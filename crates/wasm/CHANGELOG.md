@@ -171,6 +171,12 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
 
 ### Bug Fixes
 
+* Display tessellation no longer draws a fan of inside-out wedges on a
+  walked fillet band when Newton stalls on one boundary sample. The sample
+  is re-charted from its neighbours (accepted only within the deflection), so
+  the band keeps its constrained triangulation instead of falling back to the
+  snapped rectangular mesh. Seen on a block's top edge rounded into a boss
+  seam band at radii 3–3.25 against a 6 mm boss.
 * Reject overflowing JSON edge and legacy sketch indices before they can
   alias another entity in wasm32. Variable fillets also reject unknown or
   non-string supplied radius laws across direct and batch APIs; omitted-law
