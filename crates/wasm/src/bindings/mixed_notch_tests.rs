@@ -145,12 +145,13 @@ fn mixed_notch_whole_edge_fillet_succeeds_on_both_contracts() {
     );
 }
 
-/// Whole-edge chamfer succeeds through batch with the native closed form.
+/// Whole-edge chamfer matches the independent OCCT notch volume in both batches.
 #[test]
 fn mixed_notch_whole_edge_chamfer_matches_native_closed_form() {
     let mut kernel = RemusKernel::new();
     let solid = make_l_bracket(&mut kernel);
     let edges = edge_handles(&mut kernel, solid);
+    let before = volume(&mut kernel, solid);
     let out = run(
         &mut kernel,
         &[op(
@@ -160,10 +161,24 @@ fn mixed_notch_whole_edge_chamfer_matches_native_closed_form() {
     );
     let chamfered = u32::try_from(out[0]["ok"].as_u64().unwrap()).unwrap();
     let vol = volume(&mut kernel, chamfered);
+    // Ten triangular convex caps and two quadrilateral notch caps give
+    // K=22/3 in V(d)=13120-220*d²+K*d³. Independent OCCT: 12907.333333333325.
+    let expected = 13_120.0 - 220.0 + 22.0 / 3.0;
     assert!(
-        (vol - 12905.3333).abs() < 0.5,
-        "batch chamfer must meet the native closed form, got {vol}"
+        (vol - expected).abs() < 1e-6,
+        "batch chamfer must meet the OCCT volume, got {vol}"
     );
+    let out = run_v2(
+        &mut kernel,
+        &[op(
+            "chamfer",
+            serde_json::json!({"solid":solid,"edges":edges,"distance":1.0}),
+        )],
+    );
+    let v2 = u32::try_from(out[0]["ok"].as_u64().unwrap()).unwrap();
+    assert!((volume(&mut kernel, v2) - expected).abs() < 1e-6);
+    assert!((volume(&mut kernel, solid) - before).abs() < 1e-9);
+    assert_eq!(edge_handles(&mut kernel, solid).len(), 18);
 }
 
 /// Rib-on-plate fixture through batch: 60x50x6 plate plus one 6x20x18 rib

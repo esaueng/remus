@@ -100,9 +100,20 @@ fn reimported_bracket_keeps_boundary_contracts() {
         .unwrap_or_else(|e| panic!("reimported whole-edge chamfer must build: {e}"));
     assert!(!chamfered.is_partial);
     let cvol = solid_volume(&imported, chamfered.solid, 0.01).unwrap();
+    // Independent OCCT result with ten triangular and two quadrilateral caps.
+    let expected = 13_120.0 - 220.0 + 22.0 / 3.0;
     assert!(
-        (cvol - 12905.3333).abs() < 0.5,
-        "reimported chamfer must meet the closed form, got {cvol:.4}"
+        (cvol - expected).abs() < 1e-6,
+        "reimported chamfer must meet the OCCT volume, got {cvol:.9}"
+    );
+    let chamfer_step = remus_io::step::writer::write_step(&imported, &[chamfered.solid]).unwrap();
+    let (chamfer_back, chamfer_solid) = reimport(&chamfer_step);
+    assert_eq!(solid_faces(&chamfer_back, chamfer_solid).unwrap().len(), 38);
+    assert!((solid_volume(&chamfer_back, chamfer_solid, 0.01).unwrap() - expected).abs() < 1e-6);
+    assert!(
+        validate_solid(&chamfer_back, chamfer_solid, &ValidateOptions::default())
+            .unwrap()
+            .is_valid()
     );
 
     // The filleted solid itself round-trips with volume agreement.
