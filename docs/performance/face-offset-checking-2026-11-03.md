@@ -50,13 +50,19 @@ consumer regressions and the consumer parity corpus exercise the existing
 geometry contracts. Consumer workflow latency qualification remains open;
 this document makes no end-to-end speedup claim.
 
-The paired committed packages use the artifact from CI run `41624660041`,
-from tested merge source `066d0d2b040131b2062a2a900e1e3d8c48c64764`.
-The branch includes its integration base `b9970b43`, including the shared
-analytic-trim endpoint repair and the sheared-chart tessellation repair.
+The immutable consumer package candidate at
+`a12bae1d0a3bfb646457dc5bac90a431669e2433` uses the artifact from CI run
+`41624660041`, from tested merge source
+`066d0d2b040131b2062a2a900e1e3d8c48c64764`. Its source includes integration
+base `b9970b43`, with the shared analytic-trim endpoint repair and the
+sheared-chart tessellation repair.
 Earlier local Mac and hosted Linux builds passed
 the same package runtime checks but produced different WASM bytes while
 generated bindings agreed, so the distribution uses the hosted artifact.
 The artifact ZIP SHA-256 is
 `868059ac5bd5d81574812864188a99e66c56530c657e2a488407629f682cd361`.
 The unchanged package integrity gate rebuilds and compares the hosted output.
+The final source PR retains main's generated packages and normal automatic
+refresh channel; it does not claim those older main packages contain this
+new source. OpenZCAD separately pins and qualifies the immutable consumer
+candidate above, including its upstream blob checksums and consumer CI.
