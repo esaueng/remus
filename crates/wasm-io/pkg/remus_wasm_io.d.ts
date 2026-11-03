@@ -2,6 +2,33 @@
 /* eslint-disable */
 
 /**
+ * A native BREP import attempt with an explicit unsupported-geometry verdict.
+ *
+ * Malformed input, exceeded budgets and invalid topology still return errors.
+ * Only an unsupported carrier or layout permits a consumer's format fallback.
+ * An unsupported result does not certify the input; the alternate converter
+ * must independently validate its input and result.
+ */
+export class BrepImportResult {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Exact arena document, or empty bytes when `supported` is false.
+     */
+    readonly solids: Uint8Array;
+    /**
+     * Whether the native reader imported and strictly validated every root.
+     */
+    readonly supported: boolean;
+    /**
+     * Human-readable support boundary. Use `supported` to choose a fallback;
+     * this text is diagnostic, not a stable machine-readable contract.
+     */
+    readonly unsupportedReason: string | undefined;
+}
+
+/**
  * The translator. Stateless: every call works in a fresh scratch topology.
  */
 export class RemusIo {
@@ -118,6 +145,13 @@ export class RemusIo {
      * Create a translator.
      */
     constructor();
+    /**
+     * Try native BREP import without interpreting diagnostic text.
+     * `supported=false` permits a separate format converter; malformed input,
+     * invalid geometry and exceeded limits remain errors, with no result.
+     * Budgets and strict validation are identical to `importBrep`.
+     */
+    tryImportBrep(data: Uint8Array, max_input_bytes?: number | null, max_entities?: number | null): BrepImportResult;
 }
 
 /**
