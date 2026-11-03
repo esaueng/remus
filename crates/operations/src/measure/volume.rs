@@ -1264,7 +1264,16 @@ fn quadric_wall_boundary_winds_period(topo: &Topology, fid: FaceId) -> bool {
     };
     let fy = axis.cross(fx);
 
-    let Ok(pts) = crate::polygon::face_polygon(topo, fid) else {
+    // Open arcs and splines can travel more than half a turn between their
+    // endpoints. The coarse construction polygon records only those endpoints
+    // and can report the complementary winding. Use the same complete curved
+    // outline as the integrator whose eligibility this decides.
+    let Ok(pts) = remus_check::util::wire_polygon_curve_sampled(
+        topo,
+        face.outer_wire(),
+        MAX_EDGE_SAMPLES as usize,
+        MAX_EDGE_SAMPLES as usize,
+    ) else {
         return false;
     };
     if pts.len() < 3 {
@@ -7126,3 +7135,6 @@ mod torus_latitude_band_tests {
         assert!(torus_parallel_band_signed_volume(&topo, face, reference).is_none());
     }
 }
+
+#[cfg(test)]
+mod periodic_winding_tests;

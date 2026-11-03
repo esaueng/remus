@@ -20,9 +20,12 @@ use super::PropertiesOptions;
 use crate::CheckError;
 
 mod adaptive;
+#[cfg(test)]
+mod anisotropic_tests;
 mod boundary_area;
 #[cfg(test)]
 mod cylinder_band_tests;
+mod knot_axis;
 mod loop_index;
 mod natural_rectangle;
 #[cfg(test)]
@@ -4895,23 +4898,32 @@ fn integrate_knot_aligned<S: ParametricSurface, const AREA_ONLY: bool>(
     } else {
         vec![u_range.0, u_range.1]
     };
-    let over_budget = || {
-        CheckError::IntegrationFailed(format!(
-            "knot-aligned quadrature needs more than {MAX_KNOT_ALIGNED_CELLS} cells"
-        ))
-    };
     // Every `u` interval is at least one cell, so the breaks are held to the
     // cap before any is sorted or integrated.
     breaks.extend_from_slice(&knots_u);
     if splits {
         let room = MAX_KNOT_ALIGNED_CELLS.saturating_sub(breaks.len());
-        breaks.extend(
-            trim.knot_crossing_breaks(u_range, &knots_v, room)
-                .ok_or_else(over_budget)?,
-        );
+        let Some(crossings) = trim.knot_crossing_breaks(u_range, &knots_v, room) else {
+            return knot_axis::retry::<_, AREA_ONLY>(
+                surface,
+                (u_range, v_range),
+                rule,
+                sign,
+                trim,
+                scale,
+            );
+        };
+        breaks.extend(crossings);
     }
     if breaks.len() > MAX_KNOT_ALIGNED_CELLS {
-        return Err(over_budget());
+        return knot_axis::retry::<_, AREA_ONLY>(
+            surface,
+            (u_range, v_range),
+            rule,
+            sign,
+            trim,
+            scale,
+        );
     }
     breaks.compact_sort_by(f64::total_cmp);
     breaks.dedup();
@@ -4963,7 +4975,14 @@ fn integrate_knot_aligned<S: ParametricSurface, const AREA_ONLY: bool>(
                             let nv = knot_aligned_cells(p1 - p0, cell_v);
                             lines = lines.saturating_add(nv);
                             if lines > budget {
-                                return Err(over_budget());
+                                return knot_axis::retry::<_, AREA_ONLY>(
+                                    surface,
+                                    (u_range, v_range),
+                                    rule,
+                                    sign,
+                                    trim,
+                                    scale,
+                                );
                             }
                             if preflight {
                                 continue;

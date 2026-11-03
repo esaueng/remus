@@ -22,6 +22,9 @@
 //! This module sums solid angles over `tessellate_solid` output instead, which
 //! handles cylinders, cones, spheres, tori, and NURBS correctly.
 
+pub(crate) mod mesh_memo;
+mod winding_tree;
+
 use std::f64::consts::PI;
 
 use remus_math::vec::Point3;
@@ -115,7 +118,7 @@ pub fn classify_points(
         tolerance,
         ..Default::default()
     };
-    let prepared = remus_check::classify::PreparedSolid::prepare(topo, solid)?;
+    let prepared = crate::query::prepare_memoized_classifier(topo, solid)?;
     Ok(prepared
         .classify_points(points, &options)?
         .into_iter()
@@ -231,7 +234,7 @@ pub(crate) struct RobustClassifier<'a> {
     solid: SolidId,
     deflection: f64,
     tolerance: f64,
-    mesh: Option<crate::tessellate::TriangleMesh>,
+    mesh: Option<std::sync::Arc<mesh_memo::AnalysisMesh>>,
     /// Lazily built on the first ambiguous point, then reused across every
     /// later point and every ray within each point (PERF-Q01): the winding
     /// fallback used to rebuild bounds, BVH and trims per ray via the
@@ -271,18 +274,21 @@ impl<'a> RobustClassifier<'a> {
         let mesh = match &mut self.mesh {
             Some(mesh) => mesh,
             slot @ None => {
-                let mesh = crate::tessellate::tessellate_solid_for_analysis(
-                    self.topo,
-                    self.solid,
-                    self.deflection,
-                    remus_math::chord::DEFAULT_ANGULAR_TOL,
-                )?;
-                #[cfg(test)]
-                ROBUST_MESH_BUILDS.with(|builds| builds.set(builds.get() + 1));
+                let mesh = mesh_memo::mesh(self.topo, self.solid, self.deflection)?;
                 slot.insert(mesh)
             }
         };
-        let w = mesh_winding_number(mesh, point);
+        if let Some(verdict) = mesh
+            .winding
+            .as_ref()
+            .and_then(|tree| tree.decisive(&mesh.mesh, point))
+        {
+            let _interval = crate::performance::span("classification.winding.interval");
+            return Ok(verdict);
+        }
+        let w = crate::performance::timed("classification.winding.full", || {
+            mesh_winding_number(&mesh.mesh, point)
+        });
         if w > INSIDE_THRESHOLD + AMBIGUOUS_BAND {
             return Ok(PointClassification::Inside);
         }

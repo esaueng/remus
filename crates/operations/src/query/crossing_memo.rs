@@ -450,6 +450,45 @@ mod tests {
     }
 
     #[test]
+    fn batch_classification_reuses_exact_crossings_after_an_edit() {
+        let _reset = Reset;
+        disable_thread_crossing_memo();
+        let mut topo = Topology::new();
+        let solid = drilled_block(&mut topo);
+        let face = far_side(&topo, solid);
+        let moved = move_faces(&mut topo, solid, &[face], -3.0).unwrap();
+        let points: Vec<_> = (0..96)
+            .map(|i| {
+                let t = f64::from(i) / 96.0;
+                Point3::new(
+                    24.0 * t - 2.0,
+                    16.0 * (7.0 * t).fract() - 2.0,
+                    10.0 * (13.0 * t).fract() - 2.0,
+                )
+            })
+            .collect();
+        let classify =
+            |solid| crate::classify::classify_points(&topo, solid, &points, 0.01, 1e-7).unwrap();
+        let expected = [classify(solid), classify(moved)];
+        enable_thread_crossing_memo();
+        assert_eq!(classify(solid), expected[0]);
+        let cold = thread_crossing_memo_stats().unwrap();
+        assert!(cold.misses > 0);
+        assert_eq!(classify(moved), expected[1]);
+        let edited = thread_crossing_memo_stats().unwrap();
+        assert!(edited.hits > cold.hits);
+        assert_eq!(classify(moved), expected[1]);
+        let warm = thread_crossing_memo_stats().unwrap();
+        assert_eq!(warm.misses, edited.misses);
+        assert!(warm.hits > edited.hits);
+        // Eviction and an input too large for the content budget still run
+        // the same classifier and reach every uncached verdict.
+        set_thread_crossing_memo_limits(4, 1, 8);
+        assert_eq!(classify(moved), expected[1]);
+        assert_eq!(thread_crossing_memo_stats().unwrap().faces, 0);
+    }
+
+    #[test]
     fn evicting_memo_still_reproduces_the_analysis() {
         let _reset = Reset;
         disable_thread_crossing_memo();
