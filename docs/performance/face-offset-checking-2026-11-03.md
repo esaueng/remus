@@ -51,9 +51,10 @@ geometry contracts. Consumer workflow latency qualification remains open;
 this document makes no end-to-end speedup claim.
 
 The paired committed packages use the artifact from CI run `41624660041`,
-whose merge tree is identical to source head
-`9a1241dfcda58fc00128f7e26ad74a1efebf113a`, including the shared analytic-trim
-endpoint repair from #1504. Earlier local Mac and hosted Linux builds passed
+from tested merge source `066d0d2b040131b2062a2a900e1e3d8c48c64764`.
+The branch includes its integration base `b9970b43`, including the shared
+analytic-trim endpoint repair and the sheared-chart tessellation repair.
+Earlier local Mac and hosted Linux builds passed
 the same package runtime checks but produced different WASM bytes while
 generated bindings agreed, so the distribution uses the hosted artifact.
 The artifact ZIP SHA-256 is
