@@ -31,6 +31,8 @@ mod geometry;
 mod helpers;
 mod mitre;
 pub(crate) mod notch_torus;
+#[cfg(test)]
+mod retained_support_tests;
 mod rolling_ball;
 #[cfg(test)]
 mod tests;

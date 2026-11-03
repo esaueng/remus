@@ -40,6 +40,117 @@ fn push_face_spec(
     origins.push(origin);
 }
 
+/// Retain curved source spans that a support trim did not change. A cylinder
+/// can have a non-isoparametric boundary left by an earlier blend; endpoints
+/// alone cannot reconstruct that curve, even when only its opposite rim moves.
+fn retain_curved_support_boundaries(
+    topo: &Topology,
+    specs: &mut [FaceSpec],
+    origins: &[FaceSpecOrigin],
+    targets: &HashSet<usize>,
+    curves: &mut Vec<crate::boolean::BoundaryCurveOverride>,
+    tol: Tolerance,
+) -> Result<(), crate::OperationsError> {
+    let same = |a: Point3, b: Point3| (a - b).length() <= tol.linear;
+    let mut retained = HashSet::default();
+    for (spec, origin) in specs.iter().zip(origins) {
+        let FaceSpecOrigin::Modified(source) = origin else {
+            continue;
+        };
+        let points = spec.vertices();
+        if points.len() < 3 {
+            continue;
+        }
+        let face = topo.face(*source)?;
+        for oe in topo.wire(face.outer_wire())?.edges() {
+            if targets.contains(&oe.edge().index()) || retained.contains(&oe.edge().index()) {
+                continue;
+            }
+            let edge = topo.edge(oe.edge())?;
+            if matches!(edge.curve(), EdgeCurve::Line) || edge.start() == edge.end() {
+                continue;
+            }
+            let start = topo.vertex(edge.start())?.point();
+            let end = topo.vertex(edge.end())?.point();
+            let unchanged = (0..points.len()).any(|i| {
+                let (a, b) = (points[i], points[(i + 1) % points.len()]);
+                (same(a, start) && same(b, end)) || (same(a, end) && same(b, start))
+            });
+            if !unchanged {
+                continue;
+            }
+            if !curves.iter().any(|curve| {
+                (same(curve.start, start) && same(curve.end, end))
+                    || (same(curve.start, end) && same(curve.end, start))
+            }) {
+                curves.push(crate::boolean::BoundaryCurveOverride {
+                    start,
+                    end,
+                    curve: edge.curve().clone(),
+                    trim: crate::authoritative_edge_domain(
+                        edge,
+                        "retained fillet support boundary",
+                    )?,
+                });
+            }
+            retained.insert(oe.edge().index());
+        }
+    }
+    retain_known_cylinder_wires(specs, curves, tol);
+    Ok(())
+}
+
+fn retain_known_cylinder_wires(
+    specs: &mut [FaceSpec],
+    curves: &[crate::boolean::BoundaryCurveOverride],
+    tol: Tolerance,
+) {
+    let same = |a: Point3, b: Point3| (a - b).length() <= tol.linear;
+    // `CylindricalFace` selects minor/major circle spans from UV winding.
+    // A retained freeform trim can wind more than half a turn, which its two
+    // endpoints cannot establish. Where every non-axial span is supplied as
+    // an authoritative curve, no circle needs inferring: emit that wire as
+    // supplied, including the source's unchanged NURBS trim and parameter range.
+    // Missing curve coverage keeps the existing arc-inference checks.
+    for spec in specs {
+        let FaceSpec::CylindricalFace {
+            vertices,
+            cylinder,
+            reversed,
+            inner_wires,
+        } = spec
+        else {
+            continue;
+        };
+        if !inner_wires.is_empty() {
+            continue;
+        }
+        let mut retained_nurbs = false;
+        let covered = (0..vertices.len()).all(|i| {
+            let (a, b) = (vertices[i], vertices[(i + 1) % vertices.len()]);
+            if let Some(curve) = curves.iter().find(|curve| {
+                (same(curve.start, a) && same(curve.end, b))
+                    || (same(curve.start, b) && same(curve.end, a))
+            }) {
+                retained_nurbs |= matches!(curve.curve, EdgeCurve::NurbsCurve(_));
+                return true;
+            }
+            let (u0, _) = cylinder.project_point(a);
+            let (u1, _) = cylinder.project_point(b);
+            let radial_chord = 2.0 * cylinder.radius() * ((u1 - u0) * 0.5).sin().abs();
+            radial_chord <= tol.linear
+        });
+        if covered && retained_nurbs {
+            *spec = FaceSpec::Surface {
+                vertices: vertices.clone(),
+                surface: FaceSurface::Cylinder(cylinder.clone()),
+                reversed: *reversed,
+                inner_wires: inner_wires.clone(),
+            };
+        }
+    }
+}
+
 fn origins_from_face_specs(
     spec_origins: &[FaceSpecOrigin],
     faces_by_spec: &[Option<FaceId>],
@@ -5263,6 +5374,15 @@ pub fn fillet_rolling_ball_with_origins(
         // Phase 6: Assemble the solid using mixed-surface assembly.  Each fillet
         // strip and corner-patch spec already carries the `reversed` flag needed
         // for an outward-facing normal, so no post-assembly fix-up is required.
+
+        retain_curved_support_boundaries(
+            topo,
+            &mut all_specs,
+            &all_spec_origins,
+            &target_set,
+            &mut analytic_boundary_curves,
+            tol,
+        )?;
 
         let assembly = crate::boolean::assemble_solid_mixed_with_history_and_curves(
             topo,
