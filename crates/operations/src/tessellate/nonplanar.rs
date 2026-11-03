@@ -3384,6 +3384,7 @@ pub(super) fn tessellate_nonplanar_cdt(
                 }) =>
         {
             sheared_chart::ShearedChart::detect(surface, (u_min, u_max, v_min, v_max))
+                .map(|chart| (chart, surface))
         }
         FaceSurface::Nurbs(_)
         | FaceSurface::Plane { .. }
@@ -3398,10 +3399,13 @@ pub(super) fn tessellate_nonplanar_cdt(
         1.0
     };
     let to_cdt = |u: f64, v: f64| {
-        sheared.map_or_else(|| Point2::new(u, v * v_scale), |chart| chart.forward(u, v))
+        sheared.map_or_else(
+            || Point2::new(u, v * v_scale),
+            |(chart, _)| chart.forward(u, v),
+        )
     };
     let from_cdt =
-        |p: Point2| sheared.map_or_else(|| (p.x(), p.y() / v_scale), |chart| chart.inverse(p));
+        |p: Point2| sheared.map_or_else(|| (p.x(), p.y() / v_scale), |(chart, _)| chart.inverse(p));
 
     let margin = 0.01;
     let bounds = sheared.map_or_else(
@@ -3411,7 +3415,7 @@ pub(super) fn tessellate_nonplanar_cdt(
                 to_cdt(u_max + margin, v_max + margin),
             )
         },
-        |chart| {
+        |(chart, _)| {
             chart.bounds(
                 (u_min - margin, u_max + margin),
                 (v_min - margin, v_max + margin),
@@ -3537,17 +3541,19 @@ pub(super) fn tessellate_nonplanar_cdt(
     let mut interior_samples: Vec<Option<(Point2, (Point3, Vec3))>> = Vec::new();
 
     if du > 1e-15 && dv > 1e-15 {
-        let sheared_grid = match (sheared, chart_surface) {
-            (Some(chart), FaceSurface::Nurbs(surface)) => Some(chart.grid(
-                surface,
-                &boundary_uv,
-                (u_min, u_max, v_min, v_max),
-                deflection,
-                angular_tol,
-            )),
-            _ => None,
-        };
-        let (n_u, n_v) = if let Some(grid) = sheared_grid {
+        let sheared_grid = sheared.map(|(chart, surface)| {
+            (
+                chart,
+                chart.grid(
+                    surface,
+                    &boundary_uv,
+                    (u_min, u_max, v_min, v_max),
+                    deflection,
+                    angular_tol,
+                ),
+            )
+        });
+        let (n_u, n_v) = if let Some((_, grid)) = sheared_grid {
             (grid.n_s, grid.n_v)
         } else {
             let (n_u, n_v) =
@@ -3565,11 +3571,13 @@ pub(super) fn tessellate_nonplanar_cdt(
         validate_interior_grid_size(n_u, n_v)?;
         // Column `iu` of the row at `v`. A sheared chart spaces its columns
         // evenly in `s`, so each row has its own `u` values.
-        let grid_u = |iu: usize, v: f64| match (sheared, sheared_grid) {
-            (Some(chart), Some(grid)) => {
-                chart.u_at(grid.s_span.mul_add(iu as f64 / n_u as f64, grid.s_min), v)
-            }
-            _ => u_min + du * (iu as f64 / n_u as f64),
+        let grid_u = |iu: usize, v: f64| {
+            sheared_grid.map_or_else(
+                || u_min + du * (iu as f64 / n_u as f64),
+                |(chart, grid)| {
+                    chart.u_at(grid.s_span.mul_add(iu as f64 / n_u as f64, grid.s_min), v)
+                },
+            )
         };
 
         let boundary_uv_ref = &boundary_uv;
