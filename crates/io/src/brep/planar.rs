@@ -20,7 +20,7 @@ pub(super) struct Polygon {
 pub(super) struct Work(usize);
 
 impl Work {
-    fn charge(&mut self, count: usize) -> Result<(), IoError> {
+    pub(super) fn charge(&mut self, count: usize) -> Result<(), IoError> {
         self.0 = self.0.saturating_add(count);
         ensure_limit("BREP planar boundary comparisons", self.0, MAX_WORK)
     }

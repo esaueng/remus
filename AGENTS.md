@@ -569,6 +569,8 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Independent global maximum-distance oracles (tests) | `distance/maximum_tests.rs` |
 | Tessellation | `tessellate/` (mod, face, planar, nonplanar, nurbs, solid, edge_sampling, mesh_ops, tests, tests/face_cache, tests/mesh_oracles, tests/mutation_oracles) |
 | Differential oracle for the interior grid's boundary scans: the `(i + 1) % n` indexed containment and clearance loops kept verbatim (tests) | `tessellate/nonplanar/polygon_scan_oracle_tests.rs` |
+| Metric (first-fundamental-form) chart for an open NURBS face whose parameter lines run nearly parallel, e.g. a thread flank: interior grid and CDT in surface lengths | `tessellate/nonplanar/sheared_chart.rs` |
+| Thread flank display-mesh shading and density regressions (tests) | `tessellate/tests/sheared_chart.rs` |
 | Projection retry for a NURBS face whose coarse seed grid fails: a narrow strip swept many turns, retried from a node in every knot span (tests) | `tessellate/nonplanar/frame_projection_tests.rs` |
 | Interior grid samples reused at emission: meshes with the reuse on and off compared bit for bit (tests) | `tessellate/nonplanar/interior_sample_tests.rs` |
 | Signed native vector-area qualification for a hemisphere chart | `tessellate/nonplanar/sphere_chart_orientation.rs` |
@@ -620,11 +622,14 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Shared loft/sweep/pipe/revolve end caps | `cap.rs` |
 | Journal ingestion for modeling operations | `journal_ops.rs` |
 | Direct push/pull face editing | `push_pull.rs` |
+| Conservative radial separation proofs for periodic face sweeps | `push_pull/radial_clearance.rs` |
 | Face moves with explicit permission and quality disclosure for sampled cap reconstruction | `face_move_quality.rs` |
 | Prepared face moves: repeated moves of one source selection to new distances, distance-independent analysis read once (`PreparedFaceMove`) | `prepared_move.rs` |
 | Work-count guards for interactive face moves: writes independent of unrelated bodies, constant slots per drag tick (tests) | `prepared_move/tests/scaling.rs` |
 | Exact support-surface replacement with topology-preserving re-limitation | `replace_surface.rs` |
 | Exact constant-radius blend-band resizing; a bore resize that carries its rim rounds (`resize_cylindrical_face_with_blends`) | `resize_blend.rs` |
+| Topology-preserving radial edits of closed analytic surfaces of revolution | `resize_blend/radial_resize.rs` |
+| Exact meridian collision and volume checks for the qualified radial cell | `resize_blend/radial_resize/profile.rs` |
 | Exact axial travel limits between a moving shoulder blend and a full fixed rim on their shared cylindrical support | `resize_blend/axial_clearance.rs` |
 | Approximate cap reconstruction after a translating shoulder reaches a fixed rim, with construction history | `resize_blend/axial_rim_join.rs` |
 | Closed-form vector area of a translating region's construction boundary for the swept-volume sign guard | `resize_blend/translation_shadow.rs` |
@@ -644,6 +649,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Task | File(s) |
 |------|---------|
 | FreeCAD saved-shape ASCII BREP read and bounded planar loop classification | `brep/mod.rs`, `brep/reader.rs`, `brep/planar.rs` |
+| Saved-shape analytic line/circle and plane/cylinder carriers, rigid location words, bounded placed occurrences, circular caps and cylindrical seam bands | `brep/reader/carriers.rs`, `brep/reader/locations.rs`, `brep/reader/placed.rs`, `brep/reader/curved.rs` |
 | STEP read/write | `step/reader.rs`, `step/writer.rs` |
 | IGES read/write | `iges/reader.rs`, `iges/writer.rs` |
 | STL read/write/import | `stl/reader.rs`, `stl/writer.rs`, `stl/import.rs` |
