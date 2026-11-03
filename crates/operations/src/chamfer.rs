@@ -13,6 +13,10 @@
 //! of those holes the operation is refused rather than approximated. Only the
 //! bevel strips and corner patches are newly minted geometry, and new geometry
 //! cannot carry a hole.
+//!
+//! A complete orthogonal three-edge corner also has an exact plane-clipping
+//! construction after earlier fillets. That bounded path preserves curved
+//! carriers and untouched hole boundaries; it never facets a blend.
 
 use remus_math::compact_sort::CompactSort;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -30,6 +34,8 @@ use remus_topology::wire::WireId;
 use crate::OperationsError;
 use crate::boolean::{FaceSpec, assemble_solid_mixed_with_history};
 use crate::dot_normal_point;
+
+mod curved_corner;
 
 /// Operation name carried by [`OperationsError::Unsupported`] refusals.
 const OP: &str = "chamfer";
@@ -101,7 +107,8 @@ fn has_directed_segment(spec: &FaceSpec, from: Point3, to: Point3, eps: f64) -> 
 /// Returns [`OperationsError::Unsupported`] when the bevel has no exact
 /// construction here — a target edge on a curved face or on a hole's rim, a
 /// corner of a bevelled edge that also lies on a curved face or on a hole's
-/// rim, a rebuilt boundary carrying a curved edge, a bevel that would cut into
+/// rim, a rebuilt boundary carrying a curved edge outside the qualified
+/// complete orthogonal corner, a bevel that would cut into
 /// a hole in the face it trims, or a result that fails validation, encloses no
 /// volume, or does not come back smaller than the input.
 pub fn chamfer(
@@ -130,9 +137,10 @@ pub(crate) fn chamfer_with_origins(
             reason: "no edges specified for chamfer".into(),
         });
     }
-    remus_topology::transaction::run_transacted(topo, |t| {
+    let planar = remus_topology::transaction::run_transacted(topo, |t| {
         chamfer_core(t, solid, edges, ChamferDistances::Symmetric(distance))
-    })
+    });
+    finish_with_curved_corner(topo, solid, edges, distance, planar)
 }
 
 /// Asymmetric chamfer: `d1` on the first adjacent face, `d2` on the second.
@@ -178,9 +186,29 @@ pub(crate) fn chamfer_asymmetric_with_origins(
             reason: "no edges specified for chamfer".into(),
         });
     }
-    remus_topology::transaction::run_transacted(topo, |t| {
+    let planar = remus_topology::transaction::run_transacted(topo, |t| {
         chamfer_core(t, solid, edges, ChamferDistances::Asymmetric { d1, d2 })
-    })
+    });
+    if d1.to_bits() == d2.to_bits() {
+        finish_with_curved_corner(topo, solid, edges, d1, planar)
+    } else {
+        planar
+    }
+}
+
+fn finish_with_curved_corner(
+    topo: &mut Topology,
+    solid: SolidId,
+    edges: &[EdgeId],
+    distance: f64,
+    planar: Result<(SolidId, BlendFaceOrigins), OperationsError>,
+) -> Result<(SolidId, BlendFaceOrigins), OperationsError> {
+    if matches!(&planar, Err(OperationsError::Unsupported { .. }))
+        && let Some(result) = curved_corner::try_chamfer(topo, solid, edges, distance)?
+    {
+        return Ok(result);
+    }
+    planar
 }
 
 /// How chamfer distances are assigned to edges.
