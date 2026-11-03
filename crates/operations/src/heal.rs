@@ -2380,13 +2380,22 @@ fn apply_unify<V: std::ops::Deref<Target = [FaceId]>>(
                 representative_surface = Some(face.surface().clone());
                 representative_reversed = face.is_reversed();
             }
+            // Grouping compares effective outward normals. Equivalent planes
+            // can therefore have opposite surface normals and reversed flags;
+            // their stored wires must be oriented to the representative face
+            // before removing shared edges and assembling the merged loops.
+            let reverse_wire = face.is_reversed() != representative_reversed;
+            let orient =
+                |oe: &OrientedEdge| OrientedEdge::new(oe.edge(), oe.is_forward() ^ reverse_wire);
+            let outer_wire = face.outer_wire();
+            let inner_wires = face.inner_wires().to_vec();
             // An inner wire containing an edge shared with another face in
             // this group is a hole boundary absorbed by the merge (e.g. an
             // annulus merged with the disc that fills its hole). Dissolve it
             // into the boundary pool so its internal edges drop out; carrying
             // it over verbatim would leave a hole wire whose region is no
             // longer missing, producing an open shell with free edges.
-            for &wid in face.inner_wires() {
+            for wid in inner_wires {
                 let wire = topo.wire(wid)?;
                 let has_internal = wire
                     .edges()
@@ -2395,18 +2404,24 @@ fn apply_unify<V: std::ops::Deref<Target = [FaceId]>>(
                 if has_internal {
                     for oe in wire.edges() {
                         if !internal_edges.contains(&oe.edge().index()) {
-                            boundary_edges.push(*oe);
+                            boundary_edges.push(orient(oe));
                         }
                     }
+                } else if reverse_wire {
+                    let reversed = Wire::new(
+                        wire.edges().iter().rev().map(orient).collect(),
+                        wire.is_closed(),
+                    )?;
+                    all_inner_wires.push(topo.add_wire(reversed));
                 } else {
                     all_inner_wires.push(wid);
                 }
             }
 
-            let wire = topo.wire(face.outer_wire())?;
+            let wire = topo.wire(outer_wire)?;
             for oe in wire.edges() {
                 if !internal_edges.contains(&oe.edge().index()) {
-                    boundary_edges.push(*oe);
+                    boundary_edges.push(orient(oe));
                 }
             }
         }

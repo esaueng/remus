@@ -643,7 +643,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 ### L3: io (`crates/io/src/`)
 | Task | File(s) |
 |------|---------|
-| FreeCAD saved-shape ASCII BREP read (planar/linear slice) | `brep/mod.rs`, `brep/reader.rs` |
+| FreeCAD saved-shape ASCII BREP read and bounded planar loop classification | `brep/mod.rs`, `brep/reader.rs`, `brep/planar.rs` |
 | STEP read/write | `step/reader.rs`, `step/writer.rs` |
 | IGES read/write | `iges/reader.rs`, `iges/writer.rs` |
 | STL read/write/import | `stl/reader.rs`, `stl/writer.rs`, `stl/import.rs` |

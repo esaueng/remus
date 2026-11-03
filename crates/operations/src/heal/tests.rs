@@ -10,6 +10,190 @@ use remus_topology::Topology;
 use super::*;
 
 #[test]
+fn unify_faces_merges_mixed_planar_orientations() {
+    for reverse_first in [false, true] {
+        let mut topo = Topology::new();
+        let solid = crate::primitives::make_box(&mut topo, 4.0, 3.0, 2.0).unwrap();
+        let shell = topo.solid(solid).unwrap().outer_shell();
+        let mut faces = topo.shell(shell).unwrap().faces().to_vec();
+        let original = topo.face(faces.remove(0)).unwrap().clone();
+        let edges = topo.wire(original.outer_wire()).unwrap().edges().to_vec();
+        let a = edges[0].oriented_start(topo.edge(edges[0].edge()).unwrap());
+        let b = edges[2].oriented_start(topo.edge(edges[2].edge()).unwrap());
+        let diagonal = topo.add_edge(Edge::new(a, b, EdgeCurve::Line));
+        let boundaries = [
+            vec![edges[0], edges[1], OrientedEdge::new(diagonal, false)],
+            vec![OrientedEdge::new(diagonal, true), edges[2], edges[3]],
+        ];
+        for (index, mut boundary) in boundaries.into_iter().enumerate() {
+            // Equivalent outward faces may use opposite surface normals and
+            // opposite wire directions, compensated by the reversed flag.
+            let flip = (index == 0) == reverse_first;
+            let mut surface = original.surface().clone();
+            if flip {
+                let FaceSurface::Plane { normal, d } = &mut surface else {
+                    panic!("box face must be planar");
+                };
+                *normal = -*normal;
+                *d = -*d;
+                boundary = boundary
+                    .into_iter()
+                    .rev()
+                    .map(|oe| OrientedEdge::new(oe.edge(), !oe.is_forward()))
+                    .collect();
+            }
+            let wire = topo.add_wire(Wire::new(boundary, true).unwrap());
+            let face = if original.is_reversed() ^ flip {
+                Face::new_reversed(wire, Vec::new(), surface)
+            } else {
+                Face::new(wire, Vec::new(), surface)
+            };
+            faces.push(topo.add_face(face));
+        }
+        *topo.shell_mut(shell).unwrap() = Shell::new(faces).unwrap();
+        assert!(
+            crate::validate::validate_solid(&topo, solid)
+                .unwrap()
+                .is_valid()
+        );
+        let before = crate::measure::solid_volume(&topo, solid, 0.01).unwrap();
+
+        let report = unify_faces_checked(&mut topo, solid).unwrap();
+
+        assert_eq!(report.faces_merged, 1, "reverse_first={reverse_first}");
+        assert!(!report.reverted);
+        assert_eq!(report.input_errors, 0);
+        assert_eq!(report.result_errors, 0);
+        assert_eq!(
+            remus_topology::explorer::solid_faces(&topo, solid)
+                .unwrap()
+                .len(),
+            6
+        );
+        let after = crate::measure::solid_volume(&topo, solid, 0.01).unwrap();
+        assert!((before - 24.0).abs() < 1e-9);
+        assert!((after - before).abs() < 1e-9);
+        assert_eq!(unify_faces(&mut topo, solid).unwrap(), 0);
+    }
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn unify_mixed_planar_orientations_preserves_a_through_hole() {
+    let mut topo = Topology::new();
+    let block = crate::primitives::make_box(&mut topo, 4.0, 4.0, 2.0).unwrap();
+    let bore = crate::primitives::make_cylinder(&mut topo, 0.25, 4.0).unwrap();
+    crate::transform::transform_solid(
+        &mut topo,
+        bore,
+        &remus_math::mat::Mat4::translation(1.0, 2.5, -1.0),
+    )
+    .unwrap();
+    let solid =
+        crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Cut, block, bore).unwrap();
+    let shell = topo.solid(solid).unwrap().outer_shell();
+    let mut faces = topo.shell(shell).unwrap().faces().to_vec();
+    let original_count = faces.len();
+    let cap_index = faces
+        .iter()
+        .position(|&fid| {
+            let face = topo.face(fid).unwrap();
+            matches!(face.surface(), FaceSurface::Plane { normal, d }
+                if normal.z() > 0.9 && (*d - 2.0).abs() < 1e-9)
+        })
+        .unwrap();
+    let cap = topo.face(faces.remove(cap_index)).unwrap().clone();
+    assert_eq!(cap.inner_wires().len(), 1);
+    let edges = topo.wire(cap.outer_wire()).unwrap().edges().to_vec();
+    assert_eq!(edges.len(), 4);
+    let vertices: Vec<_> = edges
+        .iter()
+        .map(|oe| {
+            topo.vertex(oe.oriented_start(topo.edge(oe.edge()).unwrap()))
+                .unwrap()
+                .point()
+        })
+        .collect();
+    let hole_point = Point3::new(1.0, 2.5, 2.0);
+    let first_has_hole = [0, 1, 2].into_iter().all(|i| {
+        let a = vertices[i];
+        let b = vertices[(i + 1) % 3];
+        (b - a).cross(hole_point - a).z() > 0.0
+    });
+    let a = edges[0].oriented_start(topo.edge(edges[0].edge()).unwrap());
+    let b = edges[2].oriented_start(topo.edge(edges[2].edge()).unwrap());
+    let diagonal = topo.add_edge(Edge::new(a, b, EdgeCurve::Line));
+    let boundaries = [
+        vec![edges[0], edges[1], OrientedEdge::new(diagonal, false)],
+        vec![OrientedEdge::new(diagonal, true), edges[2], edges[3]],
+    ];
+    let mut pieces = Vec::new();
+    for (index, mut boundary) in boundaries.into_iter().enumerate() {
+        let has_hole = (index == 0) == first_has_hole;
+        let mut surface = cap.surface().clone();
+        let mut holes = Vec::new();
+        if has_hole {
+            let FaceSurface::Plane { normal, d } = &mut surface else {
+                panic!("cap must be planar");
+            };
+            *normal = -*normal;
+            *d = -*d;
+            boundary = boundary
+                .into_iter()
+                .rev()
+                .map(|oe| OrientedEdge::new(oe.edge(), !oe.is_forward()))
+                .collect();
+            let hole = topo.wire(cap.inner_wires()[0]).unwrap();
+            let reversed = hole
+                .edges()
+                .iter()
+                .rev()
+                .map(|oe| OrientedEdge::new(oe.edge(), !oe.is_forward()))
+                .collect();
+            holes.push(topo.add_wire(Wire::new(reversed, true).unwrap()));
+        }
+        let wire = topo.add_wire(Wire::new(boundary, true).unwrap());
+        let piece = if cap.is_reversed() ^ has_hole {
+            Face::new_reversed(wire, holes, surface)
+        } else {
+            Face::new(wire, holes, surface)
+        };
+        pieces.push((has_hole, topo.add_face(piece)));
+    }
+    // The face holding the hole must need reorientation to the representative.
+    pieces.sort_by_key(|(has_hole, _)| *has_hole);
+    faces.extend(pieces.into_iter().map(|(_, face)| face));
+    *topo.shell_mut(shell).unwrap() = Shell::new(faces).unwrap();
+    assert!(
+        crate::validate::validate_solid(&topo, solid)
+            .unwrap()
+            .is_valid()
+    );
+    let before = crate::measure::solid_volume(&topo, solid, 0.01).unwrap();
+
+    let report = unify_faces_checked(&mut topo, solid).unwrap();
+
+    assert_eq!(report.faces_merged, 1);
+    assert_eq!(report.input_errors, 0);
+    assert_eq!(report.result_errors, 0);
+    assert!(!report.reverted);
+    let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
+    assert_eq!(faces.len(), original_count);
+    let top = faces
+        .iter()
+        .map(|&face| topo.face(face).unwrap())
+        .find(|face| {
+            matches!(face.surface(), FaceSurface::Plane { normal, d }
+            if normal.z() > 0.9 && (*d - 2.0).abs() < 1e-9)
+        })
+        .unwrap();
+    assert_eq!(top.inner_wires().len(), 1);
+    let after = crate::measure::solid_volume(&topo, solid, 0.01).unwrap();
+    assert!((before - (32.0 - 0.125 * std::f64::consts::PI)).abs() < 1e-9);
+    assert!((after - before).abs() < 1e-9);
+}
+
+#[test]
 fn scaling_unify_group_edge_visits_are_linear() {
     for groups in [16_u32, 64, 256] {
         let mut topo = Topology::new();

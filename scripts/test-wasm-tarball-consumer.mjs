@@ -34,6 +34,7 @@ import { runOpseqF10Packaged } from './opseq-f10-packaged.mjs';
 import { runOpseqF13Packaged } from './opseq-f13-packaged.mjs';
 import { runWasmRayTorusPackaged } from './wasm-ray-torus-packaged.mjs';
 import { runSecurityResourceRegressions } from './security-resource-packaged.mjs';
+import { runBrepImportPackaged } from './brep-import-packaged.mjs';
 import { runPackageQueueWitness } from './queue-contracts-packaged.mjs';
 import { runPointedConeCutPackaged } from './pointed-cone-cut-packaged.mjs';
 import { runOpseqF3Packaged } from './opseq-f3-packaged.mjs';
@@ -118,6 +119,7 @@ try {
   assert.equal(typeof ioExports.RemusIo, 'function', 'installed RemusIo export');
 
   runSecurityResourceRegressions({ ...packageExports, ...ioExports });
+  runBrepImportPackaged({ ...packageExports, ...ioExports });
   runPackageQueueWitness({ ...packageExports, ...ioExports });
   runPointedConeCutPackaged(packageExports);
   runOpseqF3Packaged(packageExports);
