@@ -56,6 +56,78 @@ fn sharp(topo: &Topology, solid: SolidId) -> Vec<EdgeId> {
 }
 
 #[test]
+fn complete_boss_chamfer_retrims_its_inner_footprint_and_mixed_corners() {
+    let mut topo = Topology::new();
+    let plate = remus_operations::primitives::make_box(&mut topo, 30.0, 30.0, 6.0).unwrap();
+    let post = remus_operations::primitives::make_box(&mut topo, 10.0, 10.0, 18.0).unwrap();
+    remus_operations::transform::transform_solid(
+        &mut topo,
+        post,
+        &Mat4::translation(10.0, 10.0, 6.0),
+    )
+    .unwrap();
+    let solid = remus_operations::boolean::boolean(
+        &mut topo,
+        remus_operations::boolean::BooleanOp::Fuse,
+        plate,
+        post,
+    )
+    .unwrap();
+    let edges = sharp(&topo, solid);
+    assert_eq!(edges.len(), 24);
+    let adjacency = topo.build_adjacency(solid).unwrap();
+    for distance in [0.1, 1.0] {
+        for &edge in &edges {
+            let pair = adjacency.faces_for_edge(edge);
+            let frame = remus_blend::query::edge_material_frames_at(&topo, edge, pair[0], pair[1])
+                .unwrap()
+                .unwrap();
+            let data = topo.edge(edge).unwrap();
+            let length = (topo.vertex(data.end()).unwrap().point()
+                - topo.vertex(data.start()).unwrap().point())
+            .length();
+            let expected = 7200.0
+                + if frame.concave().unwrap() { 0.5 } else { -0.5 } * distance * distance * length;
+            let mut trial = topo.clone();
+            let result = chamfer_v2(&mut trial, solid, &[edge], distance, distance).unwrap();
+            check(&trial, result.solid);
+            assert!((solid_volume(&trial, result.solid, 0.001).unwrap() - expected).abs() < 1e-6);
+        }
+    }
+    for (distance, expected) in [(0.1, 7_198.326_666_666_665), (1.0, 7_038.666_666_666_667)] {
+        for placed in [false, true] {
+            let mut trial = topo.clone();
+            if placed {
+                remus_operations::transform::transform_solid(
+                    &mut trial,
+                    solid,
+                    &(Mat4::translation(17.0, -23.0, 31.0)
+                        * Mat4::rotation_z(0.37)
+                        * Mat4::rotation_x(0.23)),
+                )
+                .unwrap();
+            }
+            let result = chamfer_v2(&mut trial, solid, &edges, distance, distance).unwrap();
+            check(&trial, result.solid);
+            assert_eq!(solid_faces(&trial, result.solid).unwrap().len(), 51);
+            let actual = solid_volume(&trial, result.solid, 0.001).unwrap();
+            assert!(
+                (actual - expected).abs() < 1e-6,
+                "C{distance}: expected {expected}, got {actual}"
+            );
+        }
+    }
+    let before = remus_io::arena_io::serialize_solids(&topo, &[solid]).unwrap();
+    // An uncertified mixed-corner cap must not be replaced with independent
+    // finite wedges that happen to pass structural validity.
+    assert!(chamfer_v2(&mut topo, solid, &edges, 0.1, 0.2).is_err());
+    assert_eq!(
+        remus_io::arena_io::serialize_solids(&topo, &[solid]).unwrap(),
+        before
+    );
+}
+
+#[test]
 fn every_sharp_edge_of_a_filleted_block_chamfers_without_flattening_the_round() {
     let (topo, solid) = filleted_block();
     let edges = sharp(&topo, solid);

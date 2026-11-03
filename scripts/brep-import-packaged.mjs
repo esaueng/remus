@@ -41,7 +41,9 @@ export function runBrepImportPackaged({ RemusKernel, RemusIo }) {
         result.free();
       }
     }
-    const text = readFileSync(new URL('../crates/io/tests/data/brep/box-v3.brep', import.meta.url), 'utf8');
+    // Git may check these text fixtures out with CRLF on Windows. Normalize
+    // mutation inputs so each asserted corruption still changes its target.
+    const text = readFileSync(new URL('../crates/io/tests/data/brep/box-v3.brep', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
     const unsupportedSource = text.replace('Surfaces 6\n1 ', 'Surfaces 6\n3 ');
     assert.notEqual(unsupportedSource, text);
     const unsupportedBytes = new TextEncoder().encode(unsupportedSource);
@@ -66,7 +68,7 @@ export function runBrepImportPackaged({ RemusKernel, RemusIo }) {
     const inverted = text.replace(/\+1 0\s*$/, '-1 0');
     assert.notEqual(inverted, text);
     assert.throws(() => io.tryImportBrep(new TextEncoder().encode(inverted)));
-    const holed = readFileSync(new URL('../crates/io/tests/data/brep/two-holes-v1.brep', import.meta.url), 'utf8');
+    const holed = readFileSync(new URL('../crates/io/tests/data/brep/two-holes-v1.brep', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
     const face = holed.indexOf('\nFa\n');
     const hole = holed.indexOf('+', face);
     assert.ok(face >= 0 && hole > face);
@@ -74,7 +76,7 @@ export function runBrepImportPackaged({ RemusKernel, RemusIo }) {
     assert.throws(() => io.tryImportBrep(new TextEncoder().encode(invalidHole)));
     const touching = readFileSync(new URL('../crates/io/tests/data/brep/touching-hole-zero-v1.brep', import.meta.url));
     assert.throws(() => io.tryImportBrep(touching));
-    const cylinder = readFileSync(new URL('../crates/io/tests/data/brep/freecad-cylinder-v1.brep', import.meta.url), 'utf8');
+    const cylinder = readFileSync(new URL('../crates/io/tests/data/brep/freecad-cylinder-v1.brep', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
     const badSeam = cylinder.replace('3  1 2CN', '3  1 1CN');
     assert.notEqual(badSeam, cylinder);
     assert.throws(() => io.tryImportBrep(new TextEncoder().encode(badSeam)));

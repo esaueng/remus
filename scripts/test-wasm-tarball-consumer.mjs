@@ -14,6 +14,7 @@ import { createRequire } from 'node:module';
 import { dirname, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { runSingleEdgeChamferPackaged } from './chamfer-rounded-edge-packaged.mjs';
 import { runOpenZcadConsumerRegressions } from './openzcad-wasm-consumer-regressions.mjs';
 import { runProjectCurvePackaged } from './project-curve-packaged.mjs';
 import { runKernelCorrectnessPackaged } from './kernel-correctness-packaged.mjs';
@@ -63,13 +64,17 @@ const npmEnvironment = {
   ...process.env,
   npm_config_cache: resolve(temporaryRoot, 'npm-cache'),
 };
+const npmCommand = process.platform === 'win32' ? process.execPath : 'npm';
+const npmArgs = args => process.platform === 'win32'
+  ? [resolve(dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js'), ...args]
+  : args;
 
 try {
   mkdirSync(consumerDir);
   const tarballs = Object.values(packageDirs).map((packageDir) => {
     const packOutput = execFileSync(
-      'npm',
-      ['pack', packageDir, '--json', '--pack-destination', temporaryRoot],
+      npmCommand,
+      npmArgs(['pack', packageDir, '--json', '--pack-destination', temporaryRoot]),
       { encoding: 'utf8', env: npmEnvironment },
     );
     const packed = JSON.parse(packOutput);
@@ -78,8 +83,8 @@ try {
   });
 
   execFileSync(
-    'npm',
-    [
+    npmCommand,
+    npmArgs([
       'install',
       '--prefix',
       consumerDir,
@@ -89,7 +94,7 @@ try {
       '--no-audit',
       '--no-fund',
       ...tarballs,
-    ],
+    ]),
     { env: npmEnvironment, stdio: 'inherit' },
   );
 
@@ -105,6 +110,7 @@ try {
   }
 
   const packageExports = consumerRequire('remus-wasm');
+  runSingleEdgeChamferPackaged(packageExports);
   assert.equal(typeof packageExports.RemusKernel, 'function', 'installed RemusKernel export');
   assert.equal(
     packageExports.BrepKernel,

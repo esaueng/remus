@@ -12,6 +12,7 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { runSingleEdgeChamferPackaged } from './chamfer-rounded-edge-packaged.mjs';
 import { runB6SectionSplitPackaged } from './b6-section-split-packaged.mjs';
 import { runCircularPatternPackaged } from './circular-pattern-packaged.mjs';
 import { runGridPatternPackaged } from './grid-pattern-packaged.mjs';
@@ -91,6 +92,7 @@ const {
 const { RemusIo } = require(resolve(projectRoot, 'crates/wasm-io/pkg/remus_wasm_io_node.cjs'));
 
 runSecurityResourceRegressions({ RemusKernel, RemusIo });
+runSingleEdgeChamferPackaged({ RemusKernel });
 runBrepImportPackaged({ RemusKernel, RemusIo });
 runPackageQueueWitness({ RemusKernel, RemusIo });
 runPointedConeCutPackaged({ RemusKernel });

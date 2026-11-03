@@ -9,7 +9,7 @@
 //! candidate end boundary is unshareable there) — planar bevels close:
 //! every bevel is a plane, planes always intersect, and nothing buries.
 //!
-//! Closed-form volume (hand-derived, similarity-certified):
+//! Volume polynomial certified against independent OCCT chamfers:
 //!
 //! ```text
 //! V(d) = V0 - (d^2/2) * (L_convex - L_concave) + K * d^3
@@ -21,14 +21,13 @@
 //!   bottom/top perimeters `40+8+32+42+8+50 = 180` each, five convex
 //!   verticals `5*20 = 100`, one concave vertical `20`:
 //!   `L_convex - L_concave = (180 + 180 + 100) - 20 = 440`.
-//! - Corner constant `K`: ten all-convex vertices lose a corner tetrahedron
-//!   `d^3/6` each (`-10/6`), and the two mixed notch vertices contribute a
-//!   residual pinned by similarity — `(V0 - V(d) - 220*d^2)/d^3` is
-//!   `d`-independent across `d in {0.5, 1, 2}` at `K = 16/3`, hence
-//!   `+7/2*d^3` per notch vertex. The residual form is asserted, not
-//!   derived; the similarity (cubic scaling) is the independent check.
+//! - Corner constant `K = 22/3`: OCCT gives volumes 13065.916666666664,
+//!   12907.333333333325 and 12298.666666666662 at d = 0.5, 1 and 2.
+//!   Both mixed vertices close with quadrilateral caps. The former triangular
+//!   caps pinned a smaller, incorrect corner shape and `K = 16/3`.
 //!
-//! Further pins: all 26 faces stay planar (18 bevels + 8 trimmed supports),
+//! Further pins: all 38 faces stay planar (18 bevels, 8 trimmed supports,
+//! 10 triangular and 2 quadrilateral corner caps),
 //! the shell is closed and valid, the operation is not partial, and the
 //! result is stable under edge-order permutation and rigid transform.
 
@@ -50,7 +49,7 @@ use remus_topology::solid::SolidId;
 
 const V0: f64 = 13120.0;
 const EDGE_TERM: f64 = 220.0; // (d^2/2) * 440
-const CORNER_K: f64 = 16.0 / 3.0;
+const CORNER_K: f64 = 22.0 / 3.0;
 
 fn l_bracket(topo: &mut Topology) -> SolidId {
     let profile = make_polygon_wire(
@@ -85,12 +84,11 @@ fn check_chamfer(topo: &Topology, solid: SolidId, d: f64, label: &str) {
     let report = validate_solid(topo, solid, &ValidateOptions::default()).unwrap();
     assert!(report.is_valid(), "{label}: result must validate");
     let faces = solid_faces(topo, solid).unwrap();
-    // 8 trimmed supports + 18 bevels + 12 corner triangles (one per vertex,
-    // where three bevels meet). Every face stays planar.
+    // 8 trimmed supports + 18 bevels + 12 corner caps. Every face stays planar.
     assert_eq!(
         faces.len(),
         38,
-        "{label}: 8 supports + 18 bevels + 12 corner triangles"
+        "{label}: 8 supports + 18 bevels + 12 corner caps"
     );
     assert!(
         faces
@@ -109,8 +107,8 @@ fn check_chamfer(topo: &Topology, solid: SolidId, d: f64, label: &str) {
         })
         .count();
     assert_eq!(
-        triangles, 12,
-        "{label}: one triangular corner patch per vertex (including both notch vertices)"
+        triangles, 10,
+        "{label}: ten convex corner triangles; the two notch caps are quadrilateral"
     );
     let shell = topo.solid(solid).unwrap().outer_shell();
     remus_topology::validation::validate_shell_closed(topo.shell(shell).unwrap(), topo)
@@ -118,9 +116,9 @@ fn check_chamfer(topo: &Topology, solid: SolidId, d: f64, label: &str) {
     let volume = solid_volume(topo, solid, 0.01).unwrap();
     let expected = expected_volume(d);
     // Mesh-quadrature volume at deflection 0.01 must meet the closed form
-    // to 0.1 mm^3 (exact planar geometry; no chord error on planes).
+    // to 1e-6 mm^3 (exact planar geometry; no chord error on planes).
     assert!(
-        (volume - expected).abs() < 0.1,
+        (volume - expected).abs() < 1e-6,
         "{label}: expected {expected:.4} mm^3, got {volume:.4} mm^3"
     );
 }
@@ -164,7 +162,7 @@ fn whole_edge_chamfer_is_order_independent() {
         (va - vb).abs() < 1e-6,
         "edge order must not matter: {va:.6} vs {vb:.6}"
     );
-    assert!((va - expected_volume(1.0)).abs() < 0.1);
+    assert!((va - expected_volume(1.0)).abs() < 1e-6);
 }
 
 /// Rigid transform of the input carries through with the same volume.

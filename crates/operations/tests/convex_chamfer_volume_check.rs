@@ -1,8 +1,7 @@
-//! Pins the fork's fail-closed contract for an upstream convex-ridge chamfer.
+//! A convex ridge chamfer repairs planar winding and retains exact setbacks.
 //!
-//! Upstream accepts the generated shell and checks its volume. The fork's
-//! modifier postcondition additionally detects inconsistent face orientation,
-//! so returning that shell would expose invalid geometry to WASM consumers.
+//! This formerly failed the modifier's face-orientation gate. The construction
+//! now normalizes the rebuilt planar wires; the validity gate stays enabled.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -15,10 +14,9 @@ use remus_topology::explorer::solid_edges;
 use remus_topology::face::{Face, FaceSurface};
 
 #[test]
-fn chamfer_v2_convex_ridge_fails_closed_on_winding_defect() {
+fn chamfer_v2_convex_ridge_repairs_winding_and_matches_exact_volume() {
     let mut topo = Topology::new();
-    // A shallow ridge: the vertex at (5, 0.05) makes the two top laterals
-    // meet at ~178.9 degrees after extrusion.
+    // The top laterals meet at (5,2), with sin(interior angle) = 20/29.
     let profile = make_polygon_wire(
         &mut topo,
         &[
@@ -41,7 +39,7 @@ fn chamfer_v2_convex_ridge_fails_closed_on_winding_defect() {
     ));
     let solid = extrude(&mut topo, face, Vec3::new(0.0, 0.0, 1.0), 8.0).unwrap();
 
-    // The ridge edge runs along (5, 0.05, z).
+    // The ridge edge runs along (5, 2, z).
     let ridge = solid_edges(&topo, solid)
         .unwrap()
         .into_iter()
@@ -54,19 +52,31 @@ fn chamfer_v2_convex_ridge_fails_closed_on_winding_defect() {
         .expect("ridge edge");
 
     let before = remus_operations::measure::solid_volume(&topo, solid, 0.05).unwrap();
-    let error = match chamfer_v2(&mut topo, solid, &[ridge], 0.5, 0.5) {
-        Ok(_) => panic!("orientation-invalid chamfer must fail closed"),
-        Err(error) => error,
-    };
+    let source = remus_io::arena_io::serialize_solids(&topo, &[solid]).unwrap();
+    let result = chamfer_v2(&mut topo, solid, &[ridge], 0.5, 0.5).unwrap();
+    let report = remus_operations::validate::validate_solid(&topo, result.solid).unwrap();
+    assert!(report.is_valid(), "{report:?}");
+    let shell = topo
+        .shell(topo.solid(result.solid).unwrap().outer_shell())
+        .unwrap();
+    remus_topology::validation::validate_shell_closed(shell, &topo).unwrap();
+    remus_topology::validation::validate_shell_manifold(shell, &topo).unwrap();
+    // Triangular cross-section: area = d²*sin(angle)/2, extruded 8 mm.
+    let expected = 320.0 - 8.0 * 0.5 * 0.5 * 0.5 * 20.0 / 29.0;
+    let actual = remus_operations::measure::solid_volume(&topo, result.solid, 0.001).unwrap();
     assert!(
-        error.to_string().contains("inconsistent face orientations"),
-        "unexpected chamfer rejection: {error}"
+        (actual - expected).abs() < 1e-9,
+        "expected {expected}, got {actual}"
     );
 
-    // The transactional modifier contract restores the input after rejection.
+    // The accepted construction also leaves its source solid unchanged.
     let after = remus_operations::measure::solid_volume(&topo, solid, 0.05).unwrap();
     assert!(
         (after - before).abs() < 1e-9,
-        "failed chamfer mutated the input: before={before:.12} after={after:.12}"
+        "chamfer mutated the source: before={before:.12} after={after:.12}"
+    );
+    assert_eq!(
+        remus_io::arena_io::serialize_solids(&topo, &[solid]).unwrap(),
+        source
     );
 }

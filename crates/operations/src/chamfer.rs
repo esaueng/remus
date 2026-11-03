@@ -14,8 +14,8 @@
 //! bevel strips and corner patches are newly minted geometry, and new geometry
 //! cannot carry a hole.
 //!
-//! A complete orthogonal three-edge corner also has an exact plane-clipping
-//! construction after earlier fillets. That bounded path preserves curved
+//! An isolated orthogonal planar ridge and a complete three-edge corner also
+//! have an exact plane-clipping construction after earlier fillets. That path preserves curved
 //! carriers and untouched hole boundaries; it never facets a blend.
 
 use remus_math::compact_sort::CompactSort;
@@ -37,6 +37,7 @@ use crate::dot_normal_point;
 
 pub(crate) mod analytic_tools;
 mod curved_corner;
+mod orthogonal;
 
 /// Operation name carried by [`OperationsError::Unsupported`] refusals.
 const OP: &str = "chamfer";
@@ -107,9 +108,9 @@ fn has_directed_segment(spec: &FaceSpec, from: Point3, to: Point3, eps: f64) -> 
 ///
 /// Returns [`OperationsError::Unsupported`] when the bevel has no exact
 /// construction here — a target edge on a curved face or on a hole's rim, a
-/// corner of a bevelled edge that also lies on a curved face or on a hole's
-/// rim, a rebuilt boundary carrying a curved edge outside the qualified
-/// complete orthogonal corner, a bevel that would cut into
+/// corner of a bevelled edge that also lies on an unqualified curved face or
+/// on a hole's rim, a rebuilt boundary carrying a curved edge outside the
+/// qualified isolated orthogonal ridge or complete corner, a bevel that would cut into
 /// a hole in the face it trims, or a result that fails validation, encloses no
 /// volume, or does not come back smaller than the input.
 pub fn chamfer(

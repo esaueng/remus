@@ -195,12 +195,12 @@ fn imported_corner_round_trips_without_flattening_the_fillets() {
 }
 
 #[test]
-fn unsupported_partial_and_oversized_selections_leave_the_input_intact() {
+fn unsupported_two_edge_and_oversized_selections_leave_the_input_intact() {
     let mut topo = Topology::new();
     let body = rounded_box(&mut topo, true, false);
     let input = fingerprint(&topo, body);
     let edges = corner_edges(&topo, body);
-    for (count, distance) in [(1, 1.0), (2, 1.0), (3, 20.0)] {
+    for (count, distance) in [(2, 1.0), (3, 20.0)] {
         assert!(chamfer(&mut topo, body, &edges[..count], distance).is_err());
         assert_eq!(fingerprint(&topo, body), input);
     }

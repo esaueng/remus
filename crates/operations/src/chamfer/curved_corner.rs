@@ -1,10 +1,11 @@
-//! Exact clipping of a complete orthogonal corner after earlier blends.
+//! Exact clipping of orthogonal planar ridges after earlier blends.
 //!
 //! The polygon chamfer cannot rebuild a curved boundary. For three straight
 //! ridges sharing a trihedral corner, the same bevels and triangular corner
 //! cap are four planes. Exact GFA cuts trim the existing carriers against
 //! those planes, retaining circles, ellipses, cylinders and hole wires.
-//! This is a bounded addition: other selections keep their existing route.
+//! An isolated ridge uses one such plane, including its cylindrical end
+//! rounds. This is a bounded addition: other selections keep their route.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -42,11 +43,158 @@ pub(super) fn try_chamfer(
     edges: &[EdgeId],
     distance: f64,
 ) -> Result<Option<(SolidId, BlendFaceOrigins)>, OperationsError> {
+    if edges.len() == 1 {
+        return try_single_edge(topo, solid, edges[0], distance);
+    }
     let Some(corner) = qualify(topo, solid, edges, distance)? else {
         return Ok(None);
     };
     remus_topology::transaction::run_transacted(topo, |t| {
         build(t, solid, &corner, distance).map(Some)
+    })
+}
+
+/// A whole-body support proof makes the plane a convex bevel rather than a
+/// cut through a pocket. Only the two supports, endpoint faces and the planes
+/// tangent to endpoint cylinders may change; the shared builder verifies all
+/// other face boundaries and requires every original face to survive.
+#[allow(clippy::too_many_lines)]
+fn try_single_edge(
+    topo: &mut Topology,
+    solid: SolidId,
+    edge_id: EdgeId,
+    distance: f64,
+) -> Result<Option<(SolidId, BlendFaceOrigins)>, OperationsError> {
+    let edge = topo.edge(edge_id)?;
+    if !matches!(edge.curve(), EdgeCurve::Line) {
+        return Ok(None);
+    }
+    let endpoints = [edge.start(), edge.end()];
+    let point = topo.vertex(endpoints[0])?.point();
+    let direction = topo.vertex(endpoints[1])?.point() - point;
+    if direction.length() <= 2.0 * distance {
+        return Ok(None);
+    }
+    let adjacency = topo.build_adjacency(solid)?;
+    let incident = adjacency.faces_for_edge(edge_id);
+    if incident.len() != 2 {
+        return Ok(None);
+    }
+    let mut supports = Vec::new();
+    for &face_id in incident {
+        let face = topo.face(face_id)?;
+        let Some(normal) = face.effective_plane_normal() else {
+            return Ok(None);
+        };
+        if !topo
+            .wire(face.outer_wire())?
+            .edges()
+            .iter()
+            .any(|e| e.edge() == edge_id)
+        {
+            return Ok(None);
+        }
+        supports.push((face_id, normal.normalize()?));
+    }
+    let eps = Tolerance::new().linear;
+    let angular = Tolerance::new().angular;
+    if supports[0].1.dot(supports[1].1).abs() > angular {
+        return Ok(None);
+    }
+    let mut allowed: BTreeSet<_> = incident.iter().map(|f| f.index()).collect();
+    let mut cylinders = BTreeSet::new();
+    for id in solid_edges(topo, solid)? {
+        let edge = topo.edge(id)?;
+        if !endpoints.contains(&edge.start()) && !endpoints.contains(&edge.end()) {
+            continue;
+        }
+        for &face_id in adjacency.faces_for_edge(id) {
+            let face = topo.face(face_id)?;
+            match face.surface() {
+                FaceSurface::Plane { .. } => {}
+                FaceSurface::Cylinder(_) if !face.is_reversed() => {
+                    cylinders.insert(face_id);
+                }
+                FaceSurface::Cylinder(_)
+                | FaceSurface::Cone(_)
+                | FaceSurface::Sphere(_)
+                | FaceSurface::Torus(_)
+                | FaceSurface::Nurbs(_) => return Ok(None),
+            }
+            allowed.insert(face_id.index());
+        }
+    }
+    if cylinders.is_empty() {
+        return Ok(None);
+    }
+    // A bevel larger than an endpoint round may reach its other tangent
+    // wall. Admit that wall by its exact cylinder/plane tangency, never by
+    // proximity; unrelated bores and curved faces remain outside the set.
+    for cylinder_id in cylinders {
+        let face = topo.face(cylinder_id)?;
+        let FaceSurface::Cylinder(cylinder) = face.surface() else {
+            return Ok(None);
+        };
+        for oe in topo.wire(face.outer_wire())?.edges() {
+            for &neighbour in adjacency.faces_for_edge(oe.edge()) {
+                let FaceSurface::Plane { normal, d } = topo.face(neighbour)?.surface() else {
+                    continue;
+                };
+                let length = normal.length();
+                let unit = normal.normalize()?;
+                let separation =
+                    (unit.dot(cylinder.origin() - Point3::new(0.0, 0.0, 0.0)) - d / length).abs();
+                if unit.dot(cylinder.axis()).abs() <= angular
+                    && (separation - cylinder.radius()).abs() <= eps
+                {
+                    allowed.insert(neighbour.index());
+                }
+            }
+        }
+    }
+    let axis = [-supports[0].1, -supports[1].1, direction.normalize()?];
+    let row = |n: Vec3| {
+        [
+            n.x(),
+            n.y(),
+            n.z(),
+            -n.dot(point - Point3::new(0.0, 0.0, 0.0)),
+        ]
+    };
+    let mut framed = topo.clone();
+    crate::transform::transform_solid(
+        &mut framed,
+        solid,
+        &Mat4([
+            row(axis[0]),
+            row(axis[1]),
+            row(axis[2]),
+            [0.0, 0.0, 0.0, 1.0],
+        ]),
+    )?;
+    let bounds = conservative_solid_bounding_box(&framed, solid)?;
+    if [bounds.min.x(), bounds.min.y()]
+        .iter()
+        .any(|v| !v.is_finite() || *v < -eps)
+        || [
+            bounds.max.x(),
+            bounds.max.y(),
+            bounds.min.z(),
+            bounds.max.z(),
+        ]
+        .iter()
+        .any(|v| !v.is_finite())
+    {
+        return Ok(None);
+    }
+    let cut = (
+        point - supports[0].1 * distance,
+        (supports[0].1 + supports[1].1).normalize()?,
+        supports.iter().map(|(f, _)| *f).collect(),
+        0.0,
+    );
+    remus_topology::transaction::run_transacted(topo, |t| {
+        build_cuts(t, solid, &allowed, vec![cut], distance).map(Some)
     })
 }
 
@@ -201,20 +349,6 @@ fn build(
     corner: &Corner,
     distance: f64,
 ) -> Result<(SolidId, BlendFaceOrigins), OperationsError> {
-    let input_faces = solid_faces(topo, solid)?;
-    let mut origins: BTreeMap<usize, Origin> = input_faces
-        .iter()
-        .map(|&f| (f.index(), Origin::Input(f)))
-        .collect();
-    let before = solid_volume(topo, solid, super::VOLUME_DEFLECTION)?;
-    let bounds = conservative_solid_bounding_box(topo, solid)?;
-    let center = bounds.min + (bounds.max - bounds.min) * 0.5;
-    let span = (bounds.max - bounds.min).length() * 2.0 + distance;
-    if !span.is_finite() || span <= 0.0 {
-        return Err(super::unsupported(
-            "the corner has no finite clipping extent",
-        ));
-    }
     let mut cuts = Vec::new();
     for i in 0..3 {
         for j in i + 1..3 {
@@ -240,6 +374,32 @@ fn build(
         corner.supports.iter().map(|(f, _)| *f).collect(),
         0.0,
     ));
+    build_cuts(topo, solid, &corner.allowed, cuts, distance)
+}
+
+type Cut = (Point3, Vec3, Vec<FaceId>, f64);
+
+fn build_cuts(
+    topo: &mut Topology,
+    solid: SolidId,
+    allowed: &BTreeSet<usize>,
+    cuts: Vec<Cut>,
+    distance: f64,
+) -> Result<(SolidId, BlendFaceOrigins), OperationsError> {
+    let input_faces = solid_faces(topo, solid)?;
+    let mut origins: BTreeMap<usize, Origin> = input_faces
+        .iter()
+        .map(|&f| (f.index(), Origin::Input(f)))
+        .collect();
+    let before = solid_volume(topo, solid, super::VOLUME_DEFLECTION)?;
+    let bounds = conservative_solid_bounding_box(topo, solid)?;
+    let center = bounds.min + (bounds.max - bounds.min) * 0.5;
+    let span = (bounds.max - bounds.min).length() * 2.0 + distance;
+    if !span.is_finite() || span <= 0.0 {
+        return Err(super::unsupported(
+            "the chamfer has no finite clipping extent",
+        ));
+    }
     let mut current = solid;
     for (point, normal, sources, _) in cuts {
         let (result, face_sources) = clip(topo, current, point, normal, center, span)?;
@@ -269,9 +429,7 @@ fn build(
                         "the corner cut split an existing face into multiple regions",
                     ));
                 }
-                if !corner.allowed.contains(&source.index())
-                    && !unchanged_boundary(topo, *source, face)?
-                {
+                if !allowed.contains(&source.index()) && !unchanged_boundary(topo, *source, face)? {
                     return Err(super::unsupported(
                         "the corner cut would alter a face outside its edge neighbourhood",
                     ));

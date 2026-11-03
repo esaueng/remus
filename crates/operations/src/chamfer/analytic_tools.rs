@@ -64,6 +64,14 @@ fn build(
     d1: f64,
     d2: f64,
 ) -> Result<Option<BlendResult>, OperationsError> {
+    if let Some(result) = super::orthogonal::build(topo, solid, seeds, d1, d2)? {
+        return Ok(Some(result));
+    }
+    // Independent finite strips do not construct the cap at a complete
+    // mixed corner. Structural validity alone cannot certify that shape.
+    if super::orthogonal::has_complete_mixed_corner(topo, solid, seeds)? {
+        return Ok(None);
+    }
     let adjacency = topo.build_adjacency(solid)?;
     let mut work = BTreeMap::new();
     for &seed in seeds {
