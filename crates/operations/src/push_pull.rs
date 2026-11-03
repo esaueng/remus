@@ -9,6 +9,9 @@
 //! seams the boolean leaves behind, and refuse to return a result whose shell
 //! is not closed.
 
+mod radial_clearance;
+use radial_clearance::coaxial_sweep_is_radially_disjoint;
+
 use remus_math::compact_sort::CompactSort;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::f64::consts::PI;
@@ -685,6 +688,7 @@ impl SweptRegionCheck {
                 if swept_faces.contains(&candidate)
                     || excluded_candidates.contains(&candidate)
                     || adjacent.contains(&candidate)
+                    || coaxial_sweep_is_radially_disjoint(topo, moved_face, candidate, normal)?
                 {
                     continue;
                 }
@@ -1008,6 +1012,12 @@ pub fn resize_cylindrical_face(
         return resize_partial_cylindrical_face(topo, solid, face, &cyl, new_radius);
     }
 
+    if let Some(result) =
+        crate::resize_blend::resize_cylindrical_strip(topo, solid, face, new_radius)?
+    {
+        return Ok(result.0.solid);
+    }
+
     // A bore whose rims are blended onto its caps carries those blends to the
     // new radius; the sleeve below would leave them behind at the old one.
     if let Some(result) =
@@ -1090,6 +1100,12 @@ pub(crate) fn resize_cylindrical_face_with_entity_evolution(
 ) -> Result<DirectEditEvolution, crate::OperationsError> {
     let cylinder = validate_cylindrical_resize(topo, solid, face, new_radius)?;
     let full_turn = cylindrical_face_is_full_turn(topo, face, &cylinder)?;
+    if full_turn
+        && let Some(result) =
+            crate::resize_blend::resize_cylindrical_strip(topo, solid, face, new_radius)?
+    {
+        return Ok(result);
+    }
     let reversed = topo.face(face)?.is_reversed();
     if !full_turn && reversed {
         return Err(remus_offset::OffsetError::UnsupportedMoveFace {
