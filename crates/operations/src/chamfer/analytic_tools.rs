@@ -460,6 +460,18 @@ fn make_tool(
         middle + frames.into1 * distances[0],
         middle + frames.into2 * distances[1],
     ];
+    // An extended cutter must not turn an oversized setback into a valid
+    // half-space cut through an unrelated part of the body. Both requested
+    // contacts must still lie on their original trimmed support faces.
+    for (support, point) in supports.into_iter().zip(contact) {
+        let Some((distance, _)) = remus_check::distance::point_to_face(topo, point, support)?
+        else {
+            return Ok(None);
+        };
+        if distance > Tolerance::new().linear {
+            return Ok(None);
+        }
+    }
     let solid = match data.curve() {
         EdgeCurve::Line if surfaces.iter().all(FaceSurface::is_planar) => {
             let direction = (b - a).normalize()?;

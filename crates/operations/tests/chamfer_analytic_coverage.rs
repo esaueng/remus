@@ -319,6 +319,69 @@ fn every_sharp_edge_of_a_twice_rounded_block_and_all_modes_build() {
 }
 
 #[test]
+fn steep_chamfers_refuse_setbacks_beyond_the_original_support() {
+    for placed in [false, true] {
+        let mut topo = Topology::new();
+        let solid = remus_operations::primitives::make_box(&mut topo, 30.0, 18.0, 24.0).unwrap();
+        if placed {
+            remus_operations::transform::transform_solid(
+                &mut topo,
+                solid,
+                &(Mat4::translation(17.0, -23.0, 31.0)
+                    * Mat4::rotation_z(0.37)
+                    * Mat4::rotation_x(0.23)),
+            )
+            .unwrap();
+        }
+        let edge = solid_edges(&topo, solid).unwrap()[0];
+        let before = remus_io::arena_io::serialize_solids(&topo, &[solid]).unwrap();
+        let counts = (
+            topo.num_vertices(),
+            topo.num_edges(),
+            topo.num_faces(),
+            topo.num_solids(),
+        );
+        let angle = 80.0_f64.to_radians();
+        for distance in [10.0, 20.0] {
+            assert!(
+                remus_operations::blend_ops::chamfer_distance_angle(
+                    &mut topo,
+                    solid,
+                    &[edge],
+                    distance,
+                    angle
+                )
+                .is_err()
+            );
+            assert_eq!(
+                (
+                    topo.num_vertices(),
+                    topo.num_edges(),
+                    topo.num_faces(),
+                    topo.num_solids()
+                ),
+                counts
+            );
+            assert_eq!(
+                remus_io::arena_io::serialize_solids(&topo, &[solid]).unwrap(),
+                before
+            );
+        }
+        let accepted = remus_operations::blend_ops::chamfer_distance_angle(
+            &mut topo,
+            solid,
+            &[edge],
+            1.0,
+            angle,
+        )
+        .unwrap();
+        check(&topo, accepted.solid);
+        let expected = 30.0 * 18.0 * 24.0 - 0.5 * angle.tan() * 30.0;
+        assert!((solid_volume(&topo, accepted.solid, 0.001).unwrap() - expected).abs() < 1e-6);
+    }
+}
+
+#[test]
 fn rejected_chamfers_restore_source_geometry_and_all_live_entities() {
     let (mut topo, solid) = filleted_block();
     let sharp = sharp(&topo, solid);
