@@ -465,9 +465,9 @@ pub fn edge_material_frames(
     edge_material_frames_at(topo, edge_id, face1, face2)
 }
 
-/// [`edge_material_frames`] read at the midpoint of one edge rather than of
-/// a spine's first: a chain whose second face changes along the way has one
-/// pair of frames per face pair.
+/// Material-side frames evaluated at the midpoint of an individual edge:
+/// a chain whose second face changes along the way has one pair of frames
+/// per face pair.
 ///
 /// # Errors
 /// Returns a topology or geometry error when the edge or support faces cannot
