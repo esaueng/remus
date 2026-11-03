@@ -33,6 +33,17 @@ locations, multiple face loops/cavities, curved carriers and seam pcurves,
 rational/periodic splines, and FreeCAD binary framing. Native feature-history
 transfer is outside this contract.
 
+`tryImportBrep` adds a consumer fallback contract in the same lazy module.
+A result with `supported=true` carries exact, strictly validated solid arena
+bytes. `supported=false` carries no arena and a diagnostic `unsupportedReason`;
+only the native reader's `UnsupportedEntity` verdict produces it. Parse errors,
+invalid topology, resource limits, invalid API arguments and serialization
+failures still throw. Consumers branch on `supported`, never diagnostic text.
+The existing `importBrep` throwing contract remains available unchanged.
+An unsupported verdict stops at the reader's support boundary; it does not
+certify the remaining source records. Any alternate converter must validate
+the source and its result independently before the consumer commits a body.
+
 Qualification uses a saved V1 box from FreeCAD's public test archive and a V3
 box from OpenZCAD's synthetic fixture, plus a derived V2 framing control.
 Tests must check physical properties,

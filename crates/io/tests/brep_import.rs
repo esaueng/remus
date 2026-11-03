@@ -9,6 +9,27 @@ const V1: &str = include_str!("data/brep/freecad-box-v1.brep");
 const V2: &str = include_str!("data/brep/box-v2.brep");
 const V3: &str = include_str!("data/brep/box-v3.brep");
 
+#[test]
+fn valid_unqualified_edge_flags_are_unsupported_but_malformed_flags_are_errors() {
+    for flags in ["0 1 0", "1 0 0", "1 1 1"] {
+        let input = V3.replacen("1e-07 1 1 0", &format!("1e-07 {flags}"), 1);
+        assert_ne!(input, V3);
+        let mut topo = Topology::new();
+        assert!(matches!(
+            brep::read_brep(&input, &mut topo),
+            Err(IoError::UnsupportedEntity { .. })
+        ));
+        assert_eq!(topo.num_vertices(), 0);
+    }
+    let input = V3.replacen("1e-07 1 1 0", "1e-07 1 2 0", 1);
+    assert_ne!(input, V3);
+    let mut topo = Topology::new();
+    assert!(matches!(
+        brep::read_brep(&input, &mut topo),
+        Err(IoError::ParseError { .. })
+    ));
+}
+
 fn near(value: f64, expected: f64) {
     assert!(
         value.is_finite() && (value - expected).abs() < 1e-8,

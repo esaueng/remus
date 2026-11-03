@@ -35,6 +35,43 @@ const MESH_TOL: f64 = 1e-7;
 #[derive(Default)]
 pub struct RemusIo {}
 
+/// A native BREP import attempt with an explicit unsupported-geometry verdict.
+///
+/// Malformed input, exceeded budgets and invalid topology still return errors.
+/// Only an unsupported carrier or layout permits a consumer's format fallback.
+/// An unsupported result does not certify the input; the alternate converter
+/// must independently validate its input and result.
+#[wasm_bindgen]
+pub struct BrepImportResult {
+    solids: Vec<u8>,
+    unsupported_reason: Option<String>,
+}
+
+#[wasm_bindgen]
+impl BrepImportResult {
+    /// Whether the native reader imported and strictly validated every root.
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn supported(&self) -> bool {
+        self.unsupported_reason.is_none()
+    }
+
+    /// Exact arena document, or empty bytes when `supported` is false.
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn solids(&self) -> Vec<u8> {
+        self.solids.clone()
+    }
+
+    /// Human-readable support boundary. Use `supported` to choose a fallback;
+    /// this text is diagnostic, not a stable machine-readable contract.
+    #[wasm_bindgen(getter, js_name = "unsupportedReason")]
+    #[must_use]
+    pub fn unsupported_reason(&self) -> Option<String> {
+        self.unsupported_reason.clone()
+    }
+}
+
 /// Bodies restored from a STEP file, plus the reader's report.
 #[wasm_bindgen]
 pub struct StepImportResult {
@@ -335,6 +372,27 @@ impl RemusIo {
         Ok(solids_document_with_limits(&topo, &solids, limits)?)
     }
 
+    fn try_import_brep_impl(
+        data: &[u8],
+        max_input_bytes: Option<f64>,
+        max_entities: Option<f64>,
+    ) -> Result<BrepImportResult, IoWasmError> {
+        let limits = import_limits_from(max_input_bytes, max_entities)?;
+        let text = utf8(data, "BREP")?;
+        let mut topo = Topology::new();
+        match remus_io::brep::read_brep_with_limits(text, &mut topo, limits) {
+            Ok(solids) => Ok(BrepImportResult {
+                solids: solids_document_with_limits(&topo, &solids, limits)?,
+                unsupported_reason: None,
+            }),
+            Err(IoError::UnsupportedEntity { entity }) => Ok(BrepImportResult {
+                solids: Vec::new(),
+                unsupported_reason: Some(entity),
+            }),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     fn import_step_impl(
         data: &[u8],
         max_input_bytes: Option<f64>,
@@ -610,6 +668,24 @@ impl RemusIo {
         Ok(Self::import_brep_impl(data, max_input_bytes, max_entities)?)
     }
 
+    /// Try native BREP import without interpreting diagnostic text.
+    /// `supported=false` permits a separate format converter; malformed input,
+    /// invalid geometry and exceeded limits remain errors, with no result.
+    /// Budgets and strict validation are identical to `importBrep`.
+    #[wasm_bindgen(js_name = "tryImportBrep")]
+    pub fn try_import_brep(
+        &self,
+        data: &[u8],
+        max_input_bytes: Option<f64>,
+        max_entities: Option<f64>,
+    ) -> Result<BrepImportResult, JsError> {
+        Ok(Self::try_import_brep_impl(
+            data,
+            max_input_bytes,
+            max_entities,
+        )?)
+    }
+
     /// Read a STEP file; returns a solid document for `deserializeSolids`,
     /// or no bytes when the file holds no solids.
     ///
@@ -776,6 +852,77 @@ mod tests {
         assert!(RemusIo::import_brep_impl(input, None, Some(10.)).is_err());
         assert!(RemusIo::import_brep_impl(input, Some(f64::NAN), None).is_err());
         assert!(RemusIo::import_brep_impl(&[0xff], None, None).is_err());
+    }
+
+    #[test]
+    fn brep_attempt_distinguishes_imported_and_unsupported_geometry() {
+        let input = include_str!("../../io/tests/data/brep/box-v3.brep");
+        let imported = RemusIo::try_import_brep_impl(input.as_bytes(), None, None).unwrap();
+        assert!(imported.supported());
+        assert!(imported.unsupported_reason().is_none());
+        assert_eq!(
+            imported.solids(),
+            RemusIo::import_brep_impl(input.as_bytes(), None, None).unwrap()
+        );
+        let actual = volumes(&imported.solids());
+        assert_eq!(actual.len(), 1);
+        assert!((actual[0] - 6000.).abs() < 1e-8);
+
+        let curved = input.replacen("Surfaces 6\n1 ", "Surfaces 6\n2 ", 1);
+        let unsupported = RemusIo::try_import_brep_impl(curved.as_bytes(), None, None).unwrap();
+        assert!(!unsupported.supported());
+        assert!(unsupported.solids().is_empty());
+        assert!(unsupported.unsupported_reason().is_some());
+        assert!(RemusIo::import_brep_impl(curved.as_bytes(), None, None).is_err());
+
+        for flags in ["0 1 0", "1 0 0", "1 1 1"] {
+            let unqualified = input.replacen("1e-07 1 1 0", &format!("1e-07 {flags}"), 1);
+            assert_ne!(input, unqualified);
+            let result = RemusIo::try_import_brep_impl(unqualified.as_bytes(), None, None).unwrap();
+            assert!(!result.supported());
+            assert!(result.solids().is_empty());
+        }
+    }
+
+    #[test]
+    fn brep_attempt_never_converts_invalid_or_over_budget_input_to_fallback() {
+        let input = include_bytes!("../../io/tests/data/brep/freecad-box-v1.brep");
+        assert!(matches!(
+            RemusIo::try_import_brep_impl(input, Some(1.), None),
+            Err(IoWasmError::Io(IoError::LimitExceeded { .. }))
+        ));
+        assert!(matches!(
+            RemusIo::try_import_brep_impl(input, None, Some(10.)),
+            Err(IoWasmError::Io(IoError::LimitExceeded { .. }))
+        ));
+        assert!(matches!(
+            RemusIo::try_import_brep_impl(input, Some(f64::NAN), None),
+            Err(IoWasmError::InvalidInput { .. })
+        ));
+        assert!(RemusIo::try_import_brep_impl(&[0xff], None, None).is_err());
+        assert!(matches!(
+            RemusIo::try_import_brep_impl(&input[..input.len() / 2], None, None),
+            Err(IoWasmError::Io(IoError::ParseError { .. }))
+        ));
+
+        let text = std::str::from_utf8(input).unwrap();
+        let invalid = text.replacen(
+            "Curve2ds 24\n1 0.00000000000000000",
+            "Curve2ds 24\n1 2.00000000000000000",
+            1,
+        );
+        assert_ne!(text, invalid);
+        assert!(matches!(
+            RemusIo::try_import_brep_impl(invalid.as_bytes(), None, None),
+            Err(IoWasmError::Io(IoError::ParseError { .. }))
+        ));
+
+        let inverted = text.replacen("\n+1 1", "\n-1 1", 1);
+        assert_ne!(inverted, text);
+        assert!(matches!(
+            RemusIo::try_import_brep_impl(inverted.as_bytes(), None, None),
+            Err(IoWasmError::Io(IoError::InvalidTopology { .. }))
+        ));
     }
 
     fn box_document() -> Vec<u8> {
