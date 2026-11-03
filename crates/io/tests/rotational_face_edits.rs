@@ -296,10 +296,16 @@ fn collisions_and_collapsed_sections_refuse_and_preserve_input() {
         let solid = edited(&mut topo);
         let cap = plane(&topo, solid, height, normal);
         let before = remus_io::arena_io::serialize_solid(&topo, solid).unwrap();
-        assert!(
-            move_faces(&mut topo, solid, &[cap], offset).is_err(),
-            "cap at {height} offset {offset} must refuse collision or collapse"
-        );
+        let error = move_faces(&mut topo, solid, &[cap], offset)
+            .expect_err("cap must refuse collision or collapse");
+        if normal < 0.0 && offset >= 16.0 {
+            assert!(
+                error
+                    .to_string()
+                    .contains("conical cap reaches or crosses its support apex"),
+                "{error}"
+            );
+        }
         assert_eq!(
             remus_io::arena_io::serialize_solid(&topo, solid).unwrap(),
             before

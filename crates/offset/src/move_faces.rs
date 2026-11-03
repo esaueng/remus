@@ -307,6 +307,13 @@ fn move_faces_impl(
     let source_edge_faces = edge_to_face_map(topo, solid)?;
     validate_source_edges(topo, &source_edge_faces, &selected)?;
 
+    validate_conical_cap_displacement(
+        topo,
+        &source_edge_faces,
+        &selected,
+        reference_normal * distance,
+        options.tolerance,
+    )?;
     let mut data = OffsetData::new(distance, options, Vec::new());
     populate_surfaces(topo, solid, &selected, distance, &mut data)?;
     let all_surfaces = data.offset_faces.clone();
@@ -1739,6 +1746,49 @@ fn validate_source_edges<V: std::ops::Deref<Target = [FaceId]>>(
                     "face is adjacent to selected move boundary edge {}",
                     edge.index()
                 ),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Check the cone's supported nappe before intersection and vertex projection.
+/// Otherwise a cap past the tip can fail later with an unrelated projection
+/// residual instead of reporting its actual travel limit.
+fn validate_conical_cap_displacement<V: std::ops::Deref<Target = [FaceId]>>(
+    topo: &Topology,
+    edge_faces: &std::collections::BTreeMap<usize, V>,
+    selected: &HashSet<usize>,
+    delta: Vec3,
+    tolerance: Tolerance,
+) -> Result<(), OffsetError> {
+    for (&index, faces) in edge_faces {
+        let Some(&face) = faces.iter().find(|face| selected.contains(&face.index())) else {
+            continue;
+        };
+        let Some(&support) = faces.iter().find(|face| !selected.contains(&face.index())) else {
+            continue;
+        };
+        let FaceSurface::Cone(cone) = topo.face(support)?.surface() else {
+            continue;
+        };
+        let edge = topo
+            .edge_id_from_index(index)
+            .ok_or_else(|| OffsetError::TopologyChange {
+                face: Some(face),
+                edge: None,
+                reason: "conical cap lost its source edge".into(),
+            })?;
+        let EdgeCurve::Circle(circle) = topo.edge(edge)?.curve() else {
+            continue;
+        };
+        let before = (circle.center() - cone.apex()).dot(cone.axis());
+        let after = before + delta.dot(cone.axis());
+        if before * after <= 0.0 || after.abs() * cone.half_angle().tan() <= tolerance.linear {
+            return Err(OffsetError::TopologyChange {
+                face: Some(face),
+                edge: Some(edge),
+                reason: "conical cap reaches or crosses its support apex".into(),
             });
         }
     }

@@ -176,7 +176,13 @@ export function runRotationalFaceEditsPackaged({ RemusKernel, RemusIo }) {
         [0, -1, -30],
       ]) {
         const cap = plane(k, solid, height, sign);
-        assert.throws(() => k.moveFaces(solid, Uint32Array.of(cap), offset));
+        const reason =
+          sign < 0 && offset >= 16 ? /conical cap reaches or crosses its support apex/ : undefined;
+        assert.throws(() => k.moveFaces(solid, Uint32Array.of(cap), offset), reason);
+        assert.throws(
+          () => k.moveFacesJournaledWithQuality(solid, Uint32Array.of(cap), offset, 256),
+          reason,
+        );
         assert.deepEqual(Buffer.from(k.serializeSolid(solid)), snapshot);
         assert.equal(k.journalSummary(), journal);
       }
