@@ -3369,18 +3369,58 @@ pub(super) fn tessellate_nonplanar_cdt(
     // one's length before inserting, and scale back when reading vertices out.
     // The triangulation is affine-invariant in topology, so nothing else about
     // the result changes.
+    //
+    // An open NURBS chart whose parameter lines run nearly parallel in space
+    // (a thread flank) triangulates in its metric chart instead, where the
+    // grid and the Delaunay criterion see lengths on the surface (see
+    // `sheared_chart`). Section-circle walls and ellipse trims keep the
+    // parameter box: their special-case seeding reads raw parameter spans.
+    let sheared = match chart_surface {
+        FaceSurface::Nurbs(surface)
+            if !has_section_circle
+                && !wire.edges().iter().any(|oriented| {
+                    topo.edge(oriented.edge())
+                        .is_ok_and(|edge| matches!(edge.curve(), EdgeCurve::Ellipse(_)))
+                }) =>
+        {
+            sheared_chart::ShearedChart::detect(surface, (u_min, u_max, v_min, v_max))
+                .map(|chart| (chart, surface))
+        }
+        FaceSurface::Nurbs(_)
+        | FaceSurface::Plane { .. }
+        | FaceSurface::Cylinder(_)
+        | FaceSurface::Cone(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => None,
+    };
     let v_scale = if du > 1e-15 && dv > 1e-15 {
         du / dv
     } else {
         1.0
     };
-    let to_cdt = |u: f64, v: f64| Point2::new(u, v * v_scale);
-    let from_cdt = |p: Point2| (p.x(), p.y() / v_scale);
+    let to_cdt = |u: f64, v: f64| {
+        sheared.map_or_else(
+            || Point2::new(u, v * v_scale),
+            |(chart, _)| chart.forward(u, v),
+        )
+    };
+    let from_cdt =
+        |p: Point2| sheared.map_or_else(|| (p.x(), p.y() / v_scale), |(chart, _)| chart.inverse(p));
 
     let margin = 0.01;
-    let bounds = (
-        to_cdt(u_min - margin, v_min - margin),
-        to_cdt(u_max + margin, v_max + margin),
+    let bounds = sheared.map_or_else(
+        || {
+            (
+                to_cdt(u_min - margin, v_min - margin),
+                to_cdt(u_max + margin, v_max + margin),
+            )
+        },
+        |(chart, _)| {
+            chart.bounds(
+                (u_min - margin, u_max + margin),
+                (v_min - margin, v_max + margin),
+            )
+        },
     );
     let mut cdt = Cdt::with_capacity(bounds, n_boundary);
 
@@ -3501,16 +3541,44 @@ pub(super) fn tessellate_nonplanar_cdt(
     let mut interior_samples: Vec<Option<(Point2, (Point3, Vec3))>> = Vec::new();
 
     if du > 1e-15 && dv > 1e-15 {
-        let (n_u, n_v) = interior_grid_resolution(chart_surface, du, dv, deflection, angular_tol);
-        let n_v = interior_rows_for_boundary(
-            face_data.surface(),
-            &boundary_uv,
-            (v_min, v_max),
-            du,
-            n_u,
-            n_v,
-        );
+        let sheared_grid = sheared.map(|(chart, surface)| {
+            (
+                chart,
+                chart.grid(
+                    surface,
+                    &boundary_uv,
+                    (u_min, u_max, v_min, v_max),
+                    deflection,
+                    angular_tol,
+                ),
+            )
+        });
+        let (n_u, n_v) = if let Some((_, grid)) = sheared_grid {
+            (grid.n_s, grid.n_v)
+        } else {
+            let (n_u, n_v) =
+                interior_grid_resolution(chart_surface, du, dv, deflection, angular_tol);
+            let n_v = interior_rows_for_boundary(
+                face_data.surface(),
+                &boundary_uv,
+                (v_min, v_max),
+                du,
+                n_u,
+                n_v,
+            );
+            (n_u, n_v)
+        };
         validate_interior_grid_size(n_u, n_v)?;
+        // Column `iu` of the row at `v`. A sheared chart spaces its columns
+        // evenly in `s`, so each row has its own `u` values.
+        let grid_u = |iu: usize, v: f64| {
+            sheared_grid.map_or_else(
+                || u_min + du * (iu as f64 / n_u as f64),
+                |(chart, grid)| {
+                    chart.u_at(grid.s_span.mul_add(iu as f64 / n_u as f64, grid.s_min), v)
+                },
+            )
+        };
 
         let boundary_uv_ref = &boundary_uv;
         let hole_uvs_ref = &hole_uvs;
@@ -3539,13 +3607,13 @@ pub(super) fn tessellate_nonplanar_cdt(
         // (see `polygon_row_contains`): the same answers as testing every
         // grid point against every boundary segment, without the
         // grid-by-boundary product.
-        let grid_us: Vec<f64> = (1..n_u)
-            .map(|iu| u_min + du * (iu as f64 / n_u as f64))
-            .collect();
         let rows = n_v.saturating_sub(1);
-        let mut grid_inside = vec![false; grid_us.len() * rows];
+        let mut grid_inside = vec![false; n_u.saturating_sub(1) * rows];
+        let mut grid_us: Vec<f64> = Vec::with_capacity(n_u.saturating_sub(1));
         for iv in 1..n_v {
             let v = v_min + dv * (iv as f64 / n_v as f64);
+            grid_us.clear();
+            grid_us.extend((1..n_u).map(|iu| grid_u(iu, v)));
             let mut inside = polygon_row_contains(boundary_uv_ref, &grid_us, v);
             for hole in hole_uvs_ref {
                 for (cell, in_hole) in inside
@@ -3563,8 +3631,8 @@ pub(super) fn tessellate_nonplanar_cdt(
             .flat_map(|iu| {
                 let grid_inside = &grid_inside;
                 (1..n_v).filter_map(move |iv| {
-                    let u = u_min + du * (iu as f64 / n_u as f64);
                     let v = v_min + dv * (iv as f64 / n_v as f64);
+                    let u = grid_u(iu, v);
                     let point = Point2::new(u, v);
                     (grid_inside[(iu - 1) * rows + (iv - 1)] && !on_boundary(point))
                         .then(|| to_cdt(u, v))
@@ -5439,6 +5507,8 @@ fn sphere_native_arcs_in_hemisphere(
     }
     Ok(true)
 }
+
+mod sheared_chart;
 
 /// Prefer the carrier's own chart, then test great-circle frames against the
 /// entire sampled boundary. A meridian's normal alone does not identify the
