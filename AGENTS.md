@@ -415,7 +415,7 @@ Quick reference — find the right file for any task:
 | Point-in-solid classification (ray casting) | `classify/mod.rs` |
 | Winding number classifier | `classify/winding.rs` |
 | Operation-local prepared context for repeated point classification (`PreparedSolid`) | `classify/prepared.rs` |
-| Knot-span boxes of NURBS faces and the ray prefilter they drive: a forward ray clear of every box gets no hit, so the prepared crossing count skips the face (boxes scanned in groups; faces past 400 spans left to the solver) | `classify/prepared/ray_prefilter.rs` |
+| Knot-span boxes of NURBS faces and the ray prefilter they drive: a forward ray clear of every box gets no hit, so the prepared crossing count skips the face (boxes scanned in groups; faces past 4096 spans left to the solver) | `classify/prepared/ray_prefilter.rs` |
 | Persistent whole-topology classification cache (`ClassificationCache`, PERF-Q02) | `classify/cache.rs` |
 | Narrow-bump far-flank crossing through the classifier's NURBS ray path (tests) | `classify/boundary/nurbs_bump_ray_tests.rs` |
 | Exact trim of sphere faces bounded by circle arcs on the sphere, any number of supports, non-convex or reversed (first crossing along a great-circle walk) | `classify/boundary/sphere_arcs.rs` |
@@ -432,6 +432,8 @@ Quick reference — find the right file for any task:
 | Closed-form formulas (box, sphere, cylinder, etc.) | `properties/analytic.rs` |
 | AABB computation | `properties/bbox.rs` |
 | Face Gauss integration, with area/volume/vector-flux-only orientation accumulation | `properties/face_integrator.rs` |
+| Recover a knot-budget refusal by sweeping a nonperiodic trim the other way | `properties/face_integrator/knot_axis.rs` |
+| Independent planar oracles for a trim crossing many spline knot spans (tests) | `properties/face_integrator/anisotropic_tests.rs` |
 | Complete degree-(2,1) natural NURBS rectangles certified from iso-row and circular-section boundary images | `properties/face_integrator/natural_rectangle.rs` |
 | Bounded native Circle latitude domains, independent of trim sampling | `properties/face_integrator/sphere_latitude.rs` |
 | Bounded sampling of native-contiguous exact equator runs | `properties/face_integrator/sphere_latitude/partition_sampling.rs` |
@@ -558,6 +560,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Closed-form certificate that a straight-edged, axis-aligned planar outline passes the volume path's area-consistency probe without meshing | `measure/volume/planar_outline.rs` |
 | Certificate-implies-probe oracle, refusal cases and probe-mesh work guard (tests) | `measure/volume/planar_outline_tests.rs` |
 | Hash-map references for the sorted whole-mesh edge censuses (tests) | `measure/volume/edge_census_oracle_tests.rs` |
+| Long open spline arcs retain their real winding, rather than their chord's (tests) | `measure/volume/periodic_winding_tests.rs` |
 | Bounded opt-in exact-content scalar memo for trimmed NURBS face areas | `measure/nurbs_area_memo.rs`, `measure/nurbs_area_memo/tests.rs` |
 | 128-bit exact content digest of a single face (handle-free; lets a consumer keep what it derived from faces an edit left untouched) | `measure/face_digest.rs` |
 | Bounded opt-in exact-content memo of single-face bounding boxes (the move's swept-region refusal), and its bit-identity tests | `measure/face_box_memo.rs`, `measure/face_box_memo/tests.rs` |
@@ -584,6 +587,8 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Differential oracle for the circle contact candidates: the 27-key neighbour expansion kept verbatim against the merged z-run lookup (tests) | `tessellate/pool_index/oracle_tests.rs` |
 | Cost-model full-scan fallback of the circle contact index: decision boundary and fallback-on/off mesh identity (tests) | `tessellate/tests/pool_fallback.rs` |
 | Point classification (in/on/out solid) | `classify.rs` |
+| Operation-local reuse of identical robust-classification meshes | `classify/mesh_memo.rs` |
+| Bounded solid-angle intervals for the robust classifier's existing thresholds | `classify/winding_tree.rs` |
 | Offset face / solid | `offset_face.rs`, `offset_v2.rs` (delegates to remus-offset), `offset_trim.rs` |
 | Offset wire | `offset_wire.rs` |
 | Face filling (Coons patch) | `fill_face.rs` |
