@@ -1,3 +1,6 @@
+---
+row: 6.6
+---
 # P-Class 6.6 — complete native ellipse inputs
 
 Tier: core — persistent model references, GCS handles, sketch publication and
