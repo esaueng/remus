@@ -68,7 +68,14 @@ function canonical(value) {
 }
 
 function packContents(directory, pkg) {
-  const entries = JSON.parse(execFileSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], {
+  // Windows installs npm as a .cmd launcher, which execFileSync cannot run.
+  // Invoke its JavaScript entry with Node, keeping arguments out of a shell.
+  const args = ['pack', '--dry-run', '--json', '--ignore-scripts'];
+  const command = process.platform === 'win32' ? process.execPath : 'npm';
+  if (process.platform === 'win32') {
+    args.unshift(resolve(dirname(process.execPath), 'node_modules/npm/bin/npm-cli.js'));
+  }
+  const entries = JSON.parse(execFileSync(command, args, {
     cwd: directory, encoding: 'utf8', maxBuffer: 1024 * 1024
   }))[0].files;
   const files = new Map();

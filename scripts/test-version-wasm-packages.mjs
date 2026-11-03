@@ -7,13 +7,22 @@ import { test } from 'node:test';
 import { nextVersion, versionPackages } from './version-wasm-packages.mjs';
 
 const roots = ['crates/wasm/pkg', 'crates/wasm-io/pkg'];
+function configuredIdentity(key, fallback) {
+  try {
+    return execFileSync('git', ['config', '--get', key], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() || fallback;
+  } catch {
+    return fallback;
+  }
+}
+const fixtureName = configuredIdentity('user.name', 'fixture');
+const fixtureEmail = configuredIdentity('user.email', 'fixture@example.invalid');
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'remus-version-test-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  const git = (...args) => execFileSync('git', ['-c', 'core.hooksPath=/dev/null', ...args], {
+  const git = (...args) => execFileSync('git', args, {
     cwd: root, stdio: 'pipe', env: { ...process.env,
-      GIT_AUTHOR_NAME: 'fixture', GIT_COMMITTER_NAME: 'fixture',
-      GIT_AUTHOR_EMAIL: 'fixture@example.invalid', GIT_COMMITTER_EMAIL: 'fixture@example.invalid'
+      GIT_AUTHOR_NAME: fixtureName, GIT_COMMITTER_NAME: fixtureName,
+      GIT_AUTHOR_EMAIL: fixtureEmail, GIT_COMMITTER_EMAIL: fixtureEmail
     }
   });
   for (const [i, path] of roots.entries()) {

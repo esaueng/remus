@@ -115,7 +115,11 @@ fn try_single_edge(
                 FaceSurface::Cylinder(_) if !face.is_reversed() => {
                     cylinders.insert(face_id);
                 }
-                _ => return Ok(None),
+                FaceSurface::Cylinder(_)
+                | FaceSurface::Cone(_)
+                | FaceSurface::Sphere(_)
+                | FaceSurface::Torus(_)
+                | FaceSurface::Nurbs(_) => return Ok(None),
             }
             allowed.insert(face_id.index());
         }
