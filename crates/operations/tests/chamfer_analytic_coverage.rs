@@ -128,6 +128,110 @@ fn complete_boss_chamfer_retrims_its_inner_footprint_and_mixed_corners() {
 }
 
 #[test]
+fn neighboring_hole_chamfers_refuse_colliding_inner_boundaries_atomically() {
+    let mut topo = Topology::new();
+    let mut solid = remus_operations::primitives::make_box(&mut topo, 30.0, 30.0, 10.0).unwrap();
+    for x in [6.0, 15.0] {
+        let tool = remus_operations::primitives::make_box(&mut topo, 8.0, 8.0, 10.0).unwrap();
+        remus_operations::transform::transform_solid(
+            &mut topo,
+            tool,
+            &Mat4::translation(x, 10.0, 0.0),
+        )
+        .unwrap();
+        solid = remus_operations::boolean::boolean(
+            &mut topo,
+            remus_operations::boolean::BooleanOp::Cut,
+            solid,
+            tool,
+        )
+        .unwrap();
+    }
+    let edges = sharp(&topo, solid);
+    assert_eq!(edges.len(), 36);
+    for placed in [false, true] {
+        let mut trial = topo.clone();
+        if placed {
+            remus_operations::transform::transform_solid(
+                &mut trial,
+                solid,
+                &(Mat4::translation(17.0, -23.0, 31.0)
+                    * Mat4::rotation_z(0.37)
+                    * Mat4::rotation_x(0.23)),
+            )
+            .unwrap();
+        }
+        let before = remus_io::arena_io::serialize_solids(&trial, &[solid]).unwrap();
+        let counts = (
+            trial.num_vertices(),
+            trial.num_edges(),
+            trial.num_wires(),
+            trial.num_faces(),
+            trial.num_shells(),
+            trial.num_solids(),
+        );
+        for distance in [0.5, 1.0] {
+            assert!(
+                chamfer_v2(&mut trial, solid, &edges, distance, distance).is_err(),
+                "colliding C{distance} boundaries were accepted (placed={placed})"
+            );
+            assert_eq!(
+                (
+                    trial.num_vertices(),
+                    trial.num_edges(),
+                    trial.num_wires(),
+                    trial.num_faces(),
+                    trial.num_shells(),
+                    trial.num_solids()
+                ),
+                counts
+            );
+            assert_eq!(
+                remus_io::arena_io::serialize_solids(&trial, &[solid]).unwrap(),
+                before
+            );
+        }
+        let result = chamfer_v2(&mut trial, solid, &edges, 0.1, 0.1).unwrap();
+        check(&trial, result.solid);
+        assert_eq!(solid_faces(&trial, result.solid).unwrap().len(), 74);
+        // Independent OCCT all-edge C0.1 result, with disjoint openings.
+        assert!(
+            (solid_volume(&trial, result.solid, 0.001).unwrap() - 7_718.370_666_666_667).abs()
+                < 1e-6
+        );
+    }
+}
+
+#[test]
+fn complete_blind_pocket_chamfer_closes_three_concave_ridges_exactly() {
+    let mut topo = Topology::new();
+    let block = remus_operations::primitives::make_box(&mut topo, 30.0, 30.0, 30.0).unwrap();
+    let tool = remus_operations::primitives::make_box(&mut topo, 10.0, 10.0, 15.0).unwrap();
+    remus_operations::transform::transform_solid(
+        &mut topo,
+        tool,
+        &Mat4::translation(10.0, 10.0, 15.0),
+    )
+    .unwrap();
+    let solid = remus_operations::boolean::boolean(
+        &mut topo,
+        remus_operations::boolean::BooleanOp::Cut,
+        block,
+        tool,
+    )
+    .unwrap();
+    let edges = sharp(&topo, solid);
+    assert_eq!(edges.len(), 24);
+    for (distance, expected) in [(0.1, 25_498.504), (1.0, 25_354.0)] {
+        let mut trial = topo.clone();
+        let result = chamfer_v2(&mut trial, solid, &edges, distance, distance).unwrap();
+        check(&trial, result.solid);
+        assert_eq!(solid_faces(&trial, result.solid).unwrap().len(), 51);
+        assert!((solid_volume(&trial, result.solid, 0.001).unwrap() - expected).abs() < 1e-6);
+    }
+}
+
+#[test]
 fn every_sharp_edge_of_a_filleted_block_chamfers_without_flattening_the_round() {
     let (topo, solid) = filleted_block();
     let edges = sharp(&topo, solid);
