@@ -971,7 +971,10 @@ fn reanchor_rebuilt_curve_trim(
     let project = |point| match edge.curve() {
         EdgeCurve::Circle(circle) => Some(circle.project(point)),
         EdgeCurve::Ellipse(ellipse) => Some(ellipse.project(point)),
-        _ => None,
+        EdgeCurve::Line
+        | EdgeCurve::NurbsCurve(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => None,
     };
     let Some(start_parameter) = project(start) else {
         return Ok(());
