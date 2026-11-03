@@ -48,6 +48,7 @@ import { runDocumentCopyPackaged } from './document-copy-packaged.mjs';
 import { runBoundedTabRolloverPackaged } from './bounded-tab-rollover-packaged.mjs';
 import { runPackagedPreviewWorkContract } from './perf/face-drag-session/packaged_contract.cjs';
 import { runLinkedSketchPackaged } from './linked-sketch-packaged.mjs';
+import { runRotationalFaceEditsPackaged } from './rotational-face-edits-packaged.mjs';
 import {
   runOpenZcadAnalyticFlangeBooleanRegression,
   runOpenZcadCylindricalFaceResizeRegression,
@@ -1736,6 +1737,7 @@ runPartialCylinderResizeRegression({ RemusKernel, RemusIo });
 runDirectEditHistoryRegression({ RemusKernel, RemusIo });
 runSurfaceReplacementHistoryRegression({ RemusKernel, RemusIo });
 runCylindricalRadiusHistoryRegression({ RemusKernel, RemusIo });
+runRotationalFaceEditsPackaged({ RemusKernel, RemusIo });
 runBlendResizeHistoryRegression({ RemusKernel, RemusIo });
 runDraftHistoryRegression({ RemusKernel, RemusIo });
 runDefeatureHistoryRegression({ RemusKernel, RemusIo });

@@ -8,10 +8,11 @@ FreeCAD saved-solid import in stages. It belongs in `remus-io`, exposed through
 It introduces no reference-kernel library dependency and does not execute
 FreeCAD code.
 
-The first qualified envelope is ASCII topology V1–V3, straight 3D edges,
-at most two linear pcurves per edge, planar faces, one shell per solid, and
-compound roots containing solids. Only identity locations are accepted in
-this first slice. Units are millimetres, as in FreeCAD saved shapes; standalone
+The qualified envelope is ASCII topology V1–V3, line/circle 3D edges,
+line/circle pcurves, planar polygons or circular caps, and full cylindrical
+bands. Solids have one shell; compound roots contain solids. Proper rigid
+locations apply at shape, curve and surface occurrences. Units are millimetres,
+as in FreeCAD saved shapes; standalone
 BREP callers must supply geometry in those units. Source vertex/edge tolerances
 are retained within the kernel's existing entity-tolerance ceiling. Saved
 validity flags are not acceptance evidence. Imported solids must pass strict
@@ -19,12 +20,34 @@ Remus validation before the transaction commits.
 
 Malformed references, unsupported geometry/placements, surface-only roots,
 non-manifold results and exceeded resource budgets refuse the whole import.
-Repeated shell/face/wire occurrences also refuse, bounding reconstruction by
-source records instead of expanding a shared source DAG. Shared vertices and
-edges retain their source identity.
+Repeated shell/face/wire occurrences at the same canonical placement also refuse.
+Distinct placed occurrences of a shared source solid import as distinct solids.
+Shared vertices and edges retain their source identity at each placement.
 No welding, healing, tessellation fallback or tolerance widening is permitted.
 The decoder counts geometry records, shape records, representations and child
 references against one aggregate budget before allocating their storage.
+
+Circular caps use closed full-circle rims, optionally with strictly contained,
+oppositely wound disjoint circular holes. Cylindrical bands have two full-circle
+rims and a line seam used in both directions, with one authoritative pcurve
+per branch. Source use order need not follow the UV cycle: a bounded four-use
+search must find a unique closed boundary using exact source endpoint identities
+and unwrapped UV coordinates. Left-handed cylinder frames preserve radial axes
+while reversing native V and boundary orientation. Whole-interval SameParameter
+and SameRange proofs must meet the actual source edge tolerance; endpoint or
+sample agreement alone never authorizes a curve use. Saved V2 UV cache values
+are parsed for framing only. Periodic branch winding survives STEP and arena
+transport.
+
+Ordered location compositions include signed powers and inverses. Source shape
+identity plus a canonical datum/power word determines sharing; coincident
+coordinates never merge source entities, even for distinct numerically equal
+datums. Expansion is iterative. Materialized occurrences, references and copied
+representations share a 16,384 hard ceiling, tightened by caller limits; location
+terms and cached products have separate bounded budgets. Unused source edges
+remain validated in scratch storage without adding orphan native entities.
+Scale, reflection, shear, mixed polygon/circle caps, partial circular loops,
+general curved trims and splines remain outside this extension.
 
 Planar face boundaries have one simple perimeter and zero or more simple,
 strictly enclosed, mutually disjoint holes. Loop order does not identify the
@@ -39,8 +62,8 @@ rounding from creating an accepted gap. This extension remains Tier: lazy:io.
 
 The API is additive. OpenZCAD has withdrawn its previous saved-solid converter;
 restoring native import requires broader reader coverage and a consumer PR
-qualifying persistence, STEP replay and export. Subsequent slices own rigid
-locations, cavity shells, curved carriers and seam pcurves,
+qualifying persistence, STEP replay and export. Subsequent slices own cavity
+shells, mixed and partial curve trims, additional curved carriers,
 rational/periodic splines, and FreeCAD binary framing. Native feature-history
 transfer is outside this contract.
 
@@ -55,12 +78,17 @@ An unsupported verdict stops at the reader's support boundary; it does not
 certify the remaining source records. Any alternate converter must validate
 the source and its result independently before the consumer commits a body.
 
-Qualification uses a saved V1 box from FreeCAD's public test archive and a V3
-box from OpenZCAD's synthetic fixture, plus a derived V2 framing control.
+Qualification uses saved V1 boxes and a cylinder from FreeCAD's public archives
+and a V3 box from OpenZCAD's synthetic fixture, plus derived V2 framing controls.
 Synthetic two-hole, blind-pocket, concave-perimeter and oblique-plane solids
 qualify inner-loop reconstruction and order independence. These additionally
 check material/void probes, outward closed tessellation and retained holes
-through STEP/arena transport and the packaged JavaScript API.
+through STEP/arena transport and the packaged JavaScript API. Synthetic analytic
+tubes in all three text versions qualify annular caps, inward bore walls and
+both seam continuity encodings. Placement controls check oblique rotation,
+noncommuting parent/child composition, inverse cancellation, distinct coincident
+occurrence identities and expansion-budget rollback. Malformed traces, missing
+seam branches, invalid frames/radii and unqualified affine maps refuse atomically.
 Tests must check physical properties,
 shared topology, STEP/arena transport, input bounds and atomic refusal. Fixture
 provenance is recorded beside the files; the original archives' XML metadata

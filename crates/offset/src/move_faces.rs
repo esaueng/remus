@@ -10,6 +10,7 @@ use remus_math::analytic_intersection::{
 };
 use remus_math::curves::{Circle3D, Ellipse3D};
 use remus_math::surfaces::CylindricalSurface;
+use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
@@ -306,6 +307,13 @@ fn move_faces_impl(
     let source_edge_faces = edge_to_face_map(topo, solid)?;
     validate_source_edges(topo, &source_edge_faces, &selected)?;
 
+    validate_conical_cap_displacement(
+        topo,
+        &source_edge_faces,
+        &selected,
+        reference_normal * distance,
+        options.tolerance,
+    )?;
     let mut data = OffsetData::new(distance, options, Vec::new());
     populate_surfaces(topo, solid, &selected, distance, &mut data)?;
     let all_surfaces = data.offset_faces.clone();
@@ -378,6 +386,78 @@ fn restore_exact_plane_cylinder_edges<const REPLACEMENT: bool>(
                 reason: "second support surface is unavailable".into(),
             }
         })?;
+        let cone_pair = match (&face_a.surface, &face_b.surface) {
+            (FaceSurface::Plane { normal, d }, FaceSurface::Cone(cone))
+            | (FaceSurface::Cone(cone), FaceSurface::Plane { normal, d }) => {
+                Some((*normal, *d, cone.clone()))
+            }
+            (
+                FaceSurface::Plane { .. }
+                | FaceSurface::Cylinder(_)
+                | FaceSurface::Cone(_)
+                | FaceSurface::Sphere(_)
+                | FaceSurface::Torus(_)
+                | FaceSurface::Nurbs(_),
+                FaceSurface::Plane { .. }
+                | FaceSurface::Cylinder(_)
+                | FaceSurface::Cone(_)
+                | FaceSurface::Sphere(_)
+                | FaceSurface::Torus(_)
+                | FaceSurface::Nurbs(_),
+            ) => None,
+        };
+        if let Some((normal, plane_d, cone)) = cone_pair {
+            let source = topo.edge(intersection.original_edge)?.clone();
+            let EdgeCurve::Circle(source_circle) = source.curve() else {
+                continue;
+            };
+            let exact = exact_plane_analytic(AnalyticSurface::Cone(&cone), normal, plane_d)?;
+            let [ExactIntersectionCurve::Circle(circle)] = exact.as_slice() else {
+                continue;
+            };
+            let tolerance = data.options.tolerance;
+            let before_height = (source_circle.center() - cone.apex()).dot(cone.axis());
+            let after_height = (circle.center() - cone.apex()).dot(cone.axis());
+            if circle.radius() <= tolerance.linear || before_height * after_height <= 0.0 {
+                return Err(OffsetError::TopologyChange {
+                    face: Some(intersection.face_a),
+                    edge: Some(intersection.original_edge),
+                    reason: "conical cap reaches or crosses its support apex".into(),
+                });
+            }
+            let curve = EdgeCurve::Circle(Circle3D::new_with_ref(
+                circle.center(),
+                source_circle.normal(),
+                circle.radius(),
+                source_circle.u_axis(),
+            )?);
+            let shift = if REPLACEMENT {
+                Vec3::new(0.0, 0.0, 0.0)
+            } else {
+                move_normal * distance
+            };
+            let range = source
+                .strict_domain()
+                .map_err(|error| OffsetError::TopologyChange {
+                    face: Some(intersection.face_a),
+                    edge: Some(intersection.original_edge),
+                    reason: format!("source conical rim has no parameter authority: {error}"),
+                })?;
+            let edge = add_projected_curve_edge(
+                topo,
+                intersection.original_edge,
+                source.start(),
+                source.end(),
+                source.tolerance(),
+                source.curve(),
+                range,
+                curve,
+                shift,
+                data.options.tolerance.linear,
+            )?;
+            data.intersections[index].new_edges = vec![edge];
+            continue;
+        }
         let (normal, plane_d, cylinder) = match (&face_a.surface, &face_b.surface) {
             (FaceSurface::Plane { normal, d }, FaceSurface::Cylinder(cylinder))
             | (FaceSurface::Cylinder(cylinder), FaceSurface::Plane { normal, d }) => {
@@ -1317,6 +1397,10 @@ fn validate_vertex_supports<V: std::ops::Deref<Target = [FaceId]>>(
                 let radial = delta - cylinder.axis() * delta.dot(cylinder.axis());
                 (radial.length() - cylinder.radius()).abs()
             }
+            FaceSurface::Cone(cone) => {
+                let (u, v) = cone.project_point(point);
+                (cone.evaluate(u, v) - point).length()
+            }
             other => {
                 return Err(OffsetError::UnsupportedMoveFace {
                     face,
@@ -1723,10 +1807,26 @@ fn validate_source_edges<V: std::ops::Deref<Target = [FaceId]>>(
             faces[0]
         };
         let neighbor_face = topo.face(neighbor)?;
-        if !matches!(
-            neighbor_face.surface(),
-            FaceSurface::Plane { .. } | FaceSurface::Cylinder(_)
-        ) {
+        let axial_cone = if let FaceSurface::Cone(cone) = neighbor_face.surface() {
+            let selected_face = if selected.contains(&faces[0].index()) {
+                faces[0]
+            } else {
+                faces[1]
+            };
+            let normal = topo.face(selected_face)?.effective_plane_normal();
+            normal.is_some_and(|normal| {
+                normal.cross(cone.axis()).length() <= Tolerance::new().angular
+            }) && matches!(topo.edge(edge)?.curve(), EdgeCurve::Circle(circle)
+                    if circle.normal().cross(cone.axis()).length() <= Tolerance::new().angular)
+        } else {
+            false
+        };
+        if !axial_cone
+            && !matches!(
+                neighbor_face.surface(),
+                FaceSurface::Plane { .. } | FaceSurface::Cylinder(_)
+            )
+        {
             return Err(OffsetError::UnsupportedMoveFace {
                 face: neighbor,
                 surface_type: neighbor_face.surface().type_tag(),
@@ -1734,6 +1834,49 @@ fn validate_source_edges<V: std::ops::Deref<Target = [FaceId]>>(
                     "face is adjacent to selected move boundary edge {}",
                     edge.index()
                 ),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Check the cone's supported nappe before intersection and vertex projection.
+/// Otherwise a cap past the tip can fail later with an unrelated projection
+/// residual instead of reporting its actual travel limit.
+fn validate_conical_cap_displacement<V: std::ops::Deref<Target = [FaceId]>>(
+    topo: &Topology,
+    edge_faces: &std::collections::BTreeMap<usize, V>,
+    selected: &HashSet<usize>,
+    delta: Vec3,
+    tolerance: Tolerance,
+) -> Result<(), OffsetError> {
+    for (&index, faces) in edge_faces {
+        let Some(&face) = faces.iter().find(|face| selected.contains(&face.index())) else {
+            continue;
+        };
+        let Some(&support) = faces.iter().find(|face| !selected.contains(&face.index())) else {
+            continue;
+        };
+        let FaceSurface::Cone(cone) = topo.face(support)?.surface() else {
+            continue;
+        };
+        let edge = topo
+            .edge_id_from_index(index)
+            .ok_or_else(|| OffsetError::TopologyChange {
+                face: Some(face),
+                edge: None,
+                reason: "conical cap lost its source edge".into(),
+            })?;
+        let EdgeCurve::Circle(circle) = topo.edge(edge)?.curve() else {
+            continue;
+        };
+        let before = (circle.center() - cone.apex()).dot(cone.axis());
+        let after = before + delta.dot(cone.axis());
+        if before * after <= 0.0 || after.abs() * cone.half_angle().tan() <= tolerance.linear {
+            return Err(OffsetError::TopologyChange {
+                face: Some(face),
+                edge: Some(edge),
+                reason: "conical cap reaches or crosses its support apex".into(),
             });
         }
     }

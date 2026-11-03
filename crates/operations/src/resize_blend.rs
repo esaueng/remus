@@ -7,6 +7,8 @@
 //! the topology arena is restored to its pre-call state.
 
 mod axial_clearance;
+mod radial_resize;
+pub(crate) use radial_resize::resize_cylindrical_strip;
 mod axial_rim_join;
 mod translation_shadow;
 pub(crate) use axial_rim_join::move_with_cap_reblend;
