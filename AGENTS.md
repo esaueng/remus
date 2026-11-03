@@ -648,6 +648,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Task | File(s) |
 |------|---------|
 | FreeCAD saved-shape ASCII BREP read and bounded planar loop classification | `brep/mod.rs`, `brep/reader.rs`, `brep/planar.rs` |
+| Saved-shape analytic line/circle and plane/cylinder carriers, rigid location words, bounded placed occurrences, circular caps and cylindrical seam bands | `brep/reader/carriers.rs`, `brep/reader/locations.rs`, `brep/reader/placed.rs`, `brep/reader/curved.rs` |
 | STEP read/write | `step/reader.rs`, `step/writer.rs` |
 | IGES read/write | `iges/reader.rs`, `iges/writer.rs` |
 | STL read/write/import | `stl/reader.rs`, `stl/writer.rs`, `stl/import.rs` |

@@ -18,7 +18,25 @@ records are retained. No reference library is linked or executed by the tests.
   It is a 10 × 20 × 30 mm box. Expected volume: 6000 mm³; area: 2200 mm².
 
 These are format fixtures, not a representative FreeCAD compatibility corpus.
-Curved models, real placements, cavity shells and binary saves remain unqualified.
+These fixtures do not qualify general curved models, cavity shells or binary saves.
+
+- `freecad-placed-box-v1.brep` and `freecad-cylinder-v1.brep`: the `Box.Shape.brp`
+  and `Cylinder.Shape.brp` entries from FreeCAD's public
+  [`data/examples/EngineBlock.FCStd` at tag 1.1.3](https://github.com/FreeCAD/FreeCAD/blob/1.1.3/data/examples/EngineBlock.FCStd).
+  These remain LGPL-2.1-or-later third-party test data as above. The box is
+  140 × 80 × 110 mm, translated by (0, −40, 0) mm; volume 1,232,000 mm³.
+  The cylinder has radius 25 mm and height 110 mm, translated by (40, 0, 0) mm;
+  volume 68,750π mm³, area 6,750π mm². Its left-handed cylinder frame, glued seam
+  continuity token, translated reuse of a source rim/cap, and inverse location
+  composition are retained exactly. The entire EngineBlock is not qualified.
+
+- `tube-v1.brep`, `tube-v2.brep`, `tube-v3.brep`: synthetic controls written by
+  `scripts/generate-brep-curved-fixtures.py`, with no CAD library. Outer radius
+  5 mm, bore radius 2 mm, height 12 mm: volume 252π mm³, area 210π mm².
+  Annular caps retain holes; the inner wall faces into the bore. Shuffled wall
+  uses and space-separated seam continuity exercise both periodic branches.
+  V2 includes four redundant cached UV endpoint values per surface representation,
+  including paired seams. These caches are ignored, never acceptance evidence.
 
 - `box-v2.brep`: a format control derived from the V3 box by writing the V2
   header and the four explicit UV endpoint coordinates for each linear pcurve.

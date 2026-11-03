@@ -653,7 +653,7 @@ impl RemusIo {
 
     // ── Import: returns an arena document for the kernel ───────────
 
-    /// Read planar, straight-edged ASCII BREP saved shapes in millimetres.
+    /// Read qualified planar/cylindrical ASCII BREP saved solids in millimetres.
     /// Returns an exact solid document for `deserializeSolids`.
     /// Unsupported geometry or placements refuse the whole call.
     /// Optional budgets only tighten production limits; this first reader
@@ -855,6 +855,37 @@ mod tests {
     }
 
     #[test]
+    fn brep_translator_preserves_circles_tubes_and_saved_placements() {
+        for (source, volume) in [
+            (
+                include_str!("../../io/tests/data/brep/freecad-placed-box-v1.brep"),
+                1_232_000.,
+            ),
+            (
+                include_str!("../../io/tests/data/brep/freecad-cylinder-v1.brep"),
+                68750. * std::f64::consts::PI,
+            ),
+            (
+                include_str!("../../io/tests/data/brep/tube-v2.brep"),
+                252. * std::f64::consts::PI,
+            ),
+        ] {
+            let result = RemusIo::try_import_brep_impl(source.as_bytes(), None, None).unwrap();
+            assert!(result.supported());
+            assert!(result.unsupported_reason().is_none());
+            let actual = volumes(&result.solids());
+            assert_eq!(actual.len(), 1);
+            assert!((actual[0] - volume).abs() < 1e-8);
+        }
+        let cylinder = include_str!("../../io/tests/data/brep/freecad-cylinder-v1.brep");
+        let invalid = cylinder.replacen("3  1 2CN", "3  1 1CN", 1);
+        assert!(matches!(
+            RemusIo::try_import_brep_impl(invalid.as_bytes(), None, None),
+            Err(IoWasmError::Io(IoError::ParseError { .. }))
+        ));
+    }
+
+    #[test]
     fn brep_translator_preserves_planar_holes_and_rejects_invalid_winding() {
         let input = include_str!("../../io/tests/data/brep/two-holes-v1.brep");
         let result = RemusIo::try_import_brep_impl(input.as_bytes(), None, None).unwrap();
@@ -900,7 +931,7 @@ mod tests {
         assert_eq!(actual.len(), 1);
         assert!((actual[0] - 6000.).abs() < 1e-8);
 
-        let curved = input.replacen("Surfaces 6\n1 ", "Surfaces 6\n2 ", 1);
+        let curved = input.replacen("Surfaces 6\n1 ", "Surfaces 6\n3 ", 1);
         let unsupported = RemusIo::try_import_brep_impl(curved.as_bytes(), None, None).unwrap();
         assert!(!unsupported.supported());
         assert!(unsupported.solids().is_empty());

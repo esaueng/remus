@@ -2120,7 +2120,7 @@ fn compute_ref_direction(normal: Vec3) -> Vec3 {
     ref_dir.normalize().unwrap_or(ax)
 }
 
-fn export_pcurve_winding(
+pub(crate) fn export_pcurve_winding(
     surface: &FaceSurface,
     pcurve: &PCurve,
     start_point: Point3,
