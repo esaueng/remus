@@ -178,12 +178,30 @@ export function runRotationalFaceEditsPackaged({ RemusKernel, RemusIo }) {
         const cap = plane(k, solid, height, sign);
         const reason =
           sign < 0 && offset >= 16 ? /conical cap reaches or crosses its support apex/ : undefined;
+        const before = Buffer.from(k.serializeSolid(solid));
         assert.throws(() => k.moveFaces(solid, Uint32Array.of(cap), offset), reason);
+        assert.deepEqual(Buffer.from(k.serializeSolid(solid)), before);
         assert.throws(
           () => k.moveFacesJournaledWithQuality(solid, Uint32Array.of(cap), offset, 256),
           reason,
         );
-        assert.deepEqual(Buffer.from(k.serializeSolid(solid)), snapshot);
+        const expected = JSON.parse(before.toString('utf8'));
+        if (expected.journal) {
+          // Journal rollback never reuses a reserved operation ID. The two
+          // successful unjournaled cap probes above also give this export a
+          // synthetic mutation-gap barrier at that high-water ID. Only those
+          // two allocator fields advance; every source/history field is fixed.
+          const barrier = expected.journal.entries.at(-1);
+          assert.equal(barrier.kind, 'unjournaled_mutations');
+          assert.equal(barrier.payload, 'GlobalBarrier');
+          assert.equal(barrier.op, expected.journal.next_op - 1);
+          expected.journal.next_op += 1;
+          barrier.op += 1;
+        }
+        assert.deepEqual(
+          JSON.parse(Buffer.from(k.serializeSolid(solid)).toString('utf8')),
+          expected,
+        );
         assert.equal(k.journalSummary(), journal);
       }
     } finally {

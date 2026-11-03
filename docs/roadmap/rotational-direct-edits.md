@@ -26,7 +26,9 @@ must remain at their existing shared boundary points. Collapsed and reversed
 segments, a collapsed torus ring and new nonincident contacts refuse the edit.
 The exact revolution integral, `pi * integral(r^2 dz)`, checks the result's
 volume against the independent B-rep measurement route. Strict solid
-validation remains required. A failure restores the topology and journal.
+validation remains required. A failure restores live topology and committed
+journal history. Reserved operation IDs stay consumed, preserving the journal's
+allocation fence so a failed reference cannot alias a later operation.
 
 Two related axial face-move cells support imported rotational parts. A
 circular planar face translated along its axis cannot reach a radially
