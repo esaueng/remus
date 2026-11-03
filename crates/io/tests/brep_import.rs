@@ -2,12 +2,175 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use remus_io::{ImportLimits, IoError, arena_io, brep, step};
+use remus_math::vec::Point3;
+use remus_operations::classify::{PointClassification, classify_point};
+use remus_operations::tessellate::{tessellate_solid, welded_mesh_quality};
 use remus_operations::{measure, primitives, validate::validate_solid};
 use remus_topology::{Topology, explorer::solid_faces};
 
 const V1: &str = include_str!("data/brep/freecad-box-v1.brep");
 const V2: &str = include_str!("data/brep/box-v2.brep");
 const V3: &str = include_str!("data/brep/box-v3.brep");
+const TWO_HOLES: &str = include_str!("data/brep/two-holes-v1.brep");
+const POCKET: &str = include_str!("data/brep/blind-pocket-v1.brep");
+const CONCAVE: &str = include_str!("data/brep/concave-hole-v1.brep");
+const OBLIQUE: &str = include_str!("data/brep/oblique-two-holes-v1.brep");
+
+fn hole_count(topo: &Topology, solid: remus_topology::solid::SolidId) -> usize {
+    solid_faces(topo, solid)
+        .unwrap()
+        .iter()
+        .map(|&face| topo.face(face).unwrap().inner_wires().len())
+        .sum()
+}
+
+#[test]
+fn planar_holes_pocket_and_concave_perimeter_keep_material_and_transport() {
+    for (source, volume, area, holes, void_probe, solid_probe) in [
+        (TWO_HOLES, 864., 728., 4, [3., 3., 4.], [5., 6., 4.]),
+        (POCKET, 852., 664., 1, [5., 6., 7.], [5., 6., 4.]),
+        (CONCAVE, 752., 620., 2, [3., 3., 4.], [5., 6., 4.]),
+        (
+            OBLIQUE,
+            864.,
+            728.,
+            4,
+            [36.4, -19.68, 16.76],
+            [35.2, -17.64, 19.48],
+        ),
+    ] {
+        let mut topo = Topology::new();
+        let ids = brep::read_brep(source, &mut topo).unwrap();
+        assert_eq!(ids.len(), 1);
+        assert!(validate_solid(&topo, ids[0]).unwrap().is_valid());
+        assert_eq!(hole_count(&topo, ids[0]), holes);
+        near(measure::solid_volume(&topo, ids[0], 0.01).unwrap(), volume);
+        near(
+            measure::solid_surface_area(&topo, ids[0], 0.01).unwrap(),
+            area,
+        );
+        for (xyz, expected) in [
+            (void_probe, PointClassification::Outside),
+            (solid_probe, PointClassification::Inside),
+        ] {
+            assert_eq!(
+                classify_point(
+                    &topo,
+                    ids[0],
+                    Point3::new(xyz[0], xyz[1], xyz[2]),
+                    0.01,
+                    1e-7
+                )
+                .unwrap(),
+                expected
+            );
+        }
+        let mesh = tessellate_solid(&topo, ids[0], 0.01).unwrap();
+        let quality = welded_mesh_quality(&mesh);
+        assert_eq!(quality.boundary_edges, 0);
+        assert_eq!(quality.non_manifold_edges, 0);
+        let origin = Point3::new(0., 0., 0.);
+        let mesh_volume: f64 = mesh
+            .indices
+            .chunks_exact(3)
+            .map(|triangle| {
+                let [a, b, c] = [triangle[0], triangle[1], triangle[2]]
+                    .map(|index| mesh.positions[index as usize] - origin);
+                a.dot(b.cross(c)) / 6.0
+            })
+            .sum();
+        near(mesh_volume, volume);
+        let arena = arena_io::serialize_solids(&topo, &ids).unwrap();
+        let mut restored = Topology::new();
+        let restored_ids = arena_io::deserialize_solids(&arena, &mut restored).unwrap();
+        assert_eq!(hole_count(&restored, restored_ids[0]), holes);
+        near(
+            measure::solid_volume(&restored, restored_ids[0], 0.01).unwrap(),
+            volume,
+        );
+        let exchange = step::write_step(&topo, &ids).unwrap();
+        let mut imported = Topology::new();
+        let imported_ids = step::read_step(&exchange, &mut imported).unwrap();
+        assert_eq!(hole_count(&imported, imported_ids[0]), holes);
+        near(
+            measure::solid_volume(&imported, imported_ids[0], 0.01).unwrap(),
+            volume,
+        );
+    }
+}
+
+fn rewrite_face_loops(source: &str, rewrite: impl Fn(&str) -> String) -> String {
+    let mut in_face = false;
+    source
+        .lines()
+        .map(|line| {
+            if line == "Fa" {
+                in_face = true;
+            }
+            if in_face && line.ends_with('*') {
+                in_face = false;
+                rewrite(line)
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn planar_perimeter_selection_is_independent_of_saved_loop_order() {
+    for source in [TWO_HOLES, POCKET, CONCAVE, OBLIQUE] {
+        let reordered = rewrite_face_loops(source, |line| {
+            let mut pairs: Vec<_> = line
+                .trim_end_matches('*')
+                .split_ascii_whitespace()
+                .collect::<Vec<_>>()
+                .chunks_exact(2)
+                .map(|pair| pair.join(" "))
+                .collect();
+            pairs.reverse();
+            format!("{} *", pairs.join(" "))
+        });
+        let mut expected = Topology::new();
+        let a = brep::read_brep(source, &mut expected).unwrap();
+        let mut actual = Topology::new();
+        let b = brep::read_brep(&reordered, &mut actual).unwrap();
+        near(
+            measure::solid_volume(&actual, b[0], 0.01).unwrap(),
+            measure::solid_volume(&expected, a[0], 0.01).unwrap(),
+        );
+        assert_eq!(hole_count(&actual, b[0]), hole_count(&expected, a[0]));
+    }
+}
+
+#[test]
+fn same_wound_or_missing_holes_refuse_without_changing_existing_solids() {
+    let reversed_holes = rewrite_face_loops(TWO_HOLES, |line| {
+        if line.split_ascii_whitespace().count() > 3 {
+            line.replacen('+', "-", 1)
+        } else {
+            line.to_owned()
+        }
+    });
+    assert_ne!(reversed_holes, TWO_HOLES.trim());
+    assert!(matches!(
+        refuses_without_changing_existing_solid(&reversed_holes),
+        IoError::ParseError { .. }
+    ));
+    let missing = rewrite_face_loops(TWO_HOLES, |line| {
+        let parts: Vec<_> = line.split_ascii_whitespace().collect();
+        if parts.len() > 3 {
+            parts[2..].join(" ")
+        } else {
+            line.to_owned()
+        }
+    });
+    assert!(matches!(
+        refuses_without_changing_existing_solid(&missing),
+        IoError::InvalidTopology { .. }
+    ));
+}
 
 #[test]
 fn valid_unqualified_edge_flags_are_unsupported_but_malformed_flags_are_errors() {
