@@ -910,6 +910,12 @@ fn build_topology_preserving_wires<
         } else {
             source.trim()
         });
+        reanchor_rebuilt_curve_trim(
+            topo,
+            source_edge,
+            &mut rebuilt,
+            data.options.tolerance.linear,
+        )?;
         edge_map.insert(source_edge.index(), topo.add_edge(rebuilt));
     }
 
@@ -943,6 +949,85 @@ fn build_topology_preserving_wires<
         edges: edge_map,
         vertices: vertex_map,
     })
+}
+
+/// Vertex reconstruction can slide a shared endpoint along an analytic carrier.
+/// Its old angular trim then names a different point even though the new vertex
+/// still lies on every incident support. Carry the original branch and winding,
+/// but anchor its parameters to the vertices actually installed in the wire.
+fn reanchor_rebuilt_curve_trim(
+    topo: &Topology,
+    source_edge: EdgeId,
+    edge: &mut Edge,
+    tolerance: f64,
+) -> Result<(), OffsetError> {
+    let Some(range) = edge.trim() else {
+        return Ok(());
+    };
+    let start_vertex = topo.vertex(edge.start())?;
+    let end_vertex = topo.vertex(edge.end())?;
+    let start = start_vertex.point();
+    let end = end_vertex.point();
+    let project = |point| match edge.curve() {
+        EdgeCurve::Circle(circle) => Some(circle.project(point)),
+        EdgeCurve::Ellipse(ellipse) => Some(ellipse.project(point)),
+        _ => None,
+    };
+    let Some(start_parameter) = project(start) else {
+        return Ok(());
+    };
+    let end_parameter = project(end).ok_or_else(|| OffsetError::TopologyChange {
+        face: None,
+        edge: Some(source_edge),
+        reason: "rebuilt analytic edge has no endpoint projector".into(),
+    })?;
+    let nearest_branch = |parameter: f64, reference: f64| {
+        reference + (parameter - reference + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU)
+            - std::f64::consts::PI
+    };
+    let first = nearest_branch(start_parameter, range.0);
+    let last = if edge.start() == edge.end() {
+        first + (range.1 - range.0)
+    } else {
+        nearest_branch(end_parameter, range.1)
+    };
+    if !first.is_finite() || !last.is_finite() || (last - first) * (range.1 - range.0) <= 0.0 {
+        return Err(OffsetError::TopologyChange {
+            face: None,
+            edge: Some(source_edge),
+            reason: "rebuilt analytic edge lost its source trim branch".into(),
+        });
+    }
+    let endpoint_tolerance = replacement_vertex_tolerance(
+        start_vertex.tolerance(),
+        end_vertex.tolerance(),
+        edge.tolerance(),
+        tolerance,
+    )
+    .map_err(|reason| OffsetError::TopologyChange {
+        face: None,
+        edge: Some(source_edge),
+        reason,
+    })?;
+    for (parameter, expected) in [(first, start), (last, end)] {
+        let residual =
+            (edge.curve().evaluate_with_endpoints(parameter, start, end) - expected).length();
+        if !residual.is_finite() || residual > endpoint_tolerance {
+            return Err(OffsetError::TopologyChange {
+                face: None,
+                edge: Some(source_edge),
+                reason: "rebuilt analytic edge endpoint misses its carrier".into(),
+            });
+        }
+    }
+    edge.set_trim(Some((first, last)));
+    edge.strict_domain()
+        .map_err(|error| OffsetError::TopologyChange {
+            face: None,
+            edge: Some(source_edge),
+            reason: format!("rebuilt analytic edge has invalid trim authority: {error}"),
+        })?;
+    Ok(())
 }
 
 fn project_to_changed_surface<V: std::ops::Deref<Target = [FaceId]>>(
@@ -2008,6 +2093,112 @@ mod tests {
             (edge.curve().evaluate_with_endpoints(range.0, start, end) - start).length() < 1e-9
         );
         assert!((edge.curve().evaluate_with_endpoints(range.1, start, end) - end).length() < 1e-9);
+    }
+
+    #[test]
+    fn rebuilt_analytic_trims_follow_shared_vertices_without_changing_the_branch() {
+        for ellipse in [false, true] {
+            for range in [(0.4, 1.6), (5.8, 6.8), (1.6, 0.4), (6.8, 5.8)] {
+                let mut topo = Topology::new();
+                let curve = if ellipse {
+                    EdgeCurve::Ellipse(
+                        Ellipse3D::with_axes(
+                            Point3::new(0.0, 0.0, -15.0),
+                            Vec3::new(0.0, 0.0, 1.0),
+                            6.0,
+                            3.0,
+                            Vec3::new(1.0, 0.0, 0.0),
+                            Vec3::new(0.0, 1.0, 0.0),
+                        )
+                        .unwrap(),
+                    )
+                } else {
+                    EdgeCurve::Circle(
+                        Circle3D::new_with_ref(
+                            Point3::new(0.0, 0.0, -15.0),
+                            Vec3::new(0.0, 0.0, 1.0),
+                            6.0,
+                            Vec3::new(1.0, 0.0, 0.0),
+                        )
+                        .unwrap(),
+                    )
+                };
+                let expected = (range.0 + 1e-6, range.1 - 2e-6);
+                let point = |t: f64| {
+                    Point3::new(
+                        6.0 * t.cos(),
+                        if ellipse { 3.0 } else { 6.0 } * t.sin(),
+                        -15.0,
+                    )
+                };
+                let start = topo.add_vertex(Vertex::new(point(expected.0), 1e-7));
+                let end = topo.add_vertex(Vertex::new(point(expected.1), 1e-7));
+                let mut edge = Edge::with_tolerance(start, end, curve.clone(), None);
+                edge.set_trim(Some(range));
+                let source = topo.add_edge(edge.clone());
+                reanchor_rebuilt_curve_trim(&topo, source, &mut edge, 1e-7).unwrap();
+                let actual = edge.strict_domain().unwrap();
+                assert!((actual.0 - expected.0).abs() < 1e-12);
+                assert!((actual.1 - expected.1).abs() < 1e-12);
+                assert_eq!(
+                    (actual.1 - actual.0).is_sign_positive(),
+                    (range.1 - range.0).is_sign_positive()
+                );
+                assert_eq!(topo.vertex(start).unwrap().point(), point(expected.0));
+                assert_eq!(topo.vertex(end).unwrap().point(), point(expected.1));
+                let anchored = topo.add_edge(edge);
+                assert_edge_oracles(&topo, anchored, actual);
+                // The next move keeps the strict source-authority guard.
+                add_projected_curve_edge(
+                    &mut topo,
+                    anchored,
+                    start,
+                    end,
+                    None,
+                    &curve,
+                    actual,
+                    curve.clone(),
+                    Vec3::new(0.0, 0.0, 0.0),
+                    1e-7,
+                )
+                .unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn reanchoring_preserves_a_closed_seam_and_refuses_an_off_carrier_vertex() {
+        let mut topo = Topology::new();
+        let circle = Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            6.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let range = (2.8, 2.8 - std::f64::consts::TAU);
+        let seam = topo.add_vertex(Vertex::new(circle.evaluate(range.0 + 1e-6), 1e-7));
+        let mut edge = Edge::with_tolerance(seam, seam, EdgeCurve::Circle(circle.clone()), None);
+        edge.set_trim(Some(range));
+        let source = topo.add_edge(edge.clone());
+        reanchor_rebuilt_curve_trim(&topo, source, &mut edge, 1e-7).unwrap();
+        let actual = edge.strict_domain().unwrap();
+        assert!((actual.0 - (range.0 + 1e-6)).abs() < 1e-12);
+        assert!((actual.1 - actual.0 + std::f64::consts::TAU).abs() < 1e-12);
+
+        let off = topo.add_vertex(Vertex::new(
+            circle.evaluate(0.4) + Vec3::new(0.001, 0.0, 0.0),
+            1e-7,
+        ));
+        let end = topo.add_vertex(Vertex::new(circle.evaluate(1.6), 1e-7));
+        let mut invalid = Edge::with_tolerance(off, end, EdgeCurve::Circle(circle), None);
+        invalid.set_trim(Some((0.4, 1.6)));
+        assert!(
+            reanchor_rebuilt_curve_trim(&topo, source, &mut invalid, 1e-7)
+                .unwrap_err()
+                .to_string()
+                .contains("misses its carrier")
+        );
     }
 
     #[test]
