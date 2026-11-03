@@ -77,7 +77,12 @@ pub(super) fn coaxial_sweep_is_radially_disjoint(
                 axis.x().abs() * half.x() + axis.y().abs() * half.y() + axis.z().abs() * half.z();
             ((middle - cone.apex()).dot(axis).abs() - extent).max(0.0) * cone.half_angle().tan()
         }
-        _ => return Ok(false),
+        FaceSurface::Plane { .. }
+        | FaceSurface::Cylinder(_)
+        | FaceSurface::Cone(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_)
+        | FaceSurface::Nurbs(_) => return Ok(false),
     };
     Ok(lower_radius > radius + tol.linear)
 }

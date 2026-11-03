@@ -231,7 +231,10 @@ impl Profile {
                             return Ok(None);
                         }
                     }
-                    _ => return Ok(None),
+                    EdgeCurve::NurbsCurve(_)
+                    | EdgeCurve::Ellipse(_)
+                    | EdgeCurve::Hyperbola(_)
+                    | EdgeCurve::Parabola(_) => return Ok(None),
                 }
             }
             let curve = match data.surface() {
@@ -257,7 +260,7 @@ impl Profile {
                     }
                     curve
                 }
-                _ => return Ok(None),
+                FaceSurface::Sphere(_) | FaceSurface::Nurbs(_) => return Ok(None),
             };
             let point = curve.point(0.5);
             let tangent = curve.tangent();
@@ -278,7 +281,7 @@ impl Profile {
                     r: (point.r - torus.major_radius()) / torus.minor_radius(),
                     z: (point.z - (torus.center() - origin).dot(axis)) / torus.minor_radius(),
                 },
-                _ => return Ok(None),
+                FaceSurface::Sphere(_) | FaceSurface::Nurbs(_) => return Ok(None),
             }
             .scale(if data.is_reversed() { -1.0 } else { 1.0 });
             let orientation = (normal.r * tangent.z - normal.z * tangent.r).signum();
@@ -357,16 +360,27 @@ impl Profile {
     pub(super) fn preserve_directions(
         &self,
         result: &Self,
-        map: &std::collections::HashMap<usize, FaceId>,
+        map: impl Iterator<Item = (usize, FaceId)>,
     ) -> Result<(), OperationsError> {
-        for (&source, curve) in &self.curves {
-            let target = map
+        let mut covered = 0;
+        for (source, face) in map {
+            let curve = self
+                .curves
                 .get(&source)
-                .and_then(|face| result.curves.get(&face.index()))
+                .ok_or_else(|| reconstruction("radial profile has no construction source"))?;
+            let target = result
+                .curves
+                .get(&face.index())
                 .ok_or_else(|| reconstruction("radial profile has no construction successor"))?;
+            covered += 1;
             if curve.tangent().dot(target.tangent()) <= Tolerance::new().linear_sq() {
                 return Err(reconstruction("radial resize reverses a meridian segment"));
             }
+        }
+        if covered != self.curves.len() {
+            return Err(reconstruction(
+                "radial profile construction map is incomplete",
+            ));
         }
         Ok(())
     }

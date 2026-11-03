@@ -62,7 +62,7 @@ pub fn resize_cylindrical_strip(
             FaceSurface::Cylinder(c) => coaxial(c.origin(), c.axis()),
             FaceSurface::Cone(c) => coaxial(c.apex(), c.axis()),
             FaceSurface::Torus(t) => coaxial(t.center(), t.z_axis()),
-            _ => false,
+            FaceSurface::Sphere(_) | FaceSurface::Nurbs(_) => false,
         };
         if !qualified {
             return Ok(None);
@@ -124,7 +124,10 @@ pub fn resize_cylindrical_strip(
                     FaceSurface::Cone(cone) => {
                         delta / (cone.axis().dot(axis) * cone.half_angle().tan())
                     }
-                    _ => return Ok(None),
+                    FaceSurface::Cylinder(_)
+                    | FaceSurface::Sphere(_)
+                    | FaceSurface::Torus(_)
+                    | FaceSurface::Nurbs(_) => return Ok(None),
                 };
                 let major = torus.major_radius() + delta;
                 if major <= torus.minor_radius() + tolerance.linear {
@@ -152,7 +155,10 @@ pub fn resize_cylindrical_strip(
                     )?;
                 }
             }
-            _ => return Ok(None),
+            FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Nurbs(_) => return Ok(None),
         }
     }
     if rims != 2 || bands.is_empty() {
@@ -166,7 +172,13 @@ pub fn resize_cylindrical_strip(
         let copied = copy_solid_replacing_with_entity_map(topo, solid, replacements)?;
         let profile = profile::Profile::read(topo, copied.solid, origin, axis)?
             .ok_or_else(|| reconstruction("radial result lost its meridian profile"))?;
-        source_profile.preserve_directions(&profile, &copied.face_map)?;
+        source_profile.preserve_directions(
+            &profile,
+            copied
+                .face_map
+                .iter()
+                .map(|(&source, &target)| (source, target)),
+        )?;
         profile.verify_result(topo, copied.solid)?;
         let report = remus_check::validate::validate_solid(
             topo,

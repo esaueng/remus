@@ -384,7 +384,20 @@ fn restore_exact_plane_cylinder_edges<const REPLACEMENT: bool>(
             | (FaceSurface::Cone(cone), FaceSurface::Plane { normal, d }) => {
                 Some((*normal, *d, cone.clone()))
             }
-            _ => None,
+            (
+                FaceSurface::Plane { .. }
+                | FaceSurface::Cylinder(_)
+                | FaceSurface::Cone(_)
+                | FaceSurface::Sphere(_)
+                | FaceSurface::Torus(_)
+                | FaceSurface::Nurbs(_),
+                FaceSurface::Plane { .. }
+                | FaceSurface::Cylinder(_)
+                | FaceSurface::Cone(_)
+                | FaceSurface::Sphere(_)
+                | FaceSurface::Torus(_)
+                | FaceSurface::Nurbs(_),
+            ) => None,
         };
         if let Some((normal, plane_d, cone)) = cone_pair {
             let source = topo.edge(intersection.original_edge)?.clone();
