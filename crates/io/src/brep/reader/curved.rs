@@ -195,9 +195,13 @@ fn verify(
                 .map_err(|_| malformed("invalid plane chart"))?;
                 frame.origin + frame.x * uv.x() + frame.y * uv.y()
             }
-            surface => surface
+            surface @ FaceSurface::Cylinder(_) => surface
                 .evaluate(uv.x(), uv.y())
                 .ok_or_else(|| malformed("unsupported pcurve evaluation"))?,
+            FaceSurface::Nurbs(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_) => return Err(unsupported("native curved surface family")),
         };
         let residual = (expected - actual).length();
         if !residual.is_finite() || residual > tolerance {
@@ -251,7 +255,14 @@ impl Document {
                     circles.push(edge_id);
                 }
                 EdgeCurve::Line if !edge.is_closed() => seams.push((edge_id, usage.forward)),
-                _ => return Err(unsupported("cylindrical band edge family")),
+                EdgeCurve::Line
+                | EdgeCurve::Circle(_)
+                | EdgeCurve::NurbsCurve(_)
+                | EdgeCurve::Ellipse(_)
+                | EdgeCurve::Hyperbola(_)
+                | EdgeCurve::Parabola(_) => {
+                    return Err(unsupported("cylindrical band edge family"));
+                }
             }
             tolerance = tolerance.max(self.curve_tolerance(usage.index)?);
             let traces = self.traces(usage, surface)?;
