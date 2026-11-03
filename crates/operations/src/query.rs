@@ -822,6 +822,25 @@ pub(crate) struct EdgeRelationContext<'a> {
     prepared: remus_check::classify::PreparedSolid<'a>,
 }
 
+/// Prepare the shared exact classifier with the session's bounded, content-keyed
+/// crossing memo when enabled. A cached crossing is the same count for the
+/// same face content and exact ray bits; changing geometry cannot reuse it.
+pub(crate) fn prepare_memoized_classifier(
+    topo: &Topology,
+    solid: SolidId,
+) -> Result<remus_check::classify::PreparedSolid<'_>, OperationsError> {
+    let prepared = crate::performance::timed("relations.preparation", || {
+        remus_check::classify::PreparedSolid::prepare(topo, solid)
+    })?;
+    let memo = crate::performance::timed("relations.crossing_keys", || {
+        crossing_memo::SolidCrossingMemo::for_solid(topo, solid)
+    });
+    Ok(match memo {
+        Some(memo) => prepared.with_crossing_memo(std::sync::Arc::new(memo)),
+        None => prepared,
+    })
+}
+
 impl<'a> EdgeRelationContext<'a> {
     /// Prepare `solid` for repeated edge classification.
     ///
@@ -829,16 +848,7 @@ impl<'a> EdgeRelationContext<'a> {
     ///
     /// Returns an error if the solid handle or its faces are invalid.
     pub(crate) fn prepare(topo: &'a Topology, solid: SolidId) -> Result<Self, OperationsError> {
-        let prepared = crate::performance::timed("relations.preparation", || {
-            remus_check::classify::PreparedSolid::prepare(topo, solid)
-        })?;
-        let memo = crate::performance::timed("relations.crossing_keys", || {
-            crossing_memo::SolidCrossingMemo::for_solid(topo, solid)
-        });
-        let prepared = match memo {
-            Some(memo) => prepared.with_crossing_memo(std::sync::Arc::new(memo)),
-            None => prepared,
-        };
+        let prepared = prepare_memoized_classifier(topo, solid)?;
         Ok(Self { topo, prepared })
     }
 

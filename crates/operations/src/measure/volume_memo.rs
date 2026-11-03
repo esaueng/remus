@@ -122,7 +122,7 @@ pub struct ContentKey {
 }
 
 impl ContentKey {
-    pub(super) const fn bytes(&self) -> usize {
+    pub(crate) const fn bytes(&self) -> usize {
         self.words.len() * std::mem::size_of::<u64>()
     }
 }
@@ -816,11 +816,29 @@ fn solid_content_key_with_mode(
     solid: SolidId,
     canonical: bool,
 ) -> Option<ContentKey> {
+    let budget =
+        canonical.then(|| MEMO.with(|memo| memo.try_borrow().map_or(0, |m| m.byte_budget)));
+    solid_content_key_with_budget(topo, solid, canonical, budget)
+}
+
+/// Exact mesher inputs with native handle ordering, under an explicit key cap.
+pub fn classification_mesh_key(
+    topo: &Topology,
+    solid: SolidId,
+    budget: usize,
+) -> Option<ContentKey> {
+    solid_content_key_with_budget(topo, solid, false, Some(budget))
+}
+
+fn solid_content_key_with_budget(
+    topo: &Topology,
+    solid: SolidId,
+    canonical: bool,
+    budget: Option<usize>,
+) -> Option<ContentKey> {
     let _key = crate::performance::span("volume.content-key");
     let mut w = ContentWriter::new(canonical);
-    if canonical {
-        w.max_words = Some(MEMO.with(|memo| memo.try_borrow().map_or(0, |m| m.byte_budget / 8)));
-    }
+    w.max_words = budget.map(|bytes| bytes / 8);
     w.word(KEY_VERSION + u64::from(canonical));
     w.handle(1, solid.index());
     let solid_data = topo.solid(solid).ok()?;
