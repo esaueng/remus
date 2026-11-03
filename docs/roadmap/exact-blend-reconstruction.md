@@ -107,3 +107,24 @@ Core `blend/src/cap_reblend/touch.rs` handles the zero-width onset of contact:
 the retained shoulder spring becomes shared with the analytic rim, whose
 remaining lower circle bounds the boss. It creates no zero-area corner bands
 and only rewrites an owned disposable candidate.
+
+## Retained curved support boundaries
+
+Tier: core — fillet assembly edits the live solid and its construction history.
+An unrelated crown trim must survive when the opposite rim is rounded. The
+rolling-ball rebuild now carries each unchanged open source curve, including
+its authoritative parameter interval, into the boundary-override pool. A
+cylindrical support with a retained NURBS crown uses those supplied curves
+when every non-axial boundary is known; it does not infer a periodic span from
+the crown's endpoints. Missing coverage and inner loops retain the existing
+guarded construction paths. Modeling tolerances and final solid, material and
+volume checks are unchanged.
+
+`fillet::retained_support_tests` constructs a rounded box with an exact
+rational elliptical crown in a non-unit parameter domain. At three scales it
+checks the unchanged crown and source bytes, complete solid validity and
+removed volume against a closed-form rolling-section oracle. Complete saved
+consumer-history replay additionally qualifies a later bottom round while
+preserving earlier blend carriers and retained NURBS boundaries; private
+consumer geometry is not a public fixture. General curved support rollover
+remains outside this bounded change.
