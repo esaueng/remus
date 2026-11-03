@@ -10,7 +10,7 @@ use remus_math::vec::{Point2, Point3, Vec3};
 use remus_operations::validate::validate_solid;
 use remus_topology::Topology;
 use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
-use remus_topology::face::{Face, FaceSurface};
+use remus_topology::face::{Face, FaceId, FaceSurface};
 use remus_topology::pcurve::PCurve;
 use remus_topology::shell::Shell;
 use remus_topology::solid::{Solid, SolidId};
@@ -21,11 +21,13 @@ use remus_topology::wire::{OrientedEdge, Wire};
 use crate::limits::{ensure_input_size, ensure_limit};
 use crate::{ImportLimits, IoError};
 
+use super::planar::{self, Polygon, Work};
+
 // Strict validation can be more expensive than parsing. This initial envelope
 // has a deliberately separate ceiling, even if a native caller raises limits.
 const MAX_RECORDS: usize = 16_384;
 
-fn malformed(reason: &str) -> IoError {
+pub(super) fn malformed(reason: &str) -> IoError {
     IoError::ParseError {
         reason: format!("BREP: {reason}"),
     }
@@ -208,6 +210,7 @@ enum Geometry {
     Wire,
     Face {
         surface: usize,
+        tolerance: f64,
     },
     Shell,
     Solid,
@@ -225,6 +228,11 @@ struct Document {
     planes: Vec<Plane>,
     shapes: Vec<Shape>,
     root: Usage,
+}
+
+struct Boundaries {
+    used: Vec<bool>,
+    work: Work,
 }
 
 fn locations(tokens: &mut Tokens<'_>) -> Result<usize, IoError> {
@@ -428,10 +436,10 @@ fn parse(input: &str, limits: ImportLimits) -> Result<Document, IoError> {
                 if !matches!(t.next()?, "0" | "1") {
                     return Err(malformed("invalid natural-restriction flag"));
                 }
-                t.tolerance()?;
+                let tolerance = t.tolerance()?;
                 let surface = t.index(planes.len())?;
                 t.location(locs)?;
-                Geometry::Face { surface }
+                Geometry::Face { surface, tolerance }
             }
             "Sh" => Geometry::Shell,
             "So" => Geometry::Solid,
@@ -692,6 +700,125 @@ impl Document {
         Ok(())
     }
 
+    fn polygon(
+        &self,
+        ordered: &[Usage],
+        plane: &Plane,
+        tolerance: f64,
+    ) -> Result<Polygon, IoError> {
+        let mut points = Vec::with_capacity(ordered.len());
+        let mut boundary_tolerance = tolerance;
+        for usage in ordered {
+            let (start, end) = self.edge_points(usage.index)?;
+            let Geometry::Edge {
+                tolerance: edge_tolerance,
+                ..
+            } = self.shapes[usage.index].geometry
+            else {
+                return Err(malformed("non-edge boundary"));
+            };
+            let vertex = if usage.forward { start } else { end };
+            let Geometry::Vertex {
+                point,
+                tolerance: vertex_tolerance,
+            } = self.shapes[vertex].geometry
+            else {
+                return Err(malformed("non-vertex boundary endpoint"));
+            };
+            let entity_tolerance = tolerance.max(edge_tolerance).max(vertex_tolerance);
+            boundary_tolerance = boundary_tolerance.max(entity_tolerance);
+            let delta = point - plane.origin;
+            let residual = delta.dot(plane.normal).abs();
+            // A dominant-coordinate projection is injective on the plane and
+            // uses source coordinates directly. A rotated UV frame must not
+            // round an exact vertex/edge contact into a positive clearance.
+            // Projection contracts distances, so tolerance refusals are
+            // conservative without widening the accepted source tolerance.
+            let normal = plane.normal;
+            let point =
+                if normal.x().abs() >= normal.y().abs() && normal.x().abs() >= normal.z().abs() {
+                    Point2::new(point.y(), point.z())
+                } else if normal.y().abs() >= normal.z().abs() {
+                    Point2::new(point.z(), point.x())
+                } else {
+                    Point2::new(point.x(), point.y())
+                };
+            if !residual.is_finite()
+                || residual > entity_tolerance
+                || !point.x().is_finite()
+                || !point.y().is_finite()
+            {
+                return Err(malformed("boundary vertex is outside its plane tolerance"));
+            }
+            points.push(point);
+        }
+        Ok(Polygon {
+            points,
+            tolerance: boundary_tolerance,
+        })
+    }
+
+    fn face(
+        &self,
+        topo: &mut Topology,
+        usage: Usage,
+        parent_reversed: bool,
+        edges: &[Option<EdgeId>],
+        boundaries: &mut Boundaries,
+    ) -> Result<FaceId, IoError> {
+        Self::claim(&mut boundaries.used, usage.index)?;
+        let shape = &self.shapes[usage.index];
+        let Geometry::Face { surface, tolerance } = shape.geometry else {
+            return Err(malformed("shell child is not a face"));
+        };
+        let plane = &self.planes[surface];
+        let mut ordered_loops = Vec::with_capacity(shape.children.len());
+        let mut polygons = Vec::with_capacity(shape.children.len());
+        for &wire in &shape.children {
+            Self::claim(&mut boundaries.used, wire.index)?;
+            let ordered = self.ordered_wire(wire)?;
+            polygons.push(self.polygon(&ordered, plane, tolerance)?);
+            ordered_loops.push(ordered);
+        }
+        let outer = planar::outer_loop(&polygons, &mut boundaries.work)?;
+        let mut wires = Vec::with_capacity(ordered_loops.len());
+        for ordered in &ordered_loops {
+            let boundary = ordered
+                .iter()
+                .map(|u| {
+                    Ok(OrientedEdge::new(
+                        edges[u.index].ok_or_else(|| malformed("missing edge"))?,
+                        u.forward,
+                    ))
+                })
+                .collect::<Result<_, IoError>>()?;
+            wires.push(topo.add_wire(Wire::new(boundary, true)?));
+        }
+        let outer_wire = wires.remove(outer);
+        let d = plane.normal.dot(plane.origin - Point3::new(0., 0., 0.));
+        let mut face = Face::new(
+            outer_wire,
+            wires,
+            FaceSurface::Plane {
+                normal: plane.normal,
+                d,
+            },
+        );
+        face.set_reversed(!usage.forward ^ parent_reversed);
+        let face_id = topo.add_face(face);
+        for usage in ordered_loops.into_iter().flatten() {
+            if let Some(pcurve) = self.pcurve(usage.index, surface, usage.forward)? {
+                topo.set_pcurve_oriented(
+                    edges[usage.index].ok_or_else(|| malformed("missing edge"))?,
+                    face_id,
+                    usage.forward,
+                    pcurve,
+                )?;
+            }
+        }
+        Ok(face_id)
+    }
+
     fn build(&self, topo: &mut Topology) -> Result<Vec<SolidId>, IoError> {
         let roots = self.roots()?;
         let vertices = self.vertices(topo);
@@ -699,62 +826,29 @@ impl Document {
         let mut solids = Vec::new();
         // Rebuilding each source boundary at most once also bounds output work:
         // an acyclic source DAG must not expand into a quadratic arena tree.
-        let mut used_boundaries = vec![false; self.shapes.len()];
+        let mut boundaries = Boundaries {
+            used: vec![false; self.shapes.len()],
+            work: Work::default(),
+        };
         for root in roots {
             let shells = &self.shapes[root.index].children;
             if shells.len() != 1 {
                 return Err(unsupported("multiple shells or cavities"));
             }
             let shell = shells[0];
-            Self::claim(&mut used_boundaries, shell.index)?;
+            Self::claim(&mut boundaries.used, shell.index)?;
             if !matches!(self.shapes[shell.index].geometry, Geometry::Shell) {
                 return Err(malformed("solid child is not a shell"));
             }
             let mut faces = Vec::new();
             for face_use in &self.shapes[shell.index].children {
-                Self::claim(&mut used_boundaries, face_use.index)?;
-                let shape = &self.shapes[face_use.index];
-                let Geometry::Face { surface } = shape.geometry else {
-                    return Err(malformed("shell child is not a face"));
-                };
-                if shape.children.len() != 1 {
-                    return Err(unsupported("multiple face loops"));
-                }
-                Self::claim(&mut used_boundaries, shape.children[0].index)?;
-                let ordered = self.ordered_wire(shape.children[0])?;
-                let boundary: Vec<_> = ordered
-                    .iter()
-                    .map(|u| {
-                        Ok(OrientedEdge::new(
-                            edges[u.index].ok_or_else(|| malformed("missing edge"))?,
-                            u.forward,
-                        ))
-                    })
-                    .collect::<Result<_, IoError>>()?;
-                let wire = topo.add_wire(Wire::new(boundary, true)?);
-                let plane = &self.planes[surface];
-                let d = plane.normal.dot(plane.origin - Point3::new(0.0, 0.0, 0.0));
-                let mut face = Face::new(
-                    wire,
-                    vec![],
-                    FaceSurface::Plane {
-                        normal: plane.normal,
-                        d,
-                    },
-                );
-                face.set_reversed(!face_use.forward ^ !shell.forward ^ !root.forward);
-                let face_id = topo.add_face(face);
-                for usage in ordered {
-                    if let Some(pcurve) = self.pcurve(usage.index, surface, usage.forward)? {
-                        topo.set_pcurve_oriented(
-                            edges[usage.index].ok_or_else(|| malformed("missing edge"))?,
-                            face_id,
-                            usage.forward,
-                            pcurve,
-                        )?;
-                    }
-                }
-                faces.push(face_id);
+                faces.push(self.face(
+                    topo,
+                    *face_use,
+                    !shell.forward ^ !root.forward,
+                    &edges,
+                    &mut boundaries,
+                )?);
             }
             let shell = topo.add_shell(Shell::new(faces)?);
             let solid = topo.add_solid(Solid::new(shell, vec![]));

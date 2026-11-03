@@ -855,6 +855,38 @@ mod tests {
     }
 
     #[test]
+    fn brep_translator_preserves_planar_holes_and_rejects_invalid_winding() {
+        let input = include_str!("../../io/tests/data/brep/two-holes-v1.brep");
+        let result = RemusIo::try_import_brep_impl(input.as_bytes(), None, None).unwrap();
+        assert!(result.supported());
+        let document = result.solids();
+        let actual = volumes(&document);
+        assert_eq!(actual.len(), 1);
+        assert!((actual[0] - 864.).abs() < 1e-8);
+        let mut topo = Topology::new();
+        let solids = arena_io::deserialize_solids(&document, &mut topo).unwrap();
+        let holes: usize = remus_topology::explorer::solid_faces(&topo, solids[0])
+            .unwrap()
+            .iter()
+            .map(|&face| topo.face(face).unwrap().inner_wires().len())
+            .sum();
+        assert_eq!(holes, 4);
+        let first_face = input.find("\nFa\n").unwrap();
+        let first_hole = first_face + input[first_face..].find('+').unwrap();
+        let mut invalid = input.to_owned();
+        invalid.replace_range(first_hole..=first_hole, "-");
+        assert!(matches!(
+            RemusIo::try_import_brep_impl(invalid.as_bytes(), None, None),
+            Err(IoWasmError::Io(IoError::ParseError { .. }))
+        ));
+        let touching = include_bytes!("../../io/tests/data/brep/touching-hole-zero-v1.brep");
+        assert!(matches!(
+            RemusIo::try_import_brep_impl(touching, None, None),
+            Err(IoWasmError::Io(IoError::ParseError { .. }))
+        ));
+    }
+
+    #[test]
     fn brep_attempt_distinguishes_imported_and_unsupported_geometry() {
         let input = include_str!("../../io/tests/data/brep/box-v3.brep");
         let imported = RemusIo::try_import_brep_impl(input.as_bytes(), None, None).unwrap();

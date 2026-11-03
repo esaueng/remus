@@ -10,6 +10,10 @@ export function runBrepImportPackaged({ RemusKernel, RemusIo }) {
       ['freecad-box-v1', 1000],
       ['box-v2', 6000],
       ['box-v3', 6000],
+      ['two-holes-v1', 864],
+      ['blind-pocket-v1', 852],
+      ['concave-hole-v1', 752],
+      ['oblique-two-holes-v1', 864],
     ]) {
       const bytes = readFileSync(new URL(`../crates/io/tests/data/brep/${name}.brep`, import.meta.url));
       const result = io.tryImportBrep(bytes);
@@ -21,6 +25,10 @@ export function runBrepImportPackaged({ RemusKernel, RemusIo }) {
         assert.equal(solids.length, 1);
         assert.ok(Math.abs(kernel.volume(solids[0], 0.1) - volume) < 1e-8);
         assert.deepEqual(result.solids, io.importBrep(bytes));
+        const exchange = io.exportStep(result.solids);
+        const restored = kernel.deserializeSolids(io.importStep(exchange));
+        assert.equal(restored.length, 1);
+        assert.ok(Math.abs(kernel.volume(restored[0], 0.1) - volume) < 1e-8);
       } finally {
         result.free();
       }
@@ -50,6 +58,14 @@ export function runBrepImportPackaged({ RemusKernel, RemusIo }) {
     const inverted = text.replace(/\+1 0\s*$/, '-1 0');
     assert.notEqual(inverted, text);
     assert.throws(() => io.tryImportBrep(new TextEncoder().encode(inverted)));
+    const holed = readFileSync(new URL('../crates/io/tests/data/brep/two-holes-v1.brep', import.meta.url), 'utf8');
+    const face = holed.indexOf('\nFa\n');
+    const hole = holed.indexOf('+', face);
+    assert.ok(face >= 0 && hole > face);
+    const invalidHole = holed.slice(0, hole) + '-' + holed.slice(hole + 1);
+    assert.throws(() => io.tryImportBrep(new TextEncoder().encode(invalidHole)));
+    const touching = readFileSync(new URL('../crates/io/tests/data/brep/touching-hole-zero-v1.brep', import.meta.url));
+    assert.throws(() => io.tryImportBrep(touching));
   } finally {
     kernel.free();
     io.free();
