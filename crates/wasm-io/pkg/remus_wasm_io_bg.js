@@ -254,7 +254,7 @@ export class RemusIo {
         return v2;
     }
     /**
-     * Read planar, straight-edged ASCII BREP saved shapes in millimetres.
+     * Read qualified planar/cylindrical ASCII BREP saved solids in millimetres.
      * Returns an exact solid document for `deserializeSolids`.
      * Unsupported geometry or placements refuse the whole call.
      * Optional budgets only tighten production limits; this first reader
