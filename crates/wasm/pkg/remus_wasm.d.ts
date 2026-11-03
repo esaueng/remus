@@ -3721,6 +3721,13 @@ export class RemusKernel {
      */
     moveFacesJournaled(solid: number, faces: Uint32Array, distance: number): string;
     /**
+     * Journaled face move with explicit sampled-cap permission and quality.
+     *
+     * Omitting `cornerStations` retains exact-only behavior. JSON includes
+     * `solid`, `op`, `quality` and approximation details when used.
+     */
+    moveFacesJournaledWithQuality(solid: number, faces: Uint32Array, distance: number, corner_stations?: number | null): string;
+    /**
      * `moveFaces` of a prepared selection: moves it `distance` from the
      * prepared source and returns the new solid handle.
      *
@@ -3747,6 +3754,24 @@ export class RemusKernel {
      * As `moveFacesPrepared`; a refusal restores topology and history.
      */
     moveFacesPreparedJournaled(prepared: number, distance: number): string;
+    /**
+     * Prepared journaled face move with explicit sampled-cap permission.
+     *
+     * JSON includes `solid`, `op`, and disclosed construction quality.
+     *
+     * # Errors
+     * Refuses invalid budgets, stale preparations or unsupported geometry
+     * atomically, as the unprepared quality-aware method does.
+     */
+    moveFacesPreparedJournaledWithQuality(prepared: number, distance: number, corner_stations?: number | null): string;
+    /**
+     * Move faces with explicit permission for sampled cap-corner reconstruction.
+     *
+     * Omitting `cornerStations` preserves exact-only behavior. Supplying a
+     * 16..=2048 station budget permits a validated approximate cap join;
+     * `details.quality` and `details.cornerStations` disclose its construction.
+     */
+    moveFacesWithQualityDetailed(solid: number, faces: Uint32Array, distance: number, corner_stations?: number | null): SolidOperationDetailedResult;
     /**
      * Sweep through multiple section profiles along a spine, lofting the
      * rotation-minimizing-frame-placed profiles.

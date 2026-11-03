@@ -6435,6 +6435,37 @@ class RemusKernel {
         }
     }
     /**
+     * Journaled face move with explicit sampled-cap permission and quality.
+     *
+     * Omitting `cornerStations` retains exact-only behavior. JSON includes
+     * `solid`, `op`, `quality` and approximation details when used.
+     * @param {number} solid
+     * @param {Uint32Array} faces
+     * @param {number} distance
+     * @param {number | null} [corner_stations]
+     * @returns {string}
+     */
+    moveFacesJournaledWithQuality(solid, faces, distance, corner_stations) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passArray32ToWasm0(faces, wasm.__wbindgen_malloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.remuskernel_moveFacesJournaledWithQuality(this.__wbg_ptr, solid, ptr0, len0, distance, isLikeNone(corner_stations) ? Number.MAX_SAFE_INTEGER : (corner_stations) >>> 0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
      * `moveFaces` of a prepared selection: moves it `distance` from the
      * prepared source and returns the new solid handle.
      *
@@ -6489,6 +6520,58 @@ class RemusKernel {
         } finally {
             wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
         }
+    }
+    /**
+     * Prepared journaled face move with explicit sampled-cap permission.
+     *
+     * JSON includes `solid`, `op`, and disclosed construction quality.
+     *
+     * # Errors
+     * Refuses invalid budgets, stale preparations or unsupported geometry
+     * atomically, as the unprepared quality-aware method does.
+     * @param {number} prepared
+     * @param {number} distance
+     * @param {number | null} [corner_stations]
+     * @returns {string}
+     */
+    moveFacesPreparedJournaledWithQuality(prepared, distance, corner_stations) {
+        let deferred2_0;
+        let deferred2_1;
+        try {
+            const ret = wasm.remuskernel_moveFacesPreparedJournaledWithQuality(this.__wbg_ptr, prepared, distance, isLikeNone(corner_stations) ? Number.MAX_SAFE_INTEGER : (corner_stations) >>> 0);
+            var ptr1 = ret[0];
+            var len1 = ret[1];
+            if (ret[3]) {
+                ptr1 = 0; len1 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred2_0 = ptr1;
+            deferred2_1 = len1;
+            return getStringFromWasm0(ptr1, len1);
+        } finally {
+            wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Move faces with explicit permission for sampled cap-corner reconstruction.
+     *
+     * Omitting `cornerStations` preserves exact-only behavior. Supplying a
+     * 16..=2048 station budget permits a validated approximate cap join;
+     * `details.quality` and `details.cornerStations` disclose its construction.
+     * @param {number} solid
+     * @param {Uint32Array} faces
+     * @param {number} distance
+     * @param {number | null} [corner_stations]
+     * @returns {SolidOperationDetailedResult}
+     */
+    moveFacesWithQualityDetailed(solid, faces, distance, corner_stations) {
+        const ptr0 = passArray32ToWasm0(faces, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_moveFacesWithQualityDetailed(this.__wbg_ptr, solid, ptr0, len0, distance, isLikeNone(corner_stations) ? Number.MAX_SAFE_INTEGER : (corner_stations) >>> 0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
     }
     /**
      * Sweep through multiple section profiles along a spine, lofting the

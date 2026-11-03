@@ -296,8 +296,11 @@ export const remuskernel_mirror: (a: number, b: number, c: number, d: number, e:
 export const remuskernel_moveFaces: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const remuskernel_moveFacesDetailed: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const remuskernel_moveFacesJournaled: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+export const remuskernel_moveFacesJournaledWithQuality: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
 export const remuskernel_moveFacesPrepared: (a: number, b: number, c: number) => [number, number, number];
 export const remuskernel_moveFacesPreparedJournaled: (a: number, b: number, c: number) => [number, number, number, number];
+export const remuskernel_moveFacesPreparedJournaledWithQuality: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+export const remuskernel_moveFacesWithQualityDetailed: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
 export const remuskernel_multiSectionSweep: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number) => [number, number, number];
 export const remuskernel_mutualTrimSheets: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
 export const remuskernel_new: () => number;
