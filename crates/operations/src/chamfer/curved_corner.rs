@@ -139,7 +139,11 @@ fn qualify(
                     FaceSurface::Plane { .. } => {}
                     FaceSurface::Cylinder(cylinder)
                         if !face.is_reversed() && distance <= cylinder.radius() => {}
-                    _ => return Ok(None),
+                    FaceSurface::Cylinder(_)
+                    | FaceSurface::Cone(_)
+                    | FaceSurface::Sphere(_)
+                    | FaceSurface::Torus(_)
+                    | FaceSurface::Nurbs(_) => return Ok(None),
                 }
                 allowed.insert(fid.index());
             }
@@ -396,16 +400,22 @@ fn clip(
 /// not samples. The result's face identity already comes from construction;
 /// this predicate only certifies that an unrelated patch stayed unchanged.
 fn same_curve(a: &EdgeCurve, b: &EdgeCurve) -> bool {
-    match (a, b) {
-        (EdgeCurve::Line, EdgeCurve::Line) => true,
-        (EdgeCurve::Circle(a), EdgeCurve::Circle(b)) => {
+    match a {
+        EdgeCurve::Line => matches!(b, EdgeCurve::Line),
+        EdgeCurve::Circle(a) => {
+            let EdgeCurve::Circle(b) = b else {
+                return false;
+            };
             a.center() == b.center()
                 && a.normal() == b.normal()
                 && a.radius().to_bits() == b.radius().to_bits()
                 && a.u_axis() == b.u_axis()
                 && a.v_axis() == b.v_axis()
         }
-        (EdgeCurve::Ellipse(a), EdgeCurve::Ellipse(b)) => {
+        EdgeCurve::Ellipse(a) => {
+            let EdgeCurve::Ellipse(b) = b else {
+                return false;
+            };
             a.center() == b.center()
                 && a.normal() == b.normal()
                 && a.semi_major().to_bits() == b.semi_major().to_bits()
@@ -413,8 +423,8 @@ fn same_curve(a: &EdgeCurve, b: &EdgeCurve) -> bool {
                 && a.u_axis() == b.u_axis()
                 && a.v_axis() == b.v_axis()
         }
-        (EdgeCurve::NurbsCurve(a), EdgeCurve::NurbsCurve(b)) => a == b,
-        _ => false,
+        EdgeCurve::NurbsCurve(a) => matches!(b, EdgeCurve::NurbsCurve(b) if a == b),
+        EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => false,
     }
 }
 
