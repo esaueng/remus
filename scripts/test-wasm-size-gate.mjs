@@ -4,7 +4,7 @@ import { once } from 'node:events';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, delimiter, dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
@@ -304,7 +304,7 @@ test('command line: a kernel-only artifact (failed build, translator never built
 function workflowCommand(file, name) {
   const active = JSON.parse(readFileSync(new URL('../.github/fleet-workflows.json', import.meta.url), 'utf8'));
   assert.ok(active[file], `Missing active workflow family: ${file}`);
-  const workflow = readFileSync(new URL(`../.github/workflows/${active[file]}`, import.meta.url), 'utf8');
+  const workflow = readFileSync(new URL(`../.github/workflows/${active[file]}`, import.meta.url), 'utf8').replaceAll('\r\n', '\n');
   const step = workflow.split(`      - name: ${name}\n`)[1]?.split('\n      - ')[0];
   assert.ok(step, `Missing workflow step: ${name}`);
   const command = step.split('        run: |\n')[1] ?? step.match(/^        run: (.+)$/m)?.[1];
@@ -325,10 +325,10 @@ test('workflow: only fresh build artifacts reach the report, including hard-limi
       const runnerTemp = join(f.root, 'runner');
       const binDir = join(f.root, 'bin');
       for (const dir of [buildDir, runnerTemp, binDir, join(f.baseDir, 'scripts')]) mkdirSync(dir, { recursive: true });
-      for (const script of [SCRIPT, POLICY_SCRIPT]) writeFileSync(join(f.baseDir, 'scripts', script.split('/').at(-1)), readFileSync(script));
+      for (const script of [SCRIPT, POLICY_SCRIPT]) writeFileSync(join(f.baseDir, 'scripts', basename(script)), readFileSync(script));
       const metadata = { packages: ['wasm', 'wasm-io'].map((crate, i) => ({
         name: `remus-${crate}`,
-        manifest_path: join(buildDir, `crates/${crate}/Cargo.toml`),
+        manifest_path: join(buildDir, `crates/${crate}/Cargo.toml`).replaceAll('\\', '/'),
         targets: [{ name: ['remus_wasm', 'remus_wasm_io'][i], crate_types: ['cdylib'] }],
       })) };
       const cargo = join(binDir, 'cargo');
@@ -336,7 +336,7 @@ test('workflow: only fresh build artifacts reach the report, including hard-limi
       chmodSync(cargo, 0o755);
       const env = {
         ...process.env,
-        PATH: `${binDir}:${process.env.PATH}`,
+        PATH: `${binDir}${delimiter}${process.env.PATH}`,
         RUNNER_TEMP: runnerTemp,
         GITHUB_OUTPUT: join(runnerTemp, 'output'),
         GITHUB_STEP_SUMMARY: join(runnerTemp, 'summary'),
