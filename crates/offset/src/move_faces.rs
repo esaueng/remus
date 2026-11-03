@@ -408,6 +408,16 @@ fn restore_exact_plane_cylinder_edges<const REPLACEMENT: bool>(
             let [ExactIntersectionCurve::Circle(circle)] = exact.as_slice() else {
                 continue;
             };
+            let tolerance = data.options.tolerance;
+            let before_height = (source_circle.center() - cone.apex()).dot(cone.axis());
+            let after_height = (circle.center() - cone.apex()).dot(cone.axis());
+            if circle.radius() <= tolerance.linear || before_height * after_height <= 0.0 {
+                return Err(OffsetError::TopologyChange {
+                    face: Some(intersection.face_a),
+                    edge: Some(intersection.original_edge),
+                    reason: "conical cap reaches or crosses its support apex".into(),
+                });
+            }
             let curve = EdgeCurve::Circle(Circle3D::new_with_ref(
                 circle.center(),
                 source_circle.normal(),

@@ -285,6 +285,27 @@ fn collisions_and_collapsed_sections_refuse_and_preserve_input() {
         );
         valid(&topo, solid);
     }
+    for (height, normal, offset) in [
+        (16.5, 1.0, -20.0),
+        (16.5, 1.0, 40.0),
+        (0.0, -1.0, 16.0),
+        (0.0, -1.0, 16.1),
+        (0.0, -1.0, -30.0),
+    ] {
+        let mut topo = Topology::new();
+        let solid = edited(&mut topo);
+        let cap = plane(&topo, solid, height, normal);
+        let before = remus_io::arena_io::serialize_solid(&topo, solid).unwrap();
+        assert!(
+            move_faces(&mut topo, solid, &[cap], offset).is_err(),
+            "cap at {height} offset {offset} must refuse collision or collapse"
+        );
+        assert_eq!(
+            remus_io::arena_io::serialize_solid(&topo, solid).unwrap(),
+            before
+        );
+        valid(&topo, solid);
+    }
 }
 
 #[test]

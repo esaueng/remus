@@ -168,6 +168,18 @@ export function runRotationalFaceEditsPackaged({ RemusKernel, RemusIo }) {
       assert.throws(() => k.resizeCylindricalFace(solid, wall(k, solid, 12), 20));
       assert.deepEqual(Buffer.from(k.serializeSolid(solid)), snapshot);
       assert.equal(k.journalSummary(), journal);
+      for (const [height, sign, offset] of [
+        [16.5, 1, -20],
+        [16.5, 1, 40],
+        [0, -1, 16],
+        [0, -1, 16.1],
+        [0, -1, -30],
+      ]) {
+        const cap = plane(k, solid, height, sign);
+        assert.throws(() => k.moveFaces(solid, Uint32Array.of(cap), offset));
+        assert.deepEqual(Buffer.from(k.serializeSolid(solid)), snapshot);
+        assert.equal(k.journalSummary(), journal);
+      }
     } finally {
       k.free();
       io.free();

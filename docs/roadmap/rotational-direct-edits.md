@@ -35,7 +35,8 @@ the axis. Full analytic radial bounds, or a torus strip's authoritative
 meridian interval, establish that exclusion; unqualified pairs retain the
 existing conservative swept-box check. An axial planar cap adjacent to a cone
 re-limits along an exact circular plane/cone intersection, preserving its
-signed circle span, seam direction and entity counts. General oblique conical
+signed circle span, seam direction and entity counts. Travel that reaches or
+crosses the cone apex or collapses its circular cap refuses. General oblique conical
 cap moves remain unsupported.
 
 `crates/io/tests/rotational_face_edits.rs` uses the existing
