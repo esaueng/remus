@@ -304,7 +304,7 @@ type FaceSources = Vec<(usize, Option<usize>)>;
 /// Both branches are exact and transactional. The topology plane trimmer
 /// retains untouched arcs without running intersections at all. Oblique cuts
 /// through cylindrical rounds use GFA and the ordinary exact-result gate.
-fn clip(
+pub(super) fn clip(
     topo: &mut Topology,
     solid: SolidId,
     point: Point3,

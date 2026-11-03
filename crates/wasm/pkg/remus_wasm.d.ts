@@ -2872,6 +2872,14 @@ export class RemusKernel {
      */
     getSolidShells(solid: number): Uint32Array;
     /**
+     * Get the manifold edges whose two support faces meet smoothly (G1).
+     *
+     * These are visible topology boundaries with no sharp dihedral to blend.
+     * Periodic self-seams are not included. Uses the same native continuity
+     * test as blend selection normalization, without convexity meshing.
+     */
+    getSolidSmoothEdges(solid: number): Uint32Array;
+    /**
      * Get all vertex handles of a solid.
      *
      * Returns an array of unique vertex handles (`u32[]`).

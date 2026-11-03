@@ -2562,6 +2562,156 @@ pub fn chamfer_v2(
     d1: f64,
     d2: f64,
 ) -> Result<BlendResult, OperationsError> {
+    if !d1.is_finite() || !d2.is_finite() || d1 <= 0.0 || d2 <= 0.0 || edges.is_empty() {
+        return chamfer_v2_engines(topo, solid, edges, d1, d2);
+    }
+    let normalized = dedup_seed_edges(&crate::query::normalize_chamfer_selection(
+        topo, solid, edges,
+    )?);
+    let edges = normalized.as_slice();
+    let refusal = match chamfer_v2_engines(topo, solid, edges, d1, d2) {
+        Ok(result) => return Ok(result),
+        Err(error) => error,
+    };
+    if matches!(
+        refusal,
+        OperationsError::Blend(BlendError::RadiusTooLarge { .. })
+    ) {
+        return Err(refusal);
+    }
+    // The additive cutter routes qualify cavity-free bodies. Preserve the
+    // existing engines' refusal when an enclosed inner shell is present.
+    if has_cavity_shells(topo, solid)? {
+        return Err(refusal);
+    }
+    if let Ok(result) = transactional(topo, |t| {
+        chamfer_by_feature(t, solid, edges, d1, d2)?.ok_or_else(|| OperationsError::Unsupported {
+            operation: "chamfer",
+            reason: "the selection is not independent chamfer features".into(),
+        })
+    }) {
+        return Ok(result);
+    }
+    if d1.is_finite() && d2.is_finite() && d1 > 0.0 && d2 > 0.0 && !edges.is_empty() {
+        let rebuilt = transactional(topo, |t| {
+            let result = crate::chamfer::analytic_tools::try_chamfer(t, solid, edges, d1, d2)?
+                .ok_or_else(|| OperationsError::Unsupported {
+                    operation: "chamfer",
+                    reason: "no qualified analytic cutter for this selection".to_owned(),
+                })?;
+            validate_complete_blend(
+                t,
+                "chamfer",
+                solid,
+                &result,
+                edges,
+                BlendSize::Chamfer { d1, d2 },
+            )?;
+            Ok(result)
+        });
+        match rebuilt {
+            Ok(result) => return Ok(result),
+            Err(error) => log::debug!("analytic chamfer cutter refused: {error}"),
+        }
+    }
+    Err(refusal)
+}
+
+/// Disjoint rims and outer ridges can require different construction engines.
+/// The existing reach proof keeps independent bands apart; each remaining
+/// seed is found by its exact line or circle carrier after earlier groups.
+fn chamfer_by_feature(
+    topo: &mut Topology,
+    solid: SolidId,
+    edges: &[EdgeId],
+    d1: f64,
+    d2: f64,
+) -> Result<Option<BlendResult>, OperationsError> {
+    let groups = independent_blend_groups(topo, solid, edges, d1.max(d2))?;
+    if groups.len() < 2 {
+        return Ok(None);
+    }
+    let mut planar = Vec::new();
+    let mut ordered = Vec::new();
+    for group in groups {
+        if is_planar_line_blend(topo, solid, &group)? {
+            planar.extend(group);
+        } else {
+            ordered.push(group);
+        }
+    }
+    if !planar.is_empty() {
+        ordered.push(planar);
+    }
+    if ordered.len() < 2 {
+        return Ok(None);
+    }
+    let mut planned = Vec::new();
+    for group in &ordered {
+        let mut carriers = Vec::new();
+        for &edge in group {
+            let Some(carrier) = SeedCarrier::of(topo, edge) else {
+                return Ok(None);
+            };
+            carriers.push(carrier);
+        }
+        planned.push(carriers);
+    }
+    let mut current = solid;
+    let tolerance = remus_math::tolerance::Tolerance::new().linear;
+    for (group, carriers) in ordered.iter().zip(planned) {
+        let adjacency = topo.build_adjacency(current)?;
+        let current_edges = remus_topology::explorer::solid_edges(topo, current)?;
+        let mut live = Vec::new();
+        for (&seed, carrier) in group.iter().zip(carriers) {
+            if adjacency.faces_for_edge(seed).len() == 2 && carrier.carries(topo, seed, tolerance) {
+                live.push(seed);
+                continue;
+            }
+            let found: Vec<_> = current_edges
+                .iter()
+                .copied()
+                .filter(|&edge| {
+                    adjacency.faces_for_edge(edge).len() == 2
+                        && carrier.carries(topo, edge, tolerance)
+                })
+                .collect();
+            let [edge] = found.as_slice() else {
+                return Err(OperationsError::Unsupported {
+                    operation: "chamfer",
+                    reason: "an independent chamfer edge no longer has one exact carrier".into(),
+                });
+            };
+            live.push(*edge);
+        }
+        current = chamfer_v2(topo, current, &live, d1, d2)?.solid;
+    }
+    let result = BlendResult {
+        solid: current,
+        succeeded: edges.to_vec(),
+        failed: Vec::new(),
+        is_partial: false,
+        face_origins: None,
+        engine: BlendEngine::Mixed,
+    };
+    validate_complete_blend(
+        topo,
+        "chamfer",
+        solid,
+        &result,
+        edges,
+        BlendSize::Chamfer { d1, d2 },
+    )?;
+    Ok(Some(result))
+}
+
+fn chamfer_v2_engines(
+    topo: &mut Topology,
+    solid: SolidId,
+    edges: &[EdgeId],
+    d1: f64,
+    d2: f64,
+) -> Result<BlendResult, OperationsError> {
     if !d1.is_finite() || !d2.is_finite() || d1 <= 0.0 || d2 <= 0.0 {
         return Err(OperationsError::InvalidInput {
             reason: format!("distances must be finite and positive, got d1={d1}, d2={d2}"),
@@ -2642,31 +2792,8 @@ pub fn chamfer_distance_angle(
             reason: "no edges specified".into(),
         });
     }
-    // See `chamfer_v2`: repeated seeds chamfer the same edge twice.
-    let deduped = dedup_seed_edges(edges);
-    let edges = deduped.as_slice();
-    reject_seed_selection_larger_than_solid(topo, solid, "chamfer", edges)?;
     let d2 = distance * angle.tan();
-    if is_planar_line_blend(topo, solid, edges)? {
-        return transactional(topo, |t| {
-            planar_chamfer_result(t, solid, edges, distance, d2)
-        });
-    }
-    refuse_cavity_in_blend_reach(topo, solid, edges, distance.max(d2), "chamfer")?;
-    transactional(topo, |t| {
-        let mut builder = ChamferBuilder::new(t, solid);
-        builder.add_edges_distance_angle(edges, distance, angle);
-        let result = builder.build()?;
-        validate_complete_blend(
-            t,
-            "chamfer",
-            solid,
-            &result,
-            edges,
-            BlendSize::Chamfer { d1: distance, d2 },
-        )?;
-        Ok(result)
-    })
+    chamfer_v2(topo, solid, edges, distance, d2)
 }
 
 // ── Face provenance ────────────────────────────────────────────

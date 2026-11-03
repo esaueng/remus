@@ -429,6 +429,7 @@ impl EdgeMaterialFrames {
     /// `Some(true)` when the edge is concave (each face heads to the outward
     /// side of the other's tangent plane), `Some(false)` when convex, `None`
     /// when the faces meet tangentially or the two readings disagree.
+    #[must_use]
     pub fn concave(&self) -> Option<bool> {
         let tangency = remus_math::tolerance::Tolerance::new().angular;
         let side1 = self.into1.dot(self.outward2);
@@ -467,6 +468,10 @@ pub fn edge_material_frames(
 /// [`edge_material_frames`] read at the midpoint of one edge rather than of
 /// a spine's first: a chain whose second face changes along the way has one
 /// pair of frames per face pair.
+///
+/// # Errors
+/// Returns a topology or geometry error when the edge or support faces cannot
+/// be read or evaluated.
 pub fn edge_material_frames_at(
     topo: &Topology,
     edge_id: EdgeId,

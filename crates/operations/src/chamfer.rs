@@ -35,6 +35,7 @@ use crate::OperationsError;
 use crate::boolean::{FaceSpec, assemble_solid_mixed_with_history};
 use crate::dot_normal_point;
 
+pub(crate) mod analytic_tools;
 mod curved_corner;
 
 /// Operation name carried by [`OperationsError::Unsupported`] refusals.
@@ -515,6 +516,63 @@ fn chamfer_core(
     // the crate's own `approx_eq` convention. Never loosened to admit a case.
     let eps = tol.linear.max(model_span(&face_polygons) * tol.relative);
 
+    // A complete orthogonal corner with one concave ridge closes with a
+    // quadrilateral cap. The face opposite that ridge contributes two points,
+    // rather than extending its trim lines through the corner's material.
+    let symmetric = match distances {
+        ChamferDistances::Symmetric(_) => true,
+        ChamferDistances::Asymmetric { d1, d2 } => d1.to_bits() == d2.to_bits(),
+    };
+    let mut reflex_caps = BTreeMap::new();
+    if symmetric {
+        for (&vertex, edges) in &vertex_chamfer_edges {
+            if edges.len() != 3
+                || edges
+                    .iter()
+                    .filter(|e| convexity_by_edge.get(&e.index()) == Some(&false))
+                    .count()
+                    != 1
+                || edges
+                    .iter()
+                    .filter(|e| convexity_by_edge.get(&e.index()) == Some(&true))
+                    .count()
+                    != 2
+            {
+                continue;
+            }
+            let Some(faces) = faces_at_vertex.get(&vertex) else {
+                continue;
+            };
+            if faces.len() != 3 {
+                continue;
+            }
+            let normals: Vec<_> = faces
+                .iter()
+                .filter_map(|face| face_polygons.get(face).map(|poly| poly.outward))
+                .collect();
+            if normals.len() != 3
+                || (0..3)
+                    .any(|i| (i + 1..3).any(|j| normals[i].dot(normals[j]).abs() > tol.angular))
+            {
+                continue;
+            }
+            let edge = topo.edge(edges[0])?;
+            let vid = if edge.start().index() == vertex {
+                edge.start()
+            } else {
+                edge.end()
+            };
+            let normal = normals
+                .into_iter()
+                .fold(Vec3::new(0.0, 0.0, 0.0), |a, b| a + b)
+                .normalize()?;
+            reflex_caps.insert(
+                vertex,
+                (normal, dot_normal_point(normal, topo.vertex(vid)?.point())),
+            );
+        }
+    }
+
     for &face_id in &shell_face_ids {
         // A curved face is never moved by the bevel — the checks above refused
         // every configuration that would need one re-trimmed — so it travels
@@ -729,6 +787,44 @@ fn chamfer_core(
                         }
                     };
 
+                    if let Some(&(normal, d)) = reflex_caps.get(&poly.vertex_ids[i].index())
+                        && (dot_normal_point(normal, intersection) - d).abs() > eps
+                    {
+                        let cut = |base: Point3,
+                                   direction: Vec3|
+                         -> Result<Point3, OperationsError> {
+                            let denominator = normal.dot(direction);
+                            if denominator.abs() <= tol.angular {
+                                return Err(unsupported(
+                                    "reflex chamfer cap is parallel to its trim line",
+                                ));
+                            }
+                            Ok(base
+                                + direction * ((d - dot_normal_point(normal, base)) / denominator))
+                        };
+                        let before = cut(pos + p2 * dist_before, -dir_from_prev)?;
+                        let after = cut(pos + p1 * dist_after, dir_next)?;
+                        new_verts.extend([before, after]);
+                        record_chamfer_point(
+                            &mut chamfer_data,
+                            poly.wire_edge_ids[prev_i].index(),
+                            poly.vertex_ids[i],
+                            face_id,
+                            before,
+                        );
+                        record_chamfer_point(
+                            &mut chamfer_data,
+                            poly.wire_edge_ids[i].index(),
+                            poly.vertex_ids[i],
+                            face_id,
+                            after,
+                        );
+                        corner_data
+                            .entry(poly.vertex_ids[i].index())
+                            .or_default()
+                            .extend([(face_id, before), (face_id, after)]);
+                        continue;
+                    }
                     new_verts.push(intersection);
 
                     // Record this point for both adjacent chamfered edges.
@@ -885,7 +981,8 @@ fn chamfer_core(
         // Only create a corner face if ALL faces at this vertex contributed
         // (i.e. all edges at this vertex are chamfered).
         let expected = vertex_face_count.get(&vid).copied().unwrap_or(0);
-        if entries.len() != expected || entries.len() < 3 {
+        let contributors: BTreeSet<_> = entries.iter().map(|(face, _)| *face).collect();
+        if contributors.len() != expected || entries.len() < 3 {
             continue;
         }
 
@@ -894,9 +991,9 @@ fn chamfer_core(
         // into the cavity, and a centroid cannot tell that apart from a
         // corner of the block. Each face contributes its outward normal, so
         // reversed faces point the patch the right way round.
-        let outward = entries
+        let outward = contributors
             .iter()
-            .fold(Vec3::new(0.0, 0.0, 0.0), |acc, (fid, _)| {
+            .fold(Vec3::new(0.0, 0.0, 0.0), |acc, fid| {
                 acc + face_polygons[&fid.index()].outward
             })
             .normalize()
@@ -976,6 +1073,8 @@ fn chamfer_core(
 
     let assembly = assemble_solid_mixed_with_history(topo, &result_specs, tol)?;
     let result = assembly.solid;
+
+    analytic_tools::normalize_new_planar_wires(topo, solid, result)?;
 
     let report = crate::validate::validate_solid(topo, result)?;
     if !report.is_valid() {
