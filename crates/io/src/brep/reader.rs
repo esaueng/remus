@@ -23,6 +23,14 @@ use crate::{ImportLimits, IoError};
 
 use super::planar::{self, Polygon, Work};
 
+mod carriers;
+mod curved;
+mod locations;
+mod placed;
+
+use carriers::{Curve2, Curve3, Surface};
+use locations::Locations;
+
 // Strict validation can be more expensive than parsing. This initial envelope
 // has a deliberately separate ceiling, even if a native caller raises limits.
 const MAX_RECORDS: usize = 16_384;
@@ -121,12 +129,9 @@ impl<'a> Tokens<'a> {
         Ok(d)
     }
 
-    fn location(&mut self, count: usize) -> Result<(), IoError> {
+    fn location(&mut self, locations: &Locations) -> Result<usize, IoError> {
         let index: usize = self.number()?;
-        if index > count {
-            return Err(malformed("unknown location"));
-        }
-        Ok(())
+        locations.record(index)
     }
 
     fn index(&mut self, count: usize) -> Result<usize, IoError> {
@@ -137,7 +142,32 @@ impl<'a> Tokens<'a> {
         Ok(index - 1)
     }
 
-    fn usage(&mut self, token: &str, shapes: usize, locations: usize) -> Result<Usage, IoError> {
+    fn seam_index(&mut self, count: usize) -> Result<usize, IoError> {
+        let word = self.next()?;
+        let end = word.bytes().take_while(u8::is_ascii_digit).count();
+        let index: usize = word[..end]
+            .parse()
+            .map_err(|_| malformed("invalid seam curve index"))?;
+        if index == 0 || index > count {
+            return Err(malformed("unknown seam curve"));
+        }
+        let continuity = if end == word.len() {
+            self.next()?
+        } else {
+            &word[end..]
+        };
+        if !matches!(continuity, "C0" | "C1" | "C2" | "C3" | "CN" | "G1" | "G2") {
+            return Err(malformed("invalid seam continuity"));
+        }
+        Ok(index - 1)
+    }
+
+    fn usage(
+        &mut self,
+        token: &str,
+        shapes: usize,
+        locations: &Locations,
+    ) -> Result<Usage, IoError> {
         self.charge(1)?;
         let forward = match token.as_bytes().first() {
             Some(b'+') => true,
@@ -152,10 +182,11 @@ impl<'a> Tokens<'a> {
         if index == 0 || index > shapes {
             return Err(malformed("unknown shape reference"));
         }
-        self.location(locations)?;
+        let location = self.location(locations)?;
         Ok(Usage {
             index: shapes - index,
             forward,
+            location,
         })
     }
 }
@@ -164,8 +195,10 @@ impl<'a> Tokens<'a> {
 struct Usage {
     index: usize,
     forward: bool,
+    location: usize,
 }
 
+#[derive(Clone)]
 struct Plane {
     origin: Point3,
     normal: Vec3,
@@ -173,30 +206,37 @@ struct Plane {
     y: Vec3,
 }
 
+#[derive(Clone)]
 struct Line {
     origin: Point3,
     direction: Vec3,
 }
 
+#[derive(Clone)]
 struct Line2 {
     origin: Point2,
     x: f64,
     y: f64,
 }
 
+#[derive(Clone)]
 struct CurveUse {
     curve: usize,
+    location: usize,
     first: f64,
     last: f64,
 }
 
+#[derive(Clone)]
 struct PcurveUse {
     curve: usize,
     surface: usize,
+    location: usize,
     first: f64,
     last: f64,
 }
 
+#[derive(Clone)]
 enum Geometry {
     Vertex {
         point: Point3,
@@ -211,21 +251,24 @@ enum Geometry {
     Face {
         surface: usize,
         tolerance: f64,
+        location: usize,
     },
     Shell,
     Solid,
     Compound,
 }
 
+#[derive(Clone)]
 struct Shape {
     geometry: Geometry,
     children: Vec<Usage>,
 }
 
 struct Document {
-    lines: Vec<Line>,
-    lines2: Vec<Line2>,
-    planes: Vec<Plane>,
+    locations: Locations,
+    curves3: Vec<Curve3>,
+    curves2: Vec<Curve2>,
+    surfaces: Vec<Surface>,
     shapes: Vec<Shape>,
     root: Usage,
 }
@@ -235,40 +278,12 @@ struct Boundaries {
     work: Work,
 }
 
-fn locations(tokens: &mut Tokens<'_>) -> Result<usize, IoError> {
-    let count = tokens.section("Locations")?;
-    for previous in 0..count {
-        match tokens.next()? {
-            "1" => {
-                for expected in [1., 0., 0., 0., 0., 1., 0., 0., 0., 0., 1., 0.] {
-                    if tokens.real()?.partial_cmp(&expected) != Some(std::cmp::Ordering::Equal) {
-                        return Err(unsupported("nonidentity location"));
-                    }
-                }
-            }
-            "2" => loop {
-                let index: usize = tokens.number()?;
-                if index == 0 {
-                    break;
-                }
-                tokens.charge(1)?;
-                if index > previous {
-                    return Err(malformed("forward or unknown location reference"));
-                }
-                let _: i32 = tokens.number()?; // Any power of a proven identity is identity.
-            },
-            _ => return Err(malformed("unknown location record")),
-        }
-    }
-    Ok(count)
-}
-
 fn edge(
     tokens: &mut Tokens<'_>,
     line_count: usize,
     line2_count: usize,
     plane_count: usize,
-    location_count: usize,
+    locations: &Locations,
     version: u8,
 ) -> Result<Geometry, IoError> {
     let tolerance = tokens.tolerance()?;
@@ -294,26 +309,41 @@ fn edge(
                     return Err(malformed("duplicate 3D edge representation"));
                 }
                 let index = tokens.index(line_count)?;
-                tokens.location(location_count)?;
+                let location = tokens.location(locations)?;
                 curve = Some(CurveUse {
                     curve: index,
+                    location,
                     first: tokens.real()?,
                     last: tokens.real()?,
                 });
             }
-            "2" => {
-                if pcurves.len() >= 2 {
-                    return Err(unsupported("more than two pcurves on an edge"));
+            "2" | "3" => {
+                let added = if kind == "3" { 2 } else { 1 };
+                if pcurves.len() + added > 16 {
+                    return Err(unsupported("more than sixteen located pcurves on an edge"));
                 }
                 let index = tokens.index(line2_count)?;
+                let second = if kind == "3" {
+                    tokens.charge(1)?;
+                    Some(tokens.seam_index(line2_count)?)
+                } else {
+                    None
+                };
                 let surface = tokens.index(plane_count)?;
-                tokens.location(location_count)?;
-                pcurves.push(PcurveUse {
+                let location = tokens.location(locations)?;
+                let first = tokens.real()?;
+                let last = tokens.real()?;
+                let pcurve = PcurveUse {
                     curve: index,
                     surface,
-                    first: tokens.real()?,
-                    last: tokens.real()?,
-                });
+                    location,
+                    first,
+                    last,
+                };
+                pcurves.push(pcurve.clone());
+                if let Some(curve) = second {
+                    pcurves.push(PcurveUse { curve, ..pcurve });
+                }
                 if version == 2 {
                     for _ in 0..4 {
                         tokens.real()?;
@@ -357,30 +387,16 @@ fn parse(input: &str, limits: ImportLimits) -> Result<Document, IoError> {
         "Open" => t.expect("Cascade")?,
         _ => return Err(malformed("invalid topology header")),
     }
-    let locs = locations(&mut t)?;
+    let locs = Locations::parse(&mut t)?;
     let count = t.section("Curve2ds")?;
-    let mut lines2 = Vec::with_capacity(count);
+    let mut curves2 = Vec::with_capacity(count);
     for _ in 0..count {
-        if t.next()? != "1" {
-            return Err(unsupported("nonlinear pcurve"));
-        }
-        let origin = Point2::new(t.real()?, t.real()?);
-        let (x, y) = (t.real()?, t.real()?);
-        if (x * x + y * y - 1.0).abs() > 1e-12 {
-            return Err(malformed("non-unit pcurve direction"));
-        }
-        lines2.push(Line2 { origin, x, y });
+        curves2.push(t.curve2()?);
     }
     let count = t.section("Curves")?;
-    let mut lines = Vec::with_capacity(count);
+    let mut curves3 = Vec::with_capacity(count);
     for _ in 0..count {
-        if t.next()? != "1" {
-            return Err(unsupported("nonlinear 3D curve"));
-        }
-        lines.push(Line {
-            origin: t.point()?,
-            direction: t.direction()?,
-        });
+        curves3.push(t.curve3()?);
     }
     for section in ["Polygon3D", "PolygonOnTriangulations"] {
         if t.section(section)? != 0 {
@@ -388,23 +404,9 @@ fn parse(input: &str, limits: ImportLimits) -> Result<Document, IoError> {
         }
     }
     let count = t.section("Surfaces")?;
-    let mut planes = Vec::with_capacity(count);
+    let mut surfaces = Vec::with_capacity(count);
     for _ in 0..count {
-        if t.next()? != "1" {
-            return Err(unsupported("nonplanar surface"));
-        }
-        let plane = Plane {
-            origin: t.point()?,
-            normal: t.direction()?,
-            x: t.direction()?,
-            y: t.direction()?,
-        };
-        if (plane.x.cross(plane.y) - plane.normal).length() > 1e-12
-            || plane.x.dot(plane.y).abs() > 1e-12
-        {
-            return Err(malformed("invalid plane frame"));
-        }
-        planes.push(plane);
+        surfaces.push(t.surface()?);
     }
     if t.section("Triangulations")? != 0 {
         return Err(unsupported("triangulation cache"));
@@ -425,10 +427,10 @@ fn parse(input: &str, limits: ImportLimits) -> Result<Document, IoError> {
             }
             "Ed" => edge(
                 &mut t,
-                lines.len(),
-                lines2.len(),
-                planes.len(),
-                locs,
+                curves3.len(),
+                curves2.len(),
+                surfaces.len(),
+                &locs,
                 version,
             )?,
             "Wi" => Geometry::Wire,
@@ -437,9 +439,13 @@ fn parse(input: &str, limits: ImportLimits) -> Result<Document, IoError> {
                     return Err(malformed("invalid natural-restriction flag"));
                 }
                 let tolerance = t.tolerance()?;
-                let surface = t.index(planes.len())?;
-                t.location(locs)?;
-                Geometry::Face { surface, tolerance }
+                let surface = t.index(surfaces.len())?;
+                let location = t.location(&locs)?;
+                Geometry::Face {
+                    surface,
+                    tolerance,
+                    location,
+                }
             }
             "Sh" => Geometry::Shell,
             "So" => Geometry::Solid,
@@ -456,7 +462,7 @@ fn parse(input: &str, limits: ImportLimits) -> Result<Document, IoError> {
             if token == "*" {
                 break;
             }
-            let usage = t.usage(token, count, locs)?;
+            let usage = t.usage(token, count, &locs)?;
             if usage.index >= ordinal {
                 return Err(malformed("forward/cyclic child reference"));
             }
@@ -468,20 +474,21 @@ fn parse(input: &str, limits: ImportLimits) -> Result<Document, IoError> {
         shapes.push(Shape { geometry, children });
     }
     let token = t.next()?;
-    let root = t.usage(token, count, locs)?;
+    let root = t.usage(token, count, &locs)?;
     if t.words.next().is_some() {
         return Err(malformed("trailing data"));
     }
     Ok(Document {
-        lines,
-        lines2,
-        planes,
+        locations: locs,
+        curves3,
+        curves2,
+        surfaces,
         shapes,
         root,
     })
 }
 
-/// Read supported planar ASCII BREP solids, in millimetres.
+/// Read supported planar and cylindrical ASCII BREP solids, in millimetres.
 ///
 /// # Errors
 /// Refuses malformed, unsupported, over-budget or invalid geometry atomically.
@@ -499,7 +506,7 @@ pub fn read_brep_with_limits(
     topo: &mut Topology,
     limits: ImportLimits,
 ) -> Result<Vec<SolidId>, IoError> {
-    let document = parse(input, limits)?;
+    let document = parse(input, limits)?.place(limits)?;
     run_transacted(topo, |topo| document.build(topo))
 }
 
@@ -556,20 +563,36 @@ impl Document {
                     vertices[start].ok_or_else(|| malformed("edge child is not a vertex"))?,
                     vertices[end].ok_or_else(|| malformed("edge child is not a vertex"))?,
                 );
-                let line = &self.lines[curve.curve];
+                let carrier = &self.curves3[curve.curve];
                 if curve.first >= curve.last {
                     return Err(malformed("invalid edge trim"));
                 }
                 let pa = topo.vertex(a)?.point();
                 let pb = topo.vertex(b)?.point();
-                if !within(pa, line.origin + line.direction * curve.first, tolerance)
-                    || !within(pb, line.origin + line.direction * curve.last, tolerance)
-                    || (pb - pa).length() <= tolerance
+                if !within(pa, carrier.evaluate(curve.first), tolerance)
+                    || !within(pb, carrier.evaluate(curve.last), tolerance)
                 {
                     return Err(malformed("edge endpoints disagree with its trimmed curve"));
                 }
-                let mut edge = Edge::with_tolerance(a, b, EdgeCurve::Line, Some(tolerance));
-                edge.set_trim(Some((0.0, 1.0)));
+                let (native, domain) = match carrier {
+                    Curve3::Line(_) => {
+                        if (pb - pa).length() <= tolerance {
+                            return Err(malformed("collapsed line edge"));
+                        }
+                        (EdgeCurve::Line, (0., 1.))
+                    }
+                    Curve3::Circle(circle) => {
+                        if curve.last - curve.first
+                            > std::f64::consts::TAU * (1. + 32. * f64::EPSILON)
+                            || (a == b && !carriers::full_turn(curve.first, curve.last))
+                        {
+                            return Err(unsupported("circular edge span"));
+                        }
+                        (EdgeCurve::Circle(circle.clone()), (curve.first, curve.last))
+                    }
+                };
+                let mut edge = Edge::with_tolerance(a, b, native, Some(tolerance));
+                edge.set_trim(Some(domain));
                 Ok(Some(topo.add_edge(edge)))
             })
             .collect()
@@ -658,9 +681,15 @@ impl Document {
         if candidates.next().is_some() {
             return Err(unsupported("multiple pcurves on a planar face"));
         }
-        let plane = &self.planes[surface];
-        let line = &self.lines[curve.curve];
-        let pc = &self.lines2[p.curve];
+        let Surface::Plane(plane) = &self.surfaces[surface] else {
+            return Err(unsupported("nonplanar affine pcurve"));
+        };
+        let Curve3::Line(line) = &self.curves3[curve.curve] else {
+            return Err(unsupported("nonlinear affine pcurve"));
+        };
+        let Curve2::Line(pc) = &self.curves2[p.curve] else {
+            return Err(malformed("pcurve carrier mismatch"));
+        };
         if p.first >= p.last {
             return Err(malformed("invalid pcurve trim"));
         }
@@ -768,10 +797,24 @@ impl Document {
     ) -> Result<FaceId, IoError> {
         Self::claim(&mut boundaries.used, usage.index)?;
         let shape = &self.shapes[usage.index];
-        let Geometry::Face { surface, tolerance } = shape.geometry else {
+        let Geometry::Face {
+            surface, tolerance, ..
+        } = shape.geometry
+        else {
             return Err(malformed("shell child is not a face"));
         };
-        let plane = &self.planes[surface];
+        let circle_boundary = shape.children.iter().any(|wire| {
+            self.shapes[wire.index].children.iter().any(|edge| {
+                matches!(&self.shapes[edge.index].geometry, Geometry::Edge { curve, .. }
+                    if matches!(self.curves3[curve.curve], Curve3::Circle(_)))
+            })
+        });
+        if circle_boundary || matches!(self.surfaces[surface], Surface::Cylinder(_)) {
+            return self.curved_face(topo, usage, parent_reversed, edges, boundaries);
+        }
+        let Surface::Plane(plane) = &self.surfaces[surface] else {
+            return Err(unsupported("face surface"));
+        };
         let mut ordered_loops = Vec::with_capacity(shape.children.len());
         let mut polygons = Vec::with_capacity(shape.children.len());
         for &wire in &shape.children {

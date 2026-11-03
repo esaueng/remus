@@ -296,19 +296,19 @@ fn unsupported_encoding_geometry_and_location_refuse() {
         refuses_without_changing_existing_solid("Open CASCADE Topology V3"),
         IoError::UnsupportedEntity { .. }
     ));
-    let curve = V3.replacen("Curves 12\n1 ", "Curves 12\n2 ", 1);
+    let curve = V3.replacen("Curves 12\n1 ", "Curves 12\n3 ", 1);
     assert!(matches!(
         refuses_without_changing_existing_solid(&curve),
         IoError::UnsupportedEntity { .. }
     ));
-    let surface = V3.replacen("Surfaces 6\n1 ", "Surfaces 6\n2 ", 1);
+    let surface = V3.replacen("Surfaces 6\n1 ", "Surfaces 6\n3 ", 1);
     assert!(matches!(
         refuses_without_changing_existing_solid(&surface),
         IoError::UnsupportedEntity { .. }
     ));
     let located = V1.replacen(
         "1.000000000000000 0.000000000000000 0.000000000000000 0.000000000000000",
-        "1 0 0 5",
+        "2 0 0 5",
         1,
     );
     assert!(matches!(
@@ -505,7 +505,7 @@ fn shared_shell_occurrences_cannot_expand_into_repeated_native_boundaries() {
 #[test]
 fn excess_edge_representations_refuse_before_unbounded_per_face_search() {
     let line = "2  1 1 0 0 30";
-    let text = V3.replacen(line, &format!("{line}\n{line}\n{line}"), 1);
+    let text = V3.replacen(line, &vec![line; 17].join("\n"), 1);
     let error = refuses_without_changing_existing_solid(&text);
-    assert!(error.to_string().contains("two pcurves"));
+    assert!(error.to_string().contains("sixteen located pcurves"));
 }
