@@ -49,3 +49,11 @@ The affected unit suites, paired WASM package smoke tests, installed-tarball
 consumer regressions and the consumer parity corpus exercise the existing
 geometry contracts. Consumer workflow latency qualification remains open;
 this document makes no end-to-end speedup claim.
+
+The paired committed packages use the artifact from CI run `41616536725`,
+whose merge tree is identical to source head
+`47cd42066d51df87291baa0ca47d86b3efb0617b`. The local Mac and hosted Linux
+builds pass the same package runtime checks but produce different WASM bytes;
+generated bindings agree. The artifact ZIP SHA-256 is
+`2acea622f79edbabae4f898e583ef6a989fbb50a053b3ceb2d893e62ed21e902`.
+The unchanged package integrity gate rebuilds and compares the hosted output.
