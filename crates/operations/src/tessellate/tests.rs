@@ -23,6 +23,7 @@ mod mesh_oracles;
 pub(super) mod mesh_passes;
 mod mutation_oracles;
 mod pool_fallback;
+mod sheared_chart;
 
 #[test]
 fn tessellate_square() {
