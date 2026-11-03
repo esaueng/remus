@@ -84,6 +84,14 @@ impl<'a> Tokens<'a> {
         Ok(value)
     }
 
+    fn flag(&mut self) -> Result<bool, IoError> {
+        match self.next()? {
+            "0" => Ok(false),
+            "1" => Ok(true),
+            _ => Err(malformed("invalid boolean flag")),
+        }
+    }
+
     fn charge(&mut self, count: usize) -> Result<(), IoError> {
         self.used = self
             .used
@@ -256,9 +264,14 @@ fn edge(
     version: u8,
 ) -> Result<Geometry, IoError> {
     let tolerance = tokens.tolerance()?;
-    tokens.expect("1")?; // Only already SameParameter/SameRange sources in this slice.
-    tokens.expect("1")?;
-    tokens.expect("0")?; // Degenerate edges require a separate geometry family.
+    let same_parameter = tokens.flag()?;
+    let same_range = tokens.flag()?;
+    let degenerate = tokens.flag()?;
+    // These are valid persisted states outside the qualified reader envelope,
+    // rather than malformed boolean values. They require another converter.
+    if !same_parameter || !same_range || degenerate {
+        return Err(unsupported("edge parameterization or degeneration"));
+    }
     let mut curve = None;
     let mut pcurves = Vec::new();
     loop {
