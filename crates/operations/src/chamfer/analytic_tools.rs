@@ -373,12 +373,19 @@ fn orient_new_faces(
             if same_carrier(topo, *face, *source) {
                 let output = topo.face(*face)?;
                 let original = topo.face(*source)?;
-                let opposite = match (output.surface(), original.surface()) {
-                    (
-                        FaceSurface::Plane { normal: a, .. },
-                        FaceSurface::Plane { normal: b, .. },
-                    ) => a.dot(*b) < 0.0,
-                    _ => false,
+                let opposite = match output.surface() {
+                    FaceSurface::Plane { normal: a, .. } => {
+                        if let FaceSurface::Plane { normal: b, .. } = original.surface() {
+                            a.dot(*b) < 0.0
+                        } else {
+                            false
+                        }
+                    }
+                    FaceSurface::Nurbs(_)
+                    | FaceSurface::Cylinder(_)
+                    | FaceSurface::Cone(_)
+                    | FaceSurface::Sphere(_)
+                    | FaceSurface::Torus(_) => false,
                 };
                 flips[i] = Some(output.is_reversed() != (original.is_reversed() != opposite));
                 queue.push_back(i);
@@ -515,7 +522,12 @@ fn make_tool(
             )?;
             crate::revolve::revolve(topo, profile, circle.center(), axis, hi - lo)?
         }
-        _ => return Ok(None),
+        EdgeCurve::Line
+        | EdgeCurve::Circle(_)
+        | EdgeCurve::NurbsCurve(_)
+        | EdgeCurve::Ellipse(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => return Ok(None),
     };
     Ok(Some(Tool {
         solid,
@@ -683,9 +695,13 @@ fn triangle_along(
 }
 
 fn analytic_rim(surfaces: &[FaceSurface; 2], axis: Vec3) -> bool {
-    let (plane, wall) = match surfaces {
-        [p @ FaceSurface::Plane { .. }, wall] | [wall, p @ FaceSurface::Plane { .. }] => (p, wall),
-        _ => return false,
+    let (plane, wall) = match &surfaces[0] {
+        FaceSurface::Plane { .. } => (&surfaces[0], &surfaces[1]),
+        FaceSurface::Nurbs(_)
+        | FaceSurface::Cylinder(_)
+        | FaceSurface::Cone(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => (&surfaces[1], &surfaces[0]),
     };
     let FaceSurface::Plane { normal, .. } = plane else {
         return false;
@@ -693,7 +709,10 @@ fn analytic_rim(surfaces: &[FaceSurface; 2], axis: Vec3) -> bool {
     let wall_axis = match wall {
         FaceSurface::Cylinder(c) => c.axis(),
         FaceSurface::Cone(c) => c.axis(),
-        _ => return false,
+        FaceSurface::Plane { .. }
+        | FaceSurface::Nurbs(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => return false,
     };
     normal.dot(axis).abs() > 1.0 - Tolerance::new().angular
         && wall_axis.dot(axis).abs() > 1.0 - Tolerance::new().angular
@@ -736,21 +755,33 @@ fn same_carrier(topo: &Topology, first: FaceId, second: FaceId) -> bool {
         return false;
     };
     let tol = Tolerance::new();
-    match (a.surface(), b.surface()) {
-        (FaceSurface::Plane { normal: a, d: da }, FaceSurface::Plane { normal: b, d: db }) => {
-            (a.dot(*b) > 1.0 - tol.angular && (da - db).abs() <= tol.linear)
-                || (a.dot(*b) < -1.0 + tol.angular && (da + db).abs() <= tol.linear)
+    match a.surface() {
+        FaceSurface::Plane { normal: a, d: da } => {
+            if let FaceSurface::Plane { normal: b, d: db } = b.surface() {
+                (a.dot(*b) > 1.0 - tol.angular && (da - db).abs() <= tol.linear)
+                    || (a.dot(*b) < -1.0 + tol.angular && (da + db).abs() <= tol.linear)
+            } else {
+                false
+            }
         }
-        (FaceSurface::Cylinder(a), FaceSurface::Cylinder(b)) => {
-            a.axis().dot(b.axis()).abs() > 1.0 - tol.angular
-                && (a.radius() - b.radius()).abs() <= tol.linear
-                && (b.origin() - a.origin()).cross(a.axis()).length() <= tol.linear
+        FaceSurface::Cylinder(a) => {
+            if let FaceSurface::Cylinder(b) = b.surface() {
+                a.axis().dot(b.axis()).abs() > 1.0 - tol.angular
+                    && (a.radius() - b.radius()).abs() <= tol.linear
+                    && (b.origin() - a.origin()).cross(a.axis()).length() <= tol.linear
+            } else {
+                false
+            }
         }
-        (FaceSurface::Cone(a), FaceSurface::Cone(b)) => {
-            a.axis().dot(b.axis()) > 1.0 - tol.angular
-                && (a.apex() - b.apex()).length() <= tol.linear
-                && (a.half_angle() - b.half_angle()).abs() <= tol.angular
+        FaceSurface::Cone(a) => {
+            if let FaceSurface::Cone(b) = b.surface() {
+                a.axis().dot(b.axis()) > 1.0 - tol.angular
+                    && (a.apex() - b.apex()).length() <= tol.linear
+                    && (a.half_angle() - b.half_angle()).abs() <= tol.angular
+            } else {
+                false
+            }
         }
-        _ => false,
+        FaceSurface::Nurbs(_) | FaceSurface::Sphere(_) | FaceSurface::Torus(_) => false,
     }
 }
