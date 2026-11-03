@@ -415,7 +415,7 @@ Quick reference — find the right file for any task:
 | Point-in-solid classification (ray casting) | `classify/mod.rs` |
 | Winding number classifier | `classify/winding.rs` |
 | Operation-local prepared context for repeated point classification (`PreparedSolid`) | `classify/prepared.rs` |
-| Knot-span boxes of NURBS faces and the ray prefilter they drive: a forward ray clear of every box gets no hit, so the prepared crossing count skips the face (boxes scanned in groups; faces past 4096 spans left to the solver) | `classify/prepared/ray_prefilter.rs` |
+| Knot-span boxes of NURBS faces and the ray prefilter they drive: a forward ray clear of every box gets no hit, so the prepared crossing count skips the face (boxes scanned in groups; faces past 400 spans left to the solver) | `classify/prepared/ray_prefilter.rs` |
 | Persistent whole-topology classification cache (`ClassificationCache`, PERF-Q02) | `classify/cache.rs` |
 | Narrow-bump far-flank crossing through the classifier's NURBS ray path (tests) | `classify/boundary/nurbs_bump_ray_tests.rs` |
 | Exact trim of sphere faces bounded by circle arcs on the sphere, any number of supports, non-convex or reversed (first crossing along a great-circle walk) | `classify/boundary/sphere_arcs.rs` |
@@ -647,7 +647,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 ### L3: io (`crates/io/src/`)
 | Task | File(s) |
 |------|---------|
-| FreeCAD saved-shape ASCII BREP read (planar/linear slice) | `brep/mod.rs`, `brep/reader.rs` |
+| FreeCAD saved-shape ASCII BREP read and bounded planar loop classification | `brep/mod.rs`, `brep/reader.rs`, `brep/planar.rs` |
 | STEP read/write | `step/reader.rs`, `step/writer.rs` |
 | IGES read/write | `iges/reader.rs`, `iges/writer.rs` |
 | STL read/write/import | `stl/reader.rs`, `stl/writer.rs`, `stl/import.rs` |

@@ -34,11 +34,10 @@ use super::{PreparedFace, PreparedSolid};
 /// Relative inflation of every span box and of the ray-box test.
 const BOX_ROUNDING: f64 = 1.0e-12;
 
-/// Most non-empty knot spans admitted to the bounded grouped scan. At this
-/// limit a sparse ray checks about 2 sqrt(4096) = 128 boxes, still less than
-/// the solver's 400-node seed scan. Dense sampled blend strips (512 spans)
-/// need this grouped path too; the payoff gate stops unhelpful scans.
-const MAX_PREFILTER_SPANS: usize = 4096;
+/// Most non-empty knot spans of a face the prefilter takes, the solver's
+/// seed-grid size. A ray that meets many groups of a denser face could cost
+/// more box tests than the seed scan the prefilter can save.
+const MAX_PREFILTER_SPANS: usize = 400;
 
 /// Faces with at most this many spans scan their span boxes without groups.
 const UNGROUPED_SPANS: usize = 8;
@@ -434,9 +433,9 @@ mod tests {
 
     #[test]
     fn faces_of_one_span_or_past_the_cap_are_left_to_the_solver() {
-        let at_cap = SpanBoxes::for_surface(&dome(64)).unwrap();
+        let at_cap = SpanBoxes::for_surface(&dome(20)).unwrap();
         assert_eq!(at_cap.boxes.len(), MAX_PREFILTER_SPANS);
-        assert!(SpanBoxes::for_surface(&dome(65)).is_none());
+        assert!(SpanBoxes::for_surface(&dome(21)).is_none());
         assert!(SpanBoxes::for_surface(&dome(1)).is_none());
         let small = SpanBoxes::for_surface(&dome(2)).unwrap();
         assert!(small.boxes.len() <= UNGROUPED_SPANS && small.groups.is_empty());
@@ -492,7 +491,7 @@ mod tests {
             (state >> 11) as f64 / (1_u64 << 53) as f64
         };
         let (mut met, mut missed) = (0, 0);
-        for k in [3, 5, 9, 14, 20, 32, 64] {
+        for k in [3, 5, 9, 14, 20] {
             let boxes = SpanBoxes::for_surface(&dome(k)).unwrap();
             assert!(!boxes.groups.is_empty());
             let covered: Vec<usize> = boxes

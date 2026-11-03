@@ -20,8 +20,8 @@ replay or establish a real-time completion claim.
   retain their behavior. Dense spline strips can then use the existing
   certified quadrature instead of falling back to mesh volume.
 - Use the existing exact-content ray-crossing memo for batch classification
-  as well as edge relations. Extend the bounded grouped NURBS span prefilter
-  to 4096 spans; its existing payoff gate still disables unhelpful scans.
+  as well as edge relations. The existing NURBS span prefilter and its
+  admission and payoff gates retain their behavior.
 - Reuse identical complete robust-classification meshes only within a blend
   cascade, under a 4 MiB storage estimate including exact-content keys.
   Geometry, native handle order, pcurves, tolerances and deflection participate
@@ -39,7 +39,7 @@ approximation permission is relaxed.
 
 Independent regressions cover a rational 270-degree cylinder rim, true periodic
 winding, dense anisotropic planar NURBS integration with a hole and orientation
-changes, grouped-span pruning parity, cached/uncached point classification
+changes, cached/uncached point classification
 through edits and eviction, mesh memo lifetime/content invalidation, and solid
 angle intervals at multiple scales, placements and orientations. The latter
 compare intervals and decisive verdicts against the original triangle sum and

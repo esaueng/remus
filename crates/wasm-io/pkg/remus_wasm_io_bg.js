@@ -1,4 +1,64 @@
 /**
+ * A native BREP import attempt with an explicit unsupported-geometry verdict.
+ *
+ * Malformed input, exceeded budgets and invalid topology still return errors.
+ * Only an unsupported carrier or layout permits a consumer's format fallback.
+ * An unsupported result does not certify the input; the alternate converter
+ * must independently validate its input and result.
+ */
+export class BrepImportResult {
+    static __wrap(ptr) {
+        const obj = Object.create(BrepImportResult.prototype);
+        obj.__wbg_ptr = ptr;
+        BrepImportResultFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        BrepImportResultFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_brepimportresult_free(ptr, 0);
+    }
+    /**
+     * Exact arena document, or empty bytes when `supported` is false.
+     * @returns {Uint8Array}
+     */
+    get solids() {
+        const ret = wasm.brepimportresult_solids(this.__wbg_ptr);
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
+     * Whether the native reader imported and strictly validated every root.
+     * @returns {boolean}
+     */
+    get supported() {
+        const ret = wasm.brepimportresult_supported(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
+     * Human-readable support boundary. Use `supported` to choose a fallback;
+     * this text is diagnostic, not a stable machine-readable contract.
+     * @returns {string | undefined}
+     */
+    get unsupportedReason() {
+        const ret = wasm.brepimportresult_unsupportedReason(this.__wbg_ptr);
+        let v1;
+        if (ret[0] !== 0) {
+            v1 = getStringFromWasm0(ret[0], ret[1]).slice();
+            wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        }
+        return v1;
+    }
+}
+if (Symbol.dispose) BrepImportResult.prototype[Symbol.dispose] = BrepImportResult.prototype.free;
+
+/**
  * The translator. Stateless: every call works in a fresh scratch topology.
  */
 export class RemusIo {
@@ -411,6 +471,25 @@ export class RemusIo {
         RemusIoFinalization.register(this, this.__wbg_ptr, this);
         return this;
     }
+    /**
+     * Try native BREP import without interpreting diagnostic text.
+     * `supported=false` permits a separate format converter; malformed input,
+     * invalid geometry and exceeded limits remain errors, with no result.
+     * Budgets and strict validation are identical to `importBrep`.
+     * @param {Uint8Array} data
+     * @param {number | null} [max_input_bytes]
+     * @param {number | null} [max_entities]
+     * @returns {BrepImportResult}
+     */
+    tryImportBrep(data, max_input_bytes, max_entities) {
+        const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remusio_tryImportBrep(this.__wbg_ptr, ptr0, len0, !isLikeNone(max_input_bytes), isLikeNone(max_input_bytes) ? 0 : max_input_bytes, !isLikeNone(max_entities), isLikeNone(max_entities) ? 0 : max_entities);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return BrepImportResult.__wrap(ret[0]);
+    }
 }
 if (Symbol.dispose) RemusIo.prototype[Symbol.dispose] = RemusIo.prototype.free;
 
@@ -491,6 +570,9 @@ export function __wbindgen_init_externref_table() {
     table.set(offset + 2, true);
     table.set(offset + 3, false);
 }
+const BrepImportResultFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_brepimportresult_free(ptr, 1));
 const RemusIoFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_remusio_free(ptr, 1));

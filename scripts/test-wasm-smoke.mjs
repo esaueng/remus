@@ -35,6 +35,7 @@ import { runOpseqF10Packaged } from './opseq-f10-packaged.mjs';
 import { runOpseqF13Packaged } from './opseq-f13-packaged.mjs';
 import { runWasmRayTorusPackaged } from './wasm-ray-torus-packaged.mjs';
 import { runSecurityResourceRegressions } from './security-resource-packaged.mjs';
+import { runBrepImportPackaged } from './brep-import-packaged.mjs';
 import { runPackageQueueWitness } from './queue-contracts-packaged.mjs';
 import { runPointedConeCutPackaged } from './pointed-cone-cut-packaged.mjs';
 import { runTruckNurbsReusePackaged } from './truck-nurbs-reuse-packaged.mjs';
@@ -89,6 +90,7 @@ const {
 const { RemusIo } = require(resolve(projectRoot, 'crates/wasm-io/pkg/remus_wasm_io_node.cjs'));
 
 runSecurityResourceRegressions({ RemusKernel, RemusIo });
+runBrepImportPackaged({ RemusKernel, RemusIo });
 runPackageQueueWitness({ RemusKernel, RemusIo });
 runPointedConeCutPackaged({ RemusKernel });
 runTruckNurbsReusePackaged({ RemusKernel });
