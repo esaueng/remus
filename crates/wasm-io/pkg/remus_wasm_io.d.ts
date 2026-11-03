@@ -85,7 +85,7 @@ export class RemusIo {
      */
     import3mf(data: Uint8Array, max_input_bytes?: number | null, max_entities?: number | null): Uint8Array;
     /**
-     * Read planar, straight-edged ASCII BREP saved shapes in millimetres.
+     * Read qualified planar/cylindrical ASCII BREP saved solids in millimetres.
      * Returns an exact solid document for `deserializeSolids`.
      * Unsupported geometry or placements refuse the whole call.
      * Optional budgets only tighten production limits; this first reader
