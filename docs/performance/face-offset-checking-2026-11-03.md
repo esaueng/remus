@@ -50,10 +50,12 @@ consumer regressions and the consumer parity corpus exercise the existing
 geometry contracts. Consumer workflow latency qualification remains open;
 this document makes no end-to-end speedup claim.
 
-The paired committed packages use the artifact from CI run `41616536725`,
+The paired committed packages use the artifact from CI run `41624660041`,
 whose merge tree is identical to source head
-`47cd42066d51df87291baa0ca47d86b3efb0617b`. The local Mac and hosted Linux
-builds pass the same package runtime checks but produce different WASM bytes;
-generated bindings agree. The artifact ZIP SHA-256 is
-`2acea622f79edbabae4f898e583ef6a989fbb50a053b3ceb2d893e62ed21e902`.
+`9a1241dfcda58fc00128f7e26ad74a1efebf113a`, including the shared analytic-trim
+endpoint repair from #1504. Earlier local Mac and hosted Linux builds passed
+the same package runtime checks but produced different WASM bytes while
+generated bindings agreed, so the distribution uses the hosted artifact.
+The artifact ZIP SHA-256 is
+`868059ac5bd5d81574812864188a99e66c56530c657e2a488407629f682cd361`.
 The unchanged package integrity gate rebuilds and compares the hosted output.
