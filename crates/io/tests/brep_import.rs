@@ -173,6 +173,15 @@ fn same_wound_or_missing_holes_refuse_without_changing_existing_solids() {
 }
 
 #[test]
+fn rotated_source_chart_cannot_hide_a_zero_tolerance_touching_hole() {
+    let source = include_str!("data/brep/touching-hole-zero-v1.brep");
+    assert!(matches!(
+        refuses_without_changing_existing_solid(source),
+        IoError::ParseError { .. }
+    ));
+}
+
+#[test]
 fn valid_unqualified_edge_flags_are_unsupported_but_malformed_flags_are_errors() {
     for flags in ["0 1 0", "1 0 0", "1 1 1"] {
         let input = V3.replacen("1e-07 1 1 0", &format!("1e-07 {flags}"), 1);
@@ -257,7 +266,9 @@ fn refuses_without_changing_existing_solid(input: &str) -> IoError {
     let counts = (
         topo.num_vertices(),
         topo.num_edges(),
+        topo.num_wires(),
         topo.num_faces(),
+        topo.num_shells(),
         topo.num_solids(),
     );
     let error = brep::read_brep(input, &mut topo).unwrap_err();
@@ -266,7 +277,9 @@ fn refuses_without_changing_existing_solid(input: &str) -> IoError {
         (
             topo.num_vertices(),
             topo.num_edges(),
+            topo.num_wires(),
             topo.num_faces(),
+            topo.num_shells(),
             topo.num_solids()
         )
     );

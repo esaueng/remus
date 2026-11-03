@@ -729,7 +729,20 @@ impl Document {
             boundary_tolerance = boundary_tolerance.max(entity_tolerance);
             let delta = point - plane.origin;
             let residual = delta.dot(plane.normal).abs();
-            let point = Point2::new(delta.dot(plane.x), delta.dot(plane.y));
+            // A dominant-coordinate projection is injective on the plane and
+            // uses source coordinates directly. A rotated UV frame must not
+            // round an exact vertex/edge contact into a positive clearance.
+            // Projection contracts distances, so tolerance refusals are
+            // conservative without widening the accepted source tolerance.
+            let normal = plane.normal;
+            let point =
+                if normal.x().abs() >= normal.y().abs() && normal.x().abs() >= normal.z().abs() {
+                    Point2::new(point.y(), point.z())
+                } else if normal.y().abs() >= normal.z().abs() {
+                    Point2::new(point.z(), point.x())
+                } else {
+                    Point2::new(point.x(), point.y())
+                };
             if !residual.is_finite()
                 || residual > entity_tolerance
                 || !point.x().is_finite()

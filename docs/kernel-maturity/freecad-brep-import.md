@@ -32,7 +32,10 @@ perimeter. Holes must already wind opposite to it; the reader does not repair
 source winding. Crossing, touching, nested or disconnected loops refuse.
 Classification uses the exact straight edges and source entity tolerances,
 with at most 128 loops per face and 8,000,000 segment/containment comparisons
-across the import. This extension remains Tier: lazy:io.
+across the import. Direct dominant-coordinate projection preserves source
+incidence independently of the saved UV frame; projected clearance tests
+refuse conservatively. A zero-tolerance touching-hole control prevents chart
+rounding from creating an accepted gap. This extension remains Tier: lazy:io.
 
 The API is additive. OpenZCAD has withdrawn its previous saved-solid converter;
 restoring native import requires broader reader coverage and a consumer PR

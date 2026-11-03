@@ -879,6 +879,11 @@ mod tests {
             RemusIo::try_import_brep_impl(invalid.as_bytes(), None, None),
             Err(IoWasmError::Io(IoError::ParseError { .. }))
         ));
+        let touching = include_bytes!("../../io/tests/data/brep/touching-hole-zero-v1.brep");
+        assert!(matches!(
+            RemusIo::try_import_brep_impl(touching, None, None),
+            Err(IoWasmError::Io(IoError::ParseError { .. }))
+        ));
     }
 
     #[test]

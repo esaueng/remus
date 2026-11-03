@@ -45,3 +45,10 @@ claims of compatibility with additional authentic FreeCAD projects.
   about Z then X using 3–4–5 frames, and translated by (37, −19, 11) mm.
   The rigid motion is baked into geometry, with identity location references;
   it qualifies oblique plane charts, not nonidentity saved placements.
+- `touching-hole-zero-v1.brep`: an intentionally invalid 10 × 12 × 8 mm block
+  with a through-hole at [0,2] × [2,5], touching its perimeter. Source entity
+  tolerances are zero; pcurve representations are omitted and the plane UV
+  frames are rotated by a 3–4–5 rotation while 3D geometry stays axis-aligned.
+  The new reader accepted this invalid solid before switching boundary
+  classification to direct dominant-coordinate projection. It must refuse
+  atomically, independently of the saved UV chart.

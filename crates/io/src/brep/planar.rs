@@ -41,8 +41,9 @@ fn distance(point: Point2, a: Point2, b: Point2) -> Result<f64, IoError> {
         return Err(malformed("degenerate planar boundary edge"));
     }
     let unit = Vec2::new(d.x() / length, d.y() / length);
-    let t = (point - a).dot(unit).clamp(0.0, length);
-    let residual = point - (a + unit * t);
+    let delta = point - a;
+    let t = delta.dot(unit).clamp(0.0, length);
+    let residual = delta - unit * t;
     let value = residual.x().hypot(residual.y());
     if !value.is_finite() {
         return Err(malformed("non-finite planar boundary distance"));

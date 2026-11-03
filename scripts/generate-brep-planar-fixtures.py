@@ -126,6 +126,36 @@ def write(name, faces):
     output.append("+1 0")
     destination = Path(__file__).resolve().parents[1] / "crates/io/tests/data/brep" / f"{name}.brep"
     destination.write_text("\n".join(output) + "\n")
+    return destination
+
+
+def touching_control(destination):
+    """Invalid solid: a hole touches its perimeter, with rotated plane charts.
+
+    Zero tolerances and omitted pcurves isolate source-vertex classification.
+    The geometry itself stays axis-aligned, so the chart must not create a gap.
+    """
+    lines = []
+    edge = False
+    surfaces = 0
+    for line in destination.read_text().splitlines():
+        if line == "Ed":
+            edge = True
+        elif edge and line.strip() == "0":
+            edge = False
+        elif edge and line.strip().startswith("2 "):
+            continue
+        if surfaces:
+            values = list(map(float, line.split()[1:]))
+            p, n, x, y = [values[i:i + 3] for i in range(0, 12, 3)]
+            xx = [0.8 * a + 0.6 * b for a, b in zip(x, y)]
+            yy = [-0.6 * a + 0.8 * b for a, b in zip(x, y)]
+            line = "1 " + numbers(p + n + xx + yy)
+            surfaces -= 1
+        elif line.startswith("Surfaces "):
+            surfaces = int(line.split()[1])
+        lines.append(line.replace("1e-07", "0"))
+    destination.write_text("\n".join(lines) + "\n")
 
 
 if __name__ == "__main__":
@@ -143,3 +173,5 @@ if __name__ == "__main__":
     write("blind-pocket-v1", prism(rectangle, [[(2, 3), (2, 9), (8, 9), (8, 3)]], floor=5))
     concave = [(0, 0), (10, 0), (10, 7), (6, 7), (6, 12), (0, 12)]
     write("concave-hole-v1", prism(concave, [hole]))
+    touching_control(write("touching-hole-zero-v1", prism(rectangle,
+        [[(0, 2), (0, 5), (2, 5), (2, 2)]])))

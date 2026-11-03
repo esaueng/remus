@@ -64,6 +64,8 @@ export function runBrepImportPackaged({ RemusKernel, RemusIo }) {
     assert.ok(face >= 0 && hole > face);
     const invalidHole = holed.slice(0, hole) + '-' + holed.slice(hole + 1);
     assert.throws(() => io.tryImportBrep(new TextEncoder().encode(invalidHole)));
+    const touching = readFileSync(new URL('../crates/io/tests/data/brep/touching-hole-zero-v1.brep', import.meta.url));
+    assert.throws(() => io.tryImportBrep(touching));
   } finally {
     kernel.free();
     io.free();
