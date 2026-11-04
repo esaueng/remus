@@ -1726,19 +1726,15 @@ fn closed_rim_info(topo: &Topology, stripe: &Stripe) -> Result<Option<ClosedRimI
         }
     }
 
-    // Keep the analytic arm's convexity fact for assembly. For cylinders the
-    // rim-loop position plus the wall's reversed flag reproduces
-    // `plane_cylinder_fillet`'s bounded/material table exactly. The cone arm
-    // carries its own convention: reversed means a tapered hole (concave).
+    // Keep the analytic arm's convexity fact for assembly. The rim-loop
+    // position plus the wall's reversed flag reproduces the
+    // `plane_cylinder_fillet` / `plane_cone_fillet` bounded/material table
+    // exactly: a rim on the plate's outer loop is a bounded cap (convex when
+    // the wall carries material inside), one on an inner loop is a hole or
+    // a boss foot (convex when the wall is a reversed hole wall, such as a
+    // countersink).
     let wall_reversed = topo.face(wall_face)?.is_reversed();
-    let convex = match wall_surf {
-        FaceSurface::Cone(_) => !wall_reversed,
-        FaceSurface::Plane { .. }
-        | FaceSurface::Nurbs(_)
-        | FaceSurface::Cylinder(_)
-        | FaceSurface::Sphere(_)
-        | FaceSurface::Torus(_) => rim_is_inner == wall_reversed,
-    };
+    let convex = rim_is_inner == wall_reversed;
 
     Ok(Some(ClosedRimInfo {
         plane_face,
@@ -2049,7 +2045,7 @@ fn assemble_closed_rim(
 
 /// Replace one closed rim of a periodic cylinder/cone support with a contact
 /// circle and retarget the two uses of its seam to the new circle vertex.
-fn rebuild_periodic_rim_support(
+pub(crate) fn rebuild_periodic_rim_support(
     topo: &mut Topology,
     face_id: FaceId,
     rim_edge: EdgeId,
