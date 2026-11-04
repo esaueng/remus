@@ -112,6 +112,18 @@ historical predecessor-line records, retained for provenance. The
   native query's radians, typed refusals and read-only state contract. Carrier
   samples do not test trimmed membership or global undercut/accessibility.
 
+### Bug Fixes
+
+* **operations:** fillets on the edges a planar chamfer leaves on a box build
+  as exact cylinder bands. The chamfer's lower contact line, whose ends are
+  bounded by a wall and the neighbouring chamfer at once, was refused at every
+  radius (an open shell); its band now runs out on both, with the end boundary
+  kinked where it crosses their shared edge. The chamfer's upper contact line
+  and the mitre between two chamfers no longer stop at the vertex's own
+  section and leave a side face bent off its plane (the upper line removed 2%
+  too much material at r = 0.25); their contacts run on to the side plane past
+  the vertex.
+
 ### Versioning
 
 * Adopt the `YYYY.RELEASE.PATCH` Remus scheme, beginning at `2026.1.0`.

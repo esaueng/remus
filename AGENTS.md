@@ -546,6 +546,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Exact piecewise-analytic sweep tools joined across identical end sections | `chamfer/analytic_tools/joined_sweeps.rs` |
 | Rolling-ball arc stripe between a plane and a coaxial cylinder as an exact torus, or a sphere triangle at the band's own radius (a fillet riding an earlier band's end) | `fillet/arc_torus.rs` |
 | Two convex stripes mitred over a reflex corner whose concave edge stays sharp | `fillet/mitre.rs` |
+| Lone straight rolling-ball stripes ending at a strictly convex planar corner: contacts run out past the vertex onto one side plane, or onto two (a chamfered box's mitred corner) with the end boundary kinked where the band crosses their shared edge | `fillet/rolling_ball/split_runout.rs` |
 | Spatial grid behind the rolling-ball Phase 5d vertex dedup and snap (the linear scans' winners and ties), with its oracle tests | `fillet/vertex_snap.rs` |
 | Shell (hollow solid) | `shell_op.rs` |
 | Draft (taper faces) | `draft.rs` |
