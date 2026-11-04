@@ -24,7 +24,7 @@ use remus_operations::OperationsError;
 use remus_operations::boolean::{BooleanOp, boolean};
 use remus_operations::extrude::extrude;
 use remus_operations::measure::{face_area, solid_volume};
-use remus_operations::primitives::{make_box, make_cylinder};
+use remus_operations::primitives::{make_box, make_cone, make_cylinder};
 use remus_operations::push_pull::move_faces;
 use remus_operations::tessellate::{is_watertight, tessellate_solid_with_tolerance};
 use remus_operations::transform::transform_solid;
@@ -650,4 +650,82 @@ fn invalid_selections_return_specific_move_face_errors() {
         unsupported,
         OperationsError::Offset(OffsetError::UnsupportedMoveFace { .. })
     ));
+}
+
+/// A cup with a radius-12.5 bore floored at z = 8 and open at z = 60. Its
+/// outside steps from radius 20 to 16 at z = 40, flat or through a
+/// 3-high chamfer cone. Returns the cup and its bore floor.
+fn shouldered_cup(topo: &mut Topology, chamfer: bool) -> (SolidId, FaceId) {
+    let shoulder = if chamfer { 37.0 } else { 40.0 };
+    let mut body = make_cylinder(topo, 20.0, shoulder).expect("lower body");
+    if chamfer {
+        let cone = make_cone(topo, 20.0, 16.0, 3.0).expect("chamfer");
+        transform_solid(topo, cone, &Mat4::translation(0.0, 0.0, 37.0)).expect("place chamfer");
+        body = boolean(topo, BooleanOp::Fuse, body, cone).expect("fuse chamfer");
+    }
+    let upper = make_cylinder(topo, 16.0, 20.0).expect("upper body");
+    transform_solid(topo, upper, &Mat4::translation(0.0, 0.0, 40.0)).expect("place upper body");
+    let body = boolean(topo, BooleanOp::Fuse, body, upper).expect("fuse upper body");
+    let bore = make_cylinder(topo, 12.5, 60.0).expect("bore");
+    transform_solid(topo, bore, &Mat4::translation(0.0, 0.0, 8.0)).expect("place bore");
+    let cup = boolean(topo, BooleanOp::Cut, body, bore).expect("bore the cup");
+    let floor = solid_faces(topo, cup)
+        .unwrap()
+        .into_iter()
+        .find(|&face| {
+            topo.face(face)
+                .unwrap()
+                .effective_plane_normal()
+                .is_some_and(|normal| normal.z() > 0.99)
+                && face_vertices(topo, face)
+                    .unwrap()
+                    .iter()
+                    .all(|&vertex| (topo.vertex(vertex).unwrap().point().z() - 8.0).abs() < 1e-9)
+        })
+        .expect("bore floor");
+    (cup, floor)
+}
+
+#[test]
+fn bore_floor_rises_past_a_flat_or_chamfered_outer_shoulder() {
+    for chamfer in [false, true] {
+        for distance in [25.0, 33.0, 45.0] {
+            let mut topo = Topology::new();
+            let (cup, floor) = shouldered_cup(&mut topo, chamfer);
+            let before = solid_volume(&topo, cup, DEFLECTION).unwrap();
+            let counts = solid_entity_counts(&topo, cup).unwrap();
+            let moved = move_faces(&mut topo, cup, &[floor], distance)
+                .unwrap_or_else(|error| panic!("chamfer {chamfer}, {distance}: {error}"));
+            assert_verified(&topo, moved);
+            assert_eq!(solid_entity_counts(&topo, moved).unwrap(), counts);
+            assert_volume(&topo, moved, PI * 12.5 * 12.5 * distance + before);
+            let level = 8.0 + distance;
+            assert_classification(
+                &topo,
+                moved,
+                Point3::new(0.0, 0.0, level - 0.1),
+                PointClassification::Inside,
+            );
+            assert_classification(
+                &topo,
+                moved,
+                Point3::new(0.0, 0.0, level + 0.1),
+                PointClassification::Outside,
+            );
+        }
+        // The rim at z = 60 still stops a floor that would reach it.
+        for distance in [52.0, 55.0] {
+            let mut topo = Topology::new();
+            let (cup, floor) = shouldered_cup(&mut topo, chamfer);
+            let error = move_faces(&mut topo, cup, &[floor], distance)
+                .expect_err("floor must stop at the open rim");
+            assert!(
+                matches!(
+                    error,
+                    OperationsError::Offset(OffsetError::TopologyChange { .. })
+                ),
+                "unexpected refusal: {error}"
+            );
+        }
+    }
 }

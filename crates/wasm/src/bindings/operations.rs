@@ -2923,7 +2923,12 @@ mod tapered_hollow_sweep_tests;
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::disallowed_methods
+    )]
 
     use std::collections::HashSet;
 

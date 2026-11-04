@@ -804,7 +804,7 @@ pub fn profile_entity_keys(
     }
     // Corner vertices repeat around the wire; the journal refuses duplicate
     // subjects, so the scope carries each entity once.
-    keys.sort();
+    keys.compact_sort_unstable();
     keys.dedup();
     Ok(keys)
 }

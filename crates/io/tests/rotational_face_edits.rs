@@ -385,3 +385,33 @@ fn repeated_journaled_radial_edits_preserve_every_entity_reference_at_scale_and_
         roundtrip(&topo, solid);
     }
 }
+
+#[test]
+fn imported_bore_floor_rises_past_split_rim_shoulder_fillet() {
+    // The import's outer shoulder fillet (R 16, r 4) carries its rims as half
+    // circles. Its seam still bounds it to radius 16.8 and up, clear of the
+    // radius-12.5 floor, so the floor's sweep must not stop at it.
+    for offset in [15.0, 25.0, 40.0] {
+        let mut topo = Topology::new();
+        let solid = imported(&mut topo);
+        let floor = plane(&topo, solid, 9.0, 1.0);
+        let before = solid_volume(&topo, solid, 0.01).unwrap();
+        let counts = solid_entity_counts(&topo, solid).unwrap();
+        let mut prepared = PreparedFaceMove::prepare(&topo, solid, &[floor]).unwrap();
+        for result in [
+            move_faces(&mut topo, solid, &[floor], offset).unwrap(),
+            prepared.move_faces(&mut topo, offset).unwrap().solid,
+        ] {
+            valid(&topo, result);
+            assert_eq!(solid_entity_counts(&topo, result).unwrap(), counts);
+            let expected = before + PI * 12.5_f64.powi(2) * offset;
+            assert!((solid_volume(&topo, result, 0.01).unwrap() - expected).abs() < 1e-5);
+        }
+    }
+    // The open rim at z = 50 still stops the floor.
+    let mut topo = Topology::new();
+    let solid = imported(&mut topo);
+    let floor = plane(&topo, solid, 9.0, 1.0);
+    let error = move_faces(&mut topo, solid, &[floor], 41.0).expect_err("floor reaches the rim");
+    assert!(error.to_string().contains("nonadjacent"), "{error}");
+}

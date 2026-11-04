@@ -5,6 +5,7 @@
 
 use std::collections::HashSet;
 
+use remus_math::compact_sort::CompactSort;
 use remus_operations::evolution::{EvolutionMap, EvolutionOrigin};
 use serde_json::{Map, Value};
 use tsify::Tsify;
@@ -411,7 +412,7 @@ impl FaceEvolutionPayloadV1 {
                     });
                 }
             }
-            unresolved_results.sort_by_key(|claim| claim.result);
+            unresolved_results.compact_sort_by_key(|claim| claim.result);
 
             let accounted_sources: HashSet<u32> = modified
                 .iter()
@@ -634,7 +635,7 @@ fn relations(
             })
         })
         .collect::<Result<_, String>>()?;
-    claims.sort_by_key(|claim| claim.source);
+    claims.compact_sort_by_key(|claim| claim.source);
     Ok(claims)
 }
 
@@ -698,7 +699,7 @@ fn ensure_subset(
     domain: &HashSet<u32>,
 ) -> Result<(), String> {
     let mut outside: Vec<u32> = values.difference(domain).copied().collect();
-    outside.sort_unstable();
+    outside.compact_sort_unstable();
     if outside.is_empty() {
         Ok(())
     } else {
@@ -715,7 +716,7 @@ fn ensure_disjoint(
     right: &HashSet<u32>,
 ) -> Result<(), String> {
     let mut overlap: Vec<u32> = left.intersection(right).copied().collect();
-    overlap.sort_unstable();
+    overlap.compact_sort_unstable();
     if overlap.is_empty() {
         Ok(())
     } else {
@@ -733,8 +734,8 @@ fn ensure_equal(
 ) -> Result<(), String> {
     let mut missing: Vec<u32> = right.difference(left).copied().collect();
     let mut extra: Vec<u32> = left.difference(right).copied().collect();
-    missing.sort_unstable();
-    extra.sort_unstable();
+    missing.compact_sort_unstable();
+    extra.compact_sort_unstable();
     if missing.is_empty() && extra.is_empty() {
         Ok(())
     } else {
@@ -745,7 +746,7 @@ fn ensure_equal(
 }
 
 fn sorted_unique(mut values: Vec<u32>) -> Vec<u32> {
-    values.sort_unstable();
+    values.compact_sort_unstable();
     values.dedup();
     values
 }

@@ -939,7 +939,7 @@ fn is_cancellation(error: &WasmError) -> bool {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::disallowed_methods)]
 
     use remus_math::MathError;
     use remus_operations::OperationsError;

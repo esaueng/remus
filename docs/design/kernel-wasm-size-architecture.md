@@ -383,3 +383,38 @@ grew by 1.03 MB in total and shrank by 0.43 MB.
 Trimming these restores weeks, not months, of runway. The trend comes from
 qualified features landing in core, so the remaining levers are the ceiling,
 an explicit growth budget, and structural splitting.
+
+## Status (2026-11-04)
+
+Committed kernel package v2026.1.115 (`264fe67`), measured with
+`node scripts/wasm-size-policy.mjs`:
+
+| Metric | 2026-10-13 (v2026.1.58) | 2026-10-31 | 2026-11-04 (v2026.1.115) | Limit | Headroom |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Raw | 9,560,400 | 11,327,309 | 12,075,201 | 12 MiB hard (11 MiB review) | 507,711 B |
+| gzip (Node defaults) | 3,529,968 | 4,232,892 | 4,525,399 | 4.5 MiB hard | **193,193 B** |
+| Brotli q11 | 2,521,461 | 3,022,566 | 3,236,222 | 3 MiB review | −90,494 B (review exceeded) |
+
+- Both review limits are already exceeded; the gzip hard limit binds first.
+- Growth since 2026-10-13 averages about **0.80 MB raw / 0.32 MB gzip per
+  week**, four times the 0.2 MB/week the sequence above planned after W3/W4.
+  At that average both hard limits are about four to five days away; at the
+  rate of the last four days (+748 KB raw, +293 KB gzip) about three.
+- Estimate, not a measurement: at the W6 slope (≈ +89 ms per 100 KB gzip) the
+  mobile-class cold load has grown from ≈ 3.5 s to ≈ 4.3 s p95, past the
+  3,800 ms review budget. Re-measure with OpenZCAD
+  `scripts/measure-remus-wasm-load.mjs` before any ceiling change.
+- A raise is the W7 step, which owner decision 5 defers until H4/H5; neither
+  has landed. Raising before then means revising that decision, and the
+  limits change only together with OpenZCAD's `KERNEL_WASM_POLICY`. At the
+  current rate the full W7 ceiling (16 MiB raw / 6 MiB gzip) lasts about five
+  weeks, so a raise without a growth budget only postpones this review.
+- **Attribution (2026-11-04)**, `d8195032` → `84bf696`, six days:
+  +1,079,070 B raw / +447,433 B gzip, about 1.26 MB raw and 0.52 MB gzip per
+  week. Gears and threads account for about 330 KB of it, and blends, chamfers
+  and blend edits for about 530 KB. Almost all of it is new single-caller
+  feature code, not duplication. Closing the sort-lint gaps (`slice::sort` and
+  the wasm bindings) recovers 22 KB raw / 8 KB gzip; no larger duplication
+  remains. Trimming cannot keep pace with growth, so the remaining levers are
+  the ceiling, a growth budget and structural splitting
+  ([evidence](../performance/evidence/kernel-size-attribution-2026-11-04/README.md)).

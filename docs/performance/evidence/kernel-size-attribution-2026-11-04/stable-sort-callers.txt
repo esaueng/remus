@@ -1,0 +1,53 @@
+      5 remus_sketch::gcs::components::component_entities
+      5 remus_operations::resize_blend::heal_cylinder_plane_band_surgical
+      4 remus_algo::builder::builder_solid::clean_selected_faces
+      3 remus_wasm::bindings::evolution::<impl remus_wasm::kernel::RemusKernel>::offset_journaled_json
+      3 remus_operations::heal::apply_edge_repairs
+      3 remus_algo::builder::face_splitter::split_face_2d_impl
+      2 remus_topology::transaction::run_transacted
+      2 remus_operations::chamfer::analytic_tools::apply_tools
+      2 remus_operations::boundary_evolution::incidence
+      2 remus_math::bvh::build_recursive
+      2 remus_io::arena_io::serialize_attributes
+      2 remus_algo::builder::fill_images_faces::fill_images_faces
+      2 remus_algo::builder::fill_images_faces::clip_line_to_face_extent
+      2 remus_algo::builder::face_splitter::arrangement_regions_from_inputs
+      2 remus_algo::builder::face_splitter::arrangement::build_arrangement
+      2 <alloc::collections::btree::set::BTreeSet<T> as core::iter::traits::collect::FromIterator<T>>::from_iter
+      1 remus_wasm::bindings::heal::<impl remus_wasm::kernel::RemusKernel>::heal_pipeline_report_impl
+      1 remus_wasm::bindings::heal::<impl remus_wasm::kernel::RemusKernel>::fix_shape_report_impl
+      1 remus_wasm::bindings::evolution::<impl remus_wasm::kernel::RemusKernel>::resize_blend_journaled_json
+      1 remus_wasm::bindings::evolution::<impl remus_wasm::kernel::RemusKernel>::draft_journaled_json
+      1 remus_sketch::gcs::components::decompose
+      1 remus_operations::tessellate::solid::tessellate_faces_core
+      1 remus_operations::resize_blend::remove_rebuild_suffix
+      1 remus_operations::replace_surface::replace_surface_with_entity_map
+      1 remus_operations::push_pull::exact_face_evolution
+      1 remus_operations::measure::helpers::compute_angular_range
+      1 remus_operations::journal_ops::record_qualified_face_move
+      1 remus_operations::heal::merge_coincident_vertices
+      1 remus_operations::draft::draft_with_evolution
+      1 remus_operations::chamfer::curved_corner::try_chamfer
+      1 remus_operations::chamfer::curved_corner::build_cuts
+      1 remus_operations::chamfer::chamfer_core
+      1 remus_operations::boolean::run_mesh_fallback
+      1 remus_operations::blend_ops::chamfer_v2
+      1 remus_math::polygon_boolean::split_polygon
+      1 remus_math::nurbs::projection::project_point_to_curve
+      1 remus_math::compact_sort::Order::sort
+      1 remus_math::cdt::constraints::<impl remus_math::cdt::Cdt>::recover_edge_depth
+      1 remus_math::analytic_intersection::intersect_plane_torus
+      1 remus_heal::shared::ensure_exclusive_shell
+      1 remus_check::properties::face_integrator::UvTrim::v_spans_into
+      1 remus_algo::pave_filler::phase_ff_coplanar::create_boundary_sections
+      1 remus_algo::pave_filler::make_blocks::perform
+      1 remus_algo::gfa::export_entity_evolution
+      1 remus_algo::classifier::ray_cast::largest_u_gap
+      1 remus_algo::classifier::analytic::try_build_box_classifier::{{closure}}
+      1 remus_algo::builder::wire_builder::build_wire_loops_dcel
+      1 remus_algo::builder::fill_images_faces::face_u_span
+      1 remus_algo::builder::fill_images::fill_edge_images
+      1 remus_algo::builder::face_splitter::loops_orphan_boundary_edges
+      1 remus_algo::builder::face_splitter::edge_splitting::find_splits_on_line
+      1 remus_algo::builder::face_splitter::arrangement_prod::Collector::apply_cuts
+      1 remus_algo::builder::face_splitter::arrangement::geometry::intersections

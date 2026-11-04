@@ -1,6 +1,11 @@
 //! Issue #284: many small planar merge groups in a triangulated solid.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::print_stderr)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::print_stderr,
+    clippy::disallowed_methods
+)]
 
 use std::collections::HashMap;
 use std::time::Instant;
