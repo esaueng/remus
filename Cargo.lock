@@ -2160,6 +2160,7 @@ version = "2026.1.0"
 dependencies = [
  "criterion",
  "log",
+ "remus-geometry",
  "remus-math",
  "remus-topology",
  "thiserror 2.0.21",

@@ -46,7 +46,11 @@ mod nurbs_boundary {
         let (a, b) = curve.domain();
         let (e0, e1) = usage.edge_domain;
         let (p0, p1) = if usage.forward { (e0, e1) } else { (e1, e0) };
-        ((equal(e0, a) && equal(e1, b)) || (equal(e0, b) && equal(e1, a)))
+        e0.is_finite()
+            && e1.is_finite()
+            && !equal(e0, e1)
+            && e0.min(e1) >= a
+            && e0.max(e1) <= b
             && equal(usage.p0, p0)
             && equal(usage.p1, p1)
     }
@@ -60,6 +64,24 @@ mod nurbs_boundary {
             && b.is_finite()
             && (1.0e-12..=1.0e12).contains(&(b - a))
             && knots[..count].iter().all(|&v| equal(v, a))
+            && knots[count..].iter().all(|&v| equal(v, b))
+    }
+
+    fn clamped_spline(degree: usize, knots: &[f64], count: usize) -> bool {
+        if !(1..=7).contains(&degree)
+            || count <= degree
+            || count > 4096
+            || knots.len() != count + degree + 1
+        {
+            return false;
+        }
+        let (a, b) = (knots[degree], knots[count]);
+        a.is_finite()
+            && b.is_finite()
+            && (1e-12..=1e12).contains(&(b - a))
+            && knots.iter().all(|v| v.is_finite())
+            && knots.windows(2).all(|w| w[0] <= w[1])
+            && knots[..=degree].iter().all(|&v| equal(v, a))
             && knots[count..].iter().all(|&v| equal(v, b))
     }
 
@@ -98,14 +120,20 @@ mod nurbs_boundary {
     }
 
     fn split_residual(piece: ResidualPiece) -> (ResidualPiece, ResidualPiece) {
+        let mid = piece.start.midpoint(piece.end);
+        split_residual_at(piece, mid)
+    }
+
+    fn split_residual_at(piece: ResidualPiece, mid: f64) -> (ResidualPiece, ResidualPiece) {
+        let fraction = (mid - piece.start) / (piece.end - piece.start);
         let mut work = piece.controls;
         let mut left = vec![work[0]];
         let mut right = vec![work[work.len() - 1]];
         while work.len() > 1 {
             for i in 0..work.len() - 1 {
                 work[i] = (
-                    (work[i].0 + work[i + 1].0) * 0.5,
-                    work[i].1.midpoint(work[i + 1].1),
+                    work[i].0 * (1.0 - fraction) + work[i + 1].0 * fraction,
+                    work[i].1 * (1.0 - fraction) + work[i + 1].1 * fraction,
                 );
             }
             work.pop();
@@ -113,7 +141,6 @@ mod nurbs_boundary {
             right.push(work[work.len() - 1]);
         }
         right.reverse();
-        let mid = piece.start.midpoint(piece.end);
         (
             ResidualPiece {
                 controls: left,
@@ -140,11 +167,22 @@ mod nurbs_boundary {
         // Hulls prove the complete interval; endpoint witnesses only prove
         // excess. An unresolved tolerance boundary remains typed unproved.
         const MAX_DEPTH: usize = 8;
-        let mut pieces = vec![ResidualPiece {
+        let mut initial = ResidualPiece {
             controls,
             start: 0.0,
             end: 1.0,
-        }];
+        };
+        let domain = edge.domain();
+        let start =
+            (usage.edge_domain.0.min(usage.edge_domain.1) - domain.0) / (domain.1 - domain.0);
+        let end = (usage.edge_domain.0.max(usage.edge_domain.1) - domain.0) / (domain.1 - domain.0);
+        if start > 0.0 {
+            initial = split_residual_at(initial, start).1;
+        }
+        if end < 1.0 {
+            initial = split_residual_at(initial, end).0;
+        }
+        let mut pieces = vec![initial];
         for depth in 0..=MAX_DEPTH {
             let mut upper = 0.0_f64;
             let mut witness = 0.0_f64;
@@ -215,7 +253,7 @@ mod nurbs_boundary {
         let Some(chart) = PlaneChart::canonical(normal, d) else {
             return ProofResult::Unavailable;
         };
-        if !clamped_bezier(edge.degree(), edge.knots(), edge.control_points().len())
+        if !clamped_spline(edge.degree(), edge.knots(), edge.control_points().len())
             || !native_use(edge, usage)
             || edge.weights().len() != edge.control_points().len()
             || edge.degree() != pcurve.degree()
@@ -258,7 +296,7 @@ mod nurbs_boundary {
             coordinate_scale = coordinate_scale.max(point.x().abs()).max(point.y().abs());
         }
         coordinate_scale = coordinate_scale.max(d.abs());
-        let controls = edge
+        let controls: Vec<_> = edge
             .control_points()
             .iter()
             .zip(&lifted)
@@ -268,6 +306,20 @@ mod nurbs_boundary {
         // Identical basis and positive identical weights make the complete
         // residual a convex combination of the control-point residuals. The
         // fixed degree and weight-condition bounds also bound evaluation work.
+        if !clamped_bezier(edge.degree(), edge.knots(), edge.control_points().len()) {
+            let residual = controls
+                .iter()
+                .map(|(point, weight)| (*point * (1.0 / *weight)).length())
+                .fold(0.0_f64, f64::max);
+            return control_bound(
+                residual,
+                arithmetic_bound(
+                    512.0 * (edge.degree() + 1) as f64 * condition,
+                    coordinate_scale,
+                ),
+                usage,
+            );
+        }
         refined_residual_bound(
             controls,
             edge,
@@ -287,74 +339,171 @@ mod nurbs_boundary {
         let points = surface.control_points();
         let weights = surface.weights();
         if points.is_empty()
-            || !clamped_bezier(edge.degree(), edge.knots(), edge.control_points().len())
+            || !clamped_spline(edge.degree(), edge.knots(), edge.control_points().len())
+            || edge.weights().len() != edge.control_points().len()
             || !native_use(edge, usage)
-            || !clamped_bezier(surface.degree_u(), surface.knots_u(), points.len())
-            || !clamped_bezier(surface.degree_v(), surface.knots_v(), points[0].len())
+            || !clamped_spline(surface.degree_u(), surface.knots_u(), points.len())
+            || !clamped_spline(surface.degree_v(), surface.knots_v(), points[0].len())
             || points.iter().any(|row| row.len() != points[0].len())
             || weights.len() != points.len()
             || weights.iter().any(|row| row.len() != points[0].len())
         {
             return ProofResult::Unavailable;
         }
-        let Some(condition) = weight_condition(weights.iter().flatten().copied()) else {
+        let Some(surface_condition) = weight_condition(weights.iter().flatten().copied()) else {
             return ProofResult::Unavailable;
         };
-        let Some(coordinate_scale) = scale(points.iter().flatten().copied()) else {
+        let Some(edge_condition) = weight_condition(edge.weights().iter().copied()) else {
+            return ProofResult::Unavailable;
+        };
+        let condition = surface_condition.max(edge_condition);
+        let Some(coordinate_scale) = scale(
+            points
+                .iter()
+                .flatten()
+                .copied()
+                .chain(edge.control_points().iter().copied()),
+        ) else {
             return ProofResult::NonFinite;
         };
         let origin = line.origin();
         let direction = line.direction();
-        let (degree, knots, boundary_points, boundary_weights) =
-            if direction == Vec2::new(1.0, 0.0) && equal(origin.x(), 0.0) {
-                let (v0, v1) = surface.domain_v();
-                let column = if equal(origin.y(), v0) {
-                    0
-                } else if equal(origin.y(), v1) {
-                    points[0].len() - 1
+        let reverse_u = direction == Vec2::new(-1.0, 0.0)
+            && equal(origin.x(), surface.domain_u().0 + surface.domain_u().1);
+        let reverse_v = direction == Vec2::new(0.0, -1.0)
+            && equal(origin.y(), surface.domain_v().0 + surface.domain_v().1);
+        let along_u = (direction == Vec2::new(1.0, 0.0) && equal(origin.x(), 0.0)) || reverse_u;
+        let along_v = (direction == Vec2::new(0.0, 1.0) && equal(origin.y(), 0.0)) || reverse_v;
+        let (degree, knots, fixed_degree, fixed_knots, fixed_count, fixed_parameter) = if along_u {
+            (
+                surface.degree_u(),
+                surface.knots_u(),
+                surface.degree_v(),
+                surface.knots_v(),
+                points[0].len(),
+                origin.y(),
+            )
+        } else if along_v {
+            (
+                surface.degree_v(),
+                surface.knots_v(),
+                surface.degree_u(),
+                surface.knots_u(),
+                points.len(),
+                origin.x(),
+            )
+        } else {
+            return ProofResult::Unavailable;
+        };
+        let fixed_domain = (fixed_knots[fixed_degree], fixed_knots[fixed_count]);
+        if !fixed_parameter.is_finite()
+            || fixed_parameter < fixed_domain.0
+            || fixed_parameter > fixed_domain.1
+        {
+            return ProofResult::Unavailable;
+        }
+        let span = remus_math::nurbs::basis::find_span(
+            fixed_count,
+            fixed_degree,
+            fixed_parameter,
+            fixed_knots,
+        );
+        let basis =
+            remus_math::nurbs::basis::basis_funs(span, fixed_parameter, fixed_degree, fixed_knots);
+        let varying_count = if along_u {
+            points.len()
+        } else {
+            points[0].len()
+        };
+        let mut boundary_points = Vec::with_capacity(varying_count);
+        let mut boundary_weights = Vec::with_capacity(varying_count);
+        for i in 0..varying_count {
+            let mut numerator = Vec3::new(0.0, 0.0, 0.0);
+            let mut denominator = 0.0;
+            for (local, &value) in basis.iter().enumerate() {
+                let j = span - fixed_degree + local;
+                let (point, weight) = if along_u {
+                    (points[i][j], weights[i][j])
                 } else {
-                    return ProofResult::Unavailable;
+                    (points[j][i], weights[j][i])
                 };
-                (
-                    surface.degree_u(),
-                    surface.knots_u(),
-                    points.iter().map(|row| row[column]).collect(),
-                    weights.iter().map(|row| row[column]).collect(),
-                )
-            } else if direction == Vec2::new(0.0, 1.0) && equal(origin.y(), 0.0) {
-                let (u0, u1) = surface.domain_u();
-                let row = if equal(origin.x(), u0) {
-                    0
-                } else if equal(origin.x(), u1) {
-                    points.len() - 1
-                } else {
-                    return ProofResult::Unavailable;
-                };
-                (
-                    surface.degree_v(),
-                    surface.knots_v(),
-                    points[row].clone(),
-                    weights[row].clone(),
-                )
-            } else {
-                return ProofResult::Unavailable;
-            };
-        let Ok(boundary) =
+                let w = value * weight;
+                numerator += (point - Point3::new(0.0, 0.0, 0.0)) * w;
+                denominator += w;
+            }
+            if !denominator.is_finite() || denominator <= 0.0 {
+                return ProofResult::NonFinite;
+            }
+            boundary_points.push(Point3::new(0.0, 0.0, 0.0) + numerator * (1.0 / denominator));
+            boundary_weights.push(denominator);
+        }
+        let Ok(mut boundary) =
             NurbsCurve::new(degree, knots.to_vec(), boundary_points, boundary_weights)
         else {
             return ProofResult::Unavailable;
         };
-        if &boundary != edge {
+        if reverse_u || reverse_v {
+            boundary = boundary.reversed();
+        }
+        if degree != edge.degree()
+            || boundary.knots() != edge.knots()
+            || boundary.control_points().len() != edge.control_points().len()
+        {
+            // A ruled band can refine its contact basis while the retained
+            // support keeps the original curve. Certify those representations
+            // in their shared native parameter instead of changing the source.
+            let range = (
+                usage.edge_domain.0.min(usage.edge_domain.1),
+                usage.edge_domain.0.max(usage.edge_domain.1),
+            );
+            return match remus_math::nurbs::reuse::bound_curve_position(
+                &boundary,
+                edge,
+                range,
+                2_000_000,
+                &remus_math::context::OperationContext::new(),
+            ) {
+                Ok(bound) => control_bound(
+                    bound,
+                    arithmetic_bound(
+                        128.0
+                            * (surface.degree_u() + 1) as f64
+                            * (surface.degree_v() + 1) as f64
+                            * condition,
+                        coordinate_scale,
+                    ),
+                    usage,
+                ),
+                Err(_) => ProofResult::Unavailable,
+            };
+        }
+        let scale_a = boundary.weights()[0];
+        let scale_b = edge.weights()[0];
+        if !scale_b.is_finite()
+            || scale_b <= 0.0
+            || !boundary
+                .weights()
+                .iter()
+                .zip(edge.weights())
+                .all(|(&a, &b)| equal(a / scale_a, b / scale_b))
+        {
             return ProofResult::Unavailable;
         }
-        // Clamping makes the fixed-coordinate basis exactly an endpoint unit
-        // vector. The retained row/column is the same rational polynomial as
-        // the edge over its whole native interval, including reversed uses.
+        let residual = boundary
+            .control_points()
+            .iter()
+            .zip(edge.control_points())
+            .map(|(a, b)| (*a - *b).length())
+            .fold(0.0_f64, f64::max);
+        // Contracting the fixed-coordinate positive basis gives the exact
+        // rational isocurve. Matching native knots and proportional weights
+        // bound the complete residual by the control-point differences,
+        // including interior contacts, trimmed domains and reversed uses.
         let arithmetic = arithmetic_bound(
             128.0 * (surface.degree_u() + 1) as f64 * (surface.degree_v() + 1) as f64 * condition,
             coordinate_scale,
         );
-        control_bound(0.0, arithmetic, usage)
+        control_bound(residual, arithmetic, usage)
     }
 
     #[cfg(test)]
@@ -424,6 +573,102 @@ mod nurbs_boundary {
         }
 
         #[test]
+        fn interior_rational_isocurve_certificate_covers_trimmed_uses_and_detects_displacement() {
+            let (surface, _, _) = fixture();
+            let u = 3.2;
+            let points = vec![surface.evaluate(u, 7.0), surface.evaluate(u, 9.0)];
+            let edge =
+                NurbsCurve::new(1, vec![7.0, 7.0, 9.0, 9.0], points.clone(), vec![1.0; 2]).unwrap();
+            let line = Line2D::new(Point2::new(u, 0.0), Vec2::new(0.0, 1.0)).unwrap();
+            for domain in [(7.0, 9.0), (7.5, 8.5), (8.5, 7.5)] {
+                for forward in [false, true] {
+                    let (p0, p1) = if forward {
+                        domain
+                    } else {
+                        (domain.1, domain.0)
+                    };
+                    let usage = CurveUse {
+                        p0,
+                        p1,
+                        edge_domain: domain,
+                        forward,
+                    };
+                    assert!(
+                        matches!(nurbs_isocurve(&surface,&line,&edge,usage),ProofResult::Certified(bound) if bound.max_deviation<1e-9)
+                    );
+                    let shifted = NurbsCurve::new(
+                        1,
+                        edge.knots().to_vec(),
+                        points
+                            .iter()
+                            .map(|&p| p + Vec3::new(0.0, 0.0, 0.1))
+                            .collect(),
+                        vec![1.0; 2],
+                    )
+                    .unwrap();
+                    assert!(
+                        matches!(nurbs_isocurve(&surface,&line,&shifted,usage),ProofResult::Certified(bound) if bound.max_deviation>0.09)
+                    );
+                }
+            }
+        }
+
+        #[test]
+        fn interior_certificate_preserves_a_reversed_native_carrier() {
+            let (surface, _, _) = fixture();
+            let u = 3.2;
+            let edge = NurbsCurve::new(
+                1,
+                vec![7.0, 7.0, 9.0, 9.0],
+                vec![surface.evaluate(u, 9.0), surface.evaluate(u, 7.0)],
+                vec![1.0; 2],
+            )
+            .unwrap();
+            let line = Line2D::new(Point2::new(u, 16.0), Vec2::new(0.0, -1.0)).unwrap();
+            for forward in [false, true] {
+                let (p0, p1) = if forward { (7.5, 8.5) } else { (8.5, 7.5) };
+                let usage = CurveUse {
+                    p0,
+                    p1,
+                    edge_domain: (7.5, 8.5),
+                    forward,
+                };
+                assert!(
+                    matches!(nurbs_isocurve(&surface,&line,&edge,usage),ProofResult::Certified(bound) if bound.max_deviation<1e-9)
+                );
+            }
+        }
+
+        #[test]
+        fn trimmed_affine_ruling_has_a_whole_span_proof_and_rejects_weighted_aliases() {
+            let (surface, _, _) = fixture();
+            let line = Line2D::new(Point2::new(3.2, 8.7), Vec2::new(0.0, -1.0)).unwrap();
+            let start = surface.evaluate(3.2, 8.7);
+            let end = surface.evaluate(3.2, 7.4);
+            let proof = super::super::affine_isocurve_line(&surface, &line, 0.0, 1.3, start, end);
+            assert!(matches!(proof,ProofResult::Certified(bound) if bound.max_deviation<1e-9));
+            let mut weights = surface.weights().to_vec();
+            weights[0][1] *= 1.2;
+            let weighted = NurbsSurface::new(
+                surface.degree_u(),
+                surface.degree_v(),
+                surface.knots_u().to_vec(),
+                surface.knots_v().to_vec(),
+                surface.control_points().to_vec(),
+                weights,
+            )
+            .unwrap();
+            let start = weighted.evaluate(3.2, 8.7);
+            let end = weighted.evaluate(3.2, 7.4);
+            let midpoint = weighted.evaluate(3.2, 8.05);
+            assert!((midpoint - (start + (end - start) * 0.5)).length() > 1e-5);
+            assert!(matches!(
+                super::super::affine_isocurve_line(&weighted, &line, 0.0, 1.3, start, end),
+                ProofResult::Unavailable
+            ));
+        }
+
+        #[test]
         fn endpoint_agreement_cannot_certify_a_bowed_edge_or_pcurve() {
             let (surface, edge, pc) = fixture();
             let usage = CurveUse {
@@ -448,7 +693,7 @@ mod nurbs_boundary {
             assert!(bound.max_deviation >= expected && bound.max_deviation < expected + 1e-10);
             assert!(matches!(
                 nurbs_isocurve(&surface, &line, &bowed, usage),
-                ProofResult::Unavailable
+                ProofResult::Certified(bound) if bound.max_deviation >= 0.1
             ));
             let mut controls = pc.control_points().to_vec();
             controls[1] = controls[1] + Vec2::new(0.0, 0.1);
@@ -987,6 +1232,106 @@ pub(super) fn affine_nurbs_line(
             .max(point.z().abs());
     }
     finish_endpoint_bound(d0, d1, p0, p1, arithmetic_bound(512.0, scale))
+}
+
+/// A fixed-profile ruling is affine when its degree is one and both ends
+/// carry identical weights for every profile control. This permits trimmed
+/// axis intervals without treating an endpoint-only check as a spline proof.
+#[allow(clippy::float_cmp)] // Exact weight and chart identities authorize the affine proof.
+pub(super) fn affine_isocurve_line(
+    surface: &NurbsSurface,
+    line: &Line2D,
+    p0: f64,
+    p1: f64,
+    start: Point3,
+    end: Point3,
+) -> ProofResult {
+    let cp = surface.control_points();
+    let weights = surface.weights();
+    if cp.len() > 4096
+        || cp
+            .first()
+            .is_none_or(|row| row.is_empty() || row.len() > 4096)
+        || surface.degree_u() > 7
+        || surface.degree_v() > 7
+        || surface.validate().is_err()
+    {
+        return ProofResult::Unavailable;
+    }
+    let direction = line.direction();
+    let endpoint = |value: f64, degree: usize, knots: &[f64], count: usize| {
+        if value == knots[degree] && knots[..=degree].iter().all(|&k| k == value) {
+            Some(0)
+        } else if value == knots[count] && knots[count..].iter().all(|&k| k == value) {
+            Some(count - 1)
+        } else {
+            None
+        }
+    };
+    let u_weights = cp.len() == 2
+        && (weights[0] == weights[1]
+            || endpoint(
+                line.origin().y(),
+                surface.degree_v(),
+                surface.knots_v(),
+                cp[0].len(),
+            )
+            .is_some_and(|i| weights[0][i] == weights[1][i]));
+    let v_weights = cp[0].len() == 2
+        && (weights.iter().all(|row| row[0] == row[1])
+            || endpoint(
+                line.origin().x(),
+                surface.degree_u(),
+                surface.knots_u(),
+                cp.len(),
+            )
+            .is_some_and(|i| weights[i][0] == weights[i][1]));
+    let along_u =
+        direction.y() == 0.0 && direction.x().abs() == 1.0 && surface.degree_u() == 1 && u_weights;
+    let along_v =
+        direction.x() == 0.0 && direction.y().abs() == 1.0 && surface.degree_v() == 1 && v_weights;
+    if !along_u && !along_v {
+        return ProofResult::Unavailable;
+    }
+    let lower = weights
+        .iter()
+        .flatten()
+        .copied()
+        .fold(f64::INFINITY, f64::min);
+    let upper = weights.iter().flatten().copied().fold(0.0, f64::max);
+    let condition = upper / lower;
+    if condition > 16.0 || lower < 2.0_f64.powi(-128) || upper > 2.0_f64.powi(128) {
+        return ProofResult::Unavailable;
+    }
+    let a = line.evaluate(p0);
+    let b = line.evaluate(p1);
+    if !inside(a.x(), surface.domain_u())
+        || !inside(b.x(), surface.domain_u())
+        || !inside(a.y(), surface.domain_v())
+        || !inside(b.y(), surface.domain_v())
+    {
+        return ProofResult::Unavailable;
+    }
+    let sa = surface.evaluate(a.x(), a.y());
+    let sb = surface.evaluate(b.x(), b.y());
+    if !points_finite(&[sa, sb, start, end]) {
+        return ProofResult::NonFinite;
+    }
+    let mut scale = scalar_scale(&[p0, p1, a.x(), a.y(), b.x(), b.y()]);
+    for p in cp.iter().flatten().chain([&start, &end]) {
+        scale = scale.max(p.x().abs()).max(p.y().abs()).max(p.z().abs());
+    }
+    let arithmetic = arithmetic_bound(
+        512.0 * (surface.degree_u() + 1) as f64 * (surface.degree_v() + 1) as f64 * condition,
+        scale,
+    );
+    finish_endpoint_bound(
+        (sa - start).length(),
+        (sb - end).length(),
+        p0,
+        p1,
+        arithmetic,
+    )
 }
 
 pub(super) fn sphere_circle_nurbs(

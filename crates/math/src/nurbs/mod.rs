@@ -15,6 +15,7 @@ pub mod fitting;
 pub mod hermite_fit;
 pub mod intersection;
 pub mod knot_ops;
+pub mod planar_offset;
 pub mod power_basis;
 pub mod projection;
 pub mod reduction;
