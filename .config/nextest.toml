@@ -1,6 +1,16 @@
 [profile.default]
 fail-fast = false
 
+# Coverage instrumentation can consume the sphere/box replay's declared
+# two-minute oracle budget when other CPU-heavy tests compete with it. Give
+# this case the whole test pool, without changing its budget or assertions.
+[profile.coverage]
+
+[[profile.coverage.overrides]]
+filter = 'binary(=op_seq_81) & test(=finding_sphere_minus_box_open_mesh)'
+priority = 100
+threads-required = "num-test-threads"
+
 # Start the known long tail first so it overlaps the rest of the suite instead
 # of extending the end of every Linux, macOS, and coverage run.
 [[profile.default.overrides]]

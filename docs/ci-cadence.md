@@ -33,6 +33,12 @@ compiled fixture workspace before executing it. The final CI gate requires all
 selected jobs and rejects failures, cancellations, missing results and unexpected
 skips.
 
+The full-suite producer builds and uploads its archive without extracting a
+second complete target directory beside the compiler outputs. The four full
+workers remain mandatory and perform archive setup and test execution. Fast
+producers still inspect the archive inventory before running their selection,
+and any captured setup diagnostic is printed before the job fails.
+
 Ordinary merge candidates receive the critical suite plus changed test binaries.
 Foundational changes still select complete native tests. The existing selection
 of other merge-candidate checks remains intact. Main pushes retain exact-source
@@ -61,6 +67,13 @@ The reporter restores the instrumented binaries and exports one LCOV report
 while enforcing the existing **60% line minimum**. Only the separate Codecov
 upload job receives OIDC permission. Codecov availability is separate from the
 local coverage floor and the downloadable report.
+
+The coverage-only Nextest profile reserves the complete test pool for the
+sphere-minus-box oracle replay. Instrumentation plus CPU contention can exhaust
+its existing two-minute budget before the identity checks. The reservation
+changes scheduling only; its budget, mesh resolution and full oracle battery
+remain unchanged. A process-level concurrency fixture and an instrumented
+replay verify this policy in the hosted proof workflow.
 
 Weekly fuzzing, mutation testing and the larger corpus campaign retain their
 existing schedules. The smaller corpus campaign remains daily. Native platform
