@@ -1,4 +1,4 @@
-//! Clearance between a translating toroidal shoulder and a fixed full rim.
+//! Clearance between a translating shoulder or chamfer and a fixed full rim.
 
 use std::f64::consts::TAU;
 
@@ -65,7 +65,10 @@ fn contact(
             return Ok(None);
         };
         if circle.normal().dot(direction).abs() < 1.0 - Tolerance::new().angular
-            || !super::tangent_across(topo, edge, band, carrier)?
+            || (!matches!(
+                topo.face(band)?.surface(),
+                FaceSurface::Cone(_) | FaceSurface::Plane { .. }
+            ) && !super::tangent_across(topo, edge, band, carrier)?)
         {
             return Ok(None);
         }
@@ -104,7 +107,10 @@ pub(super) fn axial_blend_clearances(
         let mut moving = Vec::new();
         let mut fixed = Vec::new();
         for &face in source_faces {
-            if !matches!(topo.face(face)?.surface(), FaceSurface::Torus(_)) {
+            if !matches!(
+                topo.face(face)?.surface(),
+                FaceSurface::Torus(_) | FaceSurface::Cone(_) | FaceSurface::Plane { .. }
+            ) {
                 continue;
             }
             let Some(contact) = contact(topo, adjacency, face, carrier, direction)? else {
