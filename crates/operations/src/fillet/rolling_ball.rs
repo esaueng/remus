@@ -23,6 +23,8 @@ use super::geometry::{edge_v_samples, sample_edge_point, sample_edge_tangent};
 use super::helpers::{FacePolygon, extract_inner_wire_positions};
 use crate::tessellate::surface_normal::face_surface_normal_at;
 
+mod split_runout;
+
 #[derive(Clone)]
 enum FaceSpecOrigin {
     Modified(FaceId),
@@ -338,13 +340,29 @@ fn rolling_ball_cylinder(
     let n1 = face1_normal.normalize().ok()?;
     // An oblique runout (a mitre) moves one station's contacts off a common
     // section, so read the centre from whichever station still has one.
-    let centre = [(corners[0], corners[1]), (corners[3], corners[2])]
+    let stations = [(corners[0], corners[1]), (corners[3], corners[2])];
+    let centre = stations
         .into_iter()
         .find_map(|(on_plane1, on_plane2)| {
             [radius, -radius]
                 .into_iter()
                 .map(|signed| on_plane1 + n1 * signed)
                 .find(|c| ((on_plane2 - *c).length() - radius).abs() <= tol.linear)
+        })
+        .or_else(|| {
+            // Both ends run out on two planes (see `split_runout`), so no
+            // station keeps its contacts on one section: read the centre
+            // off the axis line instead. The corner check below still
+            // decides.
+            let axis = axis_dir.normalize().ok()?;
+            let (on_plane1, on_plane2) = stations[0];
+            [radius, -radius]
+                .into_iter()
+                .map(|signed| on_plane1 + n1 * signed)
+                .find(|c| {
+                    let w = on_plane2 - *c;
+                    ((w - axis * w.dot(axis)).length() - radius).abs() <= tol.linear
+                })
         })?;
 
     let cylinder = CylindricalSurface::new(centre, axis_dir, radius).ok()?;
@@ -3150,6 +3168,85 @@ pub fn fillet_rolling_ball_with_origins(
             }
         }
 
+        // Lone straight stripes ending at a convex four-plane corner (a
+        // chamfered box's mitred corner) run out on two side planes at once;
+        // see `split_runout`. Their end contacts replace the vertex-section
+        // contacts, so every consumer below reads the same exact points.
+        let mut split_runouts: HashMap<usize, split_runout::SplitRunout> = HashMap::default();
+        for &edge_id in &filtered_edges {
+            let Some(&side) = planar_edge_sides.get(&edge_id.index()) else {
+                continue;
+            };
+            let Some(&[f1, f2]) = edge_to_faces.get(&edge_id.index()).map(Vec::as_slice) else {
+                continue;
+            };
+            if side >= 0.0 {
+                continue;
+            }
+            let edge = topo.edge(edge_id)?;
+            for vid in [edge.start(), edge.end()] {
+                let vi = vid.index();
+                if vertex_fillet_edges.get(&vi).map_or(0, Vec::len) != 1
+                    || g1_chain_vertices.contains(&vi)
+                    || exact_corner_balls.contains_key(&vi)
+                    || torus_corners.contains_key(&vi)
+                    || setback_map
+                        .get(&(edge_id.index(), vi))
+                        .is_some_and(|setback| *setback > 0.0)
+                {
+                    continue;
+                }
+                let (Some(&c1), Some(&c2)) = (
+                    fillet_contact_map.get(&(vi, edge_id.index(), f1.index())),
+                    fillet_contact_map.get(&(vi, edge_id.index(), f2.index())),
+                ) else {
+                    continue;
+                };
+                if let Some(&plane) = planar_runout_planes.get(&(edge_id.index(), vi)) {
+                    // One side plane. The pre-pass ran the contacts onto it
+                    // when both reach it within the edge's span; a contact
+                    // that reaches it past the vertex was left on the vertex
+                    // section, off the plane, which bends the side face.
+                    let on_plane =
+                        |c: Point3| (dot_normal_point(plane.0, c) - plane.1).abs() <= tol.linear;
+                    if on_plane(c1) && on_plane(c2) {
+                        continue;
+                    }
+                    if let Some([r1, r2]) = split_runout::qualify_single(
+                        topo,
+                        vi,
+                        edge_id,
+                        [f1, f2],
+                        [c1, c2],
+                        &vertex_faces,
+                        &edge_to_faces,
+                        &face_polygons,
+                        tol,
+                    )? {
+                        fillet_contact_map.insert((vi, edge_id.index(), f1.index()), r1);
+                        fillet_contact_map.insert((vi, edge_id.index(), f2.index()), r2);
+                    }
+                    continue;
+                }
+                if let Some(split) = split_runout::qualify(
+                    topo,
+                    vi,
+                    edge_id,
+                    [f1, f2],
+                    [c1, c2],
+                    &vertex_faces,
+                    &edge_to_faces,
+                    &face_polygons,
+                    radius,
+                    tol,
+                )? {
+                    fillet_contact_map.insert((vi, edge_id.index(), f1.index()), split.contacts[0]);
+                    fillet_contact_map.insert((vi, edge_id.index(), f2.index()), split.contacts[1]);
+                    split_runouts.insert(vi, split);
+                }
+            }
+        }
+
         // Arc-runout closure data. When a single arc fillet terminates tangent to a
         // flat neighbour, its strip end cross-section straddles two planes (the two
         // contact-face planes) and cannot be shared by either neighbour alone. The
@@ -3248,6 +3345,7 @@ pub fn fillet_rolling_ball_with_origins(
                     let vi = vid.index();
                     if vertex_fillet_edges.get(&vi).map_or(0, Vec::len) != 1
                         || g1_chain_vertices.contains(&vi)
+                        || split_runouts.contains_key(&vi)
                     {
                         continue;
                     }
@@ -3856,6 +3954,13 @@ pub fn fillet_rolling_ball_with_origins(
                 // For fillet-adjacent vertices, use Phase 4's exact contact.
                 let vi = poly.vertex_ids[i].index();
                 let fi = face_id.index();
+                if let Some(points) = split_runouts
+                    .get(&vi)
+                    .and_then(|split| split.side_corner(fi, pos, prev_pos, next_pos, tol))
+                {
+                    new_verts.extend(points?);
+                    continue;
+                }
                 new_verts.extend(trim_support_corner(
                     pos,
                     prev_pos,
@@ -3922,6 +4027,12 @@ pub fn fillet_rolling_ball_with_origins(
                         let pos = topo.vertex(ids[j])?.point();
                         let prev_pos = topo.vertex(ids[prev_j])?.point();
                         let next_pos = topo.vertex(ids[next_j])?.point();
+                        if let Some(points) = split_runouts.get(&ids[j].index()).and_then(|split| {
+                            split.side_corner(face_id.index(), pos, prev_pos, next_pos, tol)
+                        }) {
+                            trimmed.extend(points?);
+                            continue;
+                        }
                         trimmed.extend(trim_support_corner(
                             pos,
                             prev_pos,
@@ -4225,7 +4336,12 @@ pub fn fillet_rolling_ball_with_origins(
             // pre-pass contacts that were intersected with that plane; the edge
             // between them is recorded as an analytic ellipse below.
             for (row, vertex) in [(0, edge.start()), (n_v - 1, edge.end())] {
-                if planar_runout_planes.contains_key(&(edge_id.index(), vertex.index()))
+                let runs_out = planar_runout_planes
+                    .contains_key(&(edge_id.index(), vertex.index()))
+                    || split_runouts
+                        .get(&vertex.index())
+                        .is_some_and(|split| split.edge == edge_id.index());
+                if runs_out
                     && let (Some(&contact1), Some(&contact2)) = (
                         fillet_contact_map.get(&(vertex.index(), edge_id.index(), f1.index())),
                         fillet_contact_map.get(&(vertex.index(), edge_id.index(), f2.index())),
@@ -4298,11 +4414,55 @@ pub fn fillet_rolling_ball_with_origins(
                     tol,
                 )
             {
+                let mut kinks: Vec<(Point3, Point3, Point3)> = Vec::new();
                 for (vertex, start, end) in [
                     (edge.start(), contact1_start, contact2_start),
                     (edge.end(), contact1_end, contact2_end),
                 ] {
-                    if let Some(&plane) =
+                    if let Some(split) = split_runouts
+                        .get(&vertex.index())
+                        .filter(|split| split.edge == edge_id.index())
+                    {
+                        // Each half of the end boundary is the section by its
+                        // own side plane: an ellipse, or a circle the
+                        // assembly mints itself when that plane is
+                        // transverse. Anything else is not this cylinder's
+                        // runout and must not be chorded.
+                        for (plane, a, b) in [
+                            (split.planes[0], start, split.kink),
+                            (split.planes[1], split.kink, end),
+                        ] {
+                            let (_, va) = cylinder.project_point(a);
+                            let (_, vb) = cylinder.project_point(b);
+                            if let Some((curve, trim)) =
+                                cylinder_plane_ellipse(&cylinder, plane, a, b, tol)
+                            {
+                                analytic_boundary_curves.push(
+                                    crate::boolean::BoundaryCurveOverride {
+                                        start: a,
+                                        end: b,
+                                        curve,
+                                        trim,
+                                    },
+                                );
+                            } else if (va - vb).abs() > tol.linear {
+                                return Err(crate::OperationsError::InvalidInput {
+                                    reason: "two-plane fillet runout section is neither a \
+                                             circle nor an ellipse of the stripe"
+                                        .into(),
+                                });
+                            }
+                        }
+                        let offset = split.kink - cylinder.origin();
+                        let axis = cylinder.axis();
+                        if ((offset - axis * offset.dot(axis)).length() - radius).abs() > tol.linear
+                        {
+                            return Err(crate::OperationsError::InvalidInput {
+                                reason: "two-plane fillet runout kink is off the stripe".into(),
+                            });
+                        }
+                        kinks.push((start, end, split.kink));
+                    } else if let Some(&plane) =
                         planar_runout_planes.get(&(edge_id.index(), vertex.index()))
                         && let Some((curve, trim)) =
                             cylinder_plane_ellipse(&cylinder, plane, start, end, tol)
@@ -4338,6 +4498,23 @@ pub fn fillet_rolling_ball_with_origins(
                 } else {
                     vec![contact2_start, contact1_start, contact1_end, contact2_end]
                 };
+                // A two-plane runout end gains its kink between its contacts.
+                let strip_wire = if kinks.is_empty() {
+                    strip_wire
+                } else {
+                    let mut wire = Vec::with_capacity(strip_wire.len() + kinks.len());
+                    for (i, &a) in strip_wire.iter().enumerate() {
+                        wire.push(a);
+                        let b = strip_wire[(i + 1) % strip_wire.len()];
+                        if let Some(&(_, _, kink)) = kinks.iter().find(|(p, q, _)| {
+                            let same = |x: Point3, y: Point3| (x - y).length() <= tol.linear;
+                            (same(*p, a) && same(*q, b)) || (same(*p, b) && same(*q, a))
+                        }) {
+                            wire.push(kink);
+                        }
+                    }
+                    wire
+                };
                 push_face_spec(
                     &mut all_specs,
                     &mut all_spec_origins,
@@ -4360,6 +4537,17 @@ pub fn fillet_rolling_ball_with_origins(
                 );
                 blended_edges.insert(edge_id.index());
                 continue;
+            }
+
+            // A two-plane runout is built only on the exact cylinder above.
+            if [edge.start(), edge.end()].iter().any(|vertex| {
+                split_runouts
+                    .get(&vertex.index())
+                    .is_some_and(|split| split.edge == edge_id.index())
+            }) {
+                return Err(crate::OperationsError::InvalidInput {
+                    reason: "two-plane fillet runout needs an exact cylindrical stripe".into(),
+                });
             }
 
             // At the band's own radius that torus has no ring: the ball's
