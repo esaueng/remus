@@ -202,6 +202,11 @@ class UbuntuRoutingTests(unittest.TestCase):
                 cache = block.split("      - uses: Swatinem/rust-cache@", 1)[1].split("      - ", 1)[0]
                 with self.subTest(file=path.name, job=name):
                     self.assertNotIn("runner.environment != 'self-hosted'", cache)
+                    if name == "clippy" and path.name == "fleet-ci-v12.yml":
+                        self.assertIn("runs-on: ubuntu-24.04", block)
+                        self.assertIn("save-if: false", cache)
+                        self.assertNotIn(": write", block)
+                        continue  # Explicitly hosted, read-only cache consumer.
                     self.assertIn("save-if: ${{ github.ref == 'refs/heads/main' }}", cache)
                     guard = "*fleet-isolation" if is_ci_workflow(path) else "fleet-guard@"
                     self.assertLess(block.index(guard), block.index("Swatinem/rust-cache@"))

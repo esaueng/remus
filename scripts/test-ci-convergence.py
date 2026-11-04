@@ -12,7 +12,8 @@ from fleet_workflows import workflow_path
 
 ROOT = Path(__file__).resolve().parents[1]
 CALLER = (ROOT / ".github/workflows/ci.yml").read_text()
-FLEET = workflow_path("ci").read_text()
+# Preserve the v11 admission/tier contract; test_ci_daily covers active v12.
+FLEET = (ROOT / ".github/workflows/fleet-ci-v11.yml").read_text()
 BENCH = workflow_path("benchmark").read_text()
 BENCH_CALLER = (ROOT / ".github/workflows/benchmark.yml").read_text()
 SPEC = importlib.util.spec_from_file_location("direct", ROOT / "scripts/test-direct-fleet.py")

@@ -43,7 +43,7 @@ class OwnerRoutingTests(unittest.TestCase):
         self.assertNotIn("select-runner.yml", CI)
 
     def test_native_checks_keep_hosted_fallback(self):
-        for name, flag in (("test", "heavy"), ("complexity-guards", "heavy"), ("msrv", "full"),
+        for name, flag in (("test", "native" if "ci_native.py" in CI else "heavy"), ("complexity-guards", "heavy"), ("msrv", "full"),
                            ("fuzz-check", "heavy"), ("w9-preflight", "wasm"), ("docs", "docs")):
             with self.subTest(name=name):
                 block = job(name)
@@ -55,7 +55,8 @@ class OwnerRoutingTests(unittest.TestCase):
                 else:
                     self.assertRegex(block, r"runs-on: [*&]fleet(?:-light)?-runner")
                 self.assertIn(f"needs.changes.outputs.{flag} == 'true'", block)
-        self.assertIn("cargo clippy --all-targets --all-features -- -D warnings", job("test"))
+        self.assertIn("cargo clippy --all-targets --all-features -- -D warnings",
+                      job("clippy" if "ci_native.py" in CI else "test"))
 
     def test_specialized_jobs_keep_their_runners_and_permissions(self):
         for name in ("repo-policy", "approx-census", "coverage", "wasm",
@@ -77,10 +78,17 @@ class OwnerRoutingTests(unittest.TestCase):
                 needs = {"changes": {"result": "success"}, "repo-policy": {"result": result},
                          "secrets-scan": {"result": "success"},
                          "test": {"result": "skipped"}, "coverage": {"result": "skipped"}}
+                if "ci_native.py" in CI:
+                    import ci_gate
+                    needs = {name: {"result": "skipped"} for name in set.union(*ci_gate.GROUPS.values()) | {"queue-trust"}}
+                    for name in ci_gate.GROUPS["always"]:
+                        needs[name]["result"] = "success"
+                    needs["repo-policy"]["result"] = result
                 run = subprocess.run(
                     ["bash", "-c", command],
                     env=dict(os.environ, NEEDS=json.dumps(needs), HEAVY="false", DOCS="false",
-                             FULL="false", WASM="false", EVENT="pull_request"),
+                             FULL="false", WASM="false", EVENT="pull_request",
+                             NATIVE="false", NATIVE_MODE="none", COVERAGE="false"),
                     capture_output=True)
                 self.assertEqual(run.returncode, expected, run.stderr.decode())
 

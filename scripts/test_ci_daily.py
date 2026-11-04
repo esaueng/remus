@@ -15,6 +15,7 @@ import ci_coverage
 import ci_gate
 import ci_native
 
+CI_V12_LANDED = "6701fc2dc528514e4e841270255eacfa5ff1dcd6"
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = ROOT / ".github/workflows"
 STAGED = (WORKFLOWS / "fleet-ci-v12.yml").read_text()
@@ -38,6 +39,14 @@ class NativeSelectionTests(unittest.TestCase):
         self.assertEqual(set(result["targets"]), set(self.manifest["critical"]))
         self.assertIn("kind(lib)", ci_native.expression(result))
         self.assertNotIn("--exclude", ci_native.build_args(result))
+
+    def test_fast_archives_build_every_selected_package_and_full_archives_keep_the_workspace(self):
+        selected = ci_native.plan(["crates/wasm/src/bindings/fillet_tests.rs"], self.manifest)
+        args = ci_native.build_args(selected)
+        packages = {args[i + 1] for i, arg in enumerate(args) if arg == "--package"}
+        self.assertEqual(packages, {"remus-operations", "remus-io", "remus-wasm"})
+        self.assertNotIn("--workspace", args)
+        self.assertIn("--workspace", ci_native.build_args(dict(selected, mode="full")))
 
     def test_added_and_changed_integration_tests_are_selected_whole(self):
         for path in ("crates/operations/tests/new_regression.rs", "crates/io/tests/new_import.rs"):
@@ -93,6 +102,9 @@ class NativeSelectionTests(unittest.TestCase):
         self.assertFalse(ci_native.verify_inventory(selection, inventory))
         inventory["rust-suites"]["lib"] = {"package-name": "remus-operations", "binary-name": "remus_operations", "kind": "lib", "testcases": {"fillet::tests::works": {"ignored": False}}}
         self.assertTrue(ci_native.verify_inventory(selection, inventory))
+        inventory["rust-suites"]["lib"]["testcases"] = {"unrelated::fillet::works": {"ignored": False}}
+        self.assertFalse(ci_native.verify_inventory(selection, inventory))
+        self.assertIn("test(/^fillet::/)", ci_native.expression(dict(selection, mode="fast")))
         inventory["rust-suites"].pop("case")
         with self.assertRaises(ValueError):
             ci_native.verify_inventory(selection, inventory)
@@ -119,6 +131,14 @@ class ClassifierTests(unittest.TestCase):
         self.assertTrue(result["wasm"])
         self.assertFalse(result["full"])
         self.assertTrue(classifier.classify(["Cargo.lock"], "push", force_full=True)["full"])
+
+    def test_explicit_full_and_coverage_requests_are_not_dropped_on_light_diffs(self):
+        for paths in (["README.md"], ["crates/wasm/pkg/package.json"], []):
+            for event in ("pull_request", "workflow_dispatch"):
+                result = classifier.classify(paths, event, force_full=True, coverage=True)
+                for flag in ("heavy", "full", "wasm", "native", "coverage"):
+                    self.assertTrue(result[flag], (paths, event, flag))
+        self.assertFalse(classifier.classify(["README.md"], "workflow_dispatch", True)["coverage"])
 
     def test_suite_manifest_cannot_be_treated_as_lightweight_repository_metadata(self):
         for event in ("pull_request", "merge_group", "push"):
@@ -173,6 +193,7 @@ class GateTests(unittest.TestCase):
             ci_gate.validate(self.results, flags, "merge_group", native_mode="fast")
 
     def test_fast_mode_can_skip_only_the_full_partition_job(self):
+        self.flags["full"] = "false"
         self.results["test-shards"]["result"] = "skipped"
         ci_gate.validate(self.results, self.flags, "pull_request", native_mode="fast")
         for mode in ("full", "none", ""):
@@ -180,6 +201,11 @@ class GateTests(unittest.TestCase):
                 ci_gate.validate(self.results, self.flags, "pull_request", native_mode=mode)
         self.results["test"]["result"] = "skipped"
         with self.assertRaises(ValueError):
+            ci_gate.validate(self.results, self.flags, "pull_request", native_mode="fast")
+
+    def test_full_request_cannot_be_satisfied_by_a_fast_producer_result(self):
+        self.results["test-shards"]["result"] = "skipped"
+        with self.assertRaisesRegex(ValueError, "complete native partitions"):
             ci_gate.validate(self.results, self.flags, "pull_request", native_mode="fast")
 
     def test_coverage_can_skip_only_when_deselected_and_failures_never_pass(self):
@@ -234,6 +260,10 @@ class StagedWorkflowTests(unittest.TestCase):
             self.assertEqual(active, "fleet-ci-v11.yml")
             pinned = re.search(r"fleet-ci-v11.yml@([0-9a-f]{40})", (WORKFLOWS / "ci.yml").read_text())[1]
             self.assertEqual((WORKFLOWS / active).read_bytes(), subprocess.check_output(["git", "show", f"{pinned}:.github/workflows/{active}"], cwd=ROOT))
+        else:
+            from fleet_workflows import validate_calls
+            self.assertGreater(validate_calls(), 0)
+            self.assertIn("fleet-ci-v12.yml@" + CI_V12_LANDED, (WORKFLOWS / "ci.yml").read_text())
         self.assertNotIn("continue-on-error", STAGED)
         self.assertNotIn("secrets: inherit", STAGED)
 
@@ -277,6 +307,61 @@ class StagedWorkflowTests(unittest.TestCase):
         self.assertIn("github.event.pull_request.head.repo.full_name == github.repository", coverage)
         self.assertIn("--fail-under-lines 60", coverage)
         self.assertIn("COVERAGE_REQUESTED:", jobs(STAGED)["changes"])
+
+    def test_historical_contracts_remain_valid_after_v12_becomes_main(self):
+        from unittest import mock
+        import test_fleet_actions_stage
+        import test_fleet_ci_v10_stage
+        import test_dependabot_actions_stage
+        import test_fleet_workflows
+        manifest = (ROOT / ".github/fleet-workflows.json").read_text()
+        original = subprocess.check_output
+
+        def main_after_activation(command, *args, **kwargs):
+            if isinstance(command, (list, tuple)) and command[-1] == "origin/main:.github/fleet-workflows.json":
+                return manifest if kwargs.get("text") else manifest.encode()
+            return original(command, *args, **kwargs)
+
+        cases = (
+            test_fleet_actions_stage.FleetActionsStageTests("test_active_and_current_main_callees_are_preserved"),
+            test_fleet_ci_v10_stage.FleetCiV10StageTests("test_active_and_current_main_ci_callees_are_v9_bytes"),
+            test_dependabot_actions_stage.DependabotActionsStageTests("test_active_and_current_main_definitions_are_preserved_until_activation"),
+            test_fleet_workflows.FleetWorkflowTests("test_staged_v2_only_changes_reviewed_action_dependencies"),
+        )
+        with mock.patch("subprocess.check_output", side_effect=main_after_activation):
+            for case in cases:
+                with self.subTest(contract=case.id()):
+                    result = unittest.TestResult()
+                    case.run(result)
+                    self.assertTrue(result.wasSuccessful(), result.errors + result.failures)
+
+    def test_activated_caller_keeps_the_schedule_guard_permissions_and_floor(self):
+        nightly = (WORKFLOWS / "coverage.yml").read_text()
+        self.assertIn('cron: "13 7 * * *"', nightly)
+        self.assertIn("workflow_dispatch:", nightly)
+        self.assertIn("cancel-in-progress: false", nightly)
+        self.assertIn("github.ref == 'refs/heads/main' && github.ref_protected", nightly)
+        self.assertIn("uses: ./.github/workflows/coverage-sharded.yml", nightly)
+        self.assertIn("id-token: write", nightly)
+        caller = (WORKFLOWS / "ci.yml").read_text()
+        self.assertIn("coverage: ${{ inputs.coverage || false }}", caller)
+        self.assertIn("Also run complete instrumented coverage", caller)
+        self.assertIn("--fail-under-lines 60", (WORKFLOWS / "coverage-sharded.yml").read_text())
+
+    def test_v12_runner_opt_in_still_requires_its_own_switch(self):
+        spec = importlib.util.spec_from_file_location("daily_direct", ROOT / "scripts/test-direct-fleet.py")
+        direct = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(direct)
+        fixture = direct.DirectFleetTests()
+        fixture.setUp()
+        expressions = re.findall(r"^    runs-on: (?:&fleet(?:-light)?-runner )?(\$\{\{ fromJSON\(.+\) \}\})$", STAGED, re.M)
+        self.assertEqual(len(expressions), 2)
+        for expression in expressions:
+            for enabled in (None, "false", "true"):
+                variables = dict(fixture.variables, CI_FLEET_CI_V12_ENABLED=enabled)
+                expected = ({"group": "ci-trusted-main", "labels": "ci-server-jane-5gb"}
+                            if enabled == "true" else "ubuntu-24.04")
+                self.assertEqual(direct.evaluate(expression, fixture.github, variables), expected)
 
     def test_daily_and_weekly_full_suites_remain_available(self):
         daily = (WORKFLOWS / "daily-validation.yml").read_text()

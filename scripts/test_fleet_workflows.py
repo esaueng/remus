@@ -313,6 +313,11 @@ class FleetWorkflowTests(unittest.TestCase):
         staged = landed_v2("ci")
         drifted = active.read_text().replace("  contents: read", "  contents: write", 1)
         self.assertNotEqual(drifted, active.read_text())
+        if active.name == "fleet-ci-v12.yml":
+            from test_ci_daily import CI_V12_LANDED
+            with self.assertRaisesRegex(ValueError, "differs"):
+                validate_reference(".github/workflows/" + active.name, CI_V12_LANDED, drifted.encode())
+            return
         if active.name == DEPENDABOT_STAGES["ci"][1]:
             with self.assertRaisesRegex(ValueError, "complete reviewed"):
                 previous_definition("ci", drifted)
@@ -380,7 +385,7 @@ class FleetWorkflowTests(unittest.TestCase):
                                                carries_reviewed_updates(active.name))
                 main_file = main_manifest[family]
                 allowed = {f"fleet-{family}{suffix}.yml" for suffix in ("", "-v2", "-v3", "-v4")}
-                allowed.update({'fleet-ci-v6.yml', 'fleet-ci-v7.yml', 'fleet-ci-v9.yml'} if family == 'ci'
+                allowed.update({'fleet-ci-v6.yml', 'fleet-ci-v7.yml', 'fleet-ci-v9.yml', 'fleet-ci-v12.yml'} if family == 'ci'
                                else {STAGE['workflows'][family]['staged']}
                                | staged_action_update(family))
                 if family in DEPENDABOT_STAGES:

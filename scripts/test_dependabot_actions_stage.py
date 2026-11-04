@@ -116,6 +116,8 @@ class DependabotActionsStageTests(unittest.TestCase):
             for family, (previous, staged) in WORKFLOWS.items():
                 with self.subTest(family=family, on_main=on_main):
                     filename = manifest[family]
+                    if family == "ci" and filename == "fleet-ci-v12.yml":
+                        filename = staged  # Retained Action-only predecessor, independently pinned v12 above.
                     self.assertIn(filename, (previous, staged))
                     content = (subprocess.check_output(
                         ["git", "show", f"origin/main:.github/workflows/{filename}"], cwd=ROOT,

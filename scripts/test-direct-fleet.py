@@ -86,7 +86,7 @@ class DirectFleetTests(unittest.TestCase):
                 }
             },
         }
-        self.variables = {"CI_FLEET_ENABLED": "true", "CI_FLEET_CI_V9_ENABLED": "true",
+        self.variables = {"CI_FLEET_ENABLED": "true", "CI_FLEET_CI_V9_ENABLED": "true", "CI_FLEET_CI_V12_ENABLED": "true",
                           "CI_FLEET_TARGET": "ci-server-jane"}
 
     def test_trusted_events_choose_exact_group_and_host(self):

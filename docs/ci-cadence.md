@@ -1,13 +1,13 @@
 # Development CI cadence
 
-The fast/daily implementation is staged in `fleet-ci-v12.yml`. The active
-`ci.yml` caller and `.github/fleet-workflows.json` continue to select v11 until
-the separate activation PR pins v12's landed main commit. Required check names,
+The fast/daily implementation is active in `fleet-ci-v12.yml`. The `ci.yml`
+caller and `.github/fleet-workflows.json` select its immutable landed commit
+`6701fc2dc528514e4e841270255eacfa5ff1dcd6`. Required check names,
 App bindings, review rules and merge-queue settings are unchanged.
 
 ## Everyday feedback
 
-The staged native path always executes the integration binaries listed in
+The native path always executes the integration binaries listed in
 `.github/ci-test-suites.json`: boolean and planar parity, evolution, exact blend
 refusal, analytic chamfer, extrusion lineage, malformed mesh input, arena
 history, atomic import and hostile input. These are a bounded contract suite,
@@ -15,8 +15,8 @@ not complete kernel qualification.
 
 For supported leaf crates, source edits add the affected top-level Rust module's
 unit tests. New or changed integration test files add their complete binary;
-nested support files select their containing integration binary. The archive is
-built with all workspace libraries and the selected integration targets. The
+nested support files select their containing integration binary. The fast archive builds the selected packages' libraries and integration
+targets; full archives build the workspace. The
 actual archive inventory must contain every selected binary. If an affected
 module has no runnable unit tests, the producer rebuilds the full native suite
 instead of silently dropping that component.
@@ -51,8 +51,8 @@ dependency policy and the advisory audit on protected main every day at 06:43
 UTC. Its manual dispatch also requires protected main. Its jobs execute the
 event's immutable checkout, so later main changes cannot relabel their result.
 
-`coverage-sharded.yml` is a staged reusable workflow for the existing daily
-coverage schedule. It builds instrumented binaries once, runs the complete
+`coverage.yml` calls `coverage-sharded.yml` on the existing daily coverage
+schedule. It builds instrumented binaries once, runs the complete
 selected suite across four workers and collects raw LLVM profiles. Each worker
 records source/archive identity, its selected test identities and profile
 hashes. The merge refuses missing, overlapping, corrupted or mixed-source
@@ -72,7 +72,7 @@ changes or release qualification. A passing fast PR result must not be reported
 as a full-suite or coverage result. Full coverage is a suite-wide measurement;
 this design does not invent a smaller PR coverage percentage.
 
-## Stage, verify and activate
+## Rollout and verification
 
 1. Land the staged workflow, selection manifest, scripts and regressions without
    changing the active workflow bytes or their immutable pin.

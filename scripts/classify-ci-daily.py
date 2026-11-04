@@ -13,6 +13,11 @@ spec.loader.exec_module(legacy)
 
 
 def classify(paths, event, force_full=False, coverage=False):
+    if event == "workflow_dispatch" or (event == "pull_request" and force_full):
+        # Explicit full requests must still work after a docs-only/latest
+        # package commit. The legacy classifier intentionally skips light diffs.
+        return {"heavy": True, "docs": True, "full": True, "wasm": True,
+                "native": True, "coverage": bool(coverage), "mode": "full"}
     selected = legacy.classify_paths(paths, force_full=force_full, merge_group=event == "merge_group")
     full = selected.full
     # Main still validates and publishes the exact package artifact. Broad

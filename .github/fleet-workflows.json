@@ -1,6 +1,6 @@
 {
   "benchmark": "fleet-benchmark-v5.yml",
-  "ci": "fleet-ci-v11.yml",
+  "ci": "fleet-ci-v12.yml",
   "fuzz": "fleet-fuzz-v5.yml",
   "gauntlet": "fleet-gauntlet-v5.yml",
   "mutants-sharded": "fleet-mutants-sharded-v6.yml",
