@@ -137,7 +137,7 @@ pub fn fill_images_faces(
         let mut seed = BTreeMap::new();
         let mut canonical_vids: Vec<remus_topology::vertex::VertexId> =
             arena.same_domain_vertices.values().copied().collect();
-        canonical_vids.sort();
+        canonical_vids.compact_sort_unstable();
         canonical_vids.dedup();
         for vid in canonical_vids {
             if let Ok(v) = topo.vertex(vid) {

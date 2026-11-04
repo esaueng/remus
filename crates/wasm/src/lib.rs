@@ -7,6 +7,8 @@
 //! The primary entry point is [`kernel::RemusKernel`], which owns all modeling
 //! state and exposes shape creation, operations, and tessellation to JS.
 
+#![cfg_attr(test, allow(clippy::disallowed_methods))]
+
 use wasm_bindgen::prelude::*;
 
 mod bindings;
