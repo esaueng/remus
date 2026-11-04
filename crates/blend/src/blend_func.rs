@@ -449,9 +449,8 @@ impl BlendFunction for BorrowedEvolRadBlend<'_> {
 /// Two-distance chamfer blend function.
 ///
 /// The chamfer is defined by two distances `d1` and `d2` from the edge,
-/// measured along each surface. The constraint system is:
-/// - `f1 = nplan · (midpoint - guide)` (planarity)
-/// - `f2..f4 = (P1 + d1·npn1) - (P2 + d2·npn2)` (offset matching)
+/// measured in the normal section from the guide to each contact. Each
+/// contact independently lies in that section and at its requested setback.
 #[derive(Debug, Clone)]
 pub struct ChamferBlend {
     /// Distance from edge along surface 1.
@@ -470,32 +469,14 @@ impl BlendFunction for ChamferBlend {
     ) -> [f64; 4] {
         let p1 = surf1.evaluate(params.u1, params.v1);
         let p2 = surf2.evaluate(params.u2, params.v2);
-        let n1 = surf1.normal(params.u1, params.v1);
-        let n2 = surf2.normal(params.u2, params.v2);
-
-        let npn1 = project_normal_to_section(n1, ctx.nplan);
-        let npn2 = project_normal_to_section(n2, ctx.nplan);
-
-        let mid = Point3::new(
-            (p1.x() + p2.x()) * 0.5,
-            (p1.y() + p2.y()) * 0.5,
-            (p1.z() + p2.z()) * 0.5,
-        );
-        let diff = mid - ctx.guide_point;
-        let f1 = ctx.nplan.dot(Vec3::new(diff.x(), diff.y(), diff.z()));
-
-        let c1 = Point3::new(
-            p1.x() + self.d1 * npn1.x(),
-            p1.y() + self.d1 * npn1.y(),
-            p1.z() + self.d1 * npn1.z(),
-        );
-        let c2 = Point3::new(
-            p2.x() + self.d2 * npn2.x(),
-            p2.y() + self.d2 * npn2.y(),
-            p2.z() + self.d2 * npn2.z(),
-        );
-
-        [f1, c1.x() - c2.x(), c1.y() - c2.y(), c1.z() - c2.z()]
+        let delta1 = p1 - ctx.guide_point;
+        let delta2 = p2 - ctx.guide_point;
+        [
+            ctx.nplan.dot(delta1),
+            delta1.length() - self.d1,
+            ctx.nplan.dot(delta2),
+            delta2.length() - self.d2,
+        ]
     }
 
     fn jacobian(
@@ -510,55 +491,15 @@ impl BlendFunction for ChamferBlend {
         let du2 = surf2.partial_u(params.u2, params.v2);
         let dv2 = surf2.partial_v(params.u2, params.v2);
 
-        // Include finite-difference ∂npn/∂u terms for convergence on
-        // curved surfaces (same approach as ConstRadBlend).
-        let h = 1e-7;
-        let dnpn1_du1 =
-            ConstRadBlend::finite_diff_npn(surf1, params.u1, params.v1, h, 0.0, ctx.nplan);
-        let dnpn1_dv1 =
-            ConstRadBlend::finite_diff_npn(surf1, params.u1, params.v1, 0.0, h, ctx.nplan);
-        let dnpn2_du2 =
-            ConstRadBlend::finite_diff_npn(surf2, params.u2, params.v2, h, 0.0, ctx.nplan);
-        let dnpn2_dv2 =
-            ConstRadBlend::finite_diff_npn(surf2, params.u2, params.v2, 0.0, h, ctx.nplan);
-
-        let nplan = ctx.nplan;
-
-        let row0 = [
-            0.5 * nplan.dot(du1),
-            0.5 * nplan.dot(dv1),
-            0.5 * nplan.dot(du2),
-            0.5 * nplan.dot(dv2),
-        ];
-
-        // Rows 1-3: ∂(c1 - c2)/∂(u1,v1,u2,v2)
-        // c1 = P1 + d1*npn1, c2 = P2 + d2*npn2
-        let col0 = Vec3::new(
-            du1.x() + self.d1 * dnpn1_du1.x(),
-            du1.y() + self.d1 * dnpn1_du1.y(),
-            du1.z() + self.d1 * dnpn1_du1.z(),
-        );
-        let col1 = Vec3::new(
-            dv1.x() + self.d1 * dnpn1_dv1.x(),
-            dv1.y() + self.d1 * dnpn1_dv1.y(),
-            dv1.z() + self.d1 * dnpn1_dv1.z(),
-        );
-        let col2 = Vec3::new(
-            -(du2.x() + self.d2 * dnpn2_du2.x()),
-            -(du2.y() + self.d2 * dnpn2_du2.y()),
-            -(du2.z() + self.d2 * dnpn2_du2.z()),
-        );
-        let col3 = Vec3::new(
-            -(dv2.x() + self.d2 * dnpn2_dv2.x()),
-            -(dv2.y() + self.d2 * dnpn2_dv2.y()),
-            -(dv2.z() + self.d2 * dnpn2_dv2.z()),
-        );
-
+        let delta1 = surf1.evaluate(params.u1, params.v1) - ctx.guide_point;
+        let delta2 = surf2.evaluate(params.u2, params.v2) - ctx.guide_point;
+        let direction1 = delta1 * (1.0 / delta1.length().max(f64::MIN_POSITIVE));
+        let direction2 = delta2 * (1.0 / delta2.length().max(f64::MIN_POSITIVE));
         [
-            row0,
-            [col0.x(), col1.x(), col2.x(), col3.x()],
-            [col0.y(), col1.y(), col2.y(), col3.y()],
-            [col0.z(), col1.z(), col2.z(), col3.z()],
+            [ctx.nplan.dot(du1), ctx.nplan.dot(dv1), 0.0, 0.0],
+            [direction1.dot(du1), direction1.dot(dv1), 0.0, 0.0],
+            [0.0, 0.0, ctx.nplan.dot(du2), ctx.nplan.dot(dv2)],
+            [0.0, 0.0, direction2.dot(du2), direction2.dot(dv2)],
         ]
     }
 
@@ -588,6 +529,50 @@ impl BlendFunction for ChamferBlend {
             uv2: (params.u2, params.v2),
             t: ctx.t,
         }
+    }
+}
+
+/// Contacts of the rolling ball whose chord forms an existing ridge bevel.
+///
+/// Ridge handovers and runout are defined by that ball, independently of the
+/// normal-section setback construction used by qualified spline extrusions.
+pub struct BallChordChamferBlend {
+    pub distance: f64,
+}
+
+impl BlendFunction for BallChordChamferBlend {
+    fn value(
+        &self,
+        surf1: &dyn ParametricSurface,
+        surf2: &dyn ParametricSurface,
+        params: &BlendParams,
+        ctx: &BlendContext,
+    ) -> [f64; 4] {
+        ConstRadBlend::value_with_radius(self.distance, surf1, surf2, params, ctx)
+    }
+
+    fn jacobian(
+        &self,
+        surf1: &dyn ParametricSurface,
+        surf2: &dyn ParametricSurface,
+        params: &BlendParams,
+        ctx: &BlendContext,
+    ) -> [[f64; 4]; 4] {
+        ConstRadBlend::jacobian_with_radius(self.distance, surf1, surf2, params, ctx)
+    }
+
+    fn section(
+        &self,
+        surf1: &dyn ParametricSurface,
+        surf2: &dyn ParametricSurface,
+        params: &BlendParams,
+        ctx: &BlendContext,
+    ) -> CircSection {
+        ChamferBlend {
+            d1: self.distance,
+            d2: self.distance,
+        }
+        .section(surf1, surf2, params, ctx)
     }
 }
 
@@ -931,46 +916,18 @@ mod tests {
     fn chamfer_residual_at_known_solution() {
         let (p1, p2) = make_test_planes();
         let d1 = 3.0;
-        let d2 = 3.0;
+        let d2 = 2.0;
         let y = 5.0;
 
         let blend = ChamferBlend { d1, d2 };
         let ctx = make_test_context(y);
 
-        // Same as fillet: contact at (d1, y, 0) and (0, y, d2)
-        // npn1 for plane1 (normal=(0,0,1), nplan=(0,1,0)):
-        //   cross = (0,1,0)×(0,0,1) = (1,0,0)
-        //   npn = (1,0,0)×(0,1,0) = (0,0,1) → same as normal, sign positive
-        //   Wait: cross×nplan = (1,0,0)×(0,1,0) = (0,0,1)
-        //   npn1 = (0,0,1), length=1, dot(normal, npn)=1 → keep sign → (0,0,1)
-        // npn2 for plane2 (normal=(-1,0,0)):
-        //   cross = (0,1,0)×(-1,0,0) = (0,0,1)
-        //   npn = (0,0,1)×(0,1,0) = ... wait let me recalc
-        //   cross = nplan × normal = (0,1,0)×(-1,0,0) = (0·0 - 0·0, 0·(-1) - 1·0, 1·0 - 0·(-1)) = (0,0,1)
-        //   npn = cross × nplan = (0,0,1)×(0,1,0) = (0·0-1·1, 1·0-0·0, 0·1-0·0) = (-1,0,0)
-        //   dot(normal, npn) = (-1)·(-1)+0+0 = 1 ≥ 0 → keep sign → (-1,0,0)
-        // c1 = P1 + d1*npn1 = (d1, y, 0) + d1*(0,0,1) = (d1, y, d1)
-        // c2 = P2 + d2*npn2 = (0, y, d2) + d2*(-1,0,0) = (-d2, y, d2)
-        // c1 - c2 = (d1+d2, 0, d1-d2)
-        // For symmetric chamfer (d1=d2): (2d, 0, 0) ≠ 0
-        // So for chamfer, the constraint is different from fillet!
-        // The chamfer solution would be where c1 = c2.
-        // (d1, y, d1) = (-d2, y, d2) → d1 = -d2 (impossible for positive distances)
-        // This means the symmetric chamfer on 90° planes doesn't have a solution with this
-        // formulation. The chamfer formulation works differently from fillet.
-        // For chamfer, let me just verify the Jacobian matches FD instead.
-
-        // With npn1=(0,0,1), npn2=(1,0,0):
-        // c1 = (u1, v1, d1), c2 = (d2, u2, v2)
-        // c1=c2: u1=d2, v1=u2, d1=v2
-        // Planarity: mid_y = y → v1 = y (since v1=u2)
-        // So: u1=d2, v1=y, u2=y, v2=d1
-
+        // Independent setbacks on the two perpendicular supports.
         let params = BlendParams {
-            u1: d2,
+            u1: d1,
             v1: y,
             u2: y,
-            v2: d1,
+            v2: d2,
         };
 
         let res = blend.value(&p1, &p2, &params, &ctx);
@@ -1008,6 +965,53 @@ mod tests {
                 (res_angle[i] - res_chamfer[i]).abs() < 1e-14,
                 "ChamferAngle should delegate to ChamferBlend with d2=d*tan(a)"
             );
+        }
+    }
+
+    #[test]
+    fn chamfer_jacobian_matches_finite_differences_and_rejects_skew_sections() {
+        let (s1, s2) = make_test_planes();
+        let blend = ChamferBlend { d1: 3.0, d2: 2.0 };
+        let ctx = make_test_context(5.0);
+        let params = BlendParams {
+            u1: 3.1,
+            v1: 4.7,
+            u2: 5.3,
+            v2: 2.1,
+        };
+        let jac = blend.jacobian(&s1, &s2, &params, &ctx);
+        let residual = blend.value(&s1, &s2, &params, &ctx);
+        assert!(
+            residual[0].abs() > 0.2 && residual[2].abs() > 0.2,
+            "contacts must each lie in the section"
+        );
+        for column in 0..4 {
+            let mut plus = params;
+            let mut minus = params;
+            let h = 1e-6;
+            match column {
+                0 => {
+                    plus.u1 += h;
+                    minus.u1 -= h;
+                }
+                1 => {
+                    plus.v1 += h;
+                    minus.v1 -= h;
+                }
+                2 => {
+                    plus.u2 += h;
+                    minus.u2 -= h;
+                }
+                _ => {
+                    plus.v2 += h;
+                    minus.v2 -= h;
+                }
+            }
+            let a = blend.value(&s1, &s2, &plus, &ctx);
+            let b = blend.value(&s1, &s2, &minus, &ctx);
+            for row in 0..4 {
+                assert!((jac[row][column] - (a[row] - b[row]) / (2.0 * h)).abs() < 1e-8);
+            }
         }
     }
 }

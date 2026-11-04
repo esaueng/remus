@@ -1025,8 +1025,19 @@ pub fn trim_face_general(
     let face = topo.face(face_id)?;
     let surface = face.surface().clone();
 
-    // Planar path: construct UV from plane frame and delegate
-    if let FaceSurface::Plane { normal, d } = &surface {
+    // Only straight contacts may use the endpoint-line trimmer. A curved
+    // planar contact must retain its complete carrier, just like a contact
+    // on a curved support, or the cap closes along a different chord.
+    let chord = contact_3d[1] - contact_3d[0];
+    let chord_length = chord.length();
+    let straight = chord_length > 0.0
+        && contact.control_points().iter().all(|p| {
+            ((*p - contact_3d[0]).cross(chord)).length()
+                <= remus_math::tolerance::Tolerance::new().linear * chord_length
+        });
+    if let FaceSurface::Plane { normal, d } = &surface
+        && straight
+    {
         let arbitrary = if normal.x().abs() < 0.9 {
             remus_math::vec::Vec3::new(1.0, 0.0, 0.0)
         } else {

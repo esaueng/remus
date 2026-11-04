@@ -1,11 +1,12 @@
 //! Chamfer builder: orchestrates the full chamfer pipeline.
 //!
 //! Supports symmetric, asymmetric, and distance-angle chamfer modes on
-//! planar face pairs (v1). Reuses the analytic fast path and face trimming
-//! infrastructure from the fillet pipeline.
+//! analytic face pairs and proven spline extrusion supports. Retains exact
+//! source carriers and shares trimmed contact and end-cap edges.
 
 use std::collections::HashSet;
 
+use remus_math::compact_sort::CompactSort;
 use remus_math::curves::Circle3D;
 use remus_math::det_hash::DetHashMap;
 use remus_math::vec::{Point3, Vec3};
@@ -21,11 +22,11 @@ use crate::analytic;
 use crate::body_edit::EditScope;
 use crate::builder_utils::{
     add_certified_curve_edge, project_onto_axis, radial_distance, refuse_non_line_rim_neighbors,
-    sample_nurbs_endpoints, wire_axial_range, wire_radial_extremum,
+    wire_axial_range, wire_radial_extremum,
 };
 use crate::spine::Spine;
 use crate::stripe::{Stripe, StripeResult};
-use crate::trimmer::{self, TrimKeep, TrimSide};
+use crate::trimmer::{self, TrimKeep};
 use crate::{BlendError, BlendFaceOrigins, BlendResult};
 
 /// Internal representation of a chamfer edge set with its distance parameters.
@@ -265,6 +266,7 @@ impl<'a> ChamferBuilder<'a> {
                     succeeded.push(*edge_id);
                 }
                 Err(e) => {
+                    log::debug!("chamfer stripe {edge_id:?} refused: {e}");
                     failed.push((*edge_id, e));
                 }
             }
@@ -335,42 +337,17 @@ impl<'a> ChamferBuilder<'a> {
             let stripe = &sr.stripe;
             stripe_contact_edges.push((None, None));
 
-            let contact1_pts = sample_nurbs_endpoints(&stripe.contact1);
-            let contact2_pts = sample_nurbs_endpoints(&stripe.contact2);
-
-            let keep_side1 =
-                if let (Some(sec), Ok(face)) = (stripe.sections.first(), topo.face(stripe.face1)) {
-                    let n = face.surface().normal(0.0, 0.0);
-                    if n.dot(sec.center - sec.p1) > 0.0 {
-                        TrimSide::Right
-                    } else {
-                        TrimSide::Left
-                    }
-                } else {
-                    TrimSide::Right
-                };
-            let keep_side2 =
-                if let (Some(sec), Ok(face)) = (stripe.sections.first(), topo.face(stripe.face2)) {
-                    let n = face.surface().normal(0.0, 0.0);
-                    if n.dot(sec.center - sec.p2) > 0.0 {
-                        TrimSide::Right
-                    } else {
-                        TrimSide::Left
-                    }
-                } else {
-                    TrimSide::Right
-                };
+            let keep = TrimKeep::AwayFrom(stripe.spine.evaluate(topo, 0.0)?);
 
             let current_face1 = face_replacements
                 .get(&stripe.face1)
                 .copied()
                 .unwrap_or(stripe.face1);
-            let trim1 = trimmer::trim_face(
+            let trim1 = trimmer::trim_face_general(
                 topo,
                 current_face1,
-                &contact1_pts,
-                &[(0.0, 0.0), (1.0, 0.0)],
-                TrimKeep::Side(keep_side1),
+                &stripe.contact1,
+                keep,
                 stripe.spine.edges(),
                 &mut scope.edit(&mut face_replacements),
             );
@@ -391,12 +368,11 @@ impl<'a> ChamferBuilder<'a> {
                 .get(&stripe.face2)
                 .copied()
                 .unwrap_or(stripe.face2);
-            let trim2 = trimmer::trim_face(
+            let trim2 = trimmer::trim_face_general(
                 topo,
                 current_face2,
-                &contact2_pts,
-                &[(0.0, 0.0), (1.0, 0.0)],
-                TrimKeep::Side(keep_side2),
+                &stripe.contact2,
+                keep,
                 stripe.spine.edges(),
                 &mut scope.edit(&mut face_replacements),
             );
@@ -416,6 +392,7 @@ impl<'a> ChamferBuilder<'a> {
 
         let mut blend_face_ids: Vec<FaceId> = rim_band_faces;
 
+        let mut cross_sections = Vec::new();
         for (si, sr) in regular.iter().enumerate() {
             // Reuse the trimmed neighbours' contact edges (mirrors the fillet
             // builder): a freshly minted duplicate leaves both copies use-1
@@ -424,11 +401,44 @@ impl<'a> ChamferBuilder<'a> {
                 .get(si)
                 .copied()
                 .unwrap_or((None, None));
-            let blend_face_id =
-                crate::builder_utils::create_blend_face_with_contacts(topo, &sr.stripe, c1, c2)?
-                    .face;
-            blend_face_ids.push(blend_face_id);
-            blend_face_origins.push((blend_face_id, vec![sr.stripe.face1, sr.stripe.face2]));
+            let mut info =
+                crate::builder_utils::create_blend_face_with_contacts(topo, &sr.stripe, c1, c2)?;
+            crate::chamfer_spline_rim::orient_surface(topo, info.face, &sr.stripe)?;
+            let neighbor = face_replacements
+                .get(&sr.stripe.face1)
+                .copied()
+                .unwrap_or(sr.stripe.face1);
+            info.face = crate::chamfer_extrusion::orient_band(topo, info.face, neighbor)?;
+            blend_face_ids.push(info.face);
+            blend_face_origins.push((info.face, vec![sr.stripe.face1, sr.stripe.face2]));
+            let edge = topo.edge(sr.stripe.spine.edges()[0])?;
+            cross_sections.push((
+                info.cross_start,
+                edge.start(),
+                sr.stripe.spine.tangent(topo, 0.0)?,
+            ));
+            cross_sections.push((
+                info.cross_end,
+                edge.end(),
+                sr.stripe.spine.tangent(topo, sr.stripe.spine.length())?,
+            ));
+        }
+
+        // End caps share the band's cross edges, including when the removed
+        // corner path contains an original curved profile segment.
+        for (cross, corner, axis) in cross_sections {
+            for &original in &original_faces {
+                let current = face_replacements
+                    .get(&original)
+                    .copied()
+                    .unwrap_or(original);
+                if let Some(face) =
+                    crate::chamfer_extrusion::notch_cap(topo, current, cross, corner, axis)?
+                {
+                    face_replacements.insert(original, face);
+                    break;
+                }
+            }
         }
 
         let mut result_faces: Vec<FaceId> = Vec::new();
@@ -441,12 +451,28 @@ impl<'a> ChamferBuilder<'a> {
             }
         }
 
-        for &fid in &touched_faces {
+        let mut touched_in_order: Vec<_> = touched_faces.iter().copied().collect();
+        touched_in_order.compact_sort_unstable();
+        for fid in touched_in_order {
             let replacement = face_replacements.get(&fid).copied();
             result_faces.push(replacement.unwrap_or(fid));
         }
 
         result_faces.extend(&blend_face_ids);
+
+        if regular.iter().any(|sr| {
+            [sr.stripe.face1, sr.stripe.face2].iter().any(|&f| {
+                topo.face(f)
+                    .is_ok_and(|f| matches!(f.surface(), FaceSurface::Nurbs(_)))
+            })
+        }) {
+            let changed: Vec<_> = result_faces
+                .iter()
+                .copied()
+                .filter(|f| !original_faces.contains(f))
+                .collect();
+            crate::chamfer_extrusion::register_pcurves(topo, &changed)?;
+        }
 
         // Provenance, straight from the bookkeeping above: an untouched face is
         // itself, a trimmed one is its replacement, and each chamfer band names
@@ -529,17 +555,27 @@ fn compute_chamfer_stripe(
         return Ok(result);
     }
 
+    if let Some(result) =
+        crate::chamfer_extrusion::stripe(topo, adjacency, spine.clone(), face1, face2, d1, d2)?
+    {
+        return Ok(result);
+    }
+    if let Some(result) =
+        crate::chamfer_spline_rim::stripe(topo, adjacency, spine, face1, face2, d1, d2)?
+    {
+        return Ok(result);
+    }
+
     log::debug!(
         target: "remus_approx",
-        "chamfer: analytic path unavailable for {}+{} — v1 has no walker fallback, returning UnsupportedSurface",
+        "chamfer: no qualified construction for {}+{}",
         surf1.type_tag(),
         surf2.type_tag()
     );
-    // v1: no walker fallback for non-analytic surface pairs.
     Err(BlendError::UnsupportedSurface {
         face: face1,
         surface_tag: format!(
-            "{}+{} (walker not yet integrated)",
+            "{}+{} (outside qualified chamfer constructions)",
             surf1.type_tag(),
             surf2.type_tag()
         ),
@@ -1222,8 +1258,8 @@ mod tests {
 
         let mut builder = ChamferBuilder::new(&mut topo, solid);
         builder.add_edges_symmetric(&[target_edge], 0.1);
-        let result = builder.build();
-        assert!(matches!(result, Err(BlendError::TrimmingFailure { .. })));
+        let result = builder.build().unwrap();
+        assert_chamfer(&topo, solid, target_edge, &result);
         assert_eq!(original_face_count, 6);
     }
 
@@ -1242,8 +1278,8 @@ mod tests {
 
         let mut builder = ChamferBuilder::new(&mut topo, solid);
         builder.add_edges_distance_angle(&[target_edge], distance, angle);
-        let result = builder.build();
-        assert!(matches!(result, Err(BlendError::TrimmingFailure { .. })));
+        let result = builder.build().unwrap();
+        assert_chamfer(&topo, solid, target_edge, &result);
         assert_eq!(original_face_count, 6);
     }
 
@@ -1255,5 +1291,28 @@ mod tests {
         let builder = ChamferBuilder::new(&mut topo, solid);
         let result = builder.build();
         assert!(result.is_err(), "empty edge set should produce an error");
+    }
+
+    fn assert_chamfer(topo: &Topology, input: SolidId, edge: EdgeId, result: &BlendResult) {
+        assert_ne!(result.solid, input);
+        assert!(!result.is_partial && result.failed.is_empty());
+        assert_eq!(result.succeeded, vec![edge]);
+        let shell = topo
+            .shell(topo.solid(result.solid).unwrap().outer_shell())
+            .unwrap();
+        assert_eq!(shell.faces().len(), 7);
+        remus_topology::validation::validate_shell_closed(shell, topo).unwrap();
+        remus_topology::validation::validate_shell_manifold(shell, topo).unwrap();
+        assert_eq!(
+            topo.shell(topo.solid(input).unwrap().outer_shell())
+                .unwrap()
+                .faces()
+                .len(),
+            6
+        );
+        let origins = result.face_origins.as_ref().unwrap();
+        assert_eq!(origins.survived.len(), 6);
+        assert_eq!(origins.created.len(), 1);
+        assert!(origins.created_unattributed.is_empty());
     }
 }

@@ -40,7 +40,7 @@ use remus_topology::vertex::VertexId;
 use remus_topology::wire::{OrientedEdge, Wire};
 
 use crate::analytic::edge_material_frames_at;
-use crate::blend_func::{BlendFunction, BlendParams, ChamferBlend, ConstRadBlend};
+use crate::blend_func::{BallChordChamferBlend, BlendFunction, BlendParams, ConstRadBlend};
 use crate::body_edit::EditScope;
 use crate::builder_utils::{
     FlippedNormalSurface, PlaneAdapter, add_certified_curve_edge, surface_ref_or_adapter,
@@ -349,14 +349,9 @@ fn blend_one(
         };
         match blend {
             RidgeBlend::Fillet(radius) => march(&context, &ConstRadBlend { radius }, size)?,
-            RidgeBlend::Chamfer(distance) => march(
-                &context,
-                &ChamferBlend {
-                    d1: distance,
-                    d2: distance,
-                },
-                size,
-            )?,
+            RidgeBlend::Chamfer(distance) => {
+                march(&context, &BallChordChamferBlend { distance }, size)?
+            }
         }
     };
     let mut sections = march.sections;

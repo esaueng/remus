@@ -116,13 +116,6 @@ fn generated_edge(
     }
 }
 
-/// Sample the start and end points of a NURBS curve.
-#[must_use]
-pub fn sample_nurbs_endpoints(curve: &NurbsCurve) -> Vec<Point3> {
-    let (t0, t1) = curve.domain();
-    vec![curve.evaluate(t0), curve.evaluate(t1)]
-}
-
 fn contact_geometry_matches(
     edge_curve: &EdgeCurve,
     edge_start: Point3,

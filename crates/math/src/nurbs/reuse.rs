@@ -7,6 +7,62 @@ use crate::MathError;
 use crate::context::OperationContext;
 use crate::diagnostic::{Diagnostic, FailureCategory, ToDiagnostic};
 
+/// Whole-interval bounds between two rational curves in the same parameter.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CurveDifferenceBounds {
+    /// Upper bound on position difference in model units.
+    pub position: f64,
+    /// Upper bound on first-derivative difference per parameter unit.
+    pub derivative: f64,
+    /// Charged coefficient and control-net work.
+    pub work_used: usize,
+}
+
+/// Certify two curves on a common parameter interval without modifying them.
+///
+/// Outward-rounded Bernstein cross products cover every common knot span,
+/// including curves with different degrees, weights or knot refinements.
+///
+/// # Errors
+/// Returns typed refusals for unsupported domains, unavailable finite bounds,
+/// cancellation and exhausted work. Sampling is never an acceptance test.
+pub fn bound_curve_difference(
+    original: &super::NurbsCurve,
+    candidate: &super::NurbsCurve,
+    range: (f64, f64),
+    max_work: usize,
+    context: &OperationContext,
+) -> Result<CurveDifferenceBounds, ReuseError> {
+    let mut budget = ReuseBudget::new(max_work, context)?;
+    let bound =
+        super::reuse_bounds::curve_difference_on_interval(original, candidate, range, &mut budget)?;
+    Ok(CurveDifferenceBounds {
+        position: bound.position,
+        derivative: bound.derivative,
+        work_used: budget.used(),
+    })
+}
+
+/// Certify only the position difference on a shared native interval.
+///
+/// Uses the same whole-span rational Bernstein certificate as
+/// [`bound_curve_difference`], without charging for an unused derivative bound.
+/// Neither input carrier is modified.
+///
+/// # Errors
+/// Returns typed refusals for unsupported domains, unavailable finite bounds,
+/// cancellation and exhausted work.
+pub fn bound_curve_position(
+    original: &super::NurbsCurve,
+    candidate: &super::NurbsCurve,
+    range: (f64, f64),
+    max_work: usize,
+    context: &OperationContext,
+) -> Result<f64, ReuseError> {
+    let mut budget = ReuseBudget::new(max_work, context)?;
+    super::reuse_bounds::curve_position_on_interval(original, candidate, range, &mut budget)
+}
+
 /// Limits for an explicit curve or surface reduction request.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ReductionOptions {
@@ -199,6 +255,59 @@ mod tests {
 
     use super::*;
     use crate::context::CancellationToken;
+
+    #[test]
+    fn public_difference_certificate_covers_refinement_and_displacement() {
+        use crate::nurbs::{NurbsCurve, curve_knot_insert};
+        use crate::vec::{Point3, Vec3};
+        let original = NurbsCurve::new(
+            2,
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            vec![
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(1.0, 2.0, 0.0),
+                Point3::new(3.0, 0.0, 0.0),
+            ],
+            vec![1.0, 0.7, 1.0],
+        )
+        .unwrap();
+        let refined = curve_knot_insert(&original, 0.4, 1).unwrap();
+        let context = OperationContext::new();
+        let bound =
+            bound_curve_difference(&original, &refined, (0.1, 0.9), 100_000, &context).unwrap();
+        assert!(bound.position < 1e-9 && bound.derivative < 1e-8 && bound.work_used > 0);
+        let position = bound_curve_position(
+            &original,
+            &refined,
+            (0.1, 0.9),
+            bound.work_used - 1,
+            &context,
+        )
+        .unwrap();
+        assert!(position < 1e-9);
+        let shifted = NurbsCurve::new(
+            refined.degree(),
+            refined.knots().to_vec(),
+            refined
+                .control_points()
+                .iter()
+                .map(|&p| p + Vec3::new(0.0, 0.0, 0.1))
+                .collect(),
+            refined.weights().to_vec(),
+        )
+        .unwrap();
+        let bound =
+            bound_curve_difference(&original, &shifted, (0.1, 0.9), 100_000, &context).unwrap();
+        assert!(bound.position >= 0.1 && bound.position < 0.3, "{bound:?}");
+        assert!(
+            bound_curve_position(&original, &shifted, (0.1, 0.9), 100_000, &context).unwrap()
+                >= 0.1
+        );
+        assert!(matches!(
+            bound_curve_difference(&original, &refined, (0.1, 0.9), 1, &context),
+            Err(ReuseError::WorkLimit { .. })
+        ));
+    }
 
     #[test]
     fn options_reject_nonpositive_nonfinite_values() {
