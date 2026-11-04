@@ -568,9 +568,6 @@ struct ClosedRimInfo {
     /// Which of the cap's boundaries the rim forms, and so which one the plate
     /// contact replaces.
     cap_rim_wire: CapRimWire,
-    /// Whether the rim is convex: the bevel takes material away, rather than
-    /// filling a concave corner such as a boss's foot.
-    convex: bool,
 }
 
 /// Which boundary of the cap face the rim edge forms.
@@ -779,14 +776,6 @@ fn closed_rim_info(topo: &Topology, stripe: &Stripe) -> Result<Option<ClosedRimI
         }
     }
 
-    // As in the fillet twin: a rim on the cap's outer loop is convex when the
-    // wall carries material inside it (a frustum or cylinder cap), one on an
-    // inner loop when the wall is a reversed hole wall (a bore or
-    // countersink mouth). The other two are concave: a pocket floor and a
-    // boss foot.
-    let convex =
-        matches!(cap_rim_wire, CapRimWire::Inner(_)) == topo.face(wall_face)?.is_reversed();
-
     Ok(Some(ClosedRimInfo {
         plane_face,
         wall_face,
@@ -794,7 +783,6 @@ fn closed_rim_info(topo: &Topology, stripe: &Stripe) -> Result<Option<ClosedRimI
         plate_circle,
         wall_circle,
         cap_rim_wire,
-        convex,
     }))
 }
 
@@ -1103,7 +1091,7 @@ fn assemble_closed_rim(
     // down). The seam runs plate_v → wall_v, so this fixed order always closes.
     // The shared circle edges are used opposite to the standard-wound cap and
     // wall, keeping the shell manifold.
-    let band_reversed = cone_band_needs_reversal(&stripe.surface, rim);
+    let band_reversed = cone_band_needs_reversal(topo, &stripe.surface, rim)?;
     let cap_effective_forward = cap_forward != plane_reversed;
     let wall_effective_forward = wall_forward != wall_reversed;
     let band_plate_forward = cap_effective_forward == band_reversed;
@@ -1132,32 +1120,68 @@ fn assemble_closed_rim(
 ///
 /// Mirrors `torus_band_needs_reversal` in `fillet_builder`: the band's outward
 /// axial direction is the one pointing from the wall contact back toward the
-/// plate on a convex rim (away from it on a concave one), and the band is
-/// reversed when the surface's geometric normal at the mid-generator point
-/// opposes it.
-fn cone_band_needs_reversal(surface: &FaceSurface, rim: &ClosedRimInfo) -> bool {
+/// plate, and the band is reversed when the surface's geometric normal at the
+/// mid-generator point opposes it. That rule is tied to how the plate–cylinder
+/// and frustum-cap arms orient their cones, so it stays theirs.
+///
+/// A cone wall whose rim is a hole in the plate (a countersink's entry, a
+/// frustum boss's foot) comes from the plate-past-the-rim construction, and a
+/// concave one fills its corner, which that axial rule gets backwards. There
+/// the band's outward normal is read directly: a bevel faces between the two
+/// faces it replaces, so its normal agrees with the sum of theirs at the
+/// contacts, convex or concave.
+///
+/// # Errors
+///
+/// Returns [`BlendError`] if a support face cannot be read or the wall
+/// contact does not project onto the wall.
+fn cone_band_needs_reversal(
+    topo: &Topology,
+    surface: &FaceSurface,
+    rim: &ClosedRimInfo,
+) -> Result<bool, BlendError> {
+    use remus_math::traits::ParametricSurface;
     let FaceSurface::Cone(cone) = surface else {
-        return false;
+        return Ok(false);
     };
-    let axis = cone.axis();
-    let to_plate = rim.plate_circle.center() - rim.wall_circle.center();
-    // The empty side is toward the plate on a convex rim; a concave bevel
-    // fills the corner, so its empty side is the axial opposite.
-    let mut outward_axial = axis * axis.dot(to_plate);
-    if !rim.convex {
-        outward_axial = -outward_axial;
-    }
-    // Midpoint of the straight generator between the two contacts.
     let plate_pt = rim.plate_circle.evaluate(0.0);
     let wall_pt = rim.wall_circle.evaluate(0.0);
+    // Midpoint of the straight generator between the two contacts.
     let mid = Point3::new(
         (plate_pt.x() + wall_pt.x()) * 0.5,
         (plate_pt.y() + wall_pt.y()) * 0.5,
         (plate_pt.z() + wall_pt.z()) * 0.5,
     );
-    let (u, v) = remus_math::traits::ParametricSurface::project_point(cone, mid);
-    let n = remus_math::traits::ParametricSurface::normal(cone, u, v);
-    n.dot(outward_axial) < 0.0
+    let (u, v) = ParametricSurface::project_point(cone, mid);
+    let n = ParametricSurface::normal(cone, u, v);
+
+    let wall = topo.face(rim.wall_face)?;
+    let past_rim = matches!(rim.cap_rim_wire, CapRimWire::Inner(_))
+        && matches!(wall.surface(), FaceSurface::Cone(_));
+    if !past_rim {
+        let axis = cone.axis();
+        let to_plate = rim.plate_circle.center() - rim.wall_circle.center();
+        return Ok(n.dot(axis * axis.dot(to_plate)) < 0.0);
+    }
+    let plate = topo.face(rim.plane_face)?;
+    // A plane's normal ignores `(u, v)`.
+    let mut outward_sum = plate.surface().normal(0.0, 0.0);
+    if plate.is_reversed() {
+        outward_sum = -outward_sum;
+    }
+    let (wu, wv) = wall
+        .surface()
+        .project_point(wall_pt)
+        .ok_or(BlendError::TrimmingFailure {
+            face: rim.wall_face,
+        })?;
+    let wall_normal = wall.surface().normal(wu, wv);
+    outward_sum += if wall.is_reversed() {
+        -wall_normal
+    } else {
+        wall_normal
+    };
+    Ok(n.dot(outward_sum) < 0.0)
 }
 
 #[cfg(test)]

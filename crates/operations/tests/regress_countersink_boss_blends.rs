@@ -313,3 +313,35 @@ fn boss_foot_chamfer_adds_the_exact_cone() {
     );
     assert_close(change, added);
 }
+
+/// The closed-rim band orientation now reads the support normals for a cone
+/// wall past the rim; a concave rim on a cylinder wall keeps the established
+/// axial rule. A blind pocket's floor rim is that case: its chamfer fills the
+/// corner between floor and wall.
+#[test]
+fn blind_pocket_floor_chamfer_fills_its_corner() {
+    let (radius, floor, distance) = (5.0, 4.0, 1.0_f64);
+    let mut topo = Topology::new();
+    let plate = make_box(&mut topo, 40.0, 40.0, 10.0).unwrap();
+    let tool = remus_operations::primitives::make_cylinder(&mut topo, radius, 10.0).unwrap();
+    let tool =
+        copy_and_transform_solid(&mut topo, tool, &Mat4::translation(20.0, 20.0, floor)).unwrap();
+    let solid = boolean(&mut topo, BooleanOp::Cut, plate, tool).unwrap();
+    let rim = circle_edge(&topo, solid, radius, floor);
+    let added = revolved_volume(&[
+        (radius, floor),
+        (radius - distance, floor),
+        (radius, floor + distance),
+    ]);
+    let change = blended_volume_change(
+        &mut topo,
+        solid,
+        |topo| {
+            let result = chamfer_v2(topo, solid, &[rim], distance, distance).unwrap();
+            assert!(!result.is_partial);
+            result.solid
+        },
+        |surface| matches!(surface, FaceSurface::Cone(_)),
+    );
+    assert_close(change, added);
+}
