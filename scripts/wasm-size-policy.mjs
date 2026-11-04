@@ -27,10 +27,10 @@ const MIB = 1024 * 1024;
 const WASM_HEADER = Uint8Array.from([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
 
 export const KERNEL_WASM_POLICY = Object.freeze({
-  rawReviewBytes: 11 * MIB,
-  rawHardBytes: 12 * MIB,
-  gzipHardBytes: 4.5 * MIB,
-  brotliReviewBytes: 3 * MIB,
+  rawReviewBytes: 15 * MIB,
+  rawHardBytes: 16 * MIB,
+  gzipHardBytes: 6 * MIB,
+  brotliReviewBytes: 4 * MIB,
   brotliQuality: 11,
 });
 

@@ -303,7 +303,8 @@ gates green and the same seven-point evidence.
    module at idle so first use is not slower, and the split ships only if it
    removes at least 250 KiB from the core after the duplicated shared code is
    counted.
-5. **W7** stays deferred until H4/H5 capabilities land.
+5. **W7** stays deferred until H4/H5 capabilities land. *Revised 2026-11-04:*
+   W7 is approved now; see [ceiling step 2](#ceiling-step-2-2026-11-04).
 
 ## Outcomes (2026-10-13)
 
@@ -322,7 +323,7 @@ bytes against main's kernel (raw 10,484,484 / gzip 3,673,721).
 | W4 lazy modules | **No candidate passes the combined size-and-speed bar.** The sketch solver split clears 250 KiB at today's optimization level (254 KiB; 151 KiB only under a size profile, which W0.1 rejects), but its 1.5–2 µs module round trip makes 10-parameter solves 5–10% slower. Repair + analysis + NURBS reuse + projection together: 175 KiB. A prototype is kept unpublished for a later re-check if the solver grows by about 100 KiB. |
 | W5 tier rule | PR #1027. |
 | W6 load gates | OpenZCAD #657: desktop cold ≈ 47–77 ms p95, mobile-class cold ≈ 3.5 s p95 (download-dominated, ≈ +89 ms per 100 KB gzip); review budgets 110/110 ms desktop and 3,800/150 ms mobile, cold/warm. |
-| W7 | Deferred to H4/H5 (owner decision 5). |
+| W7 | Approved 2026-11-04 ahead of H4/H5 (owner decision 5 revised); see [ceiling step 2](#ceiling-step-2-2026-11-04). |
 
 With #1029 and #1031 the kernel is estimated at about 9.46 MB raw / 3.49 MB gzip (the
 two PRs were measured separately and change disjoint code; the combined build is not yet measured). From
@@ -418,3 +419,44 @@ Committed kernel package v2026.1.115 (`264fe67`), measured with
   remains. Trimming cannot keep pace with growth, so the remaining levers are
   the ceiling, a growth budget and structural splitting
   ([evidence](../performance/evidence/kernel-size-attribution-2026-11-04/README.md)).
+
+## Ceiling step 2 (2026-11-04)
+
+The owner approved W7 on 2026-11-04, ahead of H4/H5, when the kernel was
+193,193 B under the step-1 gzip hard limit and growing about 0.5 MB gzip per
+week ([status](#status-2026-11-04)). The change is paired with OpenZCAD's
+`KERNEL_WASM_POLICY` and its `docs/kernel-wasm-size-policy.md`, which records
+the seven-point evidence.
+
+| Control | Step 1 | Step 2 |
+| --- | ---: | ---: |
+| Raw review | 11 MiB | 15 MiB |
+| Raw hard | 12 MiB | 16 MiB |
+| Gzip hard | 4.5 MiB | 6 MiB |
+| Brotli review | 3 MiB | 4 MiB |
+
+W7 named only the hard limits. The review limits keep step 1's spacing: raw
+review 1 MiB below the hard limit, Brotli review at two thirds of the gzip
+hard limit.
+
+**Load time at the raise.** This was measured with OpenZCAD's
+`measure-remus-wasm-load.mjs --package`, 20 alternated samples, kernel-ready
+only, on the Linux container that made this change. It compares v2026.1.116
+(12,088,063 B raw, 4.32 MiB transferred) with v2026.1.58, the package the
+load budgets were set from:
+
+| Profile | v2026.1.58 p50 / p95 | v2026.1.116 p50 / p95 | Review budget |
+| --- | ---: | ---: | ---: |
+| Desktop cold | 129.6 / 163.4 ms | 156.7 / 177.4 ms | 110 ms |
+| Desktop warm | 98.8 / 115.7 ms | 126.1 / 147.8 ms | 110 ms |
+| Mobile-class cold | 3,773 / 3,972 ms | 4,782 / 4,908 ms | 3,800 ms |
+| Mobile-class warm | 463 / 709 ms | 625 / 1,515 ms | 150 ms |
+
+This host is slower than the one that set the budgets: v2026.1.58 measured
+3.97 s mobile cold p95 here against about 3.5 s there. Even so, the kernel
+already exceeds the mobile cold review budget before the raise, and cold load
+grew about 21% on desktop and 27% on mobile since step 1. The policy text
+lets a ceiling rise only while the load budgets stay green; this raise is an
+explicit owner exception to that rule. At about 89 ms per 100 KB of gzip,
+filling the new 6 MiB gzip ceiling adds roughly 1.5 s more to mobile cold
+load. At the current growth rate the new ceiling lasts about five weeks.

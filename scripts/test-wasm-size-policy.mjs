@@ -36,10 +36,10 @@ function tempFile(t, name, contents) {
 
 test('limits mirror the consumer kernel policy', () => {
   assert.deepEqual(P, {
-    rawReviewBytes: 11 * MIB,
-    rawHardBytes: 12 * MIB,
-    gzipHardBytes: 4.5 * MIB,
-    brotliReviewBytes: 3 * MIB,
+    rawReviewBytes: 15 * MIB,
+    rawHardBytes: 16 * MIB,
+    gzipHardBytes: 6 * MIB,
+    brotliReviewBytes: 4 * MIB,
     brotliQuality: 11,
   });
   assert(Object.isFrozen(P));
