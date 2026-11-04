@@ -48,3 +48,25 @@ std sorts are still the largest monomorphization family.
 
 The duplication lever is close to exhausted: everything found here is about
 four hours of growth at the current rate.
+
+## Speed check for the sort change
+
+Instruction counts (`valgrind --tool=cachegrind --cache-sim=no`, one sample
+and one warm-up of `crates/wasm/examples/performance_baseline`, profiling
+build) for `main` (`84bf696`) against this change. Wall-clock medians in this
+container varied by about 2× between runs, so they are not used.
+
+| Case | main | this change | Δ |
+| --- | ---: | ---: | ---: |
+| native_bool_fuse 50 | 30,152,658 | 30,171,720 | +0.06% |
+| native_bool_fuse 200 | 108,723,990 | 108,488,873 | −0.22% |
+| native_bool_fuse 400 | 210,338,098 | 210,390,677 | +0.02% |
+| native_bool_refused 200 | 106,308,282 | 106,229,174 | −0.07% |
+| native_bool_refused 400 | 207,358,347 | 207,415,577 | +0.03% |
+| native_chain 512 | 9,765,370 | 9,765,061 | −0.00% |
+| native_chain 2048 | 36,875,428 | 36,875,185 | −0.00% |
+
+The differences run both ways and stay within 0.22%. The converted sites are
+cold: a debug log line, heal report strings, journal scope keys, one
+duplicate-key check in the rectilinear face splitter, the GFA's same-domain
+vertex list, and evolution-report rows in the bindings.
