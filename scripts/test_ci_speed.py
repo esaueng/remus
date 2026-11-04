@@ -191,6 +191,11 @@ class SpeedContractTests(unittest.TestCase):
 
     def test_nightly_coverage_preserves_all_tests_and_the_threshold(self):
         nightly = (WORKFLOWS / "coverage.yml").read_text()
+        if "uses: ./.github/workflows/coverage-sharded.yml" in nightly:
+            # Retain this exact historical v11 contract. The active sharded
+            # caller and complete-profile contract are checked in test_ci_daily.
+            from test_ci_daily import CI_V12_LANDED
+            nightly = subprocess.check_output(["git", "show", f"{CI_V12_LANDED}:.github/workflows/coverage.yml"], cwd=ROOT, text=True)
         self.assertIn("schedule:", nightly)
         self.assertIn("workflow_dispatch:", nightly)
         self.assertIn("github.ref == 'refs/heads/main' && github.ref_protected", nightly)

@@ -90,14 +90,20 @@ def expression(selection: dict) -> str:
     if selection["mode"] == "full":
         return "all()"
     terms = [binary_filter(path) for path in selection["targets"]]
-    terms.extend(f"(package(={name}) & kind(lib) & test(/{re.escape(module)}::/))"
+    terms.extend(f"(package(={name}) & kind(lib) & test(/^{re.escape(module)}::/))"
                  for name, module in selection["modules"])
     return " | ".join(terms)
 
 
 def build_args(selection: dict) -> list[str]:
-    args = ["--workspace", "--cargo-profile", "ci-test", "--locked"]
-    if selection["mode"] == "fast":
+    args = ["--cargo-profile", "ci-test", "--locked"]
+    if selection["mode"] == "full":
+        args += ["--workspace"]
+    else:
+        packages = {package(PurePosixPath(path).parts[1]) for path in selection["targets"]}
+        packages.update(name for name, _module in selection["modules"])
+        for name in sorted(packages):
+            args += ["--package", name]
         args += ["--lib"]
         for target in sorted({PurePosixPath(p).stem for p in selection["targets"]}):
             args += ["--test", target]
@@ -115,7 +121,7 @@ def verify_inventory(selection: dict, inventory: dict) -> bool:
             raise ValueError(f"Selected integration binary has no tests: {path}")
     for name, module in selection["modules"]:
         if not any(s["package-name"] == name and s["kind"] == "lib"
-                   and any(module + "::" in test and not case["ignored"]
+                   and any(test.startswith(module + "::") and not case["ignored"]
                            for test, case in s["testcases"].items()) for s in suites.values()):
             return False
     return True

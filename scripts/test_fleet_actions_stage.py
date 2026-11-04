@@ -105,12 +105,16 @@ class FleetActionsStageTests(unittest.TestCase):
                         cwd=ROOT,
                     )),
                 ):
-                    if family == "ci" and filename in ("fleet-ci-v9.yml", DEPENDABOT_STAGES["ci"][1]):
+                    if family == "ci" and filename in ("fleet-ci-v9.yml", DEPENDABOT_STAGES["ci"][1], "fleet-ci-v12.yml"):
                         self.assertEqual(workflow_text(previous).encode(),
                                          original(previous))
                         if filename == "fleet-ci-v9.yml":
                             validate_reference(".github/workflows/" + filename,
                                                "4e355573ffe9b1bc0466d0a57fcc98677d5fc5eb", content)
+                            continue
+                        if filename == "fleet-ci-v11.yml":
+                            validate_reference(".github/workflows/" + filename,
+                                               "ff8415b3005256df5a65af5c92b8c26caa4c878f", content)
                             continue
                         matching = [(path, sha) for _caller, path, sha in workflow_calls()
                                     if path == ".github/workflows/" + filename]

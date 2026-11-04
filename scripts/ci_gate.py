@@ -22,6 +22,8 @@ def validate(results, flags, event, native_mode="full"):
         raise ValueError("Invalid CI selection flags")
     if flags["native"] == "true" and native_mode not in ("fast", "full"):
         raise ValueError("Selected native tests have no verified execution mode")
+    if flags["full"] == "true" and native_mode != "full":
+        raise ValueError("Full validation requires the complete native partitions")
     if ((flags["heavy"] == "true" and flags["native"] != "true")
             or (flags["full"] == "true" and flags["heavy"] != "true")
             or (flags["coverage"] == "true" and flags["native"] != "true")

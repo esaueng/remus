@@ -1,10 +1,9 @@
 # Trusted owner CI fleet
 
-The staged fast/daily test split and activation procedure are documented in
-[Development CI cadence](ci-cadence.md). The active caller remains unchanged
-until the separate immutable-pin activation.
+The active fast/daily test split and its verification procedure are documented
+in [Development CI cadence](ci-cadence.md).
 
-Required Linux CI jobs and their completion gate live in `fleet-ci-v11.yml`, called
+Required Linux CI jobs and their completion gate live in `fleet-ci-v12.yml`, called
 at an immutable commit from `ci.yml`. Benchmarks, corpus gauntlets, fuzzing,
 mutation checks, OSV scans, WASM candidates and size reports each have their
 own immutable `fleet-*.yml` callee. Their shared pre-checkout guard is a pinned
@@ -264,7 +263,7 @@ slots. Hosted runs pick them up in parallel.
 ## Updating immutable workflow dependencies
 
 PR #1449 staged the rust-cache, installer v2.87.31 and SARIF uploader v4.39.1
-updates in `fleet-ci-v11.yml`, `fleet-benchmark-v5.yml`, `fleet-fuzz-v5.yml`,
+updates in `fleet-ci-v12.yml`, `fleet-benchmark-v5.yml`, `fleet-fuzz-v5.yml`,
 `fleet-gauntlet-v5.yml`, `fleet-mutants-sharded-v6.yml`,
 `fleet-mutation-scope-v5.yml`, `fleet-osv-v7.yml` and
 `fleet-wasm-candidate-v6.yml`. `scripts/test_dependabot_actions_stage.py`
@@ -378,90 +377,49 @@ discovery regression test keeps this suite in the required entrypoint.
 
 ### Tiers
 
-The classifier (`scripts/classify-ci-changes.py`) selects jobs in tiers so a
-kernel PR waits only for the checks that can fail on its diff:
+The active `scripts/classify-ci-daily.py` wrapper uses the existing path classifier
+and adds independent native-test and coverage selectors. The execution contract
+and complete schedules are in [Development CI cadence](ci-cadence.md).
 
-- **Tier 1** (`heavy`, every source change): Test (clippy, archive build and doc
-  tests), both Native tests partitions, Complexity Guards, Approximation Census, WASM without optional
-  I/O, Fuzz Targets Compile and Software Rendering. Fuzz compile and
-  rendering joined in `fleet-ci-v4.yml`: both build against most kernel
-  crates, so a queue entry that skips tier 2 must still run them. The
-  complexity guards left Test for their own job in `fleet-ci-v7.yml`.
-- **Tier 2** (`full`): MSRV, Cargo Deny and Security Audit. Coverage also runs
-  for full PR, merge-group and manual CI events; main pushes defer it to the
-  complete nightly workspace run with the same 60-percent threshold. Selected for every main
-  push and dispatch, and for a PR only while it carries the `ci:full` label
-  (label it, then re-run or push). A merge group selects it only when its
-  diff touches a tier-2 input: a `Cargo.toml`, `Cargo.lock`,
-  `rust-toolchain.toml`, `deny.toml`, `clippy.toml`, `.cargo/`, `.config/`,
-  `.github/workflows/` or a committed package
-  (a queue batch can pair a refresh with source PRs). Any other merge group
-  runs tier 1 and the package build (mode `queue`), and the main push of the
-  same squashed tree runs the dependency and MSRV tier after the merge.
-  A source-level MSRV regression can therefore turn `main` red after merging;
-  coverage regressions surface in the nightly run unless full CI selected them. The pinned callee still passes
-  `--full` for merge groups; the classifier reads `GITHUB_EVENT_NAME` itself.
-- **Queue fast path** (since 2026-10-25, while `QUEUE_RERUNS_PR_TIER` in the
-  classifier is `False`): a `queue`-mode merge group also skips tier 1 and the
-  package build, which its PR already passed. It runs Repository Policy,
-  Secrets Scan and Documentation, beside the unchanged commit-privacy,
-  history-privacy, dependency-review and WASM version workflows, so an entry
-  takes a few minutes instead of 20-25. A committed package no longer selects
-  tier 2 in a merge group, because the integrity job in `wasm-version.yml`
-  verifies a refresh there as it does for a package-only diff. Every tier-2
-  input still runs the full suite in the queue, and every main push still
-  runs every tier except nightly coverage. The cost: two PRs that pass alone but break together, or a
-  PR whose CI ran against an old `main`, turn `main` red after the merge
-  instead of blocking the entry. Set the constant to `True` to restore the
-  pre-merge tier-1 run.
-- **Package build** (`wasm`): WASM Build & Validate, both complete runtime
-  suites, W9 Preflight (its
-  own job since `fleet-ci-v7.yml`) and the size gate and report. Selected
-  with tier 2, and on any PR whose diff touches any crate under `crates/`,
-  `xtask`, `tools/vs-bench`, the WASM scripts,
-  `Cargo.lock`, `Cargo.toml`, `rust-toolchain.toml`, `.cargo/config.toml`,
-  `LICENSE-APACHE` or `NOTICE`.
-  Changes to the CI caller/callee, package publisher, integrity workflow or
-  fleet manifest also select package validation on PRs, so pipeline changes
-  exercise their package jobs before entering the merge queue.
-  Every crate sits below the wasm bindings, so an engine change must pass the
-  package smoke before merge. Until 2026-09-24 only `crates/wasm*` selected
-  it: PR #618 (algo, math and operations only) passed PR CI with the job
-  skipped and then failed `scripts/test-wasm-smoke.mjs` on main. The job runs
-  beside Test (median 13.6 vs 20.6 minutes), so it adds runner time, not PR
-  latency. Docs-only and CI-metadata-only PRs still skip it.
-- **Package refresh** (mode `package`): a diff confined to `crates/wasm/pkg`
-  and `crates/wasm-io/pkg` runs no heavy tier, on any event and whatever
-  `--full` says. Every source, script and workflow is then the base
-  commit's, which already passed the full suite on its main push, so
-  re-running the suites proves nothing new; until 2026-10-23 it cost three
-  full runs (PR, merge group, main push, each with Coverage) per refresh,
-  about a fifth of the repository's runner time. Paths alone still do not
-  prove the committed bytes came from that source: the required "Committed
-  packages match source" job (`wasm-version.yml`) deletes both package
-  trees, rebuilds them with `cargo xtask wasm-build` (smoke and
-  installed-tarball consumer tests included) and compares every file, on
-  PRs and merge groups. It is outside CI Pass, but the required "Changed
-  kernel requires a new version" check needs it and fails unless it
-  succeeded, so a failed rebuild, comparison or size gate blocks the PR and
-  its merge-queue entry. On a PR it also applies the WASM Size Gate, with the
-  base commit's scripts, to the verified modules. Any other path in the diff,
-  the checker's own scripts and workflow included, makes it heavy again; a
-  merge group that pairs a refresh with source PRs runs tier 2. When `publish.yml` opens a
-  refresh PR, `scripts/publish-wasm-package-pr.py` closes the open refresh
-  PRs built from an ancestor of its source commit, so only the newest refresh
-  runs CI and the version guard never sees two refreshes claim one version.
+- **Required light gates:** Classify Changes, Repository Policy and Secrets Scan,
+  plus the existing App-bound privacy, dependency-review and WASM version checks.
+  Documentation runs when selected. Check names, App bindings, reviews and
+  conversation resolution are unchanged.
+- **Native tests** (`native`): critical integration binaries plus changed tests
+  and affected leaf-module unit tests. Fast selections run on the producer;
+  foundational/unknown/deleted paths and explicit full requests use four archive
+  partitions plus doctests. A missing affected-module test match falls back to
+  full native validation. A suite-manifest edit cannot hide as light metadata.
+- **Source checks** (`heavy`): Clippy runs beside native preparation. Complexity
+  Guards, Approximation Census, WASM without optional I/O, Fuzz Targets Compile
+  and Software Rendering retain their existing commands and source selection.
+- **Dependency/configuration tier** (`full`): MSRV, Cargo Deny and Security Audit.
+  Changed dependency, toolchain and CI inputs still select it where required.
+  Routine main source pushes defer it to daily validation. Manual CI dispatches
+  and `ci:full` PR requests select full validation even for a light diff.
+- **Coverage** (`coverage`): independent of `full`; selected only by the explicit
+  manual input or `ci:coverage` request, with fork/OIDC restrictions preserved.
+  Complete instrumented coverage otherwise runs daily through the sharded
+  coverage caller, retaining the workspace and 60% line threshold.
+- **Queue candidates:** the existing queue fast path skips repeated source and
+  package jobs already passed by the PR, but now requires critical native smoke
+  and changed test binaries on the combined candidate. Foundational changes
+  receive full native validation. Dependency/CI inputs still select their
+  broader checks. This does not replace complete daily integration testing.
+- **Package validation** (`wasm`): WASM Build & Validate, complete smoke and
+  installed-tarball runtime suites, W9 Preflight and the size gate/report remain
+  selected for kernel/package-affecting inputs. Main still validates the exact
+  artifact before the clean publisher can propose its refresh PR.
+- **Package-only refreshes:** routine refresh diffs retain their independent
+  source rebuild, committed-file comparison and version guard. A failed rebuild,
+  mismatch or required size/version result blocks delivery. Explicit full
+  requests remain available. No committed binary is trusted from paths alone.
 
-CI Pass accepts a skipped job only when its tier flag is false, and rejects
-a tier-2 or package selection without a heavy selection. Every main push
-runs the full suite (the backstop for merge groups that ran tier 1 only), and the caller cancels superseded runs only for
-`pull_request` events, so each merge commit keeps a completed verdict. Optimized coverage uses the existing `ci-test`
-profile for running and reporting, with coverage artifacts cleaned first; it retains the entire workspace,
-test assertions and the 60% line threshold. WASM optional-I/O clippy and native
-tests run as a separate required job. Package validation, optimization, tarball
-consumers and W9 preflight remain in the main WASM job; `cargo xtask wasm-build`
-runs the smoke and installed-tarball consumer tests at the same time (about seven
-minutes each on a hosted runner), printing the consumer test's log once it exits.
+`CI Pass` requires every selected job and rejects failures, cancellations,
+missing results and unexpected skips. Only a verified fast producer result can
+skip the four full-suite workers. Required full native, coverage and dependency
+checks may be skipped only when their corresponding selector is false. Each
+main push keeps its own verdict; only superseded PR runs are cancelled.
 
 PR benchmarks run only with the `ci:benchmark` label. Adding the label starts
 a run; subsequent pushes keep benchmarking while the label remains. Main
@@ -525,7 +483,11 @@ unprotected-main contexts, verifies immutable pins and guard ordering, and
 retains OSV comparison and publisher permission contracts. Convergence tests
 exercise full-suite completion, cancellation, unexpected skips and independent
 PR scheduling.
-## CI speed workflow
+## Historical v9 CI speed workflow
+
+The v12 cadence above supersedes this section's native scheduling and coverage
+selection. The archive, package publisher and privacy history below explains
+the earlier rollout; its exact regressions remain retained.
 
 `fleet-ci-v9.yml` and `fleet-benchmark-v4.yml` are selected together by immutable
 main-ancestor caller pins and `.github/fleet-workflows.json`. The staging and

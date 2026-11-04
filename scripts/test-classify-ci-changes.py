@@ -26,7 +26,8 @@ SPEC.loader.exec_module(MODULE)
 
 
 ROOT = MODULE_PATH.resolve().parents[1]
-FLEET_CI = workflow_path("ci")
+# This suite exercises the legacy classifier still imported by the daily wrapper.
+FLEET_CI = ROOT / ".github/workflows/fleet-ci-v11.yml"
 # The engine crates below the wasm bindings. A PR touching any of them must
 # rebuild and smoke-test the packaged kernel (PR #618 broke main's WASM
 # Build & Validate from crates/algo, crates/math and crates/operations alone).

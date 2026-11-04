@@ -64,13 +64,19 @@ class FleetCiV10StageTests(unittest.TestCase):
         manifest = workflow_manifest()
         if manifest["ci"] == V10.name:
             return  # Activated: the caller pin check binds v10 to its landed bytes.
-        self.assertIn(manifest["ci"], ("fleet-ci-v9.yml", DEPENDABOT_STAGES["ci"][1]))
+        self.assertIn(manifest["ci"], ("fleet-ci-v9.yml", DEPENDABOT_STAGES["ci"][1], "fleet-ci-v12.yml"))
         self.assertEqual(workflow_text("fleet-ci-v9.yml").encode(), landed_v9())
+        if manifest["ci"] == "fleet-ci-v12.yml":
+            # Keep the v9->v11 Action-only history proof against retained v11;
+            # active v12's complete bytes remain bound by validate_calls.
+            manifest["ci"] = DEPENDABOT_STAGES["ci"][1]
         local = workflow_text(manifest["ci"])
         main_manifest = subprocess.check_output(
             ["git", "show", "origin/main:.github/fleet-workflows.json"], cwd=ROOT,
         )
         main_file = json.loads(main_manifest)["ci"]
+        if main_file == "fleet-ci-v12.yml":
+            main_file = DEPENDABOT_STAGES["ci"][1]
         main = subprocess.check_output(
             ["git", "show", f"origin/main:.github/workflows/{main_file}"], cwd=ROOT, text=True,
         )

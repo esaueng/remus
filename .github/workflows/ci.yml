@@ -13,6 +13,10 @@ on:
         required: true
         default: main
         type: string
+      coverage:
+        description: Also run complete instrumented coverage
+        type: boolean
+        default: false
 
 concurrency:
   # Shared groups replace pending runs even when running cancellation is off.
@@ -78,11 +82,14 @@ jobs:
       id-token: write
       contents: read
       pull-requests: read
-    uses: esaueng/remus/.github/workflows/fleet-ci-v11.yml@ff8415b3005256df5a65af5c92b8c26caa4c878f
+    uses: esaueng/remus/.github/workflows/fleet-ci-v12.yml@6701fc2dc528514e4e841270255eacfa5ff1dcd6
+
+    with:
+      coverage: ${{ inputs.coverage || false }}
 
   # Posts the WASM size report as a PR comment. It needs a write token, so it
   # stays outside `checks`; the same policy gates CI Pass through
-  # fleet-ci-v11.yml's read-only wasm-size-gate job. It also runs when CI failed
+  # fleet-ci-v12.yml's read-only wasm-size-gate job. It also runs when CI failed
   # (a size failure fails CI Pass), so the comment never goes stale.
   wasm-size:
     needs: checks
