@@ -7,6 +7,7 @@
 //! the topology arena is restored to its pre-call state.
 
 mod axial_clearance;
+mod cap_chamfer;
 mod radial_resize;
 pub(crate) use radial_resize::resize_cylindrical_strip;
 mod axial_rim_join;
@@ -1958,6 +1959,21 @@ fn translation_invariant_blend_region(
     for &selected_face in selected_faces {
         for edge in face_edges(topo, selected_face)? {
             for candidate in distinct_faces(adjacency.faces_for_edge(edge)) {
+                // A chamfer is deliberately not tangent to its cap. Carry a
+                // complete coaxial mouth with the rounded cap instead of
+                // leaving its cone behind while the cap's rim translates.
+                if !selected.contains(&candidate)
+                    && cap_chamfer::is_axial_cap_chamfer(
+                        topo,
+                        &adjacency,
+                        |face| selected.contains(&face),
+                        candidate,
+                        direction,
+                    )?
+                {
+                    region.insert(candidate);
+                    continue;
+                }
                 if selected.contains(&candidate)
                     || surface_translation_invariant(topo.face(candidate)?.surface(), direction)
                     || !tangent_across(topo, edge, selected_face, candidate)?
