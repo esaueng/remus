@@ -120,6 +120,12 @@ class ClassifierTests(unittest.TestCase):
         self.assertFalse(result["full"])
         self.assertTrue(classifier.classify(["Cargo.lock"], "push", force_full=True)["full"])
 
+    def test_suite_manifest_cannot_be_treated_as_lightweight_repository_metadata(self):
+        for event in ("pull_request", "merge_group", "push"):
+            result = classifier.classify([".github/ci-test-suites.json"], event, force_full=event != "pull_request")
+            self.assertTrue(result["native"])
+            self.assertFalse(result["coverage"])
+
     def test_explicit_coverage_and_full_runs_remain_available(self):
         result = classifier.classify(["crates/operations/src/chamfer.rs"], "workflow_dispatch", True, True)
         self.assertTrue(result["coverage"])

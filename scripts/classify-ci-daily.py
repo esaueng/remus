@@ -19,7 +19,7 @@ def classify(paths, event, force_full=False, coverage=False):
     # dependency/configuration checks run daily unless their inputs changed.
     if event == "push" and paths:
         full = selected.heavy and any(legacy.needs_second_tier(path) for path in paths)
-    native = selected.heavy or selected.mode == "queue"
+    native = selected.heavy or selected.mode == "queue" or ".github/ci-test-suites.json" in paths
     return {"heavy": selected.heavy, "docs": selected.docs, "full": full,
             "wasm": selected.wasm, "native": native,
             "coverage": bool(coverage and native), "mode": selected.mode}
