@@ -41,6 +41,7 @@ jobs:
     timeout-minutes: 90
     env:
       CARGO_LLVM_COV_TARGET_DIR: ${{ github.workspace }}/target/coverage-worker
+      NEXTEST_PROFILE: coverage
     strategy:
       fail-fast: false
       matrix:

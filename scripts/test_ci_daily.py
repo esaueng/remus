@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 
 import ci_coverage
@@ -254,6 +255,22 @@ class CoverageReceiptTests(unittest.TestCase):
 
 
 class StagedWorkflowTests(unittest.TestCase):
+    def test_coverage_budget_reservation_is_used_without_changing_test_selection(self):
+        profiles = tomllib.loads((ROOT / ".config/nextest.toml").read_text())["profile"]
+        self.assertEqual(set(profiles["coverage"]), {"overrides"})
+        override, = profiles["coverage"]["overrides"]
+        self.assertEqual(set(override), {"filter", "priority", "threads-required"})
+        self.assertEqual(override["filter"], "binary(=op_seq_81) & test(=finding_sphere_minus_box_open_mesh)")
+        self.assertEqual(override["threads-required"], "num-test-threads")
+        self.assertEqual(override["priority"], 100)
+        coverage = jobs((WORKFLOWS / "coverage-sharded.yml").read_text())
+        self.assertIn("NEXTEST_PROFILE: coverage", coverage["partitions"])
+        self.assertIn('--partition "hash:$SHARD/4"', coverage["partitions"])
+        proof = (WORKFLOWS / "ci-daily-proof.yml").read_text()
+        self.assertIn("python3 scripts/test_coverage_scheduling.py", proof)
+        self.assertIn("NEXTEST_PROFILE: coverage", jobs(proof)["coverage-budget-replay"])
+        self.assertIn("test(=finding_sphere_minus_box_open_mesh)", jobs(proof)["coverage-budget-replay"])
+
     def test_existing_active_workflow_and_protections_are_unchanged(self):
         active = json.loads((ROOT / ".github/fleet-workflows.json").read_text())["ci"]
         if active != "fleet-ci-v12.yml":

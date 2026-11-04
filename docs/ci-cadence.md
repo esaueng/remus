@@ -62,6 +62,13 @@ while enforcing the existing **60% line minimum**. Only the separate Codecov
 upload job receives OIDC permission. Codecov availability is separate from the
 local coverage floor and the downloadable report.
 
+The coverage-only Nextest profile reserves the complete test pool for the
+sphere-minus-box oracle replay. Instrumentation plus CPU contention can exhaust
+its existing two-minute budget before the identity checks. The reservation
+changes scheduling only; its budget, mesh resolution and full oracle battery
+remain unchanged. A process-level concurrency fixture and an instrumented
+replay verify this policy in the hosted proof workflow.
+
 Weekly fuzzing, mutation testing and the larger corpus campaign retain their
 existing schedules. The smaller corpus campaign remains daily. Native platform
 workflows retain their existing triggers.

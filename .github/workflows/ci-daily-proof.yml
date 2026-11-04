@@ -6,6 +6,8 @@ on:
       - scripts/ci_coverage.py
       - scripts/ci_gate.py
       - scripts/test_coverage_archive.py
+      - scripts/test_coverage_scheduling.py
+      - .config/nextest.toml
       - scripts/classify-ci-daily.py
       - scripts/test_ci_daily.py
       - .github/ci-test-suites.json
@@ -82,3 +84,20 @@ jobs:
         with:
           tool: cargo-llvm-cov@0.9.1,nextest@0.9.150
       - run: python3 scripts/test_coverage_archive.py
+      - run: python3 scripts/test_coverage_scheduling.py
+  coverage-budget-replay:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      NEXTEST_PROFILE: coverage
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+        with:
+          tool: cargo-llvm-cov@0.9.1,nextest@0.9.150
+      - name: Build the real budget-sensitive instrumented test binary
+        run: cargo llvm-cov nextest-archive --package remus-operations --test op_seq_81 --cargo-profile ci-test --locked --archive-file "$RUNNER_TEMP/budget-tests.tar.zst"
+      - name: Verify the complete sphere-box oracle within its existing budget
+        run: cargo llvm-cov nextest --archive-file "$RUNNER_TEMP/budget-tests.tar.zst" --workspace-remap "$GITHUB_WORKSPACE" --no-report --test-threads 2 -E 'binary(=op_seq_81) & test(=finding_sphere_minus_box_open_mesh)'
