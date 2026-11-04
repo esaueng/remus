@@ -56,6 +56,53 @@ fn sharp(topo: &Topology, solid: SolidId) -> Vec<EdgeId> {
 }
 
 #[test]
+fn consuming_a_complete_support_refuses_without_changing_the_input() {
+    for placed in [false, true] {
+        for (d1, d2) in [(10.0, 10.0), (10.0, 1.0), (1.0, 10.0)] {
+            let mut topo = Topology::new();
+            let solid =
+                remus_operations::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+            if placed {
+                remus_operations::transform::transform_solid(
+                    &mut topo,
+                    solid,
+                    &(Mat4::translation(17.0, -23.0, 31.0)
+                        * Mat4::rotation_z(0.37)
+                        * Mat4::rotation_x(0.23)),
+                )
+                .unwrap();
+            }
+            let edge = solid_edges(&topo, solid).unwrap()[0];
+            let before = remus_io::arena_io::serialize_solids(&topo, &[solid]).unwrap();
+            let counts = (
+                topo.num_vertices(),
+                topo.num_edges(),
+                topo.num_faces(),
+                topo.num_solids(),
+            );
+            assert!(chamfer_v2(&mut topo, solid, &[edge], d1, d2).is_err());
+            assert_eq!(
+                (
+                    topo.num_vertices(),
+                    topo.num_edges(),
+                    topo.num_faces(),
+                    topo.num_solids()
+                ),
+                counts
+            );
+            assert_eq!(
+                remus_io::arena_io::serialize_solids(&topo, &[solid]).unwrap(),
+                before
+            );
+            let result = chamfer_v2(&mut topo, solid, &[edge], d1 * 0.999, d2 * 0.999).unwrap();
+            check(&topo, result.solid);
+            let expected = 1000.0 - 0.5 * d1 * d2 * 0.999_f64.powi(2) * 10.0;
+            assert!((solid_volume(&topo, result.solid, 0.001).unwrap() - expected).abs() < 1e-6);
+        }
+    }
+}
+
+#[test]
 fn complete_boss_chamfer_retrims_its_inner_footprint_and_mixed_corners() {
     let mut topo = Topology::new();
     let plate = remus_operations::primitives::make_box(&mut topo, 30.0, 30.0, 6.0).unwrap();
@@ -194,7 +241,7 @@ fn neighboring_hole_chamfers_refuse_colliding_inner_boundaries_atomically() {
         let result = chamfer_v2(&mut trial, solid, &edges, 0.1, 0.1).unwrap();
         check(&trial, result.solid);
         assert_eq!(solid_faces(&trial, result.solid).unwrap().len(), 74);
-        // Independent OCCT all-edge C0.1 result, with disjoint openings.
+        // Independent reference all-edge C0.1 result, with disjoint openings.
         assert!(
             (solid_volume(&trial, result.solid, 0.001).unwrap() - 7_718.370_666_666_667).abs()
                 < 1e-6
@@ -438,7 +485,7 @@ fn every_sharp_edge_of_a_twice_rounded_block_and_all_modes_build() {
                         };
                         // The general trimmed-face quadrature has a small
                         // numerical residual. Carrier setbacks below are exact;
-                        // the STEP volumes were independently checked in OCCT.
+                        // the STEP volumes were independently checked in reference-kernel.
                         let volume = solid_volume(&trial, result.solid, 0.001).unwrap();
                         assert!(
                             (volume - expected).abs() < 0.01,

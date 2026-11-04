@@ -9,7 +9,7 @@
 //! candidate end boundary is unshareable there) — planar bevels close:
 //! every bevel is a plane, planes always intersect, and nothing buries.
 //!
-//! Volume polynomial certified against independent OCCT chamfers:
+//! Volume polynomial certified against independent reference chamfers:
 //!
 //! ```text
 //! V(d) = V0 - (d^2/2) * (L_convex - L_concave) + K * d^3
@@ -21,7 +21,7 @@
 //!   bottom/top perimeters `40+8+32+42+8+50 = 180` each, five convex
 //!   verticals `5*20 = 100`, one concave vertical `20`:
 //!   `L_convex - L_concave = (180 + 180 + 100) - 20 = 440`.
-//! - Corner constant `K = 22/3`: OCCT gives volumes 13065.916666666664,
+//! - Corner constant `K = 22/3`: reference-kernel gives volumes 13065.916666666664,
 //!   12907.333333333325 and 12298.666666666662 at d = 0.5, 1 and 2.
 //!   Both mixed vertices close with quadrilateral caps. The former triangular
 //!   caps pinned a smaller, incorrect corner shape and `K = 16/3`.

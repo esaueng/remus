@@ -470,7 +470,9 @@ fn make_tool(
     ];
     // An extended cutter must not turn an oversized setback into a valid
     // half-space cut through an unrelated part of the body. Both requested
-    // contacts must still lie on their original trimmed support faces.
+    // contacts must still lie on their original trimmed support faces and
+    // leave material before a sharp boundary. Consuming the entire support
+    // is the excluded fit limit, even when a half-space cut remains valid.
     for (support, point) in supports.into_iter().zip(contact) {
         let Some((distance, _)) = remus_check::distance::point_to_face(topo, point, support)?
         else {
@@ -478,6 +480,26 @@ fn make_tool(
         };
         if distance > Tolerance::new().linear {
             return Ok(None);
+        }
+        let face = topo.face(support)?;
+        for wire in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            for boundary in topo.wire(wire)?.edges() {
+                let boundary = boundary.edge();
+                let (distance, _) = remus_check::distance::point_to_edge(topo, point, boundary)?;
+                if distance > Tolerance::new().linear {
+                    continue;
+                }
+                // A proven smooth join is an internal continuation of the
+                // support, not a physical limit of its available material.
+                let adjacency = topo.build_adjacency(solid)?;
+                let pair = adjacency.faces_for_edge(boundary);
+                if pair.len() != 2
+                    || (pair[0] != pair[1]
+                        && !crate::query::edge_is_g1(topo, boundary, pair[0], pair[1])?)
+                {
+                    return Ok(None);
+                }
+            }
         }
     }
     let solid = match data.curve() {

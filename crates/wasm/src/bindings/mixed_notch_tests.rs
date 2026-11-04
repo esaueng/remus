@@ -145,7 +145,7 @@ fn mixed_notch_whole_edge_fillet_succeeds_on_both_contracts() {
     );
 }
 
-/// Whole-edge chamfer matches the independent OCCT notch volume in both batches.
+/// Whole-edge chamfer matches the independent reference notch volume in both batches.
 #[test]
 fn mixed_notch_whole_edge_chamfer_matches_native_closed_form() {
     let mut kernel = RemusKernel::new();
@@ -162,11 +162,11 @@ fn mixed_notch_whole_edge_chamfer_matches_native_closed_form() {
     let chamfered = u32::try_from(out[0]["ok"].as_u64().unwrap()).unwrap();
     let vol = volume(&mut kernel, chamfered);
     // Ten triangular convex caps and two quadrilateral notch caps give
-    // K=22/3 in V(d)=13120-220*d²+K*d³. Independent OCCT: 12907.333333333325.
+    // K=22/3 in V(d)=13120-220*d²+K*d³. Independent reference: 12907.333333333325.
     let expected = 13_120.0 - 220.0 + 22.0 / 3.0;
     assert!(
         (vol - expected).abs() < 1e-6,
-        "batch chamfer must meet the OCCT volume, got {vol}"
+        "batch chamfer must meet the reference-kernel volume, got {vol}"
     );
     let out = run_v2(
         &mut kernel,
