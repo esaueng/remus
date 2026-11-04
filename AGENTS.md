@@ -1093,9 +1093,10 @@ Workspace-level strict lints:
 - `panic = "deny"` — no panic
 - `clippy::pedantic`, `clippy::nursery` = warn
 - `missing_docs` = warn
-- `clippy::disallowed_methods` forbids `sort_by` / `sort_by_key` and
+- `clippy::disallowed_methods` forbids `sort` / `sort_by` / `sort_by_key` and
   `sort_unstable` / `sort_unstable_by` / `sort_unstable_by_key` in the kernel
-  crates (math through operations; their own `clippy.toml`): use
+  crates (math through operations) and the wasm bindings (each has its own
+  `clippy.toml`): use
   `remus_math::compact_sort::CompactSort`. The stable `compact_sort_by*` keep
   `sort_by`'s order, ties included. The unstable `compact_sort_unstable*`
   match `sort_unstable*` only where no two distinguishable elements compare
