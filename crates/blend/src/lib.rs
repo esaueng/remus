@@ -256,6 +256,8 @@ pub enum BlendEngine {
     RollingBall,
     /// The operations-layer planar bevel (chamfer only).
     PlanarBevel,
+    /// Exact prismatic or revolved analytic chamfer cutters.
+    AnalyticCut,
     /// A multi-feature selection whose features were blended on different
     /// engines.
     Mixed,

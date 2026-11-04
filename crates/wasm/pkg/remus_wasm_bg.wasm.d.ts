@@ -211,6 +211,7 @@ export const remuskernel_getShellFaces: (a: number, b: number) => [number, numbe
 export const remuskernel_getSolidEdges: (a: number, b: number) => [number, number, number, number];
 export const remuskernel_getSolidFaces: (a: number, b: number) => [number, number, number, number];
 export const remuskernel_getSolidShells: (a: number, b: number) => [number, number, number, number];
+export const remuskernel_getSolidSmoothEdges: (a: number, b: number) => [number, number, number, number];
 export const remuskernel_getSolidVertices: (a: number, b: number) => [number, number, number, number];
 export const remuskernel_getSurfaceDomain: (a: number, b: number) => [number, number, number, number];
 export const remuskernel_getSurfaceType: (a: number, b: number) => [number, number, number, number];

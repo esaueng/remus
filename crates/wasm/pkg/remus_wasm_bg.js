@@ -4466,6 +4466,24 @@ export class RemusKernel {
         return v1;
     }
     /**
+     * Get the manifold edges whose two support faces meet smoothly (G1).
+     *
+     * These are visible topology boundaries with no sharp dihedral to blend.
+     * Periodic self-seams are not included. Uses the same native continuity
+     * test as blend selection normalization, without convexity meshing.
+     * @param {number} solid
+     * @returns {Uint32Array}
+     */
+    getSolidSmoothEdges(solid) {
+        const ret = wasm.remuskernel_getSolidSmoothEdges(this.__wbg_ptr, solid);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU32FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
      * Get all vertex handles of a solid.
      *
      * Returns an array of unique vertex handles (`u32[]`).

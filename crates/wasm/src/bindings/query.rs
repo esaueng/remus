@@ -77,6 +77,27 @@ impl RemusKernel {
         serde_json::to_string(&records).map_err(|error| JsError::new(&error.to_string()))
     }
 
+    /// Get the manifold edges whose two support faces meet smoothly (G1).
+    ///
+    /// These are visible topology boundaries with no sharp dihedral to blend.
+    /// Periodic self-seams are not included. Uses the same native continuity
+    /// test as blend selection normalization, without convexity meshing.
+    #[wasm_bindgen(js_name = "getSolidSmoothEdges")]
+    pub fn get_solid_smooth_edges(&self, solid: u32) -> Result<Vec<u32>, JsError> {
+        let solid_id = self.resolve_solid(solid)?;
+        let adjacency = self.topo.build_adjacency(solid_id)?;
+        let mut smooth = Vec::new();
+        for edge in remus_topology::explorer::solid_edges(&self.topo, solid_id)? {
+            if let &[a, b] = adjacency.faces_for_edge(edge)
+                && a != b
+                && remus_operations::query::edge_is_g1(&self.topo, edge, a, b)?
+            {
+                smooth.push(edge_id_to_u32(edge));
+            }
+        }
+        Ok(smooth)
+    }
+
     /// Get all edge handles of a solid.
     ///
     /// Returns an array of unique edge handles (`u32[]`).

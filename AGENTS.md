@@ -541,6 +541,9 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Chamfer, Fillet | `chamfer.rs`, `fillet/` (mod, rolling_ball, g1_chain, geometry, radius_law, helpers, notch_torus, tests) |
 | Retained support-crown regression: exact rational ellipse, non-unit curve domain, unchanged source and closed-form volume at three scales | `fillet/retained_support_tests.rs` |
 | Exact clipping of a complete orthogonal corner after earlier blends | `chamfer/curved_corner.rs` |
+| Exact analytic chamfer cutters for ridges the boundary rebuild refuses | `chamfer/analytic_tools.rs` |
+| Exact complete chamfers of trivalent orthogonal shells, including inner boundaries | `chamfer/orthogonal.rs` |
+| Exact piecewise-analytic sweep tools joined across identical end sections | `chamfer/analytic_tools/joined_sweeps.rs` |
 | Rolling-ball arc stripe between a plane and a coaxial cylinder as an exact torus, or a sphere triangle at the band's own radius (a fillet riding an earlier band's end) | `fillet/arc_torus.rs` |
 | Two convex stripes mitred over a reflex corner whose concave edge stays sharp | `fillet/mitre.rs` |
 | Spatial grid behind the rolling-ball Phase 5d vertex dedup and snap (the linear scans' winners and ties), with its oracle tests | `fillet/vertex_snap.rs` |

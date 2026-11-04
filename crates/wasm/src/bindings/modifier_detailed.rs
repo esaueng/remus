@@ -747,6 +747,7 @@ const fn engine_name(engine: BlendEngine) -> &'static str {
         BlendEngine::Walking => "walking",
         BlendEngine::RollingBall => "rollingBall",
         BlendEngine::PlanarBevel => "planarBevel",
+        BlendEngine::AnalyticCut => "analyticCut",
         BlendEngine::Mixed => "mixed",
     }
 }

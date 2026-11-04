@@ -8,6 +8,8 @@ use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
 use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::vertex::Vertex;
 
+pub use crate::analytic::{EdgeMaterialFrames, edge_material_frames_at};
+
 /// Exact topology-independent geometry for a single blend spine.
 ///
 /// The enum is non-exhaustive so future exact conic representations can be

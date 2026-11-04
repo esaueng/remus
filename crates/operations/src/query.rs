@@ -1081,6 +1081,29 @@ pub fn normalize_fillet_selection(
     solid: SolidId,
     edge_ids: &[EdgeId],
 ) -> Result<Vec<EdgeId>, OperationsError> {
+    normalize_blend_selection(topo, solid, edge_ids, "filletable")
+}
+
+/// Normalize a chamfer selection while retaining foreign and non-manifold
+/// requests for refusal. Only proven smooth joins and periodic seams are
+/// removed, since neither has a dihedral to bevel.
+///
+/// # Errors
+/// Returns topology/query errors, or invalid input when no sharp edge remains.
+pub fn normalize_chamfer_selection(
+    topo: &Topology,
+    solid: SolidId,
+    edge_ids: &[EdgeId],
+) -> Result<Vec<EdgeId>, OperationsError> {
+    normalize_blend_selection(topo, solid, edge_ids, "chamferable")
+}
+
+fn normalize_blend_selection(
+    topo: &Topology,
+    solid: SolidId,
+    edge_ids: &[EdgeId],
+    label: &str,
+) -> Result<Vec<EdgeId>, OperationsError> {
     // Only edges this solid joins smoothly, and its periodic seams, are
     // dropped. Anything else the filter would skip (a foreign or
     // non-manifold edge) stays, so the cascade refuses rather than
@@ -1101,9 +1124,9 @@ pub fn normalize_fillet_selection(
     }
     if kept.is_empty() {
         return Err(OperationsError::InvalidInput {
-            reason: "no filletable edges in the selection (tangent and degenerate edges are \
-                         skipped)"
-                .into(),
+            reason: format!(
+                "no {label} edges in the selection (tangent and degenerate edges are skipped)"
+            ),
         });
     }
     Ok(kept)
