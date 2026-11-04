@@ -1,0 +1,129 @@
+name: Sharded complete coverage
+on:
+  workflow_call:
+permissions:
+  contents: read
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -Dwarnings
+  CARGO_INCREMENTAL: "0"
+jobs:
+  archive:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
+        with:
+          key: coverage-archive
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+        with:
+          tool: cargo-llvm-cov@0.9.1,nextest@0.9.150
+      - run: python3 scripts/check-native-test-workspace.py --record "$RUNNER_TEMP/coverage-workspace.json"
+      - run: |
+          cargo llvm-cov clean --workspace
+          cargo llvm-cov nextest-archive --workspace --cargo-profile ci-test --locked --archive-file "$RUNNER_TEMP/coverage-tests.tar.zst"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-binaries
+          compression-level: 0
+          path: |
+            ${{ runner.temp }}/coverage-tests.tar.zst
+            ${{ runner.temp }}/coverage-workspace.json
+          if-no-files-found: error
+          retention-days: 1
+  partitions:
+    needs: archive
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CARGO_LLVM_COV_TARGET_DIR: ${{ github.workspace }}/target/coverage-worker
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+        with:
+          tool: cargo-llvm-cov@0.9.1,nextest@0.9.150
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: coverage-binaries
+          path: ${{ runner.temp }}
+      - run: python3 scripts/check-native-test-workspace.py "$RUNNER_TEMP/coverage-workspace.json"
+      - name: Run this partition of the complete instrumented suite
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          mkdir -p "$CARGO_LLVM_COV_TARGET_DIR"
+          cargo llvm-cov nextest --archive-file "$RUNNER_TEMP/coverage-tests.tar.zst" --workspace-remap "$GITHUB_WORKSPACE" --no-report --partition "hash:$SHARD/4" --test-threads "${RUST_TEST_THREADS:-num-cpus}"
+          LLVM_PROFILE_FILE="$RUNNER_TEMP/inventory-%p-%m.profraw" cargo nextest list --archive-file "$RUNNER_TEMP/coverage-tests.tar.zst" --workspace-remap "$GITHUB_WORKSPACE" --partition "hash:$SHARD/4" --message-format json > "$RUNNER_TEMP/partition.json"
+          python3 scripts/ci_coverage.py record --inventory "$RUNNER_TEMP/partition.json" --archive "$RUNNER_TEMP/coverage-tests.tar.zst" --profiles "$CARGO_LLVM_COV_TARGET_DIR" --artifacts "$RUNNER_TEMP/profiles" --shard "$SHARD" --total 4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-profiles-${{ matrix.shard }}
+          path: ${{ runner.temp }}/profiles/
+          if-no-files-found: error
+          retention-days: 1
+  report:
+    needs: [archive, partitions]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CARGO_LLVM_COV_TARGET_DIR: ${{ github.workspace }}/target/coverage-worker
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+        with:
+          tool: cargo-llvm-cov@0.9.1,nextest@0.9.150
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: coverage-binaries
+          path: ${{ runner.temp }}
+      - run: python3 scripts/check-native-test-workspace.py "$RUNNER_TEMP/coverage-workspace.json"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: coverage-profiles-*
+          path: ${{ runner.temp }}/profiles
+      - name: Verify complete partition coverage and merge matching profiles
+        run: |
+          mkdir -p "$CARGO_LLVM_COV_TARGET_DIR"
+          LLVM_PROFILE_FILE="$RUNNER_TEMP/inventory-%p-%m.profraw" cargo nextest list --archive-file "$RUNNER_TEMP/coverage-tests.tar.zst" --workspace-remap "$GITHUB_WORKSPACE" --extract-to "$CARGO_LLVM_COV_TARGET_DIR" --message-format json > "$RUNNER_TEMP/complete.json"
+          python3 scripts/ci_coverage.py merge --inventory "$RUNNER_TEMP/complete.json" --archive "$RUNNER_TEMP/coverage-tests.tar.zst" --profiles "$CARGO_LLVM_COV_TARGET_DIR" --artifacts "$RUNNER_TEMP/profiles" --total 4
+      - name: Export complete coverage and enforce the existing minimum
+        run: cargo llvm-cov report --profile ci-test --nextest-archive-file "$RUNNER_TEMP/coverage-tests.tar.zst" --lcov --output-path "$RUNNER_TEMP/lcov.info" --fail-under-lines 60
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: complete-coverage-report
+          path: ${{ runner.temp }}/lcov.info
+          if-no-files-found: error
+          retention-days: 7
+  upload:
+    needs: report
+    if: github.repository == 'esaueng/remus' && github.ref == 'refs/heads/main' && github.ref_protected
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: complete-coverage-report
+          path: ${{ runner.temp }}
+      - uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          files: ${{ runner.temp }}/lcov.info
+          disable_search: true
+          use_oidc: true

@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "focused_crates": [
+    "operations",
+    "io",
+    "wasm",
+    "wasm-io",
+    "render",
+    "sketch",
+    "remus"
+  ],
+  "critical": [
+    "crates/operations/tests/boolean_invariants.rs",
+    "crates/operations/tests/parity_boolean_planar.rs",
+    "crates/operations/tests/evolution_contracts.rs",
+    "crates/operations/tests/regress_fillet_fail_closed.rs",
+    "crates/operations/tests/chamfer_analytic_coverage.rs",
+    "crates/operations/tests/regress_extrusion_evolution_fev.rs",
+    "crates/operations/tests/regress_mesh_boolean_malformed_input.rs",
+    "crates/io/tests/arena_append_history.rs",
+    "crates/io/tests/step_atomic_import.rs",
+    "crates/io/tests/step_arena_non_finite.rs"
+  ]
+}

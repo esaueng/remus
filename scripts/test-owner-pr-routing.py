@@ -13,6 +13,7 @@ from pathlib import Path
 from fleet_workflows import workflow_path
 import test_fleet_workflows
 import test_ci_speed
+import test_ci_daily
 import test_fleet_ci_v10_stage
 import test_dependabot_actions_stage
 
@@ -113,6 +114,7 @@ def load_tests(loader, tests, pattern):
     # imported TestCase class; its failures must continue to fail CI Pass.
     tests.addTests(loader.loadTestsFromModule(test_fleet_workflows, pattern=pattern))
     tests.addTests(loader.loadTestsFromModule(test_ci_speed, pattern=pattern))
+    tests.addTests(loader.loadTestsFromModule(test_ci_daily, pattern=pattern))
     tests.addTests(loader.loadTestsFromModule(test_fleet_ci_v10_stage, pattern=pattern))
     tests.addTests(loader.loadTestsFromModule(test_dependabot_actions_stage, pattern=pattern))
     return tests

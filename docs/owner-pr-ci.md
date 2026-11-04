@@ -1,5 +1,9 @@
 # Trusted owner CI fleet
 
+The staged fast/daily test split and activation procedure are documented in
+[Development CI cadence](ci-cadence.md). The active caller remains unchanged
+until the separate immutable-pin activation.
+
 Required Linux CI jobs and their completion gate live in `fleet-ci-v11.yml`, called
 at an immutable commit from `ci.yml`. Benchmarks, corpus gauntlets, fuzzing,
 mutation checks, OSV scans, WASM candidates and size reports each have their
