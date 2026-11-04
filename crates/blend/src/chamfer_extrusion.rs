@@ -78,7 +78,11 @@ pub fn profile_axis(surface: &FaceSurface, axis: Vec3) -> Option<ExtrusionSuppor
             }
             None
         }
-        _ => None,
+        FaceSurface::Plane { .. }
+        | FaceSurface::Cylinder(_)
+        | FaceSurface::Cone(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => None,
     }
 }
 
@@ -543,14 +547,44 @@ pub fn register_pcurves(topo: &mut Topology, faces: &[FaceId]) -> Result<(), Ble
                         return Err(BlendError::TrimmingFailure { face });
                     }
                 }
-                (EdgeCurve::Line, _) => {
+                (
+                    EdgeCurve::Line,
+                    FaceSurface::Plane { .. }
+                    | FaceSurface::Cylinder(_)
+                    | FaceSurface::Cone(_)
+                    | FaceSurface::Sphere(_)
+                    | FaceSurface::Torus(_),
+                ) => {
                     let a = support.project_point(topo.vertex(edge.start())?.point());
                     let b = support.project_point(topo.vertex(edge.end())?.point());
                     let direction = Vec2::new(b.0 - a.0, b.1 - a.1);
                     pc_domain = (0.0, direction.length());
                     Curve2D::Line(Line2D::new(Point2::new(a.0, a.1), direction)?)
                 }
-                _ => return Err(BlendError::TrimmingFailure { face }),
+                (
+                    EdgeCurve::Circle(_),
+                    FaceSurface::Nurbs(_)
+                    | FaceSurface::Cylinder(_)
+                    | FaceSurface::Cone(_)
+                    | FaceSurface::Sphere(_)
+                    | FaceSurface::Torus(_),
+                )
+                | (
+                    EdgeCurve::NurbsCurve(_),
+                    FaceSurface::Cylinder(_)
+                    | FaceSurface::Cone(_)
+                    | FaceSurface::Sphere(_)
+                    | FaceSurface::Torus(_),
+                )
+                | (
+                    EdgeCurve::Ellipse(_) | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_),
+                    FaceSurface::Plane { .. }
+                    | FaceSurface::Nurbs(_)
+                    | FaceSurface::Cylinder(_)
+                    | FaceSurface::Cone(_)
+                    | FaceSurface::Sphere(_)
+                    | FaceSurface::Torus(_),
+                ) => return Err(BlendError::TrimmingFailure { face }),
             };
             let (t0, t1) = if usage.is_forward() {
                 pc_domain

@@ -39,7 +39,10 @@ fn boundary_points(topo: &Topology, face: FaceId) -> Result<Vec<Point3>, BlendEr
                 result.push(topo.vertex(e.start())?.point());
                 result.push(topo.vertex(e.end())?.point());
             }
-            _ => return Err(BlendError::TrimmingFailure { face }),
+            EdgeCurve::Circle(_)
+            | EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => return Err(BlendError::TrimmingFailure { face }),
         }
     }
     Ok(result)
@@ -224,10 +227,27 @@ pub fn stripe(
     }
     let f1 = topo.face(face1)?;
     let f2 = topo.face(face2)?;
-    let (cap, wall, dc, dw, cap_first) = match (f1.surface(), f2.surface()) {
-        (FaceSurface::Plane { .. }, FaceSurface::Nurbs(_)) => (face1, face2, d1, d2, true),
-        (FaceSurface::Nurbs(_), FaceSurface::Plane { .. }) => (face2, face1, d2, d1, false),
-        _ => return Ok(None),
+    let (cap, wall, dc, dw, cap_first) = match f1.surface() {
+        FaceSurface::Plane { .. } => match f2.surface() {
+            FaceSurface::Nurbs(_) => (face1, face2, d1, d2, true),
+            FaceSurface::Plane { .. }
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_) => return Ok(None),
+        },
+        FaceSurface::Nurbs(_) => match f2.surface() {
+            FaceSurface::Plane { .. } => (face2, face1, d2, d1, false),
+            FaceSurface::Nurbs(_)
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_) => return Ok(None),
+        },
+        FaceSurface::Cylinder(_)
+        | FaceSurface::Cone(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => return Ok(None),
     };
     let cap_face = topo.face(cap)?;
     let FaceSurface::Plane { normal, d } = cap_face.surface() else {
@@ -374,7 +394,11 @@ pub fn orient_surface(
             FaceSurface::Plane { normal, .. } => {
                 Some(if f.is_reversed() { -*normal } else { *normal })
             }
-            _ => None,
+            FaceSurface::Nurbs(_)
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_) => None,
         })
     });
     if let Some(cap) = cap {
