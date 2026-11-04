@@ -84,6 +84,52 @@ pub(super) fn cylinder_has_non_standard_boundary(
     Ok(has_nurbs || has_ellipse || (all_line && wire.edges().len() > 4))
 }
 
+/// Is this torus face bounded by anything other than its own iso-circles?
+///
+/// Every curved edge of a parametric-rectangle torus face is a parallel (a
+/// circle coaxial with the torus) or a meridian (a circle of the tube's
+/// radius in a plane through the axis). Any other curve — a blend's marched
+/// rail, a boolean section curve — trims the face to less than its UV box.
+fn torus_has_trimmed_boundary(
+    topo: &Topology,
+    face_data: &remus_topology::face::Face,
+) -> Result<bool, crate::OperationsError> {
+    let FaceSurface::Torus(torus) = face_data.surface() else {
+        return Ok(false);
+    };
+    let tolerance = remus_math::tolerance::Tolerance::default();
+    let axis = torus.z_axis();
+    for oriented in topo.wire(face_data.outer_wire())?.edges() {
+        let circle = match topo.edge(oriented.edge())?.curve() {
+            EdgeCurve::Circle(circle) => circle,
+            // A primitive torus closes its seams with zero-length line edges;
+            // no straight segment of positive length lies on a torus.
+            EdgeCurve::Line => continue,
+            EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => return Ok(true),
+        };
+        let offset = circle.center() - torus.center();
+        let normal = circle.normal();
+        let height = offset.dot(axis);
+        let radial = offset - axis * height;
+        let parallel = normal.cross(axis).length() <= tolerance.angular.max(1e-9)
+            && radial.length() <= tolerance.linear.max(1e-9 * torus.major_radius());
+        let meridian = normal.dot(axis).abs() <= 1e-9
+            && height.abs() <= tolerance.linear.max(1e-9 * torus.major_radius())
+            && (radial.length() - torus.major_radius()).abs()
+                <= tolerance.linear.max(1e-9 * torus.major_radius())
+            && (circle.radius() - torus.minor_radius()).abs()
+                <= tolerance.linear.max(1e-9 * torus.minor_radius())
+            && normal.dot(radial).abs() <= 1e-9 * torus.major_radius();
+        if !parallel && !meridian {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn cylinder_has_stepped_rims(
     topo: &Topology,
     face: &remus_topology::face::Face,
@@ -369,6 +415,38 @@ pub(super) fn tessellate_with_uvs_floor(
                 let kind = sphere_analytic_kind(v_range);
                 tessellate_analytic(sphere, u_range, v_range, nu, nv, kind)
             }
+        }
+        FaceSurface::Torus(torus) if torus_has_trimmed_boundary(topo, face_data)? => {
+            // The analytic sweep below covers the boundary's whole UV box. A
+            // torus trimmed by curves that are not its iso-circles (a corner
+            // blend cut by a neighbouring round) is not that box, so the
+            // sweep skins far more than the face; triangulate inside the
+            // actual wire, as the solid path does, against a local pool.
+            let mut mesh = super::TriangleMesh::default();
+            super::nonplanar::tessellate_nonplanar_cdt(
+                topo,
+                face,
+                face_data,
+                deflection,
+                angular_tol,
+                curvature_floor,
+                &remus_math::det_hash::DetHashMap::default(),
+                &mut mesh,
+                &mut super::PointMergeMap::default(),
+            )?;
+            let uvs = mesh
+                .positions
+                .iter()
+                .map(|&p| {
+                    let (u, v) = torus.project_point(p);
+                    [u, v]
+                })
+                .collect();
+            for (normal, &point) in mesh.normals.iter_mut().zip(&mesh.positions) {
+                let (u, v) = torus.project_point(point);
+                *normal = torus.normal(u, v);
+            }
+            Ok(TriangleMeshUV { mesh, uvs })
         }
         FaceSurface::Torus(torus) => {
             let u_range = compute_angular_range(topo, face_data, |p| torus.project_point(p))?;
