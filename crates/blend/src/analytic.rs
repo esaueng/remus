@@ -323,6 +323,17 @@ pub fn try_analytic_chamfer(
         (FaceSurface::Cone(co1), FaceSurface::Cone(co2)) => {
             cone_cone_coaxial_chamfer(co1, co2, spine, topo, d1, d2, face1, face2)
         }
+        (FaceSurface::Cylinder(cyl), FaceSurface::Cone(cone)) => {
+            cylinder_cone_coaxial_chamfer(cyl, cone, spine, topo, d1, d2, face1, face2)
+        }
+        (FaceSurface::Cone(cone), FaceSurface::Cylinder(cyl)) => {
+            let mut result =
+                cylinder_cone_coaxial_chamfer(cyl, cone, spine, topo, d2, d1, face2, face1)?;
+            if let Some(ref mut r) = result {
+                swap_stripe_sides(r);
+            }
+            Ok(result)
+        }
         (
             FaceSurface::Plane { .. }
             | FaceSurface::Cylinder(_)
@@ -331,10 +342,6 @@ pub fn try_analytic_chamfer(
             | FaceSurface::Torus(_)
             | FaceSurface::Nurbs(_),
             FaceSurface::Torus(_) | FaceSurface::Nurbs(_),
-        )
-        | (
-            FaceSurface::Cylinder(_) | FaceSurface::Cone(_),
-            FaceSurface::Cylinder(_) | FaceSurface::Cone(_),
         )
         | (
             FaceSurface::Torus(_) | FaceSurface::Nurbs(_),
@@ -1708,13 +1715,12 @@ pub fn plane_cylinder_chamfer(
 }
 
 /// Fillet between a plane and a cone whose axis is parallel to the plane
-/// normal, for the bounded "solid frustum cap rim" family.
+/// normal.
 ///
-/// Returns `Some(StripeResult)` with an exact toroidal blend when the plate
-/// is the frustum's own bounded disc cap and the cone carries the material
-/// on its axis side (face not reversed). Both cap rims of a solid frustum
-/// are covered: the base rim (cone axis anti-parallel to the inward plane
-/// normal) and the small-end rim (axis parallel to the inward normal).
+/// Returns `Some(StripeResult)` with an exact toroidal blend for both plate
+/// families: the bounded disc (a solid frustum's cap, base or small-end rim,
+/// or a tapered pocket's floor) and a plate reaching past the rim (a
+/// countersink's entry face, or a frustum boss standing on a plate).
 /// Returns `None` for any other configuration so the walker handles it.
 ///
 /// # Geometry
@@ -1750,16 +1756,23 @@ pub fn plane_cylinder_chamfer(
 /// and `tan(α/2) = 1`, so the inward formulas collapse to
 /// `major = r_p − r`, matching `plane_cylinder_fillet`'s inward branch.
 ///
+/// When the plate reaches past the rim the ball lies on the far side of
+/// the wall line from the axis: `ρc = r_p + k·s_c + r·csc α` with
+/// `s_c = +r` into the material for a convex rim (a countersink:
+/// `r_p + r·tan(α/2)` at `σ = −1`) and `−r` into the void for a concave
+/// one (a boss foot). The wall contact is then the foot toward the axis,
+/// at radial `ρc − r·sin α` and axial `s_c + r·σ·cos α`.
+///
 /// Returns `None` when:
 ///   - the cone axis isn't parallel to the plane normal,
 ///   - the rim circle is degenerate (`σ·step ≤ 0`, i.e. no cone-plate
 ///     intersection, or the apex lies on the plate),
-///   - the plane is not the bounded disc cap (post-on-plate and hole-rim
-///     plates reach past the cone; left to the walker),
 ///   - the half-angle α is too close to 0 or π/2 (degenerate),
 ///   - the spine is too short,
-///   - the radius produces a degenerate torus (`major ≤ tol`; concave
-///     additionally refuses the spindle/horn regime `major − minor < tol`).
+///   - the radius produces a degenerate torus (`major ≤ tol`; a reversed
+///     wall or an unbounded plate additionally refuses the spindle/horn
+///     regime `major − minor < tol`), or the wall contact would reach the
+///     axis.
 ///
 /// # Errors
 ///
@@ -1842,13 +1855,15 @@ pub fn plane_cone_fillet(
     //     `plane_bounded == mat_inside` table). The contact circle must lie
     //     on the plane face: a frustum cap stops at the rim, so the contact
     //     runs INSIDE the spine; a plate the cone passes through (or stands
-    //     on) reaches past it. Only the bounded family is supported here —
-    //     anything else declines to the walker.
+    //     on) reaches past it. The ball sits inside the cone exactly when the
+    //     plate is the bounded disc (a frustum cap, a tapered pocket's
+    //     floor), and outside it when the plate reaches past the rim (a
+    //     countersink's entry face, a frustum boss standing on a plate).
     let plane_bounded = plane_is_bounded_disc_cone(topo, face_plane, p_axis_on_plane, axis_c, r_p)?;
-    if !plane_bounded {
-        return Ok(None);
-    }
     let convex = plane_bounded == mat_inside_cone;
+    // `-1` puts the ball centre on the axis side of the wall line, `+1` on
+    // the far side.
+    let wall_side: f64 = if plane_bounded { -1.0 } else { 1.0 };
 
     // 6) Rolling-ball placement from the meridian construction (see the
     //    `# Geometry` section above). With wall slope `k = σ·cot α` and
@@ -1865,7 +1880,7 @@ pub fn plane_cone_fillet(
     let k_slope = sigma * (alpha.cos() / alpha.sin());
     let csc_alpha = 1.0 / alpha.sin();
     let ball_s = if convex { radius } else { -radius };
-    let major_radius = r_p + k_slope * ball_s - radius * csc_alpha;
+    let major_radius = r_p + k_slope * ball_s + wall_side * radius * csc_alpha;
     let minor_radius = radius;
     if major_radius <= tol_lin {
         return Ok(None);
@@ -1874,7 +1889,9 @@ pub fn plane_cone_fillet(
     // horn-torus boundary (`major == minor`, where the tube touches the
     // axis at a degenerate point). Tolerance lets us catch the boundary
     // even when floating-point rounding leaves the difference at +ε.
-    if concave && major_radius - minor_radius < tol_lin {
+    // Outside the cone the wall contact lies on the axis side of the
+    // centre, so the same limit applies whatever the convexity.
+    if (concave || !plane_bounded) && major_radius - minor_radius < tol_lin {
         return Ok(None);
     }
     // Torus center sits one fillet radius off the plate along the ball
@@ -1946,8 +1963,13 @@ pub fn plane_cone_fillet(
     //       `−r·(1+cos α)` placement, unchanged). Its radius is
     //       `major + r·sin α` — outward toward the wall in every case.
     let contact_plane_radius = major_radius;
-    let contact_cone_radius = (major_radius + radius * alpha.sin()).max(tol_lin);
-    let cone_contact_s = ball_s - radius * sigma * alpha.cos();
+    //     Outside the cone (`wall_side = +1`) the foot lies toward the axis
+    //     instead: radius `major − r·sin α`, axial `ball_s + r·σ·cos α`.
+    let contact_cone_radius = major_radius - wall_side * radius * alpha.sin();
+    if contact_cone_radius <= tol_lin {
+        return Ok(None);
+    }
+    let cone_contact_s = ball_s - (-wall_side) * radius * sigma * alpha.cos();
     let cone_contact_center = p_axis_on_plane + n_p_inward * cone_contact_s;
 
     let contact_plane_circle = remus_math::curves::Circle3D::with_axes(
@@ -2087,9 +2109,6 @@ pub fn plane_cone_chamfer(
     face_plane: FaceId,
     face_cone: FaceId,
 ) -> Result<Option<StripeResult>, BlendError> {
-    use remus_math::surfaces::ConicalSurface;
-    use std::f64::consts::PI;
-
     let tol_ang = ANALYTIC_TOL_ANG;
     let tol_lin = ANALYTIC_TOL_LIN;
 
@@ -2120,7 +2139,12 @@ pub fn plane_cone_chamfer(
     // (release + debug) on disagreement so callers fall back to the
     // walker rather than getting a malformed analytic stripe.
     if concave != topo.face(face_cone)?.is_reversed() {
-        return Ok(None);
+        // The orientations this closed form was written for disagree; a
+        // plate reaching past the rim (a countersink's entry face, a boss
+        // foot) has its own meridian construction.
+        return plane_cone_chamfer_past_rim(
+            n_p_inward, d_plane, cone, spine, topo, d1, d2, face_plane, face_cone,
+        );
     }
 
     // 2) Validate half-angle and chamfer distances.
@@ -2210,6 +2234,193 @@ pub fn plane_cone_chamfer(
     let chamfer_axis = -axis_toward_apex;
     let axis_into_material = -n_p_inward;
 
+    // 10) 3D contact circles. Both lie around the cone axis.
+    //     Concave flips the cone-side contact circle's radius: instead of
+    //     `r_p − d2·cos α` (post case, contact moves inward toward axis)
+    //     it becomes `r_p + d2·cos α` (hole case, contact moves outward
+    //     into surrounding plate material). The axial offset direction
+    //     `axis_into_material` is always `−n_p_inward` regardless of
+    //     convex/concave.
+    let cone_contact_radius = r_p - signed_offset * d2 * cos_a;
+    let cone_contact_axial_offset = d2 * sin_a;
+    let cone_contact_center = p_axis_on_plane + axis_into_material * cone_contact_axial_offset;
+
+    plane_cone_chamfer_stripe(
+        &PlaneConeChamfer {
+            n_plane: n_p_inward,
+            d_plane,
+            p_axis_on_plane,
+            chamfer_apex: chamfer_apex_pos,
+            chamfer_axis,
+            chamfer_half_angle,
+            plate_contact_radius,
+            cone_contact_center,
+            cone_contact_radius,
+        },
+        cone,
+        spine,
+        topo,
+        face_plane,
+        face_cone,
+    )
+}
+
+/// Chamfer of a plane–cone rim whose plate reaches past the rim: a
+/// countersink's entry edge (convex, the cone a reversed hole wall) or the
+/// foot of a frustum boss standing on a plate (concave).
+///
+/// Work in the meridian half-plane `(ρ, s)`, `s` measured from the plate
+/// into its material and the wall the line `ρ = r_p + k·s` with
+/// `k = σ·cot α`, `σ = axis · n_into_material`. The plate contact is `d1`
+/// out along the plate, at `(r_p + d1, 0)`; the wall contact is `d2` along
+/// the wall from the rim, into the material for a convex rim and into the
+/// void for a concave one: `s2 = ±d2·sin α`, `ρ2 = r_p + k·s2`. The chamfer
+/// is the cone through both circles, its apex where their generator meets
+/// the axis.
+///
+/// Returns `None` for a bounded plate (the frustum-cap family
+/// [`plane_cone_chamfer`] owns), a degenerate cone, or a chamfer whose
+/// generator runs parallel to the axis (a cylinder) or reaches it.
+#[allow(clippy::too_many_arguments)]
+fn plane_cone_chamfer_past_rim(
+    n_raw: Vec3,
+    d_plane: f64,
+    cone: &remus_math::surfaces::ConicalSurface,
+    spine: &Spine,
+    topo: &Topology,
+    d1: f64,
+    d2: f64,
+    face_plane: FaceId,
+    face_cone: FaceId,
+) -> Result<Option<StripeResult>, BlendError> {
+    let tol_ang = ANALYTIC_TOL_ANG;
+    let tol_lin = ANALYTIC_TOL_LIN;
+    let axis_c = cone.axis();
+    if axis_c.dot(n_raw).abs() < 1.0 - tol_ang || d1 <= tol_lin || d2 <= tol_lin {
+        return Ok(None);
+    }
+    let alpha = cone.half_angle();
+    if alpha <= 1e-3 || alpha >= std::f64::consts::FRAC_PI_2 - 1e-3 {
+        return Ok(None);
+    }
+    // The raw normal is the surface's; the face's reversal flips which side
+    // holds the material.
+    let n_into_material = if topo.face(face_plane)?.is_reversed() {
+        n_raw
+    } else {
+        -n_raw
+    };
+    let apex = cone.apex();
+    let step = d_plane - n_raw.dot(Vec3::new(apex.x(), apex.y(), apex.z()));
+    let p_axis_on_plane = apex + n_raw * step;
+    let (sin_a, cos_a) = alpha.sin_cos();
+    // The rim lies on the cone's own nappe, `v > 0` from the apex.
+    let rim_height = axis_c.dot(p_axis_on_plane - apex);
+    if rim_height <= tol_lin {
+        return Ok(None);
+    }
+    let r_p = rim_height * cos_a / sin_a;
+    if plane_is_bounded_disc_cone(topo, face_plane, p_axis_on_plane, axis_c, r_p)? {
+        return Ok(None);
+    }
+    let mat_inside_cone = !topo.face(face_cone)?.is_reversed();
+    // Past the rim, the edge is convex exactly when the cone is a hole wall.
+    let convex = !mat_inside_cone;
+    let sigma = axis_c.dot(n_into_material).signum();
+    let k_slope = sigma * cos_a / sin_a;
+
+    let plate_contact_radius = r_p + d1;
+    let s2 = if convex { d2 * sin_a } else { -d2 * sin_a };
+    let cone_contact_radius = k_slope.mul_add(s2, r_p);
+    if cone_contact_radius <= tol_lin {
+        return Ok(None);
+    }
+    let drho = plate_contact_radius - cone_contact_radius;
+    if drho.abs() <= tol_lin {
+        return Ok(None);
+    }
+    // Generator through (plate_contact_radius, 0) and (cone_contact_radius,
+    // s2) meets ρ = 0 at s = s2·ρ1/(ρ1 − ρ2), on the far side of the plate
+    // contact from the wall contact when the generator narrows toward it.
+    let apex_s = s2 * plate_contact_radius / drho;
+    if apex_s.abs() <= tol_lin {
+        return Ok(None);
+    }
+    let chamfer_half_angle = apex_s.abs().atan2(plate_contact_radius);
+    if chamfer_half_angle <= 1e-3 || chamfer_half_angle >= std::f64::consts::FRAC_PI_2 - 1e-3 {
+        return Ok(None);
+    }
+    let chamfer_apex = p_axis_on_plane + n_into_material * apex_s;
+    // From the apex toward the plate, where the chamfer cone opens.
+    let chamfer_axis = if apex_s > 0.0 {
+        -n_into_material
+    } else {
+        n_into_material
+    };
+    plane_cone_chamfer_stripe(
+        &PlaneConeChamfer {
+            n_plane: n_raw,
+            d_plane,
+            p_axis_on_plane,
+            chamfer_apex,
+            chamfer_axis,
+            chamfer_half_angle,
+            plate_contact_radius,
+            cone_contact_center: p_axis_on_plane + n_into_material * s2,
+            cone_contact_radius,
+        },
+        cone,
+        spine,
+        topo,
+        face_plane,
+        face_cone,
+    )
+}
+
+/// The closed form [`plane_cone_chamfer`] and its past-the-rim sibling
+/// share: the chamfer cone and both contact circles around the cone axis.
+#[derive(Clone, Copy)]
+struct PlaneConeChamfer {
+    /// The plate's raw geometric normal and offset (`n·p = d`).
+    n_plane: Vec3,
+    d_plane: f64,
+    /// Where the cone axis meets the plate: both contact circles' axis point.
+    p_axis_on_plane: Point3,
+    chamfer_apex: Point3,
+    /// From the chamfer cone's apex toward its opening.
+    chamfer_axis: Vec3,
+    chamfer_half_angle: f64,
+    plate_contact_radius: f64,
+    cone_contact_center: Point3,
+    cone_contact_radius: f64,
+}
+
+/// Build the stripe of a [`PlaneConeChamfer`].
+fn plane_cone_chamfer_stripe(
+    chamfer: &PlaneConeChamfer,
+    cone: &remus_math::surfaces::ConicalSurface,
+    spine: &Spine,
+    topo: &Topology,
+    face_plane: FaceId,
+    face_cone: FaceId,
+) -> Result<Option<StripeResult>, BlendError> {
+    use remus_math::surfaces::ConicalSurface;
+    use std::f64::consts::PI;
+
+    let tol_lin = ANALYTIC_TOL_LIN;
+    let PlaneConeChamfer {
+        n_plane: n_p_inward,
+        d_plane,
+        p_axis_on_plane,
+        chamfer_apex: chamfer_apex_pos,
+        chamfer_axis,
+        chamfer_half_angle,
+        plate_contact_radius,
+        cone_contact_center,
+        cone_contact_radius,
+    } = *chamfer;
+    let axis_c = cone.axis();
+
     // 8) Spine: detect closed-circle case so we can spin a full 2π without
     //    relying on `Spine::length()` (chord-based, zero for closed loops).
     let edges = spine.edges();
@@ -2229,17 +2440,6 @@ pub fn plane_cone_chamfer(
     let cone_y = cone.y_axis();
     let chamfer_cone =
         ConicalSurface::with_ref_dir(chamfer_apex_pos, chamfer_axis, chamfer_half_angle, cone_x)?;
-
-    // 10) 3D contact circles. Both lie around the cone axis.
-    //     Concave flips the cone-side contact circle's radius: instead of
-    //     `r_p − d2·cos α` (post case, contact moves inward toward axis)
-    //     it becomes `r_p + d2·cos α` (hole case, contact moves outward
-    //     into surrounding plate material). The axial offset direction
-    //     `axis_into_material` is always `−n_p_inward` regardless of
-    //     convex/concave.
-    let cone_contact_radius = r_p - signed_offset * d2 * cos_a;
-    let cone_contact_axial_offset = d2 * sin_a;
-    let cone_contact_center = p_axis_on_plane + axis_into_material * cone_contact_axial_offset;
 
     let contact_plane_circle = remus_math::curves::Circle3D::with_axes(
         p_axis_on_plane,
@@ -5405,6 +5605,240 @@ pub fn cone_cone_coaxial_chamfer(
         face1,
         face2,
         sections: vec![section_start, section_end],
+    };
+    Ok(Some(StripeResult {
+        stripe,
+        new_edges: Vec::new(),
+    }))
+}
+
+/// The axial side of `axial_spine` a coaxial surface-of-revolution face lies
+/// on: `+1` or `−1` along `axis`, from the outer-wire vertex farthest from
+/// the spine's plane, with that distance (the face's axial reach from the
+/// spine). `None` when every vertex sits on the spine's plane.
+fn face_axial_side(
+    topo: &Topology,
+    face: FaceId,
+    origin: Point3,
+    axis: Vec3,
+    axial_spine: f64,
+) -> Result<Option<(f64, f64)>, BlendError> {
+    let wire = topo.wire(topo.face(face)?.outer_wire())?;
+    let mut farthest = 0.0_f64;
+    for oe in wire.edges() {
+        let edge = topo.edge(oe.edge())?;
+        for vertex in [edge.start(), edge.end()] {
+            let offset = axis.dot(topo.vertex(vertex)?.point() - origin) - axial_spine;
+            if offset.abs() > farthest.abs() {
+                farthest = offset;
+            }
+        }
+    }
+    if farthest.abs() <= ANALYTIC_TOL_LIN {
+        return Ok(None);
+    }
+    Ok(Some((farthest.signum(), farthest.abs())))
+}
+
+/// The `(u, v)` a contact circle starts at on `surface`, and the sign `u`
+/// runs with as the circle's own parameter grows.
+fn contact_uv_frame<S: ParametricSurface>(
+    surface: &S,
+    circle: &remus_math::curves::Circle3D,
+    u_start: f64,
+) -> (f64, f64, f64) {
+    let (u0, v0) = surface.project_point(circle.evaluate(u_start));
+    let (u1, _) = surface.project_point(circle.evaluate(u_start + 0.25));
+    let du =
+        (u1 - u0 + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI;
+    (u0, v0, if du >= 0.0 { 1.0 } else { -1.0 })
+}
+
+/// Chamfer of the circular edge where a cylinder meets a coaxial cone: a
+/// countersink's floor rim on its bore, or a turned shaft's taper shoulder.
+///
+/// Work in the meridian half-plane `(ρ, z)` about the cylinder's axis. Each
+/// contact lies its chamfer distance along its own face's generator from
+/// the spine, into that face: `d1` axially on the cylinder (radius `r`), `d2`
+/// along the cone's slant, whose unit generator is `(cos β, σ·sin β)` with
+/// `σ = ±1` the cone axis against the cylinder's. The chamfer is the cone of
+/// revolution through the two contact circles.
+///
+/// Returns `None` (walker fallback) when the axes are not coaxial, the spine
+/// is not their common circle, a face's extent along its generator is not
+/// past its contact, or the chamfer generator runs parallel or
+/// perpendicular to the axis (a cylinder or an annulus, not a cone).
+///
+/// # Errors
+///
+/// Returns `BlendError` if topology lookups or NURBS construction fails.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+pub fn cylinder_cone_coaxial_chamfer(
+    cyl: &remus_math::surfaces::CylindricalSurface,
+    cone: &remus_math::surfaces::ConicalSurface,
+    spine: &Spine,
+    topo: &Topology,
+    d1: f64,
+    d2: f64,
+    face1: FaceId,
+    face2: FaceId,
+) -> Result<Option<StripeResult>, BlendError> {
+    use remus_math::surfaces::ConicalSurface;
+    use std::f64::consts::PI;
+
+    let tol_lin = ANALYTIC_TOL_LIN;
+    let tol_ang = ANALYTIC_TOL_ANG;
+    if d1 <= tol_lin || d2 <= tol_lin {
+        return Ok(None);
+    }
+    let axis = cyl.axis();
+    let origin = cyl.origin();
+    let sigma = axis.dot(cone.axis());
+    if sigma.abs() < 1.0 - tol_ang {
+        return Ok(None);
+    }
+    let sigma = sigma.signum();
+    let to_apex = cone.apex() - origin;
+    let apex_axial = axis.dot(to_apex);
+    if (to_apex - axis * apex_axial).length() > tol_lin {
+        return Ok(None);
+    }
+    let beta = cone.half_angle();
+    if beta <= 1e-3 || beta >= std::f64::consts::FRAC_PI_2 - 1e-3 {
+        return Ok(None);
+    }
+    let (sin_b, cos_b) = beta.sin_cos();
+    let r = cyl.radius();
+    // The cone reaches radius `r` at slant `r / cos β` from its apex.
+    let z_spine = (sigma * r * sin_b / cos_b) + apex_axial;
+
+    let edges = spine.edges();
+    let is_closed_spine = if edges.len() == 1 {
+        let e = topo.edge(edges[0])?;
+        e.start() == e.end()
+    } else {
+        false
+    };
+    let spine_len = spine.length();
+    if !is_closed_spine && spine_len < tol_lin {
+        return Ok(None);
+    }
+    let p_spine = spine.evaluate(topo, 0.0)?;
+    let sample_axial = axis.dot(p_spine - origin);
+    let sample_radial = ((p_spine - origin) - axis * sample_axial).length();
+    let spine_match_tol = tol_lin * 1e3;
+    if (sample_axial - z_spine).abs() > spine_match_tol
+        || (sample_radial - r).abs() > spine_match_tol
+    {
+        return Ok(None);
+    }
+
+    let Some((side1, reach1)) = face_axial_side(topo, face1, origin, axis, z_spine)? else {
+        return Ok(None);
+    };
+    let Some((side2, reach2)) = face_axial_side(topo, face2, origin, axis, z_spine)? else {
+        return Ok(None);
+    };
+    // The two faces must leave the spine on opposite axial sides.
+    if side1 * side2 > 0.0 {
+        return Ok(None);
+    }
+    // Cylinder contact: `d1` axially into its face.
+    let z1 = side1.mul_add(d1, z_spine);
+    let r1 = r;
+    // Cone contact: `d2` along the slant into its face. Moving `±d2` along
+    // the generator changes the axial coordinate by `±d2·σ·sin β`; pick the
+    // sign that heads into the face.
+    let slant = side2 * sigma;
+    let z2 = (slant * d2).mul_add(sigma * sin_b, z_spine);
+    let r2 = (slant * d2).mul_add(cos_b, r);
+    if d1 >= reach1 - tol_lin || (d2 * sin_b) >= reach2 - tol_lin || r2 <= tol_lin {
+        return Ok(None);
+    }
+
+    let dr = r2 - r1;
+    let dz = z2 - z1;
+    if dr.abs() <= tol_lin || dz.abs() <= tol_lin {
+        return Ok(None);
+    }
+    // Apex where the chamfer generator meets the axis.
+    let z_apex = z1 - r1 * dz / dr;
+    let mid_z = 0.5 * (z1 + z2);
+    let chamfer_axis = if mid_z > z_apex { axis } else { -axis };
+    let chamfer_half_angle = ((mid_z - z_apex).abs() / (0.5 * (r1 + r2))).atan();
+    if chamfer_half_angle <= 1e-3 || chamfer_half_angle >= std::f64::consts::FRAC_PI_2 - 1e-3 {
+        return Ok(None);
+    }
+    let ref_dir = cyl.x_axis();
+    let chamfer_cone = ConicalSurface::with_ref_dir(
+        origin + axis * z_apex,
+        chamfer_axis,
+        chamfer_half_angle,
+        ref_dir,
+    )?;
+
+    let spine_center = origin + axis * z_spine;
+    let perp_y = axis.cross(ref_dir).normalize()?;
+    let u_at = |p: Point3| {
+        let v = p - spine_center;
+        perp_y.dot(v).atan2(ref_dir.dot(v))
+    };
+    let u_start = u_at(p_spine);
+    let u_end = if is_closed_spine {
+        u_start + 2.0 * PI
+    } else {
+        let u_end_raw = u_at(spine.evaluate(topo, spine_len)?);
+        if u_end_raw > u_start {
+            u_end_raw
+        } else {
+            u_end_raw + 2.0 * PI
+        }
+    };
+
+    let contact1_circle =
+        remus_math::curves::Circle3D::with_axes(origin + axis * z1, axis, r1, ref_dir, perp_y)?;
+    let contact2_circle =
+        remus_math::curves::Circle3D::with_axes(origin + axis * z2, axis, r2, ref_dir, perp_y)?;
+    let contact1 = circle_arc_to_nurbs(&contact1_circle, u_start, u_end)?;
+    let contact2 = circle_arc_to_nurbs(&contact2_circle, u_start, u_end)?;
+
+    // Both supports are parameterised about their own axis and reference
+    // direction, so each pcurve starts where its circle does and runs with
+    // the circle's sense on that surface.
+    let (u1_start, v1, du1) = contact_uv_frame(cyl, &contact1_circle, u_start);
+    let (u2_start, v2, du2) = contact_uv_frame(cone, &contact2_circle, u_start);
+    let pcurve1 = Curve2D::Line(Line2D::new(
+        remus_math::vec::Point2::new(u1_start, v1),
+        remus_math::vec::Vec2::new(du1 * (u_end - u_start), 0.0),
+    )?);
+    let pcurve2 = Curve2D::Line(Line2D::new(
+        remus_math::vec::Point2::new(u2_start, v2),
+        remus_math::vec::Vec2::new(du2 * (u_end - u_start), 0.0),
+    )?);
+
+    let section_at = |u: f64, t: f64| {
+        let p1 = contact1_circle.evaluate(u);
+        let p2 = contact2_circle.evaluate(u);
+        CircSection {
+            p1,
+            p2,
+            center: midpoint_3d(p1, p2),
+            radius: (p1 - p2).length() * 0.5,
+            uv1: (du1.mul_add(u - u_start, u1_start), v1),
+            uv2: (du2.mul_add(u - u_start, u2_start), v2),
+            t,
+        }
+    };
+    let stripe = Stripe {
+        spine: spine.clone(),
+        surface: FaceSurface::Cone(chamfer_cone),
+        pcurve1,
+        pcurve2,
+        contact1,
+        contact2,
+        face1,
+        face2,
+        sections: vec![section_at(u_start, 0.0), section_at(u_end, 1.0)],
     };
     Ok(Some(StripeResult {
         stripe,
