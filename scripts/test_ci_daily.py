@@ -30,6 +30,50 @@ def jobs(text):
 
 
 class NativeSelectionTests(unittest.TestCase):
+    def archive_invocation(self, mode, commands):
+        from contextlib import redirect_stdout
+        import io
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as temporary:
+            plan = Path(temporary) / "plan.json"
+            selection = ci_native.plan(["README.md"], ci_native.suite_manifest(), full=mode == "full")
+            selection["source_sha"] = "a" * 40
+            plan.write_text(json.dumps(selection))
+
+            def execute(command, **kwargs):
+                commands.append(command)
+                return subprocess.CompletedProcess(command, 0, stdout='{"rust-suites": {}}')
+
+            argv = ["ci_native.py", "archive", "--plan", str(plan), "--archive", str(Path(temporary) / "tests.tar.zst")]
+            with mock.patch.object(sys, "argv", argv), mock.patch.object(ci_native, "git", return_value="a" * 40), mock.patch.object(ci_native, "run", side_effect=execute), mock.patch.dict(os.environ, GITHUB_OUTPUT="", GITHUB_STEP_SUMMARY=""), redirect_stdout(io.StringIO()):
+                ci_native.main()
+
+    def test_full_archive_producer_does_not_unpack_a_second_complete_target(self):
+        commands = []
+        self.archive_invocation("full", commands)
+        self.assertEqual(len(commands), 1)
+        self.assertEqual(commands[0][:3], ["cargo", "nextest", "archive"])
+        self.assertIn("--workspace", commands[0])
+
+    def test_fast_archive_still_requires_actual_critical_inventory(self):
+        commands = []
+        with self.assertRaisesRegex(ValueError, "Selected integration binary has no tests"):
+            self.archive_invocation("fast", commands)
+        self.assertEqual([command[2] for command in commands], ["archive", "list"])
+
+    def test_captured_inventory_failure_exposes_diagnostics_and_still_fails(self):
+        from contextlib import redirect_stderr, redirect_stdout
+        import io
+        from unittest import mock
+        detail = "native archive setup detail"
+        error = subprocess.CalledProcessError(96, ["cargo", "nextest", "list"], stderr=detail)
+        output = io.StringIO()
+        with mock.patch.object(subprocess, "run", side_effect=error), redirect_stderr(output), redirect_stdout(io.StringIO()):
+            with self.assertRaises(subprocess.CalledProcessError) as caught:
+                ci_native.run(error.cmd, capture_output=True, text=True)
+        self.assertIs(caught.exception, error)
+        self.assertIn(detail, output.getvalue())
+
     def setUp(self):
         self.manifest = ci_native.suite_manifest()
 

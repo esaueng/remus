@@ -33,6 +33,12 @@ compiled fixture workspace before executing it. The final CI gate requires all
 selected jobs and rejects failures, cancellations, missing results and unexpected
 skips.
 
+The full-suite producer builds and uploads its archive without extracting a
+second complete target directory beside the compiler outputs. The four full
+workers remain mandatory and perform archive setup and test execution. Fast
+producers still inspect the archive inventory before running their selection,
+and any captured setup diagnostic is printed before the job fails.
+
 Ordinary merge candidates receive the critical suite plus changed test binaries.
 Foundational changes still select complete native tests. The existing selection
 of other merge-candidate checks remains intact. Main pushes retain exact-source

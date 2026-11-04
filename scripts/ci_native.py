@@ -9,6 +9,7 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import subprocess
+import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ".github/ci-test-suites.json"
@@ -129,7 +130,15 @@ def verify_inventory(selection: dict, inventory: dict) -> bool:
 
 def run(command: list[str], **kwargs):
     print("+ " + " ".join(command), flush=True)
-    return subprocess.run(command, cwd=ROOT, check=True, **kwargs)
+    try:
+        return subprocess.run(command, cwd=ROOT, check=True, **kwargs)
+    except subprocess.CalledProcessError as error:
+        # Inventory JSON must be captured, but setup/extraction diagnostics
+        # must still reach the CI log when nextest cannot create it.
+        if error.stderr:
+            detail = error.stderr.decode(errors="replace") if isinstance(error.stderr, bytes) else error.stderr
+            print(detail, file=sys.stderr)
+        raise
 
 
 def main() -> None:
@@ -169,14 +178,18 @@ def main() -> None:
             parser.error("archive/run requires --archive")
         if args.command == "archive":
             run(["cargo", "nextest", "archive", *build_args(selection), "--archive-file", str(args.archive)])
-            # Query actual binaries instead of assuming a source module has tests.
-            inventory = json.loads(run(["cargo", "nextest", "list", "--archive-file", str(args.archive),
-                                        "--workspace-remap", str(ROOT), "--message-format", "json"],
-                                       capture_output=True, text=True).stdout)
-            if selection["mode"] == "fast" and not verify_inventory(selection, inventory):
-                selection["mode"], selection["reason"] = "full", "affected module has no runnable unit tests"
-                run(["cargo", "nextest", "archive", *build_args(selection), "--archive-file", str(args.archive)])
-                args.plan.write_text(json.dumps(selection, indent=2) + "\n")
+            if selection["mode"] == "fast":
+                # Fast selection needs an inventory to detect missing modules.
+                # Full archives are extracted and run by all four mandatory
+                # workers; unpacking them again beside the build duplicates
+                # their complete target directory without validating selection.
+                inventory = json.loads(run(["cargo", "nextest", "list", "--archive-file", str(args.archive),
+                                            "--workspace-remap", str(ROOT), "--message-format", "json"],
+                                           capture_output=True, text=True).stdout)
+                if not verify_inventory(selection, inventory):
+                    selection["mode"], selection["reason"] = "full", "affected module has no runnable unit tests"
+                    run(["cargo", "nextest", "archive", *build_args(selection), "--archive-file", str(args.archive)])
+                    args.plan.write_text(json.dumps(selection, indent=2) + "\n")
         else:
             if not 1 <= args.shard <= args.total:
                 raise ValueError("Invalid native partition")
