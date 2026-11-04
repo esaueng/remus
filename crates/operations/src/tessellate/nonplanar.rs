@@ -3056,8 +3056,11 @@ pub(super) fn tessellate_nonplanar_cdt(
     // Near a pole every node of the collapsed row ties for nearest, the first
     // in scan order wins, and Newton stalls on the singular row: a sample a
     // little way along one side lands on the far side's corner and the CDT
-    // drops the triangle at the pole. Re-seed such a sample from its
-    // neighbours' chart points and keep the closer answer.
+    // drops the triangle at the pole. A patch with a collapsed boundary row
+    // traps the coarse seed the same way far from any pole: every sample of
+    // a short straight span between two collapsed corners charted onto a
+    // corner, centimetres off. Re-seed such a sample from the per-span seed
+    // grid and from its neighbours' chart points and keep the closest answer.
     if let Some(frame) = nurbs_frame.as_ref() {
         let limit = deflection.max(1e-9);
         let n = boundary_uv.len();
@@ -3067,6 +3070,12 @@ pub(super) fn tessellate_nonplanar_cdt(
             if best <= limit {
                 continue;
             }
+            if let Some((uv, distance)) = frame.project_spans(point)
+                && distance < best
+            {
+                best = distance;
+                boundary_uv[i] = uv;
+            }
             for seed in [boundary_uv[(i + n - 1) % n], boundary_uv[(i + 1) % n]] {
                 if let Some((uv, distance)) = frame.project_seeded(point, seed)
                     && distance < best
@@ -3075,6 +3084,40 @@ pub(super) fn tessellate_nonplanar_cdt(
                     boundary_uv[i] = uv;
                 }
             }
+        }
+    }
+    // A NURBS side whose iso-curve collapses to one point (a pole, or a blend
+    // rolling round a corner of its own radius) charts every boundary sample
+    // at that point ambiguously along the side; spread them monotonically
+    // over the collapsed interval so the chart polygon does not fold back on
+    // itself (see `collapsed_boundary`). Read in the frame's anchored copy so
+    // a translated face charts exactly like its source.
+    if let Some(frame) = nurbs_frame.as_ref()
+        && let FaceSurface::Nurbs(relative) = frame.surface()
+    {
+        let tol = (deflection * 1e-3).max(1e-9);
+        // A periodic direction wraps: its neighbours can sit a period apart,
+        // and the seam unwrap below owns that geometry.
+        let mut sides = collapsed_boundary::collapsed_sides(relative, tol);
+        sides.retain(|side| {
+            !(if side.along_u {
+                relative.is_periodic_u()
+            } else {
+                relative.is_periodic_v()
+            })
+        });
+        if !sides.is_empty() {
+            let points: Vec<Point3> = boundary_3d
+                .iter()
+                .map(|sample| self_relative(sample.0, frame.anchor))
+                .collect();
+            collapsed_boundary::respread_collapsed_samples(
+                &sides,
+                &points,
+                &mut boundary_uv,
+                (relative.domain_u(), relative.domain_v()),
+                tol,
+            );
         }
     }
     // Step 2a: Unwrap periodic u across the seam for polyline boundaries.
@@ -4195,6 +4238,28 @@ impl NurbsFrame {
             self_relative(point, self.anchor),
             1e-6,
             seed,
+        )
+        .ok()
+        .map(|proj| ((proj.u, proj.v), proj.distance))
+    }
+
+    /// `(u, v)` of a world point, Newton-refined from the nearest node of the
+    /// per-knot-span seed grid, with the distance from the point to the
+    /// surface there. The coarse grid's nine nodes per axis can all miss a
+    /// short span, so a seed lands a span or more away; on a patch whose
+    /// boundary row collapses onto a point that seed can be the collapsed
+    /// row itself, where Newton has no gradient along the row and stops.
+    fn project_spans(&self, point: Point3) -> Option<((f64, f64), f64)> {
+        let FaceSurface::Nurbs(rel) = &self.surface else {
+            return None;
+        };
+        remus_math::nurbs::projection::project_point_to_surface_with_grid(
+            rel,
+            self_relative(point, self.anchor),
+            1e-6,
+            self.span_grid.get_or_init(|| {
+                remus_math::nurbs::projection::SurfaceSeedGrid::for_surface_spans(rel)
+            }),
         )
         .ok()
         .map(|proj| ((proj.u, proj.v), proj.distance))
@@ -5508,6 +5573,7 @@ fn sphere_native_arcs_in_hemisphere(
     Ok(true)
 }
 
+mod collapsed_boundary;
 mod sheared_chart;
 
 /// Prefer the carrier's own chart, then test great-circle frames against the
