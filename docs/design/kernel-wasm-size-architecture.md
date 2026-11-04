@@ -409,3 +409,12 @@ Committed kernel package v2026.1.115 (`264fe67`), measured with
   limits change only together with OpenZCAD's `KERNEL_WASM_POLICY`. At the
   current rate the full W7 ceiling (16 MiB raw / 6 MiB gzip) lasts about five
   weeks, so a raise without a growth budget only postpones this review.
+- **Attribution (2026-11-04)**, `d8195032` → `84bf696`, six days:
+  +1,079,070 B raw / +447,433 B gzip, about 1.26 MB raw and 0.52 MB gzip per
+  week. Gears and threads account for about 330 KB of it, and blends, chamfers
+  and blend edits for about 530 KB. Almost all of it is new single-caller
+  feature code, not duplication. Closing the sort-lint gaps (`slice::sort` and
+  the wasm bindings) recovers 22 KB raw / 8 KB gzip; no larger duplication
+  remains. Trimming cannot keep pace with growth, so the remaining levers are
+  the ceiling, a growth budget and structural splitting
+  ([evidence](../performance/evidence/kernel-size-attribution-2026-11-04/README.md)).

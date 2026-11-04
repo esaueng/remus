@@ -389,7 +389,7 @@ fn fix_shell_duplicate_faces(
         .iter()
         .map(|(survivor, removed)| format!("F{}<-F{}", survivor.index(), removed.index()))
         .collect();
-    vetoed.sort();
+    vetoed.compact_sort_unstable();
     if plan.veto_count > 0 {
         ctx.info(format!(
             "kept {} duplicate pair(s) with incompatible attributes [{}] ({} detail(s) omitted)",
@@ -423,7 +423,7 @@ fn fix_shell_duplicate_faces(
         .iter()
         .map(|(survivor, removed)| format!("F{}<-F{}", survivor.index(), removed.index()))
         .collect();
-    provenance.sort();
+    provenance.compact_sort_unstable();
     // The counts below are the scaling evidence trail (PERF-H03): how many
     // pairs the buckets drew versus how many reached the exact predicate.
     // They also keep the plan stats live outside tests.

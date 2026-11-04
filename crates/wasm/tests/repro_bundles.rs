@@ -5,7 +5,12 @@
 //! with no code change.
 
 #![cfg(not(target_arch = "wasm32"))]
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::disallowed_methods
+)]
 
 use remus_wasm::repro::ReproBundle;
 

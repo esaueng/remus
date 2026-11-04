@@ -32,6 +32,7 @@
 
 use std::collections::HashSet;
 
+use remus_math::compact_sort::CompactSort;
 use serde_json::{Map, Value};
 use tsify::Tsify as _;
 use wasm_bindgen::prelude::*;
@@ -101,7 +102,7 @@ pub(super) fn face_move_quality_json(
 
 pub(super) fn face_move_evolution_json(map: &remus_operations::evolution::EvolutionMap) -> Value {
     let mut deleted: Vec<_> = map.deleted.iter().copied().collect();
-    deleted.sort_unstable();
+    deleted.compact_sort_unstable();
     serde_json::json!({
         "origin": map.origin.as_str(),
         "modified": map.modified,

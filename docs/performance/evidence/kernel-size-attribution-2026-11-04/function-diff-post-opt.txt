@@ -1,0 +1,56 @@
+functions: base 5958  cur 6480  new 2110 (2,202,956 B)  removed 1588 (1,184,461 B)
+existing functions that grew: 617,733 B   shrank: -495,937 B
+
+Largest growth among existing functions:
+  +60,965   611,525 ->   672,490  "function names" subsection
+  +55,898     1,957 ->    57,855  remus_operations::blend_ops::chamfer_v2
+  +19,974        13 ->    19,987  data segment ".rodata.5"
+  +19,477        11 ->    19,488  data segment ".rodata.127"
+  +17,146     3,788 ->    20,934  data segment ".rodata.44"
+  +16,773   230,749 ->   247,522  core::slice::sort::stable::quicksort::quicksort
+  +16,483       123 ->    16,606  data segment ".rodata.50"
+  +15,445     1,826 ->    17,271  data segment ".rodata.43"
+  +14,316    94,266 ->   108,582  remus_blend::fillet_builder::FilletBuilder::build
+  +12,594     2,176 ->    14,770  data segment ".rodata.46"
+  +11,825    48,563 ->    60,388  alloc::collections::btree::map::BTreeMap<K,V,A>::insert
+  +11,373       587 ->    11,960  data segment ".rodata.51"
+  +10,477        14 ->    10,491  data segment ".rodata.139"
+   +9,792     1,655 ->    11,447  data segment ".rodata.73"
+   +9,391        42 ->     9,433  data segment ".rodata.64"
+   +8,866     4,214 ->    13,080  remus_operations::push_pull::resize_cylindrical_face
+   +8,756    48,075 ->    56,831  remus_operations::tessellate::nonplanar::tessellate_nonplanar_cdt
+   +8,084   116,061 ->   124,145  core::slice::sort::stable::drift::sort
+   +8,080     2,277 ->    10,357  data segment ".rodata.48"
+   +7,641    36,688 ->    44,329  remus_operations::chamfer::chamfer_core
+   +7,579    89,513 ->    97,092  data segment ".rodata"
+   +7,339     4,309 ->    11,648  remus_operations::blend_ops::fillet_cascade_attempts
+   +7,106        14 ->     7,120  data segment ".rodata.96"
+   +6,345    26,264 ->    32,609  <alloc::vec::Vec<T> as alloc::vec::spec_from_iter_nested::SpecFromIterNested<T,I>>::from_iter
+   +6,193   124,396 ->   130,589  remus_algo::pave_filler::phase_ff::perform_seeded
+
+Largest new functions:
+  146,334  remus_wasm::bindings::batch::<impl remus_wasm::kernel::RemusKernel>::dispatch_op
+  107,384  remus_operations::resize_blend::axial_rim_join::move_with_cap_reblend
+   65,167  remus_blend::ridge_chain::blend_all
+   53,904  remus_blend::seam_chain::blend
+   44,429  remus_operations::blend_ops::chamfer_v2_engines::{{closure}}
+   44,078  remus_wasm::bindings::gear::<impl remus_wasm::kernel::RemusKernel>::make_enveloping_worm_detailed_impl
+   41,710  remus_wasm::bindings::thread::<impl remus_wasm::kernel::RemusKernel>::cut_thread_detailed_impl
+   40,451  remuskernel_recognizeFeatures multivalue shim
+   37,962  remus_wasm::bindings::gear::<impl remus_wasm::kernel::RemusKernel>::make_enveloping_worm_wheel_detailed_impl
+   31,413  remus_wasm::bindings::evolution::<impl remus_wasm::kernel::RemusKernel>::remove_blends_journaled_json
+   30,876  remuskernel_fromBREP multivalue shim
+   29,460  remus_operations::split::split_with_evolution_impl
+   26,648  remus_wasm::bindings::gear::<impl remus_wasm::kernel::RemusKernel>::make_worm_wheel_detailed_impl
+   25,614  remus_wasm::bindings::evolution::<impl remus_wasm::kernel::RemusKernel>::resize_cylindrical_face_journaled_json
+   20,485  remus_wasm::bindings::gear::<impl remus_wasm::kernel::RemusKernel>::cut_gear_teeth_detailed_impl
+   19,850  remuskernel_offsetPolygon2d multivalue shim
+   19,213  remus_operations::thread::chamfer::chamfer_zone
+   18,902  remus_wasm::bindings::nurbs_reuse::<impl remus_wasm::kernel::RemusKernel>::dispatch_nurbs_reuse_op
+   17,356  remuskernel_deleteSolid multivalue shim
+   16,675  remus_wasm::bindings::construction_imprint::<impl remus_wasm::kernel::RemusKernel>::imprint_planar_polygon_impl
+   16,480  remus_wasm::bindings::evolution::<impl remus_wasm::kernel::RemusKernel>::offset_journaled_json
+   15,237  remus_operations::chamfer::analytic_tools::apply_tools
+   15,211  remus_wasm::bindings::evolution::<impl remus_wasm::kernel::RemusKernel>::resize_blend_journaled_json
+   14,865  remus_operations::chamfer::curved_corner::try_chamfer
+   13,678  remus_operations::resize_blend::radial_resize::profile::Profile::read

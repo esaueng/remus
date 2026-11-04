@@ -4,7 +4,12 @@
 //! arena within 1e-7 of a contact point, so moving one result dragged the
 //! other's corners along with it while `validate_solid` still passed both.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::disallowed_methods
+)]
 
 use std::collections::HashSet;
 

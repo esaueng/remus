@@ -9,6 +9,7 @@
 
 use wasm_bindgen::prelude::*;
 
+use remus_math::compact_sort::CompactSort;
 use remus_operations::boolean::{BooleanOp, EdgeEvent, EntityEvolution, VertexEvent};
 use remus_operations::journal_ops;
 use remus_topology::journal::EntryPayload;
@@ -110,7 +111,7 @@ fn entity_history_json(
     }
     let mut face_events: BTreeMap<usize, serde_json::Value> = BTreeMap::new();
     for (output, mut inputs) in modified {
-        inputs.sort_unstable();
+        inputs.compact_sort_unstable();
         inputs.dedup();
         let event = match inputs.as_slice() {
             [single] => serde_json::json!({
@@ -123,7 +124,7 @@ fn entity_history_json(
         face_events.insert(output, event);
     }
     for (output, mut inputs) in generated {
-        inputs.sort_unstable();
+        inputs.compact_sort_unstable();
         inputs.dedup();
         face_events.insert(
             output,
@@ -144,7 +145,7 @@ fn entity_history_json(
         );
     }
     let mut deleted: Vec<usize> = faces.deleted.iter().copied().collect();
-    deleted.sort_unstable();
+    deleted.compact_sort_unstable();
 
     let boundary_events = |kind: &str, claims: &BTreeMap<usize, BoundaryEvent>| {
         claims

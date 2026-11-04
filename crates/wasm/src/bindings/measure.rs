@@ -743,7 +743,7 @@ impl RemusKernel {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::disallowed_methods)]
 
     use crate::kernel::RemusKernel;
 

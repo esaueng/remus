@@ -4971,7 +4971,7 @@ fn merge_duplicate_edges(topo: &mut Topology, face_ids: &mut [FaceId]) -> Result
                 }
             }
         }
-        closed_nurbs.sort();
+        closed_nurbs.compact_sort_unstable();
         log::debug!("MERGENURBS [{}]", closed_nurbs.join(" | "));
         for (qpair, edge_ids) in &groups {
             let mut unique: Vec<EdgeId> = edge_ids.clone();
