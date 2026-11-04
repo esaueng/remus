@@ -532,6 +532,50 @@ impl BlendFunction for ChamferBlend {
     }
 }
 
+/// Contacts of the rolling ball whose chord forms an existing ridge bevel.
+///
+/// Ridge handovers and runout are defined by that ball, independently of the
+/// normal-section setback construction used by qualified spline extrusions.
+pub struct BallChordChamferBlend {
+    pub distance: f64,
+}
+
+impl BlendFunction for BallChordChamferBlend {
+    fn value(
+        &self,
+        surf1: &dyn ParametricSurface,
+        surf2: &dyn ParametricSurface,
+        params: &BlendParams,
+        ctx: &BlendContext,
+    ) -> [f64; 4] {
+        ConstRadBlend::value_with_radius(self.distance, surf1, surf2, params, ctx)
+    }
+
+    fn jacobian(
+        &self,
+        surf1: &dyn ParametricSurface,
+        surf2: &dyn ParametricSurface,
+        params: &BlendParams,
+        ctx: &BlendContext,
+    ) -> [[f64; 4]; 4] {
+        ConstRadBlend::jacobian_with_radius(self.distance, surf1, surf2, params, ctx)
+    }
+
+    fn section(
+        &self,
+        surf1: &dyn ParametricSurface,
+        surf2: &dyn ParametricSurface,
+        params: &BlendParams,
+        ctx: &BlendContext,
+    ) -> CircSection {
+        ChamferBlend {
+            d1: self.distance,
+            d2: self.distance,
+        }
+        .section(surf1, surf2, params, ctx)
+    }
+}
+
 /// Distance-angle chamfer blend function.
 ///
 /// The chamfer is defined by a distance `d` from the edge along surface 1,
