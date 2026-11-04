@@ -5096,7 +5096,7 @@ fn split_cylinder_band_by_arrangement(
             segs
         })
         .collect();
-    face_keys.sort();
+    face_keys.compact_sort_unstable();
     if face_keys.windows(2).any(|w| w[0] == w[1]) {
         return None;
     }

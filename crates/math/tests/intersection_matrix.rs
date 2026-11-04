@@ -8,7 +8,12 @@
 //! sampled point (checked against implicit distance functions, not against
 //! the routine that produced it).
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::disallowed_methods
+)]
 
 use remus_math::analytic_intersection::AnalyticSurface;
 use remus_math::context::OperationContext;
