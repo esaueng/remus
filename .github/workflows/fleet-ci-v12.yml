@@ -493,12 +493,16 @@ jobs:
     # Compiled CARGO_MANIFEST_DIR fixture paths must match on every worker.
     runs-on: &native-runner ubuntu-24.04
     timeout-minutes: 30
+    outputs:
+      mode: ${{ steps.archive.outputs.mode }}
     steps:
       - *fleet-source
       - *fleet-isolation
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
+          filter: blob:none
       - *fleet-rust
       - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
         with:
@@ -523,7 +527,11 @@ jobs:
       - name: Build the selected native test archive once
         id: archive
         run: python3 scripts/ci_native.py archive --plan "$RUNNER_TEMP/native-plan.json" --archive "$RUNNER_TEMP/native-tests.tar.zst"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      - name: Run the fast selection on its build worker
+        if: steps.archive.outputs.mode == 'fast'
+        run: python3 scripts/ci_native.py run --plan "$RUNNER_TEMP/native-plan.json" --archive "$RUNNER_TEMP/native-tests.tar.zst" --shard 1 --total 1
+      - if: steps.archive.outputs.mode == 'full'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-tests
           compression-level: 0
@@ -539,7 +547,7 @@ jobs:
   test-shards:
     name: Native tests (${{ matrix.shard }}/4)
     needs: [queue-trust, changes, repo-policy, secrets-scan, test]
-    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.repo-policy.result == 'success' && needs.secrets-scan.result == 'success' && needs.test.result == 'success' && needs.changes.outputs.native == 'true' }}
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.repo-policy.result == 'success' && needs.secrets-scan.result == 'success' && needs.test.result == 'success' && needs.test.outputs.mode == 'full' && needs.changes.outputs.native == 'true' }}
     runs-on: *native-runner
     timeout-minutes: 30
     strategy:
@@ -1070,6 +1078,7 @@ jobs:
           DOCS: ${{ needs.changes.outputs.docs }}
           FULL: ${{ needs.changes.outputs.full }}
           NATIVE: ${{ needs.changes.outputs.native }}
+          NATIVE_MODE: ${{ needs.test.outputs.mode || 'none' }}
           COVERAGE: ${{ needs.changes.outputs.coverage }}
           WASM: ${{ needs.changes.outputs.wasm }}
           EVENT: ${{ github.event_name }}

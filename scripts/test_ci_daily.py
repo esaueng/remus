@@ -161,10 +161,20 @@ class GateTests(unittest.TestCase):
             if group not in ("always", "native", "docs"):
                 for name in names:
                     self.results[name]["result"] = "skipped"
-        ci_gate.validate(self.results, flags, "merge_group")
-        self.results["test-shards"]["result"] = "skipped"
+        ci_gate.validate(self.results, flags, "merge_group", native_mode="fast")
+        self.results["test"]["result"] = "skipped"
         with self.assertRaises(ValueError):
-            ci_gate.validate(self.results, flags, "merge_group")
+            ci_gate.validate(self.results, flags, "merge_group", native_mode="fast")
+
+    def test_fast_mode_can_skip_only_the_full_partition_job(self):
+        self.results["test-shards"]["result"] = "skipped"
+        ci_gate.validate(self.results, self.flags, "pull_request", native_mode="fast")
+        for mode in ("full", "none", ""):
+            with self.subTest(mode=mode), self.assertRaises(ValueError):
+                ci_gate.validate(self.results, self.flags, "pull_request", native_mode=mode)
+        self.results["test"]["result"] = "skipped"
+        with self.assertRaises(ValueError):
+            ci_gate.validate(self.results, self.flags, "pull_request", native_mode="fast")
 
     def test_coverage_can_skip_only_when_deselected_and_failures_never_pass(self):
         self.flags["coverage"] = "false"
@@ -242,7 +252,12 @@ class StagedWorkflowTests(unittest.TestCase):
 
     def test_critical_test_archive_and_four_partitions_preserve_source_receipts(self):
         selected = jobs(STAGED)
+        self.assertIn("fetch-depth: 0", selected["test"])
+        self.assertIn("filter: blob:none", selected["test"])
         self.assertIn("ci_native.py archive", selected["test"])
+        self.assertIn("Run the fast selection on its build worker", selected["test"])
+        self.assertIn("--shard 1 --total 1", selected["test"])
+        self.assertIn("needs.test.outputs.mode == 'full'", selected["test-shards"])
         self.assertIn("check-native-test-workspace.py --record", selected["test"])
         self.assertIn("native-plan.json", selected["test"])
         self.assertIn("shard: [1, 2, 3, 4]", selected["test-shards"])

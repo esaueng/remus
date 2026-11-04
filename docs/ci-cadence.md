@@ -26,8 +26,9 @@ deleted files, fixtures and unsupported test layouts select the full suite.
 No test's assertions, tolerances or ignored status change. New crates must be
 explicitly reviewed before joining `focused_crates`; otherwise they remain full.
 
-Native execution uses four deterministic hash partitions of one archive.
-Clippy runs beside archive preparation. Workers verify the source commit and
+Fast selections execute on the archive producer without allocating download
+workers. Full native execution uses four deterministic hash partitions of one
+archive. Clippy runs beside archive preparation. Workers verify the source commit and
 compiled fixture workspace before executing it. The final CI gate requires all
 selected jobs and rejects failures, cancellations, missing results and unexpected
 skips.
