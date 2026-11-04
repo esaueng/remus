@@ -30,7 +30,7 @@ use remus_operations::tessellate::{is_watertight, tessellate_solid_with_toleranc
 use remus_operations::transform::transform_solid;
 use remus_operations::validate::validate_solid;
 use remus_topology::Topology;
-use remus_topology::edge::{Edge, EdgeCurve};
+use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
 use remus_topology::explorer::{face_vertices, solid_entity_counts, solid_faces};
 use remus_topology::face::{Face, FaceId, FaceSurface};
 use remus_topology::shell::Shell;
@@ -727,5 +727,106 @@ fn bore_floor_rises_past_a_flat_or_chamfered_outer_shoulder() {
                 "unexpected refusal: {error}"
             );
         }
+    }
+}
+
+fn edge_between(topo: &Topology, solid: SolidId, a: Point3, b: Point3) -> EdgeId {
+    remus_topology::explorer::solid_edges(topo, solid)
+        .expect("solid edges")
+        .into_iter()
+        .find(|&edge_id| {
+            let edge = topo.edge(edge_id).expect("edge");
+            let start = topo.vertex(edge.start()).expect("start").point();
+            let end = topo.vertex(edge.end()).expect("end").point();
+            ((start - a).length() < 1e-6 && (end - b).length() < 1e-6)
+                || ((start - b).length() < 1e-6 && (end - a).length() < 1e-6)
+        })
+        .unwrap_or_else(|| panic!("edge {a:?} -- {b:?}"))
+}
+
+/// The largest sideways tilt, off `direction`, of any straight edge that runs
+/// along it.
+fn worst_ruling_tilt(topo: &Topology, solid: SolidId, direction: Vec3) -> f64 {
+    remus_topology::explorer::solid_edges(topo, solid)
+        .expect("solid edges")
+        .into_iter()
+        .filter_map(|edge_id| {
+            let edge = topo.edge(edge_id).expect("edge");
+            if !matches!(edge.curve(), EdgeCurve::Line) {
+                return None;
+            }
+            let span = topo.vertex(edge.end()).expect("end").point()
+                - topo.vertex(edge.start()).expect("start").point();
+            (span.dot(direction).abs() > 1e-9).then(|| span.cross(direction).length())
+        })
+        .fold(0.0, f64::max)
+}
+
+/// A round boss standing against the corner of a block, rounded where they
+/// meet: the two vertical junction rulings, the boss rim on the block top and
+/// the two block-top edges that run into it, all at radius 2. Each ruling band
+/// is an exact cylinder tangent to the boss along that ruling.
+fn rounded_boss_on_block(topo: &mut Topology, block_height: f64) -> SolidId {
+    let boss = make_cylinder(topo, 6.0, 28.0).expect("boss");
+    let block = make_box(topo, 30.0, 18.0, block_height).expect("block");
+    let body = boolean(topo, BooleanOp::Fuse, boss, block).expect("fuse");
+    // One floor under both, as a modeller unifies a union's coplanar faces.
+    remus_operations::heal::unify_faces(topo, body).expect("unify floor");
+    let top = |x: f64, y: f64| Point3::new(x, y, block_height);
+    let edges = [
+        edge_between(topo, body, Point3::new(6.0, 0.0, 0.0), top(6.0, 0.0)),
+        edge_between(topo, body, Point3::new(0.0, 6.0, 0.0), top(0.0, 6.0)),
+        edge_between(topo, body, top(6.0, 0.0), top(0.0, 6.0)),
+        edge_between(topo, body, top(6.0, 0.0), top(30.0, 0.0)),
+        edge_between(topo, body, top(0.0, 6.0), top(0.0, 18.0)),
+    ];
+    let rounded = remus_operations::blend_ops::fillet_cascade(topo, body, &edges, 2.0)
+        .expect("junction fillet");
+    assert!(rounded.failed.is_empty(), "partial junction fillet");
+    rounded.solid
+}
+
+/// Moving the block's floor re-limits the boss wall and the ruling bands
+/// that stand on it. Neither moves, so their shared ruling keeps its exact
+/// line: re-intersecting the two tangent cylinders tilted it by a few
+/// micrometres, and the next move of the block top then refused that ruling
+/// as not parallel to its translation.
+#[test]
+fn floor_moves_keep_tangent_rulings_exact_for_a_later_top_move() {
+    let up = Vec3::new(0.0, 0.0, 1.0);
+    let mut topo = Topology::new();
+    let mut body = rounded_boss_on_block(&mut topo, 10.5);
+    assert!(worst_ruling_tilt(&topo, body, up) < 1e-12);
+
+    for distance in [12.5, -8.5, -8.0] {
+        let floor = outward_faces(&topo, body, -up);
+        body = move_faces(&mut topo, body, &floor, distance).expect("move floor");
+        let tilt = worst_ruling_tilt(&topo, body, up);
+        assert!(tilt < 1e-12, "floor {distance}: a ruling tilts by {tilt}");
+    }
+    assert_verified(&topo, body);
+
+    let block_top = solid_faces(&topo, body)
+        .expect("faces")
+        .into_iter()
+        .find(|&face| {
+            matches!(
+                topo.face(face).expect("face").surface(),
+                FaceSurface::Plane { normal, d }
+                    if normal.dot(up).abs() > 1.0 - 1e-12 && (d.abs() - 10.5).abs() < 1e-9
+            )
+        })
+        .expect("block top");
+    let before = solid_volume(&topo, body, DEFLECTION).expect("volume");
+    for distance in [8.0, -1.0] {
+        let moved = move_faces(&mut topo, body, &[block_top], distance)
+            .unwrap_or_else(|error| panic!("block top {distance}: {error}"));
+        assert_verified(&topo, moved);
+        let after = solid_volume(&topo, moved, DEFLECTION).expect("volume");
+        assert_eq!(
+            after > before,
+            distance > 0.0,
+            "{distance}: {before} -> {after}"
+        );
     }
 }

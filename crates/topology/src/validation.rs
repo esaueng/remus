@@ -980,14 +980,52 @@ fn check_same_parameter_strict_with_tolerance(
             },
             crate::face::FaceSurface::Nurbs(nurbs) => match pcurve.curve() {
                 remus_math::curves2d::Curve2D::Line(line) => {
-                    Some(same_parameter_proof::affine_nurbs_line(
+                    let affine = same_parameter_proof::affine_nurbs_line(
                         nurbs,
                         line,
                         p0,
                         p1,
                         oriented_start,
                         oriented_end,
-                    ))
+                    );
+                    let affine = if matches!(affine, same_parameter_proof::ProofResult::Unavailable)
+                    {
+                        same_parameter_proof::affine_isocurve_line(
+                            nurbs,
+                            line,
+                            p0,
+                            p1,
+                            oriented_start,
+                            oriented_end,
+                        )
+                    } else {
+                        affine
+                    };
+                    Some(
+                        if matches!(affine, same_parameter_proof::ProofResult::Unavailable) {
+                            match remus_math::nurbs::curve::NurbsCurve::new(
+                                1,
+                                vec![0.0, 0.0, 1.0, 1.0],
+                                vec![start, end],
+                                vec![1.0; 2],
+                            ) {
+                                Ok(curve) => same_parameter_proof::nurbs_isocurve(
+                                    nurbs,
+                                    line,
+                                    &curve,
+                                    same_parameter_proof::CurveUse {
+                                        p0,
+                                        p1,
+                                        edge_domain: domain,
+                                        forward,
+                                    },
+                                ),
+                                Err(_) => same_parameter_proof::ProofResult::NonFinite,
+                            }
+                        } else {
+                            affine
+                        },
+                    )
                 }
                 _ => None,
             },

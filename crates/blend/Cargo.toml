@@ -8,6 +8,7 @@ rust-version.workspace = true
 version = "2026.1.0"
 
 [dependencies]
+remus-geometry.workspace = true
 remus-math.workspace = true
 remus-topology.workspace = true
 

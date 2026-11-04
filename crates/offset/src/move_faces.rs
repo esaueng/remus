@@ -897,6 +897,9 @@ fn build_topology_preserving_wires<
                 ),
             });
         };
+        if keeps_source_line(topo, intersection.original_edge, source_edge_faces, data)? {
+            continue;
+        }
         preliminary.insert(intersection.original_edge.index(), *replacement);
     }
 
@@ -1029,6 +1032,36 @@ fn build_topology_preserving_wires<
         edges: edge_map,
         vertices: vertex_map,
     })
+}
+
+/// Whether a straight edge keeps its source carrier instead of the one
+/// re-intersected from its faces.
+///
+/// When neither face moves, the source line is already exact. Re-intersecting
+/// two tangent supports (a blend meeting its wall along a ruling) is
+/// ill-conditioned: the recomputed line tilts by about the square root of the
+/// solver tolerance, and the moved endpoint follows it off the exact
+/// line/plane point. A later translation then refuses that edge as not
+/// parallel to its move.
+fn keeps_source_line<V: std::ops::Deref<Target = [FaceId]>>(
+    topo: &Topology,
+    edge: EdgeId,
+    source_edge_faces: &std::collections::BTreeMap<usize, V>,
+    data: &OffsetData,
+) -> Result<bool, OffsetError> {
+    if !matches!(topo.edge(edge)?.curve(), EdgeCurve::Line) {
+        return Ok(false);
+    }
+    let Some(faces) = source_edge_faces.get(&edge.index()) else {
+        return Ok(false);
+    };
+    // `populate_*surfaces` marks every face it leaves in place with exactly 0.
+    Ok(!faces.is_empty()
+        && faces.iter().all(|face| {
+            data.offset_faces
+                .get(face)
+                .is_some_and(|surface| surface.distance == 0.0)
+        }))
 }
 
 /// Vertex reconstruction can slide a shared endpoint along an analytic carrier.

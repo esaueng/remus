@@ -254,9 +254,51 @@ export const runOpenZcadCylindricalFaceResizeRegression = ({
   console.log('ok - OpenZCAD mounting bracket: decoded lineage, r3 -> r4.8 -> r3.8, exact STEP');
 };
 
+// A valid planar-only cut can omit the ridge's curved continuation. Require
+// the seam-crossing band through the published direct and batch entry points.
+export const runRidgeChamferContactRegression = ({ RemusKernel }) => {
+  for (const entry of ['direct', 'executeBatch', 'executeBatchV2']) {
+    const kernel = new RemusKernel();
+    try {
+      const source = kernel.fuse(kernel.makeCylinder(6, 28), kernel.makeBox(30, 18, 18));
+      const findEdge = (solid, a, b) => {
+        const edge = Array.from(kernel.getSolidEdges(solid)).find((candidate) => {
+          const points = kernel.getEdgeVertices(candidate);
+          const near = (offset, target) => target.every((value, index) => Math.abs(points[offset + index] - value) < 1e-6);
+          return (near(0, a) && near(3, b)) || (near(0, b) && near(3, a));
+        });
+        assert.notEqual(edge, undefined, `${entry}: fixture edge ${a} to ${b}`);
+        return edge;
+      };
+      const seam = Uint32Array.of(
+        findEdge(source, [6, 0, 0], [6, 0, 18]),
+        findEdge(source, [6, 0, 18], [0, 6, 18]),
+        findEdge(source, [0, 6, 18], [0, 6, 0]),
+      );
+      const rounded = kernel.fillet(source, seam, 2.6);
+      const edge = findEdge(rounded, [8.6, 0, 18], [30, 0, 18]);
+      let result;
+      if (entry === 'direct') result = kernel.chamferV2(rounded, Uint32Array.of(edge), 1, 1);
+      else {
+        const [response] = JSON.parse(kernel[entry](JSON.stringify([
+          { op: 'chamferV2', args: { solid: rounded, edges: [edge], d1: 1, d2: 1 } },
+        ])));
+        assert.equal(response.error, undefined, `${entry}: ${JSON.stringify(response)}`);
+        result = response.ok;
+      }
+      assert.equal(kernel.validateSolid(result), 0, `${entry}: valid ridge bevel`);
+      const bands = Array.from(kernel.getSolidFaces(result))
+        .filter((face) => kernel.getSurfaceType(face) === 'bspline');
+      assert.equal(bands.length, 1, `${entry}: the complete curved ridge band must be present`);
+    } finally { kernel.free(); }
+  }
+  console.log('ok - ridge chamfer: rolling-ball seam handovers retain the complete band through direct and both batch APIs');
+};
+
 /** `exports` merges the kernel package (`RemusKernel`, `decodeEvolutionPayload`)
  * with the translator package (`RemusIo`). */
 export const runOpenZcadConsumerRegressions = (exports) => {
+  runRidgeChamferContactRegression(exports);
   runOpenZcadAnalyticFlangeBooleanRegression(exports);
   runOpenZcadCylindricalFaceResizeRegression(exports);
   runPartialCylinderResizeRegression(exports);

@@ -83,7 +83,7 @@ Enforced by `scripts/check-boundaries.sh` — run before pushing:
 | `geometry` | `math` |
 | `topology` | `math` |
 | `algo` | `math`, `topology` |
-| `blend` | `math`, `topology` |
+| `blend` | `math`, `topology`, `geometry` |
 | `heal` | `math`, `topology`, `geometry` |
 | `check` | `math`, `topology`, `geometry` |
 | `offset` | `math`, `topology`, `geometry` |
@@ -101,7 +101,7 @@ The script checks `[dependencies]` in each `Cargo.toml`. A violation fails the `
 - `geometry/src/**` → `remus_math::*`
 - `topology/src/**` → `remus_math::*`
 - `algo/src/**` → `remus_math::*`, `remus_topology::*`
-- `blend/src/**` → `remus_math::*`, `remus_topology::*`
+- `blend/src/**` → `remus_math::*`, `remus_topology::*`, `remus_geometry::*`
 - `heal/src/**` → `remus_math::*`, `remus_topology::*`, `remus_geometry::*`
 - `check/src/**` → `remus_math::*`, `remus_topology::*`, `remus_geometry::*`
 - `offset/src/**` → `remus_math::*`, `remus_topology::*`, `remus_geometry::*`
@@ -157,6 +157,7 @@ Quick reference — find the right file for any task:
 | Bit-identity oracle for the loop-based `evaluate` contraction, the lane first-order solve, the allocation-free `normal`, the fused `evaluate_and_partials_from`/`point_and_normal(_with)` and the per-axis `first_order_at` tables against the verbatim pre-change code, degrees 1–5, 9 and 11 (tests) | `nurbs/surface/contraction_oracle_tests.rs` |
 | NURBS knot insertion/removal | `nurbs/knot_ops.rs` |
 | Certified NURBS reduction contracts and interval Bernstein bounds | `nurbs/reuse.rs`, `nurbs/reuse_bounds.rs` |
+| Bounded parallel curves for monotone planar spline profiles | `nurbs/planar_offset.rs` |
 | Opt-in curve/surface knot simplification and U/V removal | `nurbs/reduction.rs`, `nurbs/reduction/tests.rs` |
 | Certified adaptive Hermite cubic approximation | `nurbs/cubic_fit.rs`, `nurbs/cubic_fit/tests.rs` |
 | Certified piecewise cubic Hermite fit of a parametric curve with a closed-form fourth-derivative bound (C¹ double-knot B-spline, proven remainder) | `nurbs/hermite_fit.rs`, `nurbs/hermite_fit/tests.rs` |
@@ -336,6 +337,9 @@ Quick reference — find the right file for any task:
 | Analytic fast paths (plane-plane, plane-cyl, etc.) | `analytic.rs` |
 | Fillet builder (orchestration) | `fillet_builder.rs` |
 | Chamfer builder (orchestration) | `chamfer_builder.rs` |
+| Exact straight-ridge chamfers on proven spline extrusion supports | `chamfer_extrusion.rs` |
+| Ruled chamfers on monotone spline rims of linear extrusions | `chamfer_spline_rim.rs` |
+| Whole-carrier hole clearance for spline chamfers | `chamfer_clearance.rs` |
 | Vertex blend / corner solver | `corner.rs` |
 | Face trimming along contact curves | `trimmer.rs` |
 | Copy-on-write boundary rewrites, so a blend never edits faces its input still uses | `body_edit.rs` |
@@ -546,6 +550,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Exact piecewise-analytic sweep tools joined across identical end sections | `chamfer/analytic_tools/joined_sweeps.rs` |
 | Rolling-ball arc stripe between a plane and a coaxial cylinder as an exact torus, or a sphere triangle at the band's own radius (a fillet riding an earlier band's end) | `fillet/arc_torus.rs` |
 | Two convex stripes mitred over a reflex corner whose concave edge stays sharp | `fillet/mitre.rs` |
+| Lone straight rolling-ball stripes ending at a strictly convex planar corner: contacts run out past the vertex onto one side plane, or onto two (a chamfered box's mitred corner) with the end boundary kinked where the band crosses their shared edge | `fillet/rolling_ball/split_runout.rs` |
 | Spatial grid behind the rolling-ball Phase 5d vertex dedup and snap (the linear scans' winners and ties), with its oracle tests | `fillet/vertex_snap.rs` |
 | Shell (hollow solid) | `shell_op.rs` |
 | Draft (taper faces) | `draft.rs` |
@@ -742,6 +747,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Differential oracle: the full-copy batch rollback dispatcher kept verbatim, in lockstep with the rollback scope (tests) | `bindings/batch_rollback_oracle_tests.rs` |
 | Gridfinity integration tests | `bindings/gridfinity_tests.rs` |
 | Fillet fail-closed contract tests | `bindings/fillet_fail_closed_tests.rs` |
+| Browser-facing spline chamfer contracts through both batch envelopes | `bindings/chamfer_freeform_tests.rs` |
 | Sequential fillet onto an earlier blend band (contract test) | `bindings/sequential_fillet_tests.rs` |
 | Entity-evolution and journal bindings | `bindings/evolution.rs` |
 | Typed persistent GCS sketch bindings | `bindings/gcs_sketch.rs` |

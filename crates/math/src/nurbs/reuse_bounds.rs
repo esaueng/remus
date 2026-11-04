@@ -278,10 +278,13 @@ fn basis_on_span(
     range: (f64, f64),
     budget: &mut ReuseBudget<'_>,
 ) -> Result<(usize, Vec<Vec<Interval>>), ReuseError> {
-    budget.spend(knots.len())?;
+    // Domains have already been validated and knots are sorted. Locating an
+    // active span must not rescan a large refined carrier for every piece.
+    budget.spend((usize::BITS - knots.len().leading_zeros()) as usize + 1)?;
     let span = knots
-        .windows(2)
-        .position(|k| k[0] <= range.0 && k[1] >= range.1 && k[0] < k[1])
+        .partition_point(|&k| k <= range.0)
+        .checked_sub(1)
+        .filter(|&i| i + 1 < knots.len() && knots[i + 1] >= range.1 && knots[i] < knots[i + 1])
         .ok_or_else(|| unavailable("comparison interval crosses an unpartitioned knot"))?;
     budget.spend(1)?;
     let mut previous = vec![vec![Interval::ONE]];
@@ -379,6 +382,30 @@ impl Polynomial {
         Ok(output)
     }
 
+    fn add(&self, other: &Self, budget: &mut ReuseBudget<'_>) -> Result<Self, ReuseError> {
+        if self.du != other.du || self.dv != other.dv {
+            return Err(unavailable("incompatible Bernstein polynomial degrees"));
+        }
+        let mut output = Self::zero(self.du, self.dv, budget)?;
+        for ((value, a), b) in output
+            .coefficients
+            .iter_mut()
+            .zip(&self.coefficients)
+            .zip(&other.coefficients)
+        {
+            *value = a.add(*b)?;
+        }
+        Ok(output)
+    }
+
+    fn scaled(&self, factor: Interval, budget: &mut ReuseBudget<'_>) -> Result<Self, ReuseError> {
+        let mut output = Self::zero(self.du, self.dv, budget)?;
+        for (value, a) in output.coefficients.iter_mut().zip(&self.coefficients) {
+            *value = a.mul(factor)?;
+        }
+        Ok(output)
+    }
+
     #[cfg_attr(target_arch = "wasm32", inline(never))]
     fn product(&self, other: &Self, budget: &mut ReuseBudget<'_>) -> Result<Self, ReuseError> {
         // All degrees stay below 48 under MAX_DEGREE; binomial integers are
@@ -453,6 +480,153 @@ impl Polynomial {
     }
 }
 
+/// Fixed geometric frame for a certified planar parallel curve.
+pub(super) struct OffsetFrame {
+    pub(super) normal: crate::vec::Vec3,
+    pub(super) axis: crate::vec::Vec3,
+    pub(super) distance: f64,
+}
+
+fn polynomial_dot(
+    a: &[Polynomial; 3],
+    b: &[Polynomial; 3],
+    budget: &mut ReuseBudget<'_>,
+) -> Result<Polynomial, ReuseError> {
+    a[0].product(&b[0], budget)?
+        .add(&a[1].product(&b[1], budget)?, budget)?
+        .add(&a[2].product(&b[2], budget)?, budget)
+}
+
+fn polynomial_linear(
+    a: &[Polynomial; 3],
+    v: crate::vec::Vec3,
+    budget: &mut ReuseBudget<'_>,
+) -> Result<Polynomial, ReuseError> {
+    a[0].scaled(Interval::point(v.x()), budget)?
+        .add(&a[1].scaled(Interval::point(v.y()), budget)?, budget)?
+        .add(&a[2].scaled(Interval::point(v.z()), budget)?, budget)
+}
+
+fn rational_derivative(
+    a: &[Polynomial; 4],
+    range: (f64, f64),
+    budget: &mut ReuseBudget<'_>,
+) -> Result<[Polynomial; 3], ReuseError> {
+    let dw = a[3].derivative(range, budget)?;
+    let component = |i: usize, budget: &mut ReuseBudget<'_>| {
+        a[i].derivative(range, budget)?
+            .product(&a[3], budget)?
+            .sub(&a[i].product(&dw, budget)?, budget)
+    };
+    Ok([
+        component(0, budget)?,
+        component(1, budget)?,
+        component(2, budget)?,
+    ])
+}
+
+fn scalar_quotient(numerator: &Polynomial, denominator: &Polynomial) -> Result<f64, ReuseError> {
+    Ok(Interval::point(numerator.abs_upper())
+        .div(Interval::point(denominator.positive_lower()?))?
+        .hi)
+}
+
+/// Bound the complete contact error relative to the selected normal offset.
+/// Positive derivative projections prove both curves are graphs in one fixed
+/// direction. Cross products prove the material-side branch without sampling.
+pub(super) fn planar_offset_on_interval(
+    original: &NurbsCurve,
+    candidate: &NurbsCurve,
+    range: (f64, f64),
+    frame: &OffsetFrame,
+    budget: &mut ReuseBudget<'_>,
+) -> Result<f64, ReuseError> {
+    charge_curve(original, budget)?;
+    charge_curve(candidate, budget)?;
+    // A common finite translation is algebraically exact for this comparison.
+    // Keep each tiny interval near its own origin so derivative quotients do
+    // not amplify an irrelevant large homogeneous position offset.
+    let origin = original.evaluate(range.0);
+    let a = homogeneous_curve(original, range, origin, budget)?;
+    let b = homogeneous_curve(candidate, range, origin, budget)?;
+    let aw2 = a[3].product(&a[3], budget)?;
+    let delta_denominator = a[3].product(&b[3], budget)?;
+    let delta_component = |i: usize, budget: &mut ReuseBudget<'_>| {
+        b[i].product(&a[3], budget)?
+            .sub(&a[i].product(&b[3], budget)?, budget)
+    };
+    let delta = [
+        delta_component(0, budget)?,
+        delta_component(1, budget)?,
+        delta_component(2, budget)?,
+    ];
+    let derivative = rational_derivative(&a, range, budget)?;
+    let contact_derivative = rational_derivative(&b, range, budget)?;
+    let projection = polynomial_linear(&derivative, frame.axis, budget)?.positive_lower()?;
+    polynomial_linear(&contact_derivative, frame.axis, budget)?.positive_lower()?;
+    let minimum_speed = Interval::point(projection)
+        .div(Interval::point(aw2.abs_upper()))?
+        .lo;
+    if minimum_speed <= 0.0 {
+        return Err(unavailable("offset source has no positive speed bound"));
+    }
+    let orthogonal_denominator = delta_denominator.product(&aw2, budget)?;
+    let tangent_error = Interval::point(scalar_quotient(
+        &polynomial_dot(&delta, &derivative, budget)?,
+        &orthogonal_denominator,
+    )?)
+    .div(Interval::point(minimum_speed))?;
+    let normal_error = Interval::point(scalar_quotient(
+        &polynomial_linear(&delta, frame.normal, budget)?,
+        &delta_denominator,
+    )?);
+    let normal_tangent =
+        scalar_quotient(&polynomial_linear(&derivative, frame.normal, budget)?, &aw2)?;
+    let cosine = Interval::point(normal_tangent)
+        .div(Interval::point(minimum_speed))?
+        .hi;
+    if cosine > 0.25 {
+        return Err(unavailable("offset source tangent leaves its planar chart"));
+    }
+    let cross_component = |j: usize, k: usize, budget: &mut ReuseBudget<'_>| {
+        derivative[j]
+            .product(&delta[k], budget)?
+            .sub(&derivative[k].product(&delta[j], budget)?, budget)
+    };
+    let side = [
+        cross_component(1, 2, budget)?,
+        cross_component(2, 0, budget)?,
+        cross_component(0, 1, budget)?,
+    ];
+    polynomial_linear(&side, frame.normal, budget)?.positive_lower()?;
+    let contact_cross = |j: usize, k: usize, budget: &mut ReuseBudget<'_>| {
+        contact_derivative[j]
+            .product(&delta[k], budget)?
+            .sub(&contact_derivative[k].product(&delta[j], budget)?, budget)
+    };
+    let contact_side = [
+        contact_cross(1, 2, budget)?,
+        contact_cross(2, 0, budget)?,
+        contact_cross(0, 1, budget)?,
+    ];
+    polynomial_linear(&contact_side, frame.normal, budget)?.positive_lower()?;
+    let distance_squared = Interval::point(frame.distance).mul(Interval::point(frame.distance))?;
+    let denominator_squared = delta_denominator.product(&delta_denominator, budget)?;
+    let residual = polynomial_dot(&delta, &delta, budget)?.sub(
+        &denominator_squared.scaled(distance_squared, budget)?,
+        budget,
+    )?;
+    let distance_error = Interval::point(scalar_quotient(&residual, &denominator_squared)?)
+        .div(Interval::point(frame.distance))?;
+    // The two nearly orthogonal projections bound the component outside the
+    // selected normal direction by twice their sum. Norm error plus twice
+    // that component bounds the full vector error; the positive side above
+    // excludes the opposite root.
+    Ok(distance_error
+        .add(tangent_error.add(normal_error)?.mul(Interval::point(4.0))?)?
+        .hi)
+}
+
 #[allow(clippy::cast_precision_loss)]
 fn binomial(n: usize, k: usize) -> f64 {
     let mut value = 1_u64;
@@ -484,8 +658,12 @@ fn homogeneous_curve(
     ];
     // Common weight normalization is performed in interval arithmetic, so its
     // rounding error is included rather than silently changing the input.
-    budget.spend(curve.weights().len())?;
-    let maximum = curve.weights().iter().copied().fold(0.0, f64::max);
+    // Only these active basis functions contribute on the certified span.
+    budget.spend(basis.len())?;
+    let maximum = curve.weights()[first..first + basis.len()]
+        .iter()
+        .copied()
+        .fold(0.0, f64::max);
     for (local, coefficients) in basis.iter().enumerate() {
         budget.spend(4 * coefficients.len())?;
         let weight =
@@ -665,6 +843,25 @@ pub(super) fn curve_difference_on_interval(
     range: (f64, f64),
     budget: &mut ReuseBudget<'_>,
 ) -> Result<CurveDifferenceBound, ReuseError> {
+    curve_comparison_on_interval(original, candidate, range, true, budget)
+}
+
+pub(super) fn curve_position_on_interval(
+    original: &NurbsCurve,
+    candidate: &NurbsCurve,
+    range: (f64, f64),
+    budget: &mut ReuseBudget<'_>,
+) -> Result<f64, ReuseError> {
+    Ok(curve_comparison_on_interval(original, candidate, range, false, budget)?.position)
+}
+
+fn curve_comparison_on_interval(
+    original: &NurbsCurve,
+    candidate: &NurbsCurve,
+    range: (f64, f64),
+    include_derivative: bool,
+    budget: &mut ReuseBudget<'_>,
+) -> Result<CurveDifferenceBound, ReuseError> {
     charge_curve(original, budget)?;
     charge_curve(candidate, budget)?;
     if !range.0.is_finite()
@@ -696,9 +893,11 @@ pub(super) fn curve_difference_on_interval(
         let a = homogeneous_curve(original, span_range, origin, budget)?;
         let b = homogeneous_curve(candidate, span_range, origin, budget)?;
         result.position = result.position.max(position_bound(&a, &b, budget)?);
-        result.derivative = result
-            .derivative
-            .max(derivative_bound(&a, &b, span_range, budget)?);
+        if include_derivative {
+            result.derivative = result
+                .derivative
+                .max(derivative_bound(&a, &b, span_range, budget)?);
+        }
     }
     Ok(result)
 }

@@ -1259,7 +1259,7 @@ impl StepWriteContext {
                 let origin = self.write_point2(line.origin());
                 let direction = self.write_direction2(line.direction());
                 let vector = self.next_id();
-                self.write_entity(vector, "VECTOR", &format!("'', #{direction}, 1."));
+                self.write_entity(vector, "VECTOR", &format!("'', #{direction}, 1.)"));
                 let id = self.next_id();
                 self.write_entity(id, "LINE", &format!("'', #{origin}, #{vector})"));
                 id
@@ -3608,6 +3608,24 @@ mod tests {
             let parsed = result.parse::<f64>().unwrap();
             assert_eq!(parsed.to_bits(), value.to_bits());
         }
+    }
+
+    #[test]
+    fn pcurve_line_vector_is_a_complete_step_entity() {
+        let mut writer = StepWriteContext::new(StepWriteOptions::default());
+        let line =
+            remus_math::curves2d::Line2D::new(Point2::new(0.0, 0.0), Vec2::new(1.0, 0.0)).unwrap();
+        writer.write_curve2d(&Curve2D::Line(line));
+        let vector = writer
+            .entities
+            .lines()
+            .find(|line| line.contains(" = VECTOR("))
+            .unwrap();
+        assert!(vector.ends_with(");"), "incomplete STEP vector: {vector}");
+        assert_eq!(
+            vector.chars().filter(|&c| c == '(').count(),
+            vector.chars().filter(|&c| c == ')').count()
+        );
     }
 
     #[test]
