@@ -27,6 +27,7 @@
 //! kernel's phase spans are summed per frame and reported under the move.
 
 #![allow(
+    clippy::disallowed_methods,
     clippy::print_stdout,
     clippy::print_stderr,
     clippy::expect_used,

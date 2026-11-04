@@ -21,6 +21,7 @@
 //! prepared bodies contiguously, so a sampling profiler can isolate it.
 
 #![allow(
+    clippy::disallowed_methods,
     clippy::print_stdout,
     clippy::print_stderr,
     clippy::expect_used,

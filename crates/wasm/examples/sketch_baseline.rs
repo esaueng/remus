@@ -5,7 +5,12 @@
 //! region; only `solve` / `solve_detailed` (or the 20 warm drag re-solves)
 //! are timed. Dense Jacobians above the manifest byte budget are refused
 //! before timing and reported as resource rows, never dropped.
-#![allow(clippy::expect_used, clippy::unwrap_used, clippy::print_stdout)]
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::print_stdout,
+    clippy::disallowed_methods
+)]
 
 use std::{hint::black_box, time::Instant};
 
