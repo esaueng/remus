@@ -120,6 +120,34 @@ entry, `details.kernelCode` carries that fine-grained stable code (e.g.
 the native registry in `remus_math::diagnostic`. It is additive and
 per-code optional: consumers must not require it.
 
+A face move or cylindrical resize outside the qualified direct-edit cells
+reports `kernelCode` `unsupported_move_face` with category `unsupported`.
+`details.reason` names the typed cause: `unsupported_neighbor` (the selected
+face borders a face the move cannot re-intersect; `neighborSurfaceType` names
+its surface type), `partial_reversed_wall` (a partial wall facing into the
+material, such as a blind bore) or `unclassified`. `details.surfaceType` is
+the selected face's surface type. `resizeCylindricalFaceDetailed(solid, face,
+radius)` returns the same refusal as a typed result instead of throwing, with
+the blocking face's handle as `neighborFace`:
+
+```json
+{
+  "status": "error",
+  "value": null,
+  "code": "unsupported_move_face",
+  "category": "unsupported",
+  "details": {
+    "kernelCode": "unsupported_move_face",
+    "reason": "unsupported_neighbor",
+    "surfaceType": "cylinder",
+    "neighborSurfaceType": "sphere",
+    "neighborFace": 7,
+    "operation": "resizeCylindricalFace",
+    "message": "offset: move-face does not support face Id(7) (sphere): face is adjacent to selected move boundary edge 20"
+  }
+}
+```
+
 Codes are lowercase ASCII snake case. New codes may be added, but an existing
 code's meaning will not be broadened or reassigned. The `message` remains for
 people and is not a branching contract. Direct WASM methods keep their current

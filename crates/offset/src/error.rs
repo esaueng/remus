@@ -34,11 +34,15 @@ pub enum OffsetError {
     /// A selected face has no exact move-face construction in this phase.
     #[error("move-face does not support face {face:?} ({surface_type}): {reason}")]
     UnsupportedMoveFace {
-        /// Selected face that cannot be moved.
+        /// Face that cannot be moved or re-intersected: the selected face, or
+        /// for [`UnsupportedMoveCause::UnsupportedNeighbor`] the neighbour
+        /// across the selection boundary.
         face: FaceId,
-        /// Surface type reported by the face.
+        /// Surface type reported by `face`.
         surface_type: &'static str,
-        /// Exact reason the configuration was refused.
+        /// Typed cause of the refusal, for callers that branch on it.
+        cause: UnsupportedMoveCause,
+        /// Exact reason the configuration was refused (human-readable).
         reason: String,
     },
 
@@ -103,4 +107,71 @@ pub enum OffsetError {
     /// The offset distance exceeds the local curvature, collapsing the solid.
     #[error("offset distance collapses the solid")]
     CollapsedSolid,
+}
+
+/// Typed cause of an [`OffsetError::UnsupportedMoveFace`] refusal.
+///
+/// [`code`](Self::code) is the stable machine-readable name of each cause.
+/// Codes are explicit literals, never derived from `Display` text or variant
+/// names; existing codes are never reassigned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnsupportedMoveCause {
+    /// No finer typed cause is recorded for this refusal yet; the
+    /// human-readable `reason` describes it.
+    Unclassified,
+    /// A partial (not full-turn) cylindrical wall facing into the material,
+    /// such as a blind bore segment: partial-wall resize supports outward
+    /// quarter walls with radial planar sides only.
+    PartialReversedWall,
+    /// The selected face borders a face whose surface type has no exact
+    /// move-face re-intersection; the error's `face` and `surface_type` name
+    /// that neighbour.
+    UnsupportedNeighbor {
+        /// Selected face whose move boundary meets the neighbour.
+        selected: FaceId,
+        /// Surface type of the selected face.
+        selected_surface_type: &'static str,
+        /// Shared boundary edge between the selected face and the neighbour.
+        edge: EdgeId,
+    },
+}
+
+impl UnsupportedMoveCause {
+    /// Stable lowercase snake-case code of this cause.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::Unclassified => "unclassified",
+            Self::PartialReversedWall => "partial_reversed_wall",
+            Self::UnsupportedNeighbor { .. } => "unsupported_neighbor",
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    #[test]
+    fn unsupported_move_cause_codes_are_pinned() {
+        // Stable-code pins: changing any of these strings is a breaking
+        // change to the WASM `details.reason` contract.
+        assert_eq!(UnsupportedMoveCause::Unclassified.code(), "unclassified");
+        assert_eq!(
+            UnsupportedMoveCause::PartialReversedWall.code(),
+            "partial_reversed_wall"
+        );
+        let mut topo = remus_topology::Topology::new();
+        let solid = remus_operations::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        let face = remus_topology::explorer::solid_faces(&topo, solid).unwrap()[0];
+        let edge = topo.edge_id_from_index(0).unwrap();
+        let cause = UnsupportedMoveCause::UnsupportedNeighbor {
+            selected: face,
+            selected_surface_type: "cylinder",
+            edge,
+        };
+        assert_eq!(cause.code(), "unsupported_neighbor");
+    }
 }

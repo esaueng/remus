@@ -4,7 +4,9 @@
 //! are additive twins of `fillet`, `chamfer`, `shell` and `offsetSolid`; the
 //! blend variants `filletV2Detailed`, `chamferV2Detailed`,
 //! `chamferDistanceAngleDetailed` and `filletVariableDetailed` twin
-//! `filletV2`, `chamferV2`, `chamferDistanceAngle` and `filletVariable`. Each
+//! `filletV2`, `chamferV2`, `chamferDistanceAngle` and `filletVariable`;
+//! `resizeCylindricalFaceDetailed` twins the direct edit
+//! `resizeCylindricalFace`. Each
 //! runs the same engine path as its legacy method and returns the typed
 //! [`SolidOperationDetailedResult`] the boolean twins return, never throwing
 //! on a refusal:
@@ -348,6 +350,34 @@ impl RemusKernel {
     }
 }
 
+#[wasm_bindgen]
+impl RemusKernel {
+    /// Change the radius of a cylindrical face and return an exact or
+    /// disclosed-approximate result or a typed refusal.
+    ///
+    /// Additive twin of [`resizeCylindricalFace`](Self::resize_cylindrical_face_binding)
+    /// on the same engine path, which is unchanged. A refusal never throws
+    /// and leaves the topology as it was. A configuration outside the
+    /// qualified move-face/replace-surface cells refuses with category
+    /// `unsupported` and code `unsupported_move_face`; `details.reason` is
+    /// `partial_reversed_wall` (a partial inward wall, such as a blind bore
+    /// segment), `unsupported_neighbor` (the wall borders a face the move
+    /// cannot re-intersect: `details.neighborSurfaceType` names its surface
+    /// type and `details.neighborFace` its handle) or `unclassified`, and
+    /// `details.surfaceType` is the selected face's surface type.
+    #[wasm_bindgen(js_name = "resizeCylindricalFaceDetailed")]
+    pub fn resize_cylindrical_face_detailed(
+        &mut self,
+        solid: u32,
+        face: u32,
+        radius: f64,
+    ) -> Result<tsify::Ts<SolidOperationDetailedResult>, JsError> {
+        Ok(self
+            .resize_cylindrical_face_detailed_impl(solid, face, radius)
+            .into_ts()?)
+    }
+}
+
 /// Natively-testable bodies shared by the direct twins and the batch ops.
 impl RemusKernel {
     pub(crate) fn move_faces_detailed_impl(
@@ -648,6 +678,41 @@ impl RemusKernel {
         })
     }
 
+    pub(crate) fn resize_cylindrical_face_detailed_impl(
+        &mut self,
+        solid: u32,
+        face: u32,
+        radius: f64,
+    ) -> SolidOperationDetailedResult {
+        self.run_modifier_detailed(
+            "resizeCylindricalFace",
+            "Resize cylindrical face",
+            |kernel| {
+                validate_positive(radius, "radius")?;
+                let solid_id = kernel.resolve_solid(solid)?;
+                let face_id = kernel.resolve_face(face)?;
+                let input_faces = face_set(kernel.topo(), solid_id)?;
+                let result = remus_operations::push_pull::resize_cylindrical_face(
+                    kernel.topo_mut(),
+                    solid_id,
+                    face_id,
+                    radius,
+                )
+                .map_err(|error| resize_refusal(error, &input_faces))?;
+                let (handle, mut details) = blend_outcome(
+                    kernel.topo(),
+                    "cylindrical resize",
+                    &input_faces,
+                    result,
+                    None,
+                    false,
+                )?;
+                details.insert("radius".into(), Value::from(radius));
+                Ok((handle, details))
+            },
+        )
+    }
+
     /// Shared body of the single-engine walking-blend twins: argument checks,
     /// handle resolution, the engine call, then quality classification.
     fn walking_blend_detailed(
@@ -740,6 +805,26 @@ fn face_set(
     solid: SolidId,
 ) -> Result<HashSet<FaceId>, remus_topology::TopologyError> {
     Ok(solid_faces(topo, solid)?.into_iter().collect())
+}
+
+/// Project a cylindrical-resize failure, adding the blocking neighbour's
+/// handle to an `unsupported_neighbor` refusal when that face belongs to the
+/// input solid (and so stays live after the rollback). A neighbour on an
+/// intermediate solid the attempt built is reported by surface type only.
+fn resize_refusal(error: OperationsError, input_faces: &HashSet<FaceId>) -> StructuredWasmError {
+    let neighbor = match &error {
+        OperationsError::Offset(remus_offset::OffsetError::UnsupportedMoveFace {
+            face,
+            cause: remus_offset::UnsupportedMoveCause::UnsupportedNeighbor { .. },
+            ..
+        }) if input_faces.contains(face) => Some(face_id_to_u32(*face)),
+        _ => None,
+    };
+    let structured = StructuredWasmError::from(error);
+    match neighbor {
+        Some(handle) => structured.with_detail("neighborFace", handle),
+        None => structured,
+    }
 }
 
 /// Stable wire name of a blend engine.

@@ -9,12 +9,13 @@ use remus_topology::{
     face::{FaceId, FaceSurface},
 };
 
-use crate::OffsetError;
+use crate::{OffsetError, UnsupportedMoveCause};
 
 fn unsupported(face: FaceId, reason: &str) -> OffsetError {
     OffsetError::UnsupportedMoveFace {
         face,
         surface_type: "cylinder",
+        cause: UnsupportedMoveCause::Unclassified,
         reason: reason.into(),
     }
 }

@@ -23,7 +23,7 @@ use remus_topology::vertex::{Vertex, VertexId};
 use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
 use crate::data::{OffsetData, OffsetFace, OffsetOptions, OffsetStatus};
-use crate::error::OffsetError;
+use crate::error::{OffsetError, UnsupportedMoveCause};
 
 /// A topology-preserving face move and its construction-derived face map.
 #[derive(Debug)]
@@ -1190,6 +1190,7 @@ fn project_point_to_surface(
         other => Err(OffsetError::UnsupportedMoveFace {
             face,
             surface_type: other.type_tag(),
+            cause: UnsupportedMoveCause::Unclassified,
             reason: "replacement vertex projection supports planes and cylinders only".into(),
         }),
     }
@@ -1438,6 +1439,7 @@ fn validate_vertex_supports<V: std::ops::Deref<Target = [FaceId]>>(
                 return Err(OffsetError::UnsupportedMoveFace {
                     face,
                     surface_type: other.type_tag(),
+                    cause: UnsupportedMoveCause::Unclassified,
                     reason: format!(
                         "surface constrains moved source vertex {}",
                         source_vertex.index()
@@ -1473,6 +1475,7 @@ fn effective_plane(topo: &Topology, face: FaceId) -> Result<(Vec3, f64), OffsetE
         return Err(OffsetError::UnsupportedMoveFace {
             face,
             surface_type: face_data.surface().type_tag(),
+            cause: UnsupportedMoveCause::Unclassified,
             reason: "phase 4.1 moves planar faces only".into(),
         });
     };
@@ -1515,6 +1518,7 @@ fn validate_replacement(
                 return Err(OffsetError::UnsupportedMoveFace {
                     face,
                     surface_type: "plane",
+                    cause: UnsupportedMoveCause::Unclassified,
                     reason: "replacement plane reverses or turns through the source face".into(),
                 });
             }
@@ -1541,6 +1545,7 @@ fn validate_replacement(
                 return Err(OffsetError::UnsupportedMoveFace {
                     face,
                     surface_type: "cylinder",
+                    cause: UnsupportedMoveCause::Unclassified,
                     reason: "qualified replacement cylinders preserve the source axis direction"
                         .into(),
                 });
@@ -1551,6 +1556,7 @@ fn validate_replacement(
                 return Err(OffsetError::UnsupportedMoveFace {
                     face,
                     surface_type: "cylinder",
+                    cause: UnsupportedMoveCause::Unclassified,
                     reason: "qualified replacement cylinders are coaxial with the source".into(),
                 });
             }
@@ -1559,6 +1565,7 @@ fn validate_replacement(
         (source, replacement) => Err(OffsetError::UnsupportedMoveFace {
             face,
             surface_type: replacement.type_tag(),
+            cause: UnsupportedMoveCause::Unclassified,
             reason: format!(
                 "qualified replace-surface does not change {} to {}",
                 source.type_tag(),
@@ -1780,6 +1787,7 @@ fn populate_surfaces(
                     return Err(OffsetError::UnsupportedMoveFace {
                         face: face_id,
                         surface_type: face.surface().type_tag(),
+                        cause: UnsupportedMoveCause::Unclassified,
                         reason: "phase 4.1 moves planar faces only".into(),
                     });
                 };
@@ -1834,18 +1842,13 @@ fn validate_source_edges<V: std::ops::Deref<Target = [FaceId]>>(
         if !boundary {
             continue;
         }
-        let neighbor = if selected.contains(&faces[0].index()) {
-            faces[1]
+        let (selected_face, neighbor) = if selected.contains(&faces[0].index()) {
+            (faces[0], faces[1])
         } else {
-            faces[0]
+            (faces[1], faces[0])
         };
         let neighbor_face = topo.face(neighbor)?;
         let axial_cone = if let FaceSurface::Cone(cone) = neighbor_face.surface() {
-            let selected_face = if selected.contains(&faces[0].index()) {
-                faces[0]
-            } else {
-                faces[1]
-            };
             let normal = topo.face(selected_face)?.effective_plane_normal();
             normal.is_some_and(|normal| {
                 normal.cross(cone.axis()).length() <= Tolerance::new().angular
@@ -1863,6 +1866,11 @@ fn validate_source_edges<V: std::ops::Deref<Target = [FaceId]>>(
             return Err(OffsetError::UnsupportedMoveFace {
                 face: neighbor,
                 surface_type: neighbor_face.surface().type_tag(),
+                cause: UnsupportedMoveCause::UnsupportedNeighbor {
+                    selected: selected_face,
+                    selected_surface_type: topo.face(selected_face)?.surface().type_tag(),
+                    edge,
+                },
                 reason: format!(
                     "face is adjacent to selected move boundary edge {}",
                     edge.index()

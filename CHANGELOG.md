@@ -8,6 +8,15 @@ historical predecessor-line records, retained for provenance. The
 
 ### Added
 
+* **offset,operations,wasm:** `OffsetError::UnsupportedMoveFace` carries a
+  typed `cause` (`UnsupportedMoveCause`: `UnsupportedNeighbor` with the
+  selected face, its surface type and the shared edge; `PartialReversedWall`;
+  `Unclassified`), with stable `code()` names. The WASM boundary projects the
+  refusal as `unsupported` / `unsupported_move_face` with that cause as
+  `details.reason`, and `resizeCylindricalFaceDetailed` returns it as a typed
+  result, so a resize of a boss on a sphere or a blind bore in one is told
+  apart from other failures without parsing the message. Adding the field
+  breaks native code that constructs the variant or matches it without `..`.
 * **operations,wasm:** thread ends can be chamfered (`ThreadEnd::Chamfer`,
   spec `start` / `end` `{ "kind": "chamfer", "angle": 45 }`): a cone from just
   inside the root on the end plane tapers the first turn out instead of ending

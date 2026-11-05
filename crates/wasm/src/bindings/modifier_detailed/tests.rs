@@ -982,3 +982,266 @@ fn variable_fillet_spec_refusals_match_legacy_batch_v2() {
     );
     assert_eq!(response[0]["error"]["code"], "invalid_argument");
 }
+
+/// The consumer's sphere (r 73.5, centred at (25.5, −1.5, 0)) combined by
+/// `op` with an r 6 cylinder rising from z = 58 off the sphere's polar axis:
+/// `fuse` leaves a protruding boss, `cut` a blind bore. Returns the solid and
+/// its cylindrical wall.
+fn sphere_with_cylinder(kernel: &mut RemusKernel, op: &str) -> (u32, u32) {
+    let response = batch_v2(
+        kernel,
+        &json!([
+            {"op": "makeSphere", "args": {"radius": 73.5}},
+            {"op": "transform", "args": {"solid": 0, "matrix": [
+                1, 0, 0, 25.5,
+                0, 1, 0, -1.5,
+                0, 0, 1, 0,
+                0, 0, 0, 1
+            ]}},
+            {"op": "makeCylinder", "args": {"radius": 6, "height": 64.1}},
+            {"op": "transform", "args": {"solid": 1, "matrix": [
+                1, 0, 0, 35.5,
+                0, 1, 0, 3.5,
+                0, 0, 1, 58,
+                0, 0, 0, 1
+            ]}},
+            {"op": op, "args": {"solidA": 0, "solidB": 1}},
+        ]),
+    );
+    let solid = handle(&response[4]["ok"]);
+    let solid_id = kernel.resolve_solid(solid).unwrap();
+    let topo = kernel.topo();
+    let walls: Vec<_> = remus_topology::explorer::solid_faces(topo, solid_id)
+        .unwrap()
+        .into_iter()
+        .filter(|&face| matches!(topo.face(face).unwrap().surface(), FaceSurface::Cylinder(_)))
+        .collect();
+    assert_eq!(walls.len(), 1, "{op}: one cylindrical wall");
+    (solid, face_id_to_u32(walls[0]))
+}
+
+fn solid_face_handles(kernel: &RemusKernel, solid: u32) -> Vec<u32> {
+    let solid_id = kernel.resolve_solid(solid).unwrap();
+    remus_topology::explorer::solid_faces(kernel.topo(), solid_id)
+        .unwrap()
+        .into_iter()
+        .map(face_id_to_u32)
+        .collect()
+}
+
+/// Shared assertions for an `unsupported_move_face` resize refusal: the
+/// direct twin returns it as data with the topology unchanged, both batch
+/// contracts' twin op return the identical envelope, and the legacy op's
+/// `executeBatchV2` error carries the same code, category and typed cause.
+fn assert_typed_resize_refusal(op: &str, reason: &str, neighbor: Option<&str>) {
+    for radius in [5.0, 7.0] {
+        let mut kernel = RemusKernel::new();
+        let (solid, wall) = sphere_with_cylinder(&mut kernel, op);
+        let before = counts(&kernel);
+        let faces = solid_face_handles(&kernel, solid);
+        let source_volume = volume(&kernel, solid);
+
+        let direct = envelope(kernel.resize_cylindrical_face_detailed_impl(solid, wall, radius));
+        let context = format!("{op} r{radius}: {direct}");
+        assert_eq!(direct["status"], "error", "{context}");
+        assert!(direct["value"].is_null(), "{context}");
+        assert_eq!(direct["code"], "unsupported_move_face", "{context}");
+        assert_eq!(direct["category"], "unsupported", "{context}");
+        let details = &direct["details"];
+        assert_eq!(details["kernelCode"], "unsupported_move_face", "{context}");
+        assert_eq!(details["reason"], reason, "{context}");
+        assert_eq!(details["surfaceType"], "cylinder", "{context}");
+        assert_eq!(details["operation"], "resizeCylindricalFace", "{context}");
+        if let Some(surface) = neighbor {
+            assert_eq!(details["neighborSurfaceType"], surface, "{context}");
+            let face = handle(&details["neighborFace"]);
+            assert!(
+                faces.contains(&face),
+                "{context}: neighbour is an input face"
+            );
+            let face_id = kernel.resolve_face(face).unwrap();
+            assert_eq!(
+                kernel.topo().face(face_id).unwrap().surface().type_tag(),
+                surface,
+                "{context}"
+            );
+        } else {
+            assert!(details["neighborSurfaceType"].is_null(), "{context}");
+            assert!(details["neighborFace"].is_null(), "{context}");
+        }
+
+        // The refusal left the input exactly as it was.
+        assert_eq!(counts(&kernel), before, "{context}: topology changed");
+        assert_eq!(solid_face_handles(&kernel, solid), faces, "{context}");
+        assert!(
+            (volume(&kernel, solid) - source_volume).abs() < 1e-9,
+            "{context}: source volume changed"
+        );
+
+        // Both batch contracts return the identical envelope.
+        let args = json!({"solid": solid, "face": wall, "radius": radius});
+        let v2 = batch_v2(
+            &mut kernel,
+            &json!([{"op": "resizeCylindricalFaceDetailed", "args": args}]),
+        );
+        assert_eq!(v2[0]["ok"], direct, "{context}: executeBatchV2 parity");
+        let legacy = batch_legacy(
+            &mut kernel,
+            &json!([{"op": "resizeCylindricalFaceDetailed", "args": args}]),
+        );
+        assert_eq!(legacy[0]["ok"], direct, "{context}: executeBatch parity");
+        assert_eq!(counts(&kernel), before, "{context}: batch twin mutated");
+
+        // The legacy op projects the same typed refusal on executeBatchV2
+        // (surface types only: it has no input-face check for handles).
+        let legacy_v2 = batch_v2(
+            &mut kernel,
+            &json!([{"op": "resizeCylindricalFace", "args": args}]),
+        );
+        let error = &legacy_v2[0]["error"];
+        assert_eq!(error["code"], "operation_failed", "{context}: {error}");
+        assert_eq!(error["category"], "unsupported", "{context}: {error}");
+        assert_eq!(v2_code(error), "unsupported_move_face", "{context}");
+        assert_eq!(error["details"]["reason"], reason, "{context}");
+        assert_eq!(error["details"]["surfaceType"], "cylinder", "{context}");
+        assert_eq!(
+            error["details"]["neighborSurfaceType"].as_str(),
+            neighbor,
+            "{context}"
+        );
+        assert_eq!(error["details"]["message"], Value::Null, "{context}");
+        assert_eq!(error["message"], details["message"], "{context}");
+    }
+}
+
+#[test]
+fn resize_twin_types_the_sphere_boss_neighbour_refusal() {
+    assert_typed_resize_refusal("fuse", "unsupported_neighbor", Some("sphere"));
+}
+
+#[test]
+fn resize_twin_types_the_partial_blind_bore_refusal() {
+    assert_typed_resize_refusal("cut", "partial_reversed_wall", None);
+}
+
+/// The journaled resize reaches the same reversed-partial refusal through
+/// its entity-evolution path and projects the same typed cause.
+#[test]
+fn journaled_resize_projects_the_partial_blind_bore_refusal() {
+    let mut kernel = RemusKernel::new();
+    let (solid, wall) = sphere_with_cylinder(&mut kernel, "cut");
+    let response = batch_v2(
+        &mut kernel,
+        &json!([{"op": "resizeCylindricalFaceJournaled", "args": {
+            "solid": solid, "face": wall, "radius": 7.0
+        }}]),
+    );
+    let error = &response[0]["error"];
+    assert_eq!(error["category"], "unsupported", "{response}");
+    assert_eq!(v2_code(error), "unsupported_move_face", "{response}");
+    assert_eq!(
+        error["details"]["reason"], "partial_reversed_wall",
+        "{response}"
+    );
+    assert_eq!(error["details"]["surfaceType"], "cylinder", "{response}");
+}
+
+/// A 40×40×10 plate with an r 3 through bore at (20, 20), and the bore wall.
+fn bored_plate(kernel: &mut RemusKernel) -> (u32, u32) {
+    let response = batch_v2(
+        kernel,
+        &json!([
+            {"op": "makeBox", "args": {"width": 40, "height": 40, "depth": 10}},
+            {"op": "makeCylinder", "args": {"radius": 3, "height": 10}},
+            {"op": "transform", "args": {"solid": 1, "matrix": [
+                1, 0, 0, 20,
+                0, 1, 0, 20,
+                0, 0, 1, 0,
+                0, 0, 0, 1
+            ]}},
+            {"op": "cut", "args": {"solidA": 0, "solidB": 1}},
+        ]),
+    );
+    let solid = handle(&response[3]["ok"]);
+    let solid_id = kernel.resolve_solid(solid).unwrap();
+    let topo = kernel.topo();
+    let bore = remus_topology::explorer::solid_faces(topo, solid_id)
+        .unwrap()
+        .into_iter()
+        .find(|&face| matches!(topo.face(face).unwrap().surface(), FaceSurface::Cylinder(_)))
+        .expect("bore wall");
+    (solid, face_id_to_u32(bore))
+}
+
+#[test]
+fn resize_twin_matches_the_legacy_bore_resize_and_both_batches() {
+    let expected = 40.0_f64.mul_add(400.0, -std::f64::consts::PI * 25.0 * 10.0);
+    let mut kernel = RemusKernel::new();
+    let (solid, bore) = bored_plate(&mut kernel);
+    let direct = envelope(kernel.resize_cylindrical_face_detailed_impl(solid, bore, 5.0));
+    assert_eq!(direct["status"], "ok", "{direct}");
+    assert!(direct["code"].is_null(), "{direct}");
+    assert_eq!(direct["details"]["quality"], "exact", "{direct}");
+    assert_eq!(direct["details"]["radius"], 5.0, "{direct}");
+    let result = handle(&direct["value"]);
+    let direct_volume = volume(&kernel, result);
+    assert!(
+        (direct_volume - expected).abs() < 5.0,
+        "volume {direct_volume} vs closed form {expected}"
+    );
+
+    // Same engine path as the legacy op: same handle, same geometry.
+    let mut legacy_kernel = RemusKernel::new();
+    let (legacy_solid, legacy_bore) = bored_plate(&mut legacy_kernel);
+    assert_eq!((legacy_solid, legacy_bore), (solid, bore));
+    let legacy = batch_v2(
+        &mut legacy_kernel,
+        &json!([{"op": "resizeCylindricalFace", "args": {
+            "solid": solid, "face": bore, "radius": 5.0
+        }}]),
+    );
+    let legacy_result = handle(&legacy[0]["ok"]);
+    assert_eq!(legacy_result, result, "same handle allocation");
+    assert!(
+        (volume(&legacy_kernel, legacy_result) - direct_volume).abs() < 1e-9,
+        "legacy and detailed geometry diverge"
+    );
+    assert_eq!(
+        solid_face_handles(&legacy_kernel, legacy_result),
+        solid_face_handles(&kernel, result)
+    );
+
+    // The batch twin returns the identical envelope under both contracts.
+    for contract in ["v2", "legacy"] {
+        let mut batch_kernel = RemusKernel::new();
+        bored_plate(&mut batch_kernel);
+        let ops = json!([{"op": "resizeCylindricalFaceDetailed", "args": {
+            "solid": solid, "face": bore, "radius": 5.0
+        }}]);
+        let response = if contract == "v2" {
+            batch_v2(&mut batch_kernel, &ops)
+        } else {
+            batch_legacy(&mut batch_kernel, &ops)
+        };
+        assert_eq!(response[0]["ok"], direct, "{contract}: batch twin parity");
+    }
+}
+
+#[test]
+fn resize_twin_argument_and_handle_refusals_are_data() {
+    let mut kernel = RemusKernel::new();
+    let (solid, bore) = bored_plate(&mut kernel);
+    let before = counts(&kernel);
+    for (radius, face, code) in [
+        (0.0, bore, "invalid_argument"),
+        (f64::NAN, bore, "invalid_argument"),
+        (5.0, u32::MAX, "invalid_handle"),
+    ] {
+        let direct = envelope(kernel.resize_cylindrical_face_detailed_impl(solid, face, radius));
+        assert_eq!(direct["status"], "error", "{direct}");
+        assert_eq!(direct["code"], code, "{direct}");
+        assert_eq!(direct["category"], "invalid_input", "{direct}");
+        assert_eq!(direct["details"]["operation"], "resizeCylindricalFace");
+        assert_eq!(counts(&kernel), before, "{direct}: mutated");
+    }
+}

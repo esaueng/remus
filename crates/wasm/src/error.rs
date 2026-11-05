@@ -650,6 +650,46 @@ impl From<remus_operations::OperationsError> for StructuredWasmError {
                 }
                 structured
             }
+            // A declared move-face / replace-surface capability boundary
+            // (capability matrix, "Direct edits"): category `unsupported`
+            // with a stable native code and the typed cause as `reason`.
+            // Surface types only; entity handles may name a rolled-back
+            // intermediate solid, so they are left to bindings that can
+            // check them against the live input.
+            remus_operations::OperationsError::Offset(
+                remus_offset::OffsetError::UnsupportedMoveFace {
+                    surface_type,
+                    cause,
+                    ..
+                },
+            ) => {
+                let mut structured = Self::unsupported(message);
+                structured.details.insert(
+                    "kernelCode".to_string(),
+                    Value::from("unsupported_move_face"),
+                );
+                structured
+                    .details
+                    .insert("reason".to_string(), Value::from(cause.code()));
+                if let remus_offset::UnsupportedMoveCause::UnsupportedNeighbor {
+                    selected_surface_type,
+                    ..
+                } = cause
+                {
+                    structured.details.insert(
+                        "surfaceType".to_string(),
+                        Value::from(selected_surface_type),
+                    );
+                    structured
+                        .details
+                        .insert("neighborSurfaceType".to_string(), Value::from(surface_type));
+                } else {
+                    structured
+                        .details
+                        .insert("surfaceType".to_string(), Value::from(surface_type));
+                }
+                structured
+            }
             remus_operations::OperationsError::Unsupported {
                 operation: "sweep" | "sweep_guided",
                 ..
@@ -1288,6 +1328,87 @@ mod work_limit_tests {
         assert_eq!(existing.code, WasmErrorCode::OperationFailed);
         assert_eq!(existing.category, "internal");
         assert_eq!(existing.details["kernelCode"], "fillet-failed");
+    }
+
+    #[test]
+    fn move_face_refusals_project_their_typed_cause() {
+        use remus_offset::{OffsetError, UnsupportedMoveCause};
+
+        // Registry pin: `unsupported_move_face` and its `reason` codes are a
+        // public wire contract; the cause is read from the typed field,
+        // never from the message.
+        let mut topo = remus_topology::Topology::new();
+        let solid = remus_operations::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
+        let edge = remus_topology::explorer::solid_edges(&topo, solid).unwrap()[0];
+        let refusal = |face, surface_type, cause| {
+            super::StructuredWasmError::from(remus_operations::OperationsError::Offset(
+                OffsetError::UnsupportedMoveFace {
+                    face,
+                    surface_type,
+                    cause,
+                    reason: "prose that is not parsed".into(),
+                },
+            ))
+        };
+        let cases = [
+            (
+                refusal(
+                    faces[1],
+                    "sphere",
+                    UnsupportedMoveCause::UnsupportedNeighbor {
+                        selected: faces[0],
+                        selected_surface_type: "cylinder",
+                        edge,
+                    },
+                ),
+                "unsupported_neighbor",
+                Some("sphere"),
+            ),
+            (
+                refusal(
+                    faces[0],
+                    "cylinder",
+                    UnsupportedMoveCause::PartialReversedWall,
+                ),
+                "partial_reversed_wall",
+                None,
+            ),
+            (
+                refusal(faces[0], "cylinder", UnsupportedMoveCause::Unclassified),
+                "unclassified",
+                None,
+            ),
+        ];
+        for (structured, reason, neighbor) in cases {
+            assert_eq!(structured.code, WasmErrorCode::OperationFailed);
+            assert_eq!(structured.category, "unsupported");
+            assert_eq!(structured.details["kernelCode"], "unsupported_move_face");
+            assert_eq!(structured.details["reason"], reason);
+            assert_eq!(structured.details["surfaceType"], "cylinder");
+            assert_eq!(
+                structured
+                    .details
+                    .get("neighborSurfaceType")
+                    .and_then(|v| v.as_str()),
+                neighbor
+            );
+            assert!(structured.message.contains("move-face does not support"));
+            let (code, category, details) = structured.into_direct_parts();
+            assert_eq!(code, "unsupported_move_face");
+            assert_eq!(category, "unsupported");
+            assert_eq!(details["reason"], reason);
+        }
+
+        // Other offset failures keep their existing projection.
+        let other = super::StructuredWasmError::from(remus_operations::OperationsError::Offset(
+            OffsetError::AssemblyFailed {
+                reason: "wire loop walk".into(),
+            },
+        ));
+        assert_eq!(other.code, WasmErrorCode::OperationFailed);
+        assert_eq!(other.category, "internal");
+        assert!(other.details.get("kernelCode").is_none());
     }
 
     #[test]

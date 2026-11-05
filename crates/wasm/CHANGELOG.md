@@ -7,6 +7,20 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
 
 ### ⚠ BREAKING CHANGES
 
+* A move-face refusal outside the qualified cells
+  (`OffsetError::UnsupportedMoveFace`) now projects as category
+  `unsupported` with `details.kernelCode = "unsupported_move_face"`, plus
+  `details.reason` (`unsupported_neighbor`, `partial_reversed_wall` or
+  `unclassified`), `details.surfaceType` and, for a blocking neighbour,
+  `details.neighborSurfaceType`. It was `operation_failed` / `internal` with no
+  `kernelCode`. This changes the `executeBatchV2` errors of every op that
+  reaches it (for example `resizeCylindricalFace`,
+  `resizeCylindricalFaceJournaled` and `moveFaces`) and the `code` of the
+  typed `moveFacesDetailed` / `moveFacesWithQualityDetailed` refusals, which
+  is now `unsupported_move_face`. The wire `code` stays `operation_failed`,
+  messages are unchanged, and legacy direct methods and `executeBatch` still
+  throw or return the same text.
+
 * Batch `getFaceNormal` (`executeBatch` / `executeBatchV2`) now returns a
   planar face's outward normal, flipped by the face's `reversed` flag, the
   same vector as the direct `getFaceNormal`. It used to return the stored
@@ -74,6 +88,19 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
   error instead of returning a chamfer-shaped solid. `chamfer` is unchanged.
 
 ### Features
+
+* Add `resizeCylindricalFaceDetailed(solid, face, radius)` (direct and
+  batch), the typed O4.7 twin of `resizeCylindricalFace` on the same engine
+  path, which is unchanged. Success is the solid envelope with
+  `details.quality` (`exact`, or `approximate` with `approximateFaces` if
+  the result gains a NURBS face) and `details.radius`. A refusal is data, never
+  thrown, and rolls back. A wall outside the qualified cells refuses with code
+  `unsupported_move_face` and category `unsupported`: a boss whose wall
+  meets a sphere or NURBS face reports `reason: "unsupported_neighbor"`,
+  `neighborSurfaceType` and the blocking face's `neighborFace` handle; a
+  partial inward wall such as a blind bore reports
+  `reason: "partial_reversed_wall"`. The batch op returns the same envelope
+  as its `ok` value.
 
 * Add `setDisplayOnlyBlends(enabled)` and `displayOnlyBlendsEnabled()`, a
   per-thread switch for live blend previews (off by default). When on,

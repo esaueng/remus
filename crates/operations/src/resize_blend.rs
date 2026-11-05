@@ -2450,6 +2450,7 @@ pub(crate) fn analyze_translation(
             return Err(remus_offset::OffsetError::UnsupportedMoveFace {
                 face: reference,
                 surface_type: surface.type_tag(),
+                cause: remus_offset::UnsupportedMoveCause::Unclassified,
                 reason: "blend-aware translation requires planar selected faces".into(),
             }
             .into());
@@ -2460,6 +2461,7 @@ pub(crate) fn analyze_translation(
             return Err(remus_offset::OffsetError::UnsupportedMoveFace {
                 face,
                 surface_type: topo.face(face)?.surface().type_tag(),
+                cause: remus_offset::UnsupportedMoveCause::Unclassified,
                 reason: "blend-aware translation requires planar selected faces".into(),
             }
             .into());
