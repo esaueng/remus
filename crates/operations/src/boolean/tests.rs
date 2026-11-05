@@ -11377,3 +11377,225 @@ fn scaling_nway_ef_samples_each_face_outline_once() {
         );
     }
 }
+
+/// A cylinder wall that reaches the generic `Surface` path (it keeps a
+/// retained curve, so no `CylindricalFace` inference is wanted) runs up its
+/// seam, round the face and back down the seam. The second, opposite-direction
+/// use of the seam is the face's own boundary and must stay in the wire: the
+/// "skip duplicate edges anywhere" rule used to drop it, leaving the seam free
+/// and the loop open after the rim of a previously blended boss was filleted.
+#[test]
+fn generic_surface_wall_keeps_its_seam_return_use() {
+    use remus_math::curves::Circle3D;
+    use remus_math::surfaces::CylindricalSurface;
+
+    let tau = std::f64::consts::TAU;
+    let tol = Tolerance::new();
+    let at = |angle: f64, z: f64| Point3::new(angle.cos(), angle.sin(), z);
+    let thirds = [0.0, tau / 3.0, 2.0 * tau / 3.0];
+    let (s0, b0, c0) = (at(thirds[0], 0.0), at(thirds[1], 0.0), at(thirds[2], 0.0));
+    let (s1, b1, c1) = (at(thirds[0], 1.0), at(thirds[1], 1.0), at(thirds[2], 1.0));
+
+    let mut curves = Vec::new();
+    for z in [0.0, 1.0] {
+        let circle = Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, z),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        for k in 0..3 {
+            let (t0, t1) = (thirds[k], if k == 2 { tau } else { thirds[k + 1] });
+            curves.push(BoundaryCurveOverride {
+                start: at(t0, z),
+                end: at(t1, z),
+                curve: EdgeCurve::Circle(circle.clone()),
+                trim: (t0, t1),
+            });
+        }
+    }
+    let cylinder =
+        CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+    let specs = vec![
+        FaceSpec::Surface {
+            // Bottom rim in +u, up the seam, top rim in -u, back down the seam.
+            vertices: vec![s0, b0, c0, s0, s1, c1, b1, s1],
+            surface: FaceSurface::Cylinder(cylinder),
+            reversed: false,
+            inner_wires: vec![],
+        },
+        FaceSpec::Planar {
+            vertices: vec![s0, c0, b0],
+            normal: Vec3::new(0.0, 0.0, -1.0),
+            d: 0.0,
+            inner_wires: vec![],
+        },
+        FaceSpec::Planar {
+            vertices: vec![s1, b1, c1],
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 1.0,
+            inner_wires: vec![],
+        },
+    ];
+
+    let mut topo = Topology::new();
+    let solid = assemble_solid_mixed_with_history_and_curves(&mut topo, &specs, &curves, tol)
+        .unwrap()
+        .solid;
+
+    let wall = remus_topology::explorer::solid_faces(&topo, solid)
+        .unwrap()
+        .into_iter()
+        .find(|&f| matches!(topo.face(f).unwrap().surface(), FaceSurface::Cylinder(_)))
+        .expect("cylinder wall");
+    let wire = topo.wire(topo.face(wall).unwrap().outer_wire()).unwrap();
+    assert_eq!(
+        wire.edges().len(),
+        8,
+        "three arcs per rim plus the seam twice"
+    );
+    let seam_uses: Vec<bool> = wire
+        .edges()
+        .iter()
+        .filter(|oe| matches!(topo.edge(oe.edge()).unwrap().curve(), EdgeCurve::Line))
+        .map(OrientedEdge::is_forward)
+        .collect();
+    assert_eq!(seam_uses.len(), 2, "the seam is used once each way");
+    assert_ne!(seam_uses[0], seam_uses[1]);
+
+    let report = crate::validate::validate_solid(&topo, solid).unwrap();
+    assert!(report.is_valid(), "{:?}", report.issues);
+    assert_volume_near(&topo, solid, std::f64::consts::PI, 1e-6);
+}
+
+/// Edges `AB`, `BC`, `CD`, `DB` of a wire with a spur `AB` hanging off the
+/// triangle `BCD`, for the generic wire classification tests.
+fn spur_wire_edges() -> [EdgeId; 4] {
+    let mut topo = Topology::new();
+    let [a, b, c, d] = [
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(1.0, 0.0, 0.0),
+        Point3::new(2.0, 0.0, 0.0),
+        Point3::new(1.0, 1.0, 0.0),
+    ]
+    .map(|p| topo.add_vertex(Vertex::new(p, 1e-7)));
+    [(a, b), (b, c), (c, d), (d, b)].map(|(s, e)| topo.add_edge(Edge::new(s, e, EdgeCurve::Line)))
+}
+
+fn wire_uses(wire: &[OrientedEdge]) -> Vec<(EdgeId, bool)> {
+    wire.iter().map(|oe| (oe.edge(), oe.is_forward())).collect()
+}
+
+/// The spur `A→B→C→D→B→A` uses `AB` once each way, but the two uses meet
+/// across the wire's closing boundary: a backtrack spike, not a seam. Starting
+/// the same loop at `B` (`B→A→B→C→D→B`) puts the spike in linear order. Both
+/// rotations must cancel the spur and leave the same triangle `BCD`.
+#[test]
+fn generic_face_wire_cancels_a_wrap_around_spike_in_every_rotation() {
+    let [ab, bc, cd, db] = spur_wire_edges();
+    let triangle = vec![(bc, true), (cd, true), (db, true)];
+
+    let from_a = assembly::generic_face_wire_edges(
+        [(ab, true), (bc, true), (cd, true), (db, true), (ab, false)],
+        true,
+    );
+    assert_eq!(
+        wire_uses(&from_a),
+        triangle,
+        "spike across the closing boundary"
+    );
+
+    let from_b = assembly::generic_face_wire_edges(
+        [(ab, false), (ab, true), (bc, true), (cd, true), (db, true)],
+        true,
+    );
+    assert_eq!(wire_uses(&from_b), triangle, "spike in linear order");
+}
+
+/// An immediate reverse use (`B→A→B` mid-wire) is a spike, not a seam. So is
+/// a pair that only becomes adjacent once a dropped repeat is gone: `A→B`,
+/// `B→C`, a same-direction `B→C` repeat (dropped), then `C→B`, `B→A` folds all
+/// the way back.
+#[test]
+fn generic_face_wire_cancels_an_adjacent_reverse_spike() {
+    let [ab, bc, cd, db] = spur_wire_edges();
+    let wire = assembly::generic_face_wire_edges(
+        [(cd, true), (db, true), (ab, false), (ab, true), (bc, true)],
+        true,
+    );
+    assert_eq!(wire_uses(&wire), vec![(cd, true), (db, true), (bc, true)]);
+
+    let folded = assembly::generic_face_wire_edges(
+        [
+            (ab, true),
+            (bc, true),
+            (bc, true),
+            (bc, false),
+            (ab, false),
+            (cd, true),
+        ],
+        true,
+    );
+    assert_eq!(wire_uses(&folded), vec![(cd, true)]);
+}
+
+/// A same-direction repeat is never a seam, even on a periodic face.
+#[test]
+fn generic_face_wire_drops_a_same_direction_repeat() {
+    let [ab, bc, cd, db] = spur_wire_edges();
+    let wire = assembly::generic_face_wire_edges(
+        [
+            (bc, true),
+            (cd, true),
+            (db, true),
+            (ab, true),
+            (bc, true),
+            (ab, true),
+        ],
+        true,
+    );
+    assert_eq!(
+        wire_uses(&wire),
+        vec![(bc, true), (cd, true), (db, true), (ab, true)]
+    );
+}
+
+/// A seam has exactly two uses: the opposite second use of `BC` stays (the
+/// rest of the loop lies between them), a third use is dropped.
+#[test]
+fn generic_face_wire_drops_a_third_use() {
+    let [ab, bc, cd, db] = spur_wire_edges();
+    let wire = assembly::generic_face_wire_edges(
+        [
+            (bc, true),
+            (cd, true),
+            (bc, false),
+            (db, true),
+            (bc, true),
+            (ab, true),
+        ],
+        true,
+    );
+    assert_eq!(
+        wire_uses(&wire),
+        vec![(bc, true), (cd, true), (bc, false), (db, true), (ab, true)]
+    );
+}
+
+/// On a non-periodic face every repeat is dropped, even an opposite one with
+/// the rest of the loop between its uses (the old behaviour, unchanged).
+#[test]
+fn generic_face_wire_drops_a_reverse_repeat_on_a_non_periodic_face() {
+    let [ab, bc, cd, db] = spur_wire_edges();
+    let uses = [(ab, true), (bc, true), (cd, true), (ab, false), (db, true)];
+    assert_eq!(
+        wire_uses(&assembly::generic_face_wire_edges(uses, false)),
+        vec![(ab, true), (bc, true), (cd, true), (db, true)]
+    );
+    // The same uses on a periodic face keep the non-adjacent seam pair.
+    assert_eq!(
+        wire_uses(&assembly::generic_face_wire_edges(uses, true)),
+        uses.to_vec()
+    );
+}
