@@ -130,7 +130,7 @@ fn assert_rims_on_carriers(topo: &Topology, solid: SolidId, wall: FaceId, radius
         let edge = topo.edge(topo.edge_id_from_index(index).unwrap()).unwrap();
         let start = topo.vertex(edge.start()).unwrap().point();
         let end = topo.vertex(edge.end()).unwrap().point();
-        let (lo, hi) = edge.domain_with_endpoints(start, end);
+        let (lo, hi) = edge.strict_domain().expect("rim edges carry a trim");
         let sphere = faces
             .iter()
             .find_map(|&face| match topo.face(face).unwrap().surface() {

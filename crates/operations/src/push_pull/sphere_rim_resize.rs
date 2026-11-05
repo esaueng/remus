@@ -21,10 +21,11 @@
 //! residuals of every rebuilt rim, and the tessellated volume change against
 //! a quadrature of the exact swept-sleeve integral.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::TAU;
 
 use remus_math::curves::Circle3D;
+use remus_math::det_hash::{DetHashMap, DetHashSet};
 use remus_math::surfaces::{CylindricalSurface, SphericalSurface};
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point3, Vec3};
@@ -307,7 +308,10 @@ fn plan(
                     None => return Ok(None),
                 }
             }
-            _ => return Ok(None),
+            FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Torus(_)
+            | FaceSurface::Nurbs(_) => return Ok(None),
         };
         chains.push(Chain {
             neighbor,
@@ -350,7 +354,7 @@ fn edge_samples(
     let data = topo.edge(edge)?;
     let start = topo.vertex(data.start())?.point();
     let end = topo.vertex(data.end())?.point();
-    let (lo, hi) = data.domain_with_endpoints(start, end);
+    let (lo, hi) = crate::authoritative_edge_domain(data, "sphere-rim edge samples")?;
     Ok((0..=count)
         .map(|index| {
             let parameter = lo + (hi - lo) * index as f64 / count as f64;
@@ -585,7 +589,7 @@ fn rebuild(
         .ok_or_else(|| refusal(face, None, "copied solid lost the selected wall"))?;
 
     // Source rim directions are read before any vertex moves.
-    let mut sweeps = HashMap::new();
+    let mut sweeps = DetHashMap::default();
     for chain in &plan.chains {
         if !matches!(chain.support, Support::Sphere { .. }) {
             continue;
@@ -594,7 +598,7 @@ fn rebuild(
             let data = topo.edge(source)?;
             let start = topo.vertex(data.start())?.point();
             let end = topo.vertex(data.end())?.point();
-            let (lo, hi) = data.domain_with_endpoints(start, end);
+            let (lo, hi) = crate::authoritative_edge_domain(data, "sphere-rim edge samples")?;
             let probe = data
                 .curve()
                 .evaluate_with_endpoints(lo + 0.25 * (hi - lo), start, end);
@@ -701,7 +705,7 @@ fn rebuild(
     // stored p-curve get a fresh one: a support's other coedges (a sphere's
     // equator, say) and coedges whose p-curve the source left to be derived
     // keep exactly the source's state.
-    let mut stored = std::collections::HashSet::new();
+    let mut stored = DetHashSet::default();
     for &index in &plan.wall_edges {
         let copy = edge(index)?;
         for &face_id in &affected {
