@@ -25,6 +25,7 @@ mod anisotropic_tests;
 mod boundary_area;
 #[cfg(test)]
 mod cylinder_band_tests;
+mod cylinder_green;
 mod knot_axis;
 mod loop_index;
 mod natural_rectangle;
@@ -546,8 +547,8 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
                 true,
             )?;
             #[cfg(target_arch = "wasm32")]
-            if !AREA_ONLY && rule.volume_only {
-                return integrate_cylinder_with_trimming::<_, AREA_ONLY>(
+            let sampled = if !AREA_ONLY && rule.volume_only {
+                integrate_cylinder_with_trimming::<_, AREA_ONLY>(
                     s,
                     u_range,
                     v_range,
@@ -556,9 +557,20 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
                     &uv,
                     PatchScale::ANGULAR,
                     None,
-                );
-            }
-            integrate_with_trimming::<_, AREA_ONLY>(
+                )
+            } else {
+                integrate_with_trimming::<_, AREA_ONLY>(
+                    s,
+                    u_range,
+                    v_range,
+                    rule,
+                    sign,
+                    &uv,
+                    PatchScale::ANGULAR,
+                )
+            };
+            #[cfg(not(target_arch = "wasm32"))]
+            let sampled = integrate_with_trimming::<_, AREA_ONLY>(
                 s,
                 u_range,
                 v_range,
@@ -566,7 +578,33 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
                 sign,
                 &uv,
                 PatchScale::ANGULAR,
-            )
+            );
+            // A face trimmed only by exact curves integrates exactly on its
+            // own boundary (see `cylinder_green`). The sampled reading stays
+            // the guard: the exact one replaces it only where both agree to
+            // the sampling error, so a boundary this path misreads can never
+            // move a result by more than that.
+            //
+            // Explicit refinement controls keep the quadrature they asked for
+            // (their accuracy is part of the options contract).
+            let sampled = sampled?;
+            if rule.requested_refinement().is_none()
+                && let Some((exact, flux)) =
+                    cylinder_green::integrate::<AREA_ONLY>(topo, face, s, &rule, sign)?
+            {
+                let scale = sampled.area.max(f64::MIN_POSITIVE);
+                let agrees = (exact.area - sampled.area).abs() <= 1e-3 * scale
+                    && (AREA_ONLY
+                        || (exact.volume - sampled.volume).abs()
+                            <= 1e-3 * sampled.volume.abs().max(scale * s.radius()));
+                if agrees {
+                    if !AREA_ONLY {
+                        rule.record_flux(flux);
+                    }
+                    return Ok(exact);
+                }
+            }
+            Ok(sampled)
         }
         FaceSurface::Cone(s) => {
             let rule = IntegrationRule {

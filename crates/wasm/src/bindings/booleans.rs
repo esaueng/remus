@@ -2419,3 +2419,7 @@ mod tests {
 #[cfg(test)]
 #[path = "box_torus_cut_tests.rs"]
 mod box_torus_cut_tests;
+
+#[cfg(test)]
+#[path = "steinmetz_measurement_tests.rs"]
+mod steinmetz_measurement_tests;

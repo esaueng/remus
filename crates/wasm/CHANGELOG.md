@@ -206,6 +206,13 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
   kept band wider than half the tube correctly (they read the whole tube or
   the opposite band). A tilted face, whose section is not a circle, now
   refuses with a typed error instead of dropping the torus.
+* `volume` and `massProperties` of equal-radius perpendicular cylinders
+  (the Steinmetz bicylinder, its cross-drilled cut and its union) are exact:
+  a bicylinder r = 10 reads 16r³/3 = 5333.3333 instead of 5333.2664. A
+  cylinder face trimmed only by lines, circles and ellipses is now measured
+  on its exact boundary instead of a 128-point sampled outline; centroids and
+  inertia move with it. Faces with fitted (NURBS) trims, such as unequal
+  crossing cylinders, are measured as before.
 * `fuseWithEntityEvolution` and `cutWithEntityEvolution` (direct and batch)
   no longer report a round boss's kept seam piece as `unresolved` when a
   ring cuts the boss wall into bands: a cylinder boss fused into a block's

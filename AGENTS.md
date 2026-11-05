@@ -444,6 +444,7 @@ Quick reference — find the right file for any task:
 | Bounded h-refinement on an already resolved rectangular analytic domain | `properties/face_integrator/adaptive.rs` |
 | Bucketed trim-loop segment lookup for trimmed quadrature (O06) | `properties/face_integrator/loop_index.rs` |
 | Exact boundary reduction (Green's theorem) of cylinder, cone, sphere and torus face areas behind `analytic_face_area`, with the trimmed quadrature as fallback | `properties/face_integrator/boundary_area.rs` |
+| Exact moments (volume, centroid, inertia) of a cylinder face trimmed only by lines, circles and ellipses, by Green's theorem on its own boundary; the sampled trim quadrature stays the guard and the path for fitted trims | `properties/face_integrator/cylinder_green.rs` |
 | Bit-identity oracle for the NURBS row and grid quadrature (per-axis basis tables) against the verbatim per-abscissa `integrate_parametric` (tests) | `properties/face_integrator/nurbs_rows_oracle_tests.rs` |
 | Bit-identity oracle for `integrate_parametric` with its sliced request out of line and its knot-aligned path reached through `as_nurbs`, against the verbatim previous function (tests) | `properties/face_integrator/parametric_split_oracle_tests.rs` |
 | Full-turn cylinder bands with rims split into many arcs, integrated over their exact `(u, v)` rectangle past the trim budget (tests) | `properties/face_integrator/cylinder_band_tests.rs` |
@@ -753,6 +754,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Browser-facing spline chamfer contracts through both batch envelopes | `bindings/chamfer_freeform_tests.rs` |
 | Sequential fillet onto an earlier blend band (contract test) | `bindings/sequential_fillet_tests.rs` |
 | Direct (`cutDetailed`/`fuseDetailed`) and both batch WASM qualification of box × complete-torus booleans cut normal to the torus axis: Pappus closed-form volumes at three scales, both fuse orders, and the tilted cut refused rather than returned unchanged | `bindings/box_torus_cut_tests.rs` |
+| Direct (`intersectDetailed`/`cutDetailed`/`fuseDetailed`) and both batch WASM qualification of the measured volume of equal-radius perpendicular cylinders against the Steinmetz closed form at three scales, both operand orders | `bindings/steinmetz_measurement_tests.rs` |
 | Direct and both batch WASM qualification of the B38 sphere–torus orientation repair (P-Class 8.1 seeds 5201 and 1146): exact, validator-clean, slice-integral volumes, watertight meshes, refusal rollback | `bindings/sphere_torus_orientation_tests.rs` |
 | Entity-evolution and journal bindings | `bindings/evolution.rs` |
 | Typed persistent GCS sketch bindings | `bindings/gcs_sketch.rs` |
