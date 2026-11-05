@@ -4,6 +4,11 @@ on:
   pull_request:
   merge_group:
 
+concurrency:
+  # Replace obsolete PR rebuilds; every queue candidate retains its verdict.
+  group: wasm-version-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
@@ -19,6 +24,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      actions: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -27,6 +33,8 @@ jobs:
       - name: Test integrity and publisher scope guards
         run: |
           python3 scripts/test-wasm-package-integrity.py
+          python3 scripts/test_ci_concurrency.py
+          python3 scripts/test_reuse_wasm_qualification.py
           bash scripts/test-publish-credentials.sh
       - name: Detect committed package changes
         id: packages
@@ -39,21 +47,27 @@ jobs:
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
+      - name: Reuse an identical protected-main package qualification
+        id: qualification
+        if: steps.packages.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/reuse-wasm-qualification.py
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: steps.packages.outputs.changed == 'true'
         with:
           node-version: 24
       - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
-        if: steps.packages.outputs.changed == 'true'
+        if: steps.packages.outputs.changed == 'true' && steps.qualification.outputs.reused != 'true'
         with:
           shared-key: wasm-package
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
-        if: steps.packages.outputs.changed == 'true'
+        if: steps.packages.outputs.changed == 'true' && steps.qualification.outputs.reused != 'true'
         with:
           tool: wasm-pack@0.15.0
       - name: Rebuild both packages and compare every committed file
-        if: steps.packages.outputs.changed == 'true'
+        if: steps.packages.outputs.changed == 'true' && steps.qualification.outputs.reused != 'true'
         run: |
           # Remove committed files first: a build must not inherit extra payload
           # files planted in a package that wasm-pack would otherwise leave alone.

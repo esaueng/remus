@@ -22,16 +22,19 @@ import { hashFile } from './provenance.mjs';
 
 test('refusal and approximation use the native guarded fixture on batch and direct surfaces', (t) => {
   const native = readFileSync(new URL('../../crates/operations/tests/fallback_policy.rs', import.meta.url), 'utf8');
-  assert.match(native, /fn tangent_boss\([\s\S]*?Mat4::translation\(9\.999_99, 20\.0, 0\.0\)/);
-  const expected = [1, 0, 0, 9.99999, 0, 1, 0, 20, 0, 0, 1, 0, 0, 0, 0, 1];
+  const fixture = native.match(/fn near_tangent_cylinders\([\s\S]*?\n\}/)?.[0];
+  assert.ok(fixture, 'the native refusal witness must still exist');
+  assert.equal((fixture.match(/make_cylinder\(topo, 5\.0, 10\.0\)/g) ?? []).length, 2);
+  assert.match(fixture, /Mat4::translation\(9\.999, 0\.0, 3\.0\)/);
+  const expected = [1, 0, 0, 9.999, 0, 1, 0, 0, 0, 0, 1, 3, 0, 0, 0, 1];
   const root = mkdtempSync(resolve(tmpdir(), 'remus fallback fixture '));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const entry = resolve(root, 'kernel.cjs');
   writeFileSync(entry, `
     const transforms = [];
+    const cylinders = [];
     class RemusKernel {
-      makeBox() { return 0; }
-      makeCylinder() { return 1; }
+      makeCylinder(radius, height) { cylinders.push([radius, height]); return cylinders.length - 1; }
       transformSolid(id, matrix) { transforms.push({ id, matrix }); }
       getEntityCounts() { return [2, 0, 0, 0, 0, 0]; }
       booleanWithQuality(op, a, b, exactOnly) {
@@ -41,15 +44,20 @@ test('refusal and approximation use the native guarded fixture on batch and dire
       volume() { return 21713; }
       free() {}
     }
-    module.exports = { RemusKernel, transforms };
+    module.exports = { RemusKernel, transforms, cylinders };
   `);
   const fake = createRequire(import.meta.url)(entry);
   for (const c of expandContractMatrix().filter(({ id }) =>
     id === 'contract/exact-only-refusal' || id === 'contract/disclosed-approximation')) {
     assert.deepEqual(c.batch[2].args.matrix, expected);
+    for (const primitive of c.batch.slice(0, 2)) {
+      assert.deepEqual(primitive, { op: 'makeCylinder', args: { radius: 5, height: 10 } });
+    }
     fake.transforms.length = 0;
+    fake.cylinders.length = 0;
     const observation = directObservation(c, entry);
     assert.deepEqual(fake.transforms, [{ id: 1, matrix: expected }]);
+    assert.deepEqual(fake.cylinders, [[5, 10], [5, 10]]);
     if (c.id === 'contract/exact-only-refusal') {
       assert.equal(observation.outcome, 'batch_error');
       assert.deepEqual(observation.diagnosticCodes, ['operation_failed']);
