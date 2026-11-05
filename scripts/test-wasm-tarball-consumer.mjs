@@ -35,6 +35,7 @@ import { runOpseqOffsetCollapsePackaged } from './opseq-offset-collapse-packaged
 import { runOpseqF10Packaged } from './opseq-f10-packaged.mjs';
 import { runSphereCylinderClosedSectionPackaged } from './sphere-cylinder-closed-section-packaged.mjs';
 import { runOpseqTorusSphereFusePackaged } from './opseq-torus-sphere-fuse-packaged.mjs';
+import { runOpseqSphereTorusIntersectPackaged } from './opseq-sphere-torus-intersect-packaged.mjs';
 import { runOpseqF13Packaged } from './opseq-f13-packaged.mjs';
 import { runWasmRayTorusPackaged } from './wasm-ray-torus-packaged.mjs';
 import { runSecurityResourceRegressions } from './security-resource-packaged.mjs';
@@ -167,6 +168,7 @@ try {
   runOpseqF10Packaged(packageExports);
   runSphereCylinderClosedSectionPackaged({ ...packageExports, ...ioExports });
   runOpseqTorusSphereFusePackaged(packageExports);
+  runOpseqSphereTorusIntersectPackaged(packageExports);
   runOpseqF13Packaged(packageExports);
   runWasmRayTorusPackaged(packageExports);
   runLinkedSketchPackaged(packageExports);

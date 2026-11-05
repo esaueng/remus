@@ -7,7 +7,8 @@
 //! test appends read-only probes (`validateSolid`, `volume`, `meshQuality`)
 //! on the final produced solid and checks the pinned acceptance or defect signature:
 //!
-//! - fixed orientation findings F1/F2/F5/F10/F11/F12/F16/F17 must validate clean and mesh
+//! - fixed orientation findings F1/F2/F5/F10/F11/F12/F16/F17 and the B38
+//!   sphere–torus intersect legs must validate clean and mesh
 //!   watertight with their closed-form volumes through batch.
 //! - fixed material findings F3/F6/F8 must retain their independently derived
 //!   remainders and mesh watertight through batch.
@@ -298,6 +299,26 @@ fn cross_checks() -> Vec<CrossCheck> {
                 // Independent horizontal-disc overlap integral; the native
                 // and packaged matrices retain the tighter quantity gates.
                 volume_near: (426.554_124_672_275_07, 0.05),
+                validate: ValidateExpect::Clean,
+                watertight: Some(true),
+            },
+        },
+        CrossCheck {
+            file: "opseq81-sphere-torus-crescent-intersect.json",
+            signature: Signature::Probes {
+                // B38 seed 5201: sphere r5 at (0,3,0) ∩ torus R5.5/r2.75, an
+                // independent slice integral of disc ∩ annulus areas.
+                volume_near: (241.467_103_793_182_87, 0.05),
+                validate: ValidateExpect::Clean,
+                watertight: Some(true),
+            },
+        },
+        CrossCheck {
+            file: "opseq81-torus-sphere-disc-intersect.json",
+            signature: Signature::Probes {
+                // B38 seed 1146: torus R4/r2 at (-7,0,-3) ∩ sphere r8, the
+                // same independent slice integral.
+                volume_near: (135.979_005_791_330_85, 0.05),
                 validate: ValidateExpect::Clean,
                 watertight: Some(true),
             },

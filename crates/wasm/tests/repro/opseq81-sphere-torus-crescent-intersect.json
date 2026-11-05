@@ -1,0 +1,45 @@
+{
+  "description": "B38 / P-Class 8.1 seed 5201364664492509300 identity leg: the mirrored sphere (r5 about y=1.5, centre (0,3,0)) intersected with the torus R5.5/r2.75, the leg that returned 5 same-sense edges. Native regress_opseq_sphere_torus_orientation covers every operator, both orders, rigid placement and the declared scale limits; opseq81_crosscheck requires clean validation, the slice-integral volume and a watertight mesh through executeBatchV2.",
+  "expect": [],
+  "name": "opseq81-sphere-torus-crescent-intersect",
+  "operations": [
+    {
+      "args": {
+        "radius": 5.0,
+        "segments": 16
+      },
+      "op": "makeSphere"
+    },
+    {
+      "args": {
+        "majorRadius": 5.5,
+        "minorRadius": 2.75,
+        "segments": 16
+      },
+      "op": "makeTorus"
+    },
+    {
+      "args": {
+        "nx": 0.0,
+        "ny": 1.0,
+        "nz": 0.0,
+        "px": 0.0,
+        "py": 1.5,
+        "pz": 0.0,
+        "solid": 0
+      },
+      "op": "mirror"
+    },
+    {
+      "args": {
+        "exactOnly": true,
+        "operation": "intersect",
+        "solidA": 2,
+        "solidB": 1
+      },
+      "op": "booleanWithQuality"
+    }
+  ],
+  "revision": "4faa4782c0b9eb80cafb39bebf7d9db91c777fb0",
+  "schema": 1
+}

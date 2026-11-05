@@ -1895,6 +1895,96 @@ fn count_sphere_arc_trim_crossings(
     Ok(Some(count))
 }
 
+/// Count ray crossings of a sphere face whose trim reads in the sphere's own
+/// `(longitude, latitude)` chart: every loop clear of both poles, closing in
+/// longitude without winding the axis. `None` otherwise, keeping the 3D
+/// polygon fallback.
+///
+/// The 3D polygon projects the trim along its Newell normal, which only
+/// stands for a nearly planar patch. A thin piece along a great circle (the
+/// sphere-in-torus crescent of a sphere–torus intersect, B38) has a vector
+/// area nearly perpendicular to its own surface, so the projected loop folds
+/// over itself and a hit on the neighbouring piece tests inside it. In the
+/// chart the same loop is a simple polygon, as a cylinder or torus trim is.
+fn count_sphere_chart_crossings(
+    topo: &Topology,
+    face_id: FaceId,
+    trim: Option<&FaceTrimData>,
+    cache: Option<&FaceCache>,
+    hits: &[Point3],
+    sphere: &remus_math::surfaces::SphericalSurface,
+) -> Result<Option<u32>, CheckError> {
+    if hits.is_empty() {
+        return Ok(None);
+    }
+    let owned_trim;
+    let trim_data = if let Some(cached) = trim {
+        cached
+    } else {
+        owned_trim = FaceTrimData::build(topo, face_id)?;
+        &owned_trim
+    };
+    if !sphere_trim_reads_in_chart(trim_data, sphere) {
+        return Ok(None);
+    }
+    count_analytic_crossings_with_trim(
+        topo,
+        face_id,
+        Some(trim_data),
+        cache,
+        hits,
+        |p| sphere.project_point(p),
+        false,
+        None,
+    )
+    .map(Some)
+}
+
+/// Whether a sphere face's trim polygons are simple loops in its chart.
+fn sphere_trim_reads_in_chart(
+    trim: &FaceTrimData,
+    sphere: &remus_math::surfaces::SphericalSurface,
+) -> bool {
+    use std::f64::consts::{FRAC_PI_2, PI, TAU};
+    // A sample this close to a pole has no usable longitude.
+    const POLE_GUARD: f64 = 1e-6;
+    let Some(&first) = trim.outer.first() else {
+        return false;
+    };
+    if trim.outer.len() < 3
+        || trim
+            .outer
+            .iter()
+            .all(|p| (*p - first).length_squared() < COINCIDENT_SQ)
+    {
+        return false;
+    }
+    std::iter::once(&trim.outer)
+        .chain(&trim.holes)
+        .all(|polygon| {
+            if polygon.len() < 3 {
+                return false;
+            }
+            let mut previous: Option<f64> = None;
+            let mut travel = 0.0;
+            for point in polygon.iter().chain(polygon.first()) {
+                let (u, v) = sphere.project_point(*point);
+                if FRAC_PI_2 - v.abs() < POLE_GUARD {
+                    return false;
+                }
+                if let Some(previous) = previous {
+                    let step = (u - previous + PI).rem_euclid(TAU) - PI;
+                    if step.abs() > FRAC_PI_2 {
+                        return false;
+                    }
+                    travel += step;
+                }
+                previous = Some(u);
+            }
+            travel.abs() < PI
+        })
+}
+
 fn count_3d_polygon_crossings(
     topo: &Topology,
     face_id: FaceId,
@@ -2059,6 +2149,10 @@ pub fn count_face_ray_crossings_cached(
                     Ok(count)
                 } else if let Some(count) =
                     count_sphere_arc_trim_crossings(topo, face_id, cache, points, sph)?
+                {
+                    Ok(count)
+                } else if let Some(count) =
+                    count_sphere_chart_crossings(topo, face_id, trim, cache, points, sph)?
                 {
                     Ok(count)
                 } else {
