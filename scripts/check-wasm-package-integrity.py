@@ -26,7 +26,8 @@ def manifest_contract(data, generated=False):
     return json.dumps({key: package[key] for key in sorted(package)})
 
 
-def check(revision, directory=Path(".")):
+def check(revision, directory=Path("."), rebuilt_directory=None):
+    rebuilt_directory = directory if rebuilt_directory is None else rebuilt_directory
     def git(*args):
         return subprocess.check_output(["git", *args], cwd=directory)
 
@@ -47,7 +48,7 @@ def check(revision, directory=Path(".")):
             committed[name] = git("show", f"{commit}:{name}")
         if not committed:
             raise ValueError(f"Committed package is missing: {root}")
-        package = directory / root
+        package = rebuilt_directory / root
         if package.is_symlink() or not package.is_dir():
             raise ValueError(f"Rebuilt package is missing or a symlink: {root}")
         rebuilt = {}
@@ -55,7 +56,7 @@ def check(revision, directory=Path(".")):
             if path.is_symlink():
                 raise ValueError(f"Symlink in rebuilt package: {path}")
             if path.is_file():
-                rebuilt[path.relative_to(directory).as_posix()] = path.read_bytes()
+                rebuilt[path.relative_to(rebuilt_directory).as_posix()] = path.read_bytes()
         for name in sorted(committed.keys() | rebuilt.keys()):
             before, after = committed.get(name), rebuilt.get(name)
             label = name
