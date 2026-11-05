@@ -701,8 +701,14 @@ fn partition_touching(
             if !bboxes[i].intersects(bboxes[j]) {
                 continue;
             }
+            // Only a proved gap or contact keeps two cylinders apart. `None`
+            // (axes not parallel) proves nothing: crossing bars read as apart
+            // were shell-merged unsplit into one invalid solid.
             if let (Some(a), Some(b)) = (&cylinder_bounds[i], &cylinder_bounds[j])
-                && cylinder_relation(a, b, margin) != Some(CylinderRelation::PositiveOverlap)
+                && matches!(
+                    cylinder_relation(a, b, margin),
+                    Some(CylinderRelation::Separated | CylinderRelation::Touching)
+                )
             {
                 continue;
             }

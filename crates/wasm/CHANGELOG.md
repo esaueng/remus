@@ -198,6 +198,11 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
 
 ### Bug Fixes
 
+* `fuseAll` (direct and both batches) now unions cylinders whose axes cross.
+  A bar crossed by a drill used to be read as two separate lumps and stitched
+  together unsplit (six faces, one validation error), so a strict union gate
+  refused every such union. Only cylinders proved apart or touching are kept
+  as separate lumps now; parallel-cylinder clusters are unchanged.
 * `fuseWithEntityEvolution` and `cutWithEntityEvolution` (direct and batch)
   no longer report a round boss's kept seam piece as `unresolved` when a
   ring cuts the boss wall into bands: a cylinder boss fused into a block's
