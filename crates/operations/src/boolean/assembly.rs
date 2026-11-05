@@ -112,6 +112,61 @@ const fn surface_is_periodic(surface: &FaceSurface) -> bool {
     }
 }
 
+/// Builds a generic face's outer wire from its edge uses in polygon order.
+///
+/// Repeated edges are dropped (they arise when the polygon revisits a vertex
+/// pair through degenerate splits or vertex merging), with one exception on
+/// a `periodic` face: its seam, which the loop runs up, round the face and
+/// back down, so the two uses are opposite with the rest of the loop between.
+///
+/// Whether a repeat is a seam depends on its place in the closed loop, not on
+/// where the polygon happens to start, so the test is cyclic. An opposite
+/// second use is first kept as a candidate; the finished wire then cancels
+/// every reverse pair adjacent in its cyclic order (a backtrack spike,
+/// including one that wraps from the last use to the first, or whose uses
+/// only meet once dropped uses are gone). Every rotation of the polygon
+/// yields the same loop.
+pub(crate) fn generic_face_wire_edges(
+    uses: impl IntoIterator<Item = (EdgeId, bool)>,
+    periodic: bool,
+) -> Vec<OrientedEdge> {
+    let mut wire: Vec<OrientedEdge> = Vec::new();
+    for (edge_id, is_forward) in uses {
+        let mut previous_uses = wire.iter().filter(|oe| oe.edge() == edge_id);
+        if let Some(first_use) = previous_uses.next() {
+            // A seam is used exactly twice, once each way: a same-direction
+            // repeat or a third use is dropped, as on a non-periodic face.
+            let seam_candidate =
+                periodic && previous_uses.next().is_none() && first_use.is_forward() != is_forward;
+            if !seam_candidate {
+                continue;
+            }
+        }
+        wire.push(OrientedEdge::new(edge_id, is_forward));
+    }
+
+    // Cyclic reduction. Reverse pairs adjacent in linear order cancel on a
+    // stack; pairs adjacent across the closing boundary then cancel at the
+    // two ends. Trimming the ends exposes no new interior adjacency, so no
+    // cyclically adjacent reverse pair survives.
+    let backtrack = |a: &OrientedEdge, b: &OrientedEdge| {
+        a.edge() == b.edge() && a.is_forward() != b.is_forward()
+    };
+    let mut reduced: Vec<OrientedEdge> = Vec::with_capacity(wire.len());
+    for oe in wire {
+        if reduced.last().is_some_and(|last| backtrack(last, &oe)) {
+            reduced.pop();
+        } else {
+            reduced.push(oe);
+        }
+    }
+    while reduced.len() >= 2 && backtrack(&reduced[0], &reduced[reduced.len() - 1]) {
+        reduced.pop();
+        reduced.remove(0);
+    }
+    reduced
+}
+
 /// A torus patch is arc-minting only when every loop edge arrives as an
 /// analytic override. Torus seam arcs are small circles with independent
 /// centers (unlike sphere-cap great circles), so positional inference can
@@ -1211,7 +1266,7 @@ fn assemble_solid_mixed_traced(
                     })
                     .collect();
 
-                let mut oriented_edges = Vec::with_capacity(n);
+                let mut wire_uses: Vec<(EdgeId, bool)> = Vec::with_capacity(n);
                 for i in 0..n {
                     let j = (i + 1) % n;
                     let vi = vert_ids[i].index();
@@ -1288,34 +1343,17 @@ fn assemble_solid_mixed_traced(
                     // vertex-index order.
                     let is_forward = topo.edge(edge_id)?.start() == vert_ids[i];
 
-                    // Skip duplicate edges anywhere in the wire (not just consecutive).
-                    // Duplicates arise when the polygon revisits a vertex pair due to
-                    // degenerate splits or vertex merging.
-                    //
-                    // The one exception is a periodic face's seam: the loop runs up
-                    // the seam, round the face and back down it, so the second use
-                    // is the same edge in the opposite direction with the rest of
-                    // the loop in between. A wall rebuilt here rather than as a
-                    // `CylindricalFace` (because it keeps an earlier blend's NURBS
-                    // boundary) has exactly that wire; dropping the return use
-                    // leaves the seam free and the loop open.
-                    let mut previous_uses = oriented_edges
-                        .iter()
-                        .filter(|oe: &&OrientedEdge| oe.edge() == edge_id);
-                    if let Some(first_use) = previous_uses.next() {
-                        let seam_return = surface_is_periodic(&surface)
-                            && previous_uses.next().is_none()
-                            && first_use.is_forward() != is_forward
-                            && oriented_edges
-                                .last()
-                                .is_some_and(|last: &OrientedEdge| last.edge() != edge_id);
-                        if !seam_return {
-                            continue;
-                        }
-                    }
-                    oriented_edges.push(OrientedEdge::new(edge_id, is_forward));
+                    wire_uses.push((edge_id, is_forward));
                 }
 
+                // Duplicate edges are resolved on the finished loop: telling a
+                // periodic face's seam return from a backtrack spike needs the
+                // wire's cyclic order. A wall rebuilt here rather than as a
+                // `CylindricalFace` (because it keeps an earlier blend's NURBS
+                // boundary) runs up its seam and back down it; dropping the
+                // return use would leave the seam free and the loop open.
+                let oriented_edges =
+                    generic_face_wire_edges(wire_uses, surface_is_periodic(&surface));
                 let wire =
                     Wire::new(oriented_edges, true).map_err(crate::OperationsError::Topology)?;
                 let wire_id = topo.add_wire(wire);
