@@ -349,7 +349,6 @@ name = "remus-blend"
 version = "2026.1.0"
 dependencies = [
  "log",
- "remus-geometry",
  "remus-math",
  "remus-topology",
  "thiserror",
