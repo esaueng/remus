@@ -2364,6 +2364,7 @@ dependencies = [
  "remus-heal",
  "remus-io",
  "remus-math",
+ "remus-offset",
  "remus-operations",
  "remus-sketch",
  "remus-topology",

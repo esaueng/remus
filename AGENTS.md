@@ -714,7 +714,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Shape construction (vertices, edges, wires, faces) | `bindings/shapes.rs` |
 | Modeling operations (extrude, revolve, sweep, loft, fillet, etc.) | `bindings/operations.rs` |
 | Boolean operations (fuse, cut, intersect) | `bindings/booleans.rs` |
-| Typed modifier results (`moveFacesDetailed`, `filletDetailed`, `chamferDetailed`, `shellDetailed`, `offsetDetailed`, and the `filletV2`/`chamferV2`/`chamferDistanceAngle`/`filletVariable` twins) | `bindings/modifier_detailed.rs` |
+| Typed modifier results (`moveFacesDetailed`, `resizeCylindricalFaceDetailed`, `filletDetailed`, `chamferDetailed`, `shellDetailed`, `offsetDetailed`, and the `filletV2`/`chamferV2`/`chamferDistanceAngle`/`filletVariable` twins) | `bindings/modifier_detailed.rs` |
 | `faceContentDigests` contract: drag ticks keep the digests of untouched faces (tests) | `bindings/face_digest_tests.rs` |
 | Source-relative live face moves preserve accepted geometry on refusal (tests) | `bindings/face_move_preview_tests.rs` |
 | Batch `getFaceNormal` returns the outward normal of reversed planar faces and refuses curved faces, matching the direct method (tests) | `bindings/face_normal_contract_tests.rs` |

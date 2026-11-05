@@ -333,6 +333,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "moveFacesDetailed"
         | "moveFacesWithQualityDetailed"
         | "resizeCylindricalFace"
+        | "resizeCylindricalFaceDetailed"
         | "extrude"
         | "extrudeDetailed"
         | "makeGearDetailed"
@@ -1771,6 +1772,22 @@ impl RemusKernel {
                 let result = resize_cylindrical_face(self.topo_mut(), solid_id, face_id, radius)
                     .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(result)))
+            }
+            "resizeCylindricalFaceDetailed" => {
+                let result = (|| {
+                    let solid = get_u32(args, "solid")?;
+                    let face = get_u32(args, "face")?;
+                    let radius = get_f64(args, "radius")?;
+                    Ok::<_, StructuredWasmError>(
+                        self.resize_cylindrical_face_detailed_impl(solid, face, radius),
+                    )
+                })()
+                .unwrap_or_else(|error| {
+                    SolidOperationDetailedResult::error(
+                        error.with_direct_operation("resizeCylindricalFace"),
+                    )
+                });
+                serde_json::to_value(result).map_err(StructuredWasmError::from)
             }
             "extrude" => {
                 let f = get_u32(args, "face")?;

@@ -110,5 +110,7 @@ twins (B74) add two exports and cover `copyAndTransformSolid`: 220
 mutating exports -- 14 covered, 110 uncovered, 96 special.
 `transformSolid`/`transformWire`/`transformFace` stay uncovered by
 design (void in-place mutations; `transformDetailed` is their
-special-case status surface, never a forced solid envelope). The roadmap O4.7
+special-case status surface, never a forced solid envelope).
+`resizeCylindricalFaceDetailed` covers `resizeCylindricalFace`; regenerate
+the live totals with the gate above. The roadmap O4.7
 row is the human-readable mirror; this baseline is the executable one.

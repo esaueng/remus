@@ -72,7 +72,7 @@ pub(crate) mod offset;
 pub(crate) mod self_int;
 
 pub use data::{JointType, OffsetOptions};
-pub use error::OffsetError;
+pub use error::{OffsetError, UnsupportedMoveCause};
 pub use move_faces::{
     MoveFacesEntityResult, MoveFacesResult, move_faces, move_faces_with_entity_map,
     move_faces_with_face_map, replace_surface_with_entity_map, replace_surface_with_face_map,

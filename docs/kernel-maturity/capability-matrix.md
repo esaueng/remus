@@ -354,6 +354,16 @@ does not itself promote or demote anything.
   lateral relocation, and complex blend regions without unique construction
   correspondence remain roadmap work. Replace-surface itself is not yet a
   WASM operation; full direct-edit journal/evolution exposure remains 6.5.
+- **Unsupported-typed boundary:** a move or cylindrical resize whose selected
+  face borders a face outside the plane/cylinder (and axial cone) neighbour
+  set, or a partial inward cylindrical wall, refuses with
+  `OffsetError::UnsupportedMoveFace` and a typed `UnsupportedMoveCause`
+  (`unsupported_neighbor` naming both surface types, `partial_reversed_wall`).
+  WASM projects it as `unsupported` / `unsupported_move_face` with the cause
+  as `details.reason`; `resizeCylindricalFaceDetailed` returns it as data and
+  rolls back. A sphere with a protruding r 6 boss and the same sphere with a
+  blind bore pin both causes natively, direct and through both batches. Other
+  move-face refusals still report `reason: "unclassified"`.
 
 ### Sweeps (extrude, revolve, sweep, loft, pipe, helix)
 

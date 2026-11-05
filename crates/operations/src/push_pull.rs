@@ -126,6 +126,7 @@ pub(crate) fn move_faces_with_entity_evolution(
                     return Err(remus_offset::OffsetError::UnsupportedMoveFace {
                         face,
                         surface_type: surface.type_tag(),
+                        cause: remus_offset::UnsupportedMoveCause::Unclassified,
                         reason: "cylindrical move classification changed before replacement".into(),
                     }
                     .into());
@@ -493,6 +494,7 @@ fn cylindrical_bore_move_request(
         return Err(remus_offset::OffsetError::UnsupportedMoveFace {
             face: reference,
             surface_type: reference_data.surface().type_tag(),
+            cause: remus_offset::UnsupportedMoveCause::Unclassified,
             reason: "radial move supports inward-facing bore walls only".into(),
         }
         .into());
@@ -501,6 +503,7 @@ fn cylindrical_bore_move_request(
         return Err(remus_offset::OffsetError::UnsupportedMoveFace {
             face: reference,
             surface_type: reference_data.surface().type_tag(),
+            cause: remus_offset::UnsupportedMoveCause::Unclassified,
             reason: "a moved bore wall cannot carry inner trim wires".into(),
         }
         .into());
@@ -576,6 +579,11 @@ fn validate_cylindrical_bore_boundary(
             return Err(remus_offset::OffsetError::UnsupportedMoveFace {
                 face: neighbor,
                 surface_type: neighbor_data.surface().type_tag(),
+                cause: remus_offset::UnsupportedMoveCause::UnsupportedNeighbor {
+                    selected: face,
+                    selected_surface_type: face_data.surface().type_tag(),
+                    edge,
+                },
                 reason: format!("face bounds cylindrical bore rim edge {}", edge.index()),
             }
             .into());
@@ -584,6 +592,7 @@ fn validate_cylindrical_bore_boundary(
             return Err(remus_offset::OffsetError::UnsupportedMoveFace {
                 face: neighbor,
                 surface_type: neighbor_data.surface().type_tag(),
+                cause: remus_offset::UnsupportedMoveCause::Unclassified,
                 reason: "bore support plane is not perpendicular to the cylinder axis".into(),
             }
             .into());
@@ -595,6 +604,7 @@ fn validate_cylindrical_bore_boundary(
             return Err(remus_offset::OffsetError::UnsupportedMoveFace {
                 face,
                 surface_type: face_data.surface().type_tag(),
+                cause: remus_offset::UnsupportedMoveCause::Unclassified,
                 reason: format!("bore rim edge {} is not an exact circle", edge.index()),
             }
             .into());
@@ -606,6 +616,7 @@ fn validate_cylindrical_bore_boundary(
         return Err(remus_offset::OffsetError::UnsupportedMoveFace {
             face,
             surface_type: face_data.surface().type_tag(),
+            cause: remus_offset::UnsupportedMoveCause::Unclassified,
             reason: format!("bore wall has {rim_count} supported circular rims, expected 2"),
         }
         .into());
@@ -1110,6 +1121,7 @@ pub(crate) fn resize_cylindrical_face_with_entity_evolution(
     if !full_turn && reversed {
         return Err(remus_offset::OffsetError::UnsupportedMoveFace {
             face, surface_type: "cylinder",
+            cause: remus_offset::UnsupportedMoveCause::PartialReversedWall,
             reason: "partial-cylinder resize currently requires an outward quarter wall with radial planar sides".into(),
         }.into());
     }
@@ -1334,6 +1346,7 @@ fn resize_partial_cylindrical_face(
         return Err(remus_offset::OffsetError::UnsupportedMoveFace {
             face,
             surface_type: "cylinder",
+            cause: remus_offset::UnsupportedMoveCause::PartialReversedWall,
             reason: "partial-cylinder resize currently requires an outward quarter wall with radial planar sides".into(),
         }.into());
     }

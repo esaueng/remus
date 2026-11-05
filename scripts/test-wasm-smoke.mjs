@@ -825,6 +825,42 @@ console.log(`ok - meshQuality: watertight, euler=${quality.eulerCharacteristic}`
   const step = io.exportStep(bodies(kernel, widened));
   assert.ok(step.length > 0, 'STEP export of the resized bore should not be empty');
   console.log(`ok - resized bore STEP export: ${step.length} bytes`);
+
+  // The O4.7 twin runs the same engine: an exact envelope with the same
+  // volume, and refusals as typed data with the input left as it was.
+  const detailed = kernel.resizeCylindricalFaceDetailed(drilled, bore, 5);
+  assert.equal(detailed.status, 'ok', JSON.stringify(detailed));
+  assert.equal(detailed.details.quality, 'exact');
+  assert.ok(Math.abs(kernel.volume(detailed.value, DEFLECTION) - widenedVol) < 1e-9);
+  console.log('ok - resizeCylindricalFaceDetailed(5): exact, legacy volume');
+
+  const translate = (x, y, z) => [1, 0, 0, x, 0, 1, 0, y, 0, 0, 1, z, 0, 0, 0, 1];
+  for (const [label, combine, reason, neighbor] of [
+    ['boss', (s, c) => kernel.fuse(s, c), 'unsupported_neighbor', 'sphere'],
+    ['blind bore', (s, c) => kernel.cut(s, c), 'partial_reversed_wall', undefined],
+  ]) {
+    const sphere = kernel.copyAndTransformSolid(kernel.makeSphere(73.5, 16), translate(25.5, -1.5, 0));
+    const cylinder = kernel.copyAndTransformSolid(kernel.makeCylinder(6, 64.1), translate(35.5, 3.5, 58));
+    const body = combine(sphere, cylinder);
+    const wall = Array.from(kernel.getSolidFaces(body)).find(
+      (f) => kernel.getSurfaceType(f) === 'cylinder',
+    );
+    const faces = Array.from(kernel.getSolidFaces(body));
+    const refused = kernel.resizeCylindricalFaceDetailed(body, wall, 7);
+    assert.equal(refused.status, 'error', `${label}: ${JSON.stringify(refused)}`);
+    assert.equal(refused.value, null);
+    assert.equal(refused.code, 'unsupported_move_face');
+    assert.equal(refused.category, 'unsupported');
+    assert.equal(refused.details.reason, reason);
+    assert.equal(refused.details.surfaceType, 'cylinder');
+    assert.equal(refused.details.neighborSurfaceType, neighbor);
+    if (neighbor !== undefined) {
+      assert.equal(kernel.getSurfaceType(refused.details.neighborFace), neighbor);
+    }
+    assert.deepEqual(Array.from(kernel.getSolidFaces(body)), faces, `${label}: input changed`);
+    assert.throws(() => kernel.resizeCylindricalFace(body, wall, 7), /move-face does not support/);
+    console.log(`ok - resizeCylindricalFaceDetailed ${label}: typed ${reason} refusal`);
+  }
 }
 
 // 11. Analytic preservation through an OpenZCAD-shaped flange boolean.
