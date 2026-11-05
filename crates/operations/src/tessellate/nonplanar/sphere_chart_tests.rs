@@ -22,6 +22,85 @@ type ChartFixture = (
     super::super::PointMergeMap,
 );
 
+#[test]
+fn single_circle_equator_requires_a_native_closed_full_turn() {
+    for radius in [0.001, 1.0, 1000.0] {
+        let center = Point3::new(17.0 * radius, -23.0 * radius, 31.0 * radius);
+        let axis = Vec3::new(0.2, 0.4, 1.0).normalize().unwrap();
+        let sphere = SphericalSurface::with_axis(center, radius, axis).unwrap();
+        for phase in [0.0, 0.37] {
+            for normal_sign in [-1.0, 1.0] {
+                for forward in [false, true] {
+                    for variant in 0..11 {
+                        let mut topo = Topology::new();
+                        let circle_center = if variant == 6 {
+                            center + axis * (0.1 * radius)
+                        } else {
+                            center
+                        };
+                        let (normal, v) = if variant == 8 {
+                            (
+                                -sphere.y_axis() * normal_sign,
+                                sphere.z_axis() * normal_sign,
+                            )
+                        } else {
+                            (axis * normal_sign, sphere.y_axis() * normal_sign)
+                        };
+                        let circle =
+                            Circle3D::with_axes(circle_center, normal, radius, sphere.x_axis(), v)
+                                .unwrap();
+                        let point = circle.evaluate(phase)
+                            + if variant == 5 {
+                                sphere.x_axis() * (0.01 * radius)
+                            } else {
+                                Vec3::new(0.0, 0.0, 0.0)
+                            };
+                        let start = topo.add_vertex(Vertex::new(point, 1e-7));
+                        let end = if variant == 4 {
+                            topo.add_vertex(Vertex::new(point, 1e-7))
+                        } else {
+                            start
+                        };
+                        let mut edge = Edge::new(start, end, EdgeCurve::Circle(circle));
+                        let turn = std::f64::consts::TAU;
+                        edge.set_trim(match variant {
+                            1 => None,
+                            2 => Some((phase, phase + turn / 2.0)),
+                            3 => Some((phase, phase + 2.0 * turn)),
+                            9 => Some((phase + turn, phase)),
+                            _ => Some((phase, phase + turn)),
+                        });
+                        let edge = topo.add_edge(edge);
+                        let wire = topo.add_wire(
+                            Wire::new(vec![OrientedEdge::new(edge, forward)], variant != 10)
+                                .unwrap(),
+                        );
+                        let face = Face::new(
+                            wire,
+                            if variant == 7 { vec![wire] } else { Vec::new() },
+                            FaceSurface::Sphere(sphere.clone()),
+                        );
+                        let expected = if variant == 0 || variant == 9 {
+                            Some(
+                                normal_sign
+                                    * if forward { 1.0 } else { -1.0 }
+                                    * if variant == 9 { -1.0 } else { 1.0 },
+                            )
+                        } else {
+                            None
+                        };
+                        assert_eq!(
+                            super::analytic_sphere_equator_direction(&topo, &face).unwrap(),
+                            expected,
+                            "radius={radius}, phase={phase}, normal_sign={normal_sign}, forward={forward}, variant={variant}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn direction(matrix: Mat4, vector: Vec3) -> Vec3 {
     Vec3::new(
         matrix.0[0][0] * vector.x() + matrix.0[0][1] * vector.y() + matrix.0[0][2] * vector.z(),
@@ -626,6 +705,90 @@ fn holed_hemisphere_budget_refusal_restores_the_attempt() {
     assert_eq!((mesh.positions, mesh.normals, mesh.indices, map), before);
 }
 
+#[test]
+fn holed_hemisphere_nurbs_hole_requires_the_whole_curve_on_the_selected_sphere() {
+    for variant in 0..9 {
+        let (mut topo, face, mut mesh, pool, mut map) =
+            holed_hemisphere(1.0, Mat4::identity(), 1.0, 0.5);
+        let edges = topo.wire(face.inner_wires()[0]).unwrap().edges().to_vec();
+        for (index, oriented) in edges.iter().enumerate() {
+            let source = topo.edge(oriented.edge()).unwrap();
+            let EdgeCurve::Circle(circle) = source.curve() else {
+                panic!("circle fixture")
+            };
+            let (a, b) = source.strict_domain().unwrap();
+            let curve =
+                remus_geometry::convert::curve_to_nurbs::circle_to_nurbs(circle, a, b).unwrap();
+            let mut data = serde_json::to_value(curve).unwrap();
+            if index == 0 {
+                match variant {
+                    // A bulge between the endpoints must not be admitted by
+                    // endpoint-only or shared-boundary-sample validation.
+                    1 => data["control_points"][1][2] = serde_json::json!(0.6),
+                    2 => {
+                        for point in data["control_points"].as_array_mut().unwrap() {
+                            point[2] = serde_json::json!(-0.5);
+                        }
+                    }
+                    4 => data["weights"][1] = serde_json::json!(-1.0),
+                    // Lift the weighted middle control point radially by
+                    // 1e-8: the curve leaves the sphere by about 4e-9,
+                    // well past the 1e-10 tolerance set below.
+                    8 => {
+                        let point = data["control_points"][1].as_array_mut().unwrap();
+                        let xyz: Vec<f64> = point.iter().map(|c| c.as_f64().unwrap()).collect();
+                        let length = xyz.iter().map(|c| c * c).sum::<f64>().sqrt();
+                        for (c, value) in point.iter_mut().zip(xyz) {
+                            *c = serde_json::json!(value * (1.0 + 1e-8 / length));
+                        }
+                    }
+                    5 => data["weights"][1] = serde_json::json!(1e-10),
+                    _ => {}
+                }
+            }
+            let curve: remus_math::nurbs::curve::NurbsCurve = serde_json::from_value(data).unwrap();
+            let domain = curve.domain();
+            let edge = topo.edge_mut(oriented.edge()).unwrap();
+            edge.set_curve(EdgeCurve::NurbsCurve(curve));
+            edge.set_trim((variant != 3 || index != 0).then_some(domain));
+            if variant == 6 && index == 0 {
+                edge.set_tolerance(Some(1e-30)).unwrap();
+            }
+            // This tolerance exceeds the roundoff reserve but needs more
+            // convex-hull subdivisions than the bounded certificate permits;
+            // the exact circle's Bernstein radial residual certifies it
+            // without them (variant 7 accepts). Variant 8 moves the curve
+            // itself off the sphere at the same tolerance and must decline.
+            if (variant == 7 || variant == 8) && index == 0 {
+                edge.set_tolerance(Some(1e-10)).unwrap();
+            }
+        }
+        let FaceSurface::Sphere(sphere) = face.surface() else {
+            panic!("sphere fixture")
+        };
+        let qualified = variant == 0 || variant == 7;
+        assert_eq!(
+            super::sphere_nurbs_loop_in_hemisphere(&topo, sphere, &edges, 1.0).unwrap(),
+            qualified,
+            "variant {variant}"
+        );
+        let before = (
+            mesh.positions.clone(),
+            mesh.normals.clone(),
+            mesh.indices.clone(),
+            map.clone(),
+        );
+        let accepted = super::tessellate_sphere_holed_hemisphere_shared(
+            &topo, &face, sphere, 0.01, 0.35, &pool, &mut mesh, &mut map,
+        )
+        .unwrap();
+        assert_eq!(accepted, qualified, "variant {variant}");
+        if !qualified {
+            assert_eq!((mesh.positions, mesh.normals, mesh.indices, map), before);
+        }
+    }
+}
+
 /// opseq81 two-sphere fuse: both hole-free sphere remainders take the
 /// stereographic hemisphere chart. Its interior grid once spread a fixed
 /// `2 * angular_segments` samples per axis over the patch's chart bounding
@@ -676,4 +839,292 @@ fn sphere_fuse_hemisphere_chart_grid_follows_arc_angle() {
         volume <= exact && exact - volume <= deflection * area_bound,
         "mesh volume {volume} against exact {exact}"
     );
+}
+
+/// A hemisphere with several circular holes, each the cap `n_i . p > h_i`
+/// about the axis at polar angle `tilt_i` and azimuth `azimuth_i`.
+fn multi_holed_hemisphere(
+    radius: f64,
+    matrix: Mat4,
+    side: f64,
+    holes: &[(f64, f64, f64)],
+) -> ChartFixture {
+    let mut topo = Topology::new();
+    let mut mesh = TriangleMesh {
+        positions: vec![],
+        normals: vec![],
+        indices: vec![],
+    };
+    let mut pool = DetHashMap::default();
+    let mut map = super::super::PointMergeMap::default();
+    let center = matrix.mul_point(Point3::new(0.0, 0.0, 0.0));
+    let mut wires = Vec::new();
+    let rings = std::iter::once((0.0, 0.0, 0.0)).chain(holes.iter().copied());
+    for (ring, (height, tilt, azimuth)) in rings.enumerate() {
+        let z = height * side;
+        let (sin_t, cos_t) = tilt.sin_cos();
+        let (sin_a, cos_a) = f64::sin_cos(azimuth);
+        let axis = Vec3::new(sin_t * cos_a, sin_t * sin_a, cos_t);
+        let circle = Circle3D::with_axes(
+            matrix.mul_point(Point3::new(
+                axis.x() * z * radius,
+                axis.y() * z * radius,
+                axis.z() * z * radius,
+            )),
+            direction(matrix, axis),
+            radius * (1.0 - z * z).sqrt(),
+            direction(matrix, Vec3::new(cos_t * cos_a, cos_t * sin_a, -sin_t)),
+            direction(matrix, Vec3::new(-sin_a, cos_a, 0.0)),
+        )
+        .unwrap();
+        let mut vertices = Vec::new();
+        let mut ring_ids = Vec::new();
+        for i in 0..64 {
+            let p = circle.evaluate(std::f64::consts::TAU * f64::from(i) / 64.0);
+            let id = mesh.positions.len() as u32;
+            mesh.positions.push(p);
+            mesh.normals.push((p - center) * (1.0 / radius));
+            map.insert(point_merge_key(p, super::MERGE_GRID), id);
+            ring_ids.push(id);
+            if i % 16 == 0 {
+                vertices.push(topo.add_vertex(Vertex::new(p, 1e-7)));
+            }
+        }
+        let mut uses = Vec::new();
+        for i in 0..4 {
+            let mut edge = Edge::new(
+                vertices[i],
+                vertices[(i + 1) % 4],
+                EdgeCurve::Circle(circle.clone()),
+            );
+            edge.set_trim(Some((
+                std::f64::consts::FRAC_PI_2 * i as f64,
+                std::f64::consts::FRAC_PI_2 * (i + 1) as f64,
+            )));
+            let id = topo.add_edge(edge);
+            pool.insert(
+                id.index(),
+                (0..=16).map(|j| ring_ids[(i * 16 + j) % 64]).collect(),
+            );
+            uses.push(OrientedEdge::new(id, true));
+        }
+        if (ring != 0) == (side > 0.0) {
+            uses = uses
+                .into_iter()
+                .rev()
+                .map(|e| OrientedEdge::new(e.edge(), false))
+                .collect();
+        }
+        wires.push(topo.add_wire(Wire::new(uses, true).unwrap()));
+    }
+    let sphere =
+        SphericalSurface::with_axis(center, radius, direction(matrix, Vec3::new(0.0, 0.0, 1.0)))
+            .unwrap();
+    let face = Face::new(wires[0], wires[1..].to_vec(), FaceSurface::Sphere(sphere));
+    (topo, face, mesh, pool, map)
+}
+
+/// opseq81 seed 1146645986253340484: a torus piercing a sphere leaves two
+/// disjoint section holes in one hemisphere. Every hole stays open, every
+/// shared loop sample is used once, and the area is the hemisphere less
+/// both caps (closed form, independent of the chart).
+#[test]
+fn holed_hemisphere_keeps_every_disjoint_hole_open() {
+    // Cap angular radius acos(0.85) = 0.555; axes 1.2 apart stay disjoint,
+    // and 0.6 + 0.555 < pi/2 keeps each cap inside the hemisphere.
+    let holes = [
+        (0.85, 0.6, 0.0),
+        (0.85, 0.6, std::f64::consts::PI),
+        (0.95, 0.9, std::f64::consts::FRAC_PI_2),
+    ];
+    for radius in [0.001, 1.0, 1000.0] {
+        for side in [-1.0, 1.0] {
+            for count in [2, 3] {
+                for deflection in [0.03, 0.003] {
+                    let matrix = Mat4::translation(13.0 * radius, -7.0 * radius, 3.0 * radius)
+                        * Mat4::rotation_y(0.53)
+                        * Mat4::rotation_x(0.21);
+                    let inverse = matrix.inverse().unwrap();
+                    let (topo, face, mut mesh, pool, mut map) =
+                        multi_holed_hemisphere(radius, matrix, side, &holes[..count]);
+                    let positions = mesh.positions.clone();
+                    assert!(
+                        super::tessellate_sphere_cap_shared(
+                            &topo,
+                            &face,
+                            deflection * radius,
+                            0.35,
+                            false,
+                            false,
+                            &pool,
+                            &mut mesh,
+                            &mut map
+                        )
+                        .unwrap(),
+                        "radius={radius} side={side} count={count}"
+                    );
+                    assert_eq!(&mesh.positions[..positions.len()], positions);
+                    let mut uses = std::collections::BTreeMap::new();
+                    let mut area = 0.0;
+                    for t in mesh.indices.chunks_exact(3) {
+                        let [a, b, c] = [t[0], t[1], t[2]].map(|i| {
+                            (inverse.mul_point(mesh.positions[i as usize])
+                                - Point3::new(0.0, 0.0, 0.0))
+                                * (1.0 / radius)
+                        });
+                        let normal = (b - a).cross(c - a);
+                        assert!(normal.dot((a + b + c) * (1.0 / 3.0)) > 0.0);
+                        area += normal.length() * 0.5;
+                        for p in [a, b, c] {
+                            assert!((p.length() - 1.0).abs() < 1e-10);
+                            assert!(p.z() * side >= -1e-10);
+                            for &(height, tilt, azimuth) in &holes[..count] {
+                                let axis = Vec3::new(
+                                    tilt.sin() * f64::cos(azimuth),
+                                    tilt.sin() * f64::sin(azimuth),
+                                    tilt.cos(),
+                                );
+                                // Halfspace at all facet vertices: no facet
+                                // reaches into any removed cap.
+                                assert!(side * p.dot(axis) <= height + 1e-10);
+                            }
+                        }
+                        for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+                            uses.entry((a.min(b), a.max(b)))
+                                .or_insert_with(Vec::new)
+                                .push(a < b);
+                        }
+                    }
+                    let boundary: std::collections::BTreeSet<_> = pool
+                        .values()
+                        .flat_map(|ids| ids.windows(2).map(|p| (p[0].min(p[1]), p[0].max(p[1]))))
+                        .collect();
+                    assert_eq!(boundary.len(), 64 * (count + 1));
+                    for edge in &boundary {
+                        assert_eq!(uses.get(edge).unwrap().len(), 1, "shared segment {edge:?}");
+                    }
+                    for (edge, directions) in uses {
+                        if !boundary.contains(&edge) {
+                            assert_eq!(directions.len(), 2);
+                            assert_ne!(directions[0], directions[1]);
+                        }
+                    }
+                    let removed: f64 = holes[..count].iter().map(|h| 1.0 - h.0).sum();
+                    let exact_area = std::f64::consts::TAU * (1.0 - removed);
+                    assert!(
+                        (area - exact_area).abs() < exact_area * deflection,
+                        "area={area} expected={exact_area}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Nested, overlapping and repeated holes do not bound a patch the chart
+/// can mesh: each declines before triangulating and leaves the mesh and
+/// vertex index exactly as they were.
+#[test]
+fn holed_hemisphere_declines_nested_or_overlapping_holes_without_mutation() {
+    let cases: [&[(f64, f64, f64)]; 3] = [
+        // A small cap inside a larger one about the same axis.
+        &[(0.5, 0.0, 0.0), (0.8, 0.0, 0.0)],
+        // Two caps of angular radius 0.555 with axes only 0.6 apart.
+        &[(0.85, 0.3, 0.0), (0.85, 0.3, std::f64::consts::PI)],
+        // A cap overlapping one of two otherwise disjoint caps.
+        &[
+            (0.85, 0.6, 0.0),
+            (0.85, 0.6, std::f64::consts::PI),
+            (0.85, 0.2, 0.0),
+        ],
+    ];
+    for holes in cases {
+        for side in [-1.0, 1.0] {
+            let (topo, face, mut mesh, pool, mut map) =
+                multi_holed_hemisphere(1.0, Mat4::identity(), side, holes);
+            let before = (
+                mesh.positions.clone(),
+                mesh.normals.clone(),
+                mesh.indices.clone(),
+                map.clone(),
+            );
+            let FaceSurface::Sphere(sphere) = face.surface() else {
+                panic!("sphere fixture")
+            };
+            assert!(
+                !super::tessellate_sphere_holed_hemisphere_shared(
+                    &topo, &face, sphere, 0.01, 0.35, &pool, &mut mesh, &mut map
+                )
+                .unwrap(),
+                "{holes:?} side={side}"
+            );
+            assert_eq!((mesh.positions, mesh.normals, mesh.indices, map), before);
+        }
+    }
+}
+
+/// The Bernstein radial certificate against a dense sampled oracle: exact
+/// rational small circles on spheres from 1e-3 to 1e4 are certified at a
+/// tolerance the convex-hull bound cannot reach within its work cap, and
+/// every radially perturbed arc the certificate accepts stays inside the
+/// band at every sample.
+#[test]
+fn nurbs_radial_band_certificate_encloses_the_curve() {
+    let (mut accepted, mut rejected) = (0, 0);
+    for radius in [0.001, 1.0, 1e4] {
+        let sphere = SphericalSurface::with_axis(
+            Point3::new(3.0 * radius, -2.0 * radius, radius),
+            radius,
+            Vec3::new(0.3, -0.2, 1.0).normalize().unwrap(),
+        )
+        .unwrap();
+        let height = 0.4 * radius;
+        let circle = Circle3D::with_axes(
+            sphere.center() + sphere.z_axis() * height,
+            sphere.z_axis(),
+            (radius * radius - height * height).sqrt(),
+            sphere.x_axis(),
+            sphere.y_axis(),
+        )
+        .unwrap();
+        let tolerance = 1e-12 * radius.max(1.0) * 64.0;
+        for (a, b) in [(0.0, 1.0), (0.4, 2.9), (0.0, std::f64::consts::TAU)] {
+            let curve =
+                remus_geometry::convert::curve_to_nurbs::circle_to_nurbs(&circle, a, b).unwrap();
+            assert!(
+                super::sphere_nurbs_radial_band_certified(&curve, &sphere, tolerance),
+                "exact arc radius={radius} span=({a},{b})"
+            );
+            for lift in [-4.0, -1.0, -0.25, 0.25, 1.0, 4.0] {
+                let mut data = serde_json::to_value(&curve).unwrap();
+                let point = data["control_points"][1].as_array_mut().unwrap();
+                let xyz: Vec<f64> = point.iter().map(|c| c.as_f64().unwrap()).collect();
+                let p = Point3::new(xyz[0], xyz[1], xyz[2]);
+                let moved = p + (p - sphere.center()).normalize().unwrap() * (lift * tolerance);
+                for (c, value) in point.iter_mut().zip([moved.x(), moved.y(), moved.z()]) {
+                    *c = serde_json::json!(value);
+                }
+                let moved: remus_math::nurbs::curve::NurbsCurve =
+                    serde_json::from_value(data).unwrap();
+                let certified =
+                    super::sphere_nurbs_radial_band_certified(&moved, &sphere, tolerance);
+                let (lo, hi) = moved.domain();
+                let worst = (0..=4096)
+                    .map(|i| {
+                        let t = lo + (hi - lo) * f64::from(i) / 4096.0;
+                        ((moved.evaluate(t) - sphere.center()).length() - radius).abs()
+                    })
+                    .fold(0.0_f64, f64::max);
+                if certified {
+                    accepted += 1;
+                    assert!(worst <= tolerance, "radius={radius} lift={lift}: {worst}");
+                }
+                if worst > tolerance * 1.01 {
+                    rejected += 1;
+                    assert!(!certified, "radius={radius} lift={lift}");
+                }
+            }
+        }
+    }
+    assert!(accepted > 0 && rejected > 0, "{accepted} {rejected}");
 }

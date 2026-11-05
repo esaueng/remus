@@ -148,38 +148,43 @@ that does not exist yet; without it, stop.
 
 - **An equatorial boundary does not locate a hemisphere interior (F10).** Qualify the complete signed native circle partition before sampling its represented side; shared cylinder-rim synchronization may scale with each native arc span only on qualified complete circular two-rim bands, preserving the edge sampler and grid budget; stepped/CDT boundaries keep their established density (`regress_opseq_sphere_cylinder_fuse.rs`).
 
+- **A holed hemisphere must qualify every hole, and a convex-hull radial bound cannot certify a long spline arc on a large sphere.** One unqualified extra hole sends the face to a path that skins it. A hull never beats the chord sagitta `R·θ²/8`, so certify the rational residual's Bernstein coefficients instead of loosening the edge tolerance (`regress_opseq_torus_sphere_fuse.rs`).
+
 ## Open items with a repro
 
-The `#[ignore]` inventory (regenerated 2026-09-18 at `3785eebc`: 43
-actual attributes, excluding comment mentions) has 31 open engine witnesses:
-24 B26 ready-repros in `crates/operations/tests/prop_boolean_invariants.rs`
-(findings 1/2/4/8/12–17/19/21/22 — five pass on main and are being un-ignored
-in #500: finding-14 cut/sibling, 18, 21, small-scale cut translation), one B46
-blend-band witness (`regress_torus_pierce_band.rs`, still fails 3/3), one
-P-Class 2.6 witness (`qualify_boolean_anisotropic.rs`, still fails 3/3), and
-five B10 seeds (`b10_curve_curve.rs` ×2, `b10_conic_distance.rs` ×3, all still
-fail 3/3; the two `b10_curve_curve.rs` crossing seeds were fixed and
-un-ignored in PR #642 (2026-09-25) and the three conic-distance seeds in PR
-#658, so B10 owns no ignored seeds). The other twelve are one ~2 min perf run
-(`boolean/tests.rs::staircase_fuse_with_cylinders`), two manual release-mode
-`unify_faces` scaling measurements (`regress_unify_scaling.rs`, issue #284),
-and nine print-only diagnostics (`profile_intersect.rs` ×3, the two #696
-dovetail probes, the four `diag_*tangency*` probes). Zero stale ignores outside
-the five in flight (every other ignored test re-run 3× on 2026-09-18; `io`,
-`algo`, `math`, and `wasm` carry no actual ignores). The concave-notch fillet
-and obtuse-ridge chamfer pins are no longer ignored after #398. Re-run
-landscape diagnostics with `--ignored --nocapture` before re-opening a case.
-Added since that snapshot: the B55 curved-offset scale witness
-(`crates/offset/tests/regress_curved_offset_scale.rs`, fails on `main`), the
-B64/B65 lidded box–sphere witnesses
-(`crates/operations/tests/regress_sphere_lidded_box_collar.rs`, plus the B65
-collar-sample repro in `crates/algo/src/builder/face_splitter/closed_form_split_tests.rs`),
-the B66 SSI branch-point witness (`math/src/nurbs/intersection/tests.rs`), and the
-two B67 plane–cone rim fillet witnesses (`blend/src/fillet_builder.rs`
-`closed_rim_oracles`), and the B69, B70 and B71 tessellation witnesses
-(`operations/src/tessellate/tests/mutation_oracles.rs`), all failing on `main`;
-and the five B79 holed-plane internal-section repros
-(`operations/tests/regress_b79_holed_plane_internal_section.rs`, failing on `main`).
+The `#[ignore]` inventory (regenerated 2026-11-05 at `df7ce90e`: 35 actual
+attributes in 17 files, all in `operations`, `io`, `heal`, `math`, `wasm` and
+`remus`) splits by the ignore reason as written. The tests were listed, not
+re-run, for this count. **19
+open engine witnesses:**
+- seven B26 property ready-repros in `operations/tests/prop_boolean_invariants.rs`:
+  finding 13 sphere–torus ×3 (owner B38), finding 20 sphere–cone (B33), and
+  B51 torus–cone ×3;
+- `regress_boss_crossing_a_wall.rs` (B62), and the residual witnesses that
+  B52 and B53 left behind: `regress_b52_box_cylinder_rim_notch.rs` (a cone seam
+  crossing a slanted notch side) and `regress_b53_finding17_neighborhood.rs`
+  (sparse cone wall below d = 8e-5);
+- `qualify_boolean_anisotropic.rs` (P-Class 2.6);
+- `regress_opseq_sphere_box_cut.rs` ×2 (F13 equator coedge sense);
+- `regress_g1_chain_corner_wall_dig.rs`, and `remus/tests/bracket_campaign.rs`
+  ×2 (F6 bands lofted rather than exact tori; every-edge r2 refuses);
+- `wasm/src/bindings/qualify_edge_relations_tests.rs` (trimmed-torus boundary
+  containment);
+- the two STEP audit repros `io/tests/step_roundtrip_{hammer_holder,mambo_b1}_repro.rs`.
+
+**16 manual runs:**
+- slow or exhaustive: `boolean/tests.rs::staircase_fuse_with_cylinders`, the
+  B53 17,150-input sweep, `math/src/fma.rs::long_random_differential`, and
+  `io/tests/classify_engine_oracle.rs`;
+- release-mode measurements: two `regress_unify_scaling.rs` (issue #284) and
+  the PERF-H03 table in `heal/src/fix/duplicate_faces.rs`;
+- print-only diagnostics: `profile_intersect.rs` ×3, the two #696 dovetail
+  probes, and the four `diag_*tangency*` probes.
+
+The B10, B55, B61, B64–B67, B69–B71 and B79 witnesses that earlier snapshots
+listed as failing are no longer ignored, and their rows record Done (B79 in
+source). Re-run landscape diagnostics with `--ignored --nocapture` before
+re-opening a case, and re-run a witness 3× before quoting it as still failing.
 Current work lives in the master roadmap; closed narratives live in
 `campaign-history.md`.
 

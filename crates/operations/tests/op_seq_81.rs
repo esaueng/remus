@@ -1106,8 +1106,12 @@ fn classify_refusal(e: &OperationsError) -> RefusalClass {
 /// untyped (the offsets kept in generation are tripwires), except in the
 /// retained X6 cell — an inward offset of a boolean result, finding F7 —
 /// whose typed `Offset(AssemblyFailed)` refusal is the qualified answer.
+/// An inward offset that reaches the body's half-thickness is the typed
+/// `OffsetCollapsed` refusal wherever it occurs; nothing else moves.
 fn classify_offset_refusal(e: &OperationsError, retained_x6: bool) -> RefusalClass {
-    if retained_x6
+    if matches!(e, OperationsError::OffsetCollapsed { distance, .. } if *distance < 0.0) {
+        RefusalClass::Refused
+    } else if retained_x6
         && matches!(
             e,
             OperationsError::Offset(remus_offset::OffsetError::AssemblyFailed { .. })
@@ -4706,6 +4710,47 @@ fn finding_closed_sphere_cap_uses_a_contained_interior_witness() {
             .collect::<Vec<_>>()
     );
     assert_eq!(report.exact_ok_bools, 1);
+}
+
+/// Retained campaign seeds 10434068600042686585 (zero thickness) and
+/// 14788754164979531939 (pass-through): an inward box offset reaching its
+/// half-thickness is the typed `OffsetCollapsed` refusal with rollback
+/// intact, never an untyped witness. Seed 3388039345656333454 is the first
+/// seed's twin; its literal lives in `regress_opseq_offset_collapse.rs`.
+#[test]
+fn finding_box_offset_collapse_is_a_typed_refusal() {
+    for (bundle, last) in [
+        (
+            include_str!("../../wasm/tests/repro/opseq81-box-offset-zero-thickness.json"),
+            3,
+        ),
+        (
+            include_str!("../../wasm/tests/repro/opseq81-box-offset-pass-through.json"),
+            6,
+        ),
+    ] {
+        let bundle: Value = serde_json::from_str(bundle).unwrap();
+        let operations = bundle["operations"].as_array().unwrap();
+        let report = execute_sequence(operations, &replay_limits(), Fault::None);
+        let details = report
+            .notes
+            .iter()
+            .map(|note| note.detail.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            report.kind,
+            SeqKind::Refused,
+            "{}: {details:?}",
+            bundle["name"]
+        );
+        let terminal = report.notes.last().unwrap();
+        assert_eq!(terminal.index, last, "{details:?}");
+        assert_eq!(terminal.oracle, "refused", "{details:?}");
+        assert!(
+            terminal.detail.contains("collapsed the solid"),
+            "{details:?}"
+        );
+    }
 }
 
 /// Hand-built partial-overlap witness: A is a 4×2×2 box, B a 2×2×2 box

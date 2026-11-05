@@ -5418,10 +5418,31 @@ pub(super) fn analytic_sphere_equator_direction(
     let FaceSurface::Sphere(sphere) = face.surface() else {
         return Ok(None);
     };
-    let edges = topo.wire(face.outer_wire())?.edges();
-    // Keep single- and two-edge trims on the established shared-boundary path.
+    let wire = topo.wire(face.outer_wire())?;
+    let edges = wire.edges();
+    // STEP healing can coalesce the equator into one closed native circle.
+    // Its authoritative full turn (checked below) has the same hemisphere
+    // reading as a partitioned equator. Other one/two-edge trims keep dispatch.
+    let single_closed_circle = if let [oriented] = edges {
+        let edge = topo.edge(oriented.edge())?;
+        if let EdgeCurve::Circle(circle) = edge.curve()
+            && wire.is_closed()
+            && edge.start() == edge.end()
+            && let Ok((a, b)) = edge.strict_domain()
+        {
+            let point = topo.vertex(edge.start())?.point();
+            [a, b].into_iter().all(|t| {
+                (circle.evaluate(t) - point).length()
+                    <= remus_math::tolerance::Tolerance::new().linear
+            })
+        } else {
+            false
+        }
+    } else {
+        false
+    };
     if !face.inner_wires().is_empty()
-        || edges.len() < 3
+        || (edges.len() < 3 && !single_closed_circle)
         || !sphere_great_circle_loop(topo, sphere, edges)?
     {
         return Ok(None);
@@ -6408,11 +6429,241 @@ fn sphere_conic_loop_on_sphere(
     Ok(true)
 }
 
-/// A complete native equator and one native inner loop bound a holed
-/// hemisphere. Project from its excluded pole, constrain both shared loops,
-/// and accept only a triangulation with every boundary segment once, every
-/// interior segment twice, and one coherent outward facet orientation.
-/// Other holed spherical faces keep dispatch.
+/// Certify `R - tolerance <= |C(t) - center| <= R + tolerance` over a whole
+/// positive-weight NURBS piece. On each Bezier segment with homogeneous
+/// coefficients `w_i (P_i - center)`, the degree-`2p` polynomial
+/// `|A(t) - center w(t)|^2 - rho^2 w(t)^2` equals
+/// `(|C(t) - center|^2 - rho^2) w(t)^2`; with `w > 0` its sign is the radial
+/// sign, and its Bernstein coefficients enclose it. Both bands must hold
+/// with a forward rounding reserve on every coefficient; anything else
+/// returns `false` (the caller subdivides or declines).
+fn sphere_nurbs_radial_band_certified(
+    piece: &remus_math::nurbs::curve::NurbsCurve,
+    sphere: &remus_math::surfaces::SphericalSurface,
+    tolerance: f64,
+) -> bool {
+    let Ok(segments) = remus_math::nurbs::decompose::curve_to_bezier_segments(piece) else {
+        return false;
+    };
+    let center = sphere.center();
+    let center_size = center.x().abs() + center.y().abs() + center.z().abs();
+    let inner = (sphere.radius() - tolerance).max(0.0).powi(2);
+    let outer = (sphere.radius() + tolerance).powi(2);
+    let binomial = |n: usize, k: usize| -> f64 {
+        (0..k).fold(1.0, |acc, i| acc * (n - i) as f64 / (i + 1) as f64)
+    };
+    for segment in &segments {
+        let points = segment.control_points();
+        let weights = segment.weights();
+        let degree = points.len().saturating_sub(1);
+        if degree == 0 || weights.len() != points.len() || weights.iter().any(|&w| w <= 0.0) {
+            return false;
+        }
+        let offsets: Vec<_> = points.iter().map(|&p| p - center).collect();
+        let sizes: Vec<f64> = points
+            .iter()
+            .map(|p| p.x().abs() + p.y().abs() + p.z().abs() + center_size)
+            .collect();
+        for k in 0..=2 * degree {
+            let scale = binomial(2 * degree, k);
+            let (mut low, mut high, mut error) = (0.0_f64, 0.0_f64, 0.0_f64);
+            for i in k.saturating_sub(degree)..=k.min(degree) {
+                let j = k - i;
+                let factor =
+                    binomial(degree, i) * binomial(degree, j) / scale * weights[i] * weights[j];
+                let dot = offsets[i].dot(offsets[j]);
+                low += factor * (dot - inner);
+                high += factor * (dot - outer);
+                // Differences, products and the short sum: a generous
+                // forward bound on each term's absolute rounding.
+                error += factor * (sizes[i] * sizes[j] + outer);
+            }
+            let reserve = 256.0 * f64::EPSILON * error;
+            if !low.is_finite() || !high.is_finite() || !reserve.is_finite() {
+                return false;
+            }
+            if low - reserve < 0.0 || high + reserve > 0.0 {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// Certify a positive-weight NURBS loop inside one spherical hemisphere.
+/// Subdivision tightens convex-hull radial bounds without changing the curve;
+/// unresolved, off-sphere, or out-of-hemisphere carriers decline.
+fn sphere_nurbs_loop_in_hemisphere(
+    topo: &Topology,
+    sphere: &remus_math::surfaces::SphericalSurface,
+    edges: &[remus_topology::wire::OrientedEdge],
+    side: f64,
+) -> Result<bool, crate::OperationsError> {
+    if edges.is_empty() {
+        return Ok(false);
+    }
+    for (index, oriented) in edges.iter().enumerate() {
+        let edge = topo.edge(oriented.edge())?;
+        let next_use = edges[(index + 1) % edges.len()];
+        let next = topo.edge(next_use.edge())?;
+        if oriented.oriented_end(edge) != next_use.oriented_start(next) {
+            return Ok(false);
+        }
+        let EdgeCurve::NurbsCurve(curve) = edge.curve() else {
+            return Ok(false);
+        };
+        if curve.validate().is_err() || curve.degree() > 12 || edge.strict_domain().is_err() {
+            return Ok(false);
+        }
+        let tolerance = edge
+            .tolerance()
+            .unwrap_or(remus_math::tolerance::Tolerance::new().linear);
+        if !tolerance.is_finite() || tolerance <= 0.0 {
+            return Ok(false);
+        }
+        let minimum_weight = curve
+            .weights()
+            .iter()
+            .copied()
+            .fold(f64::INFINITY, f64::min);
+        let maximum_weight = curve.weights().iter().copied().fold(0.0_f64, f64::max);
+        if minimum_weight < maximum_weight * 0.5 {
+            return Ok(false);
+        }
+        let mut pending = vec![(curve.clone(), 0)];
+        let mut work = 0;
+        while let Some((piece, depth)) = pending.pop() {
+            work += 1;
+            if work > 16_384 {
+                return Ok(false);
+            }
+            let (a, b) = piece.domain();
+            let Some(axis) = (piece.evaluate(f64::midpoint(a, b)) - sphere.center())
+                .normalize()
+                .ok()
+            else {
+                return Ok(false);
+            };
+            let mut lower = f64::INFINITY;
+            let mut upper = 0.0_f64;
+            let mut magnitude = sphere.radius();
+            for &point in piece.control_points() {
+                let offset = point - sphere.center();
+                if side * offset.dot(sphere.z_axis()) < -sphere.radius() * 1e-8 {
+                    return Ok(false);
+                }
+                lower = lower.min(offset.dot(axis));
+                upper = upper.max(offset.length());
+                magnitude = magnitude.max(point.x().abs() + point.y().abs() + point.z().abs());
+            }
+            // Reserve roundoff for the bounded degree, weight ratio and
+            // subdivision depth; difficult weight conditioning declines.
+            let rounding = 4096.0
+                * f64::EPSILON
+                * (magnitude
+                    + sphere.center().x().abs()
+                    + sphere.center().y().abs()
+                    + sphere.center().z().abs());
+            if !rounding.is_finite() || rounding >= tolerance {
+                return Ok(false);
+            }
+            if ((piece.evaluate(f64::midpoint(a, b)) - sphere.center()).length() - sphere.radius())
+                .abs()
+                > tolerance + rounding
+            {
+                return Ok(false);
+            }
+            if lower - rounding >= sphere.radius() - tolerance
+                && upper + rounding <= sphere.radius() + tolerance
+            {
+                continue;
+            }
+            // A hull cannot beat the chord sagitta, so its piece count grows
+            // with the square root of radius over tolerance. The rational
+            // radial residual's Bernstein coefficients bound the curve
+            // itself; try them before subdividing further.
+            if sphere_nurbs_radial_band_certified(&piece, sphere, tolerance) {
+                continue;
+            }
+            if depth >= 16 {
+                return Ok(false);
+            }
+            let Ok((left, right)) =
+                remus_math::nurbs::knot_ops::curve_split(&piece, f64::midpoint(a, b))
+            else {
+                return Ok(false);
+            };
+            pending.push((right, depth + 1));
+            pending.push((left, depth + 1));
+        }
+    }
+    Ok(true)
+}
+
+/// Several inner loops of one hemisphere must bound disjoint holes: no
+/// sample of one loop may lie inside, or coincide with a sample of, another
+/// in the hemisphere's stereographic chart (bijective there). Crossing
+/// chords without such a sample still fail the patch's strict incidence
+/// guard; this check declines nested and overlapping loops before the CDT.
+fn sphere_holes_separated(
+    sphere: &remus_math::surfaces::SphericalSurface,
+    side: f64,
+    holes: &[Vec<u32>],
+    positions: &[remus_math::vec::Point3],
+) -> bool {
+    if holes.len() < 2 {
+        return true;
+    }
+    let chart = |gid: u32| {
+        let offset = positions[gid as usize] - sphere.center();
+        let radius = sphere.radius();
+        let denominator = side.mul_add(offset.dot(sphere.z_axis()) / radius, 1.0);
+        (denominator.is_finite() && denominator > 1e-12).then(|| {
+            remus_math::vec::Point2::new(
+                offset.dot(sphere.x_axis()) / radius / denominator,
+                offset.dot(sphere.y_axis()) / radius / denominator,
+            )
+        })
+    };
+    let mut polygons = Vec::with_capacity(holes.len());
+    for hole in holes {
+        let Some(points) = hole
+            .iter()
+            .map(|&gid| chart(gid))
+            .collect::<Option<Vec<_>>>()
+        else {
+            return false;
+        };
+        polygons.push(points);
+    }
+    let rings: Vec<Vec<(f64, f64)>> = polygons
+        .iter()
+        .map(|points| points.iter().map(|p| (p.x(), p.y())).collect())
+        .collect();
+    for (i, hole) in holes.iter().enumerate() {
+        for (j, other) in holes.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+            if hole.iter().any(|gid| other.contains(gid))
+                || polygons[i]
+                    .iter()
+                    .any(|&point| point_in_polygon_2d(&rings[j], point))
+            {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// A complete native equator and qualified inner loops bound a holed
+/// hemisphere. Each inner loop must be a native conic or certified NURBS
+/// loop on the same hemisphere, sampled strictly inside the equator and
+/// outside every other inner loop. Project from the excluded pole, constrain
+/// all shared loops, and accept only a triangulation with every boundary
+/// segment once, every interior segment twice, and one coherent outward
+/// facet orientation. Other holed spherical faces keep dispatch.
 #[allow(clippy::too_many_arguments)]
 fn tessellate_sphere_holed_hemisphere_shared(
     topo: &Topology,
@@ -6424,7 +6675,7 @@ fn tessellate_sphere_holed_hemisphere_shared(
     merged: &mut TriangleMesh,
     point_to_global: &mut PointMergeMap,
 ) -> Result<bool, crate::OperationsError> {
-    if face.inner_wires().len() != 1 {
+    if face.inner_wires().is_empty() {
         return Ok(false);
     }
     let equator = remus_topology::face::Face::new(
@@ -6435,11 +6686,15 @@ fn tessellate_sphere_holed_hemisphere_shared(
     let Some(side) = analytic_sphere_equator_direction(topo, &equator)? else {
         return Ok(false);
     };
-    let hole_edges = topo.wire(face.inner_wires()[0])?.edges();
-    if !sphere_conic_loop_on_sphere(topo, sphere, hole_edges)?
-        || !sphere_native_arcs_in_hemisphere(topo, sphere, hole_edges, side)?
-    {
-        return Ok(false);
+    let mut hole_wires = Vec::with_capacity(face.inner_wires().len());
+    for &wire in face.inner_wires() {
+        let hole_edges = topo.wire(wire)?.edges();
+        let native_conic = sphere_conic_loop_on_sphere(topo, sphere, hole_edges)?
+            && sphere_native_arcs_in_hemisphere(topo, sphere, hole_edges, side)?;
+        if !native_conic && !sphere_nurbs_loop_in_hemisphere(topo, sphere, hole_edges, side)? {
+            return Ok(false);
+        }
+        hole_wires.push(hole_edges);
     }
     let pos_save = merged.positions.len();
     let nrm_save = merged.normals.len();
@@ -6454,22 +6709,29 @@ fn tessellate_sphere_holed_hemisphere_shared(
             merged,
             point_to_global,
         )?;
-        let hole = collect_boundary_loop(
-            topo,
-            hole_edges,
-            deflection,
-            angular_tol,
-            edge_global_indices,
-            merged,
-            point_to_global,
-        )?;
-        if sphere_boundary_hemisphere(sphere, &hole, &merged.positions) != Some(side) {
+        let mut holes = Vec::with_capacity(hole_wires.len());
+        for hole_edges in &hole_wires {
+            let hole = collect_boundary_loop(
+                topo,
+                hole_edges,
+                deflection,
+                angular_tol,
+                edge_global_indices,
+                merged,
+                point_to_global,
+            )?;
+            if sphere_boundary_hemisphere(sphere, &hole, &merged.positions) != Some(side) {
+                return Ok(false);
+            }
+            holes.push(hole);
+        }
+        if !sphere_holes_separated(sphere, side, &holes, &merged.positions) {
             return Ok(false);
         }
         fill_sphere_hemisphere_patch_impl(
             sphere,
             &boundary,
-            &[hole],
+            &holes,
             Some(side),
             deflection,
             angular_tol,
@@ -6492,7 +6754,7 @@ fn tessellate_sphere_holed_hemisphere_shared(
     }
 }
 
-/// Tessellate qualified spherical caps and one-hole native hemispheres.
+/// Tessellate qualified spherical caps and holed native hemispheres.
 ///
 /// Constant-latitude polar caps use structured latitude rows. Other suitable
 /// caps (for example, the corner ball patch a fillet leaves at a box corner)
@@ -6506,7 +6768,7 @@ fn tessellate_sphere_holed_hemisphere_shared(
 /// sphere. Primitive spheres with polygonal equators retain their existing
 /// dispatch and triangle semantics.
 ///
-/// A complete native equator with one qualified inner loop uses the bounded
+/// A complete native equator with qualified disjoint inner loops uses the bounded
 /// holed-hemisphere chart above. All other inner-wire faces defer unchanged.
 ///
 /// Returns `Ok(true)` when the face was tessellated here;

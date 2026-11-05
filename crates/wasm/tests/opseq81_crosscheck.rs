@@ -78,10 +78,36 @@ enum Signature {
         /// When set, the mesh watertightness flag must equal it.
         watertight: Option<bool>,
     },
-    /// The sequence ends in a typed assembly refusal at `op_index`,
-    /// with every earlier operation succeeding exactly.
-    TerminalError { op_index: usize },
+    /// The sequence ends in a typed refusal at `op_index`, with every
+    /// earlier operation succeeding exactly.
+    TerminalError { op_index: usize, refusal: Refusal },
 }
+
+/// The pinned `executeBatchV2` envelope of a terminal refusal.
+#[derive(Clone, Copy)]
+struct Refusal {
+    code: &'static str,
+    category: &'static str,
+    /// Native registry code in `details.kernelCode`, when one exists.
+    kernel_code: Option<&'static str>,
+    message: &'static str,
+}
+
+/// F7: the offset producer's assembly failure, honestly internal.
+const ASSEMBLY_REFUSAL: Refusal = Refusal {
+    code: "operation_failed",
+    category: "internal",
+    kernel_code: None,
+    message: "wire loop walk",
+};
+
+/// A certified inward-offset collapse of a planar body.
+const COLLAPSE_REFUSAL: Refusal = Refusal {
+    code: "invalid_argument",
+    category: "invalid_input",
+    kernel_code: Some("offset_collapsed"),
+    message: "collapsed the solid",
+};
 
 /// Pinned batch signatures for the retained 8.1 findings. Volumes use the
 /// native `READ_DEFLECTION` (0.1); tolerances are gross-agreement bands —
@@ -158,7 +184,24 @@ fn cross_checks() -> Vec<CrossCheck> {
         },
         CrossCheck {
             file: "opseq81-inward-offset-fuse-untyped.json",
-            signature: Signature::TerminalError { op_index: 3 },
+            signature: Signature::TerminalError {
+                op_index: 3,
+                refusal: ASSEMBLY_REFUSAL,
+            },
+        },
+        CrossCheck {
+            file: "opseq81-box-offset-zero-thickness.json",
+            signature: Signature::TerminalError {
+                op_index: 3,
+                refusal: COLLAPSE_REFUSAL,
+            },
+        },
+        CrossCheck {
+            file: "opseq81-box-offset-pass-through.json",
+            signature: Signature::TerminalError {
+                op_index: 6,
+                refusal: COLLAPSE_REFUSAL,
+            },
         },
         CrossCheck {
             file: "opseq81-sphere-box-fuse-mesh.json",
@@ -303,7 +346,7 @@ fn opseq81_native_batch_crosscheck() {
 
         let ops = bundle.operations.clone();
         match check.signature {
-            Signature::TerminalError { op_index } => {
+            Signature::TerminalError { op_index, refusal } => {
                 // No probes: nothing is produced past the terminal op. The
                 // prefix must succeed exactly as natively; the terminal op
                 // must error (never silently succeed, never crash the
@@ -332,17 +375,29 @@ fn opseq81_native_batch_crosscheck() {
                     .and_then(Value::as_str)
                     .unwrap_or_else(|| {
                         panic!(
-                            "{}: terminal op must refuse assembly through batch, got {terminal}",
+                            "{}: terminal op must refuse through batch, got {terminal}",
                             check.file
                         )
                     });
-                assert_eq!(code, "operation_failed", "{}", check.file);
-                assert_eq!(terminal["error"]["category"], "internal", "{}", check.file);
+                assert_eq!(code, refusal.code, "{}", check.file);
+                assert_eq!(
+                    terminal["error"]["category"], refusal.category,
+                    "{}",
+                    check.file
+                );
+                assert_eq!(
+                    terminal["error"]["details"]["kernelCode"].as_str(),
+                    refusal.kernel_code,
+                    "{}",
+                    check.file
+                );
                 assert!(
                     terminal["error"]["message"]
                         .as_str()
                         .unwrap()
-                        .contains("wire loop walk")
+                        .contains(refusal.message),
+                    "{}: {terminal}",
+                    check.file
                 );
                 println!(
                     "B81XCHECK {}: terminal error `{code}` at op {op_index}",
