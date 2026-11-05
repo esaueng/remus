@@ -1122,6 +1122,7 @@ pub fn exact_boolean_outcome(
                 remus_operations::OperationsError::Geometry(_) => "Geometry",
                 remus_operations::OperationsError::Heal(_) => "Heal",
                 remus_operations::OperationsError::Offset(_) => "Offset",
+                remus_operations::OperationsError::OffsetCollapsed { .. } => "OffsetCollapsed",
                 remus_operations::OperationsError::PartialResult { .. } => "PartialResult",
             };
             NudgeOutcome::Refused { variant, reason }

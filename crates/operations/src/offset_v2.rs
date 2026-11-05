@@ -24,10 +24,14 @@ fn map_offset_error(e: OffsetError) -> OperationsError {
     }
 }
 
+/// `distance` is the signed offset distance when the operation is a uniform
+/// solid offset, and `None` for a shell, whose collapse stays the generic
+/// refusal it was.
 fn validate_offset_postcondition(
     topo: &Topology,
     operation: &'static str,
     solid: SolidId,
+    distance: Option<f64>,
 ) -> Result<SolidId, OperationsError> {
     let report = remus_check::validate::validate_solid(
         topo,
@@ -50,7 +54,7 @@ fn validate_offset_postcondition(
             ),
         });
     }
-    ensure_not_collapsed(topo, operation, solid)?;
+    ensure_not_collapsed(topo, operation, solid, distance)?;
     Ok(solid)
 }
 
@@ -72,10 +76,16 @@ fn validate_offset_postcondition(
 /// A negative signed volume on the outer shell is exactly that inversion,
 /// and it is the one signature every collapsed case shares, so it is checked
 /// here rather than by widening the general validator.
+///
+/// For an inward solid offset the inversion is the typed
+/// [`OperationsError::OffsetCollapsed`]; any other inversion (an outward
+/// offset, a shell) is not a collapse the caller asked for and stays the
+/// generic refusal.
 fn ensure_not_collapsed(
     topo: &Topology,
     operation: &'static str,
     solid: SolidId,
+    distance: Option<f64>,
 ) -> Result<(), OperationsError> {
     let gauss_order = remus_check::properties::PropertiesOptions::default().gauss_order;
     let Some(floor) = crate::measure::negligible_volume(topo, solid) else {
@@ -86,6 +96,13 @@ fn ensure_not_collapsed(
         return Ok(());
     };
     if signed < -floor {
+        if let Some(distance) = distance.filter(|d| *d < 0.0) {
+            return Err(OperationsError::OffsetCollapsed {
+                operation,
+                distance,
+                thickness: None,
+            });
+        }
         return Err(OperationsError::InvalidInput {
             reason: format!(
                 "{operation} collapsed the solid: the result's outer shell is inside out \
@@ -95,6 +112,103 @@ fn ensure_not_collapsed(
         });
     }
     Ok(())
+}
+
+/// Refuse, before construction, an inward offset that a certified thickness
+/// says must collapse.
+///
+/// The qualified cell is an all-planar solid whose every edge is a straight
+/// line (a box, a prism, any polyhedron). Its extent along a direction is
+/// then attained at its vertices, so along each face normal `n` the solid
+/// lies in the slab `min(n·v) <= n·x <= max(n·v)` of width `w`. An inward
+/// offset by `|d|` keeps only points at least `|d|` inside the solid, which
+/// lie inside that slab shrunk by `|d|` from both sides: empty when
+/// `2|d| > w`, a zero-volume sheet when `2|d| = w`. That holds whether or not
+/// the solid is convex, so the refusal is sound, never a guess.
+///
+/// Without it a box offset to exactly its half-thickness reached assembly
+/// with coincident opposite faces and failed as a non-manifold topology
+/// error, and one offset past it was caught only after construction, as an
+/// untyped inside-out result.
+///
+/// Bodies outside the cell (any curved face or edge) are not judged here:
+/// their per-face radius guards and the inversion postcondition still apply.
+fn refuse_certified_collapse(
+    topo: &Topology,
+    operation: &'static str,
+    solid: SolidId,
+    distance: f64,
+) -> Result<(), OperationsError> {
+    if !distance.is_finite() || distance >= 0.0 {
+        return Ok(());
+    }
+    let Some(thickness) = planar_min_thickness(topo, solid)? else {
+        return Ok(());
+    };
+    // Coordinates carry rounding relative to the model's size; the linear
+    // tolerance covers small models.
+    let tolerance = remus_math::tolerance::Tolerance::default()
+        .linear
+        .max(thickness * 1e-12);
+    if 2.0 * distance.abs() >= thickness - tolerance {
+        return Err(OperationsError::OffsetCollapsed {
+            operation,
+            distance,
+            thickness: Some(thickness),
+        });
+    }
+    Ok(())
+}
+
+/// Smallest width of an all-planar, straight-edged solid across its own face
+/// normals, or `None` when the solid is outside that cell.
+fn planar_min_thickness(topo: &Topology, solid: SolidId) -> Result<Option<f64>, OperationsError> {
+    use remus_math::vec::Vec3;
+    use remus_topology::edge::EdgeCurve;
+    use remus_topology::face::FaceSurface;
+
+    let outer = topo.solid(solid)?.outer_shell();
+    let mut normals: Vec<Vec3> = Vec::new();
+    let mut points: Vec<Vec3> = Vec::new();
+    for &fid in topo.shell(outer)?.faces() {
+        let face = topo.face(fid)?;
+        let FaceSurface::Plane { normal, .. } = face.surface() else {
+            return Ok(None);
+        };
+        normals.push(*normal);
+        for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            for oe in topo.wire(wid)?.edges() {
+                let edge = topo.edge(oe.edge())?;
+                if !matches!(edge.curve(), EdgeCurve::Line) {
+                    return Ok(None);
+                }
+                for vid in [edge.start(), edge.end()] {
+                    let p = topo.vertex(vid)?.point();
+                    points.push(Vec3::new(p.x(), p.y(), p.z()));
+                }
+            }
+        }
+    }
+    let mut thickness: Option<f64> = None;
+    for normal in normals {
+        let length = normal.length();
+        if !(length.is_finite() && length > 0.0) {
+            return Ok(None);
+        }
+        let n = normal * (1.0 / length);
+        let (lo, hi) = points
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| {
+                let s = n.dot(*p);
+                (lo.min(s), hi.max(s))
+            });
+        let width = hi - lo;
+        if !width.is_finite() {
+            return Ok(None);
+        }
+        thickness = Some(thickness.map_or(width, |t: f64| t.min(width)));
+    }
+    Ok(thickness)
 }
 
 /// Offset all faces of a solid (V2 pipeline).
@@ -107,10 +221,11 @@ pub fn offset_solid_v2(
     solid: SolidId,
     distance: f64,
 ) -> Result<SolidId, OperationsError> {
+    refuse_certified_collapse(topo, "offset", solid, distance)?;
     remus_topology::transaction::run_transacted(topo, |topo| {
         let result = remus_offset::offset_solid(topo, solid, distance, OffsetOptions::default())
             .map_err(map_offset_error)?;
-        validate_offset_postcondition(topo, "offset", result)
+        validate_offset_postcondition(topo, "offset", result, Some(distance))
     })
 }
 
@@ -129,6 +244,7 @@ pub fn offset_solid_v2_with_evolution(
     solid: SolidId,
     distance: f64,
 ) -> Result<(SolidId, EvolutionMap), OperationsError> {
+    refuse_certified_collapse(topo, "offset", solid, distance)?;
     remus_topology::transaction::run_transacted(topo, |topo| {
         let result = remus_offset::offset_solid_with_face_map(
             topo,
@@ -137,7 +253,7 @@ pub fn offset_solid_v2_with_evolution(
             OffsetOptions::default(),
         )
         .map_err(map_offset_error)?;
-        let solid = validate_offset_postcondition(topo, "offset", result.solid)?;
+        let solid = validate_offset_postcondition(topo, "offset", result.solid, Some(distance))?;
         let mut evolution = EvolutionMap::exact();
         for (source, result_face) in result.face_map {
             evolution.add_modified(source, result_face.index());
@@ -213,7 +329,7 @@ pub fn shell_v2(
         let result =
             remus_offset::thick_solid(topo, solid, thickness, exclude, OffsetOptions::default())
                 .map_err(map_offset_error)?;
-        validate_offset_postcondition(topo, "shell", result)
+        validate_offset_postcondition(topo, "shell", result, None)
     })
 }
 
@@ -231,10 +347,11 @@ pub fn offset_solid_arc_v2(
         joint: JointType::Arc,
         ..Default::default()
     };
+    refuse_certified_collapse(topo, "arc offset", solid, distance)?;
     remus_topology::transaction::run_transacted(topo, |topo| {
         let result =
             remus_offset::offset_solid(topo, solid, distance, options).map_err(map_offset_error)?;
-        validate_offset_postcondition(topo, "arc offset", result)
+        validate_offset_postcondition(topo, "arc offset", result, Some(distance))
     })
 }
 
@@ -246,6 +363,57 @@ mod tests {
     use remus_topology::Topology;
     use remus_topology::explorer::solid_faces;
     use remus_topology::face::FaceSurface;
+
+    /// The postcondition's inversion check, reached directly: only an
+    /// inward solid offset makes it the typed collapse; an outward offset or
+    /// a shell keeps the generic refusal.
+    #[test]
+    fn inside_out_postcondition_is_typed_only_for_inward_offsets() {
+        let mut topo = Topology::new();
+        let solid = crate::primitives::make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
+        for face in solid_faces(&topo, solid).unwrap() {
+            let reversed = topo.face(face).unwrap().is_reversed();
+            topo.face_mut(face).unwrap().set_reversed(!reversed);
+        }
+        let error = validate_offset_postcondition(&topo, "offset", solid, Some(-0.5)).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                OperationsError::OffsetCollapsed {
+                    operation: "offset",
+                    thickness: None,
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+        assert!(error.to_string().contains("inside out"), "{error}");
+        for distance in [Some(0.5), None] {
+            let error = validate_offset_postcondition(&topo, "shell", solid, distance).unwrap_err();
+            assert!(
+                matches!(error, OperationsError::InvalidInput { ref reason } if reason.contains("collapsed")),
+                "{distance:?}: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn planar_thickness_is_the_thinnest_face_normal_slab() {
+        let mut topo = Topology::new();
+        let solid = crate::primitives::make_box(&mut topo, 2.0, 5.5, 1.0).unwrap();
+        let thickness = planar_min_thickness(&topo, solid).unwrap().unwrap();
+        assert!((thickness - 1.0).abs() < 1e-15, "{thickness}");
+        let cylinder = crate::primitives::make_cylinder(&mut topo, 1.0, 1.0).unwrap();
+        assert!(planar_min_thickness(&topo, cylinder).unwrap().is_none());
+        // Outward and curved bodies are never judged.
+        assert!(refuse_certified_collapse(&topo, "offset", solid, 5.0).is_ok());
+        assert!(refuse_certified_collapse(&topo, "offset", cylinder, -5.0).is_ok());
+        assert!(refuse_certified_collapse(&topo, "offset", solid, -0.49).is_ok());
+        assert!(matches!(
+            refuse_certified_collapse(&topo, "offset", solid, -0.5),
+            Err(OperationsError::OffsetCollapsed { .. })
+        ));
+    }
 
     #[test]
     fn offset_v2_box() {
