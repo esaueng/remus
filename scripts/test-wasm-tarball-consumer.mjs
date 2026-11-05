@@ -32,6 +32,7 @@ import { runOpseqF6Packaged } from './opseq-f6-packaged.mjs';
 import { runOpseqOffsetWallPackaged } from './opseq-offset-wall-packaged.mjs';
 import { runOpseqOffsetRefusalPackaged } from './opseq-offset-refusal-packaged.mjs';
 import { runOpseqF10Packaged } from './opseq-f10-packaged.mjs';
+import { runSphereCylinderClosedSectionPackaged } from './sphere-cylinder-closed-section-packaged.mjs';
 import { runOpseqF13Packaged } from './opseq-f13-packaged.mjs';
 import { runWasmRayTorusPackaged } from './wasm-ray-torus-packaged.mjs';
 import { runSecurityResourceRegressions } from './security-resource-packaged.mjs';
@@ -161,6 +162,7 @@ try {
   runOpseqOffsetWallPackaged(packageExports);
   runOpseqOffsetRefusalPackaged(packageExports);
   runOpseqF10Packaged(packageExports);
+  runSphereCylinderClosedSectionPackaged({ ...packageExports, ...ioExports });
   runOpseqF13Packaged(packageExports);
   runWasmRayTorusPackaged(packageExports);
   runLinkedSketchPackaged(packageExports);

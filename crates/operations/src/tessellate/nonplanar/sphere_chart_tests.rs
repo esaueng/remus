@@ -22,6 +22,85 @@ type ChartFixture = (
     super::super::PointMergeMap,
 );
 
+#[test]
+fn single_circle_equator_requires_a_native_closed_full_turn() {
+    for radius in [0.001, 1.0, 1000.0] {
+        let center = Point3::new(17.0 * radius, -23.0 * radius, 31.0 * radius);
+        let axis = Vec3::new(0.2, 0.4, 1.0).normalize().unwrap();
+        let sphere = SphericalSurface::with_axis(center, radius, axis).unwrap();
+        for phase in [0.0, 0.37] {
+            for normal_sign in [-1.0, 1.0] {
+                for forward in [false, true] {
+                    for variant in 0..11 {
+                        let mut topo = Topology::new();
+                        let circle_center = if variant == 6 {
+                            center + axis * (0.1 * radius)
+                        } else {
+                            center
+                        };
+                        let (normal, v) = if variant == 8 {
+                            (
+                                -sphere.y_axis() * normal_sign,
+                                sphere.z_axis() * normal_sign,
+                            )
+                        } else {
+                            (axis * normal_sign, sphere.y_axis() * normal_sign)
+                        };
+                        let circle =
+                            Circle3D::with_axes(circle_center, normal, radius, sphere.x_axis(), v)
+                                .unwrap();
+                        let point = circle.evaluate(phase)
+                            + if variant == 5 {
+                                sphere.x_axis() * (0.01 * radius)
+                            } else {
+                                Vec3::new(0.0, 0.0, 0.0)
+                            };
+                        let start = topo.add_vertex(Vertex::new(point, 1e-7));
+                        let end = if variant == 4 {
+                            topo.add_vertex(Vertex::new(point, 1e-7))
+                        } else {
+                            start
+                        };
+                        let mut edge = Edge::new(start, end, EdgeCurve::Circle(circle));
+                        let turn = std::f64::consts::TAU;
+                        edge.set_trim(match variant {
+                            1 => None,
+                            2 => Some((phase, phase + turn / 2.0)),
+                            3 => Some((phase, phase + 2.0 * turn)),
+                            9 => Some((phase + turn, phase)),
+                            _ => Some((phase, phase + turn)),
+                        });
+                        let edge = topo.add_edge(edge);
+                        let wire = topo.add_wire(
+                            Wire::new(vec![OrientedEdge::new(edge, forward)], variant != 10)
+                                .unwrap(),
+                        );
+                        let face = Face::new(
+                            wire,
+                            if variant == 7 { vec![wire] } else { Vec::new() },
+                            FaceSurface::Sphere(sphere.clone()),
+                        );
+                        let expected = if variant == 0 || variant == 9 {
+                            Some(
+                                normal_sign
+                                    * if forward { 1.0 } else { -1.0 }
+                                    * if variant == 9 { -1.0 } else { 1.0 },
+                            )
+                        } else {
+                            None
+                        };
+                        assert_eq!(
+                            super::analytic_sphere_equator_direction(&topo, &face).unwrap(),
+                            expected,
+                            "radius={radius}, phase={phase}, normal_sign={normal_sign}, forward={forward}, variant={variant}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn direction(matrix: Mat4, vector: Vec3) -> Vec3 {
     Vec3::new(
         matrix.0[0][0] * vector.x() + matrix.0[0][1] * vector.y() + matrix.0[0][2] * vector.z(),
@@ -624,6 +703,74 @@ fn holed_hemisphere_budget_refusal_restores_the_attempt() {
         matches!(result,Err(crate::OperationsError::InvalidInput{reason}) if reason.contains("work limit"))
     );
     assert_eq!((mesh.positions, mesh.normals, mesh.indices, map), before);
+}
+
+#[test]
+fn holed_hemisphere_nurbs_hole_requires_the_whole_curve_on_the_selected_sphere() {
+    for variant in 0..8 {
+        let (mut topo, face, mut mesh, pool, mut map) =
+            holed_hemisphere(1.0, Mat4::identity(), 1.0, 0.5);
+        let edges = topo.wire(face.inner_wires()[0]).unwrap().edges().to_vec();
+        for (index, oriented) in edges.iter().enumerate() {
+            let source = topo.edge(oriented.edge()).unwrap();
+            let EdgeCurve::Circle(circle) = source.curve() else {
+                panic!("circle fixture")
+            };
+            let (a, b) = source.strict_domain().unwrap();
+            let curve =
+                remus_geometry::convert::curve_to_nurbs::circle_to_nurbs(circle, a, b).unwrap();
+            let mut data = serde_json::to_value(curve).unwrap();
+            if index == 0 {
+                match variant {
+                    // A bulge between the endpoints must not be admitted by
+                    // endpoint-only or shared-boundary-sample validation.
+                    1 => data["control_points"][1][2] = serde_json::json!(0.6),
+                    2 => {
+                        for point in data["control_points"].as_array_mut().unwrap() {
+                            point[2] = serde_json::json!(-0.5);
+                        }
+                    }
+                    4 => data["weights"][1] = serde_json::json!(-1.0),
+                    5 => data["weights"][1] = serde_json::json!(1e-10),
+                    _ => {}
+                }
+            }
+            let curve: remus_math::nurbs::curve::NurbsCurve = serde_json::from_value(data).unwrap();
+            let domain = curve.domain();
+            let edge = topo.edge_mut(oriented.edge()).unwrap();
+            edge.set_curve(EdgeCurve::NurbsCurve(curve));
+            edge.set_trim((variant != 3 || index != 0).then_some(domain));
+            if variant == 6 && index == 0 {
+                edge.set_tolerance(Some(1e-30)).unwrap();
+            }
+            // This tolerance exceeds the roundoff reserve but needs more
+            // subdivisions than the bounded certificate permits.
+            if variant == 7 && index == 0 {
+                edge.set_tolerance(Some(1e-10)).unwrap();
+            }
+        }
+        let FaceSurface::Sphere(sphere) = face.surface() else {
+            panic!("sphere fixture")
+        };
+        assert_eq!(
+            super::sphere_nurbs_loop_in_hemisphere(&topo, sphere, &edges, 1.0).unwrap(),
+            variant == 0
+        );
+        let before = (
+            mesh.positions.clone(),
+            mesh.normals.clone(),
+            mesh.indices.clone(),
+            map.clone(),
+        );
+        let accepted = super::tessellate_sphere_holed_hemisphere_shared(
+            &topo, &face, sphere, 0.01, 0.35, &pool, &mut mesh, &mut map,
+        )
+        .unwrap();
+        assert_eq!(accepted, variant == 0);
+        if variant != 0 {
+            assert_eq!((mesh.positions, mesh.normals, mesh.indices, map), before);
+        }
+    }
 }
 
 /// opseq81 two-sphere fuse: both hole-free sphere remainders take the
