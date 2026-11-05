@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793804208286,
+  "lastUpdate": 1793890784991,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -141725,6 +141725,304 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 87708,
             "range": "± 903",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Peter",
+            "username": "petertoday",
+            "email": "171875562+petertoday@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "d7dd86e21be8787862e0ebf74b78228fba074d83",
+          "message": "fix(tessellate): keep every section hole open in a holed sphere hemisphere (#1546)\n\n## Summary\n\nThis fixes opseq81 seed `1146645986253340484` ([CI run\n41959012115](https://github.com/esaueng/remus/actions/runs/41959012115),\nartifact `opseq81-campaign-findings`). The seed fuses a translated torus\n(R=4, r=2) exact-only with a sphere of radius 8. The fused B-Rep is\nvalid, but the mesh had **1320 open edges** at the campaign deflection.\nThe defect reproduces unchanged on `df7ce90e` and on #1542's head\n`a16ca673`.\n\n**Root cause (tessellation only).** The torus cuts two NURBS section\nholes into one sphere hemisphere. #1542's holed-hemisphere chart mesher\naccepted exactly one inner loop. This face therefore fell back to a path\nthat skinned both holes (the face area measured 402.11, which is the\nfull hemisphere 2π·8²) and resampled the equator differently from the\nopposite hemisphere.\n\n**Fix** (`crates/operations/src/tessellate/nonplanar.rs`):\n- Every inner loop must qualify, as either a native conic or a certified\nNURBS loop. A new guard, `sphere_holes_separated`, declines nested,\noverlapping or repeated holes before the CDT. The existing strict guards\nare unchanged: each boundary segment used once, each interior segment\ntwice, and every facet strictly outward.\n- `sphere_nurbs_loop_in_hemisphere` gains an exact certificate, tried\nbefore convex-hull subdivision. It checks the Bernstein coefficients of\nthe rational radial residual `(|C−c|² − ρ²)·w²`\n(`sphere_nurbs_radial_band_certified`).\n- Why: a hull bound never beats the chord sagitta Rθ²/8. At scale 10 the\nhull-only path hit its 16,384-piece work cap and the hole mesh stayed\nopen.\n- The edge tolerance, depth and work caps, grid budgets and deflections\nare unchanged.\n\n## Tier and effects\n\n`Tier: core`. This changes only the display/measurement mesh the kernel\nemits. There is no change to the B-Rep, GFA, journal or live topology,\nand no new dependency or public API. Kernel growth is expected well\nunder 64 KiB, so no `WASM-Size:` line is needed. I did not refresh the\ncommitted packages; that is left to the normal release refresh.\n\n## Behavior change in an existing test\n\n\n`holed_hemisphere_nurbs_hole_requires_the_whole_curve_on_the_selected_sphere`,\nvariant 7: an exact rational circle at edge tolerance 1e-10 used to\ndecline. The new certificate now accepts it, because the curve really is\non the sphere. The old expectation pinned the hull's work cap, not a\ngeometric property. A new variant 8 lifts that curve about 4e-9 off the\nsphere at the same tolerance, and it still declines.\n\n## Verification (local, native)\n\n**B-Rep checked independently before meshing:**\n- `Exact` quality; `validate_solid` is valid; the operands' arena\nserialization is unchanged.\n- Section edges lie within 3.3e-10 of both carriers.\n- Cartesian material probes agree for the ball, the torus and the union.\n- Gauss volume 2324.5336 against an independent inclusion-exclusion\nlens-slice integral of 2324.508920 (+1.06e-5 relative; disclosed below).\n\n**Mesh:**\n- At the campaign deflection (diag·1e-5): 0 boundary and 0 non-manifold\nedges, previously 1320.\n- At 0.01·s and 0.002·s: raw indexed and 1e-9 geometrically welded\nmeshes are closed, manifold and opposite-wound.\n- Every sphere facet is outward and none lies inside the torus.\n- Mesh volume is within 1e-3 of the independent integral.\n\n**Controls in `regress_opseq_torus_sphere_fuse.rs`:**\n- Scales 0.01, 0.1, 1 and 10, placed and unplaced, both operand orders.\n- At scales 0.001, 100 and 1000 the exact boolean refuses\n`ExactOnlyUnattainable` **upstream of meshing**. The test pins only a\ntyped refusal with rollback there.\n\n**Chart oracles (`sphere_chart_tests.rs`):**\n- Two- and three-hole closed-form areas at three radii, both hemispheres\nand two deflections.\n- Nested and overlapping holes decline without mutating the mesh.\n- The Bernstein certificate against a 4096-sample radial-band oracle, at\nradii from 1e-3 to 1e4.\n\n**Suites:**\n- `remus-operations` lib: 1856 passed.\n- 48 sphere, torus, tessellation, opseq, mesh and STEP integration\nbinaries in operations, including `op_seq_81`: 215 passed, 0 failed.\n- Clippy `-D warnings` (all targets) clean; fmt clean;\n`roadmap-evidence.py` clean.\n\n## Packaged witness\n\n`scripts/opseq-torus-sphere-fuse-packaged.mjs` is wired into\n`test-wasm-smoke.mjs` (fresh packages) and\n`test-wasm-tarball-consumer.mjs` (installed tarballs), next to #1542's\nscript. CI builds fresh packages on the exact head and runs both suites\non them.\n\n**What it runs:** the seed's own construction (`makeTorus`,\n`makeSphere`, `mirror`, `transform`, `booleanWithQuality` exact-only)\nthrough direct calls, `executeBatch` and `executeBatchV2`. The cells are\nscale 1 unplaced, scale 1 placed and scale 10 placed, each in both\noperand orders: 18 cells.\n\n**What each cell checks:**\n- B-Rep: `exact` quality, `validateSolidDetailed` with no errors,\ncarriers (Torus, Sphere, Sphere, with one hemisphere holding both\nholes), opposite B-Rep edge uses, and operands byte-identical before and\nafter.\n- Material: Cartesian ball/torus membership through `classifyPoint`,\ncovering all four cells.\n- Volume: within 1e-3 of an independent JS lens-slice\ninclusion-exclusion integral, which itself is pinned against the native\nvalue.\n- Meshes at 0.01·s and 0.004·s: raw-index and 1e-9-welded closure and\norientation, outward sphere facets, no sphere facet inside the torus,\nand the mesh's signed volume.\n\n**Local package results** (node v24.22.0):\n- The committed pre-fix `2026.1.122` package **fails** the first seed\ncell at raw mesh closure (`direct scale=1 … d=0.01 raw: edge 35,36`),\nafter its B-Rep, material and volume checks pass.\n- A fresh node-target kernel built from this head **passes all 18 cells\nin 12.9 s**. It was built with pinned `wasm-pack 0.15.0` and\n`wasm-bindgen 0.2.126`, the xtask remap and SIMD flags, and `--no-opt`,\nsince Binaryen 117 isn't available locally.\n- I did not run the full smoke and tarball suites locally, nor build the\noptimized bundler package. CI's fresh-package and installed-tarball jobs\non the exact head are the packaged verification. The native\n`JsError`-helper contract tests are not evidence of packaged parity.\n\n**Not verified locally:** the full workspace test run (the shared\nmachine was memory-thrashing), and `xtask wasm-build` with Binaryen\noptimization. I did not refresh the committed packages; #1547 is a\nseparate package refresh.\n\n## Coordination\n\nThe B-Rep orientation fix (sibling branch\n`fix/sphere-torus-chart-orientation`, `builder_solid.rs` and\n`check/classify/boundary.rs`) skips mesh closure on seed 1146's fuse and\nsphere−torus cut. Whichever PR lands second must turn those two skips\ninto assertions and run those cells.\n\n## Disclosed, out of scope\n\n- The Gauss face integrator reads +1.06e-5 relative high on this trimmed\ntorus, while the section curves themselves are accurate. The regression\nbounds Gauss at 2e-5 and does not chase the integrator.\n- The intersect-leg orientation defects in seeds 1146 and 5201 belong to\nthe separate B-Rep orientation fix in `builder_solid.rs`. This PR does\nnot touch algo.\n\nRoadmap:\n`docs/kernel-maturity/roadmap-evidence/8.1--torus-sphere-fuse-holed-hemisphere.md`.\nThere is also a one-line lesson in the roadmap skill.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-11-05T10:51:28Z",
+          "url": "https://github.com/esaueng/remus/commit/d7dd86e21be8787862e0ebf74b78228fba074d83"
+        },
+        "date": 1793890779815,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 683032,
+            "range": "± 4375",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 715685,
+            "range": "± 12538",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 15607,
+            "range": "± 1047",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 4919902,
+            "range": "± 856992",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 5114107,
+            "range": "± 433824",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 4814457,
+            "range": "± 80987",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 15502,
+            "range": "± 352",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 2296101,
+            "range": "± 31737",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 18490879,
+            "range": "± 651062",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 18,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 59,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 40,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 138,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 128,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 484,
+            "range": "± 69",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 103,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 201,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 151,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 318,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 710,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 2160,
+            "range": "± 38",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 10,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 21,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 61,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 62,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "surface_projection/cached_grid/3",
+            "value": 14851,
+            "range": "± 140",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "surface_projection/cached_grid/9",
+            "value": 93782,
+            "range": "± 1338",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/bilinear_hit",
+            "value": 2429,
+            "range": "± 762",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_secant",
+            "value": 9227,
+            "range": "± 835",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_miss",
+            "value": 35891,
+            "range": "± 330",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/quadratic_hit",
+            "value": 3189,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 346006,
+            "range": "± 7158",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 1706811,
+            "range": "± 20311",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 101426,
+            "range": "± 1204",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 193875,
+            "range": "± 2583",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/plane_torus_grid",
+            "value": 219734,
+            "range": "± 13362",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 40497,
+            "range": "± 574",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/narrow_bump_flank",
+            "value": 21239,
+            "range": "± 76",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_hit",
+            "value": 12787,
+            "range": "± 123",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_miss",
+            "value": 74878,
+            "range": "± 837",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_grid_build",
+            "value": 88843,
+            "range": "± 1977",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 410948,
+            "range": "± 36512",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 5346271,
+            "range": "± 181544",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 326129,
+            "range": "± 24757",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 675847,
+            "range": "± 9371",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 54768,
+            "range": "± 202",
             "unit": "ns/iter"
           }
         ]
