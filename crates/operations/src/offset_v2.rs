@@ -139,7 +139,7 @@ fn refuse_certified_collapse(
     solid: SolidId,
     distance: f64,
 ) -> Result<(), OperationsError> {
-    if distance.is_nan() || distance >= 0.0 {
+    if !distance.is_finite() || distance >= 0.0 {
         return Ok(());
     }
     let Some(thickness) = planar_min_thickness(topo, solid)? else {

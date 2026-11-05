@@ -1292,6 +1292,11 @@ fn operations_diagnostic(error: &OperationsError) -> DiagnosticRecord {
                 error.to_string(),
             )
         }
+        OperationsError::OffsetCollapsed { .. } => DiagnosticRecord::error(
+            FailureCategory::InvalidInput,
+            "offset_collapsed",
+            error.to_string(),
+        ),
         OperationsError::Math(inner) => diagnostic_record(inner.diagnostic()),
         OperationsError::Algo(inner) => diagnostic_record(inner.diagnostic()),
         OperationsError::Check(inner) => check_diagnostic(inner),

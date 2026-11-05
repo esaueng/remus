@@ -242,8 +242,27 @@ fn non_convex_planar_prism_is_certified_by_its_thinnest_slab() {
     }
 }
 
-/// Outside the certified cell nothing moves: a cylinder's own radius guard
-/// still answers its collapse, unchanged.
+/// Non-finite arguments must reach input validation rather than the
+/// geometric collapse certificate, including negative infinity.
+#[test]
+fn non_finite_distances_keep_their_invalid_input_refusal() {
+    let mut topo = Topology::new();
+    let source = make_box(&mut topo, 2.0, 5.5, 1.0).unwrap();
+    for distance in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        for route in ROUTES {
+            let mut t = topo.clone();
+            let before = live_state(&t);
+            let error = run_route(&mut t, route, source, distance).unwrap_err();
+            assert!(
+                matches!(error, OperationsError::InvalidInput { ref reason } if reason.contains("finite")),
+                "{route} with {distance}: {error:?}"
+            );
+            assert_eq!(live_state(&t), before, "{route} with {distance}");
+        }
+    }
+}
+
+/// A cylinder's existing radius guard remains unchanged.
 #[test]
 fn curved_bodies_keep_their_existing_refusal() {
     let mut t = Topology::new();
