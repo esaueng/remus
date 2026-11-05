@@ -162,7 +162,7 @@ try {
   runOpseqOffsetWallPackaged(packageExports);
   runOpseqOffsetRefusalPackaged(packageExports);
   runOpseqF10Packaged(packageExports);
-  runSphereCylinderClosedSectionPackaged(packageExports);
+  runSphereCylinderClosedSectionPackaged({ ...packageExports, ...ioExports });
   runOpseqF13Packaged(packageExports);
   runWasmRayTorusPackaged(packageExports);
   runLinkedSketchPackaged(packageExports);

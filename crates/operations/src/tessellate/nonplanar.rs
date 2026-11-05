@@ -5418,10 +5418,31 @@ pub(super) fn analytic_sphere_equator_direction(
     let FaceSurface::Sphere(sphere) = face.surface() else {
         return Ok(None);
     };
-    let edges = topo.wire(face.outer_wire())?.edges();
-    // Keep single- and two-edge trims on the established shared-boundary path.
+    let wire = topo.wire(face.outer_wire())?;
+    let edges = wire.edges();
+    // STEP healing can coalesce the equator into one closed native circle.
+    // Its authoritative full turn (checked below) has the same hemisphere
+    // reading as a partitioned equator. Other one/two-edge trims keep dispatch.
+    let single_closed_circle = if let [oriented] = edges {
+        let edge = topo.edge(oriented.edge())?;
+        if let EdgeCurve::Circle(circle) = edge.curve()
+            && wire.is_closed()
+            && edge.start() == edge.end()
+            && let Ok((a, b)) = edge.strict_domain()
+        {
+            let point = topo.vertex(edge.start())?.point();
+            [a, b].into_iter().all(|t| {
+                (circle.evaluate(t) - point).length()
+                    <= remus_math::tolerance::Tolerance::new().linear
+            })
+        } else {
+            false
+        }
+    } else {
+        false
+    };
     if !face.inner_wires().is_empty()
-        || edges.len() < 3
+        || (edges.len() < 3 && !single_closed_circle)
         || !sphere_great_circle_loop(topo, sphere, edges)?
     {
         return Ok(None);

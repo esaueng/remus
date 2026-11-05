@@ -1779,7 +1779,7 @@ runOpseqF6Packaged({ RemusKernel });
 runOpseqOffsetWallPackaged({ RemusKernel });
 runOpseqOffsetRefusalPackaged({ RemusKernel });
 runOpseqF10Packaged({ RemusKernel });
-runSphereCylinderClosedSectionPackaged({ RemusKernel });
+runSphereCylinderClosedSectionPackaged({ RemusKernel, RemusIo });
 runOpseqF13Packaged({ RemusKernel });
 
 runWasmRayTorusPackaged({ RemusKernel });

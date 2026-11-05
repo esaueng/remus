@@ -183,4 +183,53 @@ fn check_fixture(scale: f64, segments: usize, phase: f64, placed: bool, swapped:
         assert_eq!(boundary_edge_count(&mesh), 0, "deflection={deflection}");
         assert_eq!(non_manifold_edge_count(&mesh), 0, "deflection={deflection}");
     }
+    if !placed {
+        let step = remus_io::step::write_step(&topo, &[solid]).unwrap();
+        let mut imported = Topology::new();
+        let roots = remus_io::step::read_step(&step, &mut imported).unwrap();
+        assert_eq!(roots.len(), 1);
+        let restored = roots[0];
+        assert!(
+            remus_operations::validate::validate_solid(&imported, restored)
+                .unwrap()
+                .is_valid()
+        );
+        let sphere_faces = remus_topology::explorer::solid_faces(&imported, restored)
+            .unwrap()
+            .into_iter()
+            .filter(|&id| matches!(imported.face(id).unwrap().surface(), FaceSurface::Sphere(_)))
+            .collect::<Vec<_>>();
+        assert_eq!(sphere_faces.len(), 2);
+        // STEP healing coalesces the partitioned equator into one full circle.
+        for face in sphere_faces {
+            assert_eq!(
+                imported
+                    .wire(imported.face(face).unwrap().outer_wire())
+                    .unwrap()
+                    .edges()
+                    .len(),
+                1
+            );
+        }
+        assert!(
+            (solid_volume(&imported, restored, 0.01).unwrap()
+                - sphere_volume
+                - 6_030.504_746_075_203)
+                .abs()
+                < 0.05
+        );
+        for deflection in [0.1, 0.01] {
+            let mesh = tessellate_solid(&imported, restored, deflection).unwrap();
+            assert_eq!(
+                boundary_edge_count(&mesh),
+                0,
+                "STEP round-trip deflection={deflection}, swapped={swapped}"
+            );
+            assert_eq!(
+                non_manifold_edge_count(&mesh),
+                0,
+                "STEP round-trip deflection={deflection}, swapped={swapped}"
+            );
+        }
+    }
 }

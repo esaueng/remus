@@ -26,6 +26,13 @@ equator's centroid is a projection singularity, so winding repair preserves
 its selected hemisphere when the centroid is indistinguishable from the
 sphere center at floating-point precision.
 
+STEP healing can coalesce the equator's arc partition into a single native
+full-circle edge. The hemisphere path accepts this equivalent representation
+only with a closed wire, one closed circle edge, matching evaluated endpoints,
+the existing complete-support certificate, an aligned axis and exactly one
+directed native turn. Partial, multiple-turn and other one/two-edge trims retain
+their existing dispatch.
+
 ## Regression oracles
 
 - `regress_sphere_cylinder_closed_section.rs`: exact union in both operand
@@ -33,6 +40,8 @@ sphere center at floating-point precision.
   two-face edge uses, material witnesses and closed meshes at two deflections.
   Additional cases vary primitive segmentation, scale, seam phase and rigid
   placement. The large rotated case pins the equator orientation failure.
+  Both original operand orders also export and reimport STEP, pin the healed
+  one-edge equators, and require closed meshes at both deflections.
 - Independent integration over the cylinder disk gives overlap
   `1219.0344613486054` and added volume `6030.504746075203`. At the original
   dimensions, the volume error must stay below `0.05`. Scaled cases take the
@@ -45,7 +54,8 @@ sphere center at floating-point precision.
 - `sphere-cylinder-closed-section-packaged.mjs` runs the original dimensions
   through direct, batch and V2 batch APIs in both orders, in fresh build and
   installed-tarball smoke suites. It checks exact quality, native carriers,
-  strict validity, edge incidence, material, volume and input immutability.
+  strict validity, B-Rep incidence, raw mesh incidence and orientation at two
+  deflections, STEP round trips, material, volume and input immutability.
 
 OpenZCAD's consumer regression additionally covers undo/redo, native project
 rebuild and STEP export/reimport. Local evidence and hosted CI are reported

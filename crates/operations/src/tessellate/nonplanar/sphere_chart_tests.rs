@@ -22,6 +22,85 @@ type ChartFixture = (
     super::super::PointMergeMap,
 );
 
+#[test]
+fn single_circle_equator_requires_a_native_closed_full_turn() {
+    for radius in [0.001, 1.0, 1000.0] {
+        let center = Point3::new(17.0 * radius, -23.0 * radius, 31.0 * radius);
+        let axis = Vec3::new(0.2, 0.4, 1.0).normalize().unwrap();
+        let sphere = SphericalSurface::with_axis(center, radius, axis).unwrap();
+        for phase in [0.0, 0.37] {
+            for normal_sign in [-1.0, 1.0] {
+                for forward in [false, true] {
+                    for variant in 0..11 {
+                        let mut topo = Topology::new();
+                        let circle_center = if variant == 6 {
+                            center + axis * (0.1 * radius)
+                        } else {
+                            center
+                        };
+                        let (normal, v) = if variant == 8 {
+                            (
+                                -sphere.y_axis() * normal_sign,
+                                sphere.z_axis() * normal_sign,
+                            )
+                        } else {
+                            (axis * normal_sign, sphere.y_axis() * normal_sign)
+                        };
+                        let circle =
+                            Circle3D::with_axes(circle_center, normal, radius, sphere.x_axis(), v)
+                                .unwrap();
+                        let point = circle.evaluate(phase)
+                            + if variant == 5 {
+                                sphere.x_axis() * (0.01 * radius)
+                            } else {
+                                Vec3::new(0.0, 0.0, 0.0)
+                            };
+                        let start = topo.add_vertex(Vertex::new(point, 1e-7));
+                        let end = if variant == 4 {
+                            topo.add_vertex(Vertex::new(point, 1e-7))
+                        } else {
+                            start
+                        };
+                        let mut edge = Edge::new(start, end, EdgeCurve::Circle(circle));
+                        let turn = std::f64::consts::TAU;
+                        edge.set_trim(match variant {
+                            1 => None,
+                            2 => Some((phase, phase + turn / 2.0)),
+                            3 => Some((phase, phase + 2.0 * turn)),
+                            9 => Some((phase + turn, phase)),
+                            _ => Some((phase, phase + turn)),
+                        });
+                        let edge = topo.add_edge(edge);
+                        let wire = topo.add_wire(
+                            Wire::new(vec![OrientedEdge::new(edge, forward)], variant != 10)
+                                .unwrap(),
+                        );
+                        let face = Face::new(
+                            wire,
+                            if variant == 7 { vec![wire] } else { Vec::new() },
+                            FaceSurface::Sphere(sphere.clone()),
+                        );
+                        let expected = if variant == 0 || variant == 9 {
+                            Some(
+                                normal_sign
+                                    * if forward { 1.0 } else { -1.0 }
+                                    * if variant == 9 { -1.0 } else { 1.0 },
+                            )
+                        } else {
+                            None
+                        };
+                        assert_eq!(
+                            super::analytic_sphere_equator_direction(&topo, &face).unwrap(),
+                            expected,
+                            "radius={radius}, phase={phase}, normal_sign={normal_sign}, forward={forward}, variant={variant}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
 fn direction(matrix: Mat4, vector: Vec3) -> Vec3 {
     Vec3::new(
         matrix.0[0][0] * vector.x() + matrix.0[0][1] * vector.y() + matrix.0[0][2] * vector.z(),
