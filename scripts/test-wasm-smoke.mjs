@@ -834,32 +834,61 @@ console.log(`ok - meshQuality: watertight, euler=${quality.eulerCharacteristic}`
   assert.ok(Math.abs(kernel.volume(detailed.value, DEFLECTION) - widenedVol) < 1e-9);
   console.log('ok - resizeCylindricalFaceDetailed(5): exact, legacy volume');
 
+  // Sphere-rimmed walls (the OpenZCAD r 73.5 sphere with an r 6 boss or
+  // blind bore) resize both ways, matching a body built at the new radius.
   const translate = (x, y, z) => [1, 0, 0, x, 0, 1, 0, y, 0, 0, 1, z, 0, 0, 0, 1];
-  for (const [label, combine, reason, neighbor] of [
-    ['boss', (s, c) => kernel.fuse(s, c), 'unsupported_neighbor', 'sphere'],
-    ['blind bore', (s, c) => kernel.cut(s, c), 'partial_reversed_wall', undefined],
-  ]) {
+  const sphereBody = (combine, radius) => {
     const sphere = kernel.copyAndTransformSolid(kernel.makeSphere(73.5, 16), translate(25.5, -1.5, 0));
-    const cylinder = kernel.copyAndTransformSolid(kernel.makeCylinder(6, 64.1), translate(35.5, 3.5, 58));
+    const cylinder = kernel.copyAndTransformSolid(
+      kernel.makeCylinder(radius, 64.1),
+      translate(35.5, 3.5, 58),
+    );
     const body = combine(sphere, cylinder);
     const wall = Array.from(kernel.getSolidFaces(body)).find(
       (f) => kernel.getSurfaceType(f) === 'cylinder',
     );
-    const faces = Array.from(kernel.getSolidFaces(body));
-    const refused = kernel.resizeCylindricalFaceDetailed(body, wall, 7);
-    assert.equal(refused.status, 'error', `${label}: ${JSON.stringify(refused)}`);
+    return { body, wall };
+  };
+  for (const [label, combine] of [
+    ['boss', (s, c) => kernel.fuse(s, c)],
+    ['blind bore', (s, c) => kernel.cut(s, c)],
+  ]) {
+    for (const radius of [5, 7]) {
+      const { body, wall } = sphereBody(combine, 6);
+      const faces = Array.from(kernel.getSolidFaces(body));
+      const resized = kernel.resizeCylindricalFaceDetailed(body, wall, radius);
+      assert.equal(resized.status, 'ok', `${label} r${radius}: ${JSON.stringify(resized)}`);
+      assert.equal(resized.details.quality, 'exact');
+      assert.deepEqual(Array.from(kernel.getSolidFaces(body)), faces, `${label}: input changed`);
+      const direct = sphereBody(combine, radius).body;
+      const got = kernel.volume(resized.value, 0.002);
+      const want = kernel.volume(direct, 0.002);
+      assert.ok(Math.abs(got - want) <= 2e-5 * want, `${label} r${radius}: ${got} vs ${want}`);
+      const legacy = kernel.resizeCylindricalFace(body, wall, radius);
+      assert.ok(Math.abs(kernel.volume(legacy, 0.002) - got) < 1e-6, `${label}: legacy parity`);
+      console.log(`ok - resizeCylindricalFaceDetailed ${label} r${radius}: volume ${got}`);
+    }
+  }
+
+  // A partial inward wall (a plate corner notched by a cylinder) keeps its
+  // typed refusal as data, with the input left as it was.
+  {
+    const notched = kernel.cut(kernel.makeBox(40, 40, 10), kernel.makeCylinder(10, 10));
+    const wall = Array.from(kernel.getSolidFaces(notched)).find(
+      (f) => kernel.getSurfaceType(f) === 'cylinder',
+    );
+    const faces = Array.from(kernel.getSolidFaces(notched));
+    const refused = kernel.resizeCylindricalFaceDetailed(notched, wall, 12);
+    assert.equal(refused.status, 'error', JSON.stringify(refused));
     assert.equal(refused.value, null);
     assert.equal(refused.code, 'unsupported_move_face');
     assert.equal(refused.category, 'unsupported');
-    assert.equal(refused.details.reason, reason);
+    assert.equal(refused.details.reason, 'partial_reversed_wall');
     assert.equal(refused.details.surfaceType, 'cylinder');
-    assert.equal(refused.details.neighborSurfaceType, neighbor);
-    if (neighbor !== undefined) {
-      assert.equal(kernel.getSurfaceType(refused.details.neighborFace), neighbor);
-    }
-    assert.deepEqual(Array.from(kernel.getSolidFaces(body)), faces, `${label}: input changed`);
-    assert.throws(() => kernel.resizeCylindricalFace(body, wall, 7), /move-face does not support/);
-    console.log(`ok - resizeCylindricalFaceDetailed ${label}: typed ${reason} refusal`);
+    assert.equal(refused.details.neighborSurfaceType, undefined);
+    assert.deepEqual(Array.from(kernel.getSolidFaces(notched)), faces, 'notch: input changed');
+    assert.throws(() => kernel.resizeCylindricalFace(notched, wall, 12), /move-face does not support/);
+    console.log('ok - resizeCylindricalFaceDetailed notch: typed partial_reversed_wall refusal');
   }
 }
 
