@@ -4268,6 +4268,20 @@ fn analytic_torus_signed_volume(
         v_vals = vec![0.0, std::f64::consts::TAU];
     }
 
+    // A latitude band of a split closed torus (two full-turn rims joined by
+    // the seam) has its window read off its wire: the sampled angles below
+    // are the rims' two levels and the seam's own vertices, near-evenly
+    // spread, so their largest gap does not mark the band and read a band
+    // wider than half the tube as the whole tube (a box cut by a torus whose
+    // plane sits 3 of 4 tube radii off the tube centre read 2004 mm³ light).
+    if !whole
+        && let Some(band) = crate::tessellate::torus_band_tube_window(topo, face, tor)?
+        && band.seam_decided
+    {
+        let vol = torus_window_volume(tor, (0.0, std::f64::consts::TAU), band.range, reference);
+        return Ok(if face.is_reversed() { -vol } else { vol });
+    }
+
     let v_min = v_vals.iter().copied().fold(f64::INFINITY, f64::min);
     let v_max = v_vals.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     if (v_max - v_min).abs() < 1e-15 {
