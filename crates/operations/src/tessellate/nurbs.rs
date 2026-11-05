@@ -97,22 +97,49 @@ pub(super) fn cone_chart_radius(
 /// Compute the tube-angle (v) range for a toroidal face from its wire boundary.
 ///
 /// A full torus has no boundary constraint on v, so the default is the full
-/// tube `(0, TAU)`. A toroidal *band* (e.g. a rim-fillet quarter-torus) is
-/// bounded by two circular boundary groups sitting at distinct constant v;
-/// each group may be one closed edge or an open arc chain. The band fills the
-/// arc between them. v is periodic, so two arcs are possible — the fillet band
-/// is the shorter one (a 90° rim corner spans π/2; we accept up to just under
-/// π). Returns `(0, TAU)` whenever the boundary doesn't clearly describe such
-/// a band (preserving full-tube tessellation for every other toroidal face).
+/// tube `(0, TAU)`. A toroidal *band* (see [`torus_latitude_band_v_range`])
+/// fills the arc between its two rims. Returns `(0, TAU)` whenever the
+/// boundary doesn't clearly describe such a band (preserving full-tube
+/// tessellation for every other toroidal face).
 pub(super) fn compute_torus_v_range(
     topo: &Topology,
     face_data: &remus_topology::face::Face,
     torus: &remus_math::surfaces::ToroidalSurface,
 ) -> Result<(f64, f64), crate::OperationsError> {
+    Ok(torus_latitude_band_v_range(topo, face_data, torus)?
+        .map_or((0.0, std::f64::consts::TAU), |band| band.range))
+}
+
+/// The tube-angle window of a torus latitude band, as read by
+/// [`torus_latitude_band_v_range`].
+#[derive(Debug, Clone, Copy)]
+pub struct TorusLatitudeBand {
+    /// `(v_start, v_end)` with `v_start < v_end <= v_start + TAU`; the band
+    /// covers the tube angles between them.
+    pub range: (f64, f64),
+    /// `true` when the band's own seam edges picked the arc and the wire is
+    /// nothing but the two rims and that seam. `false` when the wire carries
+    /// no seam and the shorter arc was assumed (a rim-fillet quarter torus),
+    /// a convention rather than evidence, or carries other boundary too.
+    pub seam_decided: bool,
+}
+
+/// Read a toroidal *band* face: one bounded by two circular boundary groups
+/// at distinct constant tube angles `v`, each one closed circle or an open
+/// arc chain turning fully around the ring. The band fills one of the two
+/// arcs between them (v is periodic). When the wire has seam edges (open
+/// edges traversed twice, running between the rims across the material, as
+/// a closed torus split into bands carries) their side decides, whichever
+/// arc is longer. Without a seam the band is the shorter arc (a rim-fillet
+/// quarter torus spans π/2). `None` when the boundary is not such a band.
+pub fn torus_latitude_band_v_range(
+    topo: &Topology,
+    face_data: &remus_topology::face::Face,
+    torus: &remus_math::surfaces::ToroidalSurface,
+) -> Result<Option<TorusLatitudeBand>, crate::OperationsError> {
     use remus_topology::edge::EdgeCurve;
     use std::f64::consts::{PI, TAU};
 
-    let full_range = (0.0, TAU);
     let wire = topo.wire(face_data.outer_wire())?;
     let mut use_counts: DetHashMap<usize, usize> = DetHashMap::default();
     for oe in wire.edges() {
@@ -120,6 +147,7 @@ pub(super) fn compute_torus_v_range(
     }
     let mut seen = std::collections::HashSet::new();
     let mut curved = Vec::new();
+    let mut other_boundary = false;
     for oe in wire.edges() {
         if !seen.insert(oe.edge().index()) || use_counts.get(&oe.edge().index()) != Some(&1) {
             continue;
@@ -127,11 +155,15 @@ pub(super) fn compute_torus_v_range(
         let edge = topo.edge(oe.edge())?;
         if matches!(edge.curve(), EdgeCurve::Circle(_)) {
             curved.push((oe.edge().index(), edge.start(), edge.end()));
+        } else {
+            other_boundary = true;
         }
     }
+    // Only a wire of rims and seams is wholly described by the band window.
+    other_boundary |= use_counts.values().any(|&uses| uses > 2);
     let project_u = |point| torus.project_point(point).0;
     let Some(cycles) = collect_full_turn_rim_cycles(topo, &curved, &project_u, 2)? else {
-        return Ok(full_range);
+        return Ok(None);
     };
 
     // Each accepted cycle must also remain at one constant tube angle between
@@ -143,7 +175,7 @@ pub(super) fn compute_torus_v_range(
         let mut samples = Vec::new();
         for edge_index in cycle.edge_indices {
             let Some(edge_id) = topo.edge_id_from_index(edge_index) else {
-                return Ok(full_range);
+                return Ok(None);
             };
             let edge = topo.edge(edge_id)?;
             let start = topo.vertex(edge.start())?;
@@ -162,29 +194,64 @@ pub(super) fn compute_torus_v_range(
             (acc.0 + v.sin(), acc.1 + v.cos())
         });
         if sin_sum.hypot(cos_sum) <= 1e-12 {
-            return Ok(full_range);
+            return Ok(None);
         }
         let level = sin_sum.atan2(cos_sum).rem_euclid(TAU);
         if samples
             .iter()
             .any(|&v| ((v - level + PI).rem_euclid(TAU) - PI).abs() > 1e-6)
         {
-            return Ok(full_range);
+            return Ok(None);
         }
         circle_vs.push(level);
     }
 
     let (va, vb) = (circle_vs[0], circle_vs[1]);
 
-    // Two candidate arcs between the circles; the band is the shorter one.
+    // Two candidate arcs between the circles: lo -> hi without wrap, and the
+    // wrapped hi -> lo + TAU.
     let (lo, hi) = if va <= vb { (va, vb) } else { (vb, va) };
-    let forward_span = hi - lo; // arc lo -> hi without wrap
-    if forward_span <= PI {
-        Ok((lo, hi))
-    } else {
-        // The wrapped arc hi -> lo + TAU is the shorter one.
-        Ok((hi, lo + TAU))
+    let forward_span = hi - lo;
+
+    // The band's seam (its open edges, each traversed twice) runs between
+    // the rims across the material, so its interior picks the covered arc.
+    // Either arc can be the band: a box cut by a torus whose plane sits off
+    // the tube centre keeps a band wider than half the tube.
+    let mut seam_votes = (0_usize, 0_usize);
+    let mut seen_seams = remus_math::det_hash::DetHashSet::default();
+    for oe in wire.edges() {
+        let index = oe.edge().index();
+        if use_counts.get(&index) != Some(&2) || !seen_seams.insert(index) {
+            continue;
+        }
+        let edge = topo.edge(oe.edge())?;
+        if edge.start() == edge.end() {
+            continue;
+        }
+        let (t0, t1) = crate::authoritative_edge_domain(edge, "torus band seam")?;
+        let mid = edge.curve().evaluate_with_endpoints(
+            f64::midpoint(t0, t1),
+            topo.vertex(edge.start())?.point(),
+            topo.vertex(edge.end())?.point(),
+        );
+        let v = torus.project_point(mid).1.rem_euclid(TAU);
+        if v > lo && v < hi {
+            seam_votes.0 += 1;
+        } else {
+            seam_votes.1 += 1;
+        }
     }
+    let unwrapped = match seam_votes {
+        (0, 0) => forward_span <= PI,
+        (_, 0) => true,
+        (0, _) => false,
+        // Seam pieces on both arcs: not a single band.
+        _ => return Ok(None),
+    };
+    Ok(Some(TorusLatitudeBand {
+        range: if unwrapped { (lo, hi) } else { (hi, lo + TAU) },
+        seam_decided: seam_votes != (0, 0) && !other_boundary,
+    }))
 }
 
 /// Compute the v-range (axial extent) for an analytic surface from its face

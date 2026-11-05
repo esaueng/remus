@@ -7451,6 +7451,63 @@ fn find_plane_plane_point(na: Vec3, da: f64, nb: Vec3, db: f64, dir: Vec3) -> Po
     )
 }
 
+/// The exact section of a ring torus by a plane normal to its axis: two
+/// concentric latitude circles (constant tube angle) when the plane crosses
+/// the tube transversally.
+///
+/// The generic plane-analytic path samples every plane x torus section into
+/// point chains that are refit as NURBS. A latitude circle is exactly the
+/// curve the closed-torus band splitter cuts along, and that splitter
+/// accepts only `Circle` sections: given the refit curves it declined, the
+/// torus face reached assembly unsplit and was dropped whole, so a box cut by
+/// a half-embedded torus came back unchanged.
+///
+/// `None` keeps the sampled path for every other configuration (oblique and
+/// meridian planes, tangency, misses), so their trimming is unchanged.
+fn axis_normal_torus_section_circles(
+    torus: &remus_math::surfaces::ToroidalSurface,
+    normal: Vec3,
+    d: f64,
+) -> Result<Option<Vec<RawCurve>>, AlgoError> {
+    use remus_math::intersect::{
+        ContactKind, CurveGeometry, IntersectionElement, PlaneOperand, SurfaceOperand,
+        intersect_surfaces,
+    };
+    if normal.cross(torus.z_axis()).length() > 4.0 * f64::EPSILON * normal.length() {
+        return Ok(None);
+    }
+    let section = intersect_surfaces(
+        SurfaceOperand::Plane(PlaneOperand { normal, d }),
+        SurfaceOperand::Analytic(analytic_intersection::AnalyticSurface::Torus(torus)),
+        &OperationContext::new(),
+    )?;
+    if !section.complete || section.elements.len() != 2 {
+        return Ok(None);
+    }
+    let mut curves = Vec::with_capacity(2);
+    for element in section.elements {
+        let IntersectionElement::Curve(curve) = element else {
+            return Ok(None);
+        };
+        let (ContactKind::Transversal, CurveGeometry::Circle(circle)) =
+            (curve.kind, curve.geometry)
+        else {
+            return Ok(None);
+        };
+        let domain = (0.0, std::f64::consts::TAU);
+        let p_start = ParametricCurve::evaluate(&circle, domain.0);
+        let p_end = ParametricCurve::evaluate(&circle, domain.1);
+        curves.push(RawCurve {
+            bbox: circle_bbox(&circle),
+            curve: EdgeCurve::Circle(circle),
+            t_range: domain,
+            p_start,
+            p_end,
+        });
+    }
+    Ok(Some(curves))
+}
+
 /// Plane-analytic surface intersection using exact curves.
 fn plane_analytic_intersection(
     normal: Vec3,
@@ -7489,6 +7546,11 @@ fn plane_analytic_intersection(
         && let analytic_intersection::AnalyticSurface::Cone(cone) = analytic
         && let Some(v_max) = cone_v_max
         && let Some(curves) = cone_plane::parallel_section(cone, normal, d, v_max)
+    {
+        return Ok(curves);
+    }
+    if let analytic_intersection::AnalyticSurface::Torus(torus) = analytic
+        && let Some(curves) = axis_normal_torus_section_circles(torus, normal, d)?
     {
         return Ok(curves);
     }
