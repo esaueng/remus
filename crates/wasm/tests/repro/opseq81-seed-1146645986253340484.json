@@ -1,0 +1,105 @@
+{
+  "description": "P-Class 8.1 op sequence: seed=1146645986253340484 source=op_seq_81/v2 timeout_ms=120000 face_budget=240 verdict=inputs (persisted before execution)",
+  "expect": [],
+  "name": "opseq81-seed-1146645986253340484",
+  "operations": [
+    {
+      "args": {
+        "majorRadius": 4.0,
+        "minorRadius": 2.0,
+        "segments": 16
+      },
+      "op": "makeTorus"
+    },
+    {
+      "args": {
+        "radius": 8.0,
+        "segments": 16
+      },
+      "op": "makeSphere"
+    },
+    {
+      "args": {
+        "nx": 1.0,
+        "ny": 0.0,
+        "nz": 0.0,
+        "px": -4.0,
+        "py": 0.0,
+        "pz": 0.0,
+        "solid": 0
+      },
+      "op": "mirror"
+    },
+    {
+      "args": {
+        "matrix": [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          -3.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "solid": 2
+      },
+      "op": "transform"
+    },
+    {
+      "args": {
+        "matrix": [
+          1.0,
+          0.0,
+          0.0,
+          -0.5,
+          0.0,
+          0.8660254037844386,
+          -0.5,
+          1.5,
+          0.0,
+          0.5,
+          0.8660254037844386,
+          2.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "solid": 0
+      },
+      "op": "transform"
+    },
+    {
+      "args": {
+        "exactOnly": true,
+        "operation": "fuse",
+        "solidA": 2,
+        "solidB": 1
+      },
+      "op": "booleanWithQuality"
+    },
+    {
+      "args": {
+        "nx": 0.0,
+        "ny": 1.0,
+        "nz": 0.0,
+        "px": 0.0,
+        "py": 0.0,
+        "pz": 0.0,
+        "solid": 0
+      },
+      "op": "mirror"
+    }
+  ],
+  "revision": "4faa4782c0b9eb80cafb39bebf7d9db91c777fb0",
+  "schema": 1
+}

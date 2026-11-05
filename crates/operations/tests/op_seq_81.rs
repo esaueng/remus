@@ -4753,6 +4753,54 @@ fn finding_box_offset_collapse_is_a_typed_refusal() {
     }
 }
 
+/// B38: the persisted sphere–torus seeds whose identity-leg intersects
+/// returned same-sense shared edges (seed 5201: 5, seed 1146: 2). Replayed
+/// verbatim, neither may report an incorrect success through the identity
+/// leg or the topology oracles. Seed 5201's last step, the fused body
+/// intersected with the unmirrored sphere, is a typed refusal with its
+/// rollback intact. Seed 1146's fuse mesh (a sphere face with two section
+/// holes) is a separate tessellation defect, so its mesh note is not pinned
+/// here.
+#[test]
+fn finding_sphere_torus_identity_legs_keep_opposing_coedges() {
+    for (bundle, expected) in [
+        (
+            include_str!("../../wasm/tests/repro/opseq81-seed-5201364664492509300.json"),
+            Some(SeqKind::Refused),
+        ),
+        (
+            include_str!("../../wasm/tests/repro/opseq81-seed-1146645986253340484.json"),
+            None,
+        ),
+    ] {
+        let bundle: Value = serde_json::from_str(bundle).unwrap();
+        let operations = bundle["operations"].as_array().unwrap();
+        let report = execute_sequence(operations, &replay_limits(), Fault::None);
+        let notes: Vec<_> = report
+            .notes
+            .iter()
+            .map(|note| {
+                format!(
+                    "op {} {}: {}: {}",
+                    note.index, note.op, note.oracle, note.detail
+                )
+            })
+            .collect();
+        for note in &report.notes {
+            assert!(
+                !(note.kind == SeqKind::Incorrect
+                    && matches!(note.oracle, "identity_leg" | "topology")),
+                "{}: {notes:?}",
+                bundle["name"]
+            );
+        }
+        if let Some(expected) = expected {
+            assert_eq!(report.kind, expected, "{}: {notes:?}", bundle["name"]);
+            assert_eq!(report.exact_ok_bools, 1, "{}: {notes:?}", bundle["name"]);
+        }
+    }
+}
+
 /// Hand-built partial-overlap witness: A is a 4×2×2 box, B a 2×2×2 box
 /// shifted +2.5 in x (overlap 1.5×2×2, neither center on the other's
 /// boundary), fused. Fault-free it must not read Incorrect; with the

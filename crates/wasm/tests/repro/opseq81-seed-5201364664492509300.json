@@ -1,0 +1,54 @@
+{
+  "description": "P-Class 8.1 op sequence: seed=5201364664492509300 source=op_seq_81/v2 timeout_ms=120000 face_budget=240 verdict=inputs (persisted before execution)",
+  "expect": [],
+  "name": "opseq81-seed-5201364664492509300",
+  "operations": [
+    {
+      "args": {
+        "radius": 5.0,
+        "segments": 16
+      },
+      "op": "makeSphere"
+    },
+    {
+      "args": {
+        "majorRadius": 5.5,
+        "minorRadius": 2.75,
+        "segments": 16
+      },
+      "op": "makeTorus"
+    },
+    {
+      "args": {
+        "nx": 0.0,
+        "ny": 1.0,
+        "nz": 0.0,
+        "px": 0.0,
+        "py": 1.5,
+        "pz": 0.0,
+        "solid": 0
+      },
+      "op": "mirror"
+    },
+    {
+      "args": {
+        "exactOnly": true,
+        "operation": "fuse",
+        "solidA": 2,
+        "solidB": 1
+      },
+      "op": "booleanWithQuality"
+    },
+    {
+      "args": {
+        "exactOnly": true,
+        "operation": "intersect",
+        "solidA": 3,
+        "solidB": 0
+      },
+      "op": "booleanWithQuality"
+    }
+  ],
+  "revision": "4faa4782c0b9eb80cafb39bebf7d9db91c777fb0",
+  "schema": 1
+}

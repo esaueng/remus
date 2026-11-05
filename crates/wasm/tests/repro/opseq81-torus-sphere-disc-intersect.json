@@ -1,0 +1,93 @@
+{
+  "description": "B38 / P-Class 8.1 seed 1146645986253340484 identity leg: the mirrored, moved torus (R4/r2 at (-7,0,-3)) intersected with the sphere r8, the leg that returned 2 same-sense edges on the sphere discs bounded by one closed edge each. Native regress_opseq_sphere_torus_orientation covers every operator, both orders, rigid placement and the declared scale limits; opseq81_crosscheck requires clean validation, the slice-integral volume and a watertight mesh through executeBatchV2.",
+  "expect": [],
+  "name": "opseq81-torus-sphere-disc-intersect",
+  "operations": [
+    {
+      "args": {
+        "majorRadius": 4.0,
+        "minorRadius": 2.0,
+        "segments": 16
+      },
+      "op": "makeTorus"
+    },
+    {
+      "args": {
+        "radius": 8.0,
+        "segments": 16
+      },
+      "op": "makeSphere"
+    },
+    {
+      "args": {
+        "nx": 1.0,
+        "ny": 0.0,
+        "nz": 0.0,
+        "px": -4.0,
+        "py": 0.0,
+        "pz": 0.0,
+        "solid": 0
+      },
+      "op": "mirror"
+    },
+    {
+      "args": {
+        "matrix": [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          -3.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "solid": 2
+      },
+      "op": "transform"
+    },
+    {
+      "args": {
+        "matrix": [
+          1.0,
+          0.0,
+          0.0,
+          -0.5,
+          0.0,
+          0.8660254037844386,
+          -0.5,
+          1.5,
+          0.0,
+          0.5,
+          0.8660254037844386,
+          2.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "solid": 0
+      },
+      "op": "transform"
+    },
+    {
+      "args": {
+        "exactOnly": true,
+        "operation": "intersect",
+        "solidA": 2,
+        "solidB": 1
+      },
+      "op": "booleanWithQuality"
+    }
+  ],
+  "revision": "4faa4782c0b9eb80cafb39bebf7d9db91c777fb0",
+  "schema": 1
+}

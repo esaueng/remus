@@ -152,10 +152,11 @@ that does not exist yet; without it, stop.
 
 ## Open items with a repro
 
-The `#[ignore]` inventory (regenerated 2026-11-05 at `df7ce90e`: 35 actual
-attributes in 17 files, all in `operations`, `io`, `heal`, `math`, `wasm` and
-`remus`) splits by the ignore reason as written. The tests were listed, not
-re-run, for this count. **19
+The `#[ignore]` inventory (regenerated 2026-11-05 on `cc3bcc44` plus the B38
+chart-orientation branch: 38 actual attributes in 19 files, all in
+`operations`, `io`, `heal`, `math`, `wasm` and `remus`) splits by the ignore
+reason as written. The tests were listed, not re-run, for this count, except
+the two B38/B264 witnesses, which fail as pinned. **22
 open engine witnesses:**
 - seven B26 property ready-repros in `operations/tests/prop_boolean_invariants.rs`:
   finding 13 sphere–torus ×3 (owner B38), finding 20 sphere–cone (B33), and
@@ -170,7 +171,12 @@ open engine witnesses:**
   ×2 (F6 bands lofted rather than exact tori; every-edge r2 refuses);
 - `wasm/src/bindings/qualify_edge_relations_tests.rs` (trimmed-torus boundary
   containment);
-- the two STEP audit repros `io/tests/step_roundtrip_{hammer_holder,mambo_b1}_repro.rs`.
+- the two STEP audit repros `io/tests/step_roundtrip_{hammer_holder,mambo_b1}_repro.rs`;
+- `regress_opseq_sphere_torus_orientation.rs` ×2: seed 1146 at 1e-3 builds
+  wrong bodies (B38), and the ray vote miscounts on a pole-holding sphere piece
+  (B264);
+- `regress_offset_cylinder_pass_through.rs` (an inward cylinder offset past
+  half-height returns its caps swapped, #1545).
 
 **16 manual runs:**
 - slow or exhaustive: `boolean/tests.rs::staircase_fuse_with_cylinders`, the

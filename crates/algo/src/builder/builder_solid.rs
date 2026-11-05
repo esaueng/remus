@@ -447,6 +447,20 @@ pub(super) fn orient_revolved_face_wires(
             }
         } else if matches!(surface, FaceSurface::Sphere(_)) && !inners.is_empty() {
             (outer, false)
+        } else if let FaceSurface::Sphere(sphere) = &surface
+            && let Some(area) = sphere_wire_chart_area(topo, outer, sphere)?
+        {
+            // The loop's signed area in the sphere's own (longitude,
+            // latitude) chart fixes which side it bounds. The 3D Newell
+            // fallback below cannot: a thin piece along a great circle has a
+            // vector area nearly perpendicular to the normal at its centroid
+            // (B38, the sphere-in-torus crescent of a sphere-torus
+            // intersect), so the coarse chord polygon decides its sign.
+            if area < 0.0 {
+                (reverse_wire(topo, outer)?, true)
+            } else {
+                (outer, false)
+            }
         } else if matches!(surface, FaceSurface::Cylinder(_) | FaceSurface::Cone(_))
             && let Some(area) = revolved_wire_uv_area(topo, outer, &surface)?
         {
@@ -482,8 +496,19 @@ pub(super) fn orient_revolved_face_wires(
                     oriented_inners.push(inner);
                 }
             }
-        } else if matches!(surface, FaceSurface::Sphere(_)) {
+        } else if let FaceSurface::Sphere(sphere) = &surface {
             for &inner in &inners {
+                // A hole runs against the chart, like a torus hole; the 3D
+                // oracle remains the fallback where the chart cannot read it.
+                if let Some(area) = sphere_wire_chart_area(topo, inner, sphere)? {
+                    if area > 0.0 {
+                        oriented_inners.push(reverse_wire(topo, inner)?);
+                        changed = true;
+                    } else {
+                        oriented_inners.push(inner);
+                    }
+                    continue;
+                }
                 let (inner, inner_changed) = orient_wire_to_surface(topo, inner, &surface, false)?;
                 changed |= inner_changed;
                 oriented_inners.push(inner);
@@ -847,6 +872,84 @@ fn measure_revolved_wire_uv_area(
         })
         .sum();
     Ok((area.abs() > remus_math::tolerance::Tolerance::new().relative * magnitude).then_some(area))
+}
+
+/// Signed area of a wire in a sphere's `(longitude, latitude)` chart,
+/// positive when the loop runs with the outward normal.
+///
+/// `None` when the chart cannot read the loop: it winds around the polar
+/// axis (a polar cap or a hemisphere rim), it reaches a pole, consecutive
+/// samples are too far apart in longitude to unwrap, or the area is lost to
+/// cancellation. The caller then keeps its 3D fallback.
+fn sphere_wire_chart_area(
+    topo: &Topology,
+    wire_id: WireId,
+    sphere: &remus_math::surfaces::SphericalSurface,
+) -> Result<Option<f64>, AlgoError> {
+    use remus_math::vec::Point2;
+    use std::f64::consts::{FRAC_PI_2, PI, TAU};
+    // Hole-free poles are the chart's only singularity; a sample this close
+    // to one has no usable longitude.
+    const POLE_GUARD: f64 = 1e-6;
+    let mut points = Vec::new();
+    for oriented in topo.wire(wire_id)?.edges() {
+        // A closed edge is read like any other: a one-edge disc rim is the
+        // loop the 3D fallback cannot sign, while a latitude circle or a
+        // tilted great circle winds the longitude and declines below.
+        let edge = topo.edge(oriented.edge())?;
+        let domain = edge.strict_domain().map_err(|error| {
+            AlgoError::AssemblyFailed(format!("cannot orient sphere wire: {error}"))
+        })?;
+        super::pcurve_compute::sample_edge_uniform(
+            edge.curve(),
+            topo.vertex(edge.start())?.point(),
+            topo.vertex(edge.end())?.point(),
+            domain,
+            32,
+            oriented.is_forward(),
+            &mut points,
+        );
+    }
+    if points.len() < 3 {
+        return Ok(None);
+    }
+    let mut uv = Vec::with_capacity(points.len() + 1);
+    for &point in &points {
+        let (u, v) = sphere.project_point(point);
+        if FRAC_PI_2 - v.abs() < POLE_GUARD {
+            return Ok(None);
+        }
+        uv.push(Point2::new(u, v));
+    }
+    uv.push(uv[0]);
+    // Unwrap longitude to the nearest copy of each predecessor.
+    for i in 1..uv.len() {
+        let previous = uv[i - 1].x();
+        let mut u = uv[i].x();
+        u -= TAU * ((u - previous) / TAU).round();
+        if (u - previous).abs() > FRAC_PI_2 {
+            return Ok(None);
+        }
+        uv[i] = Point2::new(u, uv[i].y());
+    }
+    if (uv[uv.len() - 1].x() - uv[0].x()).abs() > PI {
+        return Ok(None);
+    }
+    let origin = uv[0];
+    let mut area = 0.0;
+    let mut magnitude = 0.0;
+    for pair in uv.windows(2) {
+        let a = pair[0] - origin;
+        let b = pair[1] - origin;
+        area += a.x() * b.y() - b.x() * a.y();
+        magnitude += (a.x() * b.y()).abs() + (b.x() * a.y()).abs();
+    }
+    if area.abs() <= remus_math::tolerance::Tolerance::new().relative * magnitude {
+        return Ok(None);
+    }
+    // d(point)/du x d(point)/dv runs along +normal for a right-handed frame.
+    let handedness = sphere.x_axis().cross(sphere.y_axis()).dot(sphere.z_axis());
+    Ok(Some(area * handedness.signum()))
 }
 
 /// Signed chart area of a wire on a recognized converted-cylinder wall.
@@ -6082,6 +6185,57 @@ mod tests {
     /// noticed, because the only coverage was an operations fixture. A
     /// quarter cylinder patch must get a signed alignment that negates
     /// under wire reversal, and a lone line edge must decline.
+    /// B38: a sphere disc bounded by ONE closed edge (the sphere-in-tube disc
+    /// of a sphere–torus intersect) is a loop the 3D oracle declines, so the
+    /// chart must sign it, and reversal must negate the sign. A latitude
+    /// circle winds the chart's longitude and must decline instead.
+    #[test]
+    fn sphere_chart_area_signs_a_closed_disc_rim_and_declines_a_latitude() {
+        use remus_math::curves::Circle3D;
+        use remus_math::surfaces::SphericalSurface;
+        use remus_topology::{edge::Edge, vertex::Vertex, wire::Wire};
+
+        let center = Point3::new(170.0, -230.0, 310.0);
+        let radius = 7.0;
+        let axis = Vec3::new(0.2, 0.4, 1.0).normalize().unwrap();
+        let sphere = SphericalSurface::with_axis(center, radius, axis).unwrap();
+        let surface = FaceSurface::Sphere(sphere.clone());
+        // A small circle about a direction well clear of both poles, and a
+        // latitude circle about the polar axis.
+        let disc_axis = Vec3::new(1.0, -0.3, 0.1).normalize().unwrap();
+        for (direction, latitude, winds) in [(disc_axis, 0.8_f64, false), (axis, 0.4, true)] {
+            let circle = Circle3D::new(
+                center + direction * (radius * latitude),
+                direction,
+                radius * (1.0 - latitude * latitude).sqrt(),
+            )
+            .unwrap();
+            let mut topo = Topology::new();
+            let vertex = topo.add_vertex(Vertex::new(circle.evaluate(0.0), MERGE_TOL));
+            let mut edge = Edge::new(vertex, vertex, EdgeCurve::Circle(circle));
+            edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+            let edge = topo.add_edge(edge);
+            let forward =
+                topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap());
+            let backward =
+                topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, false)], true).unwrap());
+            // The 3D oracle cannot read a one-edge closed rim either way.
+            assert_eq!(
+                wire_surface_alignment(&topo, forward, &surface).unwrap(),
+                None
+            );
+            let a = sphere_wire_chart_area(&topo, forward, &sphere).unwrap();
+            let b = sphere_wire_chart_area(&topo, backward, &sphere).unwrap();
+            if winds {
+                assert_eq!((a, b), (None, None));
+            } else {
+                // Counter-clockwise about the cap's outward axis bounds the cap.
+                assert!(a.unwrap() > 0.0, "{a:?}");
+                assert!(b.unwrap() < 0.0, "{b:?}");
+            }
+        }
+    }
+
     #[test]
     fn wire_surface_alignment_signs_a_cylinder_patch_and_declines_under_three_samples() {
         use remus_math::curves::Circle3D;
