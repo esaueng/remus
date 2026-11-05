@@ -51,11 +51,11 @@ pub use face_cache::{
     enable_face_mesh_cache_with_limits, face_mesh_cache_stats,
 };
 pub(crate) use mesh_ops::COINCIDENT_DEDUPE_GRID;
-pub(crate) use nurbs::torus_latitude_band_v_range;
 pub use mesh_ops::{
     EdgeLines, WeldedMeshQuality, boundary_edge_count, is_watertight, non_manifold_edge_count,
     sample_solid_edges, sample_solid_edges_filtered, welded_mesh_quality,
 };
+pub(crate) use nurbs::torus_latitude_band_v_range;
 pub use reuse::{
     DEFAULT_MESH_REUSE_BYTES, DEFAULT_MESH_REUSE_ENTRIES, MeshReuseStats, clear_mesh_reuse,
     disable_mesh_reuse, enable_mesh_reuse, enable_mesh_reuse_with_limits, mesh_reuse_stats,
