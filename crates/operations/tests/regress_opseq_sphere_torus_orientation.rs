@@ -383,28 +383,23 @@ fn check(pair: Pair, op: BooleanOp, sphere_first: bool, scale: f64, placed: bool
         "{label}: volume {volume} against slice integral {target}"
     );
 
-    // Raw (unwelded) mesh closure at two deflections. Seed 1146's fuse and
-    // sphere − torus cut keep the sphere outside the tube: one sphere face
-    // with two section holes, whose open mesh is a separate tessellation
-    // defect outside this orientation repair. Their B-Rep is held above.
-    let holed_sphere = pair.name == "seed1146"
-        && (op == BooleanOp::Fuse || (op == BooleanOp::Cut && sphere_first));
+    // Raw (unwelded) mesh closure at two deflections, on every leg. Seed
+    // 1146's fuse and sphere − torus cut keep one sphere face with two
+    // section holes; #1546 meshes it closed.
     let mut closed_mesh = None;
-    if !holed_sphere {
-        for deflection in [0.1, 0.02] {
-            let mesh = tessellate_solid(&topo, solid, deflection * scale).unwrap();
-            assert_eq!(
-                boundary_edge_count(&mesh),
-                0,
-                "{label}: raw mesh boundary at {deflection}"
-            );
-            assert_eq!(
-                non_manifold_edge_count(&mesh),
-                0,
-                "{label}: raw mesh non-manifold at {deflection}"
-            );
-            closed_mesh = Some(mesh);
-        }
+    for deflection in [0.1, 0.02] {
+        let mesh = tessellate_solid(&topo, solid, deflection * scale).unwrap();
+        assert_eq!(
+            boundary_edge_count(&mesh),
+            0,
+            "{label}: raw mesh boundary at {deflection}"
+        );
+        assert_eq!(
+            non_manifold_edge_count(&mesh),
+            0,
+            "{label}: raw mesh non-manifold at {deflection}"
+        );
+        closed_mesh = Some(mesh);
     }
 
     let ray_mismatches = assert_material(

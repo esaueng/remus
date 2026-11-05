@@ -5,10 +5,8 @@
 //! Each persisted chain (mirror included) runs every operator in both operand
 //! orders. Direct calls must return an exact, validator-clean body with the
 //! independent slice-integral volume; `executeBatch` and `executeBatchV2`
-//! must agree with them and, apart from the seed-1146 legs that keep a
-//! sphere face with two section holes (a separate tessellation defect), mesh
-//! watertight at two deflections. A refused exact-only cell must leave the
-//! session unchanged.
+//! must agree with them and mesh watertight at two deflections on every leg.
+//! A refused exact-only cell must leave the session unchanged.
 
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
@@ -214,17 +212,12 @@ fn both_batches_return_exact_valid_watertight_sphere_torus_legs() {
                         (volume - target).abs() < 2e-4 * target,
                         "{label}: volume {volume} against {target}"
                     );
-                    // Seed 1146's fuse and sphere − torus cut keep one sphere
-                    // face with two section holes; its open mesh is a separate
-                    // tessellation defect outside this repair.
-                    let holed_sphere =
-                        seed.name == "seed1146" && (op == "fuse" || (op == "cut" && sphere_first));
-                    if !holed_sphere {
-                        for cell in &cells[2..] {
-                            assert_eq!(cell["ok"]["isWatertight"], true, "{label}: {cells:?}");
-                            assert_eq!(cell["ok"]["boundaryEdges"], 0, "{label}");
-                            assert_eq!(cell["ok"]["nonManifoldEdges"], 0, "{label}");
-                        }
+                    // Every leg, including seed 1146's fuse and sphere − torus
+                    // cut, whose two-hole sphere face #1546 meshes closed.
+                    for cell in &cells[2..] {
+                        assert_eq!(cell["ok"]["isWatertight"], true, "{label}: {cells:?}");
+                        assert_eq!(cell["ok"]["boundaryEdges"], 0, "{label}");
+                        assert_eq!(cell["ok"]["nonManifoldEdges"], 0, "{label}");
                     }
                 }
             }

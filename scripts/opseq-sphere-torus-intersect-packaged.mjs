@@ -9,7 +9,9 @@
  * discs, each bounded by one closed edge, kept the splitter's arbitrary
  * traversal (2 same-sense edges). Both persisted chains run through direct
  * calls, executeBatch and executeBatchV2: the intersect in both operand
- * orders and the torus − sphere cut, unplaced and rigidly placed.
+ * orders and the torus − sphere cut, unplaced and rigidly placed, plus seed
+ * 1146's unplaced fuse and sphere − torus cut, whose two-hole sphere face
+ * must also mesh closed.
  */
 import assert from 'node:assert/strict';
 
@@ -140,7 +142,13 @@ export function runOpseqSphereTorusIntersectPackaged({ RemusKernel }) {
   for (const seed of SEEDS) {
     const sphereVolume = (4 / 3) * Math.PI * seed.sphere[1] ** 3;
     for (const placed of [false, true]) {
-      for (const [operation, sphereFirst] of [['intersect', true], ['intersect', false], ['cut', false]]) {
+      // The intersect in both orders and the torus − sphere cut everywhere.
+      // Seed 1146's fuse and sphere − torus cut keep a sphere face with two
+      // section holes (meshed closed by #1546); they run unplaced, since the
+      // placed cells are typed exact-only refusals on this and the base kernel.
+      const legs = [['intersect', true], ['intersect', false], ['cut', false]];
+      if (seed.name === 'seed1146' && !placed) legs.push(['fuse', true], ['fuse', false], ['cut', true]);
+      for (const [operation, sphereFirst] of legs) {
         for (const api of ['direct', 'executeBatch', 'executeBatchV2']) {
           const label = `${seed.name} ${operation} sphereFirst=${sphereFirst} placed=${placed} ${api}`;
           const kernel = new RemusKernel();
@@ -170,11 +178,19 @@ export function runOpseqSphereTorusIntersectPackaged({ RemusKernel }) {
             assert.equal(JSON.parse(kernel.validateSolidDetailed(solid)).errorCount, 0, `${label}: validity`);
             assertOpposingCoedges(kernel, solid, label);
             assertClosedMeshes(kernel, solid, label);
-            const target = operation === 'intersect' ? seed.intersection : seed.torusVolume - seed.intersection;
+            const target = {
+              intersect: seed.intersection,
+              fuse: sphereVolume + seed.torusVolume - seed.intersection,
+              cut: sphereFirst ? sphereVolume - seed.intersection : seed.torusVolume - seed.intersection,
+            }[operation];
             const volume = kernel.volume(solid, 0.01);
             assert.ok(Math.abs(volume - target) < 2e-4 * target, `${label}: volume ${volume} against ${target}`);
             for (const [point, inSphere, inTorus] of seed.probes) {
-              const inside = operation === 'intersect' ? inSphere && inTorus : inTorus && !inSphere;
+              const inside = {
+                intersect: inSphere && inTorus,
+                fuse: inSphere || inTorus,
+                cut: sphereFirst ? inSphere && !inTorus : inTorus && !inSphere,
+              }[operation];
               const [x, y, z] = placed ? place(PLACEMENT, point) : point;
               assert.equal(
                 kernel.classifyPoint(solid, x, y, z, 1e-7),
