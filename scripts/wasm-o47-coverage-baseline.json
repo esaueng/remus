@@ -2177,8 +2177,9 @@
       ],
       "witnesses": [
         "resize_twin_matches_the_legacy_bore_resize_and_both_batches",
-        "resize_twin_types_the_sphere_boss_neighbour_refusal",
-        "resize_twin_types_the_partial_blind_bore_refusal"
+        "resize_twin_resizes_sphere_rimmed_walls_on_every_surface",
+        "resize_twin_types_the_blended_sphere_boss_neighbour_refusal",
+        "resize_twin_types_the_partial_inward_wall_refusal"
       ],
       "schema": "solid_envelope"
     },
