@@ -7583,6 +7583,32 @@ class RemusKernel {
         return ret[0] >>> 0;
     }
     /**
+     * Change the radius of a cylindrical face and return an exact or
+     * disclosed-approximate result or a typed refusal.
+     *
+     * Additive twin of [`resizeCylindricalFace`](Self::resize_cylindrical_face_binding)
+     * on the same engine path, which is unchanged. A refusal never throws
+     * and leaves the topology as it was. A configuration outside the
+     * qualified move-face/replace-surface cells refuses with category
+     * `unsupported` and code `unsupported_move_face`; `details.reason` is
+     * `partial_reversed_wall` (a partial inward wall, such as a blind bore
+     * segment), `unsupported_neighbor` (the wall borders a face the move
+     * cannot re-intersect: `details.neighborSurfaceType` names its surface
+     * type and `details.neighborFace` its handle) or `unclassified`, and
+     * `details.surfaceType` is the selected face's surface type.
+     * @param {number} solid
+     * @param {number} face
+     * @param {number} radius
+     * @returns {SolidOperationDetailedResult}
+     */
+    resizeCylindricalFaceDetailed(solid, face, radius) {
+        const ret = wasm.remuskernel_resizeCylindricalFaceDetailed(this.__wbg_ptr, solid, face, radius);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
      * Resize a cylindrical wall and record its construction history.
      *
      * Returns JSON `{"solid", "op"}`. Qualified bore and quarter-wall
