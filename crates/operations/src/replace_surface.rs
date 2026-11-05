@@ -76,7 +76,21 @@ pub(crate) fn replace_surface_with_entity_map(
     })
 }
 
-fn register_fresh_pcurves(topo: &mut Topology, faces: &[FaceId]) -> Result<(), OperationsError> {
+pub(crate) fn register_fresh_pcurves(
+    topo: &mut Topology,
+    faces: &[FaceId],
+) -> Result<(), OperationsError> {
+    register_fresh_pcurves_where(topo, faces, |_, _, _| true)
+}
+
+/// [`register_fresh_pcurves`] for only the coedges `(edge, face, forward)`
+/// that `rebuilt` accepts; every other coedge on `faces` keeps its stored
+/// p-curve (or its absence) exactly as it was.
+pub(crate) fn register_fresh_pcurves_where(
+    topo: &mut Topology,
+    faces: &[FaceId],
+    rebuilt: impl Fn(remus_topology::edge::EdgeId, FaceId, bool) -> bool,
+) -> Result<(), OperationsError> {
     for &face_id in faces {
         let face = topo.face(face_id)?;
         let surface = face.surface().clone();
@@ -108,6 +122,9 @@ fn register_fresh_pcurves(topo: &mut Topology, faces: &[FaceId]) -> Result<(), O
             let uses = topo.wire(wire_id)?.edges().to_vec();
             for oriented in uses {
                 let edge_id = oriented.edge();
+                if !rebuilt(edge_id, face_id, oriented.is_forward()) {
+                    continue;
+                }
                 let edge = topo.edge(edge_id)?;
                 let start = topo.vertex(edge.start())?.point();
                 let end = topo.vertex(edge.end())?.point();

@@ -1033,10 +1033,16 @@ fn solid_face_handles(kernel: &RemusKernel, solid: u32) -> Vec<u32> {
 /// direct twin returns it as data with the topology unchanged, both batch
 /// contracts' twin op return the identical envelope, and the legacy op's
 /// `executeBatchV2` error carries the same code, category and typed cause.
-fn assert_typed_resize_refusal(op: &str, reason: &str, neighbor: Option<&str>) {
-    for radius in [5.0, 7.0] {
+fn assert_typed_resize_refusal(
+    build: fn(&mut RemusKernel) -> (u32, u32),
+    radii: [f64; 2],
+    reason: &str,
+    neighbor: Option<&str>,
+) {
+    for radius in radii {
         let mut kernel = RemusKernel::new();
-        let (solid, wall) = sphere_with_cylinder(&mut kernel, op);
+        let (solid, wall) = build(&mut kernel);
+        let op = "witness";
         let before = counts(&kernel);
         let faces = solid_face_handles(&kernel, solid);
         let source_volume = volume(&kernel, solid);
@@ -1114,26 +1120,89 @@ fn assert_typed_resize_refusal(op: &str, reason: &str, neighbor: Option<&str>) {
     }
 }
 
-#[test]
-fn resize_twin_types_the_sphere_boss_neighbour_refusal() {
-    assert_typed_resize_refusal("fuse", "unsupported_neighbor", Some("sphere"));
+/// The sphere boss after an r 2 fillet on its seam: the NURBS blend band has
+/// no exact re-intersection yet, so the resize keeps its typed refusal.
+fn blended_sphere_boss(kernel: &mut RemusKernel) -> (u32, u32) {
+    let (solid, _) = sphere_with_cylinder(kernel, "fuse");
+    let solid_id = kernel.resolve_solid(solid).unwrap();
+    let topo = kernel.topo();
+    let seam: Vec<u32> = remus_topology::explorer::edge_to_face_map(topo, solid_id)
+        .unwrap()
+        .iter()
+        .filter(|(_, faces)| {
+            let tags: Vec<_> = faces
+                .iter()
+                .map(|&face| topo.face(face).unwrap().surface().type_tag())
+                .collect();
+            tags.contains(&"cylinder") && tags.contains(&"sphere")
+        })
+        .map(|(&edge, _)| edge_id_to_u32(topo.edge_id_from_index(edge).unwrap()))
+        .collect();
+    let response = batch_v2(
+        kernel,
+        &json!([{"op": "fillet", "args": {"solid": solid, "radius": 2.0, "edges": seam}}]),
+    );
+    let blended = handle(&response[0]["ok"]);
+    (blended, only_cylinder(kernel, blended))
+}
+
+/// A 40×40×10 plate whose origin corner is cut by an r 10 cylinder: a
+/// concave quarter wall (partial and facing into the material).
+fn corner_notched_plate(kernel: &mut RemusKernel) -> (u32, u32) {
+    let response = batch_v2(
+        kernel,
+        &json!([
+            {"op": "makeBox", "args": {"width": 40, "height": 40, "depth": 10}},
+            {"op": "makeCylinder", "args": {"radius": 10, "height": 10}},
+            {"op": "cut", "args": {"solidA": 0, "solidB": 1}},
+        ]),
+    );
+    let solid = handle(&response[2]["ok"]);
+    (solid, only_cylinder(kernel, solid))
+}
+
+fn only_cylinder(kernel: &RemusKernel, solid: u32) -> u32 {
+    let solid_id = kernel.resolve_solid(solid).unwrap();
+    let topo = kernel.topo();
+    let walls: Vec<_> = remus_topology::explorer::solid_faces(topo, solid_id)
+        .unwrap()
+        .into_iter()
+        .filter(|&face| matches!(topo.face(face).unwrap().surface(), FaceSurface::Cylinder(_)))
+        .collect();
+    assert_eq!(walls.len(), 1, "one cylindrical wall");
+    face_id_to_u32(walls[0])
 }
 
 #[test]
-fn resize_twin_types_the_partial_blind_bore_refusal() {
-    assert_typed_resize_refusal("cut", "partial_reversed_wall", None);
+fn resize_twin_types_the_blended_sphere_boss_neighbour_refusal() {
+    assert_typed_resize_refusal(
+        blended_sphere_boss,
+        [5.0, 7.0],
+        "unsupported_neighbor",
+        Some("nurbs"),
+    );
+}
+
+#[test]
+fn resize_twin_types_the_partial_inward_wall_refusal() {
+    assert_typed_resize_refusal(
+        corner_notched_plate,
+        [8.0, 12.0],
+        "partial_reversed_wall",
+        None,
+    );
 }
 
 /// The journaled resize reaches the same reversed-partial refusal through
 /// its entity-evolution path and projects the same typed cause.
 #[test]
-fn journaled_resize_projects_the_partial_blind_bore_refusal() {
+fn journaled_resize_projects_the_partial_inward_wall_refusal() {
     let mut kernel = RemusKernel::new();
-    let (solid, wall) = sphere_with_cylinder(&mut kernel, "cut");
+    let (solid, wall) = corner_notched_plate(&mut kernel);
     let response = batch_v2(
         &mut kernel,
         &json!([{"op": "resizeCylindricalFaceJournaled", "args": {
-            "solid": solid, "face": wall, "radius": 7.0
+            "solid": solid, "face": wall, "radius": 12.0
         }}]),
     );
     let error = &response[0]["error"];
@@ -1144,6 +1213,124 @@ fn journaled_resize_projects_the_partial_blind_bore_refusal() {
         "{response}"
     );
     assert_eq!(error["details"]["surfaceType"], "cylinder", "{response}");
+}
+
+/// Closed-form volume of the consumer body with wall radius `radius`: the
+/// sphere plus (boss) or minus (bore) `∫∫ (t_top − t_bottom) dA` over the
+/// wall's disk, by composite Simpson in ρ and the trapezoid rule in θ.
+fn sphere_body_volume(op: &str, radius: f64) -> f64 {
+    let top = |x: f64, y: f64| (73.5_f64.powi(2) - (x - 25.5).powi(2) - (y + 1.5).powi(2)).sqrt();
+    let (panels, steps) = (400_u32, 720_u32);
+    let h = radius / f64::from(panels);
+    let mut integral = 0.0;
+    for k in 0..steps {
+        let (sin, cos) = (std::f64::consts::TAU * f64::from(k) / f64::from(steps)).sin_cos();
+        let mut radial = 0.0;
+        for i in 0..=panels {
+            let rho = h * f64::from(i);
+            let weight = if i == 0 || i == panels {
+                1.0
+            } else if i % 2 == 1 {
+                4.0
+            } else {
+                2.0
+            };
+            let (x, y) = (35.5 + rho * cos, 3.5 + rho * sin);
+            let height = if op == "fuse" {
+                122.1 - top(x, y)
+            } else {
+                top(x, y) - 58.0
+            };
+            radial += weight * height * rho;
+        }
+        integral += radial * h / 3.0;
+    }
+    integral *= std::f64::consts::TAU / f64::from(steps);
+    let sphere = 4.0 / 3.0 * std::f64::consts::PI * 73.5_f64.powi(3);
+    if op == "fuse" {
+        sphere + integral
+    } else {
+        sphere - integral
+    }
+}
+
+/// The sphere boss and the blind bore resize both ways through the direct
+/// twin, both batch contracts, the legacy op and the journaled op, all
+/// agreeing with each other and with the closed-form volume.
+#[test]
+fn resize_twin_resizes_sphere_rimmed_walls_on_every_surface() {
+    for op in ["fuse", "cut"] {
+        for radius in [5.0, 7.0] {
+            let context = format!("{op} r{radius}");
+            let mut kernel = RemusKernel::new();
+            let (solid, wall) = sphere_with_cylinder(&mut kernel, op);
+            let before = solid_face_handles(&kernel, solid);
+            let direct =
+                envelope(kernel.resize_cylindrical_face_detailed_impl(solid, wall, radius));
+            assert_eq!(direct["status"], "ok", "{context}: {direct}");
+            assert_eq!(direct["details"]["quality"], "exact", "{context}: {direct}");
+            assert_eq!(direct["details"]["radius"], radius, "{context}");
+            let result = handle(&direct["value"]);
+            assert_eq!(
+                solid_face_handles(&kernel, solid),
+                before,
+                "{context}: input kept"
+            );
+            let result_volume = kernel.volume(result, 0.002).unwrap();
+            let expected = sphere_body_volume(op, radius);
+            assert!(
+                (result_volume - expected).abs() <= 1e-4 * expected,
+                "{context}: volume {result_volume} vs closed form {expected}"
+            );
+            let resized = kernel.resolve_face(only_cylinder(&kernel, result)).unwrap();
+            let FaceSurface::Cylinder(cylinder) = kernel.topo().face(resized).unwrap().surface()
+            else {
+                unreachable!()
+            };
+            assert!((cylinder.radius() - radius).abs() < 1e-12, "{context}");
+
+            let args = json!({"solid": solid, "face": wall, "radius": radius});
+            for contract in ["v2", "legacy"] {
+                let mut batch_kernel = RemusKernel::new();
+                sphere_with_cylinder(&mut batch_kernel, op);
+                let ops = json!([{"op": "resizeCylindricalFaceDetailed", "args": args}]);
+                let response = if contract == "v2" {
+                    batch_v2(&mut batch_kernel, &ops)
+                } else {
+                    batch_legacy(&mut batch_kernel, &ops)
+                };
+                assert_eq!(
+                    response[0]["ok"], direct,
+                    "{context}: {contract} batch parity"
+                );
+            }
+            let mut legacy_kernel = RemusKernel::new();
+            sphere_with_cylinder(&mut legacy_kernel, op);
+            let legacy = batch_v2(
+                &mut legacy_kernel,
+                &json!([{"op": "resizeCylindricalFace", "args": args}]),
+            );
+            let legacy_result = handle(&legacy[0]["ok"]);
+            assert_eq!(legacy_result, result, "{context}: same handle allocation");
+            assert!(
+                (volume(&legacy_kernel, legacy_result) - result_volume).abs() < 1e-9,
+                "{context}: legacy geometry diverges"
+            );
+
+            let mut journal_kernel = RemusKernel::new();
+            sphere_with_cylinder(&mut journal_kernel, op);
+            let journaled = batch_v2(
+                &mut journal_kernel,
+                &json!([{"op": "resizeCylindricalFaceJournaled", "args": args}]),
+            );
+            assert!(journaled[0]["error"].is_null(), "{context}: {journaled}");
+            let journaled_solid = handle(&journaled[0]["ok"]["solid"]);
+            assert!(
+                (volume(&journal_kernel, journaled_solid) - result_volume).abs() < 1e-9,
+                "{context}: journaled geometry diverges: {journaled}"
+            );
+        }
+    }
 }
 
 /// A 40×40×10 plate with an r 3 through bore at (20, 20), and the bore wall.

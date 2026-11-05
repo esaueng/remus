@@ -10,6 +10,7 @@
 //! is not closed.
 
 mod radial_clearance;
+mod sphere_rim_resize;
 use radial_clearance::coaxial_sweep_is_radially_disjoint;
 
 use remus_math::compact_sort::CompactSort;
@@ -1019,6 +1020,12 @@ pub fn resize_cylindrical_face(
     let tol = Tolerance::new();
     let cyl = validate_cylindrical_resize(topo, solid, face, new_radius)?;
 
+    if let Some(result) =
+        sphere_rim_resize::resize_sphere_rimmed_wall(topo, solid, face, &cyl, new_radius)?
+    {
+        return Ok(result.0.solid);
+    }
+
     if !cylindrical_face_is_full_turn(topo, face, &cyl)? {
         return resize_partial_cylindrical_face(topo, solid, face, &cyl, new_radius);
     }
@@ -1110,6 +1117,11 @@ pub(crate) fn resize_cylindrical_face_with_entity_evolution(
     new_radius: f64,
 ) -> Result<DirectEditEvolution, crate::OperationsError> {
     let cylinder = validate_cylindrical_resize(topo, solid, face, new_radius)?;
+    if let Some(result) =
+        sphere_rim_resize::resize_sphere_rimmed_wall(topo, solid, face, &cylinder, new_radius)?
+    {
+        return Ok(result);
+    }
     let full_turn = cylindrical_face_is_full_turn(topo, face, &cylinder)?;
     if full_turn
         && let Some(result) =
