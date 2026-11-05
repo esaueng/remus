@@ -71,6 +71,8 @@ mod qualify_primitives_tests;
 #[cfg(test)]
 mod qualify_section_split_tests;
 #[cfg(test)]
+mod seam_edge_lineage_tests;
+#[cfg(test)]
 mod sequential_fillet_tests;
 #[cfg(test)]
 mod sew_faces_default_tests;

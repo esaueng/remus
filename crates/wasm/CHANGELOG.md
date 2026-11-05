@@ -198,6 +198,13 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
 
 ### Bug Fixes
 
+* `fuseWithEntityEvolution` and `cutWithEntityEvolution` (direct and batch)
+  no longer report a round boss's kept seam piece as `unresolved` when a
+  ring cuts the boss wall into bands: a cylinder boss fused into a block's
+  top or into a sphere off its pole, or bored into that sphere. The piece now
+  reads `modified` with `from` naming the boss's seam edge, so every result
+  edge carries lineage; the ring pieces stay `generated` with the boss wall
+  and the face it meets. The result body is unchanged.
 * Display tessellation no longer draws a fan of inside-out wedges on a
   walked fillet band when Newton stalls on one boundary sample. The sample
   is re-charted from its neighbours (accepted only within the deflection), so
