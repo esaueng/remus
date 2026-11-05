@@ -626,6 +626,74 @@ fn holed_hemisphere_budget_refusal_restores_the_attempt() {
     assert_eq!((mesh.positions, mesh.normals, mesh.indices, map), before);
 }
 
+#[test]
+fn holed_hemisphere_nurbs_hole_requires_the_whole_curve_on_the_selected_sphere() {
+    for variant in 0..8 {
+        let (mut topo, face, mut mesh, pool, mut map) =
+            holed_hemisphere(1.0, Mat4::identity(), 1.0, 0.5);
+        let edges = topo.wire(face.inner_wires()[0]).unwrap().edges().to_vec();
+        for (index, oriented) in edges.iter().enumerate() {
+            let source = topo.edge(oriented.edge()).unwrap();
+            let EdgeCurve::Circle(circle) = source.curve() else {
+                panic!("circle fixture")
+            };
+            let (a, b) = source.strict_domain().unwrap();
+            let curve =
+                remus_geometry::convert::curve_to_nurbs::circle_to_nurbs(circle, a, b).unwrap();
+            let mut data = serde_json::to_value(curve).unwrap();
+            if index == 0 {
+                match variant {
+                    // A bulge between the endpoints must not be admitted by
+                    // endpoint-only or shared-boundary-sample validation.
+                    1 => data["control_points"][1][2] = serde_json::json!(0.6),
+                    2 => {
+                        for point in data["control_points"].as_array_mut().unwrap() {
+                            point[2] = serde_json::json!(-0.5);
+                        }
+                    }
+                    4 => data["weights"][1] = serde_json::json!(-1.0),
+                    5 => data["weights"][1] = serde_json::json!(1e-10),
+                    _ => {}
+                }
+            }
+            let curve: remus_math::nurbs::curve::NurbsCurve = serde_json::from_value(data).unwrap();
+            let domain = curve.domain();
+            let edge = topo.edge_mut(oriented.edge()).unwrap();
+            edge.set_curve(EdgeCurve::NurbsCurve(curve));
+            edge.set_trim((variant != 3 || index != 0).then_some(domain));
+            if variant == 6 && index == 0 {
+                edge.set_tolerance(Some(1e-30)).unwrap();
+            }
+            // This tolerance exceeds the roundoff reserve but needs more
+            // subdivisions than the bounded certificate permits.
+            if variant == 7 && index == 0 {
+                edge.set_tolerance(Some(1e-10)).unwrap();
+            }
+        }
+        let FaceSurface::Sphere(sphere) = face.surface() else {
+            panic!("sphere fixture")
+        };
+        assert_eq!(
+            super::sphere_nurbs_loop_in_hemisphere(&topo, sphere, &edges, 1.0).unwrap(),
+            variant == 0
+        );
+        let before = (
+            mesh.positions.clone(),
+            mesh.normals.clone(),
+            mesh.indices.clone(),
+            map.clone(),
+        );
+        let accepted = super::tessellate_sphere_holed_hemisphere_shared(
+            &topo, &face, sphere, 0.01, 0.35, &pool, &mut mesh, &mut map,
+        )
+        .unwrap();
+        assert_eq!(accepted, variant == 0);
+        if variant != 0 {
+            assert_eq!((mesh.positions, mesh.normals, mesh.indices, map), before);
+        }
+    }
+}
+
 /// opseq81 two-sphere fuse: both hole-free sphere remainders take the
 /// stereographic hemisphere chart. Its interior grid once spread a fixed
 /// `2 * angular_segments` samples per axis over the patch's chart bounding

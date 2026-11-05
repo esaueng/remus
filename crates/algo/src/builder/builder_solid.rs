@@ -992,6 +992,19 @@ fn wire_surface_alignment(
     if winding.length() < 1e-12 {
         return Ok(None);
     }
+    // A complete great-circle rim has its centroid at the sphere center.
+    // Projecting that singular point can choose either pole from roundoff,
+    // reversing one of two valid hemispheres after a rigid transform. There
+    // is no winding oracle at the center: preserve the selected hemisphere.
+    if let FaceSurface::Sphere(sphere) = surface {
+        let center = sphere.center();
+        let roundoff = 64.0
+            * f64::EPSILON
+            * (sphere.radius() + center.x().abs() + center.y().abs() + center.z().abs());
+        if (centroid - center).length() <= roundoff {
+            return Ok(None);
+        }
+    }
     let Some((u, v)) = surface.project_point(centroid) else {
         return Ok(None);
     };
@@ -6138,6 +6151,57 @@ mod tests {
         let lone = line(&mut topo, v00, v01);
         let open = topo.add_wire(Wire::new(vec![OrientedEdge::new(lone, true)], false).unwrap());
         assert_eq!(wire_surface_alignment(&topo, open, &surface).unwrap(), None);
+    }
+
+    #[test]
+    fn sphere_equator_alignment_declines_the_center_singularity_but_signs_caps() {
+        use remus_math::curves::Circle3D;
+        use remus_math::surfaces::SphericalSurface;
+        use remus_topology::{edge::Edge, vertex::Vertex, wire::Wire};
+
+        let center = Point3::new(170.0, -230.0, 310.0);
+        let axis = Vec3::new(0.2, 0.4, 1.0).normalize().unwrap();
+        let sphere = SphericalSurface::with_axis(center, 735.0, axis).unwrap();
+        for latitude in [0.0_f64, 0.4] {
+            let mut topo = Topology::new();
+            let circle = Circle3D::new(
+                center + axis * (735.0 * latitude),
+                axis,
+                735.0 * (1.0 - latitude * latitude).sqrt(),
+            )
+            .unwrap();
+            let vertices: Vec<_> = (0..4)
+                .map(|i| {
+                    topo.add_vertex(Vertex::new(
+                        circle.evaluate(f64::from(i) * PI / 2.0),
+                        MERGE_TOL,
+                    ))
+                })
+                .collect();
+            let edges = (0..4)
+                .map(|i| {
+                    let mut edge = Edge::new(
+                        vertices[i],
+                        vertices[(i + 1) % 4],
+                        EdgeCurve::Circle(circle.clone()),
+                    );
+                    edge.set_trim(Some((i as f64 * PI / 2.0, (i + 1) as f64 * PI / 2.0)));
+                    OrientedEdge::new(topo.add_edge(edge), true)
+                })
+                .collect();
+            let wire = topo.add_wire(Wire::new(edges, true).unwrap());
+            let reversed = reverse_wire(&mut topo, wire).unwrap();
+            let surface = FaceSurface::Sphere(sphere.clone());
+            let forward = wire_surface_alignment(&topo, wire, &surface).unwrap();
+            let backward = wire_surface_alignment(&topo, reversed, &surface).unwrap();
+            if latitude == 0.0 {
+                assert_eq!(forward, None);
+                assert_eq!(backward, None);
+            } else {
+                assert!(forward.unwrap() > 0.0);
+                assert!(backward.unwrap() < 0.0);
+            }
+        }
     }
 
     #[test]

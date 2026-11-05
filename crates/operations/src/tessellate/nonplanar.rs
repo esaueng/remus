@@ -6408,7 +6408,110 @@ fn sphere_conic_loop_on_sphere(
     Ok(true)
 }
 
-/// A complete native equator and one native inner loop bound a holed
+/// Certify a positive-weight NURBS loop inside one spherical hemisphere.
+/// Subdivision tightens convex-hull radial bounds without changing the curve;
+/// unresolved, off-sphere, or out-of-hemisphere carriers decline.
+fn sphere_nurbs_loop_in_hemisphere(
+    topo: &Topology,
+    sphere: &remus_math::surfaces::SphericalSurface,
+    edges: &[remus_topology::wire::OrientedEdge],
+    side: f64,
+) -> Result<bool, crate::OperationsError> {
+    if edges.is_empty() {
+        return Ok(false);
+    }
+    for (index, oriented) in edges.iter().enumerate() {
+        let edge = topo.edge(oriented.edge())?;
+        let next_use = edges[(index + 1) % edges.len()];
+        let next = topo.edge(next_use.edge())?;
+        if oriented.oriented_end(edge) != next_use.oriented_start(next) {
+            return Ok(false);
+        }
+        let EdgeCurve::NurbsCurve(curve) = edge.curve() else {
+            return Ok(false);
+        };
+        if curve.validate().is_err() || curve.degree() > 12 || edge.strict_domain().is_err() {
+            return Ok(false);
+        }
+        let tolerance = edge
+            .tolerance()
+            .unwrap_or(remus_math::tolerance::Tolerance::new().linear);
+        if !tolerance.is_finite() || tolerance <= 0.0 {
+            return Ok(false);
+        }
+        let minimum_weight = curve
+            .weights()
+            .iter()
+            .copied()
+            .fold(f64::INFINITY, f64::min);
+        let maximum_weight = curve.weights().iter().copied().fold(0.0_f64, f64::max);
+        if minimum_weight < maximum_weight * 0.5 {
+            return Ok(false);
+        }
+        let mut pending = vec![(curve.clone(), 0)];
+        let mut work = 0;
+        while let Some((piece, depth)) = pending.pop() {
+            work += 1;
+            if work > 16_384 {
+                return Ok(false);
+            }
+            let (a, b) = piece.domain();
+            let Some(axis) = (piece.evaluate(f64::midpoint(a, b)) - sphere.center())
+                .normalize()
+                .ok()
+            else {
+                return Ok(false);
+            };
+            let mut lower = f64::INFINITY;
+            let mut upper = 0.0_f64;
+            let mut magnitude = sphere.radius();
+            for &point in piece.control_points() {
+                let offset = point - sphere.center();
+                if side * offset.dot(sphere.z_axis()) < -sphere.radius() * 1e-8 {
+                    return Ok(false);
+                }
+                lower = lower.min(offset.dot(axis));
+                upper = upper.max(offset.length());
+                magnitude = magnitude.max(point.x().abs() + point.y().abs() + point.z().abs());
+            }
+            // Reserve roundoff for the bounded degree, weight ratio and
+            // subdivision depth; difficult weight conditioning declines.
+            let rounding = 4096.0
+                * f64::EPSILON
+                * (magnitude
+                    + sphere.center().x().abs()
+                    + sphere.center().y().abs()
+                    + sphere.center().z().abs());
+            if !rounding.is_finite() || rounding >= tolerance {
+                return Ok(false);
+            }
+            if ((piece.evaluate(f64::midpoint(a, b)) - sphere.center()).length() - sphere.radius())
+                .abs()
+                > tolerance + rounding
+            {
+                return Ok(false);
+            }
+            if lower - rounding >= sphere.radius() - tolerance
+                && upper + rounding <= sphere.radius() + tolerance
+            {
+                continue;
+            }
+            if depth >= 16 {
+                return Ok(false);
+            }
+            let Ok((left, right)) =
+                remus_math::nurbs::knot_ops::curve_split(&piece, f64::midpoint(a, b))
+            else {
+                return Ok(false);
+            };
+            pending.push((right, depth + 1));
+            pending.push((left, depth + 1));
+        }
+    }
+    Ok(true)
+}
+
+/// A complete native equator and one qualified inner loop bound a holed
 /// hemisphere. Project from its excluded pole, constrain both shared loops,
 /// and accept only a triangulation with every boundary segment once, every
 /// interior segment twice, and one coherent outward facet orientation.
@@ -6436,9 +6539,9 @@ fn tessellate_sphere_holed_hemisphere_shared(
         return Ok(false);
     };
     let hole_edges = topo.wire(face.inner_wires()[0])?.edges();
-    if !sphere_conic_loop_on_sphere(topo, sphere, hole_edges)?
-        || !sphere_native_arcs_in_hemisphere(topo, sphere, hole_edges, side)?
-    {
+    let native_conic = sphere_conic_loop_on_sphere(topo, sphere, hole_edges)?
+        && sphere_native_arcs_in_hemisphere(topo, sphere, hole_edges, side)?;
+    if !native_conic && !sphere_nurbs_loop_in_hemisphere(topo, sphere, hole_edges, side)? {
         return Ok(false);
     }
     let pos_save = merged.positions.len();

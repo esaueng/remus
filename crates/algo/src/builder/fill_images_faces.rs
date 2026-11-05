@@ -1548,8 +1548,9 @@ const WINDING_LOOP_MIN_TURN: f64 = 1.5 * std::f64::consts::PI;
 /// `merge_duplicate_edges` cannot pair their edges and the shell opens.
 ///
 /// The decision is per FACE, and only made when that face's whole section set
-/// is closed winding NURBS loops that are STRICTLY ordered in `v` — i.e. when
-/// the band reading is the one that will actually be taken. Opening a loop is
+/// is closed winding NURBS loops that are STRICTLY ordered in `v`, or a lone
+/// loop strictly between a complete lateral's two rims — i.e. when the band
+/// reading is the one that will actually be taken. Opening a loop is
 /// not free: it makes `sections_form_winding_chain` see the winding it was
 /// blind to, which vetoes the internal-loops path. A face whose loops merely
 /// wind, without bounding bands between them, must keep that path.
@@ -1651,11 +1652,26 @@ fn compute_winding_loop_cuts(topo: &Topology, arena: &GfaArena, tol: Tolerance) 
             }
             loops.push((idx, uv));
         }
-        if loops.len() < 2 {
-            // A lone separator splits the lateral in two, which the chain-band
-            // path already handles from its own seam anchoring; opening is
-            // only needed to stack THREE or more bands.
+        if loops.is_empty() {
             continue;
+        }
+        if loops.len() == 1 {
+            // The chain-band emitter seam-splits its own copy of a lone
+            // closed curve. Its mate (a sphere cap, for example) would retain
+            // one closed edge, which the later open-NURBS refinement cannot
+            // pair with those pieces. Prepare the cuts for BOTH faces, but
+            // only for the complete finite lateral the band emitter accepts.
+            let Some((bottom, top)) = complete_lateral_rim_levels(topo, face, seam_u, tol) else {
+                continue;
+            };
+            let gap = tol.linear * 100.0;
+            if !loops[0]
+                .1
+                .iter()
+                .all(|&(_, v)| v > bottom + gap && v < top - gap)
+            {
+                continue;
+            }
         }
 
         // Strictly ordered in v at every u, or there is no band between them.
@@ -1743,6 +1759,65 @@ fn compute_winding_loop_cuts(topo: &Topology, arena: &GfaArena, tol: Tolerance) 
         }
     }
     cuts
+}
+
+/// The two full-turn rims of a hole-free, seam-cut cylindrical/conical band.
+/// Partial rims, additional trims, and unresolved boundary authority decline.
+fn complete_lateral_rim_levels(
+    topo: &Topology,
+    face: &Face,
+    seam_u: f64,
+    tol: Tolerance,
+) -> Option<(f64, f64)> {
+    if !face.inner_wires().is_empty() {
+        return None;
+    }
+    let close_tol = tol.linear * 100.0;
+    let mut rims = Vec::new();
+    let mut seams = Vec::new();
+    let wire = topo.wire(face.outer_wire()).ok()?;
+    if !wire.is_closed() {
+        return None;
+    }
+    for oe in wire.edges() {
+        let edge = topo.edge(oe.edge()).ok()?;
+        let start = topo.vertex(edge.start()).ok()?.point();
+        let end = topo.vertex(edge.end()).ok()?.point();
+        let closed = (start - end).length() < close_tol;
+        match (edge.curve(), closed) {
+            (EdgeCurve::Circle(_), true) => {}
+            (EdgeCurve::Ellipse(ellipse), true)
+                if (ellipse.semi_major() - ellipse.semi_minor()).abs() < tol.linear => {}
+            (EdgeCurve::Line, false) => {
+                seams.push((oe.edge(), oe.is_forward()));
+                continue;
+            }
+            (
+                EdgeCurve::Circle(_)
+                | EdgeCurve::Ellipse(_)
+                | EdgeCurve::Line
+                | EdgeCurve::NurbsCurve(_)
+                | EdgeCurve::Hyperbola(_)
+                | EdgeCurve::Parabola(_),
+                _,
+            ) => return None,
+        }
+        let (a, b) = edge.strict_domain().ok()?;
+        if ((b - a).abs() - std::f64::consts::TAU).abs() > tol.angular {
+            return None;
+        }
+        let (_, v) = face.surface().project_point(start)?;
+        if (face.surface().evaluate(seam_u, v)? - start).length() >= close_tol {
+            return None;
+        }
+        rims.push(v);
+    }
+    if rims.len() != 2 || seams.len() != 2 || seams[0].0 != seams[1].0 || seams[0].1 == seams[1].1 {
+        return None;
+    }
+    let bottom = rims[0].min(rims[1]);
+    let top = rims[0].max(rims[1]);
+    (top - bottom > close_tol).then_some((bottom, top))
 }
 
 /// Whether both faces of an intersection curve are cylinders of the SAME
