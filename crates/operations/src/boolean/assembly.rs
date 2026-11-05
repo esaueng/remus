@@ -100,6 +100,18 @@ pub(crate) fn ccw_arc_trim(
     Ok((t0, t1))
 }
 
+/// Whether a face on `surface` can carry a seam: an edge its loop traverses
+/// twice, once each way, where the periodic parameter wraps.
+const fn surface_is_periodic(surface: &FaceSurface) -> bool {
+    match surface {
+        FaceSurface::Cylinder(_)
+        | FaceSurface::Cone(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => true,
+        FaceSurface::Plane { .. } | FaceSurface::Nurbs(_) => false,
+    }
+}
+
 /// A torus patch is arc-minting only when every loop edge arrives as an
 /// analytic override. Torus seam arcs are small circles with independent
 /// centers (unlike sphere-cap great circles), so positional inference can
@@ -1279,11 +1291,27 @@ fn assemble_solid_mixed_traced(
                     // Skip duplicate edges anywhere in the wire (not just consecutive).
                     // Duplicates arise when the polygon revisits a vertex pair due to
                     // degenerate splits or vertex merging.
-                    if oriented_edges
+                    //
+                    // The one exception is a periodic face's seam: the loop runs up
+                    // the seam, round the face and back down it, so the second use
+                    // is the same edge in the opposite direction with the rest of
+                    // the loop in between. A wall rebuilt here rather than as a
+                    // `CylindricalFace` (because it keeps an earlier blend's NURBS
+                    // boundary) has exactly that wire; dropping the return use
+                    // leaves the seam free and the loop open.
+                    let mut previous_uses = oriented_edges
                         .iter()
-                        .any(|oe: &OrientedEdge| oe.edge() == edge_id)
-                    {
-                        continue;
+                        .filter(|oe: &&OrientedEdge| oe.edge() == edge_id);
+                    if let Some(first_use) = previous_uses.next() {
+                        let seam_return = surface_is_periodic(&surface)
+                            && previous_uses.next().is_none()
+                            && first_use.is_forward() != is_forward
+                            && oriented_edges
+                                .last()
+                                .is_some_and(|last: &OrientedEdge| last.edge() != edge_id);
+                        if !seam_return {
+                            continue;
+                        }
                     }
                     oriented_edges.push(OrientedEdge::new(edge_id, is_forward));
                 }

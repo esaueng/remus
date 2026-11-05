@@ -11377,3 +11377,94 @@ fn scaling_nway_ef_samples_each_face_outline_once() {
         );
     }
 }
+
+/// A cylinder wall that reaches the generic `Surface` path (it keeps a
+/// retained curve, so no `CylindricalFace` inference is wanted) runs up its
+/// seam, round the face and back down the seam. The second, opposite-direction
+/// use of the seam is the face's own boundary and must stay in the wire: the
+/// "skip duplicate edges anywhere" rule used to drop it, leaving the seam free
+/// and the loop open after the rim of a previously blended boss was filleted.
+#[test]
+fn generic_surface_wall_keeps_its_seam_return_use() {
+    use remus_math::curves::Circle3D;
+    use remus_math::surfaces::CylindricalSurface;
+
+    let tau = std::f64::consts::TAU;
+    let tol = Tolerance::new();
+    let at = |angle: f64, z: f64| Point3::new(angle.cos(), angle.sin(), z);
+    let thirds = [0.0, tau / 3.0, 2.0 * tau / 3.0];
+    let (s0, b0, c0) = (at(thirds[0], 0.0), at(thirds[1], 0.0), at(thirds[2], 0.0));
+    let (s1, b1, c1) = (at(thirds[0], 1.0), at(thirds[1], 1.0), at(thirds[2], 1.0));
+
+    let mut curves = Vec::new();
+    for z in [0.0, 1.0] {
+        let circle = Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, z),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        for k in 0..3 {
+            let (t0, t1) = (thirds[k], if k == 2 { tau } else { thirds[k + 1] });
+            curves.push(BoundaryCurveOverride {
+                start: at(t0, z),
+                end: at(t1, z),
+                curve: EdgeCurve::Circle(circle.clone()),
+                trim: (t0, t1),
+            });
+        }
+    }
+    let cylinder =
+        CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+    let specs = vec![
+        FaceSpec::Surface {
+            // Bottom rim in +u, up the seam, top rim in -u, back down the seam.
+            vertices: vec![s0, b0, c0, s0, s1, c1, b1, s1],
+            surface: FaceSurface::Cylinder(cylinder),
+            reversed: false,
+            inner_wires: vec![],
+        },
+        FaceSpec::Planar {
+            vertices: vec![s0, c0, b0],
+            normal: Vec3::new(0.0, 0.0, -1.0),
+            d: 0.0,
+            inner_wires: vec![],
+        },
+        FaceSpec::Planar {
+            vertices: vec![s1, b1, c1],
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 1.0,
+            inner_wires: vec![],
+        },
+    ];
+
+    let mut topo = Topology::new();
+    let solid = assemble_solid_mixed_with_history_and_curves(&mut topo, &specs, &curves, tol)
+        .unwrap()
+        .solid;
+
+    let wall = remus_topology::explorer::solid_faces(&topo, solid)
+        .unwrap()
+        .into_iter()
+        .find(|&f| matches!(topo.face(f).unwrap().surface(), FaceSurface::Cylinder(_)))
+        .expect("cylinder wall");
+    let wire = topo.wire(topo.face(wall).unwrap().outer_wire()).unwrap();
+    assert_eq!(
+        wire.edges().len(),
+        8,
+        "three arcs per rim plus the seam twice"
+    );
+    let seam_uses: Vec<bool> = wire
+        .edges()
+        .iter()
+        .filter(|oe| matches!(topo.edge(oe.edge()).unwrap().curve(), EdgeCurve::Line))
+        .map(OrientedEdge::is_forward)
+        .collect();
+    assert_eq!(seam_uses.len(), 2, "the seam is used once each way");
+    assert_ne!(seam_uses[0], seam_uses[1]);
+
+    let report = crate::validate::validate_solid(&topo, solid).unwrap();
+    assert!(report.is_valid(), "{:?}", report.issues);
+    assert_volume_near(&topo, solid, std::f64::consts::PI, 1e-6);
+}
