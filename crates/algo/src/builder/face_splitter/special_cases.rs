@@ -2704,6 +2704,11 @@ pub(super) fn split_periodic_face_into_bands(
         return None;
     }
 
+    // Each band seam is a piece of a boundary seam Line, so it carries that
+    // edge's construction source (lineage and tolerance) like any other split
+    // boundary piece. `seam_source` names it only when the piece lies on one
+    // sourced seam edge, or on several that agree.
+    let seam_spans = super::seam_spans(surface, &seam_edges);
     let mk_seam = |va: f64, vb: f64| -> Option<OrientedPCurveEdge> {
         let pa = surface.evaluate(seam_u, va)?;
         let pb = surface.evaluate(seam_u, vb)?;
@@ -2720,7 +2725,7 @@ pub(super) fn split_periodic_face_into_bands(
             forward: true,
             source_edge_idx: None,
             pave_block_id: None,
-            source_topo_edge: None,
+            source_topo_edge: super::seam_source(&seam_spans, va.min(vb), va.max(vb), close_tol),
         })
     };
 

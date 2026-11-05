@@ -1618,6 +1618,43 @@ fn split_sections_at_seam_meridian(
     out
 }
 
+/// Each boundary seam Line's axial span `[lo, hi]` and construction source.
+///
+/// A band emitter rebuilds the seam between its levels, and each rebuilt
+/// piece lies on one of these Lines, so it carries that edge's source
+/// (lineage and tolerance) like any other split boundary piece. A span that
+/// does not project is left out: it can only withhold a source, never change
+/// whether an emitter applies.
+fn seam_spans(
+    surface: &FaceSurface,
+    seam_edges: &[&OrientedPCurveEdge],
+) -> Vec<(f64, f64, Option<usize>)> {
+    seam_edges
+        .iter()
+        .filter_map(|e| {
+            let (_, va) = surface.project_point(e.start_3d)?;
+            let (_, vb) = surface.project_point(e.end_3d)?;
+            Some((va.min(vb), va.max(vb), e.source_topo_edge))
+        })
+        .collect()
+}
+
+/// The construction source of a seam piece spanning `[lo, hi]`: the
+/// `source_topo_edge` shared by every [`seam_spans`] entry that covers it.
+/// `None` when no span covers the piece, a covering span has no source, or
+/// covering spans disagree, so an unsourced piece stays honestly unresolved
+/// rather than borrowing a neighbour's edge.
+fn seam_source(spans: &[(f64, f64, Option<usize>)], lo: f64, hi: f64, tol: f64) -> Option<usize> {
+    let mut covering = spans
+        .iter()
+        .filter(|&&(s_lo, s_hi, _)| s_lo <= lo + tol && hi <= s_hi + tol)
+        .map(|&(_, _, source)| source);
+    let first = covering.next()??;
+    covering
+        .all(|source| source == Some(first))
+        .then_some(first)
+}
+
 /// Split a u-periodic cylinder/cone lateral into STACKED BANDS along every
 /// section chain that winds the periodic direction — the chain generalization
 /// of [`split_periodic_face_into_bands`], whose separators must be closed
@@ -1873,6 +1910,7 @@ fn split_periodic_face_by_winding_chain(
         }
     }
 
+    let seam_spans = seam_spans(surface, &seam_edges);
     let mk_seam = |va: f64, vb: f64, pa: Point3, pb: Point3| -> Option<OrientedPCurveEdge> {
         let dir = remus_math::vec::Vec2::new(0.0, if vb > va { 1.0 } else { -1.0 });
         let pcurve = remus_math::curves2d::Curve2D::Line(
@@ -1889,7 +1927,7 @@ fn split_periodic_face_by_winding_chain(
             forward: true,
             source_edge_idx: None,
             pave_block_id: None,
-            source_topo_edge: None,
+            source_topo_edge: seam_source(&seam_spans, va.min(vb), va.max(vb), close_tol),
         })
     };
 
@@ -2281,6 +2319,7 @@ fn split_periodic_face_by_rim_chains(
         }
         Some(out)
     };
+    let seam_spans = seam_spans(surface, &seam_edges);
     let mk_seam = |va: f64, vb: f64, pa: Point3, pb: Point3| -> Option<OrientedPCurveEdge> {
         let dir = remus_math::vec::Vec2::new(0.0, if vb > va { 1.0 } else { -1.0 });
         let pcurve = remus_math::curves2d::Curve2D::Line(
@@ -2297,7 +2336,7 @@ fn split_periodic_face_by_rim_chains(
             forward: true,
             source_edge_idx: None,
             pave_block_id: None,
-            source_topo_edge: None,
+            source_topo_edge: seam_source(&seam_spans, va.min(vb), va.max(vb), close_tol),
         })
     };
     // `(u, v)` of a rim span's middle piece midpoint.
