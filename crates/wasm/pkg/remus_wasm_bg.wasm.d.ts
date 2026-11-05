@@ -343,6 +343,7 @@ export const remuskernel_resizeBlend: (a: number, b: number, c: number, d: numbe
 export const remuskernel_resizeBlendJournaled: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
 export const remuskernel_resizeBlendWithEvolution: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const remuskernel_resizeCylindricalFace: (a: number, b: number, c: number, d: number) => [number, number, number];
+export const remuskernel_resizeCylindricalFaceDetailed: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const remuskernel_resizeCylindricalFaceJournaled: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const remuskernel_resolveOperationOutput: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
 export const remuskernel_resolveRef: (a: number, b: number, c: number) => [number, number, number, number];
