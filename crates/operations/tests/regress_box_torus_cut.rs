@@ -23,7 +23,7 @@
 //! two rim-to-rim arcs, and the exact volume integrator found the window from
 //! the largest gap between sampled angles, which on the band's near-evenly
 //! spread seam vertices read the whole tube (2004 mm³ light). Both now read
-//! the window from the band's own seam (`torus_latitude_band_v_range`).
+//! the window from the band's own seam (`torus_band_tube_window`).
 //!
 //! An oblique plane (the matrix's 10° tilt) still has no exact band split, so
 //! a complete torus crossed by a closed section loop the splitter cannot cut

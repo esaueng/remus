@@ -4275,7 +4275,7 @@ fn analytic_torus_signed_volume(
     // wider than half the tube as the whole tube (a box cut by a torus whose
     // plane sits 3 of 4 tube radii off the tube centre read 2004 mm³ light).
     if !whole
-        && let Some(band) = crate::tessellate::torus_latitude_band_v_range(topo, face, tor)?
+        && let Some(band) = crate::tessellate::torus_band_tube_window(topo, face, tor)?
         && band.seam_decided
     {
         let vol = torus_window_volume(tor, (0.0, std::f64::consts::TAU), band.range, reference);

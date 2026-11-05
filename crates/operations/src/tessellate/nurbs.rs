@@ -97,7 +97,7 @@ pub(super) fn cone_chart_radius(
 /// Compute the tube-angle (v) range for a toroidal face from its wire boundary.
 ///
 /// A full torus has no boundary constraint on v, so the default is the full
-/// tube `(0, TAU)`. A toroidal *band* (see [`torus_latitude_band_v_range`])
+/// tube `(0, TAU)`. A toroidal *band* (see [`torus_band_tube_window`])
 /// fills the arc between its two rims. Returns `(0, TAU)` whenever the
 /// boundary doesn't clearly describe such a band (preserving full-tube
 /// tessellation for every other toroidal face).
@@ -106,14 +106,14 @@ pub(super) fn compute_torus_v_range(
     face_data: &remus_topology::face::Face,
     torus: &remus_math::surfaces::ToroidalSurface,
 ) -> Result<(f64, f64), crate::OperationsError> {
-    Ok(torus_latitude_band_v_range(topo, face_data, torus)?
+    Ok(torus_band_tube_window(topo, face_data, torus)?
         .map_or((0.0, std::f64::consts::TAU), |band| band.range))
 }
 
 /// The tube-angle window of a torus latitude band, as read by
-/// [`torus_latitude_band_v_range`].
+/// [`torus_band_tube_window`].
 #[derive(Debug, Clone, Copy)]
-pub struct TorusLatitudeBand {
+pub struct TorusBandWindow {
     /// `(v_start, v_end)` with `v_start < v_end <= v_start + TAU`; the band
     /// covers the tube angles between them.
     pub range: (f64, f64),
@@ -132,11 +132,11 @@ pub struct TorusLatitudeBand {
 /// a closed torus split into bands carries) their side decides, whichever
 /// arc is longer. Without a seam the band is the shorter arc (a rim-fillet
 /// quarter torus spans π/2). `None` when the boundary is not such a band.
-pub fn torus_latitude_band_v_range(
+pub fn torus_band_tube_window(
     topo: &Topology,
     face_data: &remus_topology::face::Face,
     torus: &remus_math::surfaces::ToroidalSurface,
-) -> Result<Option<TorusLatitudeBand>, crate::OperationsError> {
+) -> Result<Option<TorusBandWindow>, crate::OperationsError> {
     use remus_topology::edge::EdgeCurve;
     use std::f64::consts::{PI, TAU};
 
@@ -248,7 +248,7 @@ pub fn torus_latitude_band_v_range(
         // Seam pieces on both arcs: not a single band.
         _ => return Ok(None),
     };
-    Ok(Some(TorusLatitudeBand {
+    Ok(Some(TorusBandWindow {
         range: if unwrapped { (lo, hi) } else { (hi, lo + TAU) },
         seam_decided: seam_votes != (0, 0) && !other_boundary,
     }))

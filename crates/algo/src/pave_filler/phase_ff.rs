@@ -775,6 +775,15 @@ fn perform_seeded(
                 equal_cone_frustum_section(topo, fa, fb, surf_a, surf_b, tol)?
             {
                 exact
+            } else if let Some(circles) = closed_torus_axis_normal_section(
+                topo,
+                fa,
+                fb,
+                plane_a.as_ref().unwrap_or(surf_a),
+                plane_b.as_ref().unwrap_or(surf_b),
+                tol,
+            )? {
+                circles
             } else {
                 compute_raw_curves(
                     plane_a.as_ref().unwrap_or(surf_a),
@@ -7451,19 +7460,60 @@ fn find_plane_plane_point(na: Vec3, da: f64, nb: Vec3, db: f64, dir: Vec3) -> Po
     )
 }
 
-/// The exact section of a ring torus by a plane normal to its axis: two
-/// concentric latitude circles (constant tube angle) when the plane crosses
-/// the tube transversally.
+/// The exact section of a complete torus face by a plane normal to its axis:
+/// two concentric latitude circles (constant tube angle) when the plane
+/// crosses the tube transversally.
 ///
-/// The generic plane-analytic path samples every plane x torus section into
+/// The generic plane-analytic path samples every plane × torus section into
 /// point chains that are refit as NURBS. A latitude circle is exactly the
 /// curve the closed-torus band splitter cuts along, and that splitter
 /// accepts only `Circle` sections: given the refit curves it declined, the
 /// torus face reached assembly unsplit and was dropped whole, so a box cut by
 /// a half-embedded torus came back unchanged.
 ///
-/// `None` keeps the sampled path for every other configuration (oblique and
-/// meridian planes, tangency, misses), so their trimming is unchanged.
+/// Only a complete torus (its boundary all degenerate seam edges) takes this
+/// path. A trimmed torus patch (a fillet) keeps the sampled path its
+/// trimming was built on: an exact circle there split a coplanar neighbour
+/// it used to leave whole. `None` also keeps the sampled path for oblique
+/// and meridian planes, tangency and misses.
+fn closed_torus_axis_normal_section(
+    topo: &Topology,
+    fa: FaceId,
+    fb: FaceId,
+    surf_a: &FaceSurface,
+    surf_b: &FaceSurface,
+    tol: Tolerance,
+) -> Result<Option<Vec<RawCurve>>, AlgoError> {
+    let (normal, d, torus, torus_face) = match (surf_a, surf_b) {
+        (FaceSurface::Plane { normal, d }, FaceSurface::Torus(torus)) => (*normal, *d, torus, fb),
+        (FaceSurface::Torus(torus), FaceSurface::Plane { normal, d }) => (*normal, *d, torus, fa),
+        // B24: exhaustive over the `FaceSurface` pair — only a plane ×
+        // torus pair has a latitude section.
+        (
+            FaceSurface::Plane { .. }
+            | FaceSurface::Nurbs(_)
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_),
+            _,
+        )
+        | (
+            FaceSurface::Torus(_),
+            FaceSurface::Nurbs(_)
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_),
+        ) => return Ok(None),
+    };
+    if !face_boundary_all_degenerate(topo, torus_face, tol)? {
+        return Ok(None);
+    }
+    axis_normal_torus_section_circles(torus, normal, d)
+}
+
+/// The two transversal latitude circles of an axis-normal plane × torus
+/// section, or `None` for any other plane or contact.
 fn axis_normal_torus_section_circles(
     torus: &remus_math::surfaces::ToroidalSurface,
     normal: Vec3,
@@ -7546,11 +7596,6 @@ fn plane_analytic_intersection(
         && let analytic_intersection::AnalyticSurface::Cone(cone) = analytic
         && let Some(v_max) = cone_v_max
         && let Some(curves) = cone_plane::parallel_section(cone, normal, d, v_max)
-    {
-        return Ok(curves);
-    }
-    if let analytic_intersection::AnalyticSurface::Torus(torus) = analytic
-        && let Some(curves) = axis_normal_torus_section_circles(torus, normal, d)?
     {
         return Ok(curves);
     }
