@@ -570,6 +570,22 @@ pub fn fill_images_faces(
 
         if split_results.is_empty() {
             log::warn!("fill_images_faces: split_face_2d returned empty for face {face_id:?}");
+            // A complete torus has no boundary of its own, so a closed section
+            // loop running across it must cut it: kept whole, the face is
+            // classified by one interior point and either survives or is
+            // dropped entirely, and the result reads as the untouched other
+            // operand (a box cut by a tilted half-embedded torus came back
+            // unchanged). Refuse instead of assembling it.
+            if closed_torus_face(topo, face_id)?
+                && sections
+                    .iter()
+                    .any(|section| closed_section_loop(section, tol.linear))
+            {
+                return Err(AlgoError::FaceSplitFailed(format!(
+                    "closed torus face {face_id:?} is crossed by a closed section loop \
+                     the band splitter cannot cut"
+                )));
+            }
             // Opt-in probe: only emits with BK_WALLBAND set (see module docs).
             if std::env::var("BK_WALLBAND").is_ok() {
                 for (si, sec) in sections.iter().enumerate() {
@@ -6082,3 +6098,38 @@ mod tests {
 
 #[cfg(test)]
 mod helper_oracle_tests;
+
+/// Whether `face_id` is a complete torus: a toroidal face with no inner wires
+/// whose outer wire is only the degenerate seam `Line` edges of the
+/// fundamental polygon (each starting and ending at the one seam vertex).
+fn closed_torus_face(topo: &Topology, face_id: FaceId) -> Result<bool, AlgoError> {
+    let face = topo.face(face_id)?;
+    if !matches!(face.surface(), FaceSurface::Torus(_)) || !face.inner_wires().is_empty() {
+        return Ok(false);
+    }
+    let wire = topo.wire(face.outer_wire())?;
+    if wire.edges().is_empty() {
+        return Ok(false);
+    }
+    for oriented in wire.edges() {
+        let edge = topo.edge(oriented.edge())?;
+        if edge.start() != edge.end() || !matches!(edge.curve(), EdgeCurve::Line) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Whether `section` is a closed curved loop of real length: its ends meet
+/// and its midpoint lies away from them.
+fn closed_section_loop(section: &SectionEdge, tol: f64) -> bool {
+    if matches!(section.curve_3d, EdgeCurve::Line) || (section.start - section.end).length() > tol {
+        return false;
+    }
+    let (t0, t1) = section.domain();
+    let mid =
+        section
+            .curve_3d
+            .evaluate_with_endpoints(f64::midpoint(t0, t1), section.start, section.end);
+    (mid - section.start).length() > tol
+}

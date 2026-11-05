@@ -203,6 +203,14 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
   together unsplit (six faces, one validation error), so a strict union gate
   refused every such union. Only cylinders proved apart or touching are kept
   as separate lumps now; parallel-cylinder clusters are unchanged.
+* A box cut by a complete torus whose box face is normal to the torus axis
+  (`cut`, `cutDetailed`, both batches) no longer returns the box unchanged
+  with status ok: the face's two latitude sections are now exact circles,
+  so the torus splits into bands and the cut keeps the right one. `fuse` in
+  either order is exact too. `volume` and per-face tessellation now read a
+  kept band wider than half the tube correctly (they read the whole tube or
+  the opposite band). A tilted face, whose section is not a circle, now
+  refuses with a typed error instead of dropping the torus.
 * `fuseWithEntityEvolution` and `cutWithEntityEvolution` (direct and batch)
   no longer report a round boss's kept seam piece as `unresolved` when a
   ring cuts the boss wall into bands: a cylinder boss fused into a block's

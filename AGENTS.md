@@ -753,6 +753,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Browser-facing spline chamfer contracts through both batch envelopes | `bindings/chamfer_freeform_tests.rs` |
 | Sequential fillet onto an earlier blend band (contract test) | `bindings/sequential_fillet_tests.rs` |
 | Direct and both batch WASM qualification of `fuseAll` on crossing cylinders (bar and drill, centred, off-centre, equal radius, three scales): split, validator-clean and equal to the pairwise `fuse` | `bindings/cylinder_cross_fuse_all_tests.rs` |
+| Direct (`cutDetailed`/`fuseDetailed`) and both batch WASM qualification of box × complete-torus booleans cut normal to the torus axis: Pappus closed-form volumes at three scales, both fuse orders, and the tilted cut refused rather than returned unchanged | `bindings/box_torus_cut_tests.rs` |
 | Direct and both batch WASM qualification of the B38 sphere–torus orientation repair (P-Class 8.1 seeds 5201 and 1146): exact, validator-clean, slice-integral volumes, watertight meshes, refusal rollback | `bindings/sphere_torus_orientation_tests.rs` |
 | Entity-evolution and journal bindings | `bindings/evolution.rs` |
 | Typed persistent GCS sketch bindings | `bindings/gcs_sketch.rs` |

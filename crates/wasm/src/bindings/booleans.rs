@@ -2415,3 +2415,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "box_torus_cut_tests.rs"]
+mod box_torus_cut_tests;
