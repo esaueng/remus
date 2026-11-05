@@ -627,6 +627,29 @@ impl From<remus_operations::OperationsError> for StructuredWasmError {
             remus_operations::OperationsError::InvalidInput { .. } => {
                 Self::invalid_argument(message, None)
             }
+            // Same wire code as the untyped inside-out refusal it replaces
+            // (`invalid_argument`), with a stable native code beside it.
+            // `operation` is left to the binding context, which names the
+            // JS entry point.
+            remus_operations::OperationsError::OffsetCollapsed {
+                distance,
+                thickness,
+                ..
+            } => {
+                let mut structured = Self::invalid_argument(message, Some("distance"));
+                structured
+                    .details
+                    .insert("kernelCode".to_string(), Value::from("offset_collapsed"));
+                structured
+                    .details
+                    .insert("distance".to_string(), Value::from(distance));
+                if let Some(thickness) = thickness {
+                    structured
+                        .details
+                        .insert("thickness".to_string(), Value::from(thickness));
+                }
+                structured
+            }
             remus_operations::OperationsError::Unsupported {
                 operation: "sweep" | "sweep_guided",
                 ..

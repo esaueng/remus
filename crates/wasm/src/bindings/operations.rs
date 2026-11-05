@@ -3284,22 +3284,28 @@ mod tests {
         )
     }
 
+    /// A 10 mm box offset by -6 used to be this witness, failing its
+    /// inside-out postcondition after construction; it is now certified
+    /// collapsed before construction (below). An L-section prism whose 1 mm
+    /// arms an inward -0.6 erases keeps the post-allocation rollback witness:
+    /// its thinnest face-normal slab (2 mm) certifies nothing, so the engine
+    /// runs, allocates, and fails in assembly.
     #[test]
-    fn direct_offset_exports_rollback_postcondition_failure() {
+    fn direct_offset_exports_rollback_post_allocation_failure() {
         let mut kernel = RemusKernel::new();
-        let solid = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
+        let solid = l_bracket_handle(&mut kernel);
         let before = topology_counts(kernel.topo());
 
         let mut native_topology = kernel.topo().clone();
         let slots_before = native_topology.allocated_slot_count();
         let solid_id = kernel.resolve_solid(solid).unwrap();
         let error =
-            remus_operations::offset_v2::offset_solid_v2(&mut native_topology, solid_id, -6.0)
-                .expect_err("collapsed offset must fail its postcondition");
-        assert!(error.to_string().contains("collapsed"));
-        // Native offsets now roll back too. Retired arena slots prove that
-        // this still exercises a post-allocation failure rather than merely
-        // refusing the input before construction.
+            remus_operations::offset_v2::offset_solid_v2(&mut native_topology, solid_id, -0.6)
+                .expect_err("the L prism's arms vanish; the offset must fail");
+        assert!(error.to_string().contains("assembly failed"), "{error}");
+        // Native offsets roll back. Retired arena slots prove that this
+        // exercises a post-allocation failure rather than merely refusing
+        // the input before construction.
         assert!(
             native_topology.allocated_slot_count() > slots_before,
             "witness must exercise a failure after topology allocation"
@@ -3307,11 +3313,110 @@ mod tests {
         assert_eq!(topology_counts(&native_topology), before);
 
         let error = kernel
-            .offset_solid_impl(solid, -6.0)
-            .expect_err("direct offset must surface the collapse refusal");
-        assert!(error.to_string().contains("collapsed"));
+            .offset_solid_impl(solid, -0.6)
+            .expect_err("direct offset must surface the assembly refusal");
+        assert!(error.to_string().contains("assembly failed"), "{error}");
         assert_eq!(topology_counts(kernel.topo()), before);
         assert!(kernel.resolve_solid(solid).is_ok());
+    }
+
+    /// The certified collapse answers alike on every surface: native typed
+    /// `OffsetCollapsed`; legacy direct and batch v1 by message; batch v2
+    /// `invalid_argument` with `kernelCode: offset_collapsed`; detailed
+    /// (direct and through both batches) `offset_collapsed` itself. None of
+    /// them changes the session.
+    #[test]
+    fn offset_collapse_refusal_agrees_across_native_direct_and_batch() {
+        let mut kernel = RemusKernel::new();
+        let solid = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
+        let other = kernel.make_box_solid(2.0, 2.0, 2.0).unwrap();
+        let before = topology_counts(kernel.topo());
+        let journal = kernel.topo().journal().snapshot();
+        let slots = kernel.topo().allocated_slot_count();
+        let unchanged = |kernel: &RemusKernel, label: &str| {
+            assert_eq!(topology_counts(kernel.topo()), before, "{label}");
+            assert_eq!(kernel.topo().journal().snapshot(), journal, "{label}");
+            assert_eq!(kernel.topo().allocated_slot_count(), slots, "{label}");
+            assert!(kernel.resolve_solid(solid).is_ok(), "{label}");
+            assert!(kernel.resolve_solid(other).is_ok(), "{label}");
+        };
+
+        for distance in [-5.0, -6.0, -1e6] {
+            let solid_id = kernel.resolve_solid(solid).unwrap();
+            let mut native = kernel.topo().clone();
+            let error =
+                remus_operations::offset_v2::offset_solid_v2(&mut native, solid_id, distance)
+                    .unwrap_err();
+            assert!(
+                matches!(
+                    error,
+                    remus_operations::OperationsError::OffsetCollapsed {
+                        thickness: Some(t),
+                        ..
+                    } if (t - 10.0).abs() < 1e-12
+                ),
+                "{error:?}"
+            );
+            let message = error.to_string();
+            assert!(message.contains("collapsed the solid"), "{message}");
+
+            let direct = kernel.offset_solid_impl(solid, distance).unwrap_err();
+            assert_eq!(direct.to_string(), message, "legacy direct");
+            unchanged(&kernel, "legacy direct");
+
+            let detailed =
+                serde_json::to_value(kernel.offset_detailed_impl(solid, distance, false)).unwrap();
+            assert_eq!(detailed["status"], "error", "{detailed}");
+            assert_eq!(detailed["code"], "offset_collapsed", "{detailed}");
+            assert_eq!(detailed["category"], "invalid_input", "{detailed}");
+            assert_eq!(detailed["details"]["thickness"], 10.0, "{detailed}");
+            assert_eq!(detailed["details"]["distance"], distance, "{detailed}");
+            assert_eq!(
+                detailed["details"]["message"],
+                message.as_str(),
+                "{detailed}"
+            );
+            unchanged(&kernel, "detailed");
+
+            for operation in ["offsetSolidV2", "offsetDetailed"] {
+                let request = serde_json::json!([{
+                    "op": operation,
+                    "args": { "solid": solid, "distance": distance }
+                }])
+                .to_string();
+                let v1: serde_json::Value =
+                    serde_json::from_str(&kernel.execute_batch(&request)).unwrap();
+                let v2: serde_json::Value =
+                    serde_json::from_str(&kernel.execute_batch_v2(&request)).unwrap();
+                unchanged(&kernel, operation);
+                if operation == "offsetDetailed" {
+                    for row in [&v1[0]["ok"], &v2[0]["ok"]] {
+                        assert_eq!(row["status"], "error", "{row}");
+                        assert_eq!(row["code"], "offset_collapsed", "{row}");
+                        assert_eq!(row["category"], "invalid_input", "{row}");
+                        assert_eq!(row["details"]["message"], message.as_str(), "{row}");
+                    }
+                } else {
+                    assert_eq!(v1[0]["error"], message.as_str(), "{v1}");
+                    let error = &v2[0]["error"];
+                    assert_eq!(error["code"], "invalid_argument", "{error}");
+                    assert_eq!(error["category"], "invalid_input", "{error}");
+                    assert_eq!(
+                        error["details"]["kernelCode"], "offset_collapsed",
+                        "{error}"
+                    );
+                    assert_eq!(error["details"]["argument"], "distance", "{error}");
+                    assert_eq!(error["details"]["thickness"], 10.0, "{error}");
+                    assert_eq!(error["message"], message.as_str(), "{error}");
+                }
+            }
+        }
+
+        // Just short of the half-thickness the offset is still a body.
+        let result = kernel.offset_solid_impl(solid, -4.9).unwrap();
+        let result = kernel.resolve_solid(result).unwrap();
+        let volume = remus_operations::measure::solid_volume(kernel.topo(), result, 0.001).unwrap();
+        assert!((volume - 0.2_f64.powi(3)).abs() < 1e-9, "{volume}");
     }
 
     #[test]

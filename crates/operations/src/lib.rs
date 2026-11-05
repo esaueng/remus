@@ -501,6 +501,33 @@ pub enum OperationsError {
     #[error("offset: {0}")]
     Offset(#[from] remus_offset::OffsetError),
 
+    /// An inward offset reached the body's own half-thickness, so the
+    /// boundary would pass through itself and nothing of positive volume
+    /// remains.
+    ///
+    /// Refused before construction when the body's thickness is certified
+    /// (`thickness` is `Some`: an all-planar, straight-edged solid lies
+    /// between two parallel planes no more than `2 * |distance|` apart), and
+    /// after construction when the result's outer shell came out inside out
+    /// (`thickness` is `None`). Either way the topology, journal and handles
+    /// are rolled back. A geometric condition of this body and distance, not
+    /// a malformed argument: a smaller `|distance|` succeeds.
+    #[error(
+        "{operation} collapsed the solid: inward offset {distance} {}",
+        match thickness {
+            Some(t) => format!("reaches half of the body's thickness {t}"),
+            None => "turned the result's outer shell inside out".to_string(),
+        }
+    )]
+    OffsetCollapsed {
+        /// Name of the offset operation (`"offset"` or `"arc offset"`).
+        operation: &'static str,
+        /// The requested signed offset distance (negative: inward).
+        distance: f64,
+        /// Certified minimum thickness of the body, model units, when known.
+        thickness: Option<f64>,
+    },
+
     /// An operation completed only a subset of the requested items.
     #[error("{operation} produced a partial result: {succeeded} succeeded, {failed} failed")]
     PartialResult {
