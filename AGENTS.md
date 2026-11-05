@@ -751,6 +751,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Fillet fail-closed contract tests | `bindings/fillet_fail_closed_tests.rs` |
 | Browser-facing spline chamfer contracts through both batch envelopes | `bindings/chamfer_freeform_tests.rs` |
 | Sequential fillet onto an earlier blend band (contract test) | `bindings/sequential_fillet_tests.rs` |
+| Direct and both batch WASM qualification of the B38 sphere–torus orientation repair (P-Class 8.1 seeds 5201 and 1146): exact, validator-clean, slice-integral volumes, watertight meshes, refusal rollback | `bindings/sphere_torus_orientation_tests.rs` |
 | Entity-evolution and journal bindings | `bindings/evolution.rs` |
 | Typed persistent GCS sketch bindings | `bindings/gcs_sketch.rs` |
 | Linked planar GCS attachment and fixed external lines | `bindings/linked_sketch.rs` |
