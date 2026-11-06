@@ -31,6 +31,11 @@ pub struct Spine {
     /// point "backwards". Without this the spine samples those edges from the
     /// wrong end and its parameterization jumps around instead of advancing.
     forward: Vec<bool>,
+    /// Station of a closed spine at which its parameter `0` sits. A closed
+    /// spine may start between vertices: a band whose contact must close on
+    /// a periodic support's seam starts there (see
+    /// [`Spine::with_origin`]). Always `0` for an open spine.
+    origin: f64,
 }
 
 /// Arc length used by the walker's global spine parameter.
@@ -81,6 +86,7 @@ impl Spine {
             length,
             is_closed: edge.is_closed(),
             forward: vec![true],
+            origin: 0.0,
         })
     }
 
@@ -150,7 +156,33 @@ impl Spine {
             length: cumulative,
             is_closed,
             forward,
+            origin: 0.0,
         })
+    }
+
+    /// This closed spine with its parameter origin moved to `station`
+    /// (an unrotated station in `[0, length)`): `evaluate(0)` is then the
+    /// point at `station`, and the parameter still advances along the chain.
+    /// An open spine is returned unchanged.
+    #[must_use]
+    pub fn with_origin(mut self, station: f64) -> Self {
+        if self.is_closed && self.length > 0.0 && station.is_finite() {
+            self.origin = station.rem_euclid(self.length);
+        }
+        self
+    }
+
+    /// Per-edge traversal flags: `false` where the chain runs against the
+    /// edge's own start→end orientation.
+    #[must_use]
+    pub fn forward(&self) -> &[bool] {
+        &self.forward
+    }
+
+    /// Unrotated station of the chain vertex where edge `index` is entered.
+    #[must_use]
+    pub fn edge_entry_station(&self, index: usize) -> Option<f64> {
+        self.params.get(index).copied()
     }
 
     /// Total arc length.
@@ -180,7 +212,13 @@ impl Spine {
     /// Map a global spine parameter `s in [0, length]` to `(edge_index, local_t in [0,1])`.
     #[must_use]
     pub fn locate(&self, s: f64) -> (usize, f64) {
-        let s_clamped = s.clamp(0.0, self.length);
+        let mut s_clamped = s.clamp(0.0, self.length);
+        if self.origin > 0.0 {
+            s_clamped += self.origin;
+            if s_clamped > self.length {
+                s_clamped -= self.length;
+            }
+        }
         for i in 0..self.edges.len() {
             let s0 = self.params[i];
             let s1 = self.params[i + 1];
@@ -238,6 +276,9 @@ impl Spine {
         let (t0, t1) = edge.strict_domain().map_err(crate::edge_domain_input)?;
         let param = t0 + (t1 - t0) * t;
         let tan = curve.tangent_with_endpoints(param, p_start, p_end);
+        // `evaluate` walks the edge from `t0` to `t1`; a descending trim runs
+        // against the curve parameter, so the travel tangent is reversed.
+        let tan = if t1 < t0 { -tan } else { tan };
         let tan = if fwd { tan } else { -tan };
         Ok(tan.normalize().unwrap_or(Vec3::new(0.0, 0.0, 1.0)))
     }

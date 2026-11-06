@@ -42,7 +42,7 @@ use crate::OperationsError;
 
 /// Rim support: what bounds the wall along one rim chain.
 #[derive(Clone, Copy)]
-enum Support {
+pub enum Support {
     /// A perpendicular planar disk at axial station `t`.
     Disk { t: f64 },
     /// A sphere carrier: axial center station, perpendicular center offset
@@ -59,7 +59,7 @@ enum Support {
 impl Support {
     /// Axial station of the rim at radius `rho` and azimuth `theta`, or
     /// `None` outside the sphere's silhouette.
-    fn station(self, rho: f64, theta: f64) -> Option<f64> {
+    pub fn station(self, rho: f64, theta: f64) -> Option<f64> {
         match self {
             Self::Disk { t } => Some(t),
             Self::Sphere {
@@ -81,21 +81,21 @@ impl Support {
 
 /// Wall frame: origin, axis and the cylinder's own reference directions.
 #[derive(Clone, Copy)]
-struct Frame {
-    origin: Point3,
-    axis: Vec3,
-    x: Vec3,
-    y: Vec3,
+pub struct Frame {
+    pub origin: Point3,
+    pub axis: Vec3,
+    pub x: Vec3,
+    pub y: Vec3,
 }
 
 impl Frame {
-    fn point(self, rho: f64, theta: f64, t: f64) -> Point3 {
+    pub fn point(self, rho: f64, theta: f64, t: f64) -> Point3 {
         let (sin, cos) = theta.sin_cos();
         self.origin + self.x * (rho * cos) + self.y * (rho * sin) + self.axis * t
     }
 
     /// `(rho, theta, t)` of a world point.
-    fn local(self, point: Point3) -> (f64, f64, f64) {
+    pub fn local(self, point: Point3) -> (f64, f64, f64) {
         let delta = point - self.origin;
         let x = delta.dot(self.x);
         let y = delta.dot(self.y);
@@ -258,16 +258,14 @@ fn plan(
                 .push(edge);
         }
     }
-    // The cell claims only off-axis sphere rims: some sphere rim edge must be
-    // a non-circular intersection curve. Coaxial sphere rims are circles and
-    // keep their established constructions.
+    // The cell claims every wall with a sphere rim. An off-axis rim is a
+    // non-circular intersection curve; a coaxial one is a latitude circle,
+    // rebuilt as the exact circle at its new station (the generic sleeve
+    // path read a coaxial sphere rim as a planar cap and left a ledge at the
+    // old station).
     let mut claims = false;
-    for (neighbor, edges) in by_neighbor.values() {
-        if matches!(topo.face(*neighbor)?.surface(), FaceSurface::Sphere(_)) {
-            for &edge in edges {
-                claims |= !matches!(topo.edge(edge)?.curve(), EdgeCurve::Circle(_));
-            }
-        }
+    for (neighbor, _) in by_neighbor.values() {
+        claims |= matches!(topo.face(*neighbor)?.surface(), FaceSurface::Sphere(_));
     }
     if !seam || !claims || by_neighbor.len() != 2 {
         return Ok(None);
@@ -660,13 +658,39 @@ fn rebuild(
                     data.set_curve(EdgeCurve::Circle(circle));
                     data.set_trim(trim);
                 }
+                Support::Sphere { c_x, c_y, .. }
+                    if c_x.hypot(c_y) <= plan.linear
+                        && matches!(topo.edge(target)?.curve(), EdgeCurve::Circle(_)) =>
+                {
+                    // A coaxial rim is the latitude circle at the new station.
+                    let data = topo.edge(target)?;
+                    let EdgeCurve::Circle(circle) = data.curve() else {
+                        return Err(refusal(face, Some(source), "coaxial rim is not a circle"));
+                    };
+                    let trim = data.trim();
+                    let (_, theta, _) = plan.frame.local(circle.center() + circle.u_axis());
+                    let t = chain.support.station(new_radius, theta).ok_or_else(|| {
+                        refusal(face, Some(source), "rim leaves its sphere support")
+                    })?;
+                    let circle = Circle3D::with_axes(
+                        plan.frame.point(0.0, 0.0, t),
+                        circle.normal(),
+                        new_radius,
+                        circle.u_axis(),
+                        circle.v_axis(),
+                    )?;
+                    let data = topo.edge_mut(target)?;
+                    data.set_curve(EdgeCurve::Circle(circle));
+                    data.set_trim(trim);
+                }
                 Support::Sphere { .. } => {
                     let (theta_a, sweep) = sweeps[&source.index()];
                     let curve = fit_rim(
                         face,
                         source,
                         chain.support,
-                        plan,
+                        plan.frame,
+                        plan.linear,
                         new_radius,
                         theta_a + sweep,
                         -sweep,
@@ -751,12 +775,13 @@ fn rebuild(
 /// Cubic interpolant of the closed-form rim from azimuth `theta_a` through
 /// `sweep`, refined until every half-step deviation is within the model
 /// linear tolerance.
-#[allow(clippy::cast_precision_loss)]
-fn fit_rim(
+#[allow(clippy::cast_precision_loss, clippy::too_many_arguments)]
+pub fn fit_rim(
     face: FaceId,
     source: EdgeId,
     support: Support,
-    plan: &Plan,
+    frame: Frame,
+    linear: f64,
     radius: f64,
     theta_a: f64,
     sweep: f64,
@@ -766,7 +791,7 @@ fn fit_rim(
         let t = support
             .station(radius, theta)
             .ok_or_else(|| refusal(face, Some(source), "rim leaves its sphere support"))?;
-        Ok(plan.frame.point(radius, theta, t))
+        Ok(frame.point(radius, theta, t))
     };
     // At least 64 spans: a coarser rim is sampled so sparsely by the
     // tessellator's span-driven NURBS sampler that a small-scale (1e-3)
@@ -786,7 +811,7 @@ fn fit_rim(
             let fitted = remus_math::traits::ParametricCurve::evaluate(&curve, u);
             worst = worst.max((fitted - rim(u)?).length());
         }
-        if worst <= plan.linear {
+        if worst <= linear {
             return Ok(curve);
         }
         segments *= 2;

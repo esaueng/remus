@@ -645,6 +645,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Work-count guards for interactive face moves: writes independent of unrelated bodies, constant slots per drag tick (tests) | `prepared_move/tests/scaling.rs` |
 | Exact support-surface replacement with topology-preserving re-limitation | `replace_surface.rs` |
 | Exact constant-radius blend-band resizing; a bore resize that carries its rim rounds (`resize_cylindrical_face_with_blends`) | `resize_blend.rs` |
+| Rolling-ball seam blends between a full-turn cylindrical wall and a sphere: exact torus / measured freeform-band recognition, exact sharp-seam removal, and the transactional wall resize that re-blends at the source band's quality (`resize_cylindrical_face_reblended`) | `resize_blend/sphere_seam.rs` |
 | Topology-preserving radial edits of closed analytic surfaces of revolution | `resize_blend/radial_resize.rs` |
 | Exact meridian collision and volume checks for the qualified radial cell | `resize_blend/radial_resize/profile.rs` |
 | Exact axial travel limits between a moving shoulder blend and a full fixed rim on their shared cylindrical support | `resize_blend/axial_clearance.rs` |

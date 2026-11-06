@@ -148,6 +148,19 @@ the blocking face's handle as `neighborFace`:
 }
 ```
 
+A full-turn wall whose seam with a sphere carries a rolling-ball fillet
+resizes with the fillet: `resizeCylindricalFaceDetailed(solid, face, radius,
+allowApproximate?)` removes the band to the exact sharp seam, resizes the wall
+and rolls the measured radius back on, in one transaction, and reports it
+under `details.reblend` (`radius`, `sourceBand`, and for a sampled band
+`sourceDeviation` / `resultDeviation` in model units). An exact (torus) band
+is rebuilt exactly. A sampled NURBS band has no exact form, so it is rebuilt
+at the same approximate quality only with `allowApproximate: true`, reported
+as `quality: "approximate"` with `approximateFaces`; without it the call
+returns category `quality_refused` (`kernelCode` `exact_only_unattainable`,
+`details.reason` `approximate_reblend_not_permitted`) and the body is
+unchanged. The batch op takes the same `allowApproximate` argument.
+
 Codes are lowercase ASCII snake case. New codes may be added, but an existing
 code's meaning will not be broadened or reassigned. The `message` remains for
 people and is not a branching contract. Direct WASM methods keep their current

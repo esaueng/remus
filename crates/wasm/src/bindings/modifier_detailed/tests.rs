@@ -1120,8 +1120,8 @@ fn assert_typed_resize_refusal(
     }
 }
 
-/// The sphere boss after an r 2 fillet on its seam: the NURBS blend band has
-/// no exact re-intersection yet, so the resize keeps its typed refusal.
+/// The sphere boss after an r 2 fillet on its seam: one sampled (NURBS)
+/// rolling-ball band with no exact form.
 fn blended_sphere_boss(kernel: &mut RemusKernel) -> (u32, u32) {
     let (solid, _) = sphere_with_cylinder(kernel, "fuse");
     let solid_id = kernel.resolve_solid(solid).unwrap();
@@ -1173,14 +1173,170 @@ fn only_cylinder(kernel: &RemusKernel, solid: u32) -> u32 {
     face_id_to_u32(walls[0])
 }
 
+/// Without `allowApproximate` the twin refuses the freeform seam band as a
+/// quality decision (it could only be rebuilt approximately), leaves the
+/// input untouched, and both batch contracts agree; the legacy op keeps its
+/// established typed neighbour refusal.
 #[test]
-fn resize_twin_types_the_blended_sphere_boss_neighbour_refusal() {
-    assert_typed_resize_refusal(
-        blended_sphere_boss,
-        [5.0, 7.0],
-        "unsupported_neighbor",
-        Some("nurbs"),
-    );
+fn resize_twin_refuses_the_approximate_seam_reblend_without_permission() {
+    for radius in [5.0, 7.0] {
+        let mut kernel = RemusKernel::new();
+        let (solid, wall) = blended_sphere_boss(&mut kernel);
+        let before = counts(&kernel);
+        let faces = solid_face_handles(&kernel, solid);
+        let direct = envelope(kernel.resize_cylindrical_face_detailed_impl(solid, wall, radius));
+        let context = format!("r{radius}: {direct}");
+        assert_eq!(direct["status"], "error", "{context}");
+        assert!(direct["value"].is_null(), "{context}");
+        assert_eq!(direct["category"], "quality_refused", "{context}");
+        let details = &direct["details"];
+        assert_eq!(
+            details["kernelCode"], "exact_only_unattainable",
+            "{context}"
+        );
+        assert_eq!(
+            details["reason"], "approximate_reblend_not_permitted",
+            "{context}"
+        );
+        assert_eq!(details["operation"], "resizeCylindricalFace", "{context}");
+        assert_eq!(counts(&kernel), before, "{context}: topology changed");
+        assert_eq!(solid_face_handles(&kernel, solid), faces, "{context}");
+
+        let args = json!({"solid": solid, "face": wall, "radius": radius});
+        let ops = json!([{"op": "resizeCylindricalFaceDetailed", "args": args}]);
+        assert_eq!(
+            batch_v2(&mut kernel, &ops)[0]["ok"],
+            direct,
+            "{context}: v2 parity"
+        );
+        assert_eq!(
+            batch_legacy(&mut kernel, &ops)[0]["ok"],
+            direct,
+            "{context}: legacy parity"
+        );
+        let legacy = batch_v2(
+            &mut kernel,
+            &json!([{"op": "resizeCylindricalFace", "args": args}]),
+        );
+        let error = &legacy[0]["error"];
+        assert_eq!(error["category"], "unsupported", "{context}: {error}");
+        assert_eq!(v2_code(error), "unsupported_move_face", "{context}");
+        assert_eq!(
+            error["details"]["reason"], "unsupported_neighbor",
+            "{context}"
+        );
+        assert_eq!(
+            error["details"]["neighborSurfaceType"], "nurbs",
+            "{context}"
+        );
+        assert_eq!(counts(&kernel), before, "{context}: batch mutated");
+    }
+}
+
+/// With `allowApproximate: true` the wall resizes and the r 2 seam band is
+/// rolled back on at the source band's quality, disclosed as approximate.
+///
+/// Oracles: the sharp body is the closed-form sphere plus the chord-
+/// integrated boss sleeve ([`sphere_body_volume`]); the band's fill is held
+/// to a BOUNDED INTERVAL around the quarter-round Pappus section
+/// `2π·ρ·r²(1 − π/4)` at the wall radius, within a factor of three either
+/// way (the seam's dihedral departs from 90° by up to ~20° here). The
+/// native suite `reblend_cylinder_sphere_seam` holds the band to a direct
+/// rolling-ball integral instead.
+#[test]
+fn resize_twin_reblends_the_sphere_boss_seam_fillet_with_permission() {
+    for radius in [5.0, 7.0] {
+        let mut kernel = RemusKernel::new();
+        let (solid, wall) = blended_sphere_boss(&mut kernel);
+        let band = solid_face_handles(&kernel, solid)
+            .into_iter()
+            .filter(|&face| {
+                let face = kernel.resolve_face(face).unwrap();
+                matches!(
+                    kernel.topo().face(face).unwrap().surface(),
+                    FaceSurface::Nurbs(_)
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(band.len(), 1, "one source band");
+        let before = counts(&kernel);
+        let source_volume = volume(&kernel, solid);
+        let direct = envelope(
+            kernel.resize_cylindrical_face_reblend_detailed_impl(solid, wall, radius, true),
+        );
+        let context = format!("r{radius}: {direct}");
+        assert_eq!(direct["status"], "ok", "{context}");
+        let details = &direct["details"];
+        assert_eq!(details["quality"], "approximate", "{context}");
+        assert_eq!(details["radius"], radius, "{context}");
+        assert_eq!(
+            details["approximateFaces"].as_array().map(Vec::len),
+            Some(1),
+            "{context}"
+        );
+        let reblend = &details["reblend"];
+        assert!(
+            (reblend["radius"].as_f64().unwrap() - 2.0).abs() < 1e-6,
+            "{context}"
+        );
+        assert_eq!(reblend["sourceBand"], json!(band), "{context}");
+        let source_deviation = reblend["sourceDeviation"].as_f64().unwrap();
+        let result_deviation = reblend["resultDeviation"].as_f64().unwrap();
+        assert!(
+            source_deviation >= 0.0 && source_deviation < 0.04,
+            "{context}"
+        );
+        assert!(
+            result_deviation >= 0.0 && result_deviation < 0.04,
+            "{context}"
+        );
+
+        let result = handle(&direct["value"]);
+        let result_id = kernel.resolve_solid(result).unwrap();
+        assert!(
+            remus_operations::validate::validate_solid(kernel.topo(), result_id)
+                .unwrap()
+                .is_valid(),
+            "{context}"
+        );
+        let resized = kernel.resolve_face(only_cylinder(&kernel, result)).unwrap();
+        let FaceSurface::Cylinder(cylinder) = kernel.topo().face(resized).unwrap().surface() else {
+            unreachable!()
+        };
+        assert!((cylinder.radius() - radius).abs() < 1e-12, "{context}");
+        // The source is untouched and still measures the same.
+        assert!(
+            (volume(&kernel, solid) - source_volume).abs() < 1e-9,
+            "{context}"
+        );
+
+        let fill = volume(&kernel, result) - sphere_body_volume("fuse", radius);
+        let pappus = std::f64::consts::TAU * radius * 4.0 * (1.0 - std::f64::consts::FRAC_PI_4);
+        assert!(
+            fill > pappus / 3.0 && fill < 3.0 * pappus,
+            "{context}: band fill {fill} outside [{}, {}]",
+            pappus / 3.0,
+            3.0 * pappus
+        );
+
+        let args =
+            json!({"solid": solid, "face": wall, "radius": radius, "allowApproximate": true});
+        for contract in ["v2", "legacy"] {
+            let mut batch_kernel = RemusKernel::new();
+            blended_sphere_boss(&mut batch_kernel);
+            let ops = json!([{"op": "resizeCylindricalFaceDetailed", "args": args}]);
+            let response = if contract == "v2" {
+                batch_v2(&mut batch_kernel, &ops)
+            } else {
+                batch_legacy(&mut batch_kernel, &ops)
+            };
+            assert_eq!(
+                response[0]["ok"], direct,
+                "{context}: {contract} batch parity"
+            );
+        }
+        assert_ne!(counts(&kernel), before, "{context}: result committed");
+    }
 }
 
 #[test]
