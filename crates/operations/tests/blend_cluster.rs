@@ -89,7 +89,7 @@ fn edge_point(topo: &Topology, edge: EdgeId, fraction: f64) -> Point3 {
     let data = topo.edge(edge).unwrap();
     let a = topo.vertex(data.start()).unwrap().point();
     let b = topo.vertex(data.end()).unwrap().point();
-    let (lo, hi) = data.curve().domain_with_endpoints(a, b);
+    let (lo, hi) = data.strict_domain().expect("edge parameter authority");
     data.curve()
         .evaluate_with_endpoints(lo + (hi - lo) * fraction, a, b)
 }

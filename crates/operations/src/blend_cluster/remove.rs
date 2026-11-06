@@ -1022,7 +1022,12 @@ fn recut(
                     edge.index()
                 )));
             }
-            let (t0, t1) = data.domain_with_endpoints(old_a, old_b);
+            let (t0, t1) = data.strict_domain().map_err(|error| {
+                ambiguous(format!(
+                    "retained arc {} has no parameter authority: {error}",
+                    edge.index()
+                ))
+            })?;
             let shift = |t: f64, point: Point3| {
                 let delta = (circle.project(point) - t + PI).rem_euclid(TAU) - PI;
                 t + delta
@@ -1057,7 +1062,11 @@ fn sharp_forward(
     let data = work.edge(contact.edge())?;
     let a = work.vertex(data.start())?.point();
     let b = work.vertex(data.end())?.point();
-    let (t0, t1) = data.domain_with_endpoints(a, b);
+    let (t0, t1) = data.strict_domain().map_err(|error| {
+        ambiguous(format!(
+            "a contact edge has no parameter authority: {error}"
+        ))
+    })?;
     let middle = 0.5 * (t0 + t1);
     let point = data.curve().evaluate_with_endpoints(middle, a, b);
     let mut tangent = data
