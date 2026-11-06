@@ -18,6 +18,7 @@ pub mod cap_reblend;
 pub mod chamfer_builder;
 mod chamfer_clearance;
 mod chamfer_extrusion;
+mod chamfer_floor_chain;
 mod chamfer_spline_rim;
 pub(crate) mod corner;
 pub(crate) mod equal_radius_boss_corner;
