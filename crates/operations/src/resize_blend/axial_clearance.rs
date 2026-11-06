@@ -1,6 +1,6 @@
 //! Clearance between a translating blend and a fixed blend on one cylinder.
 
-use std::collections::HashSet;
+use remus_math::det_hash::DetHashSet;
 use std::f64::consts::TAU;
 
 use remus_math::tolerance::Tolerance;
@@ -103,7 +103,7 @@ pub(super) struct AxialClearances {
     /// Cylindrical carriers whose every moving edge belongs to a full moving
     /// spring, each bounded against every fixed boundary edge of the carrier:
     /// no move inside those bounds folds the carrier's wire.
-    pub(super) certified: HashSet<FaceId>,
+    pub(super) certified: DetHashSet<FaceId>,
 }
 
 /// Travel bounds between moving and fixed geometry on one cylindrical carrier.
@@ -131,14 +131,14 @@ pub(super) fn axial_blend_clearances(
     is_invariant_carrier: impl Fn(FaceId) -> bool,
     direction: Vec3,
 ) -> Result<AxialClearances, OperationsError> {
-    let mut moved_vertices = HashSet::new();
+    let mut moved_vertices = DetHashSet::default();
     for &face in source_faces {
         if is_moved(face) {
             moved_vertices.extend(face_vertices(topo, face)?);
         }
     }
     let mut limits = Vec::new();
-    let mut certified = HashSet::new();
+    let mut certified = DetHashSet::default();
     for &carrier in source_faces {
         if !is_invariant_carrier(carrier) {
             continue;
@@ -275,7 +275,10 @@ fn edge_levels(
                     (lo.min(level(p)), hi.max(level(p)))
                 }),
         ),
-        _ => None,
+        EdgeCurve::NurbsCurve(_)
+        | EdgeCurve::Ellipse(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => None,
     })
 }
 
@@ -419,7 +422,10 @@ mod tests {
                     seen_circle = true;
                     assert!((high - low).abs() < 1e-12);
                 }
-                _ => {}
+                EdgeCurve::NurbsCurve(_)
+                | EdgeCurve::Ellipse(_)
+                | EdgeCurve::Hyperbola(_)
+                | EdgeCurve::Parabola(_) => {}
             }
             // Sideways, a rim circle spans its whole diameter.
             let (low, high) = edge_levels(&topo, edge, Vec3::new(1.0, 0.0, 0.0))
