@@ -155,7 +155,10 @@ fn edge_box(
                 [extent(frame.u), extent(frame.v), extent(frame.w)],
             );
         }
-        _ => return Ok(None),
+        EdgeCurve::NurbsCurve(_)
+        | EdgeCurve::Ellipse(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => return Ok(None),
     }
     Ok(bounds.is_finite().then_some(bounds))
 }
@@ -224,7 +227,10 @@ pub(super) fn validate_clearance<V: std::ops::Deref<Target = [FaceId]>>(
                     }
                     false
                 }
-                _ => {
+                EdgeCurve::NurbsCurve(_)
+                | EdgeCurve::Ellipse(_)
+                | EdgeCurve::Hyperbola(_)
+                | EdgeCurve::Parabola(_) => {
                     return Err(unsupported(
                         selected,
                         "partial-wall boundaries must be lines and circles",

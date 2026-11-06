@@ -1412,7 +1412,10 @@ fn cylinder_wall_footprint(
                     let level = (circle.center() - cylinder.origin()).dot(axis);
                     area += level * span * sense;
                 }
-                _ => {
+                EdgeCurve::NurbsCurve(_)
+                | EdgeCurve::Ellipse(_)
+                | EdgeCurve::Hyperbola(_)
+                | EdgeCurve::Parabola(_) => {
                     return Err(crate::OperationsError::InvalidInput {
                         reason: "partial-cylinder footprint requires line and circle edges".into(),
                     });

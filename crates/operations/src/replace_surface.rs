@@ -2,7 +2,7 @@
 
 use remus_algo::{PlaneFrame, compute_pcurve_on_surface_in_domain};
 use remus_math::curves2d::Curve2D;
-use remus_math::det_hash::DetHashMap;
+use remus_math::det_hash::{DetHashMap, DetHashSet};
 use remus_math::vec::Point3;
 use remus_topology::Topology;
 use remus_topology::explorer::solid_faces;
@@ -198,8 +198,8 @@ pub(crate) fn register_fresh_pcurves_where(
         };
         for wire_id in wire_ids {
             let uses = topo.wire(wire_id)?.edges().to_vec();
-            let mut seen = std::collections::HashSet::new();
-            let seam_edges: std::collections::HashSet<_> = uses
+            let mut seen = DetHashSet::default();
+            let seam_edges: DetHashSet<_> = uses
                 .iter()
                 .map(remus_topology::wire::OrientedEdge::edge)
                 .filter(|&edge| !seen.insert(edge))
