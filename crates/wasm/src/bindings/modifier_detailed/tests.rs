@@ -1282,14 +1282,8 @@ fn resize_twin_reblends_the_sphere_boss_seam_fillet_with_permission() {
         assert_eq!(reblend["sourceBand"], json!(band), "{context}");
         let source_deviation = reblend["sourceDeviation"].as_f64().unwrap();
         let result_deviation = reblend["resultDeviation"].as_f64().unwrap();
-        assert!(
-            source_deviation >= 0.0 && source_deviation < 0.04,
-            "{context}"
-        );
-        assert!(
-            result_deviation >= 0.0 && result_deviation < 0.04,
-            "{context}"
-        );
+        assert!((0.0..0.04).contains(&source_deviation), "{context}");
+        assert!((0.0..0.04).contains(&result_deviation), "{context}");
 
         let result = handle(&direct["value"]);
         let result_id = kernel.resolve_solid(result).unwrap();

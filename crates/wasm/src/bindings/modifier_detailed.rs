@@ -699,6 +699,8 @@ impl RemusKernel {
         })
     }
 
+    /// The default (exact-only) form of the resize twin, used by tests.
+    #[cfg(test)]
     pub(crate) fn resize_cylindrical_face_detailed_impl(
         &mut self,
         solid: u32,

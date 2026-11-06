@@ -27,6 +27,7 @@
 
 use std::f64::consts::{PI, TAU};
 
+use remus_math::compact_sort::CompactSort;
 use remus_math::mat::Mat4;
 use remus_math::vec::Vec3;
 use remus_operations::OperationsError;
@@ -157,7 +158,7 @@ impl Frame {
                 (q[1].atan2(q[0]).rem_euclid(TAU), q[0].hypot(q[1]))
             })
             .collect();
-        contact.sort_by(|a, b| a.0.total_cmp(&b.0));
+        contact.compact_sort_by(|a, b| a.0.total_cmp(&b.0));
         let contact_radius = |theta: f64| {
             let theta = theta.rem_euclid(TAU);
             let n = contact.len();
