@@ -45,6 +45,7 @@
 //! WASM module tier: `core` once bound (it reads the live session's handles);
 //! no binding yet.
 
+mod remove;
 mod sharp;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -64,6 +65,7 @@ use crate::OperationsError;
 use crate::query::{edge_normal_angle, effective_face_normal};
 
 pub use crate::error_payloads::BlendClusterError;
+pub use remove::{SharpRestoration, remove_blend_cluster, remove_blend_members};
 
 /// Normal angle (radians) up to which two exact analytic faces count as
 /// tangent across an edge.
