@@ -482,6 +482,7 @@ Quick reference — find the right file for any task:
 | Cavity (inner shell) extent checks | `cavity.rs` |
 | Topology-preserving planar face moves | `move_faces.rs` |
 | Quarter-cylinder replacement clearance | `move_faces/quarter_cylinder.rs` |
+| Clearance for coaxially resizing a general partial-turn boss wall | `move_faces/partial_cylinder.rs` |
 
 ### L2: sketch (`crates/sketch/src/`)
 | Task | File(s) |
