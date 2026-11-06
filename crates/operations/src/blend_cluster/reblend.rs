@@ -21,9 +21,12 @@
 //! how the group is built in the first place (an all-R4 boss group is one
 //! five-edge fillet, the only order that yields its equal-radius corners).
 //! The unmerged split and, where one convexity carries several radii, the
-//! smaller-first split follow. Nothing else is tried: a radius set no
-//! candidate builds is a typed [`BlendClusterError::ReblendFailed`] naming
-//! every attempt.
+//! smaller-first split follow. Each carries the chamfer stages last, larger
+//! distance first; with several chamfer stages the same fillet candidates
+//! follow again with the chamfers in the reverse order (two chains that meet
+//! commute in exact geometry, but either may be the one whose end closes).
+//! Nothing else is tried: a radius set no candidate builds is a typed
+//! [`BlendClusterError::ReblendFailed`] naming every attempt.
 //!
 //! # Edge identity across stages
 //!
@@ -259,11 +262,22 @@ pub fn plan_reblend(
     });
     let ascending: Vec<ReblendStage> = ascending.into_iter().map(|(_, stage)| stage).collect();
 
+    // Chamfer chains that meet (one ending on another's stripe) commute in
+    // exact geometry, but an assembler may close only one of the two ends;
+    // each fillet order is tried with the chamfers in their planned order
+    // and then in the reverse one.
+    let mut chamfer_orders = vec![chamfers.clone()];
+    if chamfers.len() > 1 {
+        chamfer_orders.push(chamfers.iter().rev().cloned().collect());
+    }
     let mut plans = Vec::new();
-    for mut candidate in [merged, unmerged, ascending] {
-        candidate.extend(chamfers.iter().cloned());
-        if !plans.contains(&candidate) {
-            plans.push(candidate);
+    for chamfer_order in &chamfer_orders {
+        for fillets in [&merged, &unmerged, &ascending] {
+            let mut candidate = fillets.clone();
+            candidate.extend(chamfer_order.iter().cloned());
+            if !plans.contains(&candidate) {
+                plans.push(candidate);
+            }
         }
     }
     Ok(plans)

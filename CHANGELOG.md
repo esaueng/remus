@@ -18,6 +18,18 @@ historical predecessor-line records, retained for provenance. The
 
 ### Added
 
+* **blend,operations:** two chamfer chains that meet now build on one body,
+  in either order. The floor-chain assembler closes an open run of a
+  straight band on planes that are not square to it (an earlier chamfer's
+  45° stripe across the corner): the band runs on until its plane leaves the
+  corner, wholly onto a wider stripe, or across a narrower stripe and into
+  the face beyond, cutting each crossed plane once along an exact straight
+  edge. Square ends are built as before. Blend-group recognition accepts a
+  chamfer stripe whose end vertices lie between its contacts, and the
+  re-blend planner retries the chamfer stages in reverse order. On the
+  filleted Gentle-Gecko the free-end 0.7 and bottom 0.8 chamfer chains (A4
+  and A6) now build together after A2 and A3, and the boss diameter
+  12 -> 14.6 -> 17 -> 14.7 rebuilds both after each edit.
 * **operations:** blend-group edits on the video's cumulative workflow. A
   recognized group now holds equal-distance chamfer stripes (planes along
   straight edges, cones along circles, read from their two supports' exact
