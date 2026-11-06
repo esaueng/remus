@@ -11,7 +11,7 @@
 //! - [`charge_step`] once per walker step attempt (a step the walker retries
 //!   at half length counts again). Every walking engine (the stripe walker,
 //!   rail and ridge chains) goes through
-//!   [`Walker::walk`](crate::walker::Walker::walk), so the step count is the
+//!   `Walker::walk`, so the step count is the
 //!   operation's walking work, independent of wall-clock and host speed.
 //! - [`checkpoint`] between attempts and before validation, where abandoning
 //!   work is safe because the caller's transaction restores the topology.
