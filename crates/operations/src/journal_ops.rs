@@ -1045,6 +1045,23 @@ pub fn resize_cylindrical_face_journaled(
     face: remus_topology::FaceId,
     new_radius: f64,
 ) -> Result<JournaledSolidOp, OperationsError> {
+    resize_cylindrical_face_journaled_with(topo, solid, face, new_radius, |topo| {
+        crate::blend_cluster::resize_cylinder_through_group(topo, solid, face, new_radius)
+    })
+}
+
+/// [`resize_cylindrical_face_journaled`] with its blend-group route supplied
+/// by the caller (the unprepared route, or a prepared group edit's cached
+/// one).
+pub(crate) fn resize_cylindrical_face_journaled_with(
+    topo: &mut Topology,
+    solid: SolidId,
+    face: FaceId,
+    new_radius: f64,
+    group: impl FnOnce(
+        &mut Topology,
+    ) -> Result<Option<crate::blend_cluster::GroupEdit>, OperationsError>,
+) -> Result<JournaledSolidOp, OperationsError> {
     let refusal = match remus_topology::transaction::run_transacted(topo, |topo| {
         resize_cylindrical_face_local_journaled(topo, solid, face, new_radius)
     }) {
@@ -1053,9 +1070,7 @@ pub fn resize_cylindrical_face_journaled(
     };
     remus_topology::transaction::run_transacted(topo, |topo| {
         let pending = begin_scoped(topo, "resize_cylindrical_face", &[solid])?;
-        let Some(edit) =
-            crate::blend_cluster::resize_cylinder_through_group(topo, solid, face, new_radius)?
-        else {
+        let Some(edit) = group(topo)? else {
             return Err(refusal);
         };
         record_group_edit(topo, pending, solid, edit.solid, edit.evolution)
@@ -1155,6 +1170,29 @@ pub fn resize_blend_journaled(
     expected_radius: f64,
     new_radius: f64,
 ) -> Result<JournaledSolidOp, OperationsError> {
+    resize_blend_journaled_with(topo, solid, face, expected_radius, new_radius, |topo| {
+        crate::blend_cluster::resize_band_through_group(
+            topo,
+            solid,
+            face,
+            expected_radius,
+            new_radius,
+        )
+    })
+}
+
+/// [`resize_blend_journaled`] with its blend-group route supplied by the
+/// caller (the unprepared route, or a prepared group edit's cached one).
+pub(crate) fn resize_blend_journaled_with(
+    topo: &mut Topology,
+    solid: SolidId,
+    face: FaceId,
+    expected_radius: f64,
+    new_radius: f64,
+    group: impl FnOnce(
+        &mut Topology,
+    ) -> Result<Option<crate::resize_blend::ResizeBlendResult>, OperationsError>,
+) -> Result<JournaledSolidOp, OperationsError> {
     let refusal = match remus_topology::transaction::run_transacted(topo, |topo| {
         resize_blend_local_journaled(topo, solid, face, expected_radius, new_radius)
     }) {
@@ -1168,14 +1206,7 @@ pub fn resize_blend_journaled(
     }
     remus_topology::transaction::run_transacted(topo, |topo| {
         let pending = begin_scoped(topo, "resize_blend", &[solid])?;
-        let Some(edit) = crate::blend_cluster::resize_band_through_group(
-            topo,
-            solid,
-            face,
-            expected_radius,
-            new_radius,
-        )?
-        else {
+        let Some(edit) = group(topo)? else {
             return Err(refusal);
         };
         record_group_edit(topo, pending, solid, edit.solid, edit.evolution)

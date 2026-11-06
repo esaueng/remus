@@ -131,8 +131,31 @@ pub fn resize_blend(
     expected_radius: f64,
     new_radius: f64,
 ) -> Result<ResizeBlendResult, OperationsError> {
-    let refusal = match remus_topology::transaction::run_transacted(topo, |topo| {
-        resize_blend_impl(topo, solid, face, expected_radius, new_radius)
+    resize_blend_with(topo, solid, face, expected_radius, new_radius, |topo| {
+        crate::blend_cluster::resize_band_through_group(
+            topo,
+            solid,
+            face,
+            expected_radius,
+            new_radius,
+        )
+    })
+}
+
+/// [`resize_blend`] with its blend-group route supplied by the caller (the
+/// unprepared route, or a prepared group edit's cached one).
+pub(crate) fn resize_blend_with(
+    topo: &mut Topology,
+    solid: SolidId,
+    face: FaceId,
+    expected_radius: f64,
+    new_radius: f64,
+    group: impl FnOnce(&mut Topology) -> Result<Option<ResizeBlendResult>, OperationsError>,
+) -> Result<ResizeBlendResult, OperationsError> {
+    let refusal = match crate::performance::timed("resize_blend.per_band", || {
+        remus_topology::transaction::run_transacted(topo, |topo| {
+            resize_blend_impl(topo, solid, face, expected_radius, new_radius)
+        })
     }) {
         Ok(result) => return Ok(result),
         Err(refusal) => refusal,
@@ -145,13 +168,7 @@ pub fn resize_blend(
     if !group_route_applies(&refusal) || new_radius <= Tolerance::new().linear {
         return Err(refusal);
     }
-    match crate::blend_cluster::resize_band_through_group(
-        topo,
-        solid,
-        face,
-        expected_radius,
-        new_radius,
-    )? {
+    match group(topo)? {
         Some(result) => Ok(result),
         None => Err(refusal),
     }

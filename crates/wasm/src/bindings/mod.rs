@@ -31,6 +31,7 @@ pub mod nurbs_reuse;
 pub mod operations;
 pub mod performance;
 pub mod polygon2d;
+pub mod prepared_group_edit;
 pub mod prepared_move;
 pub mod primitives;
 pub mod project_curve;

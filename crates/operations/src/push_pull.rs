@@ -1017,6 +1017,22 @@ pub fn resize_cylindrical_face(
     face: FaceId,
     new_radius: f64,
 ) -> Result<SolidId, crate::OperationsError> {
+    resize_cylindrical_face_with(topo, solid, face, new_radius, |topo| {
+        crate::blend_cluster::resize_cylinder_through_group(topo, solid, face, new_radius)
+    })
+}
+
+/// [`resize_cylindrical_face`] with its blend-group route supplied by the
+/// caller (the unprepared route, or a prepared group edit's cached one).
+pub(crate) fn resize_cylindrical_face_with(
+    topo: &mut Topology,
+    solid: SolidId,
+    face: FaceId,
+    new_radius: f64,
+    group: impl FnOnce(
+        &mut Topology,
+    ) -> Result<Option<crate::blend_cluster::GroupEdit>, crate::OperationsError>,
+) -> Result<SolidId, crate::OperationsError> {
     let tol = Tolerance::new();
     let cyl = validate_cylindrical_resize(topo, solid, face, new_radius)?;
 
@@ -1043,7 +1059,9 @@ pub fn resize_cylindrical_face(
     }
 
     if !cylindrical_face_is_full_turn(topo, face, &cyl)? {
-        let refusal = match resize_partial_cylindrical_face(topo, solid, face, &cyl, new_radius) {
+        let refusal = match crate::performance::timed("resize_cylinder.partial_turn", || {
+            resize_partial_cylindrical_face(topo, solid, face, &cyl, new_radius)
+        }) {
             Ok(result) => return Ok(result),
             Err(refusal) => refusal,
         };
@@ -1051,9 +1069,7 @@ pub fn resize_cylindrical_face(
         // (its seams, shoulder and the edges running into them are filleted)
         // is resized through that group: remove it to sharp, resize the
         // sharp wall exactly, re-fillet at the recorded radii.
-        return match crate::blend_cluster::resize_cylinder_through_group(
-            topo, solid, face, new_radius,
-        )? {
+        return match group(topo)? {
             Some(edit) => Ok(edit.solid),
             None => Err(refusal),
         };
@@ -1106,7 +1122,7 @@ pub fn resize_cylindrical_face(
     Ok(result)
 }
 
-fn validate_cylindrical_resize(
+pub(crate) fn validate_cylindrical_resize(
     topo: &Topology,
     solid: SolidId,
     face: FaceId,

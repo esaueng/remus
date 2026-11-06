@@ -88,5 +88,9 @@ name = "fillet_multipass"
 harness = false
 name = "fillet_perf"
 
+[[bench]]
+harness = false
+name = "prepared_group_edit"
+
 [lints]
 workspace = true
