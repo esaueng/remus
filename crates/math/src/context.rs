@@ -140,6 +140,10 @@ pub struct WorkBudgets {
     /// Maximum recursive subdivision depth while finding NURBS
     /// surface-surface intersection seeds.
     pub subdivision_depth: usize,
+    /// Maximum walker step attempts across every engine attempt of one
+    /// blend operation (fillet or chamfer cascade). Default: unbounded, the
+    /// behavior before blends answered to a context.
+    pub blend_walk_steps: usize,
 }
 
 impl WorkBudgets {
@@ -154,6 +158,7 @@ impl WorkBudgets {
             branches_per_direction: 10,
             newton_iterations: 20,
             subdivision_depth: 6,
+            blend_walk_steps: usize::MAX,
         }
     }
 
@@ -196,6 +201,13 @@ impl WorkBudgets {
     #[must_use]
     pub const fn with_newton_iterations(mut self, value: usize) -> Self {
         self.newton_iterations = value;
+        self
+    }
+
+    /// Returns budgets with the given blend walker step cap.
+    #[must_use]
+    pub const fn with_blend_walk_steps(mut self, value: usize) -> Self {
+        self.blend_walk_steps = value;
         self
     }
 
@@ -345,6 +357,11 @@ mod tests {
         assert_eq!(b.branches_per_direction, 10);
         assert_eq!(b.newton_iterations, 20);
         assert_eq!(b.subdivision_depth, 6);
+        assert_eq!(
+            b.blend_walk_steps,
+            usize::MAX,
+            "blends are unbounded by default"
+        );
     }
 
     #[test]

@@ -452,6 +452,36 @@ pub fn fillet_whole_selection_result(
     try_fillet_result(topo, solid_id, edge_ids, radius)
 }
 
+/// [`fillet_whole_selection_result`] under an operation context: the same
+/// edge filter and cascade, bounded by the context's cancellation token and
+/// blend walk-step budget, refusing typed and transactionally when either
+/// trips.
+///
+/// # Errors
+///
+/// Same as [`fillet_whole_selection`], plus `Math(Cancelled)` and
+/// `Math(ResourceLimitExceeded)`.
+pub fn fillet_whole_selection_with_context(
+    topo: &mut remus_topology::Topology,
+    solid_id: remus_topology::solid::SolidId,
+    edge_ids: &[remus_topology::edge::EdgeId],
+    radius: f64,
+    context: &remus_math::context::OperationContext,
+) -> Result<remus_operations::blend_ops::GovernedBlend, remus_operations::OperationsError> {
+    context.check_cancelled()?;
+    let edges = remus_operations::query::filter_filletable_edges(topo, solid_id, edge_ids)?;
+    if edges.is_empty() {
+        return Err(remus_operations::OperationsError::InvalidInput {
+            reason:
+                "no filletable edges in the selection (tangent and degenerate edges are skipped)"
+                    .into(),
+        });
+    }
+    remus_operations::blend_ops::fillet_cascade_with_context(
+        topo, solid_id, &edges, radius, context,
+    )
+}
+
 /// Chamfer edges, falling back to the v2 walking engine when the v1 flat-bevel
 /// engine cannot handle the geometry.
 ///
