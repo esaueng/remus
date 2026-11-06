@@ -143,9 +143,11 @@ export const remuskernel_fillCoonsPatch: (a: number, b: number, c: number, d: nu
 export const remuskernel_fillet: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const remuskernel_fillet2d: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const remuskernel_filletDetailed: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
+export const remuskernel_filletDetailedWithCancellation: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number, number];
 export const remuskernel_filletJournaled: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
 export const remuskernel_filletV2: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const remuskernel_filletV2Detailed: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
+export const remuskernel_filletV2DetailedWithCancellation: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number, number];
 export const remuskernel_filletVariable: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const remuskernel_filletVariableDetailed: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const remuskernel_filletWithEvolution: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];

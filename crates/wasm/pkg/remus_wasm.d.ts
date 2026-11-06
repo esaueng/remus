@@ -2182,6 +2182,17 @@ export class RemusKernel {
      */
     filletDetailed(solid: number, edge_handles: Uint32Array, radius: number, exact_only?: boolean | null): SolidOperationDetailedResult;
     /**
+     * [`filletDetailed`](Self::fillet_detailed) bounded by a cancellation
+     * token and an optional walker step budget.
+     *
+     * `maxWalkSteps` caps the blend walker's step attempts across every
+     * engine the cascade tries; omitted or `null` leaves it unbounded. A
+     * cancelled or over-budget call returns `status: "error"` with category
+     * `cancelled` or `resource_limit` and leaves the topology untouched;
+     * success adds `details.walkSteps`.
+     */
+    filletDetailedWithCancellation(solid: number, edge_handles: Uint32Array, radius: number, token: OperationCancellationToken, exact_only?: boolean | null, max_walk_steps?: number | null): SolidOperationDetailedResult;
+    /**
      * V2 fillet journaled as one evolution entry (kind `fillet`).
      *
      * Returns JSON `{"solid", "op", "isPartial", "failedEdges"}`.
@@ -2211,6 +2222,12 @@ export class RemusKernel {
      * [`filletDetailed`](Self::fillet_detailed).
      */
     filletV2Detailed(solid: number, edge_handles: Uint32Array, radius: number, exact_only?: boolean | null): SolidOperationDetailedResult;
+    /**
+     * [`filletV2Detailed`](Self::fillet_v2_detailed) bounded as
+     * [`filletDetailedWithCancellation`](Self::fillet_detailed_with_cancellation)
+     * is.
+     */
+    filletV2DetailedWithCancellation(solid: number, edge_handles: Uint32Array, radius: number, token: OperationCancellationToken, exact_only?: boolean | null, max_walk_steps?: number | null): SolidOperationDetailedResult;
     /**
      * Apply variable-radius fillets to edges.
      *
