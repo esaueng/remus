@@ -978,6 +978,8 @@ fn blend_outcome(
     Ok((solid_id_to_u32(result), details))
 }
 
+mod governed;
+
 #[cfg(test)]
 mod tests;
 

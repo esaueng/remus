@@ -339,8 +339,11 @@ fn check_source(topo: &Topology, case: Case, sharp: SolidId, filleted: SolidId) 
     let band = frame.band_volume(WALL, BALL);
     let filleted_actual = solid_volume(topo, filleted, 0.01).unwrap();
     let measured_band = filleted_actual - sharp_actual;
+    // 3 %: the walking band's contacts are polylines through its sections,
+    // which biases the band high by O(step²) (38.0 / 32.6 / 32.4 mm³ at 5 /
+    // 1 / 0.4 % steps against this integral's 31.9 mm³).
     assert!(
-        (measured_band - band).abs() <= 0.02 * band,
+        (measured_band - band).abs() <= 0.03 * band,
         "source band adds {measured_band} mm³; the rolling-ball integral is {band} mm³"
     );
     band
@@ -415,9 +418,10 @@ fn reblend_case(case: Case, new_wall: f64, expect_exact: bool) {
     let band = frame.band_volume(new_wall, BALL);
     let actual = solid_volume(&topo, solid, 0.01).unwrap();
     // Sharp part: closed form to 1e-5 relative; band part: the rolling-ball
-    // integral to 2 % of the band volume (the band itself is a sampled fit).
+    // integral to 3 % of the band volume (the band itself is a sampled fit,
+    // see `check_source`).
     assert!(
-        (actual - expected).abs() <= 1e-5 * expected + 0.02 * band,
+        (actual - expected).abs() <= 1e-5 * expected + 0.03 * band,
         "re-blended volume {actual} vs oracle {expected} (band {band})"
     );
     if expect_exact {

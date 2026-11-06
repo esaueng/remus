@@ -334,6 +334,7 @@ Quick reference — find the right file for any task:
 | Stripe (fillet band, contact curves, PCurves) | `stripe.rs` |
 | Blend constraint functions | `blend_func.rs` |
 | Newton-Raphson walking engine | `walker.rs` |
+| Cooperative cancellation and the deterministic walker step budget a governed blend operation answers to (scoped, sticky trips; no-op when ungoverned) | `governor.rs` |
 | Analytic fast paths (plane-plane, plane-cyl, etc.) | `analytic.rs` |
 | Fillet builder (orchestration) | `fillet_builder.rs` |
 | Chamfer builder (orchestration) | `chamfer_builder.rs` |
@@ -627,6 +628,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Compound operations | `compound_ops.rs` |
 | Blend v2 wrappers (fillet/chamfer) | `blend_ops.rs` |
 | Differential oracle for the fillet feature grouping: the pairwise polyline grouping before its connected-pair skip, box prefilter and early-exit scan, kept verbatim (tests) | `blend_ops/grouping_oracle_tests.rs` |
+| Sphere-boss seam fillet work counters (no whole-solid robust mesh, pinned walker steps) and the governed fillet cancellation/step-budget contract with rollback (tests) | `blend_ops/governed_fillet_tests.rs` |
 | Convex blend material-side acceptance | `blend_material.rs` |
 | Exact standalone face-face blend sheets | `face_face_blend.rs` |
 | Offset v2 (delegates to remus-offset) | `offset_v2.rs` |
@@ -722,6 +724,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Source-relative live face moves preserve accepted geometry on refusal (tests) | `bindings/face_move_preview_tests.rs` |
 | Batch `getFaceNormal` returns the outward normal of reversed planar faces and refuses curved faces, matching the direct method (tests) | `bindings/face_normal_contract_tests.rs` |
 | Differential oracle: the modifier twins' full-copy rollback envelope kept verbatim, against the rollback scope (tests) | `bindings/modifier_detailed/envelope_oracle_tests.rs` |
+| Bounded fillet twins (`filletDetailedWithCancellation`, `filletV2DetailedWithCancellation`): cancellation token, `maxWalkSteps` budget, typed `cancelled`/`resource_limit` refusals, `details.walkSteps` | `bindings/modifier_detailed/governed.rs` |
 | Typed construction results (`extrudeDetailed`, `revolveDetailed`) | `bindings/construction_detailed.rs` |
 | Gear construction from a JSON spec: new bodies (`makeGearDetailed`), straight bevel gears (`makeBevelGearDetailed`), worms and their wheels, plain or throated (`makeWormDetailed`, `makeWormWheelDetailed`), double-enveloping worms and their wheels (`makeEnvelopingWormDetailed`, `makeEnvelopingWormWheelDetailed`) and teeth on an existing cylinder (`cutGearTeethDetailed`), direct and batch | `bindings/gear.rs` |
 | Screw threads on an existing cylinder from a JSON spec (`cutThreadDetailed`), direct and batch, with `thread:<reason>` refusals | `bindings/thread.rs` |

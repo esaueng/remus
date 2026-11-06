@@ -106,10 +106,15 @@ only policy values move into the context; mathematical constants stay put:
    context fields only alongside a real consumer, per ground rule 3.
 3. Parameter-space tolerance policy (replacing seeding's local `1e-6`),
    coordinated with the intersection result model (Issue 10).
-4. ~~Cancellation state~~ — **landed for booleans and NURBS SSI**. WASM
-   exposes `OperationCancellationToken` + `booleanWithCancellation`; other
-   long-running operation families adopt the same token as they gain context
-   entry points. The current single-threaded WASM worker can pre-cancel but
+4. ~~Cancellation state~~ — **landed for booleans, NURBS SSI and fillets**.
+   WASM exposes `OperationCancellationToken` + `booleanWithCancellation`;
+   fillets adopt the same token through `fillet_cascade_with_context` /
+   `fillet_v2_with_context` and the WASM `filletDetailedWithCancellation` /
+   `filletV2DetailedWithCancellation`, polled at every walker step, engine
+   attempt and validation through `remus_blend::governor`, together with the
+   deterministic `WorkBudgets::blend_walk_steps` cap. Other long-running
+   operation families adopt the same token as they gain context entry
+   points. The current single-threaded WASM worker can pre-cancel but
    cannot process a new JS call during an active operation; active browser
    cancellation still requires the app-side worker/shared-memory transport.
    The diagnostics sink remains queued.

@@ -97,6 +97,22 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
   = "approximate_reblend_not_permitted"` where it returned `unsupported` /
   `unsupported_neighbor` for such a wall. The legacy `resizeCylindricalFace`
   keeps the `unsupported_neighbor` refusal for it.
+* Add `filletDetailedWithCancellation(solid, edges, radius, token,
+  exactOnly?, maxWalkSteps?)` and `filletV2DetailedWithCancellation` with the
+  same arguments: `filletDetailed` / `filletV2Detailed` on the same engines,
+  bounded by an `OperationCancellationToken` and an optional cap on the blend
+  walker's step attempts across every engine the cascade tries. A cancelled
+  or over-budget call returns `status: "error"` with category `cancelled`
+  (`kernelCode: "cancelled"`) or `resource_limit` (resource
+  `blend_walk_steps`, `kernelCode: "resource-limit"`) and leaves the topology
+  untouched; success is `filletDetailed`'s envelope plus `details.walkSteps`,
+  the deterministic work it took. As with `booleanWithCancellation`, a
+  single-threaded worker cannot deliver `cancel()` during a running call, so
+  there `maxWalkSteps` is the bound. The unbounded methods are unchanged.
+* Fillets whose input is a large curved body validate much faster: the
+  volume postcondition no longer tessellates the whole input at a 0.01
+  deflection to classify the blended edges (an r 2 seam fillet on an r 73.5
+  sphere boss: 1.59 s to 0.18 s natively).
 
 * Add `resizeCylindricalFaceDetailed(solid, face, radius)` (direct and
   batch), the typed O4.7 twin of `resizeCylindricalFace` on the same engine

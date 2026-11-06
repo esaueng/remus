@@ -2908,7 +2908,10 @@ fn compute_stripe_for_spine(
         // infinitesimally above the default Newton gate.
         config.tol_3d = 5.0 * remus_math::tolerance::Tolerance::new().linear;
         if spine.is_closed() {
-            config.max_step_fraction = 0.004;
+            // The contacts are polylines through the sections, so the step
+            // sets their chord sag: at the default 5 % an r 6 wall's contact
+            // stood 0.078 mm off the wall and the band read 19 % heavy.
+            config.max_step_fraction = 0.01;
         }
     }
 

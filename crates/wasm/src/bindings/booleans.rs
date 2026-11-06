@@ -28,7 +28,7 @@ use tsify::Tsify as _;
 /// the app's worker/shared-memory transport.
 #[wasm_bindgen]
 pub struct OperationCancellationToken {
-    inner: CancellationToken,
+    pub(crate) inner: CancellationToken,
 }
 
 #[wasm_bindgen]

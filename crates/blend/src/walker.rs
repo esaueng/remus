@@ -375,6 +375,9 @@ impl<'a, F: BlendFunction> Walker<'a, F> {
 
         #[allow(clippy::while_float)]
         while (s - s_end).abs() > self.config.min_step {
+            // The operation's cooperative cancellation and step budget
+            // (`governor`): a no-op outside a governed blend.
+            crate::governor::charge_step()?;
             step_count += 1;
             if step_count > self.config.max_steps {
                 let ctx = self.make_context(s)?;

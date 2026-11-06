@@ -2950,6 +2950,33 @@ class RemusKernel {
         return takeFromExternrefTable0(ret[0]);
     }
     /**
+     * [`filletDetailed`](Self::fillet_detailed) bounded by a cancellation
+     * token and an optional walker step budget.
+     *
+     * `maxWalkSteps` caps the blend walker's step attempts across every
+     * engine the cascade tries; omitted or `null` leaves it unbounded. A
+     * cancelled or over-budget call returns `status: "error"` with category
+     * `cancelled` or `resource_limit` and leaves the topology untouched;
+     * success adds `details.walkSteps`.
+     * @param {number} solid
+     * @param {Uint32Array} edge_handles
+     * @param {number} radius
+     * @param {OperationCancellationToken} token
+     * @param {boolean | null} [exact_only]
+     * @param {number | null} [max_walk_steps]
+     * @returns {SolidOperationDetailedResult}
+     */
+    filletDetailedWithCancellation(solid, edge_handles, radius, token, exact_only, max_walk_steps) {
+        const ptr0 = passArray32ToWasm0(edge_handles, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        _assertClass(token, OperationCancellationToken);
+        const ret = wasm.remuskernel_filletDetailedWithCancellation(this.__wbg_ptr, solid, ptr0, len0, radius, token.__wbg_ptr, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0, !isLikeNone(max_walk_steps), isLikeNone(max_walk_steps) ? 0 : max_walk_steps);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
      * V2 fillet journaled as one evolution entry (kind `fillet`).
      *
      * Returns JSON `{"solid", "op", "isPartial", "failedEdges"}`.
@@ -3022,6 +3049,28 @@ class RemusKernel {
         const ptr0 = passArray32ToWasm0(edge_handles, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.remuskernel_filletV2Detailed(this.__wbg_ptr, solid, ptr0, len0, radius, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * [`filletV2Detailed`](Self::fillet_v2_detailed) bounded as
+     * [`filletDetailedWithCancellation`](Self::fillet_detailed_with_cancellation)
+     * is.
+     * @param {number} solid
+     * @param {Uint32Array} edge_handles
+     * @param {number} radius
+     * @param {OperationCancellationToken} token
+     * @param {boolean | null} [exact_only]
+     * @param {number | null} [max_walk_steps]
+     * @returns {SolidOperationDetailedResult}
+     */
+    filletV2DetailedWithCancellation(solid, edge_handles, radius, token, exact_only, max_walk_steps) {
+        const ptr0 = passArray32ToWasm0(edge_handles, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        _assertClass(token, OperationCancellationToken);
+        const ret = wasm.remuskernel_filletV2DetailedWithCancellation(this.__wbg_ptr, solid, ptr0, len0, radius, token.__wbg_ptr, isLikeNone(exact_only) ? 0xFFFFFF : exact_only ? 1 : 0, !isLikeNone(max_walk_steps), isLikeNone(max_walk_steps) ? 0 : max_walk_steps);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
