@@ -208,7 +208,10 @@ mod tests {
                     .map(|&face| match topo.face(face).unwrap().surface() {
                         FaceSurface::Sphere(_) => 's',
                         FaceSurface::Cylinder(_) => 'c',
-                        _ => 'o',
+                        FaceSurface::Plane { .. }
+                        | FaceSurface::Nurbs(_)
+                        | FaceSurface::Cone(_)
+                        | FaceSurface::Torus(_) => 'o',
                     })
                     .collect();
                 kinds.len() == 2 && kinds.contains(&'s') && kinds.contains(&'c')

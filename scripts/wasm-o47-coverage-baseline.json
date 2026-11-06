@@ -794,6 +794,26 @@
       "reason": "O4.7 twin; the typed surface itself, no further twin required"
     },
     {
+      "js": "filletDetailedWithCancellation",
+      "rust": "fillet_detailed_with_cancellation",
+      "file": "bindings/modifier_detailed/governed.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "O4.7",
+      "reason": "O4.7 twin; the typed cancellable and step-bounded surface itself, no further twin required"
+    },
+    {
+      "js": "filletV2DetailedWithCancellation",
+      "rust": "fillet_v2_detailed_with_cancellation",
+      "file": "bindings/modifier_detailed/governed.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "O4.7",
+      "reason": "O4.7 twin; the typed cancellable and step-bounded surface itself, no further twin required"
+    },
+    {
       "js": "filletVariable",
       "rust": "fillet_variable",
       "file": "bindings/operations.rs",
