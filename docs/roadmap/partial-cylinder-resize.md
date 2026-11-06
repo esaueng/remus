@@ -7,6 +7,19 @@ resize followed in #346). Quarter-wall resizing/refusal is qualified natively
 and in the packaged WASM. General partial walls remain open under P-Class 6.5;
 consumer deployment is tracked by the committed-package channel, not here.
 
+Outward partial walls of any angular footprint are now qualified natively when
+every side lies on a plane through the axis and every rim on a plane
+perpendicular to it: for example the Gentle-Gecko boss, a three-quarter turn
+below a block top and a full seamed turn above it, and a half-turn boss on a
+block face. Volume is checked against `½ (r₁² − r₀²) · A`, where `A` is the
+exact (angle, height) footprint area from the wall's rims. Clearance
+over-approximates the sweep by the full annular slab over the wall's height
+(`crates/offset/src/move_faces/partial_cylinder.rs`), so a contact with any
+other face, or a vertex that cannot slide along an outward radial edge, is a
+typed `TopologyChange` refusal. Evidence:
+`crates/io/tests/gecko_boss_diameter_resize.rs`. Reversed (concave) partial
+walls, non-radial side planes and four-edge half walls remain open.
+
 ## Intended behavior
 
 Change a selected trimmed cylindrical wall's diameter while keeping its axis
