@@ -2735,13 +2735,14 @@ pub fn chamfer_v2(
     if has_cavity_shells(topo, solid)? {
         return Err(refusal);
     }
-    if let Ok(result) = transactional(topo, |t| {
+    match transactional(topo, |t| {
         chamfer_by_feature(t, solid, edges, d1, d2)?.ok_or_else(|| OperationsError::Unsupported {
             operation: "chamfer",
             reason: "the selection is not independent chamfer features".into(),
         })
     }) {
-        return Ok(result);
+        Ok(result) => return Ok(result),
+        Err(error) => log::debug!("chamfer by independent features refused: {error}"),
     }
     if d1.is_finite() && d2.is_finite() && d1 > 0.0 && d2 > 0.0 && !edges.is_empty() {
         let rebuilt = transactional(topo, |t| {
@@ -2766,6 +2767,38 @@ pub fn chamfer_v2(
         }
     }
     Err(refusal)
+}
+
+/// [`chamfer_v2`] of the whole tangent-continuous chain through each seed.
+///
+/// Picking one edge of a smooth outline — a block's bottom edge that runs on
+/// through concave seam rounds and round a boss's foot — chamfers the whole
+/// outline, as a fillet of that edge would. [`chamfer_v2`] itself chamfers
+/// exactly the edges it is given.
+///
+/// # Errors
+///
+/// Returns the same refusals as [`chamfer_v2`] for the expanded selection.
+pub fn chamfer_v2_tangent_chain(
+    topo: &mut Topology,
+    solid: SolidId,
+    seeds: &[EdgeId],
+    d1: f64,
+    d2: f64,
+) -> Result<BlendResult, OperationsError> {
+    let tol = remus_math::tolerance::Tolerance::new();
+    let mut edges: Vec<EdgeId> = Vec::new();
+    for chain in remus_blend::g1_chain::g1_chains(topo, solid, seeds, tol)? {
+        for edge in chain {
+            if !edges.contains(&edge) {
+                edges.push(edge);
+            }
+        }
+    }
+    if edges.is_empty() {
+        edges = seeds.to_vec();
+    }
+    chamfer_v2(topo, solid, &edges, d1, d2)
 }
 
 /// Disjoint rims and outer ridges can require different construction engines.
@@ -2913,7 +2946,17 @@ fn chamfer_v2_engines(
     if d1.to_bits() != d2.to_bits() || has_cavity_shells(topo, solid)? {
         return Err(refusal);
     }
-    transactional(topo, |t| walking(t, true)).or(Err(refusal))
+    match transactional(topo, |t| walking(t, true)) {
+        Ok(result) => Ok(result),
+        // A size verdict from the band that qualified is the answer: the
+        // caller can retry smaller. Any other ridge refusal is secondary to
+        // the first route's.
+        Err(verdict @ OperationsError::Blend(BlendError::RadiusTooLarge { .. })) => Err(verdict),
+        Err(ridge) => {
+            log::debug!("chamfer refused by every walking route: {refusal}; ridge chain: {ridge}");
+            Err(refusal)
+        }
+    }
 }
 
 /// Chamfer edges with distance and angle (v2 engine).
