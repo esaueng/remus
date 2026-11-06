@@ -502,7 +502,10 @@ fn detect(
         match topo.edge(edge)?.curve() {
             EdgeCurve::Line => {}
             EdgeCurve::Circle(_) => circular = true,
-            _ => return Ok(None),
+            EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => return Ok(None),
         }
         if topo.edge(edge)?.is_closed() {
             return Ok(None);
@@ -673,7 +676,10 @@ fn element_for(
             };
             Some((circle.center(), normal, sweep))
         }
-        _ => return Ok(None),
+        EdgeCurve::NurbsCurve(_)
+        | EdgeCurve::Ellipse(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => return Ok(None),
     };
     if !oriented.is_forward() {
         std::mem::swap(&mut f0, &mut f1);
@@ -978,7 +984,11 @@ fn band_reversed(
 fn surface_normal_at(surface: &FaceSurface, point: Point3) -> Option<Vec3> {
     match surface {
         FaceSurface::Plane { normal, .. } => Some(*normal),
-        surface => {
+        surface @ (FaceSurface::Nurbs(_)
+        | FaceSurface::Cylinder(_)
+        | FaceSurface::Cone(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_)) => {
             let (u, v) = surface.project_point(point)?;
             Some(surface.normal(u, v))
         }
