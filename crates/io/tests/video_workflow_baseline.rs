@@ -475,7 +475,7 @@ fn run_case(case: &str) -> (String, bool, Vec<String>) {
             }
             break;
         }
-        if started.elapsed() > Duration::from_mins(3) {
+        if started.elapsed() > Duration::from_secs(180) {
             process_ok = false;
             child.kill().unwrap();
             child.wait().unwrap();
