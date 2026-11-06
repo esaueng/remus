@@ -131,9 +131,49 @@ pub fn resize_blend(
     expected_radius: f64,
     new_radius: f64,
 ) -> Result<ResizeBlendResult, OperationsError> {
-    remus_topology::transaction::run_transacted(topo, |topo| {
+    let refusal = match remus_topology::transaction::run_transacted(topo, |topo| {
         resize_blend_impl(topo, solid, face, expected_radius, new_radius)
-    })
+    }) {
+        Ok(result) => return Ok(result),
+        Err(refusal) => refusal,
+    };
+    // A band the per-band path cannot rebuild alone (it ends on a sampled
+    // corner patch, or its contacts are not closed loops) can still be
+    // resized with the whole dependent group it belongs to: remove the group
+    // to sharp and re-fillet it with this band at its new radius. Malformed
+    // requests keep their own refusal.
+    if !group_route_applies(&refusal) || new_radius <= Tolerance::new().linear {
+        return Err(refusal);
+    }
+    match crate::blend_cluster::resize_band_through_group(
+        topo,
+        solid,
+        face,
+        expected_radius,
+        new_radius,
+    )? {
+        Some(result) => Ok(result),
+        None => Err(refusal),
+    }
+}
+
+/// Whether a per-band refusal is one the blend-group route may answer: a
+/// reconstruction the band alone cannot make, never a malformed request.
+/// `Unsupported` is the band path's curved-end refusal (a band ending on a
+/// sampled corner patch).
+fn group_route_applies(refusal: &OperationsError) -> bool {
+    matches!(
+        refusal,
+        OperationsError::ResizeBlend(
+            ResizeBlendError::BandNotAnalytic { .. }
+                | ResizeBlendError::BandTouchesFreeform
+                | ResizeBlendError::UnsupportedSupportPair { .. }
+                | ResizeBlendError::ReconstructionFailed { .. }
+        ) | OperationsError::Unsupported {
+            operation: "resize blend",
+            ..
+        }
+    )
 }
 
 type BlendBoundaryHistory = Vec<(EntityKey, Option<EntityKey>)>;
@@ -5949,6 +5989,9 @@ fn compose_evolution(
 pub fn resize_blend_failure_code(error: &OperationsError) -> &'static str {
     match error {
         OperationsError::ResizeBlend(error) => error.code(),
+        // The group route (`blend_cluster::resize_band_through_group`)
+        // refuses with the cluster's own stable codes.
+        OperationsError::BlendCluster(error) => error.code(),
         // Dispatches on the typed error enum, not on `EdgeCurve`/`FaceSurface`:
         // every non-resize-blend error maps to the generic code. Spelled per
         // variant so a new `OperationsError` variant is a compile error here
@@ -5976,8 +6019,7 @@ pub fn resize_blend_failure_code(error: &OperationsError) -> &'static str {
         | OperationsError::Heal(_)
         | OperationsError::Offset(_)
         | OperationsError::OffsetCollapsed { .. }
-        | OperationsError::PartialResult { .. }
-        | OperationsError::BlendCluster(_) => "resize-blend-failed",
+        | OperationsError::PartialResult { .. } => "resize-blend-failed",
     }
 }
 

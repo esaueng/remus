@@ -2243,7 +2243,7 @@ fn fillet_cascade_attempts(
 /// Where a selected edge lies, so a later step can find what is left of it
 /// after an earlier step trimmed its faces.
 #[derive(Clone, Copy)]
-enum SeedCarrier {
+pub(crate) enum SeedCarrier {
     /// A straight edge: the segment it spanned.
     Line(remus_math::vec::Point3, remus_math::vec::Point3),
     /// A circular edge: its circle.
@@ -2255,7 +2255,7 @@ enum SeedCarrier {
 }
 
 impl SeedCarrier {
-    fn of(topo: &Topology, edge: EdgeId) -> Option<Self> {
+    pub(crate) fn of(topo: &Topology, edge: EdgeId) -> Option<Self> {
         let edge = topo.edge(edge).ok()?;
         match edge.curve() {
             EdgeCurve::Line => Some(Self::Line(
@@ -2276,7 +2276,7 @@ impl SeedCarrier {
 
     /// Whether `edge` lies on this carrier: a straight edge inside the
     /// seed's segment, or an arc of the seed's circle.
-    fn carries(&self, topo: &Topology, edge: EdgeId, tolerance: f64) -> bool {
+    pub(crate) fn carries(&self, topo: &Topology, edge: EdgeId, tolerance: f64) -> bool {
         let Ok(data) = topo.edge(edge) else {
             return false;
         };
