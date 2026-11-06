@@ -111,6 +111,38 @@ pub fn classify_point_cached_with_tolerance(
     }
 }
 
+/// Whether `solid` has a planar face on the plane `normal · p = d`, either
+/// orientation, within the tolerances [`classify_coincident_coplanar`] uses.
+///
+/// # Errors
+///
+/// Returns an error if the solid's faces cannot be enumerated.
+pub fn has_coplanar_plane_face(
+    topo: &Topology,
+    solid: SolidId,
+    normal: Vec3,
+    d: f64,
+    tol: Tolerance,
+) -> Result<bool, AlgoError> {
+    let plane_tol = tol.linear.max(1e-7);
+    let n_tol = 1e-6_f64;
+    for fid in remus_topology::explorer::solid_faces(topo, solid)? {
+        let FaceSurface::Plane {
+            normal: fn_raw,
+            d: fd,
+        } = topo.face(fid)?.surface()
+        else {
+            continue;
+        };
+        let same = (*fn_raw - normal).length() < n_tol && (fd - d).abs() < plane_tol;
+        let flip = (*fn_raw + normal).length() < n_tol && (fd + d).abs() < plane_tol;
+        if same || flip {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Classify a planar sub-face that is coincident-coplanar with a face of the
 /// opposing solid by 2D containment, bypassing the unstable grazing ray-cast.
 ///

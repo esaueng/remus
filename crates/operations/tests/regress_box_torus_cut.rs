@@ -29,6 +29,22 @@
 //! a complete torus crossed by a closed section loop the splitter cannot cut
 //! is refused (`FaceSplitFailed`) instead of being dropped.
 //!
+//! Two small-scale and seam follow-ups (remus#1556's remaining gaps):
+//!
+//! - Sliver at 1e-3 scale: the box top dips 1e-6 (ten linear tolerances)
+//!   into the tube, and the planar sub-face probes are pushed a fixed 1e-6
+//!   into their own solid. The annulus probe landed exactly on the torus, was
+//!   read as outside, and the cut returned the box unchanged with status ok.
+//!   Without a coplanar opposing face the probe is now classified on its own
+//!   plane (`planar_probe_on_its_plane`).
+//! - Bottom face through the tube centre with the torus seam turned: the
+//!   plane-frame loop sampler took each edge's stored `start_uv`, which for
+//!   a section is in its pcurve's own frame, and projected the rest through
+//!   the face frame. With the seam turned the two frames disagree, the
+//!   nesting test saw no nesting, the inner disc was lost and the equator
+//!   edge landed on three faces: a typed refusal. Every sample is now
+//!   projected through the face frame.
+//!
 //! Oracle, independent of the kernel: by Pappus a horizontal slice of the
 //! torus at tube height s has area 4πR√(r² − s²), so the torus below tube
 //! height a has volume 2πR (πr² − segment(a)), where segment(a) is the area
@@ -93,7 +109,7 @@ impl Placement {
     }
 }
 
-const PLACEMENTS: [Placement; 7] = [
+const PLACEMENTS: [Placement; 8] = [
     // The matrix cells: aligned, off-centre, sliver (1e-3 overlap), raised.
     Placement {
         name: "aligned",
@@ -124,6 +140,11 @@ const PLACEMENTS: [Placement; 7] = [
     Placement {
         name: "bottom",
         centre: (30.0, 30.0, 0.0),
+    },
+    // 3e-4 deep: three linear tolerances at 1e-3 scale.
+    Placement {
+        name: "skim",
+        centre: (30.0, 30.0, 24.0 - 3e-4),
     },
 ];
 
@@ -163,54 +184,35 @@ fn assert_volume(topo: &Topology, solid: SolidId, expected: f64, what: &str) {
 fn box_minus_axis_normal_torus_matches_the_closed_form() {
     for p in &PLACEMENTS {
         for scale in SCALES {
-            // Known gap, outside this fix: at 1e-3 the sliver's overlap is
-            // 1e-6 deep, ten linear tolerances, and the planar sub-face
-            // interior probes are pushed a fixed 1e-6 into the solid
-            // (`split_face_with_internal_loops`), which lands the annulus
-            // probe exactly on the torus: it classifies outside and the cut
-            // keeps the box top whole.
-            if p.name == "sliver" && scale < 1.0 {
-                continue;
-            }
             for turn in SEAM_TURNS {
                 let s3 = scale * scale * scale;
                 let inside = p.inside() * s3;
                 let place = placement_matrix(p, scale, turn);
                 let what = format!("{} scale {scale} turn {turn}", p.name);
                 assert!(inside > 0.0, "{what}: placement must overlap");
-                // Known gap, outside this fix: on the bottom face (through
-                // the origin) a turned seam leaves the equator section edge
-                // on three faces, so validation rejects the result and the
-                // boolean refuses. It must never return a wrong body.
-                let must_succeed = p.name != "bottom" || turn == 0.0;
-
                 let mut topo = Topology::new();
                 let (b, t) = build(&mut topo, scale, &place);
-                match boolean(&mut topo, BooleanOp::Cut, b, t) {
-                    Ok(cut) => assert_volume(
-                        &topo,
-                        cut,
-                        box_volume().mul_add(s3, -inside),
-                        &format!("{what} cut"),
-                    ),
-                    Err(e) => assert!(!must_succeed, "{what}: cut refused: {e}"),
-                }
+                let cut = boolean(&mut topo, BooleanOp::Cut, b, t)
+                    .unwrap_or_else(|e| panic!("{what}: cut refused: {e}"));
+                assert_volume(
+                    &topo,
+                    cut,
+                    box_volume().mul_add(s3, -inside),
+                    &format!("{what} cut"),
+                );
 
                 for swap in [false, true] {
                     let mut topo = Topology::new();
                     let (b, t) = build(&mut topo, scale, &place);
                     let (x, y) = if swap { (t, b) } else { (b, t) };
-                    match boolean(&mut topo, BooleanOp::Fuse, x, y) {
-                        Ok(fuse) => assert_volume(
-                            &topo,
-                            fuse,
-                            (box_volume() + torus_volume()).mul_add(s3, -inside),
-                            &format!("{what} fuse swap {swap}"),
-                        ),
-                        Err(e) => {
-                            assert!(!must_succeed, "{what} swap {swap}: fuse refused: {e}");
-                        }
-                    }
+                    let fuse = boolean(&mut topo, BooleanOp::Fuse, x, y)
+                        .unwrap_or_else(|e| panic!("{what} swap {swap}: fuse refused: {e}"));
+                    assert_volume(
+                        &topo,
+                        fuse,
+                        (box_volume() + torus_volume()).mul_add(s3, -inside),
+                        &format!("{what} fuse swap {swap}"),
+                    );
                 }
             }
         }
@@ -218,26 +220,35 @@ fn box_minus_axis_normal_torus_matches_the_closed_form() {
 }
 
 /// Torus − box and intersect either reproduce the closed form or refuse
-/// with a typed error; neither returns an operand unchanged.
+/// with a typed error; neither returns an operand unchanged. Every scale and
+/// seam turn, so a small-scale probe cannot silently drop a sub-face.
 #[test]
 fn other_box_torus_legs_are_exact_or_refused() {
     for p in &PLACEMENTS {
-        for swap in [false, true] {
-            for op in [BooleanOp::Cut, BooleanOp::Intersect] {
-                if op == BooleanOp::Cut && !swap {
-                    continue;
-                }
-                let inside = p.inside();
-                let expected = match op {
-                    BooleanOp::Cut => torus_volume() - inside,
-                    _ => inside,
-                };
-                let mut topo = Topology::new();
-                let (b, t) = build(&mut topo, 1.0, &placement_matrix(p, 1.0, 0.0));
-                let (x, y) = if swap { (t, b) } else { (b, t) };
-                let what = format!("{} {op:?} swap {swap}", p.name);
-                if let Ok(solid) = boolean(&mut topo, op, x, y) {
-                    assert_volume(&topo, solid, expected, &what);
+        for scale in SCALES {
+            for turn in SEAM_TURNS {
+                for swap in [false, true] {
+                    for op in [BooleanOp::Cut, BooleanOp::Intersect] {
+                        if op == BooleanOp::Cut && !swap {
+                            continue;
+                        }
+                        let inside = p.inside();
+                        let expected = match op {
+                            BooleanOp::Cut => torus_volume() - inside,
+                            _ => inside,
+                        } * scale
+                            * scale
+                            * scale;
+                        let mut topo = Topology::new();
+                        let place = placement_matrix(p, scale, turn);
+                        let (b, t) = build(&mut topo, scale, &place);
+                        let (x, y) = if swap { (t, b) } else { (b, t) };
+                        let what =
+                            format!("{} {op:?} swap {swap} scale {scale} turn {turn}", p.name);
+                        if let Ok(solid) = boolean(&mut topo, op, x, y) {
+                            assert_volume(&topo, solid, expected, &what);
+                        }
+                    }
                 }
             }
         }

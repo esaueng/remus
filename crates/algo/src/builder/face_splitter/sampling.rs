@@ -43,7 +43,11 @@ pub(super) fn sample_wire_loop_uv_via_frame_closed(
 
     let mut pts = Vec::with_capacity(wire.len() * CURVE_SAMPLES);
     for e in wire {
-        pts.push(e.start_uv);
+        // The vertex too goes through the frame: a section's stored
+        // `start_uv` can be in its pcurve's own frame, and mixing the two
+        // frames garbles the polygon (a box face cut through a torus's
+        // equator with the torus seam turned lost its nesting).
+        pts.push(frame.project(e.start_3d));
         if matches!(e.curve_3d, EdgeCurve::Line) {
             continue;
         }
