@@ -11,6 +11,9 @@
 //! - `OPEN_DETAIL=1`: attribute open mesh edges to faces and measure how far
 //!   each NURBS contact edge lies from its analytic support.
 //!
+//! It also prints the material the fillet adds, measured as the difference of
+//! two closed meshes at one setting (about +33 mm³ axis-aligned).
+//!
 //! ```sh
 //! cargo run --profile profiling -p remus-operations --example sphere_boss_fillet_profile -- --tilted
 //! ```
@@ -122,6 +125,21 @@ fn main() {
     }
 
     let solid = governed.result.solid;
+    let volume = |solid: SolidId| {
+        let mesh = tessellate::tessellate_solid(&topo, solid, 0.03).unwrap();
+        mesh.indices
+            .chunks_exact(3)
+            .map(|t| {
+                let [a, b, c] =
+                    [0, 1, 2].map(|k| mesh.positions[t[k] as usize] - Point3::new(0.0, 0.0, 0.0));
+                a.dot(b.cross(c)) / 6.0
+            })
+            .sum::<f64>()
+    };
+    println!(
+        "fillet volume (closed meshes at 0.03): {:+.3} mm³",
+        volume(solid) - volume(fused)
+    );
     let t = Instant::now();
     let (mesh, offsets) = tessellate::tessellate_solid_grouped_with_tolerance(
         &topo,

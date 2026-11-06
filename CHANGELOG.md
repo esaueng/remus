@@ -170,6 +170,20 @@ historical predecessor-line records, retained for provenance. The
 
 ### Bug Fixes
 
+* **blend:** a closed rolling-ball walk on analytic supports (the r 2 seam
+  fillet of a cylinder boss fused into a sphere, esaueng/remus#1561) now
+  builds its contacts as cubic curves re-solved at evenly spread stations,
+  measured within 5e-8 of their supports, instead of chord polylines that
+  recorded 1e-7 while sitting up to 0.11 mm off the boss. The blend surface
+  shares those curves as its boundary rows, and spine corners are kept. A rim
+  that cannot reach the linear tolerance records its measured deviation as
+  the contact edges' tolerance (at most 1e-5, or 1e-6 of the rim length).
+  The display mesh is closed at every measured setting (it had 286 open
+  edges on the sphere's equator at OpenZCAD's 0.0294 / 0.06).
+* **check,operations:** the natural-rectangle witness accepts blend bands of
+  any degree along the rim, and the qualified face-integral volume re-reads a
+  face at Gauss order 8 where orders 3 and 5 disagree, so this fillet's
+  volume reads +32.38 mm³ from face integrals rather than a mesh.
 * **blend:** a walking fillet on a closed seam whose edges run against their
   curve parameter (the boolean's sphere/cylinder section edges) rolled the
   ball inside the material: the concavity test and the spine tangent read

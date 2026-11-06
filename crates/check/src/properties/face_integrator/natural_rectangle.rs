@@ -1,4 +1,4 @@
-//! Natural degree-(2,1) domains witnessed by every complete boundary image.
+//! Natural degree-(2, p) domains witnessed by every complete boundary image.
 
 use remus_math::compact_sort::CompactSort;
 use remus_math::nurbs::curve::NurbsCurve;
@@ -105,12 +105,12 @@ pub(super) fn is_complete(
     let f = topo.face(face)?;
     if !f.inner_wires().is_empty()
         || s.degree_u() != 2
-        || s.degree_v() != 1
+        || s.degree_v() == 0
         || s.control_points().len() != 3
         || s.control_points()[0].len() < 2
         || s.is_periodic_u()
         || !clamped(s.knots_u(), 2, s.domain_u())
-        || !clamped(s.knots_v(), 1, s.domain_v())
+        || !clamped(s.knots_v(), s.degree_v(), s.domain_v())
     {
         return Ok(false);
     }
@@ -125,13 +125,13 @@ pub(super) fn is_complete(
     let tolerance = (128.0 * f64::EPSILON * magnitude).min(1e-7);
     let iso = [
         NurbsCurve::new(
-            1,
+            s.degree_v(),
             s.knots_v().to_vec(),
             points[0].clone(),
             weights[0].clone(),
         )?,
         NurbsCurve::new(
-            1,
+            s.degree_v(),
             s.knots_v().to_vec(),
             points[2].clone(),
             weights[2].clone(),
