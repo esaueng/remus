@@ -147,9 +147,11 @@ fn default_context_matches_the_ungoverned_cascade_and_reports_its_walk_steps() {
     assert_eq!(governed.result.solid, ungoverned.solid);
 
     // Deterministic work: the same run makes the same number of walker
-    // steps. Today it is 40 (one 20-step closed walk, built twice by the
-    // lazy material guard); the envelope leaves room for walker tuning but
-    // catches a cascade that starts walking every attempt.
+    // steps. Today it is 200 (one 100-step closed walk, built twice by the
+    // lazy material guard: closed curved walks step at 1 % of the rim so the
+    // polyline contacts stay within a few microns of their supports); the
+    // envelope leaves room for walker tuning but catches a cascade that
+    // starts walking every attempt.
     let mut again = Topology::new();
     let (solid, seams) = sphere_boss(&mut again, false);
     let repeat =
@@ -157,7 +159,7 @@ fn default_context_matches_the_ungoverned_cascade_and_reports_its_walk_steps() {
             .unwrap();
     assert_eq!(repeat.walk_steps, governed.walk_steps);
     assert!(
-        (1..=80).contains(&governed.walk_steps),
+        (1..=400).contains(&governed.walk_steps),
         "walk steps {} outside the pinned envelope",
         governed.walk_steps
     );

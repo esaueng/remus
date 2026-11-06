@@ -10,7 +10,7 @@
 //! is not closed.
 
 mod radial_clearance;
-mod sphere_rim_resize;
+pub(crate) mod sphere_rim_resize;
 use radial_clearance::coaxial_sweep_is_radially_disjoint;
 
 use remus_math::compact_sort::CompactSort;
@@ -1024,6 +1024,22 @@ pub fn resize_cylindrical_face(
         sphere_rim_resize::resize_sphere_rimmed_wall(topo, solid, face, &cyl, new_radius)?
     {
         return Ok(result.0.solid);
+    }
+
+    // A wall whose seam with a sphere carries an exact rolling-ball band
+    // takes the band along. A freeform band needs the caller's permission to
+    // be rebuilt approximately (`resize_cylindrical_face_reblended`), so this
+    // exact-only entry leaves it to the refusals below.
+    match crate::resize_blend::resize_cylindrical_face_reblended(
+        topo,
+        solid,
+        face,
+        new_radius,
+        crate::resize_blend::ReblendPolicy::ExactOnly,
+    ) {
+        Ok(Some(result)) => return Ok(result.solid),
+        Ok(None) | Err(crate::OperationsError::ExactOnlyUnattainable) => {}
+        Err(error) => return Err(error),
     }
 
     if !cylindrical_face_is_full_turn(topo, face, &cyl)? {

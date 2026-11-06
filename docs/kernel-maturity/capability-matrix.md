@@ -361,10 +361,11 @@ does not itself promote or demote anything.
   (`unsupported_neighbor` naming both surface types, `partial_reversed_wall`).
   WASM projects it as `unsupported` / `unsupported_move_face` with the cause
   as `details.reason`; `resizeCylindricalFaceDetailed` returns it as data and
-  rolls back. A sphere boss whose seam carries an r 2 fillet (a NURBS blend
-  band) pins `unsupported_neighbor`, and a plate corner notched by a cylinder
-  (a concave quarter wall) pins `partial_reversed_wall`, natively, direct and
-  through both batches. Other move-face refusals still report
+  rolls back. A plate corner notched by a cylinder (a concave quarter wall)
+  pins `partial_reversed_wall`, natively, direct and through both batches;
+  the legacy `resizeCylindricalFace` of a sphere boss whose seam carries a
+  NURBS fillet band still pins `unsupported_neighbor` (see the seam re-blend
+  cell below for the detailed twin). Other move-face refusals still report
   `reason: "unclassified"`.
 - **Sphere-rimmed wall resize cell:** a full-turn cylindrical wall with an
   axis-parallel seam whose rims meet a sphere off-axis (a boss rising from a
@@ -383,7 +384,55 @@ does not itself promote or demote anything.
   face map), against a closed-form sleeve-integral volume, carrier residuals
   of every rim sample, a census, a watertight mesh and a direct rebuild at
   the new radius; direct, `executeBatch` and `executeBatchV2` WASM agree.
-  Seam-blended bands on a sphere (torus or NURBS) remain Unsupported-typed.
+  A coaxial sphere rim (a latitude circle) is now claimed by the same cell
+  and rebuilt as the exact circle at its new station; the generic sleeve
+  path used to read it as a planar cap and left a ledge at the old station
+  (1.8 mm³ short on the consumer sphere at r 6 → 7).
+- **Cylinder/sphere seam blends (re-blend on resize):** a rolling-ball band
+  on the seam of a full-turn cylindrical wall with a sphere is recognized as
+  an exact torus (coaxial seam, through the analytic region recognizer) or,
+  off axis, as a freeform walking band by measurement only: an exact
+  cross-section arc inside the band names the ball, its centre must lie on
+  both offset supports, and every band and contact sample must lie on the
+  closed-form rolling-ball envelope within 2 % of the radius.
+  `resize_cylindrical_face_reblended` (WASM: `resizeCylindricalFaceDetailed`)
+  removes the band to the exact sharp seam (an exact circle when coaxial,
+  four certified closed-form quarter fits off axis), resizes the sharp wall
+  in the sphere-rim cell and rolls the measured radius back on, in one
+  transaction. An exact band is rebuilt exactly or the edit refuses; a
+  freeform band is rebuilt only with explicit permission (`ReblendPolicy::
+  AllowApproximate` / `allowApproximate: true`) and is disclosed as
+  `quality: "approximate"` with `approximateFaces` and both bands' measured
+  envelope deviations and contact angles; the rebuilt band must measure the
+  same radius, stay within 4× the source deviation and 2× its contact angle,
+  move volume on the same side by a consistent amount, and keep the source's
+  entity census. Without permission the twin refuses `quality_refused` /
+  `exact_only_unattainable` (`approximate_reblend_not_permitted`).
+  `resize_blend` (and through it `defeature` and `remove_blends`) accepts the
+  cylinder × sphere support pair for an exact torus band (remove, or rebuild
+  at a new radius). Witnesses: the consumer's r 73.5 sphere with an r 6 boss
+  (axial and tilted 20°/10°) and an r 2 seam fillet resized to r 5 and r 7
+  against a closed-form sphere + chord-integrated sleeve + direct rolling-ball
+  band integral (`reblend_cylinder_sphere_seam.rs`), exact-only refusal and
+  mid-edit rollback with an unchanged arena; WASM direct/both-batch parity
+  with a bounded quarter-round band interval. Still unsupported: the
+  journaled resize of a blended wall (no construction history for the
+  rebuilt band), multi-face or non-closed seam bands, and seams on other
+  quadrics.
+- **Walking fillets on sloped closed seams:** the walking engine read a
+  descending-trim edge's tangent backwards (the boolean's sphere-section
+  edges carry `(1, 0)` trims), classified the concave cylinder/sphere seam as
+  convex and rolled the ball inside the material; it oriented the closed
+  band by comparing normals at two different points; and it started the
+  band off the cylinder's seam azimuth, leaving a slanted seam line. All
+  three are fixed: the r 2 seam fillet on the consumer body now adds 32 mm³
+  (rolling-ball integral 31.9 mm³; it reported +324 mm³ on the wrong side),
+  an r 0.5 fillet that used to fail trimming builds, and the closed band's
+  seam is its own first section so the face integrators measure it exactly.
+  The band remains a sampled NURBS surface (contacts are polylines through
+  the walk's sections, densified to 1 % of the rim length on closed curved
+  rims) and is disclosed as approximate; its display mesh can still show
+  gaps against its neighbours.
 
 ### Sweeps (extrude, revolve, sweep, loft, pipe, helix)
 

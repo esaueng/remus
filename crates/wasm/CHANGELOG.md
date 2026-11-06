@@ -89,6 +89,14 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
 
 ### Features
 
+* `resizeCylindricalFaceDetailed(solid, face, radius, allowApproximate?)`
+  (and the batch op's `allowApproximate`) carries a sphere-seam rolling-ball
+  fillet through the resize and reports it in `details.reblend`. A sampled
+  band is rebuilt only with `allowApproximate: true`; without it the twin now
+  returns `quality_refused` / `exact_only_unattainable` with `details.reason
+  = "approximate_reblend_not_permitted"` where it returned `unsupported` /
+  `unsupported_neighbor` for such a wall. The legacy `resizeCylindricalFace`
+  keeps the `unsupported_neighbor` refusal for it.
 * Add `filletDetailedWithCancellation(solid, edges, radius, token,
   exactOnly?, maxWalkSteps?)` and `filletV2DetailedWithCancellation` with the
   same arguments: `filletDetailed` / `filletV2Detailed` on the same engines,

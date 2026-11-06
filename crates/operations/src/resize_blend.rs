@@ -11,8 +11,12 @@ mod cap_chamfer;
 mod radial_resize;
 pub(crate) use radial_resize::resize_cylindrical_strip;
 mod axial_rim_join;
+mod sphere_seam;
 mod translation_shadow;
 pub(crate) use axial_rim_join::move_with_cap_reblend;
+pub use sphere_seam::{
+    ReblendPolicy, ReblendQuality, ReblendedResize, resize_cylindrical_face_reblended,
+};
 
 use remus_math::compact_sort::CompactSort;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
@@ -465,6 +469,9 @@ fn remove_blend_region(
             heal_plane_cylinder_band(topo, solid, band)
         }
         ["cylinder", "cone"] | ["cone", "cylinder"] => heal_cylinder_cone_band(topo, solid, band),
+        ["cylinder", "sphere"] | ["sphere", "cylinder"] => {
+            sphere_seam::heal_cylinder_sphere_band(topo, solid, band)
+        }
         [first, second] => Err(ResizeBlendError::UnsupportedSupportPair { first, second }.into()),
         // Zero, one, or three-or-more supports cannot be a two-support blend
         // reconstruction. These arms match on the string dispatch (not on

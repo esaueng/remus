@@ -2190,15 +2190,16 @@
       "class": "geometry_mutation",
       "coverage": "covered",
       "owner": "O4.7",
-      "reason": "typed by resizeCylindricalFaceDetailed; legacy geometry parity, typed unsupported_move_face refusals with rollback, direct/batch parity",
+      "reason": "typed by resizeCylindricalFaceDetailed; legacy geometry parity, typed unsupported_move_face refusals with rollback, sphere-seam re-blend with disclosed approximation, direct/batch parity",
       "twin": "resizeCylindricalFaceDetailed",
       "batch_ops": [
         "resizeCylindricalFaceDetailed"
       ],
       "witnesses": [
         "resize_twin_matches_the_legacy_bore_resize_and_both_batches",
+        "resize_twin_reblends_the_sphere_boss_seam_fillet_with_permission",
+        "resize_twin_refuses_the_approximate_seam_reblend_without_permission",
         "resize_twin_resizes_sphere_rimmed_walls_on_every_surface",
-        "resize_twin_types_the_blended_sphere_boss_neighbour_refusal",
         "resize_twin_types_the_partial_inward_wall_refusal"
       ],
       "schema": "solid_envelope"

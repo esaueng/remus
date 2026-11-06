@@ -870,6 +870,39 @@ console.log(`ok - meshQuality: watertight, euler=${quality.eulerCharacteristic}`
     }
   }
 
+  // The boss with an r 2 seam fillet (a sampled NURBS band): the resize
+  // refuses as a quality decision without permission and, with
+  // allowApproximate, rebuilds the band at the source quality, disclosed.
+  {
+    const { body, wall: sharpWall } = sphereBody((s, c) => kernel.fuse(s, c), 6);
+    const faces = Array.from(kernel.getSolidFaces(body));
+    const sphereEdges = new Set(
+      faces
+        .filter((f) => kernel.getSurfaceType(f) === 'sphere')
+        .flatMap((f) => Array.from(kernel.getFaceEdges(f))),
+    );
+    const seam = Array.from(kernel.getFaceEdges(sharpWall)).filter((e) => sphereEdges.has(e));
+    assert.ok(seam.length > 0, 'boss/sphere seam edges');
+    const filleted = kernel.fillet(body, seam, 2);
+    const wall = Array.from(kernel.getSolidFaces(filleted)).find(
+      (f) => kernel.getSurfaceType(f) === 'cylinder',
+    );
+    const refused = kernel.resizeCylindricalFaceDetailed(filleted, wall, 7);
+    assert.equal(refused.status, 'error', JSON.stringify(refused));
+    assert.equal(refused.category, 'quality_refused');
+    assert.equal(refused.details.reason, 'approximate_reblend_not_permitted');
+    const resized = kernel.resizeCylindricalFaceDetailed(filleted, wall, 7, true);
+    assert.equal(resized.status, 'ok', JSON.stringify(resized));
+    assert.equal(resized.details.quality, 'approximate');
+    assert.equal(resized.details.approximateFaces.length, 1);
+    assert.ok(Math.abs(resized.details.reblend.radius - 2) < 1e-6, JSON.stringify(resized.details));
+    const sharp = kernel.volume(sphereBody((s, c) => kernel.fuse(s, c), 7).body, 0.002);
+    const fill = kernel.volume(resized.value, 0.002) - sharp;
+    assert.ok(fill > 0 && fill < 150, `reblended band fill ${fill}`);
+    assert.deepEqual(Array.from(kernel.getSolidFaces(body)), faces, 'reblend: input changed');
+    console.log(`ok - resizeCylindricalFaceDetailed reblended seam fillet: band fill ${fill}`);
+  }
+
   // A partial inward wall (a plate corner notched by a cylinder) keeps its
   // typed refusal as data, with the input left as it was.
   {

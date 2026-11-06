@@ -1778,8 +1778,15 @@ impl RemusKernel {
                     let solid = get_u32(args, "solid")?;
                     let face = get_u32(args, "face")?;
                     let radius = get_f64(args, "radius")?;
+                    let allow_approximate =
+                        get_optional_bool(args, "allowApproximate")?.unwrap_or(false);
                     Ok::<_, StructuredWasmError>(
-                        self.resize_cylindrical_face_detailed_impl(solid, face, radius),
+                        self.resize_cylindrical_face_reblend_detailed_impl(
+                            solid,
+                            face,
+                            radius,
+                            allow_approximate,
+                        ),
                     )
                 })()
                 .unwrap_or_else(|error| {

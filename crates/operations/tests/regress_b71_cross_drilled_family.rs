@@ -418,11 +418,13 @@ fn b71_family_scale_invariance() {
 fn b71_family_wrong_side_refusals() {
     // Refusal across meshes (coarse and fine pre-conditioning does not move
     // the analytic verdict), placement, and bore size.
+    // The off-seam and thin-wall members are no longer refusals: their rim
+    // edges carry descending trims, which the walker used to read backwards
+    // (the ball rolled on the wrong side). They now build the convex round,
+    // checked in `b71_rims_round_on_the_material_side`.
     let members = [
         (3.0, 12.0, 1.0, 0.0, 0.15, "pclass"),
         (3.0, 30.0, 2.0, 0.0, 0.15, "core b=2"),
-        (3.0, 12.0, 1.0, 0.37, 0.15, "off-seam"),
-        (3.0, 30.0, 2.5, 0.0, 0.15, "thin retained wall"),
     ];
     for (stock_r, stock_h, bore, rot_z, radius, name) in members {
         let (mut topo, solid) = drilled_shaft(stock_r, stock_h, bore, rot_z);
@@ -444,5 +446,44 @@ fn b71_family_wrong_side_refusals() {
         }
         let rim = first_cylinder_rim(&topo, solid);
         check_refusal(&mut topo, solid, rim, radius, name);
+    }
+}
+
+/// The off-seam (tool spun 0.37 rad) and thin-wall (b 2.5 in r 3) bore
+/// rims round at r 0.15: a valid body that removes material.
+///
+/// BOUNDED INTERVAL for the removed volume. A bore rim of radius `b` in a
+/// shaft of radius `R` is at least the bore circumference `2πb` long and at
+/// most 1.3 times it (the saddle's axial swing), and its material dihedral
+/// runs from 90° down to `90° − asin(b/R)`, so the rolling-ball section
+/// `r²(cot(φ/2) − (π − φ)/2)` lies between the quarter round `r²(1 − π/4)`
+/// and its value at the smallest dihedral.
+#[test]
+fn b71_rims_round_on_the_material_side() {
+    for (stock_r, stock_h, bore, rot_z, name) in [
+        (3.0, 12.0, 1.0, 0.37, "off-seam"),
+        (3.0, 30.0, 2.5, 0.0, "thin retained wall"),
+    ] {
+        let radius = 0.15_f64;
+        let (mut topo, solid) = drilled_shaft(stock_r, stock_h, bore, rot_z);
+        let rim = first_cylinder_rim(&topo, solid);
+        let before = remus_operations::measure::solid_volume(&topo, solid, 0.01).unwrap();
+        let rounded = remus_operations::blend_ops::fillet_v2(&mut topo, solid, &[rim], radius)
+            .unwrap_or_else(|error| panic!("{name}: rim rounds: {error}"));
+        let report = remus_operations::validate::validate_solid(&topo, rounded.solid).unwrap();
+        assert!(report.is_valid(), "{name}: {report:?}");
+        let removed =
+            before - remus_operations::measure::solid_volume(&topo, rounded.solid, 0.01).unwrap();
+        let section = |phi: f64| {
+            radius * radius * (1.0 / (phi / 2.0).tan() - (std::f64::consts::PI - phi) / 2.0)
+        };
+        let circumference = std::f64::consts::TAU * bore;
+        let low = section(std::f64::consts::FRAC_PI_2) * circumference;
+        let high =
+            section(std::f64::consts::FRAC_PI_2 - (bore / stock_r).asin()) * 1.3 * circumference;
+        assert!(
+            removed > low && removed < high,
+            "{name}: removed {removed} outside [{low}, {high}]"
+        );
     }
 }

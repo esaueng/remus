@@ -109,7 +109,6 @@ pub(super) fn is_complete(
         || s.control_points().len() != 3
         || s.control_points()[0].len() < 2
         || s.is_periodic_u()
-        || s.is_periodic_v()
         || !clamped(s.knots_u(), 2, s.domain_u())
         || !clamped(s.knots_v(), 1, s.domain_v())
     {
@@ -197,10 +196,21 @@ pub(super) fn is_complete(
                 | EdgeCurve::Parabola(_) => {}
             }
         }
-        let [(side, interval)] = claims.as_slice() else {
-            return Ok(false);
+        // A full-turn band (periodic in v) closes on one seam section: its
+        // two v-boundaries are the same arc, and the seam edge's two uses
+        // cover them one each.
+        let claim = match claims.as_slice() {
+            [only] => *only,
+            [(2, first), (3, second)] if s.is_periodic_v() => {
+                if coverage[2].is_empty() {
+                    (2, *first)
+                } else {
+                    (3, *second)
+                }
+            }
+            _ => return Ok(false),
         };
-        coverage[*side].push(*interval);
+        coverage[claim.0].push(claim.1);
     }
     for (side, spans) in coverage.iter_mut().enumerate() {
         spans.compact_sort_by(|a, b| a.0.total_cmp(&b.0));

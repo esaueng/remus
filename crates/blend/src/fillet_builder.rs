@@ -2150,7 +2150,9 @@ fn assemble_closed_quadric_rim(
     let mut rebuilt_faces = [rim.faces[0], rim.faces[1]];
     let mut support_forward = [false; 2];
     let mut support_reversed = [false; 2];
-    let spine_start = stripe.spine.evaluate(topo, 0.0)?;
+    // The spine's own traversal flag says which way the contact runs along
+    // the rim edge; a closed spine may start between vertices.
+    let spine_forward = stripe.spine.forward().first().copied().unwrap_or(true);
     for index in 0..2 {
         let current = face_replacements
             .get(&rim.faces[index])
@@ -2164,7 +2166,7 @@ fn assemble_closed_quadric_rim(
                     &[rim.rim_edge],
                     contacts[index],
                     vertices[index],
-                    spine_start,
+                    spine_forward,
                 )?;
                 (face, forward, reversed)
             } else {
@@ -2287,7 +2289,7 @@ fn rebuild_closed_walking_support(
     rim_edges: &[EdgeId],
     contact_edge: EdgeId,
     contact_vertex: VertexId,
-    spine_start: Point3,
+    spine_forward: bool,
 ) -> Result<(FaceId, bool, bool, bool), BlendError> {
     let face = topo.face(face_id)?;
     let surface = face.surface().clone();
@@ -2323,9 +2325,6 @@ fn rebuild_closed_walking_support(
         return Err(BlendError::TrimmingFailure { face: face_id });
     }
 
-    let first_spine = topo.edge(rim_edges[0])?;
-    let spine_forward = (topo.vertex(first_spine.start())?.point() - spine_start).length()
-        <= (topo.vertex(first_spine.end())?.point() - spine_start).length();
     let source_use = uses
         .iter()
         .find(|use_| use_.edge() == rim_edges[0])
@@ -2464,7 +2463,7 @@ fn assemble_closed_walking_rim(
         vertices.push(vertex);
         contact_edges.push(edge);
     }
-    let spine_start = stripe.spine.evaluate(topo, 0.0)?;
+    let spine_forward = stripe.spine.forward().first().copied().unwrap_or(true);
     let mut support_forward = [false; 2];
     let mut support_reversed = [false; 2];
     let mut target_is_outer = [false; 2];
@@ -2480,7 +2479,7 @@ fn assemble_closed_walking_rim(
             stripe.spine.edges(),
             contact_edges[index],
             vertices[index],
-            spine_start,
+            spine_forward,
         )?;
         rebuilt_faces[index] = face;
         support_forward[index] = forward;
@@ -2509,27 +2508,79 @@ fn assemble_closed_walking_rim(
         topo.vertex(vertices[0])?.point(),
         topo.vertex(vertices[1])?.point(),
     ];
-    let from_center = points[0] - section.center;
-    let to_center = points[1] - section.center;
-    let seam_normal = from_center.cross(to_center).normalize()?;
-    let seam_circle =
-        Circle3D::new_with_ref(section.center, seam_normal, section.radius, from_center)?;
-    let seam_end = seam_circle
-        .project(points[1])
-        .rem_euclid(std::f64::consts::TAU);
-    let seam = add_certified_curve_edge(
-        topo,
-        vertices[0],
-        vertices[1],
-        EdgeCurve::Circle(seam_circle),
-        (0.0, seam_end),
-    )?;
-
     let band_surface = match &stripe.surface {
         FaceSurface::Nurbs(surface) => FaceSurface::Nurbs(reverse_nurbs_surface_u(surface)?),
         other => other.clone(),
     };
-    let desired_normal = -from_center.normalize()?;
+    // The seam closing the band is the band surface's own first section: the
+    // rational quadratic arc in its first control column. Using that iso
+    // curve (an exact circular arc) rather than a separately constructed
+    // circle keeps the seam bit-identical to both v-boundaries of the
+    // surface, so the band's boundary images witness its whole domain. The
+    // column runs from the second contact (row 0 after the u reversal) to
+    // the first; `seam_forward` is the use that runs first contact → second.
+    let (seam, seam_forward) = if let FaceSurface::Nurbs(surface) = &band_surface {
+        let column: Vec<Point3> = surface.control_points().iter().map(|row| row[0]).collect();
+        let weights: Vec<f64> = surface.weights().iter().map(|row| row[0]).collect();
+        let iso = remus_math::nurbs::curve::NurbsCurve::new(
+            surface.degree_u(),
+            surface.knots_u().to_vec(),
+            column,
+            weights,
+        )?;
+        let domain = iso.domain();
+        let edge = add_certified_curve_edge(
+            topo,
+            vertices[1],
+            vertices[0],
+            EdgeCurve::NurbsCurve(iso),
+            domain,
+        )?;
+        (edge, false)
+    } else {
+        let from_center = points[0] - section.center;
+        let to_center = points[1] - section.center;
+        let seam_normal = from_center.cross(to_center).normalize()?;
+        let seam_circle =
+            Circle3D::new_with_ref(section.center, seam_normal, section.radius, from_center)?;
+        let seam_end = seam_circle
+            .project(points[1])
+            .rem_euclid(std::f64::consts::TAU);
+        let edge = add_certified_curve_edge(
+            topo,
+            vertices[0],
+            vertices[1],
+            EdgeCurve::Circle(seam_circle),
+            (0.0, seam_end),
+        )?;
+        (edge, true)
+    };
+    // The band's outward normal points toward the ball centre for a concave
+    // edge (the ball rolls in the empty corner) and away from it for a
+    // convex one. Read concavity from the first support's outward normal at
+    // its contact, and compare the band normal with the desired side AT THE
+    // SAME POINT: the surface's (0, 0) is not the first contact once its u
+    // direction is reversed, and the direction toward the centre differs by
+    // up to the section's opening angle between the two contacts.
+    let support = topo.face(rebuilt_faces[0])?;
+    let (su, sv) = support
+        .surface()
+        .project_point(points[0])
+        .ok_or(BlendError::TrimmingFailure { face: faces[0] })?;
+    let mut support_normal = support.surface().normal(su, sv);
+    if support.is_reversed() {
+        support_normal = -support_normal;
+    }
+    let concave = support_normal.dot(section.center - points[0]) > 0.0;
+    let corner = band_surface
+        .evaluate(0.0, 0.0)
+        .ok_or(BlendError::TrimmingFailure { face: faces[0] })?;
+    let toward_center = (section.center - corner).normalize()?;
+    let desired_normal = if concave {
+        toward_center
+    } else {
+        -toward_center
+    };
     let surface_normal = band_surface.normal(0.0, 0.0);
     let band_reversed = surface_normal.dot(desired_normal) < 0.0;
     let band_forward = [0, 1].map(|index| {
@@ -2539,9 +2590,9 @@ fn assemble_closed_walking_rim(
     let wire = topo.add_wire(Wire::new(
         vec![
             OrientedEdge::new(contact_edges[0], band_forward[0]),
-            OrientedEdge::new(seam, true),
+            OrientedEdge::new(seam, seam_forward),
             OrientedEdge::new(contact_edges[1], band_forward[1]),
-            OrientedEdge::new(seam, false),
+            OrientedEdge::new(seam, !seam_forward),
         ],
         true,
     )?);
@@ -2856,19 +2907,65 @@ fn compute_stripe_for_spine(
         // weld band while avoiding a continuation collapse at residuals only
         // infinitesimally above the default Newton gate.
         config.tol_3d = 5.0 * remus_math::tolerance::Tolerance::new().linear;
+        if spine.is_closed() {
+            // The contacts are polylines through the sections, so the step
+            // sets their chord sag: at the default 5 % an r 6 wall's contact
+            // stood 0.078 mm off the wall and the band read 19 % heavy.
+            config.max_step_fraction = 0.01;
+        }
     }
 
+    let mut spine = spine;
     let walk_result = if let RadiusLaw::Constant(r) = law {
         let blend = ConstRadBlend { radius: *r };
+        let origin = {
+            let walker = Walker::new(&blend, ps1, ps2, &spine, topo, config);
+            support_seam_origin(&walker, topo, &spine, [face1, face2], [ps1, ps2])?
+        };
+        if let Some(origin) = origin {
+            spine = spine.with_origin(origin);
+        }
         let walker = Walker::new(&blend, ps1, ps2, &spine, topo, config);
         let start = walker.find_start(0.0)?;
         walker.walk(start, 0.0, spine.length())?
     } else {
         let evol = BorrowedEvolRadBlend { law };
+        let origin = {
+            let walker = Walker::new(&evol, ps1, ps2, &spine, topo, config);
+            support_seam_origin(&walker, topo, &spine, [face1, face2], [ps1, ps2])?
+        };
+        if let Some(origin) = origin {
+            spine = spine.with_origin(origin);
+        }
         let walker = Walker::new(&evol, ps1, ps2, &spine, topo, config);
         let start = walker.find_start(0.0)?;
         walker.walk(start, 0.0, spine.length())?
     };
+
+    // A closed walk returns to its first station. Close it exactly: the band
+    // then meets its own seam section bit for bit, so its contact polylines
+    // close and the seam arc is both v-boundaries of the surface (the
+    // natural-rectangle witness the face integrator measures it by).
+    let mut walk_result = walk_result;
+    if spine.is_closed()
+        && let (Some(first), Some(last)) =
+            (walk_result.sections.first(), walk_result.sections.last())
+    {
+        let gap = (last.p1 - first.p1)
+            .length()
+            .max((last.p2 - first.p2).length())
+            .max((last.center - first.center).length());
+        if walk_result.sections.len() > 2 && gap <= 10.0 * config.tol_3d.max(1e-9) {
+            // Positions only: the station and the unwrapped support
+            // parameters keep the walk's full turn.
+            let (p1, p2, center) = (first.p1, first.p2, first.center);
+            if let Some(last) = walk_result.sections.last_mut() {
+                last.p1 = p1;
+                last.p2 = p2;
+                last.center = center;
+            }
+        }
+    }
 
     let blend_face_surface = if let Some(torus) = recognize_closed_cylinder_cone_torus(
         &surf1,
@@ -2910,6 +3007,129 @@ fn compute_stripe_for_spine(
         stripe,
         new_edges: Vec::new(),
     })
+}
+
+/// Station at which a closed walking band must start so that its contact on
+/// a periodic cylindrical support closes on that support's line seam.
+///
+/// A closed band's contact edge on a full-turn cylinder carries one vertex,
+/// and the cylinder's axis-parallel seam line must end on it. The walk's
+/// first section is perpendicular to the spine, so on a sloped rim (a wall
+/// meeting an off-axis sphere) its wall contact sits at a different azimuth
+/// than the seam vertex it started from, and the rebuilt seam line would
+/// leave the cylinder. Solve for the station whose wall contact lies on the
+/// seam's azimuth instead. `None` when no support is such a cylinder, the
+/// spine is open, or the spine already starts on the seam azimuth.
+fn support_seam_origin<F: crate::blend_func::BlendFunction>(
+    walker: &Walker<'_, F>,
+    topo: &Topology,
+    spine: &Spine,
+    faces: [FaceId; 2],
+    surfaces: [&dyn remus_math::traits::ParametricSurface; 2],
+) -> Result<Option<f64>, BlendError> {
+    if !spine.is_closed() || spine.length() <= 0.0 {
+        return Ok(None);
+    }
+    let mut spine_vertices = Vec::new();
+    for (index, &edge_id) in spine.edges().iter().enumerate() {
+        let edge = topo.edge(edge_id)?;
+        let forward = spine.forward().get(index).copied().unwrap_or(true);
+        let entry = if forward { edge.start() } else { edge.end() };
+        if let Some(station) = spine.edge_entry_station(index) {
+            spine_vertices.push((entry, station));
+        }
+    }
+    for (side, &face_id) in faces.iter().enumerate() {
+        let face = topo.face(face_id)?;
+        let FaceSurface::Cylinder(cylinder) = face.surface() else {
+            continue;
+        };
+        let Ok(axis) = cylinder.axis().normalize() else {
+            continue;
+        };
+        let mut seam_vertex = None;
+        for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+        {
+            let uses = topo.wire(wire_id)?.edges();
+            for use_ in uses {
+                let edge_id = use_.edge();
+                if uses.iter().filter(|other| other.edge() == edge_id).count() != 2 {
+                    continue;
+                }
+                let edge = topo.edge(edge_id)?;
+                if !matches!(edge.curve(), EdgeCurve::Line) {
+                    continue;
+                }
+                for vertex in [edge.start(), edge.end()] {
+                    if let Some(&(_, station)) = spine_vertices
+                        .iter()
+                        .find(|(candidate, _)| *candidate == vertex)
+                    {
+                        seam_vertex = Some((vertex, station));
+                    }
+                }
+            }
+        }
+        let Some((vertex, station)) = seam_vertex else {
+            continue;
+        };
+        let x_axis = cylinder.x_axis();
+        let y_axis = axis.cross(x_axis);
+        let azimuth = |point: Point3| {
+            let offset = point - cylinder.origin();
+            offset.dot(y_axis).atan2(offset.dot(x_axis))
+        };
+        let target = azimuth(topo.vertex(vertex)?.point());
+        let surface = surfaces[side];
+        let length = spine.length();
+        let mismatch = |s: f64| -> Result<f64, BlendError> {
+            let params = walker.find_start(s.rem_euclid(length))?;
+            let (u, v) = if side == 0 {
+                (params.u1, params.v1)
+            } else {
+                (params.u2, params.v2)
+            };
+            let delta = azimuth(surface.evaluate(u, v)) - target;
+            Ok(
+                (delta + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU)
+                    - std::f64::consts::PI,
+            )
+        };
+        let at_vertex = mismatch(station)?;
+        if (at_vertex * cylinder.radius()).abs() <= remus_math::tolerance::Tolerance::new().linear {
+            return Ok(None);
+        }
+        // Bracket the root next to the seam vertex, then bisect.
+        let step = length / 512.0;
+        let mut bracket = None;
+        for k in 1..=64_u32 {
+            for direction in [1.0, -1.0] {
+                let s = direction * step * f64::from(k) + station;
+                if mismatch(s)?.is_sign_positive() != at_vertex.is_sign_positive() {
+                    let previous = direction * step * f64::from(k - 1) + station;
+                    bracket = Some((previous, s));
+                    break;
+                }
+            }
+            if bracket.is_some() {
+                break;
+            }
+        }
+        let Some((mut lo, mut hi)) = bracket else {
+            return Ok(None);
+        };
+        let lo_positive = mismatch(lo)?.is_sign_positive();
+        for _ in 0..60 {
+            let mid = 0.5 * (lo + hi);
+            if mismatch(mid)?.is_sign_positive() == lo_positive {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        return Ok(Some((0.5 * (lo + hi)).rem_euclid(length)));
+    }
+    Ok(None)
 }
 
 /// The support as the walker must see it: with its normal on the side the

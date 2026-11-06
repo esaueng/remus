@@ -18,6 +18,17 @@ historical predecessor-line records, retained for provenance. The
 
 ### Added
 
+* **operations,wasm:** a cylindrical wall whose seam with a sphere carries a
+  rolling-ball fillet resizes with it (`resize_blend::
+  resize_cylindrical_face_reblended`, WASM `resizeCylindricalFaceDetailed`
+  with `allowApproximate`). The band is removed to the exact sharp seam, the
+  wall is resized and the measured radius is rolled back on in one
+  transaction. A coaxial (exact torus) band is rebuilt exactly; an off-axis
+  sampled band is rebuilt at its own approximate quality only with explicit
+  permission and is disclosed with both bands' measured envelope deviations.
+  `resize_blend` accepts the cylinder × sphere support pair for a torus band,
+  and the exact-only `resize_cylindrical_face` carries an exact seam torus.
+
 * **blend,operations,wasm:** fillets answer to an operation context.
   `blend_ops::fillet_cascade_with_context` and `fillet_v2_with_context` run
   the same engines under the context's cancellation token and a new
@@ -143,6 +154,23 @@ historical predecessor-line records, retained for provenance. The
   samples do not test trimmed membership or global undercut/accessibility.
 
 ### Bug Fixes
+
+* **blend:** a walking fillet on a closed seam whose edges run against their
+  curve parameter (the boolean's sphere/cylinder section edges) rolled the
+  ball inside the material: the concavity test and the spine tangent read
+  the curve tangent instead of the edge's travel direction. The closed
+  band's orientation compared normals taken at two different points, and its
+  start sat off the cylinder's seam azimuth, which slanted the rebuilt seam
+  line off the wall. The consumer's r 2 sphere/boss seam fillet now adds the
+  corner material it should (32 mm³; it read +324 mm³ with the band inside
+  the body), and an r 0.5 fillet that failed trimming builds. The closed
+  band now closes on its own first section, so the face integrators measure
+  it exactly.
+* **operations:** a coaxial cylindrical resize against a sphere rim (a boss
+  on a sphere's pole) is rebuilt by the sphere-rim cell as the exact latitude
+  circle at its new station; the sleeve path left a ledge at the old station.
+* **check:** the natural-rectangle face integral accepts a full-turn
+  degree-(2, 1) band whose one seam arc covers both v-boundaries.
 
 * **operations:** fillets on the edges a planar chamfer leaves on a box build
   as exact cylinder bands. The chamfer's lower contact line, whose ends are

@@ -365,15 +365,36 @@ impl RemusKernel {
     /// cannot re-intersect: `details.neighborSurfaceType` names its surface
     /// type and `details.neighborFace` its handle) or `unclassified`, and
     /// `details.surfaceType` is the selected face's surface type.
+    ///
+    /// A full-turn wall whose seam with a sphere carries a rolling-ball
+    /// fillet takes the fillet along: the band is removed to the exact sharp
+    /// seam, the wall is resized, and the measured ball radius is rolled back
+    /// onto the new seam in one transaction. `details.reblend` then holds
+    /// `radius`, `sourceBand` (the input band handles) and, for a freeform
+    /// band, `sourceDeviation`/`resultDeviation` (each band's measured
+    /// distance from its rolling-ball envelope, model units). An exact
+    /// (torus) band is rebuilt exactly or refused. A freeform (NURBS) band
+    /// has no exact form; it is rebuilt at the same approximate quality only
+    /// with `allowApproximate: true`, and the result reports
+    /// `quality: "approximate"` with `approximateFaces`. Without the
+    /// permission such a wall refuses with category `quality_refused`
+    /// (`exact_only_unattainable`, `details.reason:
+    /// "approximate_reblend_not_permitted"`).
     #[wasm_bindgen(js_name = "resizeCylindricalFaceDetailed")]
     pub fn resize_cylindrical_face_detailed(
         &mut self,
         solid: u32,
         face: u32,
         radius: f64,
+        allow_approximate: Option<bool>,
     ) -> Result<tsify::Ts<SolidOperationDetailedResult>, JsError> {
         Ok(self
-            .resize_cylindrical_face_detailed_impl(solid, face, radius)
+            .resize_cylindrical_face_reblend_detailed_impl(
+                solid,
+                face,
+                radius,
+                allow_approximate.unwrap_or(false),
+            )
             .into_ts()?)
     }
 }
@@ -678,12 +699,27 @@ impl RemusKernel {
         })
     }
 
+    /// The default (exact-only) form of the resize twin, used by tests.
+    #[cfg(test)]
     pub(crate) fn resize_cylindrical_face_detailed_impl(
         &mut self,
         solid: u32,
         face: u32,
         radius: f64,
     ) -> SolidOperationDetailedResult {
+        self.resize_cylindrical_face_reblend_detailed_impl(solid, face, radius, false)
+    }
+
+    pub(crate) fn resize_cylindrical_face_reblend_detailed_impl(
+        &mut self,
+        solid: u32,
+        face: u32,
+        radius: f64,
+        allow_approximate: bool,
+    ) -> SolidOperationDetailedResult {
+        use remus_operations::resize_blend::{
+            ReblendPolicy, ReblendQuality, resize_cylindrical_face_reblended,
+        };
         self.run_modifier_detailed(
             "resizeCylindricalFace",
             "Resize cylindrical face",
@@ -692,6 +728,63 @@ impl RemusKernel {
                 let solid_id = kernel.resolve_solid(solid)?;
                 let face_id = kernel.resolve_face(face)?;
                 let input_faces = face_set(kernel.topo(), solid_id)?;
+                let policy = if allow_approximate {
+                    ReblendPolicy::AllowApproximate
+                } else {
+                    ReblendPolicy::ExactOnly
+                };
+                match resize_cylindrical_face_reblended(
+                    kernel.topo_mut(),
+                    solid_id,
+                    face_id,
+                    radius,
+                    policy,
+                ) {
+                    Ok(Some(reblended)) => {
+                        let (handle, mut details) = blend_outcome(
+                            kernel.topo(),
+                            "cylindrical resize",
+                            &input_faces,
+                            reblended.solid,
+                            None,
+                            false,
+                        )?;
+                        details.insert("radius".into(), Value::from(radius));
+                        let mut reblend = Map::new();
+                        reblend.insert("radius".into(), Value::from(reblended.blend_radius));
+                        reblend.insert(
+                            "sourceBand".into(),
+                            Value::from(
+                                reblended
+                                    .source_band
+                                    .iter()
+                                    .map(|&band| face_id_to_u32(band))
+                                    .collect::<Vec<_>>(),
+                            ),
+                        );
+                        if let ReblendQuality::Approximate {
+                            source_deviation,
+                            result_deviation,
+                            ..
+                        } = reblended.quality
+                        {
+                            reblend.insert("sourceDeviation".into(), Value::from(source_deviation));
+                            reblend.insert("resultDeviation".into(), Value::from(result_deviation));
+                        }
+                        details.insert("reblend".into(), Value::Object(reblend));
+                        return Ok((handle, details));
+                    }
+                    Ok(None) => {}
+                    Err(OperationsError::ExactOnlyUnattainable) => {
+                        return Err(StructuredWasmError::exact_only_unattainable(
+                            "the wall's seam fillet is a freeform (NURBS) rolling-ball band with \
+                             no exact form; rebuilding it on the resized wall needs \
+                             allowApproximate: true",
+                        )
+                        .with_detail("reason", "approximate_reblend_not_permitted"));
+                    }
+                    Err(error) => return Err(resize_refusal(error, &input_faces)),
+                }
                 let result = remus_operations::push_pull::resize_cylindrical_face(
                     kernel.topo_mut(),
                     solid_id,

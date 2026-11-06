@@ -493,12 +493,23 @@ pub fn edge_material_frames_at(
     };
     let mid = f64::midpoint(t0, t1);
     let point = edge.curve().evaluate_with_endpoints(mid, start, end);
-    let Ok(tangent) = edge
+    let Ok(curve_tangent) = edge
         .curve()
         .tangent_with_endpoints(mid, start, end)
         .normalize()
     else {
         return Ok(None);
+    };
+    // The edge travels start → end, i.e. from `t0` to `t1`. A descending
+    // trim (the boolean's sphere/cylinder section edges carry `(1, 0)`) runs
+    // against the curve parameter, so its travel tangent is the curve
+    // tangent reversed. Reading the curve tangent there swapped both faces'
+    // material sides and classified a concave seam as convex, which rolled
+    // the ball inside the material.
+    let tangent = if t1 < t0 {
+        -curve_tangent
+    } else {
+        curve_tangent
     };
 
     let frame = |face_id: FaceId| -> Result<Option<(Vec3, Vec3)>, BlendError> {
