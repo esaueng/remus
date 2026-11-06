@@ -422,33 +422,53 @@ fn same_carrier(a: &FaceSurface, b: &FaceSurface) -> bool {
     let tolerance = Tolerance::new();
     let close = |p: f64, q: f64| (p - q).abs() <= tolerance.linear;
     let parallel = |p: Vec3, q: Vec3| p.cross(q).length() <= tolerance.angular;
-    match (a, b) {
-        (FaceSurface::Plane { normal: n, d }, FaceSurface::Plane { normal: m, d: e }) => {
-            (n.dot(*m) > 1.0 - tolerance.angular && close(*d, *e))
-                || (n.dot(*m) < tolerance.angular - 1.0 && close(*d, -*e))
+    match a {
+        FaceSurface::Plane { normal: n, d } => {
+            if let FaceSurface::Plane { normal: m, d: e } = b {
+                (n.dot(*m) > 1.0 - tolerance.angular && close(*d, *e))
+                    || (n.dot(*m) < tolerance.angular - 1.0 && close(*d, -*e))
+            } else {
+                false
+            }
         }
-        (FaceSurface::Cylinder(a), FaceSurface::Cylinder(b)) => {
-            let offset = b.origin() - a.origin();
-            parallel(a.axis(), b.axis())
-                && (offset - a.axis() * offset.dot(a.axis())).length() <= tolerance.linear
-                && close(a.radius(), b.radius())
+        FaceSurface::Cylinder(a) => {
+            if let FaceSurface::Cylinder(b) = b {
+                let offset = b.origin() - a.origin();
+                parallel(a.axis(), b.axis())
+                    && (offset - a.axis() * offset.dot(a.axis())).length() <= tolerance.linear
+                    && close(a.radius(), b.radius())
+            } else {
+                false
+            }
         }
-        (FaceSurface::Cone(a), FaceSurface::Cone(b)) => {
-            (a.apex() - b.apex()).length() <= tolerance.linear
-                && a.axis().dot(b.axis()) > 1.0 - tolerance.angular
-                && (a.half_angle() - b.half_angle()).abs() <= tolerance.angular
+        FaceSurface::Cone(a) => {
+            if let FaceSurface::Cone(b) = b {
+                (a.apex() - b.apex()).length() <= tolerance.linear
+                    && a.axis().dot(b.axis()) > 1.0 - tolerance.angular
+                    && (a.half_angle() - b.half_angle()).abs() <= tolerance.angular
+            } else {
+                false
+            }
         }
-        (FaceSurface::Sphere(a), FaceSurface::Sphere(b)) => {
-            (a.center() - b.center()).length() <= tolerance.linear && close(a.radius(), b.radius())
+        FaceSurface::Sphere(a) => {
+            if let FaceSurface::Sphere(b) = b {
+                (a.center() - b.center()).length() <= tolerance.linear
+                    && close(a.radius(), b.radius())
+            } else {
+                false
+            }
         }
-        (FaceSurface::Torus(a), FaceSurface::Torus(b)) => {
-            (a.center() - b.center()).length() <= tolerance.linear
-                && parallel(a.z_axis(), b.z_axis())
-                && close(a.major_radius(), b.major_radius())
-                && close(a.minor_radius(), b.minor_radius())
+        FaceSurface::Torus(a) => {
+            if let FaceSurface::Torus(b) = b {
+                (a.center() - b.center()).length() <= tolerance.linear
+                    && parallel(a.z_axis(), b.z_axis())
+                    && close(a.major_radius(), b.major_radius())
+                    && close(a.minor_radius(), b.minor_radius())
+            } else {
+                false
+            }
         }
-        (FaceSurface::Nurbs(a), FaceSurface::Nurbs(b)) => a == b,
-        _ => false,
+        FaceSurface::Nurbs(a) => matches!(b, FaceSurface::Nurbs(b) if a == b),
     }
 }
 
