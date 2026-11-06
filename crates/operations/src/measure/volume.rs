@@ -6495,7 +6495,7 @@ mod face_integral_certificate_tests {
         let solid = make_box(&mut topo, 4.0, 3.0, 2.0).unwrap();
         let shell = topo.solid(solid).unwrap().outer_shell();
         let order = remus_check::properties::PropertiesOptions::default().gauss_order;
-        let (volume, disagreement) = qualified_shell_volume(&topo, shell, order)
+        let (volume, disagreement) = qualified_shell_volume(&topo, shell, order, false)
             .unwrap()
             .unwrap();
         assert!((volume - 24.0).abs() <= 24.0 * 1e-12, "{volume}");
@@ -6505,7 +6505,10 @@ mod face_integral_certificate_tests {
         let mut faces = topo.shell(shell).unwrap().faces().to_vec();
         faces.pop();
         let open = topo.add_shell(Shell::new(faces).unwrap());
-        assert_eq!(qualified_shell_volume(&topo, open, order).unwrap(), None);
+        assert_eq!(
+            qualified_shell_volume(&topo, open, order, false).unwrap(),
+            None
+        );
     }
 
     #[test]
