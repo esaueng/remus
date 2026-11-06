@@ -9,9 +9,9 @@ face=6 kind=sphere order=5 area_only=149.84441935714014 area=149.84441935714014 
 face=6 kind=sphere order=8 area_only=149.84441935713912 area=149.84441935713912 volume=249.7406989285647 digest=56f8130f2861ccd9
 face=6 kind=sphere options=default area=149.84441935713954 volume=249.74069892856596 digest=59040da7ca4dfd6e
 face=6 kind=sphere options=refined area=149.84441935713954 volume=249.74069892856596 digest=69b0c5acf8811bed
-face=7 kind=cylinder order=1 area_only=89.90665161428485 area=89.90665161428485 volume=-44.95332580714243 digest=cbcf09d28ab965ee
-face=7 kind=cylinder order=5 area_only=89.90665161428652 area=89.90665161428652 volume=-44.95332580714326 digest=ebfced50a14580cb
-face=7 kind=cylinder order=8 area_only=89.90665161427694 area=89.90665161427694 volume=-44.95332580713847 digest=93f8036e0f8b34f7
-face=7 kind=cylinder options=default area=89.90665161428652 volume=-44.95332580714326 digest=ebfced50a14580cb
+face=7 kind=cylinder order=1 area_only=89.90665161428417 area=89.90665161428417 volume=-44.95332580714208 digest=c18bd79ee6113269
+face=7 kind=cylinder order=5 area_only=89.90665161428417 area=89.90665161428417 volume=-44.95332580714208 digest=c18bd79ee6113269
+face=7 kind=cylinder order=8 area_only=89.90665161428417 area=89.90665161428417 volume=-44.95332580714208 digest=c18bd79ee6113269
+face=7 kind=cylinder options=default area=89.90665161428417 volume=-44.95332580714208 digest=c18bd79ee6113269
 face=7 kind=cylinder options=refined area=89.90665161428346 volume=-44.953325807141724 digest=32eb895808628bb9
-solid volume=454.5280720499886 area=389.5954903285656 measured_volume=454.5280720499886
+solid volume=454.52807204998976 area=389.59549032856324 measured_volume=454.52807204998976
