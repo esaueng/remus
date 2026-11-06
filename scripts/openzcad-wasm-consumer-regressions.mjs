@@ -378,8 +378,12 @@ export const runOpenZcadGeckoEditRegression = ({ RemusKernel, RemusIo }) => {
         assert.equal(JSON.parse(k.journalSummary()).at(-1).detail.origin, 'geometry');
         const evolved = k.resizeBlendWithEvolution(source, face, 4, 1.9);
         assertCompleteEvolution(evolved, 'Gecko convex resize');
-        assert.equal(evolved.evolution.deleted.length, 0, 'recognized blend handles survive');
-        assert.equal(evolved.evolution.modified.length, 15, 'every original face retains a successor');
+        // V1 exposes construction claims only. Group correspondences remain
+        // explicitly unavailable here; clients needing inferred identities use
+        // resizeBlendJournaled and its persistent-reference journal instead.
+        assert.equal(evolved.evolution.provenance, 'unavailable');
+        assert.equal(evolved.evolution.modified.length, 0);
+        assert.equal(evolved.evolution.unresolvedSources.length, 15);
         qualify(k, evolved.result.solid);
         let solid = source;
         let wallRefs;
