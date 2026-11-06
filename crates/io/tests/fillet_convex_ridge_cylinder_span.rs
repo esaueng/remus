@@ -375,7 +375,6 @@ fn convex_ridge_fillets_keep_their_straight_runs_as_cylinders() {
         // the cylinder there with no more turn than the walked band allows
         // between its own stations (2 degrees).
         let kink = split_kink(&topo, solid, convex);
-        println!("{label}: normal turn across the split {kink:e} rad, volume {volume}");
         assert!(kink < 0.035, "{label}: kink {kink} across the split");
         // The same material as the whole walked band removed.
         assert!(
