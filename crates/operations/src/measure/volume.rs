@@ -646,9 +646,12 @@ const BOUNDARY_GAP: f64 = 1e-4;
 /// The Gauss order whose face integrals the volume's are checked against.
 const CONVERGENCE_ORDER: usize = 3;
 
-/// The finer Gauss order a face is re-read at when its order-3 and order-5
-/// volume terms disagree; the face then counts its order-8 term and
-/// `|V₈ − V₅|` instead, when that is the smaller disagreement.
+/// The finer Gauss order that decides a body's convergence when its order-3
+/// terms disagree with order 5 by more than [`ORDER_AGREEMENT`]: each face
+/// whose own order-3 term disagrees is re-read at this order, and counts
+/// `|V₈ − V₅|` when that is the smaller disagreement. The volume itself stays
+/// the sum of the order-5 terms, the strict probe's own, so it lands on the
+/// probe's signed volume bit for bit whichever reading certified it.
 const REFINEMENT_ORDER: usize = 8;
 
 /// Largest `Σ_f |V₅(f) − V₃(f)|`, relative to the volume, of a body whose
@@ -741,17 +744,38 @@ fn qualified_face_integral_volume(
     }
     let order = remus_check::properties::PropertiesOptions::default().gauss_order;
     let data = topo.solid(solid)?;
-    let (mut total, mut disagreement) = (0.0, 0.0);
-    for shell in std::iter::once(data.outer_shell()).chain(data.inner_shells().iter().copied()) {
-        let Some((signed, shell_disagreement)) = qualified_shell_volume(topo, shell, order)? else {
-            return Ok(None);
-        };
-        total += signed;
-        disagreement += shell_disagreement;
-    }
-    let volume = total.abs();
+    let shells: Vec<_> = std::iter::once(data.outer_shell())
+        .chain(data.inner_shells().iter().copied())
+        .collect();
+    let read = |refine: bool| -> Result<Option<(f64, f64)>, crate::OperationsError> {
+        let (mut total, mut disagreement) = (0.0, 0.0);
+        for &shell in &shells {
+            let Some((signed, shell_disagreement)) =
+                qualified_shell_volume(topo, shell, order, refine)?
+            else {
+                return Ok(None);
+            };
+            total += signed;
+            disagreement += shell_disagreement;
+        }
+        Ok(Some((total.abs(), disagreement)))
+    };
+    let Some((volume, mut disagreement)) = read(false)? else {
+        return Ok(None);
+    };
     if !(volume.is_finite() && volume > floor) {
         return Ok(None);
+    }
+    // Order 3 converges more slowly than order 5 on a large curved face: an
+    // r 73.5 hemisphere's terms differ by 2.5e-6 of its volume while orders 5
+    // and 8 agree to 1e-11. Only a body the order-3 reading cannot certify
+    // re-reads its disagreeing faces at the finer order; one it certifies
+    // reads exactly what it read before.
+    if disagreement.is_nan() || disagreement > ORDER_AGREEMENT * volume {
+        let Some((_, refined)) = read(true)? else {
+            return Ok(None);
+        };
+        disagreement = refined;
     }
     if disagreement.is_nan() || disagreement > ORDER_AGREEMENT * volume {
         vol_trace(|| {
@@ -770,11 +794,13 @@ fn qualified_face_integral_volume(
 /// the sum over its faces of how far their `order` and [`CONVERGENCE_ORDER`]
 /// volume terms differ, when the shell
 /// closes within [`FACE_INTEGRAL_CLOSURE`]; `None` when it does not, or a face
-/// did not integrate or report its vector area.
+/// did not integrate or report its vector area. With `refine`, a face's
+/// disagreement may instead be read against [`REFINEMENT_ORDER`].
 fn qualified_shell_volume(
     topo: &Topology,
     shell: remus_topology::shell::ShellId,
     order: usize,
+    refine: bool,
 ) -> Result<Option<(f64, f64)>, crate::OperationsError> {
     let faces = topo.shell(shell)?.faces().to_vec();
     let Some(reference) = shell_reference(topo, &faces)? else {
@@ -817,13 +843,10 @@ fn qualified_shell_volume(
         };
         area += term.area;
         vector_area += n;
-        // Order 3 converges more slowly than order 5 on a large curved face
-        // (a sphere hemisphere of an r 73.5 ball differs by 2.5e-6 of its
-        // volume), so where it disagrees, a finer independent order decides:
-        // the face is taken at that order if it agrees with order 5.
-        let mut face_volume = term.volume;
+        // With `refine`, a face whose order-3 term disagrees is re-read at
+        // [`REFINEMENT_ORDER`]; its order-5 term is what the volume sums.
         let mut face_disagreement = (term.volume - coarse.volume).abs();
-        if face_disagreement > ORDER_AGREEMENT * term.volume.abs() {
+        if refine && face_disagreement > ORDER_AGREEMENT * term.volume.abs() {
             let Ok(fine) =
                 remus_check::properties::face_cache::integrate_face_volume_about_memoized(
                     topo,
@@ -834,22 +857,18 @@ fn qualified_shell_volume(
             else {
                 return Ok(None);
             };
-            let refined = (fine.volume - term.volume).abs();
             vol_trace(|| {
                 format!(
-                    "face {}: orders 3/{order}/{REFINEMENT_ORDER} read {} / {} / {}",
+                    "face {}: orders {CONVERGENCE_ORDER}/{order}/{REFINEMENT_ORDER} read {} / {} / {}",
                     fid.index(),
                     coarse.volume,
                     term.volume,
                     fine.volume
                 )
             });
-            if refined < face_disagreement {
-                face_volume = fine.volume;
-                face_disagreement = refined;
-            }
+            face_disagreement = face_disagreement.min((fine.volume - term.volume).abs());
         }
-        volume += face_volume;
+        volume += term.volume;
         disagreement += face_disagreement;
     }
     let closure = vector_area.length();
