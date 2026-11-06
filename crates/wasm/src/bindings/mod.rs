@@ -45,6 +45,8 @@ mod batch_optional_args_tests;
 #[cfg(test)]
 mod chamfer_freeform_tests;
 #[cfg(test)]
+mod cylinder_cross_fuse_all_tests;
+#[cfg(test)]
 mod face_digest_tests;
 #[cfg(test)]
 mod face_move_preview_tests;
