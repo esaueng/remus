@@ -228,6 +228,13 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
   kept band wider than half the tube correctly (they read the whole tube or
   the opposite band). A tilted face, whose section is not a circle, now
   refuses with a typed error instead of dropping the torus.
+* A box face that dips into a torus by only a few linear tolerances (the
+  1e-3-scale sliver: 1e-6 deep) no longer leaves `cut` returning the box
+  unchanged with status ok. Such a face was classified from a probe pushed a
+  fixed 1e-6 off it, which landed on the torus; without a coplanar face on
+  the other solid it is now classified on its own plane. A box face through
+  the tube centre with the torus seam turned no longer refuses: its two
+  section circles nest correctly, and the cut and both fuses are exact.
 * `volume` and `massProperties` of equal-radius perpendicular cylinders
   (the Steinmetz bicylinder, its cross-drilled cut and its union) are exact:
   a bicylinder r = 10 reads 16r³/3 = 5333.3333 instead of 5333.2664. A

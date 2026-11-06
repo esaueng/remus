@@ -1243,7 +1243,14 @@ impl Builder {
                             opposing_topo,
                             opposing_solid,
                             opposing_geoms,
-                            point,
+                            planar_probe_on_its_plane(
+                                &self.topo,
+                                opposing_topo,
+                                opposing_solid,
+                                sf.face_id,
+                                point,
+                                self.tol,
+                            )?,
                             self.tol,
                         )?,
                     };
@@ -1634,6 +1641,45 @@ fn u_ring_progress(
     let progress = last - first;
     // A ring's samples advance most of a turn and close by jumping back.
     (progress.abs() > 1.5 * PI).then_some(progress)
+}
+
+/// Where to classify a planar sub-face's probe: on the face's own plane
+/// unless the opposing solid has a face coplanar with it.
+///
+/// Planar sub-face probes are pushed a fixed `1e-6` into their own solid
+/// (`split_face_with_internal_loops`, `nest_internal_plane_regions`) so they
+/// leave a coplanar face of the opposing solid. The push is absolute: when
+/// the opposing boundary crosses the sub-face only a few tolerances deep (a
+/// box face skimming a torus by 1e-6 at 1e-3 scale), the pushed probe lands
+/// on that boundary and the sub-face is misclassified, so a cut kept the box
+/// face whole and returned the box unchanged.
+///
+/// Without a coplanar opposing face the push resolves nothing, and the
+/// probe's projection onto the face's own plane is the faithful sample. With
+/// one, or for a non-planar face or a probe already on its plane, the probe
+/// is returned unchanged.
+fn planar_probe_on_its_plane(
+    topo: &Topology,
+    opposing_topo: &Topology,
+    opposing_solid: SolidId,
+    face_id: FaceId,
+    probe: Point3,
+    tol: Tolerance,
+) -> Result<Point3, AlgoError> {
+    let remus_topology::face::FaceSurface::Plane { normal, d } = topo.face(face_id)?.surface()
+    else {
+        return Ok(probe);
+    };
+    let Ok(unit) = normal.normalize() else {
+        return Ok(probe);
+    };
+    let offset = unit.dot(Vec3::new(probe.x(), probe.y(), probe.z())) - *d / normal.length();
+    if offset.abs() <= tol.linear
+        || classifier::has_coplanar_plane_face(opposing_topo, opposing_solid, *normal, *d, tol)?
+    {
+        return Ok(probe);
+    }
+    Ok(probe - unit * offset)
 }
 
 /// Move a full cylindrical band's classification sample off isolated plane contacts.

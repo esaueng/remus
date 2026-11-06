@@ -6,6 +6,10 @@
 //! returned the box unchanged with status ok. The native root cause and
 //! oracle are in `crates/operations/tests/regress_box_torus_cut.rs`: the
 //! torus below tube height a has volume 2πR (πr² − segment(a)) by Pappus.
+//!
+//! The sliver cell at 1e-3 scale (the box top 1e-6 into the tube) used to
+//! return the box unchanged with status ok, and the bottom face through the
+//! tube centre with the torus seam turned used to refuse; both are exact.
 
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
@@ -31,13 +35,28 @@ fn torus_below(a: f64) -> f64 {
     2.0 * PI * MAJOR * (PI * MINOR * MINOR - segment)
 }
 
-/// `(name, torus centre z)`: the matrix's aligned and raised cells and a
-/// kept band wider than half the tube.
-const CELLS: [(&str, f64); 3] = [("aligned", 20.0), ("raised", 22.0), ("sunk", 17.0)];
+/// Unit-scale torus volume inside the box (0 ≤ z ≤ 20) for a torus centred
+/// at height `z`.
+fn inside(z: f64) -> f64 {
+    torus_below((20.0 - z).clamp(-MINOR, MINOR)) - torus_below((-z).clamp(-MINOR, MINOR))
+}
 
-fn translation(x: f64, y: f64, z: f64) -> Vec<f64> {
+/// `(name, torus centre z, seam turn)`: the matrix's aligned, raised and
+/// sliver cells, a kept band wider than half the tube, and the bottom face
+/// through the tube centre with the seam turned.
+const CELLS: [(&str, f64, f64); 5] = [
+    ("aligned", 20.0, 0.0),
+    ("raised", 22.0, 0.0),
+    ("sunk", 17.0, 0.0),
+    ("sliver", 24.0 - 1e-3, 0.0),
+    ("bottom turned", 0.0, 0.7),
+];
+
+/// Row-major translation by `(x, y, z)` after a turn about +Z.
+fn placement(x: f64, y: f64, z: f64, turn: f64) -> Vec<f64> {
+    let (s, c) = turn.sin_cos();
     vec![
-        1.0, 0.0, 0.0, x, 0.0, 1.0, 0.0, y, 0.0, 0.0, 1.0, z, 0.0, 0.0, 0.0, 1.0,
+        c, -s, 0.0, x, s, c, 0.0, y, 0.0, 0.0, 1.0, z, 0.0, 0.0, 0.0, 1.0,
     ]
 }
 
@@ -88,17 +107,17 @@ fn ok_volume(kernel: &RemusKernel, result: &Value, expected: f64, what: &str) {
 
 #[test]
 fn detailed_cut_and_fuse_match_the_closed_form() {
-    for (name, z) in CELLS {
+    for (name, z, turn) in CELLS {
         for scale in SCALES {
             let s3 = scale * scale * scale;
-            let inside = torus_below(20.0 - z) * s3;
+            let inside = inside(z) * s3;
             let what = format!("{name} scale {scale}");
 
             let mut kernel = RemusKernel::new();
             let (block, torus) = place(
                 &mut kernel,
                 scale,
-                translation(30.0 * scale, 30.0 * scale, z * scale),
+                placement(30.0 * scale, 30.0 * scale, z * scale, turn),
             );
             let cut = serde_json::to_value(kernel.binary_boolean_detailed_impl(
                 BooleanOp::Cut,
@@ -181,10 +200,10 @@ fn detailed_tilted_cut_refuses_instead_of_returning_the_box() {
 #[test]
 fn both_batches_cut_and_fuse_match_the_closed_form() {
     for v2 in [false, true] {
-        for (name, z) in CELLS {
+        for (name, z, turn) in CELLS {
             for scale in SCALES {
                 let s3 = scale * scale * scale;
-                let inside = torus_below(20.0 - z) * s3;
+                let inside = inside(z) * s3;
                 for (op, a, b, expected) in [
                     ("cut", 0, 1, BOX_VOLUME.mul_add(s3, -inside)),
                     (
@@ -204,7 +223,7 @@ fn both_batches_cut_and_fuse_match_the_closed_form() {
                     let request = json!([
                         {"op": "makeBox", "args": {"width": 60.0 * scale, "height": 60.0 * scale, "depth": 20.0 * scale}},
                         {"op": "makeTorus", "args": {"majorRadius": MAJOR * scale, "minorRadius": MINOR * scale, "segments": 32}},
-                        {"op": "transform", "args": {"solid": 1, "matrix": translation(30.0 * scale, 30.0 * scale, z * scale)}},
+                        {"op": "transform", "args": {"solid": 1, "matrix": placement(30.0 * scale, 30.0 * scale, z * scale, turn)}},
                         {"op": op, "args": {"solidA": a, "solidB": b}},
                     ])
                     .to_string();
