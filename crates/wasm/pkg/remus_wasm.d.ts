@@ -4239,8 +4239,23 @@ export class RemusKernel {
      * cannot re-intersect: `details.neighborSurfaceType` names its surface
      * type and `details.neighborFace` its handle) or `unclassified`, and
      * `details.surfaceType` is the selected face's surface type.
+     *
+     * A full-turn wall whose seam with a sphere carries a rolling-ball
+     * fillet takes the fillet along: the band is removed to the exact sharp
+     * seam, the wall is resized, and the measured ball radius is rolled back
+     * onto the new seam in one transaction. `details.reblend` then holds
+     * `radius`, `sourceBand` (the input band handles) and, for a freeform
+     * band, `sourceDeviation`/`resultDeviation` (each band's measured
+     * distance from its rolling-ball envelope, model units). An exact
+     * (torus) band is rebuilt exactly or refused. A freeform (NURBS) band
+     * has no exact form; it is rebuilt at the same approximate quality only
+     * with `allowApproximate: true`, and the result reports
+     * `quality: "approximate"` with `approximateFaces`. Without the
+     * permission such a wall refuses with category `quality_refused`
+     * (`exact_only_unattainable`, `details.reason:
+     * "approximate_reblend_not_permitted"`).
      */
-    resizeCylindricalFaceDetailed(solid: number, face: number, radius: number): SolidOperationDetailedResult;
+    resizeCylindricalFaceDetailed(solid: number, face: number, radius: number, allow_approximate?: boolean | null): SolidOperationDetailedResult;
     /**
      * Resize a cylindrical wall and record its construction history.
      *
