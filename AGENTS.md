@@ -638,6 +638,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Journal ingestion for modeling operations | `journal_ops.rs` |
 | Direct push/pull face editing | `push_pull.rs` |
 | Conservative radial separation proofs for periodic face sweeps | `push_pull/radial_clearance.rs` |
+| Coaxial resize of a full-turn cylindrical wall whose rims meet a sphere off-axis (re-intersected rims, sliding rim vertices) | `push_pull/sphere_rim_resize.rs` |
 | Face moves with explicit permission and quality disclosure for sampled cap reconstruction | `face_move_quality.rs` |
 | Prepared face moves: repeated moves of one source selection to new distances, distance-independent analysis read once (`PreparedFaceMove`) | `prepared_move.rs` |
 | Work-count guards for interactive face moves: writes independent of unrelated bodies, constant slots per drag tick (tests) | `prepared_move/tests/scaling.rs` |

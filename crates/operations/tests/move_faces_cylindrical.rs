@@ -255,77 +255,36 @@ fn radial_moves_reject_mixed_groups_and_outward_facing_cylinders() {
     ));
 }
 
-/// A radius-73.5 sphere at (25.5, −1.5, 0) with an r 6 cylinder rising from
-/// z = 58 off its polar axis: fused, a protruding boss; cut, a blind bore.
-/// Returns the body and its single cylindrical wall.
-fn sphere_with_cylinder(topo: &mut Topology, op: BooleanOp) -> (SolidId, FaceId) {
-    let sphere = remus_operations::primitives::make_sphere(topo, 73.5, 16).expect("sphere");
-    transform_solid(topo, sphere, &Mat4::translation(25.5, -1.5, 0.0)).expect("place sphere");
-    let cylinder = make_cylinder(topo, 6.0, 64.1).expect("cylinder");
-    transform_solid(topo, cylinder, &Mat4::translation(35.5, 3.5, 58.0)).expect("place cylinder");
-    let body = boolean(topo, op, sphere, cylinder).expect("sphere/cylinder boolean");
-    let walls: Vec<_> = solid_faces(topo, body)
-        .expect("body faces")
+/// A 40×40×10 plate whose corner at the origin is cut by an r 10 cylinder:
+/// a concave quarter wall, the partial inward configuration partial-wall
+/// resize does not support. (Sphere-rimmed boss and bore walls resize; see
+/// `resize_cylinder_sphere_rim.rs`.)
+#[test]
+fn partial_inward_wall_resize_refusal_carries_its_typed_cause() {
+    use remus_offset::UnsupportedMoveCause;
+    use remus_operations::journal_ops::resize_cylindrical_face_journaled;
+    use remus_operations::push_pull::resize_cylindrical_face;
+
+    let mut topo = Topology::new();
+    let plate = make_box(&mut topo, 40.0, 40.0, 10.0).expect("plate");
+    let cutter = make_cylinder(&mut topo, 10.0, 10.0).expect("cutter");
+    let notched = boolean(&mut topo, BooleanOp::Cut, plate, cutter).expect("corner cut");
+    let wall = solid_faces(&topo, notched)
+        .expect("faces")
         .into_iter()
-        .filter(|&face| {
+        .find(|&face| {
             matches!(
                 topo.face(face).expect("face").surface(),
                 FaceSurface::Cylinder(_)
             )
         })
-        .collect();
-    assert_eq!(walls.len(), 1);
-    (body, walls[0])
-}
-
-#[test]
-fn resize_refusals_on_a_sphere_carry_their_typed_cause() {
-    use remus_offset::UnsupportedMoveCause;
-    use remus_operations::journal_ops::resize_cylindrical_face_journaled;
-    use remus_operations::push_pull::resize_cylindrical_face;
-
-    // Boss: the wall's lower boundary meets the sphere, which the move
-    // cannot re-intersect.
-    let mut topo = Topology::new();
-    let (boss, wall) = sphere_with_cylinder(&mut topo, BooleanOp::Fuse);
-    let before = solid_entity_counts(&topo, boss).expect("counts");
-    for radius in [5.0, 7.0] {
-        let error = resize_cylindrical_face(&mut topo, boss, wall, radius)
-            .expect_err("sphere neighbour is outside the qualified cell");
-        let OperationsError::Offset(OffsetError::UnsupportedMoveFace {
-            face,
-            surface_type,
-            cause:
-                UnsupportedMoveCause::UnsupportedNeighbor {
-                    selected,
-                    selected_surface_type,
-                    edge,
-                },
-            ..
-        }) = error
-        else {
-            panic!("expected a typed neighbour refusal, got {error:?}");
-        };
-        assert_eq!(selected, wall);
-        assert_eq!(selected_surface_type, "cylinder");
-        assert_eq!(surface_type, "sphere");
-        assert!(solid_faces(&topo, boss).expect("faces").contains(&face));
-        assert!(matches!(
-            topo.face(face).expect("neighbour").surface(),
-            FaceSurface::Sphere(_)
-        ));
-        assert!(topo.edge(edge).is_ok());
-        assert_eq!(solid_entity_counts(&topo, boss).expect("counts"), before);
-    }
-
-    // Blind bore: a partial wall facing into the material, on both the plain
-    // and the entity-evolution (journaled) paths.
-    let mut topo = Topology::new();
-    let (bored, wall) = sphere_with_cylinder(&mut topo, BooleanOp::Cut);
-    for radius in [5.0, 7.0] {
+        .expect("quarter wall");
+    assert!(topo.face(wall).expect("wall").is_reversed());
+    let before = solid_entity_counts(&topo, notched).expect("counts");
+    for radius in [8.0, 12.0] {
         for error in [
-            resize_cylindrical_face(&mut topo, bored, wall, radius).expect_err("plain"),
-            resize_cylindrical_face_journaled(&mut topo, bored, wall, radius)
+            resize_cylindrical_face(&mut topo, notched, wall, radius).expect_err("plain"),
+            resize_cylindrical_face_journaled(&mut topo, notched, wall, radius)
                 .expect_err("journaled"),
         ] {
             assert!(
@@ -340,6 +299,7 @@ fn resize_refusals_on_a_sphere_carry_their_typed_cause() {
                 ),
                 "{error:?}"
             );
+            assert_eq!(solid_entity_counts(&topo, notched).expect("counts"), before);
         }
     }
 }

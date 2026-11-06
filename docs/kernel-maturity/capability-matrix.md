@@ -349,7 +349,7 @@ does not itself promote or demote anything.
   Inward coaxial bore moves now reuse the replace-surface cell and report the
   same total construction provenance. A collision refuses transactionally.
 - Known Partial/Unqualified cells: surface-type changes, outward-facing
-  cylindrical walls, non-coaxial cylinders, non-analytic supports,
+  cylindrical walls outside the sphere-rimmed cell below, non-coaxial cylinders, non-analytic supports,
   topology-changing replacements, blend rollover, arbitrary face rotation or
   lateral relocation, and complex blend regions without unique construction
   correspondence remain roadmap work. Replace-surface itself is not yet a
@@ -361,9 +361,29 @@ does not itself promote or demote anything.
   (`unsupported_neighbor` naming both surface types, `partial_reversed_wall`).
   WASM projects it as `unsupported` / `unsupported_move_face` with the cause
   as `details.reason`; `resizeCylindricalFaceDetailed` returns it as data and
-  rolls back. A sphere with a protruding r 6 boss and the same sphere with a
-  blind bore pin both causes natively, direct and through both batches. Other
-  move-face refusals still report `reason: "unclassified"`.
+  rolls back. A sphere boss whose seam carries an r 2 fillet (a NURBS blend
+  band) pins `unsupported_neighbor`, and a plate corner notched by a cylinder
+  (a concave quarter wall) pins `partial_reversed_wall`, natively, direct and
+  through both batches. Other move-face refusals still report
+  `reason: "unclassified"`.
+- **Sphere-rimmed wall resize cell:** a full-turn cylindrical wall with an
+  axis-parallel seam whose rims meet a sphere off-axis (a boss rising from a
+  sphere, or a blind bore sunk into one; the other rim on a sphere or a
+  perpendicular planar disk) takes a coaxial radius in either direction
+  without changing the adjacency graph. Each sphere rim is re-intersected
+  with the new cylinder from the closed form, as a cubic interpolant
+  certified at every half step to the model linear tolerance (the one
+  approximation; faces stay on exact carriers); rim vertices slide along
+  their azimuth. The cell refuses transactionally (`TopologyChange`) when the
+  new rim would reach a sphere's silhouette, the wall would collapse between
+  its rims, or the swept annulus would meet any other source edge. The
+  consumer's r 73.5 sphere with an r 6 boss and with a blind bore resize to
+  r 5 and r 7 at 1e-3/1/10 model scale (the source boolean does not build
+  this body at 1e2 and above), plain and journaled (total one-to-one
+  face map), against a closed-form sleeve-integral volume, carrier residuals
+  of every rim sample, a census, a watertight mesh and a direct rebuild at
+  the new radius; direct, `executeBatch` and `executeBatchV2` WASM agree.
+  Seam-blended bands on a sphere (torus or NURBS) remain Unsupported-typed.
 
 ### Sweeps (extrude, revolve, sweep, loft, pipe, helix)
 
