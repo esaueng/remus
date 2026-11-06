@@ -15,6 +15,8 @@ pub mod draft_analysis;
 pub mod evolution;
 pub mod gcs_sketch;
 pub mod gear;
+#[cfg(all(test, feature = "io"))]
+mod gecko_edit_tests;
 pub mod heal;
 #[cfg(feature = "io")]
 pub mod io;

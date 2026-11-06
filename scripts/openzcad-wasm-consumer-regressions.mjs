@@ -298,6 +298,7 @@ export const runRidgeChamferContactRegression = ({ RemusKernel }) => {
 /** `exports` merges the kernel package (`RemusKernel`, `decodeEvolutionPayload`)
  * with the translator package (`RemusIo`). */
 export const runOpenZcadConsumerRegressions = (exports) => {
+  runOpenZcadGeckoEditRegression(exports);
   runRidgeChamferContactRegression(exports);
   runOpenZcadAnalyticFlangeBooleanRegression(exports);
   runOpenZcadCylindricalFaceResizeRegression(exports);
@@ -323,6 +324,133 @@ export const runOpenZcadConsumerRegressions = (exports) => {
   runBooleanScaleRegression(exports);
   runAnisotropicBooleanRegression(exports);
   runZeroAreaMeshExportRegression(exports);
+};
+
+// W12a: the imported part, using the same journal/evolution entry points as
+// OpenZCAD. Tier: core (edits live handles, checkpoints and the journal).
+export const runOpenZcadGeckoEditRegression = ({ RemusKernel, RemusIo }) => {
+  const fixture = readFileSync(new URL('../crates/operations/tests/data/gentle_gecko_filleted.step', import.meta.url));
+  const timings = [];
+  const io = new RemusIo();
+  const params = (k, face) => JSON.parse(k.getAnalyticSurfaceParams(face));
+  const cylinder = (k, solid, alongX = false) => Array.from(k.getSolidFaces(solid)).find(face => {
+    const p = params(k, face);
+    return p.type === 'cylinder' && (alongX ? Math.abs(p.axis[0]) > 0.99 :
+      Math.abs(p.axis[2]) > 0.99 && Math.abs(p.origin[0]) < 1e-7 && Math.abs(p.origin[1]) < 1e-7);
+  });
+  const bytes = (k, solid) => {
+    const doc = JSON.parse(new TextDecoder().decode(k.serializeSolids(Uint32Array.of(solid))));
+    delete doc.journal; // Session history changes on success; source geometry does not.
+    return doc;
+  };
+  const run = (k, op, args) => {
+    const [r] = JSON.parse(k.executeBatch(JSON.stringify([{ op, args }])));
+    assert.ok('ok' in r, JSON.stringify(r));
+    return r.ok;
+  };
+  const timed = (label, fn) => {
+    const start = performance.now();
+    const result = fn();
+    timings.push({ label, ms: performance.now() - start });
+    return result;
+  };
+  const qualify = (k, solid, faceCount = 15) => {
+    assert.equal(k.validateSolid(solid), 0);
+    assert.equal(k.getSolidFaces(solid).length, faceCount);
+    const volumes = [0.001, 0.0005].map(d => {
+      assert.equal(JSON.parse(k.meshQuality(solid, d)).isWatertight, true);
+      return k.volume(solid, d);
+    });
+    assert.ok(Math.abs(volumes[0] - volumes[1]) / volumes[0] < 1e-4);
+  };
+  try {
+    for (const mode of ['direct', 'batch']) {
+      const k = new RemusKernel();
+      try {
+        const [source] = k.deserializeSolids(io.importStep(fixture));
+        const original = bytes(k, source);
+        const face = cylinder(k, source, true);
+        const edited = timed(`A2 ${mode}`, () => mode === 'direct'
+          ? JSON.parse(k.resizeBlendJournaled(source, face, 4, 1.5))
+          : run(k, 'resizeBlendJournaled', { solid: source, face, expectedRadius: 4, newRadius: 1.5 }));
+        qualify(k, edited.solid);
+        assert.deepEqual(bytes(k, source), original);
+        assert.equal(JSON.parse(k.journalSummary()).at(-1).detail.origin, 'geometry');
+        const evolved = k.resizeBlendWithEvolution(source, face, 4, 1.9);
+        assertCompleteEvolution(evolved, 'Gecko convex resize');
+        assert.equal(evolved.evolution.deleted.length, 0, 'recognized blend handles survive');
+        assert.equal(evolved.evolution.modified.length, 15, 'every original face retains a successor');
+        qualify(k, evolved.result.solid);
+        let solid = source;
+        let wallRefs;
+        for (const diameter of [14.6, 17, 21.1, 14.7]) {
+          const cp = k.checkpoint();
+          const before = bytes(k, solid);
+          const wall = cylinder(k, solid);
+          const result = timed(`A7 ${mode} D${diameter}`, () => mode === 'direct'
+            ? JSON.parse(k.resizeCylindricalFaceJournaled(solid, wall, diameter / 2))
+            : run(k, 'resizeCylindricalFaceJournaled', { solid, face: wall, radius: diameter / 2 }));
+          qualify(k, result.solid);
+          if (wallRefs) {
+            const live = new Set(k.getSolidFaces(result.solid));
+            for (const ref of wallRefs) {
+              const resolved = JSON.parse(k.resolveRef(ref));
+              assert.equal(resolved.status, 'bound', JSON.stringify(resolved));
+              assert.equal(resolved.provenance, 'inferred');
+              assert.ok(live.has(resolved.entities[0].handle));
+            }
+          }
+          assert.ok(Math.abs(params(k, cylinder(k, result.solid)).radius - diameter / 2) < 1e-7);
+          assert.deepEqual(bytes(k, solid), before);
+          if (diameter === 21.1) {
+            k.restore(cp);
+            assert.deepEqual(bytes(k, solid), before);
+            assert.throws(() => k.getSolidFaces(result.solid));
+          } else {
+            solid = result.solid;
+            wallRefs = Array.from(k.getSolidFaces(solid), (_, index) => k.makeOperationOutputRef(result.op, 'face', index));
+          }
+          k.discardCheckpoint(cp);
+        }
+        const before = bytes(k, solid);
+        const journal = k.journalSummary();
+        const [refusal] = JSON.parse(k.executeBatchV2(JSON.stringify([{ op: 'resizeCylindricalFaceJournaled', args: { solid, face: cylinder(k, solid), radius: 30 } }])));
+        assert.ok(JSON.stringify(refusal).includes('cylinder-diameter-unbuildable'));
+        assert.deepEqual(bytes(k, solid), before);
+        assert.equal(k.journalSummary(), journal);
+        // Explicit seven-edge selection reaches the exact floor assembler.
+        const bottom = Array.from(k.getSolidFaces(source)).find(face => {
+          const p = params(k, face);
+          return p.type === 'plane' && Math.abs(p.normal[2]) > 0.99 && Math.abs(p.d) < 1e-7;
+        });
+        const edges = Array.from(k.getFaceEdges(bottom)).filter(edge => {
+          const [ax, ay, , bx, by] = k.getEdgeVertices(edge);
+          return !(Math.abs(ax - 30) < 1e-7 && Math.abs(bx - 30) < 1e-7 ||
+            Math.abs(ay - 18) < 1e-7 && Math.abs(by - 18) < 1e-7);
+        });
+        assert.equal(edges.length, 7);
+        const bevel = mode === 'direct' ? JSON.parse(k.chamferJournaled(source, Uint32Array.from(edges), 0.8, 0.8))
+          : run(k, 'chamferJournaled', { solid: source, edges, d1: 0.8, d2: 0.8 });
+        assert.equal(k.validateSolid(bevel.solid), 0);
+        assert.deepEqual(bytes(k, source), original);
+        const cap = Array.from(k.getSolidFaces(source)).find(face => {
+          const p = params(k, face);
+          return p.type === 'plane' && Math.abs(p.normal[2]) > 0.99 && Math.abs(Math.abs(p.d) - 36) < 1e-7;
+        });
+        const prepared = k.prepareMoveFaces(source, Uint32Array.of(cap));
+        for (let i = 0; i < 3; i++) {
+          const cp = k.checkpoint();
+          timed('prepared move +2', () => k.moveFacesPreparedJournaled(prepared, 2));
+          k.restore(cp);
+          k.discardCheckpoint(cp);
+          assert.deepEqual(bytes(k, source), original);
+        }
+        assert.equal(k.releasePreparedMove(prepared), true);
+      } finally { k.free(); }
+    }
+  } finally { io.free(); }
+  console.log(`ok - Gecko A2/A6/A7 journaled/evolution contracts; timings ${JSON.stringify(timings)}`);
+  return timings;
 };
 
 export const runWideSphereCapRegression = ({ RemusKernel, RemusIo }) => {
