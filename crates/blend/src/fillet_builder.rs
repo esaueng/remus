@@ -2237,6 +2237,28 @@ fn assemble_closed_quadric_rim(
     Ok(topo.add_face(band))
 }
 
+/// Largest closest-point distance of `contact` from an analytic `support`
+/// over 4096 samples; `0` for a NURBS support, whose projection is not
+/// exact enough to measure against.
+fn contact_support_deviation(
+    contact: &remus_math::nurbs::curve::NurbsCurve,
+    support: &FaceSurface,
+) -> f64 {
+    if matches!(support, FaceSurface::Nurbs(_)) {
+        return 0.0;
+    }
+    let (t0, t1) = contact.domain();
+    (0..=4096)
+        .map(|i| {
+            let point = contact.evaluate((t1 - t0).mul_add(f64::from(i) / 4096.0, t0));
+            support
+                .project_point(point)
+                .and_then(|(u, v)| support.evaluate(u, v))
+                .map_or(f64::INFINITY, |foot| (foot - point).length())
+        })
+        .fold(0.0_f64, f64::max)
+}
+
 fn closed_walking_rim_info(topo: &Topology, stripe: &Stripe) -> Result<bool, BlendError> {
     if !stripe.spine.is_closed()
         || stripe.spine.edges().is_empty()
@@ -2448,11 +2470,17 @@ fn assemble_closed_walking_rim(
     let faces = [stripe.face1, stripe.face2];
     let mut vertices = Vec::with_capacity(2);
     let mut contact_edges = Vec::with_capacity(2);
-    for curve in curves {
+    for (curve, face) in curves.into_iter().zip(faces) {
         let domain = curve.domain();
         let start = curve.evaluate(domain.0);
         let closure = (curve.evaluate(domain.1) - start).length();
-        let vertex = topo.add_vertex(Vertex::new(start, closure.max(1e-7)));
+        // The edge records the larger of its vertex's tolerance and the
+        // linear one, so the vertex carries how far the contact really
+        // lies from its support: a resampled walk that could not reach
+        // the linear tolerance (`closed_walk::recordable_deviation`)
+        // records its measured deviation instead of claiming 1e-7.
+        let off_support = contact_support_deviation(curve, topo.face(face)?.surface());
+        let vertex = topo.add_vertex(Vertex::new(start, closure.max(off_support).max(1e-7)));
         let edge = add_certified_curve_edge(
             topo,
             vertex,
@@ -2907,16 +2935,21 @@ fn compute_stripe_for_spine(
         // weld band while avoiding a continuation collapse at residuals only
         // infinitesimally above the default Newton gate.
         config.tol_3d = 5.0 * remus_math::tolerance::Tolerance::new().linear;
-        if spine.is_closed() {
-            // The contacts are polylines through the sections, so the step
-            // sets their chord sag: at the default 5 % an r 6 wall's contact
-            // stood 0.078 mm off the wall and the band read 19 % heavy.
+        if spine.is_closed()
+            && (matches!(surf1, FaceSurface::Nurbs(_)) || matches!(surf2, FaceSurface::Nurbs(_)))
+        {
+            // A closed walk on a NURBS support keeps polyline contacts
+            // through the sections, so the step sets their chord sag: at the
+            // default 5 % an r 6 wall's contact stood 0.078 mm off the wall
+            // and the band read 19 % heavy. On analytic supports
+            // `closed_walk` resamples the contacts to the linear tolerance
+            // whatever the march's step.
             config.max_step_fraction = 0.01;
         }
     }
 
     let mut spine = spine;
-    let walk_result = if let RadiusLaw::Constant(r) = law {
+    let band = if let RadiusLaw::Constant(r) = law {
         let blend = ConstRadBlend { radius: *r };
         let origin = {
             let walker = Walker::new(&blend, ps1, ps2, &spine, topo, config);
@@ -2926,8 +2959,7 @@ fn compute_stripe_for_spine(
             spine = spine.with_origin(origin);
         }
         let walker = Walker::new(&blend, ps1, ps2, &spine, topo, config);
-        let start = walker.find_start(0.0)?;
-        walker.walk(start, 0.0, spine.length())?
+        walked_band(&walker, [(ps1, &surf1), (ps2, &surf2)], topo, radius)?
     } else {
         let evol = BorrowedEvolRadBlend { law };
         let origin = {
@@ -2938,58 +2970,16 @@ fn compute_stripe_for_spine(
             spine = spine.with_origin(origin);
         }
         let walker = Walker::new(&evol, ps1, ps2, &spine, topo, config);
-        let start = walker.find_start(0.0)?;
-        walker.walk(start, 0.0, spine.length())?
+        walked_band(&walker, [(ps1, &surf1), (ps2, &surf2)], topo, radius)?
     };
-
-    // A closed walk returns to its first station. Close it exactly: the band
-    // then meets its own seam section bit for bit, so its contact polylines
-    // close and the seam arc is both v-boundaries of the surface (the
-    // natural-rectangle witness the face integrator measures it by).
-    let mut walk_result = walk_result;
-    if spine.is_closed()
-        && let (Some(first), Some(last)) =
-            (walk_result.sections.first(), walk_result.sections.last())
-    {
-        let gap = (last.p1 - first.p1)
-            .length()
-            .max((last.p2 - first.p2).length())
-            .max((last.center - first.center).length());
-        if walk_result.sections.len() > 2 && gap <= 10.0 * config.tol_3d.max(1e-9) {
-            // Positions only: the station and the unwrapped support
-            // parameters keep the walk's full turn.
-            let (p1, p2, center) = (first.p1, first.p2, first.center);
-            if let Some(last) = walk_result.sections.last_mut() {
-                last.p1 = p1;
-                last.p2 = p2;
-                last.center = center;
-            }
-        }
-    }
-
-    let blend_face_surface = if let Some(torus) = recognize_closed_cylinder_cone_torus(
-        &surf1,
-        &surf2,
-        &spine,
-        topo,
-        &walk_result.sections,
-        radius,
-    )? {
-        FaceSurface::Torus(torus)
-    } else {
-        let surface = if spine.is_closed() {
-            approximate_blend_surface_linear_v(&walk_result.sections)?
-        } else {
-            approximate_blend_surface(&walk_result.sections)?
-        };
-        FaceSurface::Nurbs(surface)
-    };
-
-    let contact1 = sections_to_contact_curve(&walk_result.sections, |s| s.p1)?;
-    let contact2 = sections_to_contact_curve(&walk_result.sections, |s| s.p2)?;
-
-    let pcurve1 = build_pcurve_from_contact(ps1, &surf1, &contact1)?;
-    let pcurve2 = build_pcurve_from_contact(ps2, &surf2, &contact2)?;
+    let WalkedBand {
+        surface: blend_face_surface,
+        contact1,
+        contact2,
+        pcurve1,
+        pcurve2,
+        sections,
+    } = band;
 
     let stripe = Stripe {
         spine,
@@ -3000,12 +2990,128 @@ fn compute_stripe_for_spine(
         contact2,
         face1,
         face2,
-        sections: walk_result.sections,
+        sections,
     };
 
     Ok(StripeResult {
         stripe,
         new_edges: Vec::new(),
+    })
+}
+
+/// A walked band's geometry, before it becomes a [`Stripe`].
+struct WalkedBand {
+    surface: FaceSurface,
+    contact1: remus_math::nurbs::curve::NurbsCurve,
+    contact2: remus_math::nurbs::curve::NurbsCurve,
+    pcurve1: Curve2D,
+    pcurve2: Curve2D,
+    sections: Vec<crate::section::CircSection>,
+}
+
+/// Walk `walker`'s spine and build the band through its sections.
+///
+/// A closed rim the torus recognizer does not prove is resampled into C¹
+/// contacts that lie on their analytic supports within the linear tolerance
+/// their edges record (`closed_walk`). Other walks keep the sections the
+/// march produced, joined by degree-1 contacts.
+fn walked_band<F: crate::blend_func::BlendFunction>(
+    walker: &Walker<'_, F>,
+    supports: [(&dyn remus_math::traits::ParametricSurface, &FaceSurface); 2],
+    topo: &Topology,
+    radius: f64,
+) -> Result<WalkedBand, BlendError> {
+    let spine = walker.spine();
+    let start = walker.find_start(0.0)?;
+    let mut walk_result = walker.walk(start, 0.0, spine.length())?;
+    let [(ps1, surf1), (ps2, surf2)] = supports;
+
+    // A closed walk returns to its first station. Close it exactly: the band
+    // then meets its own seam section bit for bit, so its contact polylines
+    // close and the seam arc is both v-boundaries of the surface (the
+    // natural-rectangle witness the face integrator measures it by).
+    let closure_tolerance = 10.0 * walker.config().tol_3d.max(1e-9);
+    if spine.is_closed()
+        && walk_result.sections.len() > 2
+        && let (Some(first), Some(last)) =
+            (walk_result.sections.first(), walk_result.sections.last())
+        && (last.p1 - first.p1)
+            .length()
+            .max((last.p2 - first.p2).length())
+            .max((last.center - first.center).length())
+            <= closure_tolerance
+    {
+        // Positions only: the station and the unwrapped support parameters
+        // keep the walk's full turn.
+        let (p1, p2, center) = (first.p1, first.p2, first.center);
+        if let Some(last) = walk_result.sections.last_mut() {
+            last.p1 = p1;
+            last.p2 = p2;
+            last.center = center;
+        }
+    }
+
+    if let Some(torus) = recognize_closed_cylinder_cone_torus(
+        surf1,
+        surf2,
+        spine,
+        topo,
+        &walk_result.sections,
+        radius,
+    )? {
+        let contact1 = sections_to_contact_curve(&walk_result.sections, |s| s.p1)?;
+        let contact2 = sections_to_contact_curve(&walk_result.sections, |s| s.p2)?;
+        return Ok(WalkedBand {
+            surface: FaceSurface::Torus(torus),
+            pcurve1: build_pcurve_from_contact(ps1, surf1, &contact1)?,
+            pcurve2: build_pcurve_from_contact(ps2, surf2, &contact2)?,
+            contact1,
+            contact2,
+            sections: walk_result.sections,
+        });
+    }
+    let analytic = |surface: &FaceSurface| !matches!(surface, FaceSurface::Nurbs(_));
+    if spine.is_closed() && analytic(surf1) && analytic(surf2) {
+        let fit = crate::closed_walk::fit_closed_walk(
+            walker,
+            &walk_result.sections,
+            [(ps1, support_periods(surf1)), (ps2, support_periods(surf2))],
+        )?;
+        // Only the closed-rim assembly records a contact tolerance above the
+        // linear one (`assemble_closed_walking_rim`); elsewhere the edges
+        // would claim 1e-7.
+        if fit.deviation > 0.5 * remus_math::tolerance::Tolerance::new().linear
+            && !qualified_closed_curved_pair(surf1, surf2)
+        {
+            return Err(BlendError::WalkingFailure {
+                edge: spine.edges()[0],
+                t: 0.0,
+                residual: fit.deviation,
+            });
+        }
+        return Ok(WalkedBand {
+            surface: FaceSurface::Nurbs(fit.surface),
+            contact1: fit.contact1,
+            contact2: fit.contact2,
+            pcurve1: fit.pcurve1,
+            pcurve2: fit.pcurve2,
+            sections: fit.sections,
+        });
+    }
+    let surface = if spine.is_closed() {
+        approximate_blend_surface_linear_v(&walk_result.sections)?
+    } else {
+        approximate_blend_surface(&walk_result.sections)?
+    };
+    let contact1 = sections_to_contact_curve(&walk_result.sections, |s| s.p1)?;
+    let contact2 = sections_to_contact_curve(&walk_result.sections, |s| s.p2)?;
+    Ok(WalkedBand {
+        surface: FaceSurface::Nurbs(surface),
+        pcurve1: build_pcurve_from_contact(ps1, surf1, &contact1)?,
+        pcurve2: build_pcurve_from_contact(ps2, surf2, &contact2)?,
+        contact1,
+        contact2,
+        sections: walk_result.sections,
     })
 }
 
@@ -3493,17 +3599,9 @@ pub(crate) fn sections_to_contact_curve(
     Ok(curve)
 }
 
-/// Build a PCurve by projecting every contact control point onto the support.
-///
-/// Angular coordinates are unwrapped before constructing the UV NURBS. This
-/// preserves a closed contact's full turn instead of collapsing its coincident
-/// endpoints into a zero-length line at the parameter seam.
-fn build_pcurve_from_contact(
-    surf: &dyn remus_math::traits::ParametricSurface,
-    face_surface: &FaceSurface,
-    contact: &remus_math::nurbs::curve::NurbsCurve,
-) -> Result<remus_math::curves2d::Curve2D, BlendError> {
-    let (u_period, v_period) = match face_surface {
+/// Parameter periods `(u, v)` of a support surface.
+fn support_periods(face_surface: &FaceSurface) -> (Option<f64>, Option<f64>) {
+    match face_surface {
         FaceSurface::Cylinder(_) | FaceSurface::Cone(_) | FaceSurface::Sphere(_) => {
             (Some(std::f64::consts::TAU), None)
         }
@@ -3518,7 +3616,20 @@ fn build_pcurve_from_contact(
             (u_period, v_period)
         }
         FaceSurface::Plane { .. } => (None, None),
-    };
+    }
+}
+
+/// Build a PCurve by projecting every contact control point onto the support.
+///
+/// Angular coordinates are unwrapped before constructing the UV NURBS. This
+/// preserves a closed contact's full turn instead of collapsing its coincident
+/// endpoints into a zero-length line at the parameter seam.
+fn build_pcurve_from_contact(
+    surf: &dyn remus_math::traits::ParametricSurface,
+    face_surface: &FaceSurface,
+    contact: &remus_math::nurbs::curve::NurbsCurve,
+) -> Result<remus_math::curves2d::Curve2D, BlendError> {
+    let (u_period, v_period) = support_periods(face_surface);
     let mut points: Vec<Point2> = Vec::with_capacity(contact.control_points().len());
     for point in contact.control_points() {
         let (mut u, mut v) = surf.project_point(*point);

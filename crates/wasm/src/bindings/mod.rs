@@ -81,6 +81,8 @@ mod sew_faces_default_tests;
 #[cfg(test)]
 mod sketch_validation_tests;
 #[cfg(test)]
+mod sphere_boss_seam_fillet_tests;
+#[cfg(test)]
 mod sphere_torus_orientation_tests;
 #[cfg(test)]
 mod store_local_switch_tests;

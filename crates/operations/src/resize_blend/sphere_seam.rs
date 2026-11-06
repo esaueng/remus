@@ -1132,9 +1132,12 @@ fn reblend(
         ) => {
             // The quality floor is the source band's own measured envelope
             // deviation and contact angle, with headroom for the new seam's
-            // different shape.
+            // different shape. A resampled walked band (`closed_walk`) is
+            // tangent to within its stations' Newton residual, a few 1e-9
+            // rad; a microradian floor keeps two such readings from being
+            // compared as ratios of noise.
             let floor = 4.0 * source.max(10.0 * Tolerance::new().linear);
-            let angle_floor = 2.0 * source_angle.max(Tolerance::new().angular);
+            let angle_floor = 2.0 * source_angle.max(1e-6);
             if result > floor || result_angle > angle_floor {
                 return Err(reconstruction(format!(
                     "rebuilt seam blend deviates {result:.3e} mm from its rolling-ball envelope \
