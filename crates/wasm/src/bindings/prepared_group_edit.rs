@@ -229,7 +229,11 @@ impl RemusKernel {
         value: f64,
     ) -> Result<serde_json::Value, StructuredWasmError> {
         let result = self
-            .with_prepared_group_edit(prepared, |topo, edit| edit.commit_journaled(topo, value))
+            .with_prepared_group_edit(prepared, |topo, edit| {
+                remus_operations::journal_ops::commit_prepared_group_edit_journaled(
+                    topo, edit, value,
+                )
+            })
             .map_err(|reason| StructuredWasmError::from(WasmError::InvalidInput { reason }))?
             .map_err(StructuredWasmError::from)?;
         Ok(serde_json::json!({

@@ -40,8 +40,9 @@ native  remus_operations::blend_cluster::PreparedGroupEdit
         prepare_band(topo, solid, face, expected_radius) / prepare_cylinder(topo, solid, face)
         preview(topo, value) -> SolidId          // a frame
         commit(topo, value) -> SolidId           // = resize_blend / resize_cylindrical_face
-        commit_journaled(topo, value)            // = the *_journaled variants
         is_current(topo), learned_refusal(), kind()
+        remus_operations::journal_ops::commit_prepared_group_edit_journaled(topo, &prepared, value)
+                                                 // = the *_journaled variants
 
 wasm    prepareResizeBlend(solid, face, expectedRadius) -> handle
         prepareResizeCylindricalFace(solid, face) -> handle
