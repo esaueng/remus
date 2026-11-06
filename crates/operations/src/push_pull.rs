@@ -1150,7 +1150,7 @@ pub(crate) fn resize_cylindrical_face_with_entity_evolution(
         return Err(remus_offset::OffsetError::UnsupportedMoveFace {
             face, surface_type: "cylinder",
             cause: remus_offset::UnsupportedMoveCause::PartialReversedWall,
-            reason: "partial-cylinder resize currently requires an outward quarter wall with radial planar sides".into(),
+            reason: "partial-cylinder resize currently requires an outward wall with radial planar sides".into(),
         }.into());
     }
     let source_faces = solid_faces(topo, solid)?;
@@ -1164,16 +1164,6 @@ pub(crate) fn resize_cylindrical_face_with_entity_evolution(
     if !full_turn || (reversed && replacement_carriers) {
         let (base, height) = axial_extent(topo, face, &cylinder)?;
         let before = solid_volume(topo, solid, verify_deflection(topo, solid))?;
-        let fraction = if full_turn { 1.0 } else { 0.25 };
-        let sleeve = fraction
-            * PI
-            * (new_radius * new_radius - cylinder.radius() * cylinder.radius())
-            * height;
-        let expected = if reversed {
-            before - sleeve
-        } else {
-            before + sleeve
-        };
         let replacement = CylindricalSurface::with_ref_dir(
             cylinder.origin(),
             cylinder.axis(),
@@ -1186,6 +1176,19 @@ pub(crate) fn resize_cylindrical_face_with_entity_evolution(
             face,
             FaceSurface::Cylinder(replacement),
         )?;
+        // A full turn sweeps a whole annulus; a partial wall sweeps one over
+        // its exact (angle, height) footprint, read from the untouched source.
+        let radius_change = new_radius * new_radius - cylinder.radius() * cylinder.radius();
+        let sleeve = if full_turn {
+            PI * radius_change * height
+        } else {
+            0.5 * radius_change * cylinder_wall_footprint(topo, face, &cylinder)?
+        };
+        let expected = if reversed {
+            before - sleeve
+        } else {
+            before + sleeve
+        };
         ensure_closed_shell(topo, result.solid, "journaled cylindrical resize")?;
         ensure_volume(topo, result.solid, expected, "journaled cylindrical resize")?;
         ensure_resized_cylinder(
@@ -1363,6 +1366,69 @@ fn cylindrical_face_is_full_turn(
         }))
 }
 
+/// Exact area of a cylinder face's footprint in (angle, axial height).
+///
+/// The boundary of a wall bounded by axial lines and coaxial circles only
+/// changes angle along its circles, so Green's theorem gives the area as
+/// `|Σ level · signed sweep|` over those circles. Seam lines contribute
+/// nothing, so the sum is the same for a seamed or a seamless full band.
+fn cylinder_wall_footprint(
+    topo: &Topology,
+    face: FaceId,
+    cylinder: &remus_math::surfaces::CylindricalSurface,
+) -> Result<f64, crate::OperationsError> {
+    use remus_topology::edge::EdgeCurve;
+    let tolerance = Tolerance::new();
+    let axis = unit(cylinder.axis())?;
+    let face_data = topo.face(face)?;
+    let mut area = 0.0;
+    for wire_id in
+        std::iter::once(face_data.outer_wire()).chain(face_data.inner_wires().iter().copied())
+    {
+        for oriented in topo.wire(wire_id)?.edges() {
+            let edge = topo.edge(oriented.edge())?;
+            match edge.curve() {
+                EdgeCurve::Line => {
+                    let direction =
+                        topo.vertex(edge.end())?.point() - topo.vertex(edge.start())?.point();
+                    if direction.cross(axis).length() > tolerance.linear {
+                        return Err(crate::OperationsError::InvalidInput {
+                            reason: "partial-cylinder footprint requires axial side lines".into(),
+                        });
+                    }
+                }
+                EdgeCurve::Circle(circle) => {
+                    let span = if let Some((lo, hi)) = edge.trim() {
+                        hi - lo
+                    } else if edge.start() == edge.end() {
+                        std::f64::consts::TAU
+                    } else {
+                        return Err(crate::OperationsError::InvalidInput {
+                            reason: "partial-cylinder footprint requires trimmed rims".into(),
+                        });
+                    };
+                    let sense = circle.u_axis().cross(circle.v_axis()).dot(axis).signum()
+                        * if oriented.is_forward() { 1.0 } else { -1.0 };
+                    let level = (circle.center() - cylinder.origin()).dot(axis);
+                    area += level * span * sense;
+                }
+                _ => {
+                    return Err(crate::OperationsError::InvalidInput {
+                        reason: "partial-cylinder footprint requires line and circle edges".into(),
+                    });
+                }
+            }
+        }
+    }
+    let area = area.abs();
+    if !area.is_finite() || area <= tolerance.linear {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: "partial-cylinder wall has no footprint".into(),
+        });
+    }
+    Ok(area)
+}
+
 fn resize_partial_cylindrical_face(
     topo: &mut Topology,
     solid: SolidId,
@@ -1375,7 +1441,7 @@ fn resize_partial_cylindrical_face(
             face,
             surface_type: "cylinder",
             cause: remus_offset::UnsupportedMoveCause::PartialReversedWall,
-            reason: "partial-cylinder resize currently requires an outward quarter wall with radial planar sides".into(),
+            reason: "partial-cylinder resize currently requires an outward wall with radial planar sides".into(),
         }.into());
     }
     let (base, height) = axial_extent(topo, face, cylinder)?;
@@ -1396,11 +1462,12 @@ fn resize_partial_cylindrical_face(
             FaceSurface::Cylinder(replacement),
         )?
         .solid;
+        let footprint = cylinder_wall_footprint(topo, face, cylinder)?;
+        // The wall sweeps an annular prism over its exact (angle, height)
+        // footprint, so the volume changes by half the radius-squared change
+        // times that footprint's area.
         let expected = before
-            + 0.25
-                * PI
-                * (new_radius * new_radius - cylinder.radius() * cylinder.radius())
-                * height;
+            + 0.5 * (new_radius * new_radius - cylinder.radius() * cylinder.radius()) * footprint;
         ensure_closed_shell(topo, result, "partial cylindrical resize")?;
         ensure_volume(topo, result, expected, "partial cylindrical resize")?;
         ensure_resized_cylinder(

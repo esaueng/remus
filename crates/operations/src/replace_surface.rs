@@ -29,7 +29,8 @@ pub struct ReplaceSurfaceResult {
 /// The qualified first cell accepts plane-to-plane replacement and coaxial
 /// cylinder radius replacement when every neighbor is planar or cylindrical.
 /// It preserves the source adjacency graph, reconstructs intersection-curve
-/// trims, and derives a fresh p-curve for every coedge in the result.
+/// trims, and derives a fresh p-curve for every coedge in the result; a circle
+/// on a plane gets its exact `Circle2D` image.
 ///
 /// # Errors
 ///
@@ -76,6 +77,83 @@ pub(crate) fn replace_surface_with_entity_map(
     })
 }
 
+/// Shift a straight p-curve on a `u`-periodic cylinder or cone onto the
+/// principal branch at its oriented start vertex.
+///
+/// A fresh coedge carries zero periodic winding, so its p-curve must start
+/// where the surface's own projection puts that vertex. Fitting from an edge
+/// trim can land a whole period away (an arc trimmed as `[2π, 5π/2]`), which
+/// STEP export rejects as a winding/branch disagreement. Seam uses are left
+/// alone: their two branches are a period apart by construction.
+fn principal_branch(
+    curve: Curve2D,
+    start_parameter: f64,
+    surface: &FaceSurface,
+    oriented_start: Point3,
+) -> Curve2D {
+    use remus_math::vec::Vec2;
+    let Curve2D::Line(line) = &curve else {
+        return curve;
+    };
+    if !matches!(surface, FaceSurface::Cylinder(_) | FaceSurface::Cone(_)) {
+        return curve;
+    }
+    let Some((principal, _)) = surface.project_point(oriented_start) else {
+        return curve;
+    };
+    let at_start = line.evaluate(start_parameter);
+    let turns = ((at_start.x() - principal) / std::f64::consts::TAU).round();
+    if turns == 0.0 || !turns.is_finite() {
+        return curve;
+    }
+    let origin = line.evaluate(0.0);
+    let direction = line.evaluate(1.0) - origin;
+    remus_math::curves2d::Line2D::new(
+        remus_math::vec::Point2::new(origin.x() - turns * std::f64::consts::TAU, origin.y()),
+        Vec2::new(direction.x(), direction.y()),
+    )
+    .map_or(curve, Curve2D::Line)
+}
+
+/// The exact p-curve of a circle use on a plane in the canonical plane chart.
+///
+/// A fitted NURBS chart of an exact circle has no `SameParameter` proof, so a
+/// re-trimmed rim would fail strict validation. The circle lies in the plane,
+/// so its chart image is a [`Circle2D`] about the projected centre whose
+/// angle `t` meets the edge parameter `s` at `s = φ + σ t`: `φ` is the edge
+/// angle of the chart `u` axis and `σ` is +1 when the circle turns with the
+/// chart. Both endpoints follow from the use's oriented edge domain.
+fn exact_plane_circle_pcurve(
+    frame: &PlaneFrame,
+    circle: &remus_math::curves::Circle3D,
+    domain: (f64, f64),
+    forward: bool,
+) -> Option<PCurve> {
+    let (u, v) = (frame.u_axis(), frame.v_axis());
+    let (edge_u, edge_v) = (circle.u_axis(), circle.v_axis());
+    let tolerance = remus_math::tolerance::Tolerance::new();
+    if circle.normal().cross(u.cross(v)).length() > tolerance.angular {
+        return None;
+    }
+    let sigma = if edge_u.cross(edge_v).dot(u.cross(v)) >= 0.0 {
+        1.0
+    } else {
+        -1.0
+    };
+    let phase = u.dot(edge_v).atan2(u.dot(edge_u));
+    let curve =
+        remus_math::curves2d::Circle2D::new(frame.project(circle.center()), circle.radius())
+            .ok()?;
+    let (first, last) = if forward {
+        (domain.0, domain.1)
+    } else {
+        (domain.1, domain.0)
+    };
+    let (start, end) = (sigma * (first - phase), sigma * (last - phase));
+    (start.is_finite() && end.is_finite() && (end - start).abs() > f64::EPSILON)
+        .then(|| PCurve::new(Curve2D::Circle(curve), start, end))
+}
+
 pub(crate) fn register_fresh_pcurves(
     topo: &mut Topology,
     faces: &[FaceId],
@@ -120,6 +198,12 @@ pub(crate) fn register_fresh_pcurves_where(
         };
         for wire_id in wire_ids {
             let uses = topo.wire(wire_id)?.edges().to_vec();
+            let mut seen = std::collections::HashSet::new();
+            let seam_edges: std::collections::HashSet<_> = uses
+                .iter()
+                .map(remus_topology::wire::OrientedEdge::edge)
+                .filter(|&edge| !seen.insert(edge))
+                .collect();
             for oriented in uses {
                 let edge_id = oriented.edge();
                 if !rebuilt(edge_id, face_id, oriented.is_forward()) {
@@ -128,6 +212,7 @@ pub(crate) fn register_fresh_pcurves_where(
                 let edge = topo.edge(edge_id)?;
                 let start = topo.vertex(edge.start())?.point();
                 let end = topo.vertex(edge.end())?.point();
+                let oriented_start = if oriented.is_forward() { start } else { end };
                 let domain = edge.strict_domain().map_err(|error| {
                     remus_offset::OffsetError::TopologyChange {
                         face: Some(face_id),
@@ -135,6 +220,14 @@ pub(crate) fn register_fresh_pcurves_where(
                         reason: format!("result edge has no trim authority: {error}"),
                     }
                 })?;
+                if let (Some(frame), remus_topology::edge::EdgeCurve::Circle(circle)) =
+                    (plane_frame.as_ref(), edge.curve())
+                    && let Some(pcurve) =
+                        exact_plane_circle_pcurve(frame, circle, domain, oriented.is_forward())
+                {
+                    topo.set_pcurve_oriented(edge_id, face_id, oriented.is_forward(), pcurve)?;
+                    continue;
+                }
                 let curve = compute_pcurve_on_surface_in_domain(
                     edge.curve(),
                     start,
@@ -158,6 +251,11 @@ pub(crate) fn register_fresh_pcurves_where(
                     (0.0, end_parameter)
                 } else {
                     (end_parameter, 0.0)
+                };
+                let curve = if seam_edges.contains(&edge_id) {
+                    curve
+                } else {
+                    principal_branch(curve, start_parameter, &surface, oriented_start)
                 };
                 let pcurve = PCurve::new(curve, start_parameter, end_parameter);
                 topo.set_pcurve_oriented(edge_id, face_id, oriented.is_forward(), pcurve)?;
