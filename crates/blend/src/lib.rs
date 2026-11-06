@@ -24,6 +24,7 @@ pub(crate) mod equal_radius_boss_corner;
 pub mod face_face;
 pub mod fillet_builder;
 pub mod g1_chain;
+pub mod governor;
 pub mod query;
 pub mod radius_law;
 pub(crate) mod rail_chain;

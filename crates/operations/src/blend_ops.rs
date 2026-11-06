@@ -4,6 +4,7 @@ use remus_blend::chamfer_builder::ChamferBuilder;
 use remus_blend::fillet_builder::FilletBuilder;
 pub use remus_blend::{BlendEngine, BlendError, BlendFaceOrigins, BlendResult};
 use remus_math::compact_sort::CompactSort;
+use remus_math::context::OperationContext;
 use remus_math::det_hash::{DetHashMap, DetHashSet};
 use remus_topology::Topology;
 use remus_topology::edge::{EdgeCurve, EdgeId};
@@ -59,6 +60,10 @@ fn transactional<T>(
     topo: &mut Topology,
     attempt: impl FnOnce(&mut Topology) -> Result<T, OperationsError>,
 ) -> Result<T, OperationsError> {
+    // Every engine attempt starts at a safe point: a governed blend that was
+    // cancelled or spent its budget refuses here instead of starting another
+    // engine (`remus_blend::governor`; a no-op when ungoverned).
+    remus_blend::governor::checkpoint()?;
     remus_topology::transaction::run_transacted(topo, attempt)
 }
 
@@ -412,6 +417,89 @@ impl<'a> BlendBaseline<'a> {
     }
 }
 
+/// The convexity of each blended edge the volume sign rule can decide.
+///
+/// Each edge asks the exact classifier first: the prepared analytic ray vote
+/// ([`crate::query::ConcavityProbe`]), the authority the robust mesh
+/// classifier itself defers to whenever its winding number is ambiguous. It
+/// answers the four material-quadrant probes from the input's own surfaces,
+/// so its cost does not grow with the body's size. The robust classifier
+/// tessellated the whole input at an absolute 0.01 deflection for these few
+/// probes — 271 k triangles for an r 73.5 sphere carrying a boss, rebuilt for
+/// every attempt because it overflows the scoped mesh memo — and that mesh
+/// and its winding sums were 90% of such a fillet's time.
+///
+/// An edge the exact probe cannot classify (an error from a trim it cannot
+/// sample) is retried on the robust mesh classifier, built at most once, so
+/// every edge that was classified before still is.
+fn blended_edge_convexities(
+    topo: &Topology,
+    input_solid: SolidId,
+    adjacency: &remus_topology::adjacency::AdjacencyIndex,
+    edges: &[EdgeId],
+    reach: f64,
+) -> Vec<bool> {
+    use crate::query::EdgeConcavity;
+
+    // The classifier refuses to guess when the probe overshoots the local
+    // geometry (`probe > local_scale/4` → Unknown) — which is exactly what an
+    // absurd radius does (r=50 on a 10 mm edge). Retry at shrinking probes so
+    // an oversized blend still gets classified and the sign rule still fires;
+    // a genuinely ambiguous edge keeps its Unknown verdict and stays excluded.
+    let probes = [reach * 0.25, reach * 0.25 / 64.0, reach * 0.25 / 4096.0];
+    // `Some(answer)` ends the probe sequence; `None` tries a smaller probe.
+    let decide = |verdict: EdgeConcavity| match verdict {
+        EdgeConcavity::Convex => Some(Some(true)),
+        EdgeConcavity::Concave => Some(Some(false)),
+        EdgeConcavity::Tangent => Some(None),
+        EdgeConcavity::Unknown => None,
+    };
+    let mut exact = crate::query::ConcavityProbe::new(topo, input_solid);
+    let mut robust: Option<crate::classify::RobustClassifier<'_>> = None;
+    edges
+        .iter()
+        .filter_map(|&edge| {
+            let exact_answer = match *adjacency.faces_for_edge(edge) {
+                [face_a, face_b] if face_a != face_b => {
+                    let mut answer = Ok(None);
+                    for probe in probes {
+                        match exact.concavity(edge, face_a, face_b, probe) {
+                            Ok(verdict) => {
+                                if let Some(decided) = decide(verdict) {
+                                    answer = Ok(decided);
+                                    break;
+                                }
+                            }
+                            Err(error) => {
+                                answer = Err(error);
+                                break;
+                            }
+                        }
+                    }
+                    answer
+                }
+                // Non-manifold or a self-seam: Unknown on either classifier.
+                _ => Ok(None),
+            };
+            if let Ok(answer) = exact_answer {
+                return answer;
+            }
+            let classifier = robust.get_or_insert_with(|| {
+                crate::classify::RobustClassifier::new(topo, input_solid, 0.01, 1.0e-7)
+            });
+            for probe in probes {
+                let verdict =
+                    crate::query::edge_concavity_with(topo, adjacency, edge, probe, classifier)
+                        .ok()?;
+                if let Some(answer) = decide(verdict) {
+                    return answer;
+                }
+            }
+            None
+        })
+        .collect()
+}
+
 /// Reject a blend whose volume change is geometrically impossible.
 ///
 /// A blend only moves material inside a bounded tube around each edge the
@@ -533,33 +621,7 @@ pub(crate) fn validate_blend_volume(
 
     // Sign rule, applied only when every blended edge shares one convexity
     // (a mixed set can legitimately net out either way).
-    //
-    // One classifier serves every edge and probe size: it tessellates the
-    // input once, where each one-shot `edge_concavity` probe point rebuilt
-    // the whole-solid mesh (four quadrants × up to three probes per edge).
-    let mut classifier = crate::classify::RobustClassifier::new(topo, input_solid, 0.01, 1.0e-7);
-    let convexities: Vec<bool> = budget_edges
-        .iter()
-        .filter_map(|&e| {
-            // The classifier refuses to guess when the probe overshoots the
-            // local geometry (`probe > local_scale/4` → Unknown) — which is
-            // exactly what an absurd radius does (r=50 on a 10 mm edge). Retry
-            // at shrinking probes so an oversized blend still gets classified
-            // and the sign rule still fires; a genuinely ambiguous edge keeps
-            // its Unknown verdict and stays excluded, as before.
-            for probe in [reach * 0.25, reach * 0.25 / 64.0, reach * 0.25 / 4096.0] {
-                match crate::query::edge_concavity_with(topo, &adjacency, e, probe, &mut classifier)
-                    .ok()?
-                {
-                    crate::query::EdgeConcavity::Convex => return Some(true),
-                    crate::query::EdgeConcavity::Concave => return Some(false),
-                    crate::query::EdgeConcavity::Tangent => return None,
-                    crate::query::EdgeConcavity::Unknown => {}
-                }
-            }
-            None
-        })
-        .collect();
+    let convexities = blended_edge_convexities(topo, input_solid, &adjacency, &budget_edges, reach);
     // Point-in-solid convexity depends on a consistently oriented input shell.
     // The blend postcondition deliberately permits repairing baseline defects,
     // so do not turn an inherited orientation error into a confident sign
@@ -646,6 +708,9 @@ fn validate_complete_blend(
     edges: &[EdgeId],
     size: BlendSize,
 ) -> Result<(), OperationsError> {
+    // Validation tessellates and integrates; do not start it for a governed
+    // blend that has already been cancelled.
+    remus_blend::governor::checkpoint()?;
     if result.is_partial {
         return Err(OperationsError::PartialResult {
             operation,
@@ -2013,6 +2078,88 @@ fn fillet_v2_attempts(
     })
 }
 
+/// What a fillet run under an [`OperationContext`] did.
+pub struct GovernedBlend {
+    /// The blend, exactly as the ungoverned entry point returns it.
+    pub result: BlendResult,
+    /// Walker step attempts the operation made: a deterministic work count,
+    /// comparable to [`WorkBudgets::blend_walk_steps`](remus_math::context::WorkBudgets::blend_walk_steps).
+    pub walk_steps: usize,
+}
+
+/// Runs one blend operation under `context`'s cancellation token and blend
+/// step budget, as a single transaction.
+///
+/// The engines answer to the context at their safe points (every walker
+/// step, every engine attempt, validation), see [`remus_blend::governor`].
+/// A cancelled or over-budget run refuses with
+/// [`MathError::Cancelled`](remus_math::MathError::Cancelled) or
+/// [`MathError::ResourceLimitExceeded`](remus_math::MathError::ResourceLimitExceeded)
+/// (resource [`remus_blend::governor::STEP_RESOURCE`]) and restores the
+/// topology, even when a later engine attempt happened to finish without
+/// reaching a checkpoint: once a run trips, it is refused.
+fn governed_blend(
+    topo: &mut Topology,
+    context: &OperationContext,
+    run: impl FnOnce(&mut Topology) -> Result<BlendResult, OperationsError>,
+) -> Result<GovernedBlend, OperationsError> {
+    context.check_cancelled()?;
+    remus_topology::transaction::run_transacted(topo, |t| {
+        let governed = remus_blend::governor::governed(
+            context.cancellation.clone(),
+            context.budgets.blend_walk_steps,
+            || run(t),
+        );
+        if let Some(trip) = governed.trip {
+            return Err(OperationsError::Math(trip));
+        }
+        Ok(GovernedBlend {
+            result: governed.result?,
+            walk_steps: governed.steps,
+        })
+    })
+}
+
+/// [`fillet_cascade`] under an [`OperationContext`].
+///
+/// The same engines and result, bounded by the context's cancellation token
+/// and [`WorkBudgets::blend_walk_steps`](remus_math::context::WorkBudgets::blend_walk_steps).
+/// Only those two context fields apply; the engines keep their own
+/// tolerances and fallback rules. With [`OperationContext::new`] the result is
+/// [`fillet_cascade`]'s.
+///
+/// # Errors
+///
+/// [`fillet_cascade`]'s errors, plus `Math(Cancelled)` and
+/// `Math(ResourceLimitExceeded)` for a cancelled or over-budget run. Every
+/// error leaves the topology as it was.
+pub fn fillet_cascade_with_context(
+    topo: &mut Topology,
+    solid: SolidId,
+    edges: &[EdgeId],
+    radius: f64,
+    context: &OperationContext,
+) -> Result<GovernedBlend, OperationsError> {
+    governed_blend(topo, context, |t| fillet_cascade(t, solid, edges, radius))
+}
+
+/// [`fillet_v2`] under an [`OperationContext`], as
+/// [`fillet_cascade_with_context`] is for the cascade.
+///
+/// # Errors
+///
+/// [`fillet_v2`]'s errors, plus `Math(Cancelled)` and
+/// `Math(ResourceLimitExceeded)`. Every error leaves the topology as it was.
+pub fn fillet_v2_with_context(
+    topo: &mut Topology,
+    solid: SolidId,
+    edges: &[EdgeId],
+    radius: f64,
+    context: &OperationContext,
+) -> Result<GovernedBlend, OperationsError> {
+    governed_blend(topo, context, |t| fillet_v2(t, solid, edges, radius))
+}
+
 /// The one fillet cascade every handle-returning surface runs.
 ///
 /// Engine order is a product decision (2026-07, restated for B23): the
@@ -2540,6 +2687,10 @@ pub fn blend_failure_code(error: &OperationsError) -> &'static str {
             "unsupported-seam-crossing"
         }
         OperationsError::Blend(_) => "blend-failed",
+        OperationsError::Math(remus_math::MathError::Cancelled) => "cancelled",
+        OperationsError::Math(remus_math::MathError::ResourceLimitExceeded { .. }) => {
+            "resource-limit"
+        }
         OperationsError::PartialResult { .. } => "partial-result",
         OperationsError::InvalidInput { .. } => "invalid-input",
         OperationsError::Unsupported {
@@ -3542,3 +3693,6 @@ mod tests {
 
 #[cfg(test)]
 mod grouping_oracle_tests;
+
+#[cfg(test)]
+mod governed_fillet_tests;

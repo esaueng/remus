@@ -6,8 +6,29 @@ historical predecessor-line records, retained for provenance. The
 
 ## Unreleased
 
+### Performance
+
+* **operations:** a fillet's volume postcondition classifies the blended
+  edges' convexity with the exact prepared classifier, falling back to the
+  robust mesh classifier only for an edge it cannot answer. The mesh
+  classifier tessellated the whole input at an absolute 0.01 deflection for
+  these few probes: on an r 73.5 sphere carrying an r 6 boss that was a
+  271 k-triangle mesh per engine attempt and 90% of an r 2 seam fillet,
+  which drops from 1.59 s to 0.18 s natively (1.72 s to 0.20 s tilted).
+
 ### Added
 
+* **blend,operations,wasm:** fillets answer to an operation context.
+  `blend_ops::fillet_cascade_with_context` and `fillet_v2_with_context` run
+  the same engines under the context's cancellation token and a new
+  `WorkBudgets::blend_walk_steps` cap (default unbounded), polled at every
+  walker step, engine attempt and validation, and refuse a cancelled or
+  over-budget run as `MathError::Cancelled` / `ResourceLimitExceeded`
+  (resource `blend_walk_steps`) with the topology rolled back. The WASM
+  twins `filletDetailedWithCancellation` and
+  `filletV2DetailedWithCancellation` take an `OperationCancellationToken`
+  and optional `maxWalkSteps`, project refusals as `cancelled` /
+  `resource_limit`, and report `details.walkSteps`.
 * **offset,operations,wasm:** `OffsetError::UnsupportedMoveFace` carries a
   typed `cause` (`UnsupportedMoveCause`: `UnsupportedNeighbor` with the
   selected face, its surface type and the shared edge; `PartialReversedWall`;

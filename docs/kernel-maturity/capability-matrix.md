@@ -685,7 +685,12 @@ claim, and they are the first implementation targets of the program:
    modifier remain queued; those gaps stay disclosed rather than inferred.
 4. **Partial operation-context coverage.** Public booleans expose and carry
    fallback policy, all six NURBS SSI work budgets, and cooperative
-   cancellation explicitly, alongside the context's tolerance.
+   cancellation explicitly, alongside the context's tolerance. Constant-radius
+   fillets (the cascade and the v2 walking engine) carry cooperative
+   cancellation and a deterministic walker step budget
+   (`blend_walk_steps`), refusing typed (`cancelled` / `resource_limit`) and
+   transactionally; their other loops (corner solvers, validation
+   tessellation) poll cancellation only between attempts.
    Generated-topology/memory budgets,
    parameter-space tolerance, determinism policy, and non-boolean operation
    families remain local or unmigrated.
