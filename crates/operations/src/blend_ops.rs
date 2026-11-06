@@ -2226,6 +2226,15 @@ fn fillet_cascade_attempts(
     }) {
         return Ok(result);
     }
+    // A chain that runs into a recognized blend group (bands ending on
+    // sampled corners, which the reorder above cannot take off one by one):
+    // remove the whole group to sharp and re-fillet it with the selection as
+    // one more stage, in the planner's order.
+    if let Ok(Some(edit)) =
+        crate::blend_cluster::fillet_through_blend_group(topo, solid, edges, radius)
+    {
+        return Ok(crate::blend_cluster::group_fillet_result(edges, edit));
+    }
     // Features that touch each other, which no engine takes in one pass,
     // can each build once the one before it has: a seam, then the edges
     // that run into its band, then those that run into theirs.

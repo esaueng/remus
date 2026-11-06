@@ -562,8 +562,15 @@ fn find_edge(topo: &Topology, solid: SolidId, a: Point3, b: Point3) -> EdgeId {
 
 /// `fillet_into_seam_band.rs`'s body: an R2.6 seam round on the boss, then
 /// (optionally) the block's top edges rounded into it by the ridge walk.
+///
+/// The walk's transition into the seam is a circular-section carrier whose
+/// sections are not the rolling ball's characteristic circles (its stations'
+/// contacts do not share one ball), so it is no sampled corner. It continues
+/// its exact top band at the band's radius between the same two supports, so
+/// it joins that band: one member, one sharp edge, its measured deviation
+/// reported rather than bounded.
 #[test]
-fn seam_band_is_recognized_and_ridge_walked_bands_are_refused() {
+fn seam_band_is_recognized_and_ridge_walked_bands_join_their_bands() {
     let mut topo = Topology::new();
     let boss = make_cylinder(&mut topo, 6.0, 28.0).unwrap();
     let block = make_box(&mut topo, 30.0, 18.0, 18.0).unwrap();
@@ -609,16 +616,25 @@ fn seam_band_is_recognized_and_ridge_walked_bands_are_refused() {
             .filter(|&f| matches!(ridge.face(f).unwrap().surface(), FaceSurface::Nurbs(_)))
             .collect();
         assert_eq!(walked.len(), 2);
-        // The walked sections do not hold one radius to the sampled
-        // family's gate, so the group cannot be closed: typed refusal from
-        // the boss, the band and the walked faces alike.
+        // The same group from the boss and from either walked face: the
+        // three seam faces and the two top bands, each with its transition.
         for seed in [boss_face, walked[0], walked[1]] {
-            match refusal(recognize_blend_cluster(&ridge, rounded, seed)) {
-                BlendClusterError::UnrecognizedMember { face, .. } => {
-                    assert!(walked.iter().any(|w| w.index() == face), "size {size}");
-                }
-                other => panic!("size {size}: {other:?}"),
+            let group = recognize_blend_cluster(&ridge, rounded, seed).unwrap();
+            assert_eq!(group.members.len(), 5, "size {size}");
+            assert!(!group.is_exact(), "size {size}");
+            for &face in &walked {
+                let member = &group.members[group.member_of(face).unwrap()];
+                assert_eq!(member.kind, BlendMemberKind::Band, "size {size}");
+                assert_eq!(member.convexity, Convexity::Convex, "size {size}");
+                assert_eq!(member.faces.len(), 2, "size {size}: band and transition");
+                assert!((member.radius - size).abs() < 1e-9, "size {size}");
+                let BlendMemberForm::SampledSections { deviation, .. } = member.form else {
+                    panic!("size {size}: the walked member reports its sampled form");
+                };
+                assert!(deviation.is_finite() && deviation > 0.0, "size {size}");
             }
+            // Its sharp edges and vertices are the unfilleted body's.
+            assert_sharp_matches(&group, &ridge, &ridge, body);
         }
     }
 }

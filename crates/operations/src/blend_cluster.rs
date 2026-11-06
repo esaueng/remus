@@ -38,6 +38,31 @@
 //!   is measured from the stations (twice the largest turn of the section
 //!   plane between neighbouring stations), never assumed.
 //!
+//! - **Walked transitions**: a sampled carrier whose rails meet their
+//!   supports tangentially (to 2e-2 rad) although no rolling ball
+//!   explains the contact — the ridge walk's run of a smaller convex band
+//!   into a concave seam round, whose sections are not the ball's
+//!   characteristic circles — is a member only as the continuation of an
+//!   exact band of its radius. It joins that band (the two share their two
+//!   non-member supports, so one sharp edge), is removed whole with it, and
+//!   its measured deviation is reported in
+//!   [`BlendMemberForm::SampledSections`], not bounded.
+//! - **Lofted arc patches** (a round's turn over a smaller band's end, a
+//!   spindle-torus patch the rolling-ball engine lofts) are read section by
+//!   section off the surface and measured like stored stations
+//!   ([`remus_blend::cap_reblend::sampled_canal_measured`]).
+//! - **Chamfer stripes**: a plane or cone face is an equal-distance chamfer
+//!   when exactly one pair of its non-tangent neighbours with elementary
+//!   carriers explains it: every point of its contact edges with them, and
+//!   every vertex, lies at one distance from their exact section (the sharp
+//!   edge it replaced); a plane runs along a straight section, a cone is
+//!   coaxial with a circular one; and that edge lies outside the material.
+//!   A stripe between two non-member supports restores its sharp edge
+//!   ([`BlendMemberKind::ChamferBand`]); one cut round a member (a seam
+//!   round's foot) collapses with it to a sharp vertex
+//!   ([`BlendMemberKind::ChamferCorner`]). Its tangent edges are joints into
+//!   the next stripe of its chain. Chamfers are re-cut after every fillet.
+//!
 //! A face the group reaches that looks like a blend but fails these checks is
 //! a typed refusal ([`BlendClusterError::UnrecognizedMember`]), never silently
 //! dropped from the group. Read-only: the topology is not changed.
@@ -52,7 +77,9 @@ mod sharp;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use remus_blend::cap_reblend::{SampledCanal, sampled_canal, sampled_section_centre};
+use remus_blend::cap_reblend::{
+    SampledCanal, sampled_canal_measured, sampled_project_measured, sampled_section_centre_measured,
+};
 use remus_math::compact_sort::CompactSort;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
@@ -67,7 +94,10 @@ use crate::OperationsError;
 use crate::query::{edge_normal_angle, effective_face_normal};
 
 pub use crate::error_payloads::BlendClusterError;
-pub use edit::{GroupEdit, resize_band_through_group, resize_cylinder_through_group};
+pub(crate) use edit::group_fillet_result;
+pub use edit::{
+    GroupEdit, fillet_through_blend_group, resize_band_through_group, resize_cylinder_through_group,
+};
 pub use reblend::{
     GroupReblend, ReblendStage, compose_evolution, plan_reblend, reblend_restoration,
 };
@@ -91,6 +121,23 @@ const RAIL_PARAMETER: f64 = 1e-3;
 const TANGENT_SCREEN: f64 = 1e-2;
 /// Interior samples taken along every classified edge.
 const EDGE_SAMPLES: u32 = 7;
+/// Normal angle (radians) up to which a rail of a walked transition counts
+/// as tangent to its support. A walked carrier's sections are not the
+/// rolling ball's characteristic circles, so its rails meet their supports
+/// only as tangent as the walk solved them (a few milliradians).
+const WALKED_ANGLE: f64 = 2e-2;
+/// Distance (relative to `max(1, |p|)`) to which every contact point and
+/// vertex of a chamfer stripe must sit at its setback from the sharp edge.
+const CHAMFER_DISTANCE: f64 = 1e-7;
+
+fn reference_scale(point: Point3) -> f64 {
+    point
+        .x()
+        .abs()
+        .max(point.y().abs())
+        .max(point.z().abs())
+        .max(1.0)
+}
 
 /// What a blend member is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,6 +148,23 @@ pub enum BlendMemberKind {
     /// A patch closing a corner where bands meet; removing it restores a
     /// sharp vertex, not an edge.
     CornerPatch,
+    /// An equal-distance chamfer stripe along one sharp edge between two
+    /// supports: a plane along a straight edge, a cone along a circular one.
+    /// Its [`BlendMember::radius`] is the chamfer distance.
+    ChamferBand,
+    /// A chamfer stripe along a blend it was cut round (a floor chamfer
+    /// running round a seam round's foot): removing the blend and the stripe
+    /// together collapses it to a sharp vertex.
+    ChamferCorner,
+}
+
+impl BlendMemberKind {
+    /// Whether the member is a chamfer stripe rather than a rolling-ball
+    /// blend.
+    #[must_use]
+    pub const fn is_chamfer(self) -> bool {
+        matches!(self, Self::ChamferBand | Self::ChamferCorner)
+    }
 }
 
 /// The carrier a member lies on.
@@ -113,6 +177,10 @@ pub enum BlendMemberForm {
     Torus,
     /// An exact sphere (a corner ball).
     Sphere,
+    /// An exact plane (a chamfer stripe along a straight edge).
+    Plane,
+    /// An exact cone (a chamfer stripe along a circular edge).
+    Cone,
     /// A sampled circular-section carrier, recognized by measurement.
     SampledSections {
         /// Stored rolling stations.
@@ -227,13 +295,30 @@ pub struct SharpVertex {
     pub corners: Vec<usize>,
 }
 
-/// One suggested re-fillet stage.
+/// What a re-blend stage builds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StageBlend {
+    /// A rolling-ball fillet at the stage radius.
+    Fillet,
+    /// An equal-distance chamfer, the stage radius being its distance.
+    Chamfer {
+        /// Whether the stripes were cut along tangent-continuous chains
+        /// (joined stripe to stripe, or round blends they were cut against),
+        /// so the rebuild chamfers the whole chain through the stage's sharp
+        /// edges rather than those edges alone.
+        tangent_chain: bool,
+    },
+}
+
+/// One suggested re-blend stage.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReblendStep {
-    /// Side the stage rounds.
+    /// Side the stage rounds (always convex for a chamfer).
     pub convexity: Convexity,
-    /// Ball radius of the stage.
+    /// Ball radius of the stage, or a chamfer stage's distance.
     pub radius: f64,
+    /// Fillet or chamfer.
+    pub blend: StageBlend,
     /// Bands the stage rebuilds, with the corner patches it produces.
     pub members: Vec<usize>,
     /// Sharp edges to fillet in this stage.
@@ -351,6 +436,13 @@ enum Form {
         canal: SampledCanal,
         angle_tolerance: f64,
     },
+    /// An equal-distance chamfer of the sharp edge `sharp` between its two
+    /// supports, set back `distance` on each; `conical` for a cone stripe.
+    Chamfer {
+        distance: f64,
+        sharp: Section,
+        conical: bool,
+    },
 }
 
 impl Form {
@@ -359,6 +451,7 @@ impl Form {
             Self::Cylinder { radius, .. } | Self::Sphere { radius, .. } => *radius,
             Self::Torus { minor, .. } => *minor,
             Self::Sampled { canal, .. } => canal.radius,
+            Self::Chamfer { distance, .. } => *distance,
         }
     }
 
@@ -367,16 +460,20 @@ impl Form {
             Self::Sampled {
                 angle_tolerance, ..
             } => *angle_tolerance,
-            Self::Cylinder { .. } | Self::Torus { .. } | Self::Sphere { .. } => EXACT_ANGLE,
+            Self::Cylinder { .. }
+            | Self::Torus { .. }
+            | Self::Sphere { .. }
+            | Self::Chamfer { .. } => EXACT_ANGLE,
         }
     }
 
     fn distance_tolerance(&self) -> f64 {
         match self {
             Self::Sampled { canal, .. } => SAMPLED_DEVIATION_FRACTION * canal.radius,
-            Self::Cylinder { .. } | Self::Torus { .. } | Self::Sphere { .. } => {
-                EXACT_DISTANCE * self.radius().max(1.0)
-            }
+            Self::Cylinder { .. }
+            | Self::Torus { .. }
+            | Self::Sphere { .. }
+            | Self::Chamfer { .. } => EXACT_DISTANCE * self.radius().max(1.0),
         }
     }
 
@@ -430,6 +527,18 @@ impl Form {
                     radius: r2,
                 },
             ) => close(*r1, *r2) && (*c2 - *c1).length() <= EXACT_DISTANCE * r1.max(1.0),
+            (
+                Self::Chamfer {
+                    distance: d1,
+                    sharp: s1,
+                    conical: k1,
+                },
+                Self::Chamfer {
+                    distance: d2,
+                    sharp: s2,
+                    conical: k2,
+                },
+            ) => k1 == k2 && close(*d1, *d2) && s1.same(*s2),
             _ => false,
         }
     }
@@ -489,6 +598,57 @@ struct Recognizer<'a> {
 }
 
 impl Recognizer<'_> {
+    /// Outward normal of `face` at `point`. A sampled carrier is projected
+    /// from its nearest station: the generic projection's coarse seed misses
+    /// the span of a carrier with a hundred stations.
+    fn normal_at(&self, face: FaceId, point: Point3) -> Option<Vec3> {
+        let data = self.topo.face(face).ok()?;
+        if let FaceSurface::Nurbs(surface) = data.surface()
+            && let Ok((u, v)) = sampled_project_measured(data, point)
+        {
+            let normal = surface.normal(u, v).ok()?;
+            let normal = if data.is_reversed() { -normal } else { normal };
+            return normal.normalize().ok();
+        }
+        effective_face_normal(self.topo, face, point)
+    }
+
+    /// Mean normal angle across `edge` between `face` and `other`, as
+    /// [`edge_normal_angle`] measures it, with sampled carriers' normals read
+    /// through [`Self::normal_at`].
+    fn edge_angle(
+        &self,
+        edge: EdgeId,
+        face: FaceId,
+        other: FaceId,
+    ) -> Result<Option<f64>, OperationsError> {
+        let freeform = |face: FaceId| -> Result<bool, OperationsError> {
+            Ok(matches!(
+                self.topo.face(face)?.surface(),
+                FaceSurface::Nurbs(_)
+            ))
+        };
+        if face == other || !(freeform(face)? || freeform(other)?) {
+            return edge_normal_angle(self.topo, edge, face, other);
+        }
+        let data = self.topo.edge(edge)?;
+        let start = self.topo.vertex(data.start())?.point();
+        let end = self.topo.vertex(data.end())?.point();
+        let (lo, hi) = crate::authoritative_edge_domain(data, "blend cluster angles")?;
+        let mut sum = 0.0;
+        for fraction in [0.25, 0.5, 0.75] {
+            let point =
+                data.curve()
+                    .evaluate_with_endpoints((hi - lo).mul_add(fraction, lo), start, end);
+            let (Some(a), Some(b)) = (self.normal_at(face, point), self.normal_at(other, point))
+            else {
+                return Ok(None);
+            };
+            sum += a.cross(b).length().atan2(a.dot(b));
+        }
+        Ok(Some(sum / 3.0))
+    }
+
     fn sample_edge(&self, edge: EdgeId) -> Result<Vec<Point3>, OperationsError> {
         let data = self.topo.edge(edge)?;
         let start = self.topo.vertex(data.start())?.point();
@@ -555,7 +715,7 @@ impl Recognizer<'_> {
                 center: sphere.center(),
                 radius: sphere.radius(),
             }),
-            FaceSurface::Nurbs(_) => match sampled_canal(data) {
+            FaceSurface::Nurbs(_) => match sampled_canal_measured(data) {
                 Ok(canal) => {
                     let angle_tolerance = station_turn(&canal).mul_add(2.0, EXACT_ANGLE);
                     Ok(Form::Sampled {
@@ -593,7 +753,9 @@ impl Recognizer<'_> {
                         let height = offset.dot(*axis);
                         height.atan2(radial(offset, *axis).length() - major)
                     }
-                    Form::Sphere { .. } | Form::Sampled { .. } => return Ok(false),
+                    Form::Sphere { .. } | Form::Sampled { .. } | Form::Chamfer { .. } => {
+                        return Ok(false);
+                    }
                 };
                 angles.push(angle);
             }
@@ -623,12 +785,162 @@ impl Recognizer<'_> {
             return Ok(entry.clone());
         }
         let entry = match self.form(face)? {
-            Err(None) => Entry::Plain,
+            Err(None) => match self.chamfer_facts(face)? {
+                Some(facts) => Entry::Shaped(Box::new(facts)),
+                None => Entry::Plain,
+            },
             Err(Some(reason)) => Entry::Freeform(reason),
             Ok(form) => Entry::Shaped(Box::new(self.facts_of(face, form)?)),
         };
         self.facts.insert(face, entry.clone());
         Ok(entry)
+    }
+
+    /// Facts of a plane or cone face that is an equal-distance chamfer, or
+    /// `None` when it is not one.
+    ///
+    /// The face must meet exactly one pair of non-tangent neighbours with
+    /// elementary carriers (its supports) such that every point of its
+    /// contact edges with them, and every vertex of the face, lies at one
+    /// distance from their exact section, the sharp edge it replaced; a
+    /// plane must run along a straight section and a cone be coaxial with a
+    /// circular one; and that sharp edge must lie outside the material (the
+    /// chamfer removed it). Tangent edges are read as joints into the next
+    /// stripe of a chain, every other edge as an end.
+    #[allow(clippy::too_many_lines)]
+    fn chamfer_facts(&self, face: FaceId) -> Result<Option<Facts>, OperationsError> {
+        let data = self.topo.face(face)?;
+        let conical = match data.surface() {
+            FaceSurface::Plane { .. } => false,
+            FaceSurface::Cone(_) => true,
+            FaceSurface::Cylinder(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_)
+            | FaceSurface::Nurbs(_) => return Ok(None),
+        };
+        let surface = data.surface().clone();
+        let neighbours = self.neighbours(face)?;
+        let mut angles = Vec::with_capacity(neighbours.len());
+        let mut contacts: BTreeMap<FaceId, Vec<Point3>> = BTreeMap::new();
+        for &(edge, other) in &neighbours {
+            let angle = self.edge_angle(edge, face, other)?;
+            angles.push(angle);
+            if angle.is_some_and(|angle| angle > TANGENT_SCREEN)
+                && Carrier::of(self.topo.face(other)?.surface()).is_some()
+            {
+                let data = self.topo.edge(edge)?;
+                let samples = contacts.entry(other).or_default();
+                samples.extend(self.sample_edge(edge)?);
+                samples.push(self.topo.vertex(data.start())?.point());
+                samples.push(self.topo.vertex(data.end())?.point());
+            }
+        }
+        let mut corners = Vec::new();
+        for vertex in remus_topology::explorer::face_vertices(self.topo, face)? {
+            corners.push(self.topo.vertex(vertex)?.point());
+        }
+        let candidates: Vec<FaceId> = contacts.keys().copied().collect();
+        let mut found = None;
+        for (index, &first) in candidates.iter().enumerate() {
+            for &second in &candidates[index + 1..] {
+                let (Some(a), Some(b)) = (
+                    Carrier::of(self.topo.face(first)?.surface()),
+                    Carrier::of(self.topo.face(second)?.surface()),
+                ) else {
+                    continue;
+                };
+                let first_samples = &contacts[&first];
+                let reference = first_samples[first_samples.len() / 2];
+                let Ok(section) = sharp::section(a, b, reference) else {
+                    continue;
+                };
+                let distance = section.distance(reference);
+                if distance <= EXACT_DISTANCE * reference_scale(reference) {
+                    continue;
+                }
+                let equidistant = first_samples
+                    .iter()
+                    .chain(&contacts[&second])
+                    .chain(&corners)
+                    .all(|point| {
+                        (section.distance(*point) - distance).abs()
+                            <= CHAMFER_DISTANCE * reference_scale(*point)
+                    });
+                let along = match &surface {
+                    FaceSurface::Plane { normal, .. } => match section {
+                        Section::Line { direction, .. } => {
+                            normal.dot(direction).abs() <= EXACT_ANGLE * normal.length()
+                        }
+                        Section::Circle { .. } => false,
+                    },
+                    FaceSurface::Cone(cone) => match section {
+                        Section::Circle { center, axis, .. } => {
+                            cone.axis().cross(axis).length() <= EXACT_ANGLE
+                                && radial(cone.apex() - center, axis).length()
+                                    <= CHAMFER_DISTANCE * reference_scale(center)
+                        }
+                        Section::Line { .. } => false,
+                    },
+                    FaceSurface::Cylinder(_)
+                    | FaceSurface::Sphere(_)
+                    | FaceSurface::Torus(_)
+                    | FaceSurface::Nurbs(_) => false,
+                };
+                if !equidistant || !along {
+                    continue;
+                }
+                if found.is_some() {
+                    // Two support pairs explain the face: not a chamfer we
+                    // can name.
+                    return Ok(None);
+                }
+                found = Some((first, second, section, distance, reference));
+            }
+        }
+        let Some((first, second, section, distance, reference)) = found else {
+            return Ok(None);
+        };
+        // The sharp edge lies outside the face's material side: the chamfer
+        // cut it off. (A filling bevel along a concave edge is not one.)
+        let Some(foot) = section.project(reference) else {
+            return Ok(None);
+        };
+        let Some(normal) = effective_face_normal(self.topo, face, reference) else {
+            return Ok(None);
+        };
+        if (foot - reference).dot(normal) <= 0.0 {
+            return Ok(None);
+        }
+        let links = neighbours
+            .iter()
+            .zip(angles)
+            .map(|(&(edge, other), angle)| {
+                let relation = if other == first || other == second {
+                    Relation::Contact
+                } else if angle.is_some_and(|angle| angle <= TANGENT_SCREEN) {
+                    Relation::Continuation
+                } else {
+                    Relation::End
+                };
+                Link {
+                    edge,
+                    other,
+                    relation,
+                    angle,
+                }
+            })
+            .collect();
+        Ok(Some(Facts {
+            form: Form::Chamfer {
+                distance,
+                sharp: section,
+                conical,
+            },
+            convex: true,
+            links,
+            verdict: Ok(()),
+            deviation: 0.0,
+        }))
     }
 
     fn centre(&self, face: FaceId, form: &Form, point: Point3) -> Option<Point3> {
@@ -649,8 +961,10 @@ impl Recognizer<'_> {
             Form::Sphere { center, .. } => Some(*center),
             Form::Sampled { .. } => {
                 let data = self.topo.face(face).ok()?;
-                sampled_section_centre(data, point).ok()
+                sampled_section_centre_measured(data, point).ok()
             }
+            // A chamfer has no rolling ball.
+            Form::Chamfer { .. } => None,
         }
     }
 
@@ -683,16 +997,17 @@ impl Recognizer<'_> {
             }
             Form::Sphere { .. } => true,
             Form::Sampled { .. } => self.rail_side(face, points).is_some(),
+            Form::Chamfer { .. } => false,
         }
     }
 
     /// Which `U` boundary (`false` = 0, `true` = 1) of a sampled carrier the
     /// points lie on.
     fn rail_side(&self, face: FaceId, points: &[Point3]) -> Option<bool> {
-        let surface = self.topo.face(face).ok()?.surface();
+        let data = self.topo.face(face).ok()?;
         let mut side = None;
         for point in points {
-            let (u, _) = surface.project_point(*point)?;
+            let (u, _) = sampled_project_measured(data, *point).ok()?;
             let this = if u.abs() <= RAIL_PARAMETER {
                 false
             } else if (u - 1.0).abs() <= RAIL_PARAMETER {
@@ -826,6 +1141,11 @@ impl Recognizer<'_> {
         let mut links = Vec::new();
         let mut contacts = BTreeSet::new();
         let mut continuations = 0_usize;
+        // Rails of a sampled carrier tangent to their support without a
+        // rolling ball explaining the contact: a walked transition.
+        let mut walked_rails = 0_usize;
+        // Continuations into an exact band of the same radius.
+        let mut exact_continuations = 0_usize;
         let mut verdict = Ok(());
         for (edge, other) in self.neighbours(face)? {
             let other_form = self.form(other)?;
@@ -834,7 +1154,7 @@ impl Recognizer<'_> {
                     .as_ref()
                     .map_or(EXACT_ANGLE, Form::angle_tolerance),
             );
-            let angle = edge_normal_angle(self.topo, edge, face, other)?;
+            let angle = self.edge_angle(edge, face, other)?;
             let tangent = angle.is_some_and(|angle| angle <= tolerance);
             let relation = if tangent {
                 let points = self.sample_edge(edge)?;
@@ -854,12 +1174,21 @@ impl Recognizer<'_> {
                         })
                 });
                 if continues {
+                    if matches!(other_form, Ok(Form::Cylinder { .. } | Form::Torus { .. })) {
+                        exact_continuations += 1;
+                    }
                     Relation::Continuation
                 } else if self.generator(face, &form, &points)
                     && self
                         .contact_residual(face, &form, convex, other, &points)
                         .is_some_and(|residual| residual <= form.distance_tolerance())
                 {
+                    Relation::Contact
+                } else if matches!(form, Form::Sampled { .. })
+                    && angle.is_some_and(|angle| angle <= WALKED_ANGLE)
+                    && self.rail_side(face, &points).is_some()
+                {
+                    walked_rails += 1;
                     Relation::Contact
                 } else if other_form
                     .as_ref()
@@ -903,6 +1232,15 @@ impl Recognizer<'_> {
                 ));
             }
         }
+        // A walked transition is a member only as the continuation of an
+        // exact band at its radius (the band it was walked from); it is then
+        // removed whole, and its deviation is reported, not bounded.
+        let walked = walked_rails > 0;
+        if verdict.is_ok() && walked && exact_continuations == 0 {
+            verdict = Err(format!(
+                "{walked_rails} of its rails are tangent without a rolling-ball contact and it continues no exact band"
+            ));
+        }
         let mut deviation = 0.0;
         if verdict.is_ok()
             && let Form::Sampled { canal, .. } = &form
@@ -911,7 +1249,7 @@ impl Recognizer<'_> {
                 Ok(measured) => {
                     deviation = measured;
                     let limit = form.distance_tolerance();
-                    if measured > limit {
+                    if measured > limit && !walked {
                         verdict = Err(format!(
                             "its sections deviate {measured:.3e} from the rolling-ball closed form (limit {limit:.3e})"
                         ));
@@ -987,7 +1325,8 @@ impl Recognizer<'_> {
         for pair in canal.sections.windows(2) {
             let v = 0.5 * (pair[0].v + pair[1].v);
             let probe = surface.evaluate(0.5, v);
-            let centre = sampled_section_centre(data, probe).map_err(|error| error.to_string())?;
+            let centre =
+                sampled_section_centre_measured(data, probe).map_err(|error| error.to_string())?;
             for side in 0..2 {
                 let value = residual(centre, None, side)
                     .ok_or_else(|| "a section's support has no closed form".to_string())?;
@@ -1047,7 +1386,8 @@ impl Recognizer<'_> {
             // only when it is tangent to a neighbour (it might be a blend we
             // cannot prove); otherwise it is an ordinary freeform support.
             for (edge, other) in self.neighbours(seed)? {
-                if edge_normal_angle(self.topo, edge, seed, other)?
+                if self
+                    .edge_angle(edge, seed, other)?
                     .is_some_and(|angle| angle <= TANGENT_SCREEN)
                 {
                     return Err(self.unrecognized(seed)?);
@@ -1065,7 +1405,8 @@ impl Recognizer<'_> {
                     start.push(other);
                 }
             } else {
-                let tangent = edge_normal_angle(self.topo, edge, seed, other)?
+                let tangent = self
+                    .edge_angle(edge, seed, other)?
                     .is_some_and(|angle| angle <= TANGENT_SCREEN);
                 if tangent && self.refuses_tangent(other)? {
                     return Err(self.unrecognized(other)?);
@@ -1146,6 +1487,9 @@ fn frame(axis: Vec3) -> (Vec3, Vec3) {
 struct Draft {
     faces: Vec<FaceId>,
     form: Form,
+    /// The sampled carrier of a walked transition merged into an exact band:
+    /// what the member reports, so its deviation is not hidden.
+    walked: Option<Form>,
     convex: bool,
     supports: BTreeSet<FaceId>,
     neighbours: BTreeSet<FaceId>,
@@ -1186,11 +1530,23 @@ fn assemble(
         }
         face
     };
+    // A walked transition continuing a band between the same two non-member
+    // supports is part of that band: it replaces the same sharp edge.
+    let face_roots = |fact: &Facts| -> BTreeSet<FaceId> {
+        fact.links
+            .iter()
+            .filter(|link| link.relation == Relation::Contact && !faces.contains(&link.other))
+            .map(|link| link.other)
+            .collect()
+    };
     for (&face, fact) in &facts {
         for link in &fact.links {
             if link.relation == Relation::Continuation
                 && let Some(other) = facts.get(&link.other)
-                && fact.form.same_carrier(&other.form)
+                && (fact.form.same_carrier(&other.form) || {
+                    let roots = face_roots(fact);
+                    roots.len() == 2 && roots == face_roots(other)
+                })
             {
                 let (a, b) = (find(&owner, face), find(&owner, link.other));
                 if a != b {
@@ -1206,10 +1562,22 @@ fn assemble(
     let mut drafts = Vec::new();
     let mut member_of = BTreeMap::new();
     for (root, group) in groups {
-        let first = &facts[&root];
+        // The band's carrier is an exact face's where it has one.
+        let first = group
+            .iter()
+            .map(|face| &facts[face])
+            .find(|fact| !matches!(fact.form, Form::Sampled { .. }))
+            .unwrap_or_else(|| &facts[&root]);
+        let walked = group
+            .iter()
+            .map(|face| &facts[face].form)
+            .find(|form| matches!(form, Form::Sampled { .. }))
+            .filter(|_| !matches!(first.form, Form::Sampled { .. }))
+            .cloned();
         let mut draft = Draft {
             faces: group.clone(),
             form: first.form.clone(),
+            walked,
             convex: first.convex,
             supports: BTreeSet::new(),
             neighbours: BTreeSet::new(),
@@ -1488,17 +1856,21 @@ fn assemble(
             let draft = &drafts[*index];
             let mut faces = draft.faces.clone();
             faces.compact_sort_unstable_by_key(|face| face.index());
+            let chamfer = matches!(draft.form, Form::Chamfer { .. });
             BlendMember {
                 faces,
-                kind: if matches!(sharp, MemberSharp::Edge(_)) {
-                    BlendMemberKind::Band
-                } else {
-                    BlendMemberKind::CornerPatch
+                kind: match (sharp, chamfer) {
+                    (MemberSharp::Edge(_), false) => BlendMemberKind::Band,
+                    (MemberSharp::Vertex(_), false) => BlendMemberKind::CornerPatch,
+                    (MemberSharp::Edge(_), true) => BlendMemberKind::ChamferBand,
+                    (MemberSharp::Vertex(_), true) => BlendMemberKind::ChamferCorner,
                 },
-                form: match &draft.form {
+                form: match draft.walked.as_ref().unwrap_or(&draft.form) {
                     Form::Cylinder { .. } => BlendMemberForm::Cylinder,
                     Form::Torus { .. } => BlendMemberForm::Torus,
                     Form::Sphere { .. } => BlendMemberForm::Sphere,
+                    Form::Chamfer { conical: false, .. } => BlendMemberForm::Plane,
+                    Form::Chamfer { conical: true, .. } => BlendMemberForm::Cone,
                     Form::Sampled {
                         canal,
                         angle_tolerance,
@@ -1636,8 +2008,85 @@ fn shared_reference(
 }
 
 /// Concave stages first, then convex, larger radii first within each side;
-/// a corner joins the latest stage among the bands it touches.
+/// a corner joins the latest stage among the bands it touches. Chamfer
+/// stripes follow every fillet (a chamfer cut round a seam round's foot was
+/// cut after the round), larger distances first; a chamfer corner joins the
+/// stage of the stripes it continues.
 fn reblend_order(
+    members: &[BlendMember],
+    drafts: &[Draft],
+    member_of: &BTreeMap<FaceId, usize>,
+) -> Vec<ReblendStep> {
+    let mut steps = fillet_order(members, drafts, member_of);
+    let mut chamfers: Vec<usize> = members
+        .iter()
+        .enumerate()
+        .filter(|(_, member)| member.kind == BlendMemberKind::ChamferBand)
+        .map(|(index, _)| index)
+        .collect();
+    chamfers.compact_sort_by(|a, b| members[*b].radius.total_cmp(&members[*a].radius));
+    let first = steps.len();
+    let mut stage_of = BTreeMap::new();
+    for band in chamfers {
+        let member = &members[band];
+        let same = steps.len() > first
+            && steps.last().is_some_and(|step| {
+                (step.radius - member.radius).abs() <= EXACT_DISTANCE * member.radius.max(1.0)
+            });
+        if !same {
+            steps.push(ReblendStep {
+                convexity: Convexity::Convex,
+                radius: member.radius,
+                blend: StageBlend::Chamfer {
+                    tangent_chain: false,
+                },
+                members: Vec::new(),
+                sharp_edges: Vec::new(),
+            });
+        }
+        let step = steps.len() - 1;
+        steps[step].members.push(band);
+        if let MemberSharp::Edge(edge) = member.sharp {
+            steps[step].sharp_edges.push(edge);
+        }
+        stage_of.insert(band, step);
+    }
+    for (index, member) in members.iter().enumerate() {
+        if member.kind != BlendMemberKind::ChamferCorner {
+            continue;
+        }
+        let stage = drafts[index]
+            .linked
+            .iter()
+            .filter_map(|face| member_of.get(face))
+            .filter_map(|other| stage_of.get(other))
+            .max()
+            .copied();
+        if let Some(step) = stage {
+            steps[step].members.push(index);
+        }
+    }
+    // A stage whose stripes join each other or wrap a blend's foot was cut
+    // along a tangent chain.
+    for step in &mut steps[first..] {
+        let chained = step.members.iter().any(|&index| {
+            members[index].kind == BlendMemberKind::ChamferCorner
+                || drafts[index].linked.iter().any(|face| {
+                    member_of
+                        .get(face)
+                        .is_some_and(|&other| other != index && members[other].kind.is_chamfer())
+                })
+        });
+        step.blend = StageBlend::Chamfer {
+            tangent_chain: chained,
+        };
+        step.members.compact_sort_unstable();
+    }
+    steps
+}
+
+/// The rolling-ball stages of [`reblend_order`].
+fn fillet_order(
     members: &[BlendMember],
     drafts: &[Draft],
     member_of: &BTreeMap<FaceId, usize>,
@@ -1666,6 +2115,7 @@ fn reblend_order(
             steps.push(ReblendStep {
                 convexity: member.convexity,
                 radius: member.radius,
+                blend: StageBlend::Fillet,
                 members: Vec::new(),
                 sharp_edges: Vec::new(),
             });
