@@ -50,7 +50,7 @@ TIERS: dict[str, list[str]] = {
     ],
     "remus-features": [
         "fillet", "chamfer", "blend_ops", "blend_material", "face_face_blend",
-        "resize_blend", "affine_blend_caps", "local_wound", "remove_blends",
+        "resize_blend", "affine_blend_caps", "local_wound", "remove_blends", "blend_cluster",
         "defeature", "push_pull", "face_move_quality", "replace_surface", "offset_face",
         "offset_trim", "offset_v2", "shell_op", "draft", "thread",
     ],

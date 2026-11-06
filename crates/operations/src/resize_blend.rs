@@ -5976,7 +5976,8 @@ pub fn resize_blend_failure_code(error: &OperationsError) -> &'static str {
         | OperationsError::Heal(_)
         | OperationsError::Offset(_)
         | OperationsError::OffsetCollapsed { .. }
-        | OperationsError::PartialResult { .. } => "resize-blend-failed",
+        | OperationsError::PartialResult { .. }
+        | OperationsError::BlendCluster(_) => "resize-blend-failed",
     }
 }
 

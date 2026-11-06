@@ -344,7 +344,7 @@ Quick reference — find the right file for any task:
 | Vertex blend / corner solver | `corner.rs` |
 | Face trimming along contact curves | `trimmer.rs` |
 | Copy-on-write boundary rewrites, so a blend never edits faces its input still uses | `body_edit.rs` |
-| Rebuild a rounded planar cap against joined supports with explicit sampled-corner permission | `cap_reblend.rs` |
+| Rebuild a rounded planar cap against joined supports with explicit sampled-corner permission; read back a sampled circular-section carrier's stations and centre field (`sampled_canal`, `sampled_section_centre`) | `cap_reblend.rs` |
 | Restore retained sampled shoulder limits before reversing a joined-cap edit on an owned disposable candidate | `cap_reblend/restore.rs` |
 | Restore the full analytic rounded cap after a recovered shoulder separates from its rim | `cap_reblend/unjoin.rs` |
 | Share the analytic shoulder spring with its fixed rim at zero-width contact onset | `cap_reblend/touch.rs` |
@@ -660,6 +660,8 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Exact local reconstruction of analytic wounds | `local_wound.rs` |
 | Cylindrical blend removal with certified affine NURBS caps | `affine_blend_caps.rs` |
 | Atomic removal of explicitly selected connected blend groups | `remove_blends.rs` |
+| Read-only blend-cluster recognition for a direct edit: the dependent blend group of a seed face (bands, exact and sampled corner patches measured against the rolling-ball closed form), each member's supports, radius and convexity, the closed-form sharp edges and vertices its removal restores, and a re-fillet order | `blend_cluster.rs`, `blend_cluster/sharp.rs` |
+| Blend-cluster recognition on the Gentle-Gecko STEP against its sharp parent, the native boss shoulder at R4/R5, seam bands and bored plates, with typed refusals for freeform and ridge-walked faces (tests) | `tests/blend_cluster.rs` |
 | Split-band blend fixtures shared by the blend-editing tests (tests) | `resize_blend/test_fixtures.rs` |
 | Full-turn rim chain recognition | `tessellate/rim_chain.rs` |
 | Outward surface normals of face carriers at a 3D point (shared by the mesh assembler and the fillet engine) | `tessellate/surface_normal.rs` |

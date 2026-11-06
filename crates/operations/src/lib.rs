@@ -47,6 +47,7 @@ pub mod boolean;
 pub mod mesh_boolean;
 
 pub(crate) mod affine_blend_caps;
+pub mod blend_cluster;
 pub(crate) mod blend_material;
 pub mod blend_ops;
 pub mod chamfer;
@@ -484,6 +485,10 @@ pub enum OperationsError {
     /// An exact blend-band resize was refused.
     #[error("resize blend: {0}")]
     ResizeBlend(#[from] error_payloads::ResizeBlendError),
+
+    /// A blend-cluster recognition was refused.
+    #[error("blend cluster: {0}")]
+    BlendCluster(#[from] error_payloads::BlendClusterError),
 
     /// A check (classification/validation/distance) error occurred.
     #[error("check: {0}")]

@@ -2,7 +2,8 @@
 //!
 //! The error enum sits below every operation, so the types its variants embed
 //! must too (RFC 0007 stage 0). Each is re-exported at its original path:
-//! `heal::HealingReport`, `resize_blend::ResizeBlendError`.
+//! `heal::HealingReport`, `resize_blend::ResizeBlendError`,
+//! `blend_cluster::BlendClusterError`.
 
 /// Machine-readable kind of repair performed by [`heal_solid`](crate::heal::heal_solid).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,6 +164,54 @@ impl ResizeBlendError {
             Self::UnsupportedSupportPair { .. } => "unsupported-support-pair",
             Self::RadiusTooLarge { .. } => "radius-too-large",
             Self::ReconstructionFailed { .. } => "resize-blend-failed",
+        }
+    }
+}
+
+/// Stable, machine-readable refusal from
+/// [`recognize_blend_cluster`](crate::blend_cluster::recognize_blend_cluster).
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+pub enum BlendClusterError {
+    /// The seed does not name a face of the solid.
+    #[error("invalid blend-cluster seed: {reason}")]
+    InvalidSeed {
+        /// Refusal detail.
+        reason: String,
+    },
+    /// The seed is neither a blend nor a face a recognized blend rolls on.
+    #[error("face {seed} supports no blend and is not one")]
+    NoDependentBlends {
+        /// Arena index of the seed face.
+        seed: usize,
+    },
+    /// A face the dependent group reaches is blend-like but not proven to be
+    /// a rolling-ball blend, so the group cannot be closed.
+    #[error("face {face} touches the blend group but is not a recognized blend: {reason}")]
+    UnrecognizedMember {
+        /// Arena index of the unrecognized face.
+        face: usize,
+        /// Measured refusal detail.
+        reason: String,
+    },
+    /// A recognized member's sharp edge or vertex has no closed form here.
+    #[error("blend member face {face} has no closed-form sharp feature: {reason}")]
+    NoSharpForm {
+        /// Arena index of one face of the member.
+        face: usize,
+        /// Refusal detail.
+        reason: String,
+    },
+}
+
+impl BlendClusterError {
+    /// Stable code used across the WASM boundary.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::InvalidSeed { .. } => "blend-cluster-invalid-seed",
+            Self::NoDependentBlends { .. } => "blend-cluster-no-blends",
+            Self::UnrecognizedMember { .. } => "blend-cluster-unrecognized-member",
+            Self::NoSharpForm { .. } => "blend-cluster-no-sharp-form",
         }
     }
 }
