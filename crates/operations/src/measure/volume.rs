@@ -646,6 +646,11 @@ const BOUNDARY_GAP: f64 = 1e-4;
 /// The Gauss order whose face integrals the volume's are checked against.
 const CONVERGENCE_ORDER: usize = 3;
 
+/// The finer Gauss order a face is re-read at when its order-3 and order-5
+/// volume terms disagree; the face then counts its order-8 term and
+/// `|V₈ − V₅|` instead, when that is the smaller disagreement.
+const REFINEMENT_ORDER: usize = 8;
+
 /// Largest `Σ_f |V₅(f) − V₃(f)|`, relative to the volume, of a body whose
 /// fixed-order face integrals measure it. A face's order-5 reading is taken
 /// only where the independent order-3 one agrees with it; face by face, so
@@ -810,10 +815,42 @@ fn qualified_shell_volume(
         ) else {
             return Ok(None);
         };
-        volume += term.volume;
         area += term.area;
         vector_area += n;
-        disagreement += (term.volume - coarse.volume).abs();
+        // Order 3 converges more slowly than order 5 on a large curved face
+        // (a sphere hemisphere of an r 73.5 ball differs by 2.5e-6 of its
+        // volume), so where it disagrees, a finer independent order decides:
+        // the face is taken at that order if it agrees with order 5.
+        let mut face_volume = term.volume;
+        let mut face_disagreement = (term.volume - coarse.volume).abs();
+        if face_disagreement > ORDER_AGREEMENT * term.volume.abs() {
+            let Ok(fine) =
+                remus_check::properties::face_cache::integrate_face_volume_about_memoized(
+                    topo,
+                    fid,
+                    REFINEMENT_ORDER,
+                    reference,
+                )
+            else {
+                return Ok(None);
+            };
+            let refined = (fine.volume - term.volume).abs();
+            vol_trace(|| {
+                format!(
+                    "face {}: orders 3/{order}/{REFINEMENT_ORDER} read {} / {} / {}",
+                    fid.index(),
+                    coarse.volume,
+                    term.volume,
+                    fine.volume
+                )
+            });
+            if refined < face_disagreement {
+                face_volume = fine.volume;
+                face_disagreement = refined;
+            }
+        }
+        volume += face_volume;
+        disagreement += face_disagreement;
     }
     let closure = vector_area.length();
     if closure.is_nan() || closure > FACE_INTEGRAL_CLOSURE * area {

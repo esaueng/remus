@@ -334,6 +334,7 @@ Quick reference — find the right file for any task:
 | Stripe (fillet band, contact curves, PCurves) | `stripe.rs` |
 | Blend constraint functions | `blend_func.rs` |
 | Newton-Raphson walking engine | `walker.rs` |
+| Closed walked rims resampled at uniform stations into C¹ cubic contacts, pcurves and band rows, measured on their supports within the recorded linear tolerance | `closed_walk.rs` |
 | Cooperative cancellation and the deterministic walker step budget a governed blend operation answers to (scoped, sticky trips; no-op when ungoverned) | `governor.rs` |
 | Analytic fast paths (plane-plane, plane-cyl, etc.) | `analytic.rs` |
 | Fillet builder (orchestration) | `fillet_builder.rs` |
@@ -761,6 +762,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Direct and both batch WASM qualification of `fuseAll` on crossing cylinders (bar and drill, centred, off-centre, equal radius, three scales): split, validator-clean and equal to the pairwise `fuse` | `bindings/cylinder_cross_fuse_all_tests.rs` |
 | Direct (`cutDetailed`/`fuseDetailed`) and both batch WASM qualification of box × complete-torus booleans cut normal to the torus axis: Pappus closed-form volumes at three scales, both fuse orders, and the tilted cut refused rather than returned unchanged | `bindings/box_torus_cut_tests.rs` |
 | Direct (`intersectDetailed`/`cutDetailed`/`fuseDetailed`) and both batch WASM qualification of the measured volume of equal-radius perpendicular cylinders against the Steinmetz closed form at three scales, both operand orders | `bindings/steinmetz_measurement_tests.rs` |
+| Sphere-boss seam fillet through the batch ops (esaueng/remus#1561): closed display mesh at the consumer's settings, contacts on their supports within their recorded tolerance (contract test) | `bindings/sphere_boss_seam_fillet_tests.rs` |
 | Direct and both batch WASM qualification of the B38 sphere–torus orientation repair (P-Class 8.1 seeds 5201 and 1146): exact, validator-clean, slice-integral volumes, watertight meshes, refusal rollback | `bindings/sphere_torus_orientation_tests.rs` |
 | Entity-evolution and journal bindings | `bindings/evolution.rs` |
 | Typed persistent GCS sketch bindings | `bindings/gcs_sketch.rs` |
