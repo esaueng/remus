@@ -2,6 +2,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use remus_math::compact_sort::CompactSort;
 use remus_math::vec::Vec3;
 use remus_operations::blend_ops::fillet_cascade;
 use remus_operations::boolean::{BooleanOp, boolean};
@@ -615,5 +616,296 @@ fn cap_cannot_cross_the_fixed_shoulder() {
             volume.to_bits()
         );
         unchanged(&topo);
+    }
+}
+
+const SAMPLED: Option<FaceMoveApproximation> = Some(FaceMoveApproximation { stations: 256 });
+
+/// Volume of the body one sampled move of the fresh Gecko cap to
+/// `cap_height` builds.
+fn fresh_descended_volume(cap_height: f64) -> f64 {
+    let (mut topo, solid, _) = shoulder_with(24.0, 36.0, 1.0, 4.0);
+    let cap = top_at(&topo, solid, 36.0);
+    let moved = move_faces_with_quality(&mut topo, solid, &[cap], cap_height - 36.0, SAMPLED)
+        .unwrap_or_else(|error| panic!("fresh cap at {cap_height}: {error}"));
+    solid_volume(&topo, moved.result.solid, 0.002).unwrap()
+}
+
+/// Faces of `solid` by carrier: planes, cylinders, tori, sampled NURBS.
+fn carrier_census(topo: &Topology, solid: SolidId) -> [usize; 4] {
+    use remus_topology::face::FaceSurface;
+    let mut census = [0; 4];
+    for face in solid_faces(topo, solid).unwrap() {
+        census[match topo.face(face).unwrap().surface() {
+            FaceSurface::Plane { .. } => 0,
+            FaceSurface::Cylinder(_) => 1,
+            FaceSurface::Torus(_) => 2,
+            FaceSurface::Nurbs(_) => 3,
+            surface => panic!("unexpected {} carrier", surface.type_tag()),
+        }] += 1;
+    }
+    census
+}
+
+/// The verification bar for the Gecko cap lowered to `cap_height` into the
+/// retained R4 shoulder: the R1 rim re-rolls on the boss and on the
+/// shoulder torus as exact tori with exact circular contacts, the cap plane
+/// trims the sampled corner patches with sampled bands, and the shoulder is
+/// cut back by the cap plane while staying where it was below it.
+fn assert_descended_into_shoulder(topo: &Topology, solid: SolidId, cap_height: f64) {
+    use remus_check::classify::{ClassifyOptions, PointClassification, classify_point};
+    use remus_math::vec::Point3;
+    use remus_topology::face::FaceSurface;
+    let level = cap_height - 1.0;
+    assert_eq!(
+        solid_entity_counts(topo, solid).unwrap().0,
+        19,
+        "cap at {cap_height}"
+    );
+    // Planes, cylinders and tori stay analytic; only the two retained corner
+    // patches and their two new rim bands are sampled.
+    assert_eq!(
+        carrier_census(topo, solid),
+        [7, 5, 3, 4],
+        "cap at {cap_height}"
+    );
+    let cap = top_at(topo, solid, cap_height);
+    // The ball rolling under the cap meets the R4 shoulder tube (ring R10 at
+    // z=28) at the R4+R1 offset: its centres circle the axis at this radius.
+    let shoulder_ring = 10.0 - (25.0 - (level - 28.0).powi(2)).sqrt();
+    let mut rims = Vec::new();
+    for face in solid_faces(topo, solid).unwrap() {
+        let FaceSurface::Torus(torus) = topo.face(face).unwrap().surface() else {
+            continue;
+        };
+        if (torus.minor_radius() - 1.0).abs() > 1e-9 {
+            continue;
+        }
+        assert!((torus.center().z() - level).abs() < 1e-9);
+        assert!(torus.z_axis().z().abs() > 1.0 - 1e-12);
+        rims.push(torus.major_radius());
+        for edge in face_edges(topo, face).unwrap() {
+            assert!(
+                matches!(topo.edge(edge).unwrap().curve(), EdgeCurve::Circle(_)),
+                "exact rim band {} has a sampled boundary",
+                face.index()
+            );
+        }
+    }
+    rims.compact_sort_by(f64::total_cmp);
+    assert_eq!(rims.len(), 2, "cap at {cap_height}: {rims:?}");
+    assert!((rims[0] - 5.0).abs() < 1e-9, "{rims:?}");
+    assert!((rims[1] - shoulder_ring).abs() < 1e-9, "{rims:?}");
+    // The cap outline grows toward the block where it rides the shoulder.
+    let reach = face_vertices(topo, cap)
+        .unwrap()
+        .into_iter()
+        .map(|vertex| {
+            let p = topo.vertex(vertex).unwrap().point();
+            p.x().hypot(p.y())
+        })
+        .fold(0.0, f64::max);
+    assert!(
+        (reach - shoulder_ring).abs() < 1e-6,
+        "{reach} {shoulder_ring}"
+    );
+    assert!(face_area(topo, cap, 0.001).unwrap() > 25.0 * std::f64::consts::PI);
+    assert_closed_solid(topo, solid, cap_height);
+    let options = ClassifyOptions::default();
+    let diagonal = Vec3::new(1.0, 1.0, 0.0).normalize().unwrap();
+    let up = Vec3::new(0.0, 0.0, 1.0);
+    let at = |radial: Vec3, radius: f64, z: f64| Point3::new(0.0, 0.0, z) + radial * radius;
+    // The new shoulder band: inside and just outside its rolling ball.
+    let centre = at(diagonal, shoulder_ring, level);
+    let toward_shoulder = (at(diagonal, 10.0, 28.0) - centre).normalize().unwrap();
+    let band = (toward_shoulder + up).normalize().unwrap();
+    // The boss band on the far side of the boss.
+    let outward = -diagonal;
+    let boss_centre = at(outward, 5.0, level);
+    let boss_band = (outward + up).normalize().unwrap();
+    // R8 on the block diagonal: the shoulder's height there, cut back by the
+    // cap plane wherever the cap now lies below it.
+    let shoulder_top = (28.0 - 12.0_f64.sqrt()).min(cap_height);
+    for (point, expected) in [
+        (centre + band * 0.8, PointClassification::Inside),
+        (centre + band * 1.2, PointClassification::Outside),
+        (boss_centre + boss_band * 0.8, PointClassification::Inside),
+        (boss_centre + boss_band * 1.2, PointClassification::Outside),
+        (
+            at(diagonal, 8.0, cap_height + 0.1),
+            PointClassification::Outside,
+        ),
+        (
+            at(diagonal, 8.0, shoulder_top - 0.1),
+            PointClassification::Inside,
+        ),
+        (
+            at(diagonal, 6.05, cap_height + 0.1),
+            PointClassification::Outside,
+        ),
+    ] {
+        assert_eq!(
+            classify_point(topo, solid, point, &options).unwrap(),
+            expected,
+            "{point:?} with the cap at {cap_height}"
+        );
+    }
+}
+
+#[test]
+fn cap_descends_into_the_retained_shoulder_with_sampled_permission() {
+    // A1 "shorten" on the Gentle-Gecko boss: the cap with its R1 rim comes
+    // down past z=29, where the rim's contact at z=28 reaches the fixed R4
+    // shoulder arc and the exact move refuses. With sampled permission the
+    // shoulder is kept and trimmed by the cap plane. z=26 is the reference
+    // recording's shortened cap; z=24.1 leaves 0.1 mm above the block.
+    let (mut topo, solid, _) = shoulder_with(24.0, 36.0, 1.0, 4.0);
+    let cap = top_at(&topo, solid, 36.0);
+    let before = remus_io::arena_io::serialize_solid(&topo, solid).unwrap();
+    let mut prepared = PreparedFaceMove::prepare(&topo, solid, &[cap]).unwrap();
+    let source_volume = solid_volume(&topo, solid, 0.002).unwrap();
+    let mut previous = source_volume;
+    for cap_height in [28.99, 28.5, 27.0, 26.0, 25.0, 24.1] {
+        let distance = cap_height - 36.0;
+        let refusal = move_faces_with_quality(&mut topo, solid, &[cap], distance, None)
+            .expect_err("exact-only moves keep refusing to reach the shoulder");
+        assert!(
+            refusal
+                .to_string()
+                .contains("moving blend reaches fixed rim face"),
+            "{cap_height}: {refusal}"
+        );
+        let moved = move_faces_with_quality(&mut topo, solid, &[cap], distance, SAMPLED)
+            .unwrap_or_else(|error| panic!("cap at {cap_height}: {error}"));
+        assert_eq!(
+            moved.quality,
+            FaceMoveQuality::SampledCapJoin { stations: 256 }
+        );
+        assert_descended_into_shoulder(&topo, moved.result.solid, cap_height);
+        let volume = solid_volume(&topo, moved.result.solid, 0.002).unwrap();
+        assert!(volume < previous, "{cap_height}: {volume} after {previous}");
+        previous = volume;
+        let preview = prepared
+            .move_faces_with_quality(&mut topo, distance, SAMPLED)
+            .unwrap_or_else(|error| panic!("preview at {cap_height}: {error}"));
+        assert_eq!(preview.quality, moved.quality);
+        assert_eq!(
+            solid_volume(&topo, preview.result.solid, 0.002)
+                .unwrap()
+                .to_bits(),
+            volume.to_bits()
+        );
+        assert_eq!(
+            remus_io::arena_io::serialize_solid(&topo, solid).unwrap(),
+            before
+        );
+    }
+    // Journaled, the same move records its history and leaves the source.
+    let faces = solid_faces(&topo, solid).unwrap();
+    let (journaled, quality) = remus_operations::journal_ops::move_faces_journaled_with_quality(
+        &mut topo,
+        solid,
+        &[cap],
+        -10.0,
+        SAMPLED,
+    )
+    .unwrap();
+    assert_eq!(quality, FaceMoveQuality::SampledCapJoin { stations: 256 });
+    assert!(journaled.map.unresolved.is_empty());
+    assert_descended_into_shoulder(&topo, journaled.solid, 26.0);
+    assert_eq!(solid_faces(&topo, solid).unwrap(), faces);
+    assert_eq!(
+        solid_volume(&topo, solid, 0.002).unwrap().to_bits(),
+        source_volume.to_bits()
+    );
+}
+
+#[test]
+fn descending_cap_refuses_unbuildable_depths_atomically() {
+    // At z=29 the new contour meets the shoulder's boss arc exactly; within
+    // 10 um of it a corner contour cannot span its patch; from z=24 down the
+    // cap would meet the block top.
+    let (mut topo, solid, _) = shoulder_with(24.0, 36.0, 1.0, 4.0);
+    let cap = top_at(&topo, solid, 36.0);
+    let before = remus_io::arena_io::serialize_solid(&topo, solid).unwrap();
+    let counts = solid_entity_counts(&topo, solid).unwrap();
+    let entries = topo.journal().entries().len();
+    let mut prepared = PreparedFaceMove::prepare(&topo, solid, &[cap]).unwrap();
+    for distance in [-7.0, -7.000_01, -12.0, -12.5, -20.0] {
+        let direct = move_faces_with_quality(&mut topo, solid, &[cap], distance, SAMPLED)
+            .expect_err("an unbuildable depth must refuse");
+        let preview = prepared
+            .move_faces_with_quality(&mut topo, distance, SAMPLED)
+            .expect_err("prepared moves must refuse the same depth");
+        let journaled = remus_operations::journal_ops::move_faces_journaled_with_quality(
+            &mut topo,
+            solid,
+            &[cap],
+            distance,
+            SAMPLED,
+        )
+        .expect_err("journaled moves must refuse the same depth");
+        assert_eq!(preview.to_string(), direct.to_string(), "{distance}");
+        assert_eq!(journaled.to_string(), direct.to_string(), "{distance}");
+        assert_eq!(
+            remus_io::arena_io::serialize_solid(&topo, solid).unwrap(),
+            before,
+            "{distance}: {direct}"
+        );
+        assert_eq!(solid_entity_counts(&topo, solid).unwrap(), counts);
+        assert_eq!(topo.journal().entries().len(), entries);
+    }
+}
+
+#[test]
+fn joined_cap_moves_again_and_climbs_back_out_of_the_shoulder() {
+    // From the recording's shortened z=26, further moves of the joined cap
+    // build the same body as one move from the original: deeper, back up
+    // while still joined, and out of the shoulder. At z=29.5 the rim is one
+    // full circle above the restored shoulder again, and the recording's
+    // lengthened z=61.2 follows.
+    let (mut topo, solid, _) = shoulder_with(24.0, 36.0, 1.0, 4.0);
+    let cap = top_at(&topo, solid, 36.0);
+    let joined = move_faces_with_quality(&mut topo, solid, &[cap], -10.0, SAMPLED)
+        .unwrap()
+        .result
+        .solid;
+    let joined_cap = top_at(&topo, joined, 26.0);
+    let before = remus_io::arena_io::serialize_solid(&topo, joined).unwrap();
+    for (cap_height, faces) in [(25.5, 19), (27.0, 19), (28.5, 19), (29.5, 16), (61.2, 16)] {
+        let moved =
+            move_faces_with_quality(&mut topo, joined, &[joined_cap], cap_height - 26.0, SAMPLED)
+                .unwrap_or_else(|error| panic!("joined cap to {cap_height}: {error}"));
+        assert_eq!(
+            moved.quality,
+            FaceMoveQuality::SampledCapJoin { stations: 256 }
+        );
+        let result = moved.result.solid;
+        assert_eq!(solid_entity_counts(&topo, result).unwrap().0, faces);
+        if faces == 19 {
+            assert_descended_into_shoulder(&topo, result, cap_height);
+        } else {
+            assert_eq!(carrier_census(&topo, result), [7, 5, 2, 2]);
+            assert_closed_solid(&topo, result, cap_height);
+        }
+        let volume = solid_volume(&topo, result, 0.002).unwrap();
+        let fresh = fresh_descended_volume(cap_height);
+        assert!(
+            (volume - fresh).abs() <= fresh * 1e-6,
+            "{cap_height}: {volume} against a single move's {fresh}"
+        );
+        assert_eq!(
+            remus_io::arena_io::serialize_solid(&topo, joined).unwrap(),
+            before
+        );
+    }
+    // The joined cap cannot reach the block top either.
+    for cap_height in [24.0, 23.5] {
+        move_faces_with_quality(&mut topo, joined, &[joined_cap], cap_height - 26.0, SAMPLED)
+            .expect_err("the joined cap must not reach the block top");
+        assert_eq!(
+            remus_io::arena_io::serialize_solid(&topo, joined).unwrap(),
+            before
+        );
     }
 }
