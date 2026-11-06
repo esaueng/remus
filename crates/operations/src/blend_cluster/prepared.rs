@@ -101,7 +101,7 @@ enum Target {
 }
 
 /// A blend-group edit of one face of one source solid, prepared for
-/// repeated values. See the [module docs](self).
+/// repeated values. See the module docs.
 pub struct PreparedGroupEdit {
     solid: SolidId,
     face: FaceId,
@@ -241,7 +241,7 @@ impl PreparedGroupEdit {
     /// A live preview frame at `value`: the result solid, copied into `topo`.
     ///
     /// The geometry is the group route's for `value`, built with display-only
-    /// blends under the frame gate (see the [module docs](self)); commit the
+    /// blends under the frame gate (see the module docs); commit the
     /// value to keep it.
     ///
     /// # Errors
