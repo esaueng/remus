@@ -624,6 +624,22 @@ impl From<remus_operations::OperationsError> for StructuredWasmError {
             remus_operations::OperationsError::ExactOnlyUnattainable => {
                 Self::exact_only_unattainable(message)
             }
+            remus_operations::OperationsError::BlendCluster(error) => {
+                let mut structured = Self::operation_failed(message);
+                structured
+                    .details
+                    .insert("kernelCode".to_string(), Value::from(error.code()));
+                if let remus_operations::blend_cluster::BlendClusterError::DiameterUnbuildable {
+                    diameter,
+                    ..
+                } = error
+                {
+                    structured
+                        .details
+                        .insert("requestedDiameter".to_string(), Value::from(diameter));
+                }
+                structured
+            }
             remus_operations::OperationsError::InvalidInput { .. } => {
                 Self::invalid_argument(message, None)
             }

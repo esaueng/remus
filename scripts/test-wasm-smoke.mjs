@@ -57,6 +57,7 @@ import { runRotationalFaceEditsPackaged } from './rotational-face-edits-packaged
 import {
   runOpenZcadAnalyticFlangeBooleanRegression,
   runOpenZcadCylindricalFaceResizeRegression,
+  runOpenZcadGeckoEditRegression,
   runPartialCylinderResizeRegression,
   runDirectEditHistoryRegression,
   runSurfaceReplacementHistoryRegression,
@@ -1828,6 +1829,7 @@ for (const operation of ['fillet', 'chamfer']) {
 
 // 15. OpenZCAD mounting-bracket cylindrical-face resize and STEP round trip.
 runOpenZcadCylindricalFaceResizeRegression({ RemusKernel, decodeEvolutionPayload, RemusIo });
+runOpenZcadGeckoEditRegression({ RemusKernel, RemusIo });
 
 runWideSphereCapRegression({ RemusKernel, RemusIo });
 runSphereCylinderWallRegression({ RemusKernel, RemusIo });
