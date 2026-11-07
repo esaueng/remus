@@ -408,7 +408,16 @@ fn material_contact_direction(
         let w = topo.wire(wid).ok()?;
         for oe in w.edges() {
             if oe.edge() == spine_edge {
-                let t = if oe.is_forward() { tangent } else { -tangent };
+                // A reversed face (a cut's tool face, an earlier chamfer's
+                // stripe) uses each edge against its wire flag, just as its
+                // outward normal opposes the surface's
+                // (`edge_material_frames_at`). Reading the flag alone put the
+                // contact on the face's extension, off the material.
+                let t = if oe.is_forward() == f.is_reversed() {
+                    -tangent
+                } else {
+                    tangent
+                };
                 return n_eff.cross(t).normalize().ok();
             }
         }

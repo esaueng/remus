@@ -12,9 +12,12 @@ use remus_topology::vertex::Vertex;
 use remus_topology::wire::{OrientedEdge, Wire};
 use remus_topology::{FaceId, SolidId, Topology};
 
-use super::{CapReblendApproximation, CapReblendOutcome, SupportExtension, height, refusal};
+use super::{CapReblendApproximation, CapReblendOutcome, SupportExtension, height, live, refusal};
+use crate::body_edit::EditScope;
 use crate::builder_utils::add_certified_curve_edge;
+use crate::trimmer::split_body_boundary_at;
 use crate::{BlendEngine, BlendError, BlendFaceOrigins, BlendResult};
+use remus_math::det_hash::DetHashMap;
 
 /// Restore a full rounded cap on an owned candidate whose lower limits were restored.
 ///
@@ -104,10 +107,24 @@ fn restore(
             candidates.push(vertex);
         }
     }
-    let seam = candidates
-        .into_iter()
-        .min_by_key(|vertex| vertex.index())
-        .ok_or_else(|| refusal("separated cap has no existing back-side seam vertex"))?;
+    // A boss whose foot a later feature runs round (a chamfer cone cut round
+    // the foot) keeps no vertex on its back side. Its periodic seam then
+    // stands where the wall's own parametric seam (`u = 0`) first meets its
+    // boundary below the rim: on a corner's boss contact above the shoulder,
+    // as the rounded part had it before its cap came down, never on the
+    // foot a later band is cut round. The boundary is split there, on the
+    // copy of every face that uses it.
+    let mut replaced = DetHashMap::default();
+    let seam = if let Some(seam) = candidates.into_iter().min_by_key(|vertex| vertex.index()) {
+        seam
+    } else {
+        let point = parametric_seam_point(topo, solid, boss, rims, &cylinder, axis, level)?;
+        let mut scope = EditScope::new(topo, solid_faces(topo, solid)?)?;
+        let mut edit = scope.edit(&mut replaced);
+        split_body_boundary_at(topo, &mut edit, boss, point, 1e-6)?
+            .ok_or_else(|| refusal("separated cap's seam ruling misses its boss boundary"))?
+    };
+    let boss = live(&replaced, boss);
     let reference = radial(topo.vertex(seam)?.point())?;
     let center = cylinder.origin() + axis * (level - height(cylinder.origin(), axis));
     let major = cylinder.radius() - radius;
@@ -200,9 +217,10 @@ fn restore(
         .copied()
         .filter(|f| !rims.contains(f))
         .collect();
-    let shell = topo.add_shell(Shell::new(kept.iter().copied().chain([rim]).collect())?);
+    let current: Vec<_> = kept.iter().map(|&f| live(&replaced, f)).collect();
+    let shell = topo.add_shell(Shell::new(current.iter().copied().chain([rim]).collect())?);
     let result = topo.add_solid(Solid::new(shell, vec![]));
-    let mut parents = vec![cap, boss];
+    let mut parents = vec![cap, extension.boss];
     parents.extend_from_slice(rims);
     Ok(CapReblendOutcome {
         corner_stations: permission.stations,
@@ -214,11 +232,80 @@ fn restore(
             is_partial: false,
             engine: BlendEngine::Walking,
             face_origins: Some(BlendFaceOrigins {
-                survived: kept.into_iter().map(|f| (f, f)).collect(),
+                survived: kept.into_iter().zip(current).collect(),
                 deleted: rims.to_vec(),
                 created: vec![(rim, parents)],
                 created_unattributed: vec![],
             }),
         },
     })
+}
+
+/// Where the boss's parametric seam ruling (`u = 0`) meets the boss boundary
+/// highest below the rim's lower contact `level`, ignoring the old rim
+/// contacts.
+fn parametric_seam_point(
+    topo: &Topology,
+    solid: SolidId,
+    boss: FaceId,
+    rims: &[FaceId],
+    cylinder: &CylindricalSurface,
+    axis: remus_math::vec::Vec3,
+    level: f64,
+) -> Result<Point3, BlendError> {
+    const SAMPLES: u32 = 64;
+    let x = cylinder.x_axis();
+    let y = axis.cross(x);
+    let side = |point: Point3| {
+        let delta = point - cylinder.origin();
+        (delta.dot(y), delta.dot(x))
+    };
+    let adjacency = topo.build_adjacency(solid)?;
+    let mut best: Option<(f64, Point3)> = None;
+    for oriented in topo.wire(topo.face(boss)?.outer_wire())?.edges() {
+        let edge = oriented.edge();
+        if adjacency
+            .faces_for_edge(edge)
+            .iter()
+            .any(|f| rims.contains(f))
+        {
+            continue;
+        }
+        let data = topo.edge(edge)?;
+        let (a, b) = data
+            .strict_domain()
+            .map_err(|error| refusal(format!("boss edge has no parameter authority: {error}")))?;
+        let (start, end) = (
+            topo.vertex(data.start())?.point(),
+            topo.vertex(data.end())?.point(),
+        );
+        let at = |t: f64| data.curve().evaluate_with_endpoints(t, start, end);
+        let mut previous = (a, side(at(a)).0);
+        for i in 1..=SAMPLES {
+            let t = a + (b - a) * f64::from(i) / f64::from(SAMPLES);
+            let value = side(at(t)).0;
+            if previous.1 * value <= 0.0 {
+                let (mut lo, mut hi, flo) = (previous.0, t, previous.1);
+                for _ in 0..80 {
+                    let mid = f64::midpoint(lo, hi);
+                    if side(at(mid)).0 * flo > 0.0 {
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                let point = at(f64::midpoint(lo, hi));
+                let along = height(point, axis);
+                if side(point).1 > 0.0
+                    && along < level - 1e-7
+                    && best.is_none_or(|(known, _)| along > known)
+                {
+                    best = Some((along, point));
+                }
+            }
+            previous = (t, value);
+        }
+    }
+    best.map(|(_, point)| point)
+        .ok_or_else(|| refusal("separated cap's boss has no boundary on its seam ruling"))
 }

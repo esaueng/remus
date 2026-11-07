@@ -75,13 +75,29 @@ independently attributable runs. Timings include contention between cases.
 
 ## Cumulative scope
 
-The cumulative case starts at A0 plus R1, attempts cap z26 then z61.2, and then
-A2 through A7 on that same evolving body. It stops on the first refused or
-geometrically invalid prerequisite and marks later steps blocked. It never
-substitutes an isolated reference body. A3's free-end edge is a documented
-proxy, not a qualified identity from the video; A4 takes the free-end R1.5
-fillet branch, with other sizes and chamfers covered by isolated rows.
-The diameter 21.1 preview is discarded before committing 14.7.
+The rows follow the corrected spec of the round-2 application run. The
+cumulative case starts at A0 plus R1 and runs the application's order on one
+evolving body: cap z61.2 then z26 with sampled permission (256 stations), A2
+on the convex band along x = 0 (R4 -> 1.9), A3 R1 on the x = 0 / y = 18
+vertical edge, A4's 0.7 free-end chamfer (the single edge, a typed refusal
+naming its tangent chain, then the chain), the A5 negative-radius refusal,
+A6's 0.8 bottom chamfer from its seed's tangent chain, and A7 Ø14.6 -> 17 ->
+(21.1 preview, discarded) -> 14.7. The concave seam R4 -> 2 is skipped: no
+construction of it exists under the R4 shoulder (W3), so its isolated rows
+stay open. The case stops on the first refused or geometrically invalid
+prerequisite and marks later steps blocked; it never substitutes an isolated
+reference body.
+
+Isolated rows: `A1_quality_short` lowers the rimmed cap to z26 and
+`A1_quality_shoulder` takes it to z61.2 and then z26, both with sampled
+permission. The exact-only `move_faces` cap rows (`A1_short`, `A1_sequence`,
+`A1_shoulder`, `A1_rim_*`) are typed refusals by contract when they shorten
+into the shoulder. `A2_convex_*` resize to R1.9, `A2_sequence` drags the x = 0
+band R4 -> 1.5 -> 1.9, and `A3` is A2 followed by the corrected vertical edge
+(the four proxy rows are gone).
+
+The same order, with every oracle and the twelve-edge A6 outline, is the CI
+test `crates/operations/tests/video_parity_full_order.rs`.
 
 ## Sharp-body rebuild spike
 
@@ -104,6 +120,31 @@ The public result reports the engine. Existing debug diagnostics identify the
 observed equal-radius corner or general ridge-chain family (the latter is the
 family exercised by `fillet_into_seam_band`). Diagnostics may include refused
 earlier cascade attempts; they are not a new stable public corner-family API.
+
+## Acceptance results with the joined-cap group route (W14)
+
+Measured on the W14 branch (the local integration of #1572 and #1574-#1585
+plus this change) under WSL, ci-test profile. 32 of 34 rows pass; the two
+concave R2 seam rows remain the open XFAIL (no construction under the R4
+shoulder). The cumulative row passes when run alone and in the full table.
+
+| Step (cumulative, one body) | Result | Census (plane/cyl/cone/torus/nurbs) | API volume |
+|---|---|---|---|
+| A0 + R1 rim | built | 7/5/0/2/2 | 16339.8724 |
+| A1 z61.2 (sampled permission) | built | 7/5/0/2/2 | 19189.9235 |
+| A1 z26 (sampled cap join) | built | 7/5/0/3/4 | 15207.7253 |
+| A2 x = 0 band R4 -> 1.9 | built (cap lifted, edited, lowered) | 7/5/0/4/4 | 15241.6912 |
+| A3 x = 0 / y = 18 edge R1 | built | 7/7/0/4/5 | 15230.3409 |
+| A4 single free-end edge | typed refusal `chamfer-tangent-chain-required`, names the five-edge chain | unchanged | unchanged |
+| A4 chain 0.7 | built | 10/7/2/4/5 | 15214.8760 |
+| A5 R -1 | typed `invalid-input` refusal | unchanged | unchanged |
+| A6 seed chain 0.8 | built | 13/7/6/4/5 | 15185.9944 |
+| A7 Ø14.6 / 17 / 21.1 (discarded) / 14.7 | built | 13/7/6/4/5 each | 16290.2523 / 17496.6934 / 19974.0237 / 16336.9303 |
+
+Every built row passes both validators, the dual-deflection watertight mesh
+checks, API/mesh volume agreement and the feature probes. The sampled faces
+are the two original corner patches, A1's two rim bands and A3's lofted turn;
+A2's walked transition replaces one corner patch.
 
 ## Acceptance results at kernel f4b5d747
 

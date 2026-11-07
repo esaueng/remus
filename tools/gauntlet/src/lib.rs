@@ -1285,13 +1285,13 @@ fn operations_diagnostic(error: &OperationsError) -> DiagnosticRecord {
             "body_class_operand_unsupported",
             error.to_string(),
         ),
-        OperationsError::Unsupported { .. } | OperationsError::PatternInstancesOverlap { .. } => {
-            DiagnosticRecord::error(
-                FailureCategory::Unsupported,
-                "unsupported_configuration",
-                error.to_string(),
-            )
-        }
+        OperationsError::Unsupported { .. }
+        | OperationsError::PatternInstancesOverlap { .. }
+        | OperationsError::ChamferTangentChainRequired { .. } => DiagnosticRecord::error(
+            FailureCategory::Unsupported,
+            "unsupported_configuration",
+            error.to_string(),
+        ),
         OperationsError::OffsetCollapsed { .. } => DiagnosticRecord::error(
             FailureCategory::InvalidInput,
             "offset_collapsed",
@@ -1416,6 +1416,19 @@ mod tests {
     #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
     use super::*;
+
+    #[test]
+    fn chamfer_chain_refusal_is_an_unsupported_selection() {
+        let error = OperationsError::ChamferTangentChainRequired {
+            selected: vec![4],
+            chain: vec![4, 8],
+            reason: "the selected edge ends inside a tangent chain".into(),
+        };
+        let diagnostic = operations_diagnostic(&error);
+        assert_eq!(diagnostic.category, "unsupported");
+        assert_eq!(diagnostic.code, "unsupported_configuration");
+        assert_eq!(diagnostic.message, error.to_string());
+    }
 
     fn temp_path(name: &str) -> PathBuf {
         let nanos = std::time::SystemTime::now()

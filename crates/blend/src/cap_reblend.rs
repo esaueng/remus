@@ -385,6 +385,17 @@ impl<'a> CanalNormal<'a> {
         Self::read(face, StationCheck::Strict)
     }
 
+    /// The strict read, or else the measured one: a corner the cap contour
+    /// crosses may be a walked transition (a smaller convex band run into a
+    /// seam round), whose stations agree on one radius only to the walk's
+    /// tolerance and close on collapsed sections. Its resolved stations
+    /// still give the rolling sections the contour is solved on; a contour
+    /// that reaches a collapsed section refuses.
+    fn contour_field(face: &'a remus_topology::face::Face) -> Result<Self, BlendError> {
+        Self::new(face)
+            .or_else(|strict| Self::read(face, StationCheck::Measured).map_err(|_| strict))
+    }
+
     fn read(face: &'a remus_topology::face::Face, check: StationCheck) -> Result<Self, BlendError> {
         let FaceSurface::Nurbs(surface) = face.surface() else {
             return Err(refusal("expected circular-section corner"));
@@ -496,6 +507,16 @@ impl<'a> CanalNormal<'a> {
         }
         field.sign = alignment.signum();
         Ok(field)
+    }
+    /// The `v` span of the resolved stations: the whole carrier on a strict
+    /// read, short of its collapsed end sections on a measured one.
+    fn resolved_v(&self) -> (f64, f64) {
+        let knots = self.surface.knots_v();
+        let n = self.surface.control_points()[0].len();
+        if self.resolved.len() == n {
+            return (0.0, 1.0);
+        }
+        (knots[self.resolved.start + 1], knots[self.resolved.end])
     }
     fn normal(&self, u: f64, v: f64) -> Result<Vec3, BlendError> {
         Ok((self.surface.evaluate(u, v) - self.centre(v)?).normalize()? * self.sign)
@@ -637,7 +658,7 @@ fn nurbs_sections(
         count,
     } = contour;
     let f = topo.face(face)?;
-    let field = CanalNormal::new(f)?;
+    let field = CanalNormal::contour_field(f)?;
     let surface = field.surface;
     let (ua, va) = f
         .surface()
@@ -669,8 +690,7 @@ fn nurbs_sections(
                 let normal = field.normal(u, v)?;
                 Ok((height(point - normal * radius, axis) - level, point, normal))
             };
-            let mut lo = 0.0;
-            let mut hi = 1.0;
+            let (mut lo, mut hi) = field.resolved_v();
             let flo = value(lo)?.0;
             let fhi = value(hi)?.0;
             if flo * fhi >= 0.0 {

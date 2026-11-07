@@ -1119,6 +1119,9 @@ pub fn exact_boolean_outcome(
                 remus_operations::OperationsError::Blend(_) => "Blend",
                 remus_operations::OperationsError::ResizeBlend(_) => "ResizeBlend",
                 remus_operations::OperationsError::BlendCluster(_) => "BlendCluster",
+                remus_operations::OperationsError::ChamferTangentChainRequired { .. } => {
+                    "ChamferTangentChainRequired"
+                }
                 remus_operations::OperationsError::Check(_) => "Check",
                 remus_operations::OperationsError::Geometry(_) => "Geometry",
                 remus_operations::OperationsError::Heal(_) => "Heal",

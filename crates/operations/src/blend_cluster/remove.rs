@@ -550,9 +550,8 @@ impl<'a> Rebuild<'a> {
                     if span <= tol || span >= TAU - tol {
                         return Err(ambiguous(format!("sharp arc {index} has no extent")));
                     }
-                    let mut edge = Edge::new(start, end, EdgeCurve::Circle(circle));
-                    edge.set_trim(Some((t0, t0 + span)));
-                    vec![work.add_edge(edge)]
+                    let interior = closed_points.get(&index).cloned().unwrap_or_default();
+                    open_pieces(work, &circle, (start, t0), (end, span), interior)?
                 }
                 (
                     None,
@@ -718,7 +717,7 @@ impl<'a> Rebuild<'a> {
             else {
                 continue;
             };
-            if sharp.ends.is_some() || !retained.iter().all(|face| sharp.supports.contains(face)) {
+            if !retained.iter().all(|face| sharp.supports.contains(face)) {
                 continue;
             }
             let planar = radial(point - center, axis);
@@ -727,6 +726,28 @@ impl<'a> Rebuild<'a> {
                 continue;
             }
             let image = center + planar * (radius / length);
+            // An open arc takes the point only strictly between its ends: a
+            // periodic support's seam ruling standing on a band cut round
+            // part of its foot (a chamfer round a boss foot).
+            if let Some([a, b]) = sharp.ends {
+                let circle = Circle3D::new(center, axis, radius).map_err(OperationsError::Math)?;
+                let (pa, pb) = (
+                    self.cluster.sharp_vertices[a].point,
+                    self.cluster.sharp_vertices[b].point,
+                );
+                let (from, to) = if on_ccw_arc(&circle, pa, pb, sharp.midpoint) {
+                    (pa, pb)
+                } else {
+                    (pb, pa)
+                };
+                let t0 = circle.project(from);
+                let span = (circle.project(to) - t0).rem_euclid(TAU);
+                let at = (circle.project(image) - t0).rem_euclid(TAU);
+                let margin = Tolerance::new().angular;
+                if !(margin..span - margin).contains(&at) {
+                    continue;
+                }
+            }
             if on_carriers(image)? {
                 closed.push((index, image));
             }
@@ -888,6 +909,42 @@ impl<'a> Rebuild<'a> {
                 runs[index] = run;
             }
         }
+        // An open sharp arc split by a retained edge landing inside it (a
+        // seam ruling on a band cut round part of a foot) meets the loop once
+        // per contact: each contact takes the pieces from where the loop
+        // arrives to where it leaves.
+        if runs.len() > 1 {
+            for index in 0..runs.len() {
+                let Item::Sharp { edge, .. } = items[index] else {
+                    continue;
+                };
+                if self.cluster.sharp_edges[edge].ends.is_none() || runs[index].len() < 2 {
+                    continue;
+                }
+                let previous = &runs[(index + runs.len() - 1) % runs.len()];
+                let next = &runs[(index + 1) % runs.len()];
+                let arrive = oriented_end(work, previous[previous.len() - 1])?;
+                let leave = oriented_start(work, next[0])?;
+                let run = &runs[index];
+                let first = run
+                    .iter()
+                    .map(|oe| oriented_start(work, *oe))
+                    .collect::<Result<Vec<_>, _>>()?
+                    .iter()
+                    .position(|vertex| *vertex == arrive);
+                let last = run
+                    .iter()
+                    .map(|oe| oriented_end(work, *oe))
+                    .collect::<Result<Vec<_>, _>>()?
+                    .iter()
+                    .position(|vertex| *vertex == leave);
+                if let (Some(first), Some(last)) = (first, last)
+                    && first <= last
+                {
+                    runs[index] = run[first..=last].to_vec();
+                }
+            }
+        }
         let edges: Vec<OrientedEdge> = runs.into_iter().flatten().collect();
         for (index, &oe) in edges.iter().enumerate() {
             let next = edges[(index + 1) % edges.len()];
@@ -920,6 +977,37 @@ fn on_ccw_arc(circle: &Circle3D, from: Point3, to: Point3, point: Point3) -> boo
     let span = (circle.project(to) - t0).rem_euclid(TAU);
     let at = (circle.project(point) - t0).rem_euclid(TAU);
     at < span
+}
+
+/// Pieces of the counter-clockwise arc from `start` (at angle `t0`) over
+/// `span` to `end`, split at the `interior` points retained edges land on.
+fn open_pieces(
+    work: &mut Topology,
+    circle: &Circle3D,
+    (start, t0): (VertexId, f64),
+    (end, span): (VertexId, f64),
+    interior: Vec<(Point3, VertexId)>,
+) -> Result<Vec<EdgeId>, OperationsError> {
+    let mut stops: Vec<(f64, VertexId)> = interior
+        .into_iter()
+        .map(|(point, vertex)| ((circle.project(point) - t0).rem_euclid(TAU), vertex))
+        .collect();
+    stops.compact_sort_by(|a, b| a.0.total_cmp(&b.0));
+    stops.insert(0, (0.0, start));
+    stops.push((span, end));
+    let mut pieces = Vec::with_capacity(stops.len() - 1);
+    for pair in stops.windows(2) {
+        let [(a, from), (b, to)] = [pair[0], pair[1]];
+        if b - a <= Tolerance::new().angular {
+            return Err(ambiguous(
+                "two retained edges land on one point of a sharp arc",
+            ));
+        }
+        let mut edge = Edge::new(from, to, EdgeCurve::Circle(circle.clone()));
+        edge.set_trim(Some((t0 + a, t0 + b)));
+        pieces.push(work.add_edge(edge));
+    }
+    Ok(pieces)
 }
 
 /// Pieces of a closed circle split at `points`, counter-clockwise.

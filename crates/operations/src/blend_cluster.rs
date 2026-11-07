@@ -71,6 +71,7 @@
 //! no binding yet.
 
 mod edit;
+mod joined_cap;
 mod prepared;
 mod reblend;
 mod remove;

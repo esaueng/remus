@@ -6,6 +6,43 @@ historical predecessor-line records, retained for provenance. The
 
 ## Unreleased
 
+### Fixed
+
+* **operations:** blend-group edits after a rounded cap was shortened into
+  its shoulder. A cap lowered with sampled permission (A1) re-rolls its rim
+  over the sampled corner patches, and those sampled rim bands made every
+  later group edit refuse: a band radius (`resize_blend`, A2) with "blend end
+  face .. is a nurbs surface", a boss diameter (`resize_cylindrical_face`, A7)
+  with "move-face does not support face .. (nurbs)". The group route now
+  lifts such a cap clear of its shoulder on its private copy, edits the
+  lifted body, and lowers the cap back with the permission its own sampled
+  rim bands were built with; planes, cylinders and tori stay analytic and no
+  sampled face of a new kind is made. Lifting now also handles a walked
+  corner (a smaller convex band run up the shoulder, after A2) and a boss
+  foot a chamfer runs round (after A6), and group removal maps a seam ruling
+  onto an open sharp arc. On the filleted Gentle-Gecko with its R1 rim the
+  video's full order — z61.2, z26, A2 R1.9, A3, A4, A6, Ø14.6 -> 17 ->
+  (21.1 preview) -> 14.7 — builds on one body, each group edit matching its
+  fresh construction with the cap lowered last.
+* **blend:** a plane-plane chamfer next to a reversed planar face (an earlier
+  chamfer's stripe, a cut's tool face) put the band's contact on the face's
+  extension: the contact direction read the wire flag without the face's
+  reversal. The twelve-edge closed bottom outline after the free-end chamfer
+  (A6 after A4) was refused with "trimming failure" for that reason; it now
+  mitres round the chamfer stripes' feet.
+* **blend:** the cap contour of a rounded cap lowered into its shoulder now
+  crosses a walked corner (a smaller convex band's run into its seam round),
+  solving on its resolved stations.
+
+### Changed
+
+* **operations:** `chamfer_v2` still chamfers exactly its selection, but when
+  the selection does not build and ends inside a longer tangent chain whose
+  chamfer does, the refusal is the new
+  `OperationsError::ChamferTangentChainRequired { selected, chain, reason }`
+  (code `chamfer-tangent-chain-required`) naming the chain, instead of the
+  selection's own refusal. Other refusals are unchanged.
+
 ### Performance
 
 * **operations:** a fillet's volume postcondition classifies the blended

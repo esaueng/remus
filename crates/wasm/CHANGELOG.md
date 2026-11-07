@@ -5,6 +5,18 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
 
 ## Unreleased
 
+### Changed
+
+* `chamferV2`, `chamferDetailed` and the other bindings over `chamfer_v2`:
+  a selection that does not build but ends inside a longer tangent chain
+  whose chamfer builds is refused with `details.kernelCode =
+  "chamfer-tangent-chain-required"` and `details.chainEdges` (the chain's
+  edge handles). Chamfering those handles builds it. The selection is never
+  propagated implicitly.
+* `resizeBlend` and `resizeCylindricalFace` (and their prepared and
+  journaled forms) now edit a body whose rounded cap was lowered into its
+  shoulder with sampled permission; see the kernel changelog.
+
 ### ⚠ BREAKING CHANGES
 
 * A move-face refusal outside the qualified cells
