@@ -126,8 +126,9 @@ const EDGE_SAMPLES: u32 = 7;
 /// rolling ball's characteristic circles, so its rails meet their supports
 /// only as tangent as the walk solved them (a few milliradians).
 const WALKED_ANGLE: f64 = 2e-2;
-/// Distance (relative to `max(1, |p|)`) to which every contact point and
-/// vertex of a chamfer stripe must sit at its setback from the sharp edge.
+/// Distance (relative to `max(1, |p|)`) to which every contact point of a
+/// chamfer stripe must sit at its setback from the sharp edge (and no vertex
+/// farther).
 const CHAMFER_DISTANCE: f64 = 1e-7;
 
 fn reference_scale(point: Point3) -> f64 {
@@ -801,14 +802,29 @@ impl Recognizer<'_> {
     ///
     /// The face must meet exactly one pair of non-tangent neighbours with
     /// elementary carriers (its supports) such that every point of its
-    /// contact edges with them, and every vertex of the face, lies at one
-    /// distance from their exact section, the sharp edge it replaced; a
+    /// contact edges with them lies at one distance from their exact
+    /// section, the sharp edge it replaced, and every vertex lies at it too
+    /// (or, when neither support is itself a chamfer stripe, no farther: an
+    /// end crossing another stripe has vertices between the contacts); a
     /// plane must run along a straight section and a cone be coaxial with a
     /// circular one; and that sharp edge must lie outside the material (the
     /// chamfer removed it). Tangent edges are read as joints into the next
     /// stripe of a chain, every other edge as an end.
-    #[allow(clippy::too_many_lines)]
     fn chamfer_facts(&self, face: FaceId) -> Result<Option<Facts>, OperationsError> {
+        self.chamfer_facts_with(face, true)
+    }
+
+    /// [`Self::chamfer_facts`], admitting vertices nearer the sharp edge
+    /// than the contacts only when `crossing_ends` is set and neither
+    /// support is itself a chamfer stripe read without them. (A face between
+    /// two stripes square to each other, a block's end between two vertical
+    /// stripes, is otherwise a bevel of them at a large setback.)
+    #[allow(clippy::too_many_lines)]
+    fn chamfer_facts_with(
+        &self,
+        face: FaceId,
+        crossing_ends: bool,
+    ) -> Result<Option<Facts>, OperationsError> {
         let data = self.topo.face(face)?;
         let conical = match data.surface() {
             FaceSurface::Plane { .. } => false,
@@ -858,14 +874,29 @@ impl Recognizer<'_> {
                 if distance <= EXACT_DISTANCE * reference_scale(reference) {
                     continue;
                 }
-                let equidistant = first_samples
+                // Contacts lie at the setback; a vertex where the stripe's
+                // end crosses another stripe lies between the contacts,
+                // nearer the sharp edge, never past them.
+                let at_setback = |point: &Point3| {
+                    (section.distance(*point) - distance).abs()
+                        <= CHAMFER_DISTANCE * reference_scale(*point)
+                };
+                let contacts_at_setback = first_samples
                     .iter()
                     .chain(&contacts[&second])
-                    .chain(&corners)
-                    .all(|point| {
-                        (section.distance(*point) - distance).abs()
-                            <= CHAMFER_DISTANCE * reference_scale(*point)
-                    });
+                    .all(at_setback);
+                let equidistant = contacts_at_setback
+                    && if corners.iter().all(at_setback) {
+                        true
+                    } else {
+                        crossing_ends
+                            && corners.iter().all(|point| {
+                                section.distance(*point) - distance
+                                    <= CHAMFER_DISTANCE * reference_scale(*point)
+                            })
+                            && self.chamfer_facts_with(first, false)?.is_none()
+                            && self.chamfer_facts_with(second, false)?.is_none()
+                    };
                 let along = match &surface {
                     FaceSurface::Plane { normal, .. } => match section {
                         Section::Line { direction, .. } => {

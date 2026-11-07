@@ -35,9 +35,12 @@
 //! the result must match it in entity counts, face census and volume (1e-6
 //! relative), and meet the full verification bar of `blend_group_edit.rs`.
 //!
-//! A4 and A6 do not build on one body in either order (each chamfer chain's
-//! run ends on the other's oblique stripe, which the floor-chain assembler
-//! does not close); that refusal is pinned with the body unchanged.
+//! A4 and A6 build on one body in either order: each chain's run ends at a
+//! free-end bottom corner on the other's 45° stripe, and the floor-chain
+//! assembler runs the band on until its plane leaves the corner (across the
+//! narrower stripe into the free end face for the wider bottom band). The
+//! result is the union of the two chamfers, checked against each chain's own
+//! volume less the two corner overlaps, and A7 then carries both chains.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -48,11 +51,11 @@ use remus_math::compact_sort::CompactSort;
 use remus_math::vec::{Point3, Vec3};
 use remus_operations::OperationsError;
 use remus_operations::blend_cluster::{
-    BlendMemberForm, BlendMemberKind, Convexity, MemberSharp, SharpCarrier, StageBlend,
-    fillet_through_blend_group, recognize_blend_cluster, remove_blend_cluster,
-    resize_cylinder_through_group,
+    BlendMemberForm, BlendMemberKind, Convexity, MemberSharp, ReblendStage, SharpCarrier,
+    StageBlend, fillet_through_blend_group, plan_reblend, recognize_blend_cluster,
+    remove_blend_cluster, resize_cylinder_through_group,
 };
-use remus_operations::blend_ops::{blend_failure_code, chamfer_v2_tangent_chain, fillet_cascade};
+use remus_operations::blend_ops::{chamfer_v2_tangent_chain, fillet_cascade};
 use remus_operations::measure::solid_volume;
 use remus_operations::push_pull::resize_cylindrical_face;
 use remus_operations::resize_blend::{resize_blend, resize_blend_failure_code};
@@ -860,7 +863,7 @@ fn cumulative_a2_a3_a4_then_boss_diameters() {
 
 /// Steps with no construction are typed refusals that leave the cumulative
 /// body byte-identical: the concave seam R4 -> 2 under the R4 shoulder,
-/// oversized boss diameters, and the second of the two chamfer chains.
+/// and oversized boss diameters.
 #[test]
 fn unbuildable_cumulative_steps_are_refused() {
     let (mut topo, solid) = workflow(&[Step::A2, Step::A3, Step::A6], 1.9);
@@ -886,19 +889,155 @@ fn unbuildable_cumulative_steps_are_refused() {
         "{error}"
     );
     assert_eq!(fingerprint(&topo, solid), before);
-    // A4 after A6, and A6 after A4.
-    let pick = a4_pick(&topo, solid);
-    let Err(error) = chamfer_v2_tangent_chain(&mut topo, solid, &[pick], FREE_END, FREE_END) else {
-        panic!("the free-end chain does not close against the bottom chamfer");
+}
+
+// ---------------------------------------------------------------------------
+// W9b: the free-end and bottom chamfer chains on one body.
+
+/// Material both chamfers would remove at one block corner where an `a`
+/// chamfer up a vertical edge meets a `b` chamfer along a bottom edge (the
+/// corner tetrahedron-like wedge counted twice by the two chains):
+/// `∫₀^min (a − y)(b − y) dy` with `min = min(a, b)`.
+fn corner_overlap(a: f64, b: f64) -> f64 {
+    let (small, large) = if a <= b { (a, b) } else { (b, a) };
+    small * small * large / 2.0 - small.powi(3) / 6.0
+}
+
+/// A4 and A6 on one body, in either order. Each chain's run ends at a block
+/// corner of the free end on the other's 45° stripe: the free-end band on
+/// the bottom stripe, wholly; the wider bottom band crosses the free-end
+/// stripe and runs on into the free end face. Both orders give one body:
+/// the union of the two chamfers, so the removed volume is each chain's own
+/// less the two corner wedges both would take.
+#[test]
+fn free_end_and_bottom_chamfers_meet_in_either_order() {
+    let (topo_a3, a3) = workflow(&[Step::A2, Step::A3], 1.9);
+    let (topo_a4, a4) = workflow(&[Step::A2, Step::A3, Step::A4], 1.9);
+    let (topo_a6, a6) = workflow(&[Step::A2, Step::A3, Step::A6], 1.9);
+    let volume = |topo: &Topology, solid| solid_volume(topo, solid, 1e-3).unwrap();
+    let expected = volume(&topo_a4, a4) + volume(&topo_a6, a6) - volume(&topo_a3, a3)
+        + 2.0 * corner_overlap(FREE_END, BOTTOM);
+    let mut bodies = Vec::new();
+    for steps in [
+        [Step::A2, Step::A3, Step::A4, Step::A6],
+        [Step::A2, Step::A3, Step::A6, Step::A4],
+    ] {
+        let label = format!("{steps:?}");
+        let (mut topo, solid) = workflow(&steps, 1.9);
+        let measured = volume(&topo, solid);
+        assert!(
+            (measured - expected).abs() <= 1e-9 * expected,
+            "{label}: volume {measured} vs closed form {expected}"
+        );
+        // Five more faces than A4 alone (the bottom chain's planes and cones)
+        // and every one of them exact; the free-end corner closes on planes.
+        let mut grown = census(&topo_a4, a4);
+        *grown.entry("plane").or_insert(0) += 3;
+        *grown.entry("cone").or_insert(0) += 4;
+        assert_eq!(census(&topo, solid), grown, "{label}");
+        for (point, expected, what) in [
+            (
+                Point3::new(29.95, 0.75, 0.02),
+                PointClassification::Outside,
+                "bottom band past the free-end stripe",
+            ),
+            (
+                Point3::new(29.99, 0.85, 0.01),
+                PointClassification::Inside,
+                "free end just above the bottom band",
+            ),
+            (
+                Point3::new(29.6, 0.1, 0.9),
+                PointClassification::Outside,
+                "free-end stripe above the bottom band",
+            ),
+            (
+                Point3::new(29.5, 0.5, 0.5),
+                PointClassification::Inside,
+                "inside both bands' corner",
+            ),
+            (
+                Point3::new(29.95, 17.25, 0.02),
+                PointClassification::Outside,
+                "far corner, bottom band",
+            ),
+            (
+                Point3::new(29.5, 17.5, 0.5),
+                PointClassification::Inside,
+                "inside the far corner",
+            ),
+        ] {
+            assert_eq!(classify(&topo, solid, point), expected, "{label}: {what}");
+        }
+        // The boss group holds both chains (the free-end stripes end on the
+        // bottom stripes, which stay chamfers with crossing ends) and comes
+        // off whole to the exact sharp part.
+        let cluster = recognize_blend_cluster(&topo, solid, boss_of(&topo, solid)).unwrap();
+        let chamfers: Vec<f64> = cluster
+            .members
+            .iter()
+            .filter(|m| m.kind.is_chamfer())
+            .map(|m| m.radius)
+            .collect();
+        assert_eq!(chamfers.len(), 12, "{label}: {chamfers:?}");
+        assert_eq!(
+            chamfers
+                .iter()
+                .filter(|&&d| (d - BOTTOM).abs() < 1e-9)
+                .count(),
+            7,
+            "{label}"
+        );
+
+        let restored = remove_blend_cluster(&mut topo, solid, &cluster).unwrap();
+        let (sharp_topo, sharp) = gecko_sharp();
+        assert_eq!(census(&topo, restored.solid), census(&sharp_topo, sharp));
+        let restored_volume = solid_volume(&topo, restored.solid, 1e-3).unwrap();
+        let sharp_volume = solid_volume(&sharp_topo, sharp, 1e-3).unwrap();
+        assert!(
+            (restored_volume - sharp_volume).abs() <= 1e-9 * sharp_volume,
+            "{label}: removed group {restored_volume} vs sharp {sharp_volume}"
+        );
+        // Re-blend plans: the chains larger distance first, then the same
+        // fillet plans with the chains reversed.
+        let removed: Vec<usize> = (0..cluster.members.len()).collect();
+        let plans = plan_reblend(&cluster, &removed, &BTreeMap::new()).unwrap();
+        let chain_order = |plan: &[ReblendStage]| -> Vec<f64> {
+            plan.iter()
+                .filter(|stage| matches!(stage.blend, StageBlend::Chamfer { .. }))
+                .map(|stage| stage.radius)
+                .collect()
+        };
+        let orders: Vec<Vec<f64>> = plans.iter().map(|plan| chain_order(plan)).collect();
+        assert_eq!(orders.len() % 2, 0, "{label}: {orders:?}");
+        let half = orders.len() / 2;
+        for order in &orders[..half] {
+            assert!((order[0] - BOTTOM).abs() < 1e-9 && (order[1] - FREE_END).abs() < 1e-9);
+        }
+        for order in &orders[half..] {
+            assert!((order[0] - FREE_END).abs() < 1e-9 && (order[1] - BOTTOM).abs() < 1e-9);
+        }
+        bodies.push((topo, solid, label));
+    }
+    let [(topo_a, a, label_a), (topo_b, b, _)] = bodies.as_slice() else {
+        unreachable!()
     };
-    assert_eq!(blend_failure_code(&error), "trimming-failure", "{error}");
-    assert_eq!(fingerprint(&topo, solid), before);
-    let (mut topo, solid) = workflow(&[Step::A2, Step::A3, Step::A4], 1.9);
-    let before = fingerprint(&topo, solid);
-    let pick = bottom_pick(&topo, solid);
-    let Err(error) = chamfer_v2_tangent_chain(&mut topo, solid, &[pick], BOTTOM, BOTTOM) else {
-        panic!("the bottom chain does not close against the free-end chamfer");
-    };
-    assert_eq!(blend_failure_code(&error), "trimming-failure", "{error}");
-    assert_eq!(fingerprint(&topo, solid), before);
+    assert_eq!(
+        solid_entity_counts(topo_a, *a).unwrap(),
+        solid_entity_counts(topo_b, *b).unwrap(),
+        "{label_a}: both orders"
+    );
+}
+
+/// A2 -> A3 -> A4 -> A6 -> A7 Ø14.6 -> 17 -> 14.7: the group holds both
+/// chamfer chains and re-cuts them after every diameter.
+#[test]
+fn cumulative_a2_a3_a4_a6_then_boss_diameters() {
+    boss_sequence_after(&[Step::A2, Step::A3, Step::A4, Step::A6], 1.9);
+}
+
+/// The same with the chamfers made in the other order.
+#[test]
+fn cumulative_a2_a3_a6_a4_then_boss_diameters() {
+    boss_sequence_after(&[Step::A2, Step::A3, Step::A6, Step::A4], 1.9);
 }

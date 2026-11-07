@@ -633,3 +633,169 @@ fn w_fillet_part_chamfers_its_bottom_chain_and_outline() {
         assert_bevelled_outline(&topo, result.solid, label);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Two chamfer chains meeting at a block corner.
+
+/// A 30×18×10 block with its two top long edges and the two vertical edges
+/// of its `x = 0` end rounded R3. The `x = 30` end's outline (top edge, the
+/// top rounds' end arcs, the vertical edges) and the bottom outline (the
+/// long bottom edges, the vertical rounds' feet, the `x = 0` bottom edge)
+/// are two open tangent chains, each with arcs, that meet at the `x = 30`
+/// bottom corners.
+fn rounded_free_end(topo: &mut Topology) -> SolidId {
+    let block = make_box(topo, 30.0, 18.0, 10.0).unwrap();
+    let edges: Vec<EdgeId> = solid_edges(topo, block)
+        .unwrap()
+        .into_iter()
+        .filter(|&id| {
+            let (a, b) = ends(topo, id);
+            let side =
+                (a.y() - b.y()).abs() < 1e-9 && (a.y().abs() < 1e-9 || (a.y() - 18.0).abs() < 1e-9);
+            let vertical = a.x().abs() + b.x().abs() < 1e-9;
+            let top = (a.z() - 10.0).abs() + (b.z() - 10.0).abs() < 1e-9;
+            side && (vertical || top)
+        })
+        .collect();
+    assert_eq!(edges.len(), 4);
+    fillet_cascade(topo, block, &edges, 3.0).unwrap().solid
+}
+
+/// The free end's top edge: the seed of its chain.
+fn free_end_seed(topo: &Topology, solid: SolidId) -> EdgeId {
+    let found: Vec<EdgeId> = solid_edges(topo, solid)
+        .unwrap()
+        .into_iter()
+        .filter(|&id| {
+            let (a, b) = ends(topo, id);
+            matches!(topo.edge(id).unwrap().curve(), EdgeCurve::Line)
+                && (a.x() - 30.0).abs() + (b.x() - 30.0).abs() < 1e-9
+                && (a.z() - 10.0).abs() + (b.z() - 10.0).abs() < 1e-9
+        })
+        .collect();
+    assert_eq!(found.len(), 1);
+    found[0]
+}
+
+/// The longest straight bottom edge along `y = 0`: the bottom chain's seed.
+fn long_bottom_seed(topo: &Topology, solid: SolidId) -> EdgeId {
+    let length = |id: EdgeId| {
+        let (a, b) = ends(topo, id);
+        (b - a).length()
+    };
+    solid_edges(topo, solid)
+        .unwrap()
+        .into_iter()
+        .filter(|&id| {
+            let (a, b) = ends(topo, id);
+            a.y().abs() + b.y().abs() + a.z().abs() + b.z().abs() < 1e-9
+        })
+        .max_by(|&p, &q| length(p).total_cmp(&length(q)))
+        .unwrap()
+}
+
+/// What both chains would take at one corner, where an `a` chamfer up a
+/// vertical edge and a `b` chamfer along a bottom edge overlap:
+/// `∫₀^min (a − y)(b − y) dy`.
+fn corner_overlap(a: f64, b: f64) -> f64 {
+    let (small, large) = if a <= b { (a, b) } else { (b, a) };
+    small * small * large / 2.0 - small.powi(3) / 6.0
+}
+
+/// A chamfer chain whose open run ends on another chain's 45° stripe, in
+/// either order and with either the wider or the narrower distance last.
+/// The end band runs on until its plane leaves the corner: wholly onto the
+/// stripe when it is the narrower one, across the stripe and into the face
+/// beyond when it is the wider. The result is the block less the union of
+/// the two chamfers: each chain's closed form less the two corner overlaps,
+/// and the same body in both orders.
+#[test]
+fn chamfer_chains_close_on_each_others_stripes() {
+    for (free, bottom) in [(0.7, 0.8), (0.8, 0.7), (0.8, 0.8)] {
+        let mut topo = Topology::new();
+        let body = rounded_free_end(&mut topo);
+        let chain_of = |topo: &Topology, seed: EdgeId| {
+            remus_blend::g1_chain::expand_g1_chain(topo, body, &[seed], Tolerance::new()).unwrap()
+        };
+        let free_chain = chain_of(&topo, free_end_seed(&topo, body));
+        let bottom_chain = chain_of(&topo, long_bottom_seed(&topo, body));
+        // Top edge, two end arcs, two verticals; two long edges, two feet,
+        // the x = 0 edge.
+        assert_eq!((free_chain.len(), bottom_chain.len()), (5, 5));
+        let expected = removed_along(&topo, body, &free_chain, free)
+            + removed_along(&topo, body, &bottom_chain, bottom)
+            - 2.0 * corner_overlap(free, bottom);
+        let before = solid_volume(&topo, body, 1e-3).unwrap();
+        let source_counts = solid_entity_counts(&topo, body).unwrap();
+        let mut results = Vec::new();
+        for free_first in [true, false] {
+            let label = format!("free {free}, bottom {bottom}, free end first: {free_first}");
+            let mut solid = body;
+            for free_now in [free_first, !free_first] {
+                let (seed, d) = if free_now {
+                    (free_end_seed(&topo, solid), free)
+                } else {
+                    (long_bottom_seed(&topo, solid), bottom)
+                };
+                let result = chamfer_v2_tangent_chain(&mut topo, solid, &[seed], d, d).unwrap();
+                assert!(!result.is_partial && result.failed.is_empty(), "{label}");
+                // The exact floor-chain assembly, not a boolean cutter.
+                assert_eq!(result.engine, remus_blend::BlendEngine::Walking, "{label}");
+                assert_exact_bands(&topo, solid, result.solid, 5, &label);
+                solid = result.solid;
+            }
+            assert_sound(&topo, body, solid, expected, &label);
+            let strict = remus_check::validate::validate_solid(
+                &topo,
+                solid,
+                &remus_check::validate::ValidateOptions::default(),
+            )
+            .unwrap();
+            assert!(strict.is_valid(), "{label}: {:?}", strict.issues);
+            let removed = before - solid_volume(&topo, solid, 1e-3).unwrap();
+            assert!(
+                (removed - expected).abs() <= 1e-9 * before,
+                "{label}: removed {removed}, closed form {expected}"
+            );
+            // Probes round the x = 30, y = 0 corner and its mirror.
+            let large = free.max(bottom);
+            for mirror in [false, true] {
+                let at =
+                    |x: f64, y: f64, z: f64| Point3::new(x, if mirror { 18.0 - y } else { y }, z);
+                for (point, inside, what) in [
+                    (
+                        at(29.99, bottom - 0.05, 0.02),
+                        false,
+                        "bottom band at the end",
+                    ),
+                    (
+                        at(30.0 - free + 0.05, 0.02, bottom + 0.05),
+                        false,
+                        "free-end band",
+                    ),
+                    (at(30.0 - large, large, large), true, "past both bands"),
+                    (at(29.99, large + 0.05, 0.02), true, "free end above both"),
+                    (at(30.0 - large - 0.5, 0.02, 0.02), false, "bottom band"),
+                ] {
+                    let expected = if inside {
+                        PointClassification::Inside
+                    } else {
+                        PointClassification::Outside
+                    };
+                    assert_eq!(
+                        classify(&topo, solid, point),
+                        expected,
+                        "{label}: {what} {point:?}"
+                    );
+                }
+            }
+            results.push(solid);
+        }
+        assert_eq!(
+            solid_entity_counts(&topo, results[0]).unwrap(),
+            solid_entity_counts(&topo, results[1]).unwrap(),
+            "free {free}, bottom {bottom}: both orders"
+        );
+        assert_eq!(solid_entity_counts(&topo, body).unwrap(), source_counts);
+    }
+}

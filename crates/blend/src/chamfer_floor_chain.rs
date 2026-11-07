@@ -25,6 +25,17 @@
 //! third face is a plane square to the edge; that face is notched along the
 //! band's end cross-section, as a single straight chamfer's end is.
 //!
+//! A straight band may also end on planes that are not square to it — an
+//! earlier chamfer's 45° stripe across the corner, say. The band then runs
+//! on until its plane leaves the corner: its wall contact stops on the wall's
+//! edge with the first such plane, its floor contact where it leaves the
+//! floor, and its end is the band plane's section through the planes between
+//! (one straight edge on each). When the floor contact runs past the first
+//! plane's floor edge — a wider band ending on a narrower stripe — the end
+//! crosses the stripe and carries on into the face beyond it, so the corner
+//! is closed by a polygon of straight edges on exact planes. Each of those
+//! planes loses the corner of it on the removed side of the band plane.
+//!
 //! Every boundary vertex the result needs is made first, by splitting the
 //! body's edges, and each face is then cut exactly once along all of its
 //! contacts: the floor along the whole selection, each wall along its own
@@ -82,12 +93,64 @@ enum JointKind {
     Mitre { floor: Point3, wall: Point3 },
 }
 
-/// The straight edge across the band at a joint or a run end.
-#[derive(Clone, Copy)]
+/// The edges across the band at a joint or a run end: one straight edge,
+/// or at an end crossing several planes, one per plane.
+#[derive(Clone)]
 struct Cross {
     floor: VertexId,
     wall: VertexId,
-    edge: EdgeId,
+    /// The vertices from `floor` to `wall`, both included.
+    path: Vec<VertexId>,
+    /// `edges[i]` joins `path[i]` to `path[i + 1]`.
+    edges: Vec<EdgeId>,
+}
+
+impl Cross {
+    fn single(floor: VertexId, wall: VertexId, edge: EdgeId) -> Self {
+        Self {
+            floor,
+            wall,
+            path: vec![floor, wall],
+            edges: vec![edge],
+        }
+    }
+
+    /// The edges in order from the floor contact to the wall contact
+    /// (`to_wall`) or back.
+    fn uses(&self, topo: &Topology, to_wall: bool) -> Result<Vec<OrientedEdge>, BlendError> {
+        let mut uses = Vec::with_capacity(self.edges.len());
+        for (i, &edge) in self.edges.iter().enumerate() {
+            let forward = topo.edge(edge)?.start() == self.path[i];
+            uses.push(OrientedEdge::new(edge, forward));
+        }
+        Ok(if to_wall {
+            uses
+        } else {
+            uses.iter()
+                .rev()
+                .map(|oe| OrientedEdge::new(oe.edge(), !oe.is_forward()))
+                .collect()
+        })
+    }
+}
+
+/// Most planes an open run's end may cross past its corner.
+const MAX_END_FACES: usize = 3;
+
+/// How an open run's end closes against the faces past its corner.
+struct EndPlan {
+    /// The floor contact's end.
+    floor: Point3,
+    /// The wall contact's end.
+    wall: Point3,
+    /// For an end that runs past the corner: the planes the end section
+    /// crosses, from the wall's side to the floor's, with `crossings[i]` the
+    /// point where it crosses the edge `faces[i]` shares with `faces[i + 1]`
+    /// and `swallowed[i]` that edge's floor vertex. Empty for a square end.
+    /// An end on a single plane is notched as a square one is.
+    faces: Vec<FaceId>,
+    crossings: Vec<Point3>,
+    swallowed: Vec<VertexId>,
 }
 
 /// A maximal run of consecutive selected edges round the floor's boundary.
@@ -135,6 +198,11 @@ pub fn chamfer(
     let mut joint_crosses: Vec<Vec<Cross>> = Vec::with_capacity(runs.len());
     let mut end_crosses: Vec<Option<[Cross; 2]>> = Vec::with_capacity(runs.len());
     let mut joint_kinds: Vec<Vec<JointKind>> = Vec::with_capacity(runs.len());
+    let mut end_plans: Vec<Option<[EndPlan; 2]>> = Vec::with_capacity(runs.len());
+    let walls: Vec<FaceId> = runs
+        .iter()
+        .flat_map(|run| run.elements.iter().map(|element| element.wall))
+        .collect();
     for run in &runs {
         let count = run.elements.len();
         let joints = if run.closed { count } else { count - 1 };
@@ -148,17 +216,36 @@ pub fn chamfer(
         }
         joint_kinds.push(kinds);
         // An open run ends on a planar face square to the band there, which
-        // its end cross-section notches.
-        if !run.closed {
-            for (element, side) in [(&run.elements[0], 0), (&run.elements[count - 1], 1)] {
-                let corner = run_vertex(topo, element, side == 1)?;
-                if !square_end_face(topo, original_faces, floor, element, side, corner, touch)? {
-                    return Ok(None);
-                }
-            }
+        // its end cross-section notches, or runs on over planes oblique to it.
+        if run.closed {
+            end_plans.push(None);
+            continue;
         }
+        let mut plans = Vec::with_capacity(2);
+        for (element, side) in [(&run.elements[0], 0), (&run.elements[count - 1], 1)] {
+            let corner = run_vertex(topo, element, side == 1)?;
+            let Some(plan) = end_plan(
+                topo,
+                adjacency,
+                original_faces,
+                floor,
+                &walls,
+                element,
+                side,
+                corner,
+                touch,
+            )?
+            else {
+                return Ok(None);
+            };
+            plans.push(plan);
+        }
+        let (Some(last), Some(first)) = (plans.pop(), plans.pop()) else {
+            return Ok(None);
+        };
+        end_plans.push(Some([first, last]));
     }
-    for (run, kinds) in runs.iter().zip(&joint_kinds) {
+    for ((run, kinds), plans) in runs.iter().zip(&joint_kinds).zip(&end_plans) {
         let count = run.elements.len();
         let mut crosses = Vec::with_capacity(kinds.len());
         for (k, kind) in kinds.iter().enumerate() {
@@ -177,70 +264,73 @@ pub fn chamfer(
                     .ok_or(BlendError::TrimmingFailure { face: a.wall })?
             };
             let edge = topo.add_edge(Edge::new(floor_vertex, wall_vertex, EdgeCurve::Line));
-            crosses.push(Cross {
-                floor: floor_vertex,
-                wall: wall_vertex,
-                edge,
-            });
+            crosses.push(Cross::single(floor_vertex, wall_vertex, edge));
         }
         joint_crosses.push(crosses);
-        if run.closed {
+        let Some(plans) = plans.as_ref() else {
             end_crosses.push(None);
             continue;
-        }
+        };
         let first = &run.elements[0];
         let last = &run.elements[count - 1];
         let mut ends = Vec::with_capacity(2);
-        for (element, side) in [(first, 0), (last, 1)] {
+        for (element, plan) in [(first, &plans[0]), (last, &plans[1])] {
             let mut edit = scope.edit(&mut replacements);
             let floor_face = current(edit.replacements(), floor);
-            let floor_vertex = trimmer::split_body_boundary_at(
-                topo,
-                &mut edit,
-                floor_face,
-                element.floor[side],
-                touch,
-            )?
-            .ok_or_else(floor_failure)?;
+            let floor_vertex =
+                trimmer::split_body_boundary_at(topo, &mut edit, floor_face, plan.floor, touch)?
+                    .ok_or_else(floor_failure)?;
             let wall_face = current(edit.replacements(), element.wall);
-            let wall_vertex = trimmer::split_body_boundary_at(
-                topo,
-                &mut edit,
-                wall_face,
-                element.wall_points[side],
-                touch,
-            )?
-            .ok_or(BlendError::TrimmingFailure { face: element.wall })?;
-            let edge = topo.add_edge(Edge::new(floor_vertex, wall_vertex, EdgeCurve::Line));
+            let wall_vertex =
+                trimmer::split_body_boundary_at(topo, &mut edit, wall_face, plan.wall, touch)?
+                    .ok_or(BlendError::TrimmingFailure { face: element.wall })?;
+            // Where the end section crosses from one plane to the next, on
+            // the edge they share: listed from the floor's side.
+            let mut path = vec![floor_vertex];
+            for (i, &point) in plan.crossings.iter().enumerate().rev() {
+                let face = current(edit.replacements(), plan.faces[i]);
+                let vertex = trimmer::split_body_boundary_at(topo, &mut edit, face, point, touch)?
+                    .ok_or(BlendError::TrimmingFailure { face })?;
+                path.push(vertex);
+            }
+            path.push(wall_vertex);
+            let mut edges = Vec::with_capacity(path.len() - 1);
+            for pair in path.windows(2) {
+                edges.push(topo.add_edge(Edge::new(pair[0], pair[1], EdgeCurve::Line)));
+            }
             ends.push(Cross {
                 floor: floor_vertex,
                 wall: wall_vertex,
-                edge,
+                path,
+                edges,
             });
         }
-        end_crosses.push(Some([ends[0], ends[1]]));
+        let (Some(end), Some(start)) = (ends.pop(), ends.pop()) else {
+            return Err(floor_failure());
+        };
+        end_crosses.push(Some([start, end]));
     }
 
     // ── Contact edges, per element, between the crosses at its two sides. ──
     // (start cross, end cross) of element k of run r.
-    let side_crosses = |r: usize, k: usize| -> (Cross, Cross) {
+    let side_crosses = |r: usize, k: usize| -> (&Cross, &Cross) {
         let run = &runs[r];
         let count = run.elements.len();
         let start = if k == 0 {
-            match end_crosses[r] {
-                Some(ends) => ends[0],
-                None => joint_crosses[r][count - 1],
+            match &end_crosses[r] {
+                Some(ends) => &ends[0],
+                None => &joint_crosses[r][count - 1],
             }
         } else {
-            joint_crosses[r][k - 1]
+            &joint_crosses[r][k - 1]
         };
         let end = if k + 1 == count {
-            match end_crosses[r] {
-                Some(ends) => ends[1],
-                None => joint_crosses[r][count - 1],
+            match &end_crosses[r] {
+                Some(ends) => &ends[1],
+                None => &joint_crosses[r][count - 1],
             }
         } else {
-            joint_crosses[r][k]
+            &joint_crosses[r][k]
         };
         (start, end)
     };
@@ -286,7 +376,7 @@ pub fn chamfer(
         } else {
             let mut pieces = Vec::with_capacity(runs.len());
             for (r, run) in runs.iter().enumerate() {
-                let Some(ends) = end_crosses[r] else {
+                let Some(ends) = &end_crosses[r] else {
                     return Err(floor_failure());
                 };
                 let (Some(from), Some(to)) = (
@@ -370,7 +460,7 @@ pub fn chamfer(
     }
     // The end faces of open runs, notched along the end cross-sections.
     for (r, run) in runs.iter().enumerate() {
-        let Some(ends) = end_crosses[r] else {
+        let (Some(ends), Some(plans)) = (&end_crosses[r], &end_plans[r]) else {
             continue;
         };
         let count = run.elements.len();
@@ -378,7 +468,11 @@ pub fn chamfer(
             run_vertex(topo, &run.elements[0], false)?,
             run_vertex(topo, &run.elements[count - 1], true)?,
         ];
-        for (cross, corner) in ends.into_iter().zip(corners) {
+        for ((cross, plan), corner) in ends.iter().zip(plans).zip(corners) {
+            if !plan.crossings.is_empty() {
+                cut_end_planes(topo, &mut replacements, cross, plan, corner)?;
+                continue;
+            }
             let corner_point = topo.vertex(corner)?.point();
             let floor_point = topo.vertex(cross.floor)?.point();
             let wall_point = topo.vertex(cross.wall)?.point();
@@ -391,7 +485,7 @@ pub fn chamfer(
                 if let Some(cap) = crate::chamfer_extrusion::notch_cap(
                     topo,
                     face,
-                    (cross.edge, cross.floor, cross.wall),
+                    (cross.edges[0], cross.floor, cross.wall),
                     corner,
                     axis,
                 )? {
@@ -415,12 +509,10 @@ pub fn chamfer(
             let (floor_edge, wall_edge) = contacts[r][k];
             // Along the floor contact in run order, across the end, back
             // along the wall contact and across the start.
-            let mut loop_edges = vec![
-                OrientedEdge::new(floor_edge, true),
-                OrientedEdge::new(end.edge, topo.edge(end.edge)?.start() == end.floor),
-                OrientedEdge::new(wall_edge, false),
-                OrientedEdge::new(start.edge, topo.edge(start.edge)?.start() == start.wall),
-            ];
+            let mut loop_edges = vec![OrientedEdge::new(floor_edge, true)];
+            loop_edges.extend(end.uses(topo, true)?);
+            loop_edges.push(OrientedEdge::new(wall_edge, false));
+            loop_edges.extend(start.uses(topo, false)?);
             // Each contact runs against the trimmed face's use of it.
             match effective_use(topo, floor_face, floor_edge)? {
                 Some(true) => loop_edges = reversed_loop(&loop_edges),
@@ -898,6 +990,295 @@ fn square_end_face(
         }
     }
     Ok(false)
+}
+
+/// How the band of `element` ends at `corner` (its start for `side` 0, its
+/// end for 1), or `None` when this assembler does not close it there.
+///
+/// A plane square to the band through its end section takes the section as
+/// it is. Otherwise a straight band runs on over the planes past the
+/// corner, in the floor boundary's order: its wall contact must stop on the
+/// wall's straight edge with the first of them, and its floor contact on
+/// one of their straight floor edges (at most [`MAX_END_FACES`] of them).
+/// Every vertex those planes keep must lie on the band plane's material
+/// side, so each loses one corner polygon.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn end_plan(
+    topo: &Topology,
+    adjacency: &AdjacencyIndex,
+    original_faces: &[FaceId],
+    floor: FaceId,
+    walls: &[FaceId],
+    element: &Element,
+    side: usize,
+    corner: VertexId,
+    touch: f64,
+) -> Result<Option<EndPlan>, BlendError> {
+    if square_end_face(topo, original_faces, floor, element, side, corner, touch)? {
+        return Ok(Some(EndPlan {
+            floor: element.floor[side],
+            wall: element.wall_points[side],
+            faces: Vec::new(),
+            crossings: Vec::new(),
+            swallowed: Vec::new(),
+        }));
+    }
+    if element.arc.is_some() {
+        return Ok(None);
+    }
+    let FaceSurface::Plane {
+        normal: band_normal,
+        d: band_d,
+    } = element.surface
+    else {
+        return Ok(None);
+    };
+    let FaceSurface::Plane {
+        normal: floor_normal,
+        ..
+    } = *topo.face(floor)?.surface()
+    else {
+        return Ok(None);
+    };
+    let origin = Point3::new(0.0, 0.0, 0.0);
+    let band_at = |point: Point3| band_normal.dot(point - origin) - band_d;
+    let corner_point = topo.vertex(corner)?.point();
+    // The corner is on the removed side of the band plane.
+    let removed = band_at(corner_point);
+    if removed.abs() <= touch {
+        return Ok(None);
+    }
+    let kept = |point: Point3| band_at(point) * removed.signum() < -touch;
+    let along = element.floor[1] - element.floor[0];
+    let (floor_from, wall_from) = (element.floor[side], element.wall_points[side]);
+    let outward = if side == 1 { along } else { -along };
+    let other_face = |edge: EdgeId| -> Option<FaceId> {
+        match *adjacency.faces_for_edge(edge) {
+            [a, b] if a == floor && b != floor => Some(b),
+            [a, b] if b == floor && a != floor => Some(a),
+            _ => None,
+        }
+    };
+    // The straight edge of `face`'s outer boundary at `vertex` that it
+    // shares with `other`, from `vertex` to its far end.
+    let shared_line = |face: FaceId,
+                       other: FaceId,
+                       vertex: VertexId|
+     -> Result<Option<(Point3, Point3)>, BlendError> {
+        for oriented in topo.wire(topo.face(face)?.outer_wire())?.edges() {
+            let edge = topo.edge(oriented.edge())?;
+            if !matches!(edge.curve(), EdgeCurve::Line)
+                || !adjacency.faces_for_edge(oriented.edge()).contains(&other)
+            {
+                continue;
+            }
+            let far = if edge.start() == vertex {
+                edge.end()
+            } else if edge.end() == vertex {
+                edge.start()
+            } else {
+                continue;
+            };
+            return Ok(Some((
+                topo.vertex(vertex)?.point(),
+                topo.vertex(far)?.point(),
+            )));
+        }
+        Ok(None)
+    };
+    // Where the band plane crosses the segment `from -> to` strictly past
+    // `from`, at most at `to`.
+    let band_crossing = |from: Point3, to: Point3| -> Option<Point3> {
+        let (a, b) = (band_at(from), band_at(to));
+        if (a - b).abs() <= f64::EPSILON {
+            return None;
+        }
+        let t = a / (a - b);
+        let length = (to - from).length();
+        (t * length > touch && t <= 1.0 + touch / length).then(|| from + (to - from) * t.min(1.0))
+    };
+
+    let wire = topo.wire(topo.face(floor)?.outer_wire())?.edges().to_vec();
+    let n = wire.len();
+    let end_edge = if side == 1 {
+        element.edges[element.edges.len() - 1]
+    } else {
+        element.edges[0]
+    };
+    let Some(position) = wire.iter().position(|oe| oe.edge() == end_edge) else {
+        return Ok(None);
+    };
+    let mut near = corner;
+    let mut faces: Vec<FaceId> = Vec::new();
+    let mut crossings: Vec<Point3> = Vec::new();
+    let mut swallowed: Vec<VertexId> = Vec::new();
+    let mut wall_end = None;
+    for i in 1..=MAX_END_FACES.min(n.saturating_sub(element.edges.len())) {
+        let oriented = if side == 1 {
+            wire[(position + i) % n]
+        } else {
+            wire[(position + n - i % n) % n]
+        };
+        let data = topo.edge(oriented.edge())?;
+        if !matches!(data.curve(), EdgeCurve::Line) {
+            return Ok(None);
+        }
+        let (from, far) = if side == 1 {
+            (oriented.oriented_start(data), oriented.oriented_end(data))
+        } else {
+            (oriented.oriented_end(data), oriented.oriented_start(data))
+        };
+        let Some(face) = other_face(oriented.edge()) else {
+            return Ok(None);
+        };
+        if from != near
+            || walls.contains(&face)
+            || faces.contains(&face)
+            || !matches!(topo.face(face)?.surface(), FaceSurface::Plane { .. })
+        {
+            return Ok(None);
+        }
+        if i == 1 {
+            // The wall contact stops on the wall's edge with this plane.
+            let Some((at, to)) = shared_line(element.wall, face, corner)? else {
+                return Ok(None);
+            };
+            let Some(point) = band_crossing(at, to) else {
+                return Ok(None);
+            };
+            if (point - wall_from).dot(outward) < -touch {
+                return Ok(None);
+            }
+            wall_end = Some(point);
+        }
+        faces.push(face);
+        let (near_point, far_point) = (topo.vertex(from)?.point(), topo.vertex(far)?.point());
+        // The floor contact runs out over this edge, or past its far end.
+        let Some(hit) = line_line(
+            floor_from,
+            along,
+            near_point,
+            far_point - near_point,
+            floor_normal,
+        ) else {
+            return Ok(None);
+        };
+        if (hit - floor_from).dot(outward) < -touch {
+            return Ok(None);
+        }
+        let span = far_point - near_point;
+        let length = span.length();
+        let reach = (hit - near_point).dot(span) / (length * length);
+        if reach * length <= touch {
+            return Ok(None);
+        }
+        if (reach - 1.0) * length <= touch {
+            let floor_end = if (reach - 1.0).abs() * length <= touch {
+                far_point
+            } else {
+                hit
+            };
+            let Some(wall_end) = wall_end else {
+                return Ok(None);
+            };
+            // Each plane keeps all of its boundary but the corner polygon.
+            let mut cut_off = vec![corner];
+            cut_off.extend(swallowed.iter().copied());
+            let mut on_section = vec![floor_end, wall_end];
+            on_section.extend(crossings.iter().copied());
+            for &plane in &faces {
+                for oriented in topo.wire(topo.face(plane)?.outer_wire())?.edges() {
+                    let vertex = oriented.oriented_start(topo.edge(oriented.edge())?);
+                    let point = topo.vertex(vertex)?.point();
+                    if !cut_off.contains(&vertex)
+                        && on_section.iter().all(|&at| (point - at).length() > touch)
+                        && !kept(point)
+                    {
+                        return Ok(None);
+                    }
+                }
+            }
+            return Ok(Some(EndPlan {
+                floor: floor_end,
+                wall: wall_end,
+                faces,
+                crossings,
+                swallowed,
+            }));
+        }
+        // Past the far end: the section crosses from this plane into the
+        // next across their shared edge at `far`.
+        if kept(far_point) {
+            return Ok(None);
+        }
+        let next = if side == 1 {
+            wire[(position + i + 1) % n]
+        } else {
+            wire[(position + n - (i + 1) % n) % n]
+        };
+        let Some(next_face) = other_face(next.edge()) else {
+            return Ok(None);
+        };
+        let Some((at, to)) = shared_line(face, next_face, far)? else {
+            return Ok(None);
+        };
+        let Some(point) = band_crossing(at, to) else {
+            return Ok(None);
+        };
+        crossings.push(point);
+        swallowed.push(far);
+        near = far;
+    }
+    Ok(None)
+}
+
+/// Cut each plane an end section crosses past its corner along its piece of
+/// the section, dropping the corner polygon the band removes.
+fn cut_end_planes(
+    topo: &mut Topology,
+    replacements: &mut DetHashMap<FaceId, FaceId>,
+    cross: &Cross,
+    plan: &EndPlan,
+    corner: VertexId,
+) -> Result<(), BlendError> {
+    // The cross runs floor -> X_{k-1} -> ... -> X_1 -> wall; plane i holds
+    // the piece from X_i (the wall vertex for the first) to X_{i+1} (the
+    // floor vertex for the last), counted from the wall's side.
+    let k = plan.faces.len();
+    let mut fan = vec![corner];
+    fan.extend(plan.swallowed.iter().copied());
+    for (i, &original) in plan.faces.iter().enumerate() {
+        let face = replacements.get(&original).copied().unwrap_or(original);
+        let failure = BlendError::TrimmingFailure { face: original };
+        let edge_index = k - 1 - i;
+        let (from_vertex, to_vertex) = (cross.path[edge_index + 1], cross.path[edge_index]);
+        let edge = cross.edges[edge_index];
+        let wire = topo.wire(topo.face(face)?.outer_wire())?.edges().to_vec();
+        let corners: Vec<VertexId> = fan[i..(i + 2).min(fan.len())].to_vec();
+        let mut avoid = Vec::new();
+        for oriented in &wire {
+            let data = topo.edge(oriented.edge())?;
+            if corners.contains(&data.start()) || corners.contains(&data.end()) {
+                avoid.push(oriented.edge());
+            }
+        }
+        let corner_point = topo.vertex(fan[i])?.point();
+        let (Some(from), Some(to)) = (
+            trimmer::vertex_occurrence(topo, face, &wire, from_vertex, corner_point)?,
+            trimmer::vertex_occurrence(topo, face, &wire, to_vertex, corner_point)?,
+        ) else {
+            return Err(failure);
+        };
+        let forward = topo.edge(edge)?.start() == from_vertex;
+        let piece = CutPiece {
+            from,
+            to,
+            edges: vec![OrientedEdge::new(edge, forward)],
+        };
+        let trimmed = trimmer::cut_face(topo, face, &wire, &[piece], &avoid)?;
+        replacements.insert(original, trimmed);
+    }
+    Ok(())
 }
 
 /// The vertex at the band's start (`end == false`) or end, in run order.
