@@ -8,10 +8,11 @@ use remus_topology::explorer::{face_edges, solid_edges, solid_vertices};
 
 use super::{
     BlendMoveEntities, BlendTranslation, TranslatedEntities, analyze_translation, axial_clearance,
-    check_translation_distance, reconstruction, surface_translation_invariant, tangent_across,
-    translated_solid_copy, validate_exact_result,
+    check_translation_distance, reconstruction, require_closed_mesh, surface_translation_invariant,
+    tangent_across, translated_solid_copy, validate_exact_result,
 };
 use crate::OperationsError;
+use remus_math::compact_sort::CompactSort;
 use remus_math::det_hash::{DetHashMap, DetHashSet};
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::Vec3;
@@ -32,6 +33,11 @@ pub fn move_with_cap_reblend(
     let _total = crate::performance::span("move_faces.cap_join");
     let Ok(plan) = original_plan(topo, solid, faces, distance)
         .or_else(|_| joined_plan(topo, solid, faces, distance))
+        .or_else(|_| {
+            descending_plan(topo, solid, faces, distance).inspect_err(|error| {
+                log::debug!(target: "remus_approx", "move_faces: no cap join plan: {error}");
+            })
+        })
     else {
         return Ok(None);
     };
@@ -59,15 +65,31 @@ pub fn move_with_cap_reblend(
         .copied()
         .map(image)
         .collect::<Result<Vec<_>, _>>()?;
-    let touching = remus_blend::cap_reblend::restore_touching_support_limits_in_place(
-        topo,
-        copied.solid,
-        &rim_images,
-        plan.direction,
-    )?;
-    let extended = if touching.is_some() {
+    // A cap descending onto its supports for the first time leaves every
+    // support where it was, so there is no moved support to restore.
+    let first_descent = plan.descending && rim_images.len() == 1;
+    // The cap and its supports separate when a rising shoulder retreats, or
+    // when a descending cap climbs back out of its supports.
+    let separating = if plan.descending {
+        distance > 0.0
+    } else {
+        distance < 0.0
+    };
+    let touching = if first_descent {
+        None
+    } else {
+        remus_blend::cap_reblend::restore_touching_support_limits_in_place(
+            topo,
+            copied.solid,
+            &rim_images,
+            plan.direction,
+        )?
+    };
+    let extended = if first_descent {
+        None
+    } else if touching.is_some() {
         touching
-    } else if distance < 0.0 && rim_images.len() > 1 {
+    } else if separating && rim_images.len() > 1 {
         let extension = remus_blend::cap_reblend::restore_joined_support_limits_in_place(
             topo,
             copied.solid,
@@ -101,7 +123,16 @@ pub fn move_with_cap_reblend(
         false
     };
     let rebuilt = crate::performance::timed("move_faces.cap_join.rebuild", || {
-        if let Some(touching) = remus_blend::cap_reblend::rebuild_touching_cap_in_place(
+        if first_descent {
+            reblend_planar_cap_group(
+                topo,
+                copied.solid,
+                cap_image,
+                &rim_images,
+                plan.radius,
+                permission,
+            )
+        } else if let Some(touching) = remus_blend::cap_reblend::rebuild_touching_cap_in_place(
             topo,
             copied.solid,
             cap_image,
@@ -150,6 +181,13 @@ pub fn move_with_cap_reblend(
         ));
     }
     crate::push_pull::validate_moved_solid(topo, faces, result)?;
+    if plan.descending {
+        // The validators judge each face's boundary on its own; a candidate
+        // whose retained supports fold over the new contour would pass them.
+        crate::performance::timed("move_faces.cap_join.mesh_closure", || {
+            require_closed_mesh(topo, result)
+        })?;
+    }
     let inverse: DetHashMap<_, _> = copied
         .face_map
         .iter()
@@ -226,6 +264,8 @@ struct CapJoinPlan {
     rims: Vec<FaceId>,
     radius: f64,
     entities: TranslatedEntities,
+    /// Only the selected cap and its rim travel, onto fixed supports.
+    descending: bool,
 }
 
 fn original_plan(
@@ -292,6 +332,7 @@ fn original_plan(
             faces: entities.faces.clone(),
             stretched: entities.stretched.clone(),
         },
+        descending: false,
     })
 }
 
@@ -530,5 +571,126 @@ fn joined_plan(
             faces: moved.into_iter().collect(),
             stretched: Vec::new(),
         },
+        descending: false,
+    })
+}
+
+/// A rounded planar cap descending into the fixed blends its rim's carrier
+/// meets: the shoulder and corner patches stay where they are and the cap
+/// plane re-trims them, the converse of a shoulder rising to a fixed rim.
+///
+/// A cap with one coaxial toroidal rim is taken only once that full rim
+/// reaches a fixed partial contact on its carrier, where the exact rigid
+/// translation refuses; the cap and rim translate and the candidate's folded
+/// rim region is rebuilt. A cap already joined to its supports, bounded by a
+/// complete group of equal-radius bands, moves its plane alone: its old
+/// bands and every support stay in the disposable candidate, and the
+/// reconstruction restores, re-trims or separates the supports. The caller
+/// validates the assembled body in full.
+fn descending_plan(
+    topo: &Topology,
+    solid: SolidId,
+    faces: &[FaceId],
+    distance: f64,
+) -> Result<CapJoinPlan, OperationsError> {
+    let [cap] = faces else {
+        return Err(reconstruction(
+            "descending cap reconstruction requires one planar cap",
+        ));
+    };
+    let cap = *cap;
+    let source_faces = remus_topology::explorer::solid_faces(topo, solid)?;
+    if !source_faces.contains(&cap) {
+        return Err(reconstruction("descending cap is outside the source"));
+    }
+    let direction = topo
+        .face(cap)?
+        .effective_plane_normal()
+        .ok_or_else(|| reconstruction("descending cap must be planar"))?;
+    let adjacency = topo.build_adjacency(solid)?;
+    let rims: DetHashSet<_> = face_edges(topo, cap)?
+        .into_iter()
+        .flat_map(|edge| adjacency.faces_for_edge(edge).iter().copied())
+        .filter(|&face| face != cap)
+        .collect();
+    let mut rims: Vec<_> = rims.into_iter().collect();
+    rims.compact_sort_unstable_by_key(|face| face.index());
+    let mut radius = None;
+    for &rim in &rims {
+        let band = match topo.face(rim)?.surface() {
+            FaceSurface::Torus(torus)
+                if torus.z_axis().cross(direction).length() <= Tolerance::new().angular =>
+            {
+                Some(torus.minor_radius())
+            }
+            FaceSurface::Nurbs(_) if rims.len() > 1 => section_radius(topo, rim),
+            FaceSurface::Plane { .. }
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_)
+            | FaceSurface::Nurbs(_) => None,
+        };
+        let band = band.ok_or_else(|| {
+            reconstruction("descending cap band is outside the axial circular-section family")
+        })?;
+        if (*radius.get_or_insert(band) - band).abs() > 1e-7 {
+            return Err(reconstruction("descending cap bands have mixed radii"));
+        }
+    }
+    let radius = radius.ok_or_else(|| reconstruction("descending cap has no rim"))?;
+    let entities = if let [rim] = rims.as_slice() {
+        let analysis = crate::performance::timed("move_faces.cap_join.analysis", || {
+            analyze_translation(topo, solid, faces)
+        })?;
+        analysis.swept.check(distance)?;
+        let reached: Vec<_> = analysis
+            .axial_clearance
+            .iter()
+            .filter(|limit| limit.reached(distance))
+            .collect();
+        if reached.is_empty()
+            || reached
+                .iter()
+                .any(|limit| limit.fixed_is_full_rim() || limit.moving() != *rim)
+        {
+            return Err(reconstruction(
+                "descending cap reconstruction requires its rim to reach fixed partial blends",
+            ));
+        }
+        let entities = analysis
+            .entities
+            .as_ref()
+            .map_err(|reason| reconstruction(reason.clone()))?;
+        if entities.faces.len() != 2
+            || !entities.faces.contains(&cap)
+            || !entities.faces.contains(rim)
+        {
+            return Err(reconstruction(
+                "descending cap translates faces outside its band group",
+            ));
+        }
+        TranslatedEntities {
+            vertices: entities.vertices.clone(),
+            edges: entities.edges.clone(),
+            faces: entities.faces.clone(),
+            stretched: entities.stretched.clone(),
+        }
+    } else {
+        TranslatedEntities {
+            vertices: std::iter::empty().collect(),
+            edges: Vec::new(),
+            faces: std::iter::once(cap).collect(),
+            stretched: Vec::new(),
+        }
+    };
+    Ok(CapJoinPlan {
+        source_faces,
+        direction,
+        cap,
+        rims,
+        radius,
+        entities,
+        descending: true,
     })
 }
