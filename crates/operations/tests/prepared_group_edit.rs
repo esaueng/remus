@@ -47,6 +47,189 @@ fn gecko() -> (Topology, SolidId) {
     (topo, solid)
 }
 
+/// The acceptance suite's W-Fillet + R1 cap rim prerequisite.
+fn rimmed_gecko() -> (Topology, SolidId) {
+    let (mut topo, solid) = gecko();
+    let cap = solid_faces(&topo, solid)
+        .unwrap()
+        .into_iter()
+        .filter_map(|face| match topo.face(face).unwrap().surface() {
+            FaceSurface::Plane { normal, d } if normal.z().abs() > 0.999 => {
+                Some((face, d / normal.z()))
+            }
+            _ => None,
+        })
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .unwrap()
+        .0;
+    let edges: Vec<_> = topo
+        .wire(topo.face(cap).unwrap().outer_wire())
+        .unwrap()
+        .edges()
+        .iter()
+        .map(remus_topology::OrientedEdge::edge)
+        .collect();
+    let rimmed = fillet_cascade(&mut topo, solid, &edges, 1.0).unwrap().solid;
+    (topo, rimmed)
+}
+
+#[test]
+fn preview_adoption_preserves_exact_geometry_and_journal_after_restore() {
+    use remus_operations::performance;
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<PreparedGroupEdit>();
+    let (topo, solid) = rimmed_gecko();
+    for band in [true, false] {
+        let face = if band {
+            x0_member(&topo, solid, Convexity::Convex)
+        } else {
+            boss_of(&topo, solid)
+        };
+        let prepare = || {
+            if band {
+                PreparedGroupEdit::prepare_band(&topo, solid, face, 4.0).unwrap()
+            } else {
+                PreparedGroupEdit::prepare_cylinder(&topo, solid, face).unwrap()
+            }
+        };
+        let prepared = prepare();
+        let value = if band { 1.5 } else { 7.3 };
+        let mut preview_arena = topo.clone();
+        let frame = prepared.preview(&mut preview_arena, value).unwrap();
+        let frame_arena = preview_arena.clone();
+        // Mutating the public frame must not change the private candidate.
+        let vertex = remus_topology::explorer::solid_vertices(&preview_arena, frame).unwrap()[0];
+        preview_arena
+            .vertex_mut(vertex)
+            .unwrap()
+            .set_point(Point3::new(999.0, 0.0, 0.0));
+        let mut adopted = topo.clone();
+        let mut fresh = topo.clone();
+        performance::configure(Some(|| 0.0));
+        let cached = commit_prepared_group_edit_journaled(&mut adopted, &prepared, value).unwrap();
+        let phases = performance::drain();
+        performance::configure(None);
+        assert!(
+            phases
+                .iter()
+                .any(|phase| phase.name == "blend_group.adopt_preview")
+        );
+        assert!(!phases.iter().any(|phase| phase.name == "blend_group.stage"));
+        let reference =
+            commit_prepared_group_edit_journaled(&mut fresh, &prepare(), value).unwrap();
+        assert_eq!(cached.solid, reference.solid);
+        assert_eq!(cached.op, reference.op);
+        assert_eq!(adopted.journal().entries(), fresh.journal().entries());
+        assert_eq!(
+            remus_io::arena_io::serialize_solid(&adopted, cached.solid).unwrap(),
+            remus_io::arena_io::serialize_solid(&fresh, reference.solid).unwrap()
+        );
+        // Geometry (without the newly committed history) equals the exact frame.
+        assert_same_body(
+            &adopted,
+            cached.solid,
+            &frame_arena,
+            frame,
+            "adopted preview",
+        );
+        verify(&adopted, cached.solid, "adopted preview");
+    }
+}
+
+#[test]
+fn a_different_commit_value_and_a_failed_last_frame_rebuild() {
+    use remus_operations::performance;
+    let (topo, solid) = gecko();
+    let face = x0_member(&topo, solid, Convexity::Convex);
+    for failed_frame in [false, true] {
+        let prepared = PreparedGroupEdit::prepare_band(&topo, solid, face, 4.0).unwrap();
+        let mut frame_arena = topo.clone();
+        prepared.preview(&mut frame_arena, 1.5).unwrap();
+        if failed_frame {
+            assert!(prepared.preview(&mut frame_arena, f64::NAN).is_err());
+        }
+        let value = if failed_frame { 1.5 } else { 1.9 };
+        let mut committed = topo.clone();
+        performance::configure(Some(|| 0.0));
+        let actual =
+            commit_prepared_group_edit_journaled(&mut committed, &prepared, value).unwrap();
+        let phases = performance::drain();
+        performance::configure(None);
+        assert!(
+            !phases
+                .iter()
+                .any(|phase| phase.name == "blend_group.adopt_preview")
+        );
+        let mut fresh = topo.clone();
+        let reference = resize_blend_journaled(&mut fresh, solid, face, 4.0, value).unwrap();
+        assert_eq!(committed.journal().entries(), fresh.journal().entries());
+        assert_eq!(
+            remus_io::arena_io::serialize_solid(&committed, actual.solid).unwrap(),
+            remus_io::arena_io::serialize_solid(&fresh, reference.solid).unwrap()
+        );
+    }
+}
+
+/// No wall-clock assertions: use the same fixture before and after a change.
+#[test]
+#[ignore = "native timing fixture; run with --profile profiling --ignored --nocapture"]
+#[allow(clippy::print_stdout)]
+fn profile_commit_after_preview() {
+    use remus_operations::performance;
+    use std::sync::OnceLock;
+    use std::time::Instant;
+    static START: OnceLock<Instant> = OnceLock::new();
+    fn clock() -> f64 {
+        START.get_or_init(Instant::now).elapsed().as_secs_f64() * 1000.0
+    }
+    performance::configure(Some(clock));
+    remus_operations::measure::enable_thread_volume_memo();
+    remus_operations::measure::enable_default_measurement_reuse();
+    remus_operations::tessellate::enable_face_mesh_cache();
+    let (topo, solid) = rimmed_gecko();
+    for band in [true, false] {
+        for sample in 0..3 {
+            let mut session = topo.clone();
+            let prepared = if band {
+                PreparedGroupEdit::prepare_band(
+                    &session,
+                    solid,
+                    x0_member(&session, solid, Convexity::Convex),
+                    4.0,
+                )
+                .unwrap()
+            } else {
+                PreparedGroupEdit::prepare_cylinder(&session, solid, boss_of(&session, solid))
+                    .unwrap()
+            };
+            let value = if band { 1.5 } else { 7.3 };
+            let start = clock();
+            prepared.preview(&mut session, value).unwrap();
+            let preview_ms = clock() - start;
+            // Model the browser's checkpoint restore between preview and commit.
+            session = topo.clone();
+            let _ = performance::drain();
+            let start = clock();
+            commit_prepared_group_edit_journaled(&mut session, &prepared, value).unwrap();
+            println!(
+                "{} sample={sample} preview={preview_ms:.3} commit={:.3} ms",
+                if band { "A2" } else { "A7" },
+                clock() - start
+            );
+            let mut phases = BTreeMap::<_, (usize, f64)>::new();
+            for phase in performance::drain() {
+                let entry = phases.entry(phase.name).or_default();
+                entry.0 += 1;
+                entry.1 += phase.duration_ms;
+            }
+            for (name, (count, ms)) in phases {
+                println!("  {name} x{count} {ms:.3} ms");
+            }
+        }
+    }
+    performance::configure(None);
+}
+
 /// The boss wall: the cylinder on the Z axis.
 fn boss_of(topo: &Topology, solid: SolidId) -> FaceId {
     let walls: Vec<FaceId> = solid_faces(topo, solid)

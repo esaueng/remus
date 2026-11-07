@@ -69,8 +69,10 @@ pub fn fillet_across_earlier_blends(
 ) -> Result<Option<BlendResult>, OperationsError> {
     // Smaller bands first: a larger band on the chain stays where it is, so
     // nothing that pass builds rebuilds a band it did not have to.
-    let smaller = remus_topology::transaction::run_transacted(topo, |topo| {
-        reorder(topo, solid, edges, radius, true, &mut fillet)
+    let smaller = crate::blend_ops::preview_checks::optional(|| {
+        crate::blend_ops::preview_checks::transaction(topo, |topo| {
+            reorder(topo, solid, edges, radius, true, &mut fillet)
+        })
     });
     if let Ok(Some(result)) = smaller {
         return Ok(Some(result));

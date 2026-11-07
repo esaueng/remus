@@ -38,6 +38,7 @@ const BOX_ROUNDING: f64 = 1.0e-12;
 /// seed-grid size. A ray that meets many groups of a denser face could cost
 /// more box tests than the seed scan the prefilter can save.
 const MAX_PREFILTER_SPANS: usize = 400;
+const MAX_BOUNDARY_SPANS: usize = 8192;
 
 /// Faces with at most this many spans scan their span boxes without groups.
 const UNGROUPED_SPANS: usize = 8;
@@ -139,9 +140,33 @@ pub(super) fn nurbs_span_boxes(surface: &NurbsSurface) -> Option<Vec<Aabb3>> {
 /// (the surface samples lie inside it), so a ray the BVH offers practically
 /// never misses it.
 pub(super) fn takes(surface: &NurbsSurface) -> bool {
+    takes_up_to(surface, MAX_PREFILTER_SPANS)
+}
+
+fn takes_up_to(surface: &NurbsSurface, limit: usize) -> bool {
     let spans = |knots: &[f64]| knots.windows(2).filter(|pair| pair[0] < pair[1]).count();
     let count = spans(surface.knots_u()).saturating_mul(spans(surface.knots_v()));
-    (2..=MAX_PREFILTER_SPANS).contains(&count)
+    (2..=limit).contains(&count)
+}
+
+/// A bounded-condition quadratic strip whose single curved span can be
+/// subdivided without changing the queried surface. Repeated end knots are
+/// required so the insertion is an ordinary rational Bezier subdivision.
+pub(super) fn takes_strip(surface: &NurbsSurface) -> bool {
+    let knots = surface.knots_u();
+    let domain = surface.domain_u();
+    surface.degree_u() == 2
+        && surface.degree_v() == 1
+        && surface.control_points().len() == 3
+        && knots.len() == 6
+        && knots[..3].iter().all(|u| u.to_bits() == domain.0.to_bits())
+        && knots[3..].iter().all(|u| u.to_bits() == domain.1.to_bits())
+        && takes_up_to(surface, MAX_BOUNDARY_SPANS / 4)
+        && surface
+            .weights()
+            .iter()
+            .flatten()
+            .all(|&w| w.is_finite() && w > 0.0 && w / surface.max_weight() >= 0.1)
 }
 
 /// A box the prefilter tests, with the norms of its corners.
@@ -150,6 +175,7 @@ struct ScanBox {
     aabb: Aabb3,
     min_norm: f64,
     max_norm: f64,
+    point_scale: f64,
 }
 
 impl ScanBox {
@@ -158,6 +184,12 @@ impl ScanBox {
             aabb,
             min_norm: point_norm(aabb.min),
             max_norm: point_norm(aabb.max),
+            point_scale: aabb
+                .min
+                .0
+                .into_iter()
+                .chain(aabb.max.0)
+                .fold(1.0_f64, |s, x| s.max(x.abs())),
         }
     }
 
@@ -203,6 +235,32 @@ impl Clone for SpanBoxes {
 }
 
 impl SpanBoxes {
+    /// A point farther than the boundary tolerance from every local convex
+    /// hull cannot project onto the surface within that tolerance. Use the
+    /// same rounding margin as the existing whole-support hull test.
+    fn excludes_point(&self, point: Point3, tolerance: f64) -> bool {
+        if !point.0.into_iter().all(f64::is_finite) {
+            return false;
+        }
+        let scale = point.0.into_iter().fold(1.0_f64, |s, x| s.max(x.abs()));
+        // An axis gap is a lower bound on Euclidean distance. Precompute the
+        // box's scale and avoid a square root and nine-coordinate scale scan
+        // for every local hull at every probe. The evaluation-rounding margin
+        // is the existing whole-support test's, with no change to tolerance.
+        let clear = |b: &ScanBox| {
+            let margin = tolerance + 1e-9 * scale.max(b.point_scale);
+            (0..3).any(|k| {
+                point.0[k] < b.aabb.min.0[k] - margin || point.0[k] > b.aabb.max.0[k] + margin
+            })
+        };
+        if self.groups.is_empty() {
+            return self.boxes.iter().all(clear);
+        }
+        self.groups
+            .iter()
+            .all(|(group, run)| clear(group) || self.boxes[run.clone()].iter().all(clear))
+    }
+
     /// The prefilter's boxes for a NURBS support: `None` when it does not
     /// take the support ([`takes`]) or its span boxes cannot be certified
     /// ([`nurbs_span_boxes`]).
@@ -211,12 +269,60 @@ impl SpanBoxes {
     /// reach of one of them comes within reach of the group's box, which its
     /// test then reports (the rounding allowance is the group box's own).
     pub(super) fn for_surface(surface: &NurbsSurface) -> Option<Self> {
-        if !takes(surface) {
+        Self::with_limit(surface, MAX_PREFILTER_SPANS)
+    }
+
+    fn with_limit(surface: &NurbsSurface, limit: usize) -> Option<Self> {
+        Self::with_padding(surface, limit, 0.0)
+    }
+
+    fn for_strip(surface: &NurbsSurface) -> Option<Self> {
+        if !takes_strip(surface) {
+            return None;
+        }
+        // Canonical u and normalized homogeneous weights avoid the knot
+        // inserter's absolute knot epsilon and tiny/huge global weight scales.
+        // These change parameterization only, never the support's point set.
+        let weights = surface
+            .weights()
+            .iter()
+            .map(|row| row.iter().map(|w| w / surface.max_weight()).collect())
+            .collect();
+        let mut refined = NurbsSurface::new(
+            2,
+            1,
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            surface.knots_v().to_vec(),
+            surface.control_points().to_vec(),
+            weights,
+        )
+        .ok()?;
+        for fraction in [0.25, 0.5, 0.75] {
+            refined =
+                remus_math::nurbs::knot_ops::surface_knot_insert_u(&refined, fraction, 2).ok()?;
+        }
+        let magnitude = surface
+            .control_points()
+            .iter()
+            .flatten()
+            .flat_map(|p| p.0)
+            .fold(0.0_f64, |m, x| m.max(x.abs()));
+        // Insertion changes only this pruning copy. With weights within a
+        // factor ten, 1e-9 of coordinate scale dominates its few-ulp rounding.
+        // The original surface and the original solver hit reach stay authoritative.
+        let mut boxes =
+            Self::with_padding(&refined, MAX_BOUNDARY_SPANS, 1e-9 * magnitude.max(1.0))?;
+        boxes.magnitude = magnitude;
+        Some(boxes)
+    }
+
+    fn with_padding(surface: &NurbsSurface, limit: usize, padding: f64) -> Option<Self> {
+        if !takes_up_to(surface, limit) {
             return None;
         }
         let boxes: Vec<ScanBox> = nurbs_span_boxes(surface)?
             .into_iter()
-            .map(ScanBox::new)
+            .map(|b| ScanBox::new(b.expanded(padding)))
             .collect();
         let mut groups = Vec::new();
         if boxes.len() > UNGROUPED_SPANS {
@@ -344,6 +450,68 @@ fn ray_meets_grown_box(origin: Point3, direction: Vec3, aabb: &Aabb3, grow: f64)
 }
 
 impl PreparedSolid<'_> {
+    pub(super) fn boundary_misses_nurbs_face(
+        &self,
+        prepared: &PreparedFace,
+        point: Point3,
+        tolerance: f64,
+    ) -> bool {
+        self.boundary_boxes(prepared)
+            .is_some_and(|boxes| boxes.excludes_point(point, tolerance))
+    }
+
+    fn boundary_boxes<'a>(&self, prepared: &'a PreparedFace) -> Option<&'a SpanBoxes> {
+        prepared
+            .boundary_boxes
+            .get_or_init(|| {
+                match self
+                    .topo
+                    .face(prepared.fid)
+                    .map(remus_topology::face::Face::surface)
+                {
+                    Ok(FaceSurface::Nurbs(s)) => SpanBoxes::for_strip(s)
+                        .or_else(|| SpanBoxes::with_limit(s, MAX_BOUNDARY_SPANS)),
+                    Ok(
+                        FaceSurface::Plane { .. }
+                        | FaceSurface::Cylinder(_)
+                        | FaceSurface::Cone(_)
+                        | FaceSurface::Sphere(_)
+                        | FaceSurface::Torus(_),
+                    )
+                    | Err(_) => None,
+                }
+            })
+            .as_ref()
+    }
+
+    fn nurbs_boxes<'a>(&self, prepared: &'a PreparedFace) -> Option<&'a SpanBoxes> {
+        if prepared.strip_prefilter {
+            return self.boundary_boxes(prepared);
+        }
+        if !prepared.prefilter && !prepared.strip_prefilter {
+            return None;
+        }
+        prepared
+            .span_boxes
+            .get_or_init(|| {
+                match self
+                    .topo
+                    .face(prepared.fid)
+                    .map(remus_topology::face::Face::surface)
+                {
+                    Ok(FaceSurface::Nurbs(surface)) => SpanBoxes::for_surface(surface),
+                    Ok(
+                        FaceSurface::Plane { .. }
+                        | FaceSurface::Cylinder(_)
+                        | FaceSurface::Cone(_)
+                        | FaceSurface::Sphere(_)
+                        | FaceSurface::Torus(_),
+                    )
+                    | Err(_) => None,
+                }
+            })
+            .as_ref()
+    }
     /// Whether a forward ray provably meets no point of a NURBS face's
     /// support that the ray-NURBS solver could report.
     ///
@@ -367,27 +535,10 @@ impl PreparedSolid<'_> {
         origin: Point3,
         direction: Vec3,
     ) -> bool {
-        if !prepared.prefilter {
+        if !prepared.prefilter && !prepared.strip_prefilter {
             return false;
         }
-        let boxes = prepared.span_boxes.get_or_init(|| {
-            match self
-                .topo
-                .face(prepared.fid)
-                .map(remus_topology::face::Face::surface)
-            {
-                Ok(FaceSurface::Nurbs(surface)) => SpanBoxes::for_surface(surface),
-                Ok(
-                    FaceSurface::Plane { .. }
-                    | FaceSurface::Cylinder(_)
-                    | FaceSurface::Cone(_)
-                    | FaceSurface::Sphere(_)
-                    | FaceSurface::Torus(_),
-                )
-                | Err(_) => None,
-            }
-        });
-        let Some(boxes) = boxes.as_ref().filter(|boxes| boxes.due()) else {
+        let Some(boxes) = self.nurbs_boxes(prepared).filter(|boxes| boxes.due()) else {
             return false;
         };
         let usable = matches!(
@@ -439,6 +590,118 @@ mod tests {
         assert!(SpanBoxes::for_surface(&dome(1)).is_none());
         let small = SpanBoxes::for_surface(&dome(2)).unwrap();
         assert!(small.boxes.len() <= UNGROUPED_SPANS && small.groups.is_empty());
+    }
+
+    #[test]
+    fn refined_strip_hulls_keep_original_surface_points_and_solver_hits() {
+        let spans = 512u32;
+        let knots_v = std::iter::once(0.0)
+            .chain((0..=spans).map(|i| f64::from(i) / f64::from(spans)))
+            .chain(std::iter::once(1.0))
+            .collect();
+        let poles = [(1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+            .into_iter()
+            .map(|(x, y)| {
+                (0..=spans)
+                    .map(|i| Point3::new(x, y, 4.0 * f64::from(i) / f64::from(spans)))
+                    .collect()
+            })
+            .collect();
+        let weights = [1.0, std::f64::consts::FRAC_1_SQRT_2, 1.0]
+            .into_iter()
+            .map(|w| vec![w; spans as usize + 1])
+            .collect();
+        let surface = NurbsSurface::new(
+            2,
+            1,
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            knots_v,
+            poles,
+            weights,
+        )
+        .unwrap();
+        assert!(takes_strip(&surface));
+        assert!(!takes(&surface));
+        let boxes = SpanBoxes::for_strip(&surface).unwrap();
+        let gap = Point3::new(0.5, 0.5, 2.0);
+        assert!(
+            !SpanBoxes::with_limit(&surface, MAX_BOUNDARY_SPANS)
+                .unwrap()
+                .excludes_point(gap, 1e-6)
+        );
+        assert!(boxes.excludes_point(gap, 1e-6));
+        for i in 0..=60 {
+            for j in 0..=15 {
+                let point = surface.evaluate(f64::from(i) / 60.0, f64::from(j) / 15.0);
+                assert!(!boxes.excludes_point(point, 1e-6));
+                assert!(!boxes.excludes_point(point + Vec3::new(0.0, 0.0, 0.5e-6), 1e-6));
+            }
+        }
+        let mut skipped = 0;
+        for i in 1..=96 {
+            let origin = Point3::new(
+                3.0 * halton(i, 2) - 1.0,
+                3.0 * halton(i, 3) - 1.0,
+                6.0 * halton(i, 5) - 1.0,
+            );
+            let direction = Vec3::new(halton(i, 7) - 0.5, halton(i, 11) - 0.5, halton(i, 13) - 0.5);
+            if !boxes.meet(origin, direction) {
+                assert_eq!(forward_hits(&surface, origin, direction), 0);
+                skipped += 1;
+            }
+        }
+        assert!(skipped > 30, "the refined hulls must avoid solver calls");
+        for scale in [1e-200, 1e200] {
+            let weights = surface
+                .weights()
+                .iter()
+                .map(|row| row.iter().map(|w| w * scale).collect())
+                .collect();
+            let scaled = NurbsSurface::new(
+                2,
+                1,
+                vec![-3.0, -3.0, -3.0, 5.0, 5.0, 5.0],
+                surface.knots_v().to_vec(),
+                surface.control_points().to_vec(),
+                weights,
+            )
+            .unwrap();
+            let boxes = SpanBoxes::for_strip(&scaled).unwrap();
+            for i in 0..=60 {
+                let point = scaled.evaluate(-3.0 + 8.0 * f64::from(i) / 60.0, 0.53);
+                assert!(!boxes.excludes_point(point, 1e-6));
+            }
+        }
+    }
+
+    #[test]
+    fn boundary_hulls_skip_interior_box_space_but_keep_surface_points() {
+        let surface = dome(23); // 529 spans: beyond the ray-specific cap.
+        assert!(SpanBoxes::for_surface(&surface).is_none());
+        let boxes = SpanBoxes::with_limit(&surface, MAX_BOUNDARY_SPANS).unwrap();
+        let tolerance = 1e-6;
+        let gap = Point3::new(1.0, 1.0, 3.0);
+        assert!(!super::super::hull_excludes(
+            super::super::nurbs_support_hull(&surface).unwrap(),
+            gap,
+            tolerance
+        ));
+        assert!(boxes.excludes_point(gap, tolerance));
+        let grid = remus_math::nurbs::projection::SurfaceSeedGrid::for_surface(&surface);
+        let projection = remus_math::nurbs::projection::project_point_to_surface_with_grid(
+            &surface, gap, tolerance, &grid,
+        )
+        .unwrap();
+        assert!(projection.distance > tolerance);
+        for i in 0..=30 {
+            for j in 0..=30 {
+                let point = surface.evaluate(f64::from(i) / 30.0, f64::from(j) / 30.0);
+                assert!(!boxes.excludes_point(point, tolerance));
+                assert!(
+                    !boxes.excludes_point(point + Vec3::new(0.0, 0.0, tolerance * 0.5), tolerance)
+                );
+            }
+        }
     }
 
     /// One ray through the payoff test: `Some(skipped)` when it is tested.

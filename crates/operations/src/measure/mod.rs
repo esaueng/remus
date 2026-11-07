@@ -6,6 +6,7 @@ mod bounding_box;
 mod edge_length;
 mod face_box_memo;
 mod face_digest;
+pub(crate) mod guard_readings;
 pub(crate) mod helpers;
 mod nurbs_area_memo;
 mod reuse;

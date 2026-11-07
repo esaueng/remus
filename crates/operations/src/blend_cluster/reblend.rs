@@ -424,7 +424,7 @@ pub(super) fn reblend_restoration_gated(
             }
         }
         let _attempt = crate::performance::span("blend_group.plan_attempt");
-        match remus_topology::transaction::run_transacted(topo, |topo| match gate {
+        match crate::blend_ops::preview_checks::transaction(topo, |topo| match gate {
             Gate::Full => run_plan(topo, solid, sharp_edges, &carriers, plan, gate),
             Gate::Preview => crate::blend_ops::display_only_scope(|| {
                 run_plan(topo, solid, sharp_edges, &carriers, plan, gate)
@@ -560,7 +560,11 @@ fn run_plan(
     }
     crate::performance::timed("blend_group.postconditions", || match gate {
         Gate::Full => postconditions(topo, current),
-        Gate::Preview => preview_postconditions(topo, current),
+        Gate::Preview => {
+            preview_postconditions(topo, current)?;
+            crate::blend_ops::preview_checks::group(topo, current);
+            Ok(())
+        }
     })?;
     Ok(GroupReblend {
         solid: current,
@@ -835,9 +839,29 @@ fn strict_validation(topo: &Topology, solid: SolidId) -> Result<(), OperationsEr
 /// Strict validation, a watertight manifold mesh and API/mesh volume
 /// agreement.
 fn postconditions(topo: &Topology, solid: SolidId) -> Result<(), OperationsError> {
+    strict_validation(topo, solid)?;
+    measuring_postconditions(topo, solid)
+}
+
+/// Warm unchanged face meshes at the final postcondition's quality.
+pub(super) fn prime_postcondition_mesh(topo: &Topology, solid: SolidId) {
+    if crate::tessellate::face_mesh_cache_stats().is_none() {
+        return;
+    }
+    let _span = crate::performance::span("blend_group.prepare_mesh");
+    if let Ok(bounds) = crate::measure::solid_bounding_box(topo, solid) {
+        let deflection = (bounds.max - bounds.min).length() * MESH_DEFLECTION;
+        // Warm the existing exact-content face mesh cache. An error is not
+        // certified or remembered; acceptance still meshes the final body and
+        // checks every free/non-manifold edge and its independent volume.
+        let _ = crate::tessellate::tessellate_solid(topo, solid, deflection);
+    }
+}
+
+/// The remaining guards of an immutable frame that already passed validation.
+pub fn measuring_postconditions(topo: &Topology, solid: SolidId) -> Result<(), OperationsError> {
     let failed =
         |reason: String| -> OperationsError { BlendClusterError::ReblendFailed { reason }.into() };
-    strict_validation(topo, solid)?;
     let bounds = crate::measure::solid_bounding_box(topo, solid)?;
     let diagonal = (bounds.max - bounds.min).length();
     let deflection = diagonal * MESH_DEFLECTION;

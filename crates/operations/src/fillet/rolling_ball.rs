@@ -1590,7 +1590,7 @@ pub fn fillet_rolling_ball_with_origins(
     radius: f64,
     close_runouts: bool,
 ) -> Result<(SolidId, BlendFaceOrigins), crate::OperationsError> {
-    remus_topology::transaction::run_transacted(topo, |topo| {
+    crate::blend_ops::preview_checks::transaction(topo, |topo| {
         let tol = Tolerance::new();
 
         if !radius.is_finite() || radius <= tol.linear {

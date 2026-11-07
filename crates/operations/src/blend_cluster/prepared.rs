@@ -29,6 +29,12 @@
 //!   per-band or partial-turn attempt first, then the group route under every
 //!   guard. They return the same result content and history, or the same
 //!   refusal, as the unprepared call.
+//!   For the last previewed value, an immutable private candidate can instead
+//!   complete the measuring guards omitted by the frame and be copied out.
+//!   Structural validation already passed on that exact candidate. Changed
+//!   values, joined caps, chamfer groups, and ambiguous speculative branches
+//!   use the full route. Journaled commits retain the initial local attempt
+//!   and normal transaction so operation IDs and inferred history agree too.
 //!
 //! # Learned refusal
 //!
@@ -56,6 +62,7 @@
 //! `prepareResizeBlend`, `prepareResizeCylindricalFace`).
 
 use std::cell::Cell;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use remus_math::tolerance::Tolerance;
 use remus_offset::{OffsetError, UnsupportedMoveCause};
@@ -64,7 +71,8 @@ use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::solid::SolidId;
 
 use super::edit::{
-    SharpGroup, band_group, build_band, build_cylinder, check_band_radius, copy_out, cylinder_group,
+    Built, SharpGroup, band_group, build_band, build_cylinder, check_band_radius, copy_out,
+    cylinder_group,
 };
 use super::reblend::Gate;
 use super::{BlendCluster, BlendClusterError, GroupEdit, recognize_blend_cluster};
@@ -115,6 +123,16 @@ pub struct PreparedGroupEdit {
     before: Option<BlendCluster>,
     /// Whether the attempt in front of the group route refuses every value.
     learned: bool,
+    /// Last private frame, independent of caller handles and checkpoint restores.
+    preview: Mutex<Option<CachedPreview>>,
+    readings: Arc<crate::measure::guard_readings::GuardReadings>,
+}
+
+struct CachedPreview {
+    value: u64,
+    work: Topology,
+    built: Built,
+    checks: crate::blend_ops::preview_checks::Checks,
 }
 
 impl std::fmt::Debug for PreparedGroupEdit {
@@ -158,6 +176,7 @@ impl PreparedGroupEdit {
         };
         let before = recognize_blend_cluster(topo, solid, face).ok();
         let learned = probe_band(topo, solid, face, expected_radius)?;
+        let readings = prepare_readings(topo, solid, &group, learned);
         Ok(Self {
             solid,
             face,
@@ -167,6 +186,8 @@ impl PreparedGroupEdit {
             target: Target::Band { member },
             before,
             learned,
+            preview: Mutex::new(None),
+            readings,
         })
     }
 
@@ -197,6 +218,7 @@ impl PreparedGroupEdit {
         };
         let before = recognize_blend_cluster(topo, solid, face).ok();
         let learned = probe_cylinder(topo, solid, face, radius)?;
+        let readings = prepare_readings(topo, solid, &group, learned);
         Ok(Self {
             solid,
             face,
@@ -206,6 +228,8 @@ impl PreparedGroupEdit {
             target: Target::Wall { wall },
             before,
             learned,
+            preview: Mutex::new(None),
+            readings,
         })
     }
 
@@ -254,6 +278,7 @@ impl PreparedGroupEdit {
     pub fn preview(&self, topo: &mut Topology, value: f64) -> Result<SolidId, OperationsError> {
         let _span = crate::performance::span("blend_group.preview");
         self.require_current(topo)?;
+        self.cached_preview().take();
         if self.learned && self.group_value(topo, value) {
             return self
                 .group_edit(topo, value, Gate::Preview)
@@ -273,7 +298,50 @@ impl PreparedGroupEdit {
     pub fn commit(&self, topo: &mut Topology, value: f64) -> Result<SolidId, OperationsError> {
         let _span = crate::performance::span("blend_group.commit");
         self.require_current(topo)?;
+        if let Some(edit) = self.cached_group_edit(topo, value)? {
+            return Ok(edit.solid);
+        }
         self.unprepared(topo, value, Gate::Full)
+    }
+
+    /// Adopt only a private, fully checked frame. The caller supplies the
+    /// journal transaction, so no preview handles or history are retained.
+    pub(crate) fn cached_group_edit(
+        &self,
+        topo: &mut Topology,
+        value: f64,
+    ) -> Result<Option<GroupEdit>, OperationsError> {
+        let preview = self.cached_preview();
+        let Some(cached) = preview
+            .as_ref()
+            .filter(|cached| cached.value == value.to_bits())
+        else {
+            return Ok(None);
+        };
+        if crate::blend_ops::display_only_blends()
+            || self.readings.enter(|| cached.checks.validate()).is_err()
+        {
+            return Ok(None);
+        }
+        remus_blend::governor::checkpoint()?;
+        let _span = crate::performance::span("blend_group.adopt_preview");
+        let result = copy_out(
+            topo,
+            self.solid,
+            &cached.work,
+            &self.group.inputs,
+            &cached.built,
+            self.before.as_ref(),
+        )
+        .map(Some);
+        drop(preview);
+        result
+    }
+
+    // Keep the preparation Send + Sync for native callers. A panic cannot
+    // certify a candidate: checks mark success only after every guard passed.
+    fn cached_preview(&self) -> MutexGuard<'_, Option<CachedPreview>> {
+        self.preview.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// The group route at `value` under every guard, as the band route of
@@ -284,6 +352,12 @@ impl PreparedGroupEdit {
         topo: &mut Topology,
         value: f64,
     ) -> Result<Option<ResizeBlendResult>, OperationsError> {
+        if let Some(edit) = self.cached_group_edit(topo, value)? {
+            return Ok(Some(ResizeBlendResult {
+                solid: edit.solid,
+                evolution: edit.evolution,
+            }));
+        }
         self.band_route(topo, value, Gate::Full)
     }
 
@@ -294,6 +368,9 @@ impl PreparedGroupEdit {
         topo: &mut Topology,
         value: f64,
     ) -> Result<Option<GroupEdit>, OperationsError> {
+        if let Some(edit) = self.cached_group_edit(topo, value)? {
+            return Ok(Some(edit));
+        }
         self.group_edit(topo, value, Gate::Full).map(Some)
     }
 
@@ -381,19 +458,60 @@ impl PreparedGroupEdit {
         gate: Gate,
     ) -> Result<GroupEdit, OperationsError> {
         let work = self.group.work.clone();
-        let (work, built) = match self.target {
-            Target::Band { member } => build_band(&self.group, work, member, value, gate)?,
-            Target::Wall { wall } => build_cylinder(&self.group, work, wall, value, gate)?,
+        let build = || match self.target {
+            Target::Band { member } => build_band(&self.group, work, member, value, gate),
+            Target::Wall { wall } => build_cylinder(&self.group, work, wall, value, gate),
         };
-        copy_out(
+        let (built, checks) = if gate == Gate::Preview && can_adopt(&self.group, self.learned) {
+            crate::blend_ops::preview_checks::capture(build)
+        } else {
+            (build(), None)
+        };
+        let (work, built) = built?;
+        let result = copy_out(
             topo,
             self.solid,
             &work,
             &self.group.inputs,
             &built,
             self.before.as_ref(),
-        )
+        )?;
+        if let Some(checks) = checks {
+            *self.cached_preview() = Some(CachedPreview {
+                value: value.to_bits(),
+                work,
+                built,
+                checks,
+            });
+        }
+        Ok(result)
     }
+}
+
+fn can_adopt(group: &SharpGroup, learned: bool) -> bool {
+    learned
+        && group.lift.is_none()
+        && group
+            .cluster
+            .members
+            .iter()
+            .all(|member| !member.kind.is_chamfer())
+}
+
+fn prepare_readings(
+    topo: &Topology,
+    solid: SolidId,
+    group: &SharpGroup,
+    learned: bool,
+) -> Arc<crate::measure::guard_readings::GuardReadings> {
+    let readings = crate::measure::guard_readings::GuardReadings::new();
+    if can_adopt(group, learned) {
+        readings.prime(topo, solid);
+        readings.prime(&group.work, group.restoration.solid);
+        super::reblend::prime_postcondition_mesh(topo, solid);
+        super::reblend::prime_postcondition_mesh(&group.work, group.restoration.solid);
+    }
+    readings
 }
 
 fn content_key(topo: &Topology, solid: SolidId) -> Result<ContentKey, OperationsError> {

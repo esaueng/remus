@@ -377,7 +377,9 @@ pub fn estimate_added_material(
     result: SolidId,
     tube: &ReachTube,
 ) -> Result<AddedEstimate, OperationsError> {
-    let before = classify_points(pristine, input, &tube.points, 0.01, MATERIAL_RAY_TOLERANCE)?;
+    let before = crate::performance::timed("blend.material.input", || {
+        classify_points(pristine, input, &tube.points, 0.01, MATERIAL_RAY_TOLERANCE)
+    })?;
     // Only a point outside the input can count as added, so the result is
     // asked about those alone; every other point keeps its input verdict,
     // which never counts.
@@ -388,13 +390,10 @@ pub fn estimate_added_material(
         .collect();
     let probes: Vec<Point3> = outside.iter().map(|&i| tube.points[i]).collect();
     let mut after = before.clone();
-    for (&i, c) in outside.iter().zip(classify_points(
-        live,
-        result,
-        &probes,
-        0.01,
-        MATERIAL_RAY_TOLERANCE,
-    )?) {
+    let classes = crate::performance::timed("blend.material.result", || {
+        classify_points(live, result, &probes, 0.01, MATERIAL_RAY_TOLERANCE)
+    })?;
+    for (&i, c) in outside.iter().zip(classes) {
         after[i] = c;
     }
     let mut added_counts = 0u64;
@@ -515,6 +514,49 @@ mod tests {
     use crate::primitives::{make_box, make_cylinder};
     use crate::transform::transform_solid;
 
+    // Independent exhaustive oracle: classify both bodies at every draw,
+    // including boundary abstentions. Pin the estimate's floating-point bits,
+    // not just its final accept/refuse verdict.
+    fn assert_exhaustive_estimate(
+        topo: &Topology,
+        input: SolidId,
+        result: SolidId,
+        tube: &ReachTube,
+    ) {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                crate::query::disable_thread_crossing_memo();
+            }
+        }
+        let _reset = Reset;
+        crate::query::enable_thread_crossing_memo();
+        let before =
+            classify_points(topo, input, &tube.points, 0.01, MATERIAL_RAY_TOLERANCE).unwrap();
+        let after =
+            classify_points(topo, result, &tube.points, 0.01, MATERIAL_RAY_TOLERANCE).unwrap();
+        let (mut sum, mut sum_sq, mut counts) = (0.0, 0.0, 0);
+        for ((a, b), &weight) in before.iter().zip(&after).zip(&tube.inverse_multiplicities) {
+            if *a == PointClassification::Outside && *b == PointClassification::Inside {
+                counts += 1;
+                sum += weight;
+                sum_sq += weight * weight;
+            }
+        }
+        let n = tube.points.len() as f64;
+        let variance = ((sum_sq - sum * sum / n) / (n * (n - 1.0))).max(0.0);
+        let estimate = estimate_added_material(topo, input, topo, result, tube).unwrap();
+        assert_eq!(estimate.added_counts, counts);
+        assert_eq!(
+            estimate.added.to_bits(),
+            (tube.proposal_volume * sum / n).to_bits()
+        );
+        assert_eq!(
+            estimate.se.to_bits(),
+            (tube.proposal_volume * variance.sqrt()).to_bits()
+        );
+    }
+
     /// The pure estimator on analytic boolean pairs: a cut adds nothing and
     /// removes its tool bite; a fuse of a disjoint-equivalent body adds.
     #[test]
@@ -545,6 +587,7 @@ mod tests {
         // Cut removes near the edge tube only where the tool bites; it must
         // never add material anywhere in the tube.
         let cut_est = estimate_added_material(&topo, body, &topo, cut, &tube).unwrap();
+        assert_exhaustive_estimate(&topo, body, cut, &tube);
         assert_eq!(cut_est.added_counts, 0);
         assert!(cut_est.added <= 0.0);
         let cut_allowance = added_allowance(&topo, &chains, 0.3, tube.volume).unwrap();
@@ -577,6 +620,7 @@ mod tests {
             .unwrap()
             .expect("tube must sample");
         let fuse_est = estimate_added_material(&topo2, body2, &topo2, fused, &tube2).unwrap();
+        assert_exhaustive_estimate(&topo2, body2, fused, &tube2);
         assert!(
             fuse_est.added_counts >= ADDED_QUORUM,
             "fused tab must read as added: {fuse_est:?}"
