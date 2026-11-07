@@ -2,7 +2,7 @@
 //! remove it to sharp, edit the sharp body exactly, re-fillet in planned
 //! order.
 //!
-//! Two edits take this route when their per-band paths refuse:
+//! Three edits take this route when their per-band paths refuse:
 //!
 //! - [`resize_band_through_group`]: a band's radius
 //!   ([`crate::resize_blend::resize_blend`]). The whole group is removed and
@@ -14,6 +14,12 @@
 //!   group is removed, the sharp wall is resized by the exact partial-turn
 //!   path, the restored sharp edges are carried through that edit's edge
 //!   history, and the group is re-filleted at its recorded radii.
+//! - [`fillet_through_blend_group`]: a new fillet whose tangent chain runs
+//!   into a group ([`crate::blend_ops::fillet_cascade`], after the engines
+//!   and the smaller-band reorder refuse). The group is removed, the new
+//!   edges are found again on the sharp body through the removal's edge
+//!   history, and they join the re-fillet plan as one more stage, placed in
+//!   the planner's order (concave before convex, larger radii first).
 //!
 //! The whole route runs on a private copy of the solid; only the finished,
 //! verified result is copied into the caller's arena (inside a
@@ -31,21 +37,25 @@
 //! WASM module tier: `core` (reached from `resizeBlend` and
 //! `resizeCylindricalFace`).
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 
-use remus_blend::BlendEngine;
+use remus_blend::{BlendEngine, BlendResult};
 use remus_math::compact_sort::CompactSort;
 use remus_math::tolerance::Tolerance;
 use remus_topology::Topology;
 use remus_topology::edge::EdgeId;
 use remus_topology::face::FaceId;
-use remus_topology::journal::EntityKind;
+use remus_topology::journal::{EntityKey, EntityKind};
 use remus_topology::solid::SolidId;
 
 use super::reblend::{ReblendStage, compose_evolution, plan_reblend, reblend_restoration};
-use super::{BlendClusterError, BlendMemberKind, recognize_blend_cluster, remove_blend_cluster};
+use super::{
+    BlendCluster, BlendClusterError, BlendMemberKind, Convexity, StageBlend,
+    recognize_blend_cluster, remove_blend_cluster,
+};
 use crate::OperationsError;
-use crate::copy::copy_solid_between_with_entity_map;
+use crate::copy::{CopiedSolidEntities, copy_solid_between_with_entity_map};
 use crate::evolution::EvolutionMap;
 use crate::resize_blend::{ResizeBlendError, ResizeBlendResult};
 
@@ -65,6 +75,8 @@ pub struct GroupEdit {
 /// What a route built on the private arena.
 struct Built {
     solid: SolidId,
+    /// The face on the private copy the group was recognized from.
+    seed: FaceId,
     evolution: EvolutionMap,
     stages: Vec<ReblendStage>,
     engines: Vec<BlendEngine>,
@@ -126,6 +138,7 @@ pub fn resize_band_through_group(
             reblend_restoration(work, restoration.solid, &restoration.sharp_edges, &plans)?;
         Ok(Some(Built {
             solid: rebuilt.solid,
+            seed: face,
             evolution: compose_evolution(&restoration.evolution, &rebuilt.evolution),
             stages: rebuilt.stages,
             engines: rebuilt.engines,
@@ -209,6 +222,7 @@ pub fn resize_cylinder_through_group(
             .map_err(|error| diameter_refusal(error, new_radius))?;
         Ok(Some(Built {
             solid: rebuilt.solid,
+            seed: face,
             evolution: compose_evolution(
                 &compose_evolution(&restoration.evolution, &edited.evolution),
                 &rebuilt.evolution,
@@ -217,6 +231,226 @@ pub fn resize_cylinder_through_group(
             engines: rebuilt.engines,
         }))
     })
+}
+
+thread_local! {
+    /// Set while [`fillet_through_blend_group`] re-fillets a group: its own
+    /// stages run [`crate::blend_ops::fillet_cascade`], which must not route
+    /// back into another group removal.
+    static FILLETING_THROUGH_GROUP: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Resets [`FILLETING_THROUGH_GROUP`] when the route ends, however it ends.
+struct RouteGuard;
+
+impl Drop for RouteGuard {
+    fn drop(&mut self) {
+        FILLETING_THROUGH_GROUP.with(|flag| flag.set(false));
+    }
+}
+
+/// Whether a group fillet is already running on this thread.
+fn filleting_through_group() -> bool {
+    FILLETING_THROUGH_GROUP.with(Cell::get)
+}
+
+/// Fillet `edges` at `radius` through the blend group their tangent chain
+/// runs into.
+///
+/// The group is removed to sharp, the edges are found again on the sharp
+/// body, and the group is re-filleted with them as one more stage in the
+/// planner's order.
+///
+/// Returns `Ok(None)` when the chain meets no recognized group (or meets
+/// more than one), a selected edge borders a member or is consumed by the
+/// removal, the group cannot be removed to sharp, or a group fillet is
+/// already running on this thread. The result's face history is reported as
+/// the removal, then the re-fillet; the topology is unchanged on every error.
+///
+/// # Errors
+///
+/// [`BlendClusterError::ReblendFailed`] when no planned order builds, and the
+/// planner's own refusals. The topology is unchanged on every error.
+pub fn fillet_through_blend_group(
+    topo: &mut Topology,
+    solid: SolidId,
+    edges: &[EdgeId],
+    radius: f64,
+) -> Result<Option<GroupEdit>, OperationsError> {
+    let tolerance = Tolerance::new();
+    if edges.is_empty()
+        || !radius.is_finite()
+        || radius <= tolerance.linear
+        || filleting_through_group()
+    {
+        return Ok(None);
+    }
+    FILLETING_THROUGH_GROUP.with(|flag| flag.set(true));
+    let _guard = RouteGuard;
+    run_private(topo, solid, |work, copied| {
+        let mut selected = Vec::with_capacity(edges.len());
+        for edge in edges {
+            let Some(&mapped) = copied.edge_map.get(&edge.index()) else {
+                return Ok(None);
+            };
+            selected.push(mapped);
+        }
+        group_fillet(work, copied.solid, &selected, radius)
+    })
+}
+
+fn group_fillet(
+    work: &mut Topology,
+    solid: SolidId,
+    selected: &[EdgeId],
+    radius: f64,
+) -> Result<Option<Built>, OperationsError> {
+    let tolerance = Tolerance::new();
+    let Ok(chain) = remus_blend::g1_chain::expand_g1_chain(work, solid, selected, tolerance) else {
+        return Ok(None);
+    };
+    let adjacency = work.build_adjacency(solid)?;
+    let mut touched: Vec<FaceId> = chain
+        .iter()
+        .flat_map(|&edge| adjacency.faces_for_edge(edge).iter().copied())
+        .collect();
+    touched.compact_sort_unstable_by_key(|face| face.index());
+    touched.dedup();
+    // The one group the chain runs into.
+    let mut cluster: Option<BlendCluster> = None;
+    for &face in &touched {
+        if cluster
+            .as_ref()
+            .is_some_and(|cluster| cluster.member_of(face).is_some())
+        {
+            continue;
+        }
+        let Ok(found) = recognize_blend_cluster(work, solid, face) else {
+            continue;
+        };
+        if !found.seed_is_member {
+            continue;
+        }
+        if cluster.is_some() {
+            return Ok(None);
+        }
+        cluster = Some(found);
+    }
+    let Some(cluster) = cluster else {
+        return Ok(None);
+    };
+    // A selected edge bordering a member would not survive the removal.
+    for &edge in selected {
+        if adjacency
+            .faces_for_edge(edge)
+            .iter()
+            .any(|&face| cluster.member_of(face).is_some())
+        {
+            return Ok(None);
+        }
+    }
+    let Ok(restoration) = remove_blend_cluster(work, solid, &cluster) else {
+        return Ok(None);
+    };
+    // The selected edges on the sharp body, through the removal's history.
+    let mut sharp_selection = Vec::with_capacity(selected.len());
+    for &edge in selected {
+        let key = EntityKey {
+            kind: EntityKind::Edge,
+            index: edge.index(),
+        };
+        let Ok(at) = restoration
+            .boundary_history
+            .binary_search_by(|(source, _)| source.cmp(&key))
+        else {
+            return Ok(None);
+        };
+        let Some(image) = restoration.boundary_history[at]
+            .1
+            .and_then(|target| work.edge_id_from_index(target.index))
+        else {
+            return Ok(None);
+        };
+        sharp_selection.push(image);
+    }
+    let mut convexity = None;
+    for &edge in &sharp_selection {
+        let side = match crate::query::edge_concavity(work, restoration.solid, edge, 0.1 * radius)?
+        {
+            crate::query::EdgeConcavity::Convex => Convexity::Convex,
+            crate::query::EdgeConcavity::Concave => Convexity::Concave,
+            crate::query::EdgeConcavity::Tangent | crate::query::EdgeConcavity::Unknown => {
+                return Ok(None);
+            }
+        };
+        if convexity.is_some_and(|known| known != side) {
+            return Ok(None);
+        }
+        convexity = Some(side);
+    }
+    let Some(convexity) = convexity else {
+        return Ok(None);
+    };
+
+    let extra = cluster.sharp_edges.len();
+    let mut sharp_edges = restoration.sharp_edges.clone();
+    sharp_edges.push(sharp_selection);
+    let stage = ReblendStage {
+        radius,
+        blend: StageBlend::Fillet,
+        sharp_edges: vec![extra],
+    };
+    // The planner's order: concave before convex, larger radii first; the
+    // new stage after the group's stages of its own side and radius, and
+    // before every chamfer.
+    let key = |convexity: Convexity, radius: f64| (convexity, -radius);
+    let mut plans = plan_reblend(&cluster, &restoration.removed, &BTreeMap::new())?;
+    for plan in &mut plans {
+        let position = plan
+            .iter()
+            .position(|existing| match existing.blend {
+                StageBlend::Chamfer { .. } => true,
+                StageBlend::Fillet => {
+                    let side = existing
+                        .sharp_edges
+                        .first()
+                        .and_then(|&index| cluster.sharp_edges.get(index))
+                        .map_or(convexity, |sharp| cluster.members[sharp.member].convexity);
+                    key(side, existing.radius)
+                        .partial_cmp(&key(convexity, radius))
+                        .is_some_and(std::cmp::Ordering::is_gt)
+                }
+            })
+            .unwrap_or(plan.len());
+        plan.insert(position, stage.clone());
+    }
+    let rebuilt = reblend_restoration(work, restoration.solid, &sharp_edges, &plans)?;
+    Ok(Some(Built {
+        solid: rebuilt.solid,
+        seed: cluster.seed,
+        evolution: compose_evolution(&restoration.evolution, &rebuilt.evolution),
+        stages: rebuilt.stages,
+        engines: rebuilt.engines,
+    }))
+}
+
+/// A group fillet as a [`BlendResult`]: every selected edge rounded, the
+/// engine the stages agree on (or mixed), no construction face origins (the
+/// group was rebuilt).
+pub fn group_fillet_result(edges: &[EdgeId], edit: GroupEdit) -> BlendResult {
+    let engine = match edit.engines.split_first() {
+        Some((first, rest)) if rest.iter().all(|engine| engine == first) => *first,
+        Some(_) => BlendEngine::Mixed,
+        None => BlendEngine::RollingBall,
+    };
+    BlendResult {
+        solid: edit.solid,
+        succeeded: edges.to_vec(),
+        failed: Vec::new(),
+        is_partial: false,
+        face_origins: None,
+        engine,
+    }
 }
 
 /// Run `route` on a private copy of `solid` (with `face` mapped onto the
@@ -228,12 +462,25 @@ fn in_private_arena(
     face: FaceId,
     route: impl FnOnce(&mut Topology, SolidId, FaceId) -> Result<Option<Built>, OperationsError>,
 ) -> Result<Option<GroupEdit>, OperationsError> {
+    run_private(topo, solid, |work, copied| {
+        let Some(&work_face) = copied.face_map.get(&face.index()) else {
+            return Ok(None);
+        };
+        route(work, copied.solid, work_face)
+    })
+}
+
+/// Run `route` on a private copy of `solid`, then copy its result into
+/// `topo` and translate its face evolution from copy indices to the
+/// caller's.
+fn run_private(
+    topo: &mut Topology,
+    solid: SolidId,
+    route: impl FnOnce(&mut Topology, &CopiedSolidEntities) -> Result<Option<Built>, OperationsError>,
+) -> Result<Option<GroupEdit>, OperationsError> {
     let mut work = Topology::new();
     let copied = copy_solid_between_with_entity_map(topo, &mut work, solid)?;
-    let Some(&work_face) = copied.face_map.get(&face.index()) else {
-        return Ok(None);
-    };
-    let Some(built) = route(&mut work, copied.solid, work_face)? else {
+    let Some(built) = route(&mut work, &copied)? else {
         return Ok(None);
     };
     let mut inputs: Vec<(usize, usize)> = copied
@@ -242,6 +489,11 @@ fn in_private_arena(
         .map(|(&source, work)| (work.index(), source))
         .collect();
     inputs.compact_sort_unstable();
+    let face = inputs
+        .binary_search_by_key(&built.seed.index(), |&(work, _)| work)
+        .ok()
+        .and_then(|at| topo.face_id_from_index(inputs[at].1))
+        .ok_or_else(|| lost("the group's seed face has no source on the edited solid"))?;
     let (output, evolution) = remus_topology::transaction::run_transacted(topo, |topo| {
         let output = copy_solid_between_with_entity_map(&work, topo, built.solid)?;
         let mut outputs: Vec<(usize, usize)> = output

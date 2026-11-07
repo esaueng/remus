@@ -18,6 +18,22 @@ historical predecessor-line records, retained for provenance. The
 
 ### Added
 
+* **operations:** blend-group edits on the video's cumulative workflow. A
+  recognized group now holds equal-distance chamfer stripes (planes along
+  straight edges, cones along circles, read from their two supports' exact
+  section; new `BlendMemberKind::{ChamferBand, ChamferCorner}` and
+  `BlendMemberForm::{Plane, Cone}`), a walked transition that continues an
+  exact band (reported with its measured deviation), and lofted arc patches
+  such as a round's turn over a smaller band's end. Removal restores the
+  chamfered sharp edges exactly, and the re-blend plan rebuilds chamfer
+  chains after every fillet (`StageBlend`), as tangent-chain chamfers where
+  the stripes were cut round blend feet. On the filleted Gentle-Gecko the
+  boss diameter 12 -> 14.6 -> 17 -> 14.7 now resizes after the bottom 0.8
+  chamfer chain, after A2 (band R4 -> 1.9), after the A3 R1 round and after
+  the free-end 0.7 chamfer chain, each matching its fresh construction.
+  `fillet_cascade` falls back to `blend_cluster::fillet_through_blend_group`
+  when a chain runs into a group the reorder cannot take apart: an R2 round
+  across an R1.9 band now builds, largest first.
 * **operations,wasm:** direct edits through a recognized blend group
   (`blend_cluster::{plan_reblend, reblend_restoration,
   resize_band_through_group, resize_cylinder_through_group}`). When the

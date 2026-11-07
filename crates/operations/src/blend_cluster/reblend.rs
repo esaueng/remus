@@ -4,7 +4,12 @@
 //!
 //! A recognized group carries a suggested order
 //! ([`BlendCluster::reblend_order`]): concave runs first, then the convex
-//! edges that ride into their bands, larger radii first. A radius edit
+//! edges that ride into their bands, larger radii first, then its chamfer
+//! stripes, larger distances first. A chamfer stage cuts the whole tangent
+//! chain through its sharp edges when the stripes were cut along one
+//! (joined stripe to stripe, or round a blend's foot), and exactly its sharp
+//! edges otherwise; a fillet that rolls on a removed chamfer stripe was made
+//! after it, which this order cannot reproduce, and is refused. A radius edit
 //! overrides some bands' radii; [`plan_reblend`] turns order and overrides
 //! into candidate stage plans, and [`reblend_restoration`] runs them through
 //! [`fillet_cascade`] until one builds.
@@ -53,9 +58,9 @@ use remus_topology::explorer::{solid_edges, solid_faces};
 use remus_topology::face::FaceSurface;
 use remus_topology::solid::SolidId;
 
-use super::{BlendCluster, BlendClusterError, BlendMemberKind, Convexity};
+use super::{BlendCluster, BlendClusterError, BlendMemberKind, Convexity, StageBlend};
 use crate::OperationsError;
-use crate::blend_ops::{SeedCarrier, fillet_cascade};
+use crate::blend_ops::{SeedCarrier, chamfer_v2, chamfer_v2_tangent_chain, fillet_cascade};
 use crate::evolution::EvolutionMap;
 
 /// Deflection of the watertightness postcondition, as a fraction of the
@@ -68,11 +73,14 @@ const MESH_VOLUME_AGREEMENT: f64 = 1e-3;
 /// edge still lies on its stage-0 carrier.
 const CARRIER_TOLERANCE: f64 = 100.0;
 
-/// One re-fillet call: the sharp edges it rounds at one radius.
+/// One re-blend call: the sharp edges it rounds at one radius, or
+/// chamfers at one distance.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReblendStage {
-    /// Ball radius of the call.
+    /// Ball radius of the call, or a chamfer's distance.
     pub radius: f64,
+    /// Fillet or chamfer.
+    pub blend: StageBlend,
     /// Indices into [`BlendCluster::sharp_edges`], ascending.
     pub sharp_edges: Vec<usize>,
 }
@@ -124,6 +132,27 @@ pub fn plan_reblend(
             )));
         }
     }
+    // Chamfers are rebuilt after every fillet; a removed fillet that rolls on
+    // a removed chamfer stripe was made after it, which that order cannot
+    // reproduce.
+    for &member in removed {
+        let Some(data) = cluster.members.get(member) else {
+            continue;
+        };
+        if data.kind.is_chamfer() {
+            continue;
+        }
+        for &support in &data.supports {
+            if let Some(other) = cluster.member_of(support)
+                && cluster.members[other].kind.is_chamfer()
+                && removed.contains(&other)
+            {
+                return Err(invalid(format!(
+                    "fillet member {member} rolls on chamfer member {other}; chamfers are rebuilt after fillets"
+                )));
+            }
+        }
+    }
     let radius_of = |member: usize| {
         radii
             .get(&member)
@@ -131,9 +160,33 @@ pub fn plan_reblend(
             .unwrap_or(cluster.members[member].radius)
     };
 
-    // Each suggested step, split by radius (larger first).
+    // Each suggested step, split by radius (larger first). Chamfer steps
+    // carry one distance and stay last.
     let mut split: Vec<(Convexity, ReblendStage)> = Vec::new();
+    let mut chamfers: Vec<ReblendStage> = Vec::new();
     for step in &cluster.reblend_order {
+        if let StageBlend::Chamfer { .. } = step.blend {
+            let mut sharp_edges: Vec<usize> = step
+                .sharp_edges
+                .iter()
+                .copied()
+                .filter(|&index| {
+                    cluster
+                        .sharp_edges
+                        .get(index)
+                        .is_some_and(|edge| removed.contains(&edge.member))
+                })
+                .collect();
+            sharp_edges.compact_sort_unstable();
+            if !sharp_edges.is_empty() {
+                chamfers.push(ReblendStage {
+                    radius: step.radius,
+                    blend: step.blend,
+                    sharp_edges,
+                });
+            }
+            continue;
+        }
         let mut by_radius: Vec<ReblendStage> = Vec::new();
         for &index in &step.sharp_edges {
             let Some(edge) = cluster.sharp_edges.get(index) else {
@@ -150,6 +203,7 @@ pub fn plan_reblend(
                 Some(stage) => stage.sharp_edges.push(index),
                 None => by_radius.push(ReblendStage {
                     radius,
+                    blend: StageBlend::Fillet,
                     sharp_edges: vec![index],
                 }),
             }
@@ -157,8 +211,30 @@ pub fn plan_reblend(
         by_radius.compact_sort_unstable_by(|a, b| b.radius.total_cmp(&a.radius));
         split.extend(by_radius.into_iter().map(|stage| (step.convexity, stage)));
     }
-    if split.is_empty() {
+    if split.is_empty() && chamfers.is_empty() {
         return Err(invalid("no removed band has a sharp edge to re-fillet"));
+    }
+    // A chamfer corner is re-cut by the chain of the stripes it continues;
+    // with none of them removed, nothing would rebuild it.
+    for &member in removed {
+        if cluster
+            .members
+            .get(member)
+            .is_some_and(|data| data.kind == BlendMemberKind::ChamferCorner)
+            && !cluster.reblend_order.iter().any(|step| {
+                step.members.contains(&member)
+                    && step.sharp_edges.iter().any(|&index| {
+                        cluster
+                            .sharp_edges
+                            .get(index)
+                            .is_some_and(|edge| removed.contains(&edge.member))
+                    })
+            })
+        {
+            return Err(invalid(format!(
+                "chamfer corner {member} has no removed stripe to re-cut it from"
+            )));
+        }
     }
     for (_, stage) in &mut split {
         stage.sharp_edges.compact_sort_unstable();
@@ -183,8 +259,9 @@ pub fn plan_reblend(
     });
     let ascending: Vec<ReblendStage> = ascending.into_iter().map(|(_, stage)| stage).collect();
 
-    let mut plans = vec![merged];
-    for candidate in [unmerged, ascending] {
+    let mut plans = Vec::new();
+    for mut candidate in [merged, unmerged, ascending] {
+        candidate.extend(chamfers.iter().cloned());
         if !plans.contains(&candidate) {
             plans.push(candidate);
         }
@@ -264,7 +341,12 @@ fn invalid(reason: impl Into<String>) -> OperationsError {
 
 fn describe(plan: &[ReblendStage]) -> String {
     plan.iter()
-        .map(|stage| format!("R{} {:?}", stage.radius, stage.sharp_edges))
+        .map(|stage| match stage.blend {
+            StageBlend::Fillet => format!("R{} {:?}", stage.radius, stage.sharp_edges),
+            StageBlend::Chamfer { .. } => {
+                format!("chamfer {} {:?}", stage.radius, stage.sharp_edges)
+            }
+        })
         .collect::<Vec<_>>()
         .join(" then ")
 }
@@ -312,12 +394,20 @@ fn run_plan(
             }
             edges
         };
-        let result = fillet_cascade(topo, current, &edges, stage.radius)?;
+        let result = match stage.blend {
+            StageBlend::Fillet => fillet_cascade(topo, current, &edges, stage.radius)?,
+            StageBlend::Chamfer {
+                tangent_chain: true,
+            } => chamfer_v2_tangent_chain(topo, current, &edges, stage.radius, stage.radius)?,
+            StageBlend::Chamfer {
+                tangent_chain: false,
+            } => chamfer_v2(topo, current, &edges, stage.radius, stage.radius)?,
+        };
         if result.is_partial || !result.failed.is_empty() {
             return Err(BlendClusterError::ReblendFailed {
                 reason: format!(
-                    "stage {position} at R{} rounded only part of its edges",
-                    stage.radius
+                    "stage {position} at {} built only part of its edges",
+                    describe(std::slice::from_ref(stage))
                 ),
             }
             .into());

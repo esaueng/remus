@@ -7,6 +7,10 @@
 //! approximate on walked corner carriers; callers must preserve that quality
 //! and validate the assembled body.
 
+mod measured;
+pub use measured::{
+    sampled_canal_measured, sampled_project_measured, sampled_section_centre_measured,
+};
 mod restore;
 pub use restore::{SupportExtension, restore_joined_support_limits_in_place};
 mod unjoin;
@@ -317,16 +321,43 @@ struct CanalNormal<'a> {
     surface: &'a remus_math::nurbs::surface::NurbsSurface,
     sign: f64,
     radius: f64,
+    /// Stations whose section is resolved (all of them for a strict read);
+    /// a measured read leaves out collapsed sections at either end.
+    resolved: std::ops::Range<usize>,
 }
+
+/// How strictly a sampled carrier's stations must agree.
+#[derive(Clone, Copy)]
+enum StationCheck {
+    /// The construction family exactly: every station resolved, one radius
+    /// to round-off.
+    Strict,
+    /// A walked carrier read for measurement: stations agree on one radius
+    /// within `measured::MEASURED_RADIUS_DRIFT`, and a run of collapsed sections (a
+    /// band riding out to a tangent point) may close either end.
+    Measured,
+}
+
+/// Largest middle weight of a resolved circular section: above it the
+/// section's turn is too small to locate its centre.
+const RESOLVED_WEIGHT: f64 = 0.999;
+
 impl<'a> CanalNormal<'a> {
     fn centre(&self, v: f64) -> Result<Point3, BlendError> {
         let surface = self.surface;
         let n = surface.control_points()[0].len();
         let knots = surface.knots_v();
-        let index = knots
+        let mut index = knots
             .partition_point(|&knot| knot <= v)
             .saturating_sub(2)
             .min(n - 2);
+        // The last resolved station closes the last resolved span.
+        if index + 1 >= self.resolved.end && v <= knots[self.resolved.end] {
+            index = self.resolved.end - 2;
+        }
+        if index < self.resolved.start || index + 1 >= self.resolved.end {
+            return Err(refusal("sampled carrier section has collapsed there"));
+        }
         let lo = knots[index + 1];
         let hi = knots[index + 2];
         if hi <= lo {
@@ -351,6 +382,10 @@ impl<'a> CanalNormal<'a> {
         Ok(middle + (middle - apex) * (square / (1.0 - square)))
     }
     fn new(face: &'a remus_topology::face::Face) -> Result<Self, BlendError> {
+        Self::read(face, StationCheck::Strict)
+    }
+
+    fn read(face: &'a remus_topology::face::Face, check: StationCheck) -> Result<Self, BlendError> {
         let FaceSurface::Nurbs(surface) = face.surface() else {
             return Err(refusal("expected circular-section corner"));
         };
@@ -380,16 +415,40 @@ impl<'a> CanalNormal<'a> {
         {
             return Err(refusal("cap corner has inconsistent station rows"));
         }
+        let drift = match check {
+            StationCheck::Strict => 1e-8,
+            StationCheck::Measured => measured::MEASURED_RADIUS_DRIFT,
+        };
+        let collapsed = |index: usize| {
+            let weight = surface.weights()[1][index];
+            (RESOLVED_WEIGHT..=1.0).contains(&weight)
+        };
+        let resolved = match check {
+            StationCheck::Strict => 0..n,
+            StationCheck::Measured => {
+                let start = (0..n).find(|&index| !collapsed(index)).unwrap_or(n);
+                let end = (0..n)
+                    .rfind(|&index| !collapsed(index))
+                    .map_or(start, |index| index + 1);
+                start..end
+            }
+        };
+        if resolved.len() < 2 {
+            return Err(refusal("cap corner has no circular sections"));
+        }
         let mut expected = None;
         for index in 0..n {
             let weight = surface.weights()[1][index];
-            if !(0.1..0.999).contains(&weight)
-                || surface.weights()[0][index].to_bits() != 1.0_f64.to_bits()
+            if surface.weights()[0][index].to_bits() != 1.0_f64.to_bits()
                 || surface.weights()[2][index].to_bits() != 1.0_f64.to_bits()
+                || (resolved.contains(&index) && !(0.1..RESOLVED_WEIGHT).contains(&weight))
             {
                 return Err(refusal(
                     "cap corner has an unresolved or degenerate circular section",
                 ));
+            }
+            if !resolved.contains(&index) {
+                continue;
             }
             let first = surface.control_points()[0][index];
             let last = surface.control_points()[2][index];
@@ -401,8 +460,8 @@ impl<'a> CanalNormal<'a> {
             let source = expected.get_or_insert(radius);
             if !radius.is_finite()
                 || radius <= 0.0
-                || (radius - (last - centre).length()).abs() > radius * 1e-8 + 1e-9
-                || (radius - *source).abs() > radius * 1e-8 + 1e-9
+                || (radius - (last - centre).length()).abs() > radius * drift + 1e-9
+                || (radius - *source).abs() > radius * drift + 1e-9
             {
                 return Err(refusal(
                     "cap corner does not retain one circular-section radius",
@@ -413,10 +472,19 @@ impl<'a> CanalNormal<'a> {
             surface,
             sign: 1.0,
             radius: expected.ok_or_else(|| refusal("cap corner has no circular sections"))?,
+            resolved,
         };
-        let point = surface.evaluate(0.5, 0.5);
-        let radial = (point - field.centre(0.5)?).normalize()?;
-        let mut outward = surface.normal(0.5, 0.5)?;
+        // Probe the middle of the resolved stations (the whole carrier on a
+        // strict read, so its middle span holds v = 0.5 as before).
+        let probe_v = if field.resolved.len() == n {
+            0.5
+        } else {
+            let middle = field.resolved.start + field.resolved.len() / 2 - 1;
+            0.5 * (surface.knots_v()[middle + 1] + surface.knots_v()[middle + 2])
+        };
+        let point = surface.evaluate(0.5, probe_v);
+        let radial = (point - field.centre(probe_v)?).normalize()?;
+        let mut outward = surface.normal(0.5, probe_v)?;
         if face.is_reversed() {
             outward = -outward;
         }
@@ -496,7 +564,10 @@ pub struct SampledCanal {
 /// # Errors
 /// Refuses carriers outside the bounded circular-section representation.
 pub fn sampled_canal(face: &Face) -> Result<SampledCanal, BlendError> {
-    let field = CanalNormal::new(face)?;
+    canal_of(&CanalNormal::new(face)?)
+}
+
+fn canal_of(field: &CanalNormal<'_>) -> Result<SampledCanal, BlendError> {
     let surface = field.surface;
     let knots = surface.knots_v();
     let rows = surface.control_points();
@@ -506,8 +577,8 @@ pub fn sampled_canal(face: &Face) -> Result<SampledCanal, BlendError> {
             "sampled carrier is not linear between its stations",
         ));
     }
-    let mut sections = Vec::with_capacity(count);
-    for index in 0..count {
+    let mut sections = Vec::with_capacity(field.resolved.len());
+    for index in field.resolved.clone() {
         let v = knots[index + 1];
         sections.push(SampledSection {
             v,
@@ -529,7 +600,14 @@ pub fn sampled_canal(face: &Face) -> Result<SampledCanal, BlendError> {
 /// # Errors
 /// Refuses an unqualified carrier or failed point projection.
 pub fn sampled_section_centre(face: &Face, point: Point3) -> Result<Point3, BlendError> {
-    let field = CanalNormal::new(face)?;
+    section_centre(&CanalNormal::new(face)?, face, point)
+}
+
+fn section_centre(
+    field: &CanalNormal<'_>,
+    face: &Face,
+    point: Point3,
+) -> Result<Point3, BlendError> {
     let (_, v) = face
         .surface()
         .project_point(point)

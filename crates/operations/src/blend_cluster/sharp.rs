@@ -89,6 +89,68 @@ pub(super) enum Section {
 }
 
 impl Section {
+    /// Distance from `point` to the section.
+    pub(super) fn distance(self, point: Point3) -> f64 {
+        match self {
+            Self::Line {
+                point: base,
+                direction,
+            } => radial(point - base, direction).length(),
+            Self::Circle {
+                center,
+                axis,
+                radius,
+            } => {
+                let offset = point - center;
+                let height = offset.dot(axis);
+                (radial(offset, axis).length() - radius).hypot(height)
+            }
+        }
+    }
+
+    /// Whether two sections are one line or one circle.
+    pub(super) fn same(self, other: Self) -> bool {
+        let scale = |point: Point3| {
+            1e-7 * point
+                .x()
+                .abs()
+                .max(point.y().abs())
+                .max(point.z().abs())
+                .max(1.0)
+        };
+        match (self, other) {
+            (
+                Self::Line { point, direction },
+                Self::Line {
+                    point: other_point,
+                    direction: other_direction,
+                },
+            ) => {
+                direction.cross(other_direction).length() <= 1e-9
+                    && radial(other_point - point, direction).length() <= scale(point)
+            }
+            (
+                Self::Circle {
+                    center,
+                    axis,
+                    radius,
+                },
+                Self::Circle {
+                    center: other_center,
+                    axis: other_axis,
+                    radius: other_radius,
+                },
+            ) => {
+                axis.cross(other_axis).length() <= 1e-9
+                    && (center - other_center).length() <= scale(center)
+                    && (radius - other_radius).abs() <= scale(center)
+            }
+            (Self::Line { .. }, Self::Circle { .. }) | (Self::Circle { .. }, Self::Line { .. }) => {
+                false
+            }
+        }
+    }
+
     /// Closest point of the section to `point`.
     pub(super) fn project(self, point: Point3) -> Option<Point3> {
         match self {
