@@ -161,7 +161,7 @@ pub fn resize_blend(
 /// reconstruction the band alone cannot make, never a malformed request.
 /// `Unsupported` is the band path's curved-end refusal (a band ending on a
 /// sampled corner patch).
-fn group_route_applies(refusal: &OperationsError) -> bool {
+pub(crate) fn group_route_applies(refusal: &OperationsError) -> bool {
     matches!(
         refusal,
         OperationsError::ResizeBlend(
@@ -205,7 +205,10 @@ pub(crate) fn resize_blend_with_entity_evolution(
     if new_radius <= 0.0 {
         return remove_blend_with_entity_evolution(topo, solid, face, expected_radius, &band);
     }
-    let mut result = resize_blend(topo, solid, face, expected_radius, new_radius)?;
+    // This path requires construction history. Its journaled caller owns the
+    // transaction and group fallback; rebuilding a group here only to reject
+    // its inferred history would perform the expensive edit twice.
+    let mut result = resize_blend_impl(topo, solid, face, expected_radius, new_radius)?;
     let mut map = result.evolution.clone();
     if map.deleted.contains(&face.index()) {
         // The rebuilt band's generating supports identify its predecessor only

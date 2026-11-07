@@ -497,9 +497,12 @@ fn boss_route_rebuilds_fillets_then_the_chamfer_chain() {
         edit.evolution.modified.get(&boss.index()),
         Some(&vec![boss_of(&topo, edit.solid).index()])
     );
+    // A member with a unique successor by support incidence is carried to
+    // it (an inference); any other member is deleted.
     for face in cluster.faces() {
         assert!(
-            edit.evolution.deleted.contains(&face.index()),
+            edit.evolution.deleted.contains(&face.index())
+                || edit.evolution.modified.get(&face.index()).map(Vec::len) == Some(1),
             "face {}",
             face.index()
         );
@@ -516,13 +519,13 @@ fn oversized_boss_after_the_bottom_chamfer_is_refused() {
     let boss = boss_of(&topo, solid);
     let error = resize_cylindrical_face(&mut topo, solid, boss, 20.0).unwrap_err();
     assert!(
-        matches!(&error, OperationsError::Offset(inner) if format!("{inner:?}").starts_with("TopologyChange")),
+        matches!(&error, OperationsError::BlendCluster(inner) if inner.code() == "cylinder-diameter-unbuildable"),
         "{error}"
     );
     assert_eq!(fingerprint(&topo, solid), before);
     let error = resize_cylindrical_face(&mut topo, solid, boss, 17.0).unwrap_err();
     assert!(
-        matches!(&error, OperationsError::BlendCluster(inner) if inner.code() == "blend-cluster-reblend-failed"),
+        matches!(&error, OperationsError::BlendCluster(inner) if inner.code() == "cylinder-diameter-unbuildable"),
         "{error}"
     );
     assert_eq!(fingerprint(&topo, solid), before);
@@ -873,13 +876,13 @@ fn unbuildable_cumulative_steps_are_refused() {
     let boss = boss_of(&topo, solid);
     let error = resize_cylindrical_face(&mut topo, solid, boss, 20.0).unwrap_err();
     assert!(
-        matches!(&error, OperationsError::Offset(inner) if format!("{inner:?}").starts_with("TopologyChange")),
+        matches!(&error, OperationsError::BlendCluster(inner) if inner.code() == "cylinder-diameter-unbuildable"),
         "{error}"
     );
     assert_eq!(fingerprint(&topo, solid), before);
     let error = resize_cylindrical_face(&mut topo, solid, boss, 17.0).unwrap_err();
     assert!(
-        matches!(&error, OperationsError::BlendCluster(inner) if inner.code() == "blend-cluster-reblend-failed"),
+        matches!(&error, OperationsError::BlendCluster(inner) if inner.code() == "cylinder-diameter-unbuildable"),
         "{error}"
     );
     assert_eq!(fingerprint(&topo, solid), before);

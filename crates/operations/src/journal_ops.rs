@@ -1030,7 +1030,8 @@ pub(crate) fn record_qualified_face_move(
     })
 }
 
-/// Resizes a cylindrical wall with construction-derived edit history.
+/// Resizes a cylindrical wall with construction history where available,
+/// or explicitly inferred face/boundary history through a recognized group.
 ///
 /// Geometry validation and history recording form one transaction. Unsupported
 /// or ambiguous construction lineage remains explicitly unresolved.
@@ -1042,6 +1043,29 @@ pub fn resize_cylindrical_face_journaled(
     topo: &mut Topology,
     solid: SolidId,
     face: remus_topology::FaceId,
+    new_radius: f64,
+) -> Result<JournaledSolidOp, OperationsError> {
+    let refusal = match remus_topology::transaction::run_transacted(topo, |topo| {
+        resize_cylindrical_face_local_journaled(topo, solid, face, new_radius)
+    }) {
+        Ok(result) => return Ok(result),
+        Err(error) => error,
+    };
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let pending = begin_scoped(topo, "resize_cylindrical_face", &[solid])?;
+        let Some(edit) =
+            crate::blend_cluster::resize_cylinder_through_group(topo, solid, face, new_radius)?
+        else {
+            return Err(refusal);
+        };
+        record_group_edit(topo, pending, solid, edit.solid, edit.evolution)
+    })
+}
+
+fn resize_cylindrical_face_local_journaled(
+    topo: &mut Topology,
+    solid: SolidId,
+    face: FaceId,
     new_radius: f64,
 ) -> Result<JournaledSolidOp, OperationsError> {
     remus_topology::transaction::run_transacted(topo, |topo| {
@@ -1112,12 +1136,13 @@ pub fn replace_surface_journaled(
     })
 }
 
-/// Resize one cylindrical blend between planar supports with total entity history.
+/// Resize a cylindrical blend with entity history, including recognized groups.
 ///
 /// Positive radii preserve uniquely proven face, edge and vertex correspondence.
 /// Zero removes the band with explicit merges and deletions. Multi-face regions
-/// and ambiguous boundaries refuse atomically. Use
-/// [`crate::resize_blend::resize_blend`] for the broader geometry-only operation.
+/// and ambiguous boundaries refuse atomically on the local route. A recognized
+/// dependent group can instead rebuild with explicitly inferred member history;
+/// ambiguous boundary identities remain unresolved in that journal entry.
 ///
 /// # Errors
 ///
@@ -1127,6 +1152,97 @@ pub fn resize_blend_journaled(
     topo: &mut Topology,
     solid: SolidId,
     face: remus_topology::FaceId,
+    expected_radius: f64,
+    new_radius: f64,
+) -> Result<JournaledSolidOp, OperationsError> {
+    let refusal = match remus_topology::transaction::run_transacted(topo, |topo| {
+        resize_blend_local_journaled(topo, solid, face, expected_radius, new_radius)
+    }) {
+        Ok(result) => return Ok(result),
+        Err(error) => error,
+    };
+    if !crate::resize_blend::group_route_applies(&refusal)
+        || new_radius <= remus_math::tolerance::Tolerance::new().linear
+    {
+        return Err(refusal);
+    }
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let pending = begin_scoped(topo, "resize_blend", &[solid])?;
+        let Some(edit) = crate::blend_cluster::resize_band_through_group(
+            topo,
+            solid,
+            face,
+            expected_radius,
+            new_radius,
+        )?
+        else {
+            return Err(refusal);
+        };
+        record_group_edit(topo, pending, solid, edit.solid, edit.evolution)
+    })
+}
+
+// Group re-filleting infers face identities from qualified carriers and
+// support incidence. Boundary claims inherit that provenance; ambiguous
+// incidence is recorded explicitly instead of inventing an edge identity.
+fn record_group_edit(
+    topo: &mut Topology,
+    pending: PendingOp,
+    source: SolidId,
+    result: SolidId,
+    map: EvolutionMap,
+) -> Result<JournaledSolidOp, OperationsError> {
+    let source_incidence = crate::boundary_evolution::SourceIncidence::capture(topo, source)?;
+    let boundary = crate::boundary_evolution::induce_boundary_evolution(
+        topo,
+        &source_incidence,
+        &map,
+        result,
+    )?;
+    let mut events = boundary.journal_events();
+    // A changed corner contact can consume an old edge while preserving both
+    // adjacent faces. Record that deletion when its mapped incidence no
+    // longer exists, rather than leaving a source reference unexplained.
+    let result_edges = remus_topology::explorer::edge_to_face_map(topo, result)?;
+    let mut result_incidence: Vec<Vec<usize>> = result_edges
+        .values()
+        .map(|faces| {
+            let mut indices: Vec<_> = faces.iter().map(|f| f.index()).collect();
+            indices.compact_sort_unstable();
+            indices
+        })
+        .collect();
+    result_incidence.compact_sort_unstable();
+    for (edge, faces) in remus_topology::explorer::edge_to_face_map(topo, source)? {
+        let Some(mut images) = faces
+            .iter()
+            .map(|face| {
+                let [image] = map.modified.get(&face.index())?.as_slice() else {
+                    return None;
+                };
+                Some(*image)
+            })
+            .collect::<Option<Vec<_>>>()
+        else {
+            continue;
+        };
+        images.compact_sort_unstable();
+        if result_incidence.binary_search(&images).is_err() {
+            events.push((EntityKey::edge(edge), EventDraft::Deleted));
+        }
+    }
+    let op = record_entity_evolution_with_outputs(topo, pending, &map, &[result], &[], &events)?;
+    Ok(JournaledSolidOp {
+        solid: result,
+        op,
+        map,
+    })
+}
+
+fn resize_blend_local_journaled(
+    topo: &mut Topology,
+    solid: SolidId,
+    face: FaceId,
     expected_radius: f64,
     new_radius: f64,
 ) -> Result<JournaledSolidOp, OperationsError> {

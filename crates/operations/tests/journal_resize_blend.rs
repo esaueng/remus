@@ -182,7 +182,7 @@ fn blend_resize_refusal_preserves_geometry_and_unpublished_history() {
 }
 
 #[test]
-fn curved_support_blend_history_refuses_without_changing_legacy_geometry() {
+fn curved_support_group_resize_records_inference_and_preserves_source_geometry() {
     let mut topo = Topology::new();
     let sharp = remus_operations::primitives::make_cylinder(&mut topo, 10.0, 20.0).unwrap();
     let edge = solid_edges(&topo, sharp)
@@ -204,14 +204,42 @@ fn curved_support_blend_history_refuses_without_changing_legacy_geometry() {
     let refs = references(&mut topo, solid);
     let before = topo.journal().snapshot();
     let counts = remus_topology::explorer::solid_entity_counts(&topo, solid).unwrap();
-    assert!(resize_blend_journaled(&mut topo, solid, face, 1.0, 2.0).is_err());
-    assert_eq!(topo.journal().snapshot().entries, before.entries);
+    let mut oracle = topo.clone();
+    let legacy =
+        remus_operations::resize_blend::resize_blend(&mut oracle, solid, face, 1.0, 2.0).unwrap();
+    let source_volume = remus_operations::measure::solid_volume(&topo, solid, 0.001).unwrap();
+    let result = resize_blend_journaled(&mut topo, solid, face, 1.0, 2.0).unwrap();
+    assert!(!result.map.origin.is_exact());
+    assert_eq!(
+        topo.journal().snapshot().entries.len(),
+        before.entries.len() + 1
+    );
     assert_eq!(
         remus_topology::explorer::solid_entity_counts(&topo, solid).unwrap(),
         counts
     );
-    assert_bound(&topo, solid, &refs);
-    assert!(remus_operations::resize_blend::resize_blend(&mut topo, solid, face, 1.0, 2.0).is_ok());
+    assert_eq!(
+        remus_operations::measure::solid_volume(&topo, solid, 0.001)
+            .unwrap()
+            .to_bits(),
+        source_volume.to_bits()
+    );
+    assert_eq!(
+        remus_topology::explorer::solid_entity_counts(&topo, result.solid).unwrap(),
+        remus_topology::explorer::solid_entity_counts(&oracle, legacy.solid).unwrap()
+    );
+    let volume = remus_operations::measure::solid_volume(&topo, result.solid, 0.001).unwrap();
+    let expected = remus_operations::measure::solid_volume(&oracle, legacy.solid, 0.001).unwrap();
+    assert!((volume - expected).abs() < expected * 1e-6);
+    for reference in refs.iter().filter(|r| r.entity_kind == EntityKind::Face) {
+        assert!(matches!(
+            resolve(&topo, reference),
+            Resolution::Bound {
+                provenance: Provenance::Inferred,
+                ..
+            }
+        ));
+    }
 }
 
 fn assert_removed_references(
