@@ -2397,6 +2397,7 @@ fn operations_diagnostic(error: &OperationsError) -> DiagnosticRecord {
         OperationsError::Check(inner) => check_diagnostic(inner),
         OperationsError::Blend(_)
         | OperationsError::ResizeBlend(_)
+        | OperationsError::BlendCluster(_)
         | OperationsError::Geometry(_)
         | OperationsError::Heal(_)
         | OperationsError::Offset(_)

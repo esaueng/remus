@@ -443,6 +443,82 @@ pub fn sampled_section_normal(face: &Face, point: Point3) -> Result<Vec3, BlendE
     field.normal(u, v)
 }
 
+/// One stored rolling station of a qualified sampled circular-section
+/// carrier: the circular section the construction interpolated through.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SampledSection {
+    /// The station's parameter along the carrier's V direction.
+    pub v: f64,
+    /// Rolling-ball centre of the station's circular section.
+    pub centre: Point3,
+    /// Section end on the carrier's `U = 0` boundary.
+    pub start: Point3,
+    /// Section end on the carrier's `U = 1` boundary.
+    pub end: Point3,
+}
+
+/// A qualified sampled circular-section carrier read back from its control
+/// net: the construction family the walked and boss-corner blends store.
+///
+/// This names the stored stations and their common radius. It does not
+/// certify the surface between stations; callers measure that themselves.
+#[derive(Clone, Debug)]
+pub struct SampledCanal {
+    /// Common radius of every stored section.
+    pub radius: f64,
+    /// Whether the face's outward normal points away from the section
+    /// centres (a convex round) rather than toward them (a concave one).
+    pub convex: bool,
+    /// Stored stations in increasing `v`.
+    pub sections: Vec<SampledSection>,
+}
+
+/// Read a qualified sampled circular-section carrier's stations.
+///
+/// # Errors
+/// Refuses carriers outside the bounded circular-section representation.
+pub fn sampled_canal(face: &Face) -> Result<SampledCanal, BlendError> {
+    let field = CanalNormal::new(face)?;
+    let surface = field.surface;
+    let knots = surface.knots_v();
+    let rows = surface.control_points();
+    let count = rows[0].len();
+    if knots.len() != count + 2 {
+        return Err(refusal(
+            "sampled carrier is not linear between its stations",
+        ));
+    }
+    let mut sections = Vec::with_capacity(count);
+    for index in 0..count {
+        let v = knots[index + 1];
+        sections.push(SampledSection {
+            v,
+            centre: field.centre(v)?,
+            start: rows[0][index],
+            end: rows[2][index],
+        });
+    }
+    Ok(SampledCanal {
+        radius: field.radius,
+        convex: field.sign > 0.0,
+        sections,
+    })
+}
+
+/// Rolling-ball centre of a qualified sampled carrier's section through a
+/// point, from the stored centre field at the point's projected `v`.
+///
+/// # Errors
+/// Refuses an unqualified carrier or failed point projection.
+pub fn sampled_section_centre(face: &Face, point: Point3) -> Result<Point3, BlendError> {
+    let field = CanalNormal::new(face)?;
+    let (_, v) = face
+        .surface()
+        .project_point(point)
+        .ok_or_else(|| refusal("sampled carrier point projection failed"))?;
+    field.centre(v)
+}
+
 #[derive(Clone, Copy)]
 struct CapContour {
     axis: Vec3,
