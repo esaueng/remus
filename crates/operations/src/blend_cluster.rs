@@ -73,7 +73,7 @@
 mod edit;
 mod joined_cap;
 mod prepared;
-mod reblend;
+pub(crate) mod reblend;
 mod remove;
 mod sharp;
 

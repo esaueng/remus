@@ -81,6 +81,17 @@ kernel holds at most 16 live preparations; handles are never reused.
   postconditions and the group's strict-validation, watertight-mesh and
   volume-agreement postconditions). Same result content and history, same
   refusals — plain and journaled.
+  The last preview now retains its private candidate and the exact inputs of
+  every omitted volume/material guard. When the value matches bit for bit,
+  commit completes those guards and the group's mesh/volume postconditions,
+  then copies the candidate into the current arena. No public preview handle
+  is trusted; checkpoint restore or public-frame mutation cannot corrupt it.
+  Successful checks are retained with the immutable candidate. A failed
+  measuring guard falls back to the full route, which can select another engine.
+  Capture is conservative: a failed attempt after a deferred guard invalidates
+  adoption, and joined caps and groups containing chamfers still rebuild.
+  Journaled commits keep the normal initial local attempt, begin, copy and
+  record sequence, including operation-ID high-water behavior on rollback.
 - **Learned refusal.** Preparation runs the attempt in front of the group
   route once on a scratch copy at a probe value. A refusal no value changes —
   the band's description or removal refuses (`BandNotAnalytic`,
@@ -103,8 +114,9 @@ A frame can only differ from the commit where a measuring guard would refuse
 or redirect a stage. Frames still refuse anything that is not a closed,
 strictly valid B-rep, and on the reference sequences every frame equals the
 unprepared edit (entity counts, census, volume to 1e-9) and meets the full
-verification bar (`tests/prepared_group_edit.rs`). The commit re-runs every
-gate; a value whose commit refuses keeps the source.
+verification bar (`tests/prepared_group_edit.rs`). The commit completes every
+measuring gate; a value whose commit refuses keeps the source. Structural
+checks on an unchanged private candidate run once.
 
 ## Measured effect
 

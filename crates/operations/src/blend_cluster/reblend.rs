@@ -424,7 +424,7 @@ pub(super) fn reblend_restoration_gated(
             }
         }
         let _attempt = crate::performance::span("blend_group.plan_attempt");
-        match remus_topology::transaction::run_transacted(topo, |topo| match gate {
+        match crate::blend_ops::preview_checks::transaction(topo, |topo| match gate {
             Gate::Full => run_plan(topo, solid, sharp_edges, &carriers, plan, gate),
             Gate::Preview => crate::blend_ops::display_only_scope(|| {
                 run_plan(topo, solid, sharp_edges, &carriers, plan, gate)
@@ -560,7 +560,11 @@ fn run_plan(
     }
     crate::performance::timed("blend_group.postconditions", || match gate {
         Gate::Full => postconditions(topo, current),
-        Gate::Preview => preview_postconditions(topo, current),
+        Gate::Preview => {
+            preview_postconditions(topo, current)?;
+            crate::blend_ops::preview_checks::group(topo, current);
+            Ok(())
+        }
     })?;
     Ok(GroupReblend {
         solid: current,
@@ -835,9 +839,14 @@ fn strict_validation(topo: &Topology, solid: SolidId) -> Result<(), OperationsEr
 /// Strict validation, a watertight manifold mesh and API/mesh volume
 /// agreement.
 fn postconditions(topo: &Topology, solid: SolidId) -> Result<(), OperationsError> {
+    strict_validation(topo, solid)?;
+    measuring_postconditions(topo, solid)
+}
+
+/// The remaining guards of an immutable frame that already passed validation.
+pub fn measuring_postconditions(topo: &Topology, solid: SolidId) -> Result<(), OperationsError> {
     let failed =
         |reason: String| -> OperationsError { BlendClusterError::ReblendFailed { reason }.into() };
-    strict_validation(topo, solid)?;
     let bounds = crate::measure::solid_bounding_box(topo, solid)?;
     let diagonal = (bounds.max - bounds.min).length();
     let deflection = diagonal * MESH_DEFLECTION;

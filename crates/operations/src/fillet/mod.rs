@@ -128,7 +128,7 @@ pub fn fillet(
     edges: &[EdgeId],
     radius: f64,
 ) -> Result<SolidId, crate::OperationsError> {
-    remus_topology::transaction::run_transacted(topo, |t| {
+    crate::blend_ops::preview_checks::transaction(topo, |t| {
         fillet_transacted(t, solid, edges, radius)
     })
 }
@@ -493,7 +493,7 @@ pub fn fillet_variable(
     solid: SolidId,
     edge_laws: &[(EdgeId, FilletRadiusLaw)],
 ) -> Result<SolidId, crate::OperationsError> {
-    remus_topology::transaction::run_transacted(topo, |t| {
+    crate::blend_ops::preview_checks::transaction(topo, |t| {
         fillet_variable_transacted(t, solid, edge_laws, &HashMap::default())
     })
 }
@@ -527,7 +527,7 @@ pub fn fillet_variable_with_setbacks(
             setbacks.insert(spec.edge.index(), (spec.start_setback, spec.end_setback));
         }
     }
-    remus_topology::transaction::run_transacted(topo, |t| {
+    crate::blend_ops::preview_checks::transaction(topo, |t| {
         fillet_variable_transacted(t, solid, &edge_laws, &setbacks)
     })
 }

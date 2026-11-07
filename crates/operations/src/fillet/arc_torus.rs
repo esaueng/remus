@@ -2584,7 +2584,7 @@ mod bounded_tab_supports {
                 reason: "outside the certified quarter-cylinder tab runout family".into(),
             }
         })?;
-        remus_topology::transaction::run_transacted(topo, |topo| {
+        crate::blend_ops::preview_checks::transaction(topo, |topo| {
             let (built, origins) = reconstruct_with_regions(
                 topo, input, seeds, radius, tol, originals,
             )

@@ -14,6 +14,8 @@ use remus_topology::solid::SolidId;
 use crate::OperationsError;
 use crate::evolution::EvolutionMap;
 
+pub(crate) mod preview_checks;
+
 thread_local! {
     static DISPLAY_ONLY_BLENDS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
@@ -29,9 +31,9 @@ thread_local! {
 /// The structural checks still run: the result covers every named edge, has
 /// a closed outer shell and no validation error the input did not have.
 ///
-/// A result built this way is for display only. The caller must rebuild with
-/// the switch off before keeping it, since a band the skipped checks would
-/// have refused looks plausible on screen.
+/// A result built this way is for display only. Keeping it requires a rebuild
+/// with the switch off, or completion of the exact deferred guards on a private
+/// candidate (prepared group edits), since an unchecked band can look plausible.
 pub fn set_display_only_blends(enabled: bool) {
     DISPLAY_ONLY_BLENDS.with(|flag| flag.set(enabled));
 }
@@ -78,7 +80,7 @@ fn transactional<T>(
     // cancelled or spent its budget refuses here instead of starting another
     // engine (`remus_blend::governor`; a no-op when ungoverned).
     remus_blend::governor::checkpoint()?;
-    remus_topology::transaction::run_transacted(topo, attempt)
+    preview_checks::transaction(topo, attempt)
 }
 
 /// Collapse repeated seed edges, keeping the caller's order.
@@ -555,8 +557,10 @@ pub(crate) fn validate_blend_volume(
     size: BlendSize,
 ) -> Result<(), OperationsError> {
     if display_only_blends() {
+        preview_checks::volume(baseline, operation, result_solid, edges, size);
         return Ok(());
     }
+    let _span = crate::performance::span("blend.volume_guard");
     let (topo, input_solid) = (baseline.topo, baseline.input);
     let before = crate::measure::solid_volume(topo, input_solid, 0.1)?;
     let after = crate::measure::solid_volume(topo, result_solid, 0.1)?;
@@ -1583,6 +1587,7 @@ impl ConvexMaterialGuard {
         if display_only_blends() {
             return Ok(());
         }
+        let _span = crate::performance::span("blend.material_guard");
         if !crate::blend_material::result_has_nurbs_band(&self.pristine, self.input, live, result)?
         {
             return Ok(());
@@ -1637,7 +1642,12 @@ fn attempt_with_lazy_material_guard(
     // A display-only build keeps whatever the engine made: there is no guard
     // to rebuild under.
     if display_only_blends() {
-        return transactional(topo, |t| build(t));
+        let pristine = preview_checks::active().then(|| topo.clone());
+        let result = transactional(topo, |t| build(t))?;
+        if let Some(pristine) = pristine {
+            preview_checks::material(pristine, topo, solid, result.solid, edges, radius);
+        }
+        return Ok(result);
     }
 
     let mut original_nurbs: DetHashSet<FaceId> = DetHashSet::default();
@@ -1647,7 +1657,7 @@ fn attempt_with_lazy_material_guard(
         }
     }
 
-    let first = remus_topology::transaction::run_transacted(topo, |t| {
+    let first = crate::blend_ops::preview_checks::transaction(topo, |t| {
         let result = build(t).map_err(ProbeError::Build)?;
         for face in remus_topology::explorer::solid_faces(t, result.solid)
             .map_err(OperationsError::from)
@@ -2118,7 +2128,7 @@ fn governed_blend(
     run: impl FnOnce(&mut Topology) -> Result<BlendResult, OperationsError>,
 ) -> Result<GovernedBlend, OperationsError> {
     context.check_cancelled()?;
-    remus_topology::transaction::run_transacted(topo, |t| {
+    crate::blend_ops::preview_checks::transaction(topo, |t| {
         let governed = remus_blend::governor::governed(
             context.cancellation.clone(),
             context.budgets.blend_walk_steps,
@@ -2315,6 +2325,7 @@ fn fillet_cascade_attempts(
         Ok(result) => return Ok(result),
         Err(error) => error,
     };
+    preview_checks::disable();
     // A chain that runs onto an earlier band can be refused only because of
     // the order the fillets were made in: rebuild those bands after this one,
     // as the order that builds would have. The original refusal stays the
@@ -3298,7 +3309,7 @@ pub fn fillet_with_evolution(
     edges: &[EdgeId],
     radius: f64,
 ) -> Result<(BlendResult, EvolutionMap), OperationsError> {
-    remus_topology::transaction::run_transacted(topo, |topo| {
+    crate::blend_ops::preview_checks::transaction(topo, |topo| {
         let input_signatures = crate::boolean::collect_face_signatures(topo, solid)?;
         let result = fillet_cascade(topo, solid, edges, radius)?;
         let evo = evolution_for_blend(topo, &result, &input_signatures)?;
@@ -3320,7 +3331,7 @@ pub fn chamfer_with_evolution(
     d1: f64,
     d2: f64,
 ) -> Result<(BlendResult, EvolutionMap), OperationsError> {
-    remus_topology::transaction::run_transacted(topo, |topo| {
+    crate::blend_ops::preview_checks::transaction(topo, |topo| {
         let input_signatures = crate::boolean::collect_face_signatures(topo, solid)?;
         let result = chamfer_v2(topo, solid, edges, d1, d2)?;
         let evo = evolution_for_blend(topo, &result, &input_signatures)?;
