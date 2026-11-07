@@ -201,6 +201,47 @@ pub enum BlendClusterError {
         /// Refusal detail.
         reason: String,
     },
+    /// A removal request is malformed: no members, an index outside the
+    /// cluster, a cluster that no longer describes the solid, or a solid
+    /// outside the qualified scope.
+    #[error("invalid blend-cluster removal: {reason}")]
+    InvalidRemoval {
+        /// Refusal detail.
+        reason: String,
+    },
+    /// Removing the requested members alone would leave a retained blend
+    /// hanging (a corner patch without the bands it closes, or a band that
+    /// runs into a removed corner). `required` is the smallest dependency
+    /// closed member set containing the request.
+    #[error("blend members {requested:?} cannot be removed without {required:?}")]
+    DependentMembers {
+        /// Requested member indices.
+        requested: Vec<usize>,
+        /// The dependency closure of the request (member indices).
+        required: Vec<usize>,
+    },
+    /// A removed member rolls on a support whose extension is not qualified
+    /// (only plane and cylinder supports are extended exactly).
+    #[error("blend support face {face} is a {surface}; only plane and cylinder supports extend")]
+    UnsupportedSupport {
+        /// Arena index of the support face.
+        face: usize,
+        /// Surface type tag of the support.
+        surface: &'static str,
+    },
+    /// The sharp parent is not uniquely determined, or cannot be
+    /// represented exactly from the retained boundary.
+    #[error("the sharp parent is ambiguous: {reason}")]
+    AmbiguousSharp {
+        /// Refusal detail.
+        reason: String,
+    },
+    /// The reconstructed sharp body failed its exactness postconditions.
+    #[error("sharp reconstruction failed: {reason}")]
+    SharpRebuildFailed {
+        /// Refusal detail.
+        reason: String,
+    },
 }
 
 impl BlendClusterError {
@@ -212,6 +253,11 @@ impl BlendClusterError {
             Self::NoDependentBlends { .. } => "blend-cluster-no-blends",
             Self::UnrecognizedMember { .. } => "blend-cluster-unrecognized-member",
             Self::NoSharpForm { .. } => "blend-cluster-no-sharp-form",
+            Self::InvalidRemoval { .. } => "blend-cluster-invalid-removal",
+            Self::DependentMembers { .. } => "blend-cluster-dependent-members",
+            Self::UnsupportedSupport { .. } => "blend-cluster-unsupported-support",
+            Self::AmbiguousSharp { .. } => "blend-cluster-ambiguous-sharp",
+            Self::SharpRebuildFailed { .. } => "blend-cluster-sharp-rebuild-failed",
         }
     }
 }
