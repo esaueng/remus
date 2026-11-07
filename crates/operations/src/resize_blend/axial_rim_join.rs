@@ -241,7 +241,9 @@ fn original_plan(
     let reached: DetHashSet<_> = analysis
         .axial_clearance
         .iter()
-        .filter(|limit| limit.reached(distance))
+        // Only a full fixed rim is a cap this path can rejoin; a fixed partial
+        // shoulder reached by a moving full rim is refused by the translation.
+        .filter(|limit| limit.fixed_is_full_rim() && limit.reached(distance))
         .map(axial_clearance::AxialBlendClearance::fixed)
         .collect();
     let reached: Vec<_> = reached.into_iter().collect();
@@ -288,6 +290,7 @@ fn original_plan(
             vertices: entities.vertices.clone(),
             edges: entities.edges.clone(),
             faces: entities.faces.clone(),
+            stretched: entities.stretched.clone(),
         },
     })
 }
@@ -525,6 +528,7 @@ fn joined_plan(
             vertices: vertices.into_iter().collect(),
             edges,
             faces: moved.into_iter().collect(),
+            stretched: Vec::new(),
         },
     })
 }
