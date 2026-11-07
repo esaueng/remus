@@ -24,8 +24,9 @@
 //! route's to answer: it returns `None` and the caller keeps its own refusal.
 //!
 //! Face evolution is composed source to sharp to edited to result: member
-//! faces are reported deleted and rebuilt blend faces as generated from their
-//! supports, as the per-band path reports them.
+//! faces with a unique recognized successor retain their identity by support
+//! incidence. These correspondences are geometric inferences, never claimed
+//! as construction history. Ambiguous members remain deleted/generated.
 //!
 //! WASM module tier: `core` (reached from `resizeBlend` and
 //! `resizeCylindricalFace`).
@@ -177,7 +178,8 @@ pub fn resize_cylinder_through_group(
             restoration.solid,
             wall,
             new_radius,
-        )?;
+        )
+        .map_err(|error| diameter_refusal(error, new_radius))?;
         let edge_images: BTreeMap<usize, usize> = pairs
             .iter()
             .filter(|(source, target)| {
@@ -203,7 +205,8 @@ pub fn resize_cylinder_through_group(
             sharp_edges.push(carried);
         }
         let plans = plan_reblend(&cluster, &restoration.removed, &BTreeMap::new())?;
-        let rebuilt = reblend_restoration(work, edited.solid, &sharp_edges, &plans)?;
+        let rebuilt = reblend_restoration(work, edited.solid, &sharp_edges, &plans)
+            .map_err(|error| diameter_refusal(error, new_radius))?;
         Ok(Some(Built {
             solid: rebuilt.solid,
             evolution: compose_evolution(
@@ -233,27 +236,158 @@ fn in_private_arena(
     let Some(built) = route(&mut work, copied.solid, work_face)? else {
         return Ok(None);
     };
-    let output = remus_topology::transaction::run_transacted(topo, |topo| {
-        copy_solid_between_with_entity_map(&work, topo, built.solid)
-    })?;
     let mut inputs: Vec<(usize, usize)> = copied
         .face_map
         .iter()
         .map(|(&source, work)| (work.index(), source))
         .collect();
     inputs.compact_sort_unstable();
-    let mut outputs: Vec<(usize, usize)> = output
-        .face_map
-        .iter()
-        .map(|(&work, result)| (work, result.index()))
-        .collect();
-    outputs.compact_sort_unstable();
+    let (output, evolution) = remus_topology::transaction::run_transacted(topo, |topo| {
+        let output = copy_solid_between_with_entity_map(&work, topo, built.solid)?;
+        let mut outputs: Vec<(usize, usize)> = output
+            .face_map
+            .iter()
+            .map(|(&work, result)| (work, result.index()))
+            .collect();
+        outputs.compact_sort_unstable();
+        let mut evolution = translate(&built.evolution, &inputs, &outputs);
+        carry_member_identities(topo, solid, face, output.solid, &mut evolution)?;
+        Ok::<_, OperationsError>((output, evolution))
+    })?;
     Ok(Some(GroupEdit {
         solid: output.solid,
-        evolution: translate(&built.evolution, &inputs, &outputs),
+        evolution,
         stages: built.stages,
         engines: built.engines,
     }))
+}
+
+/// Match recognized members by their carrier kind and mapped supports.
+/// Radius and proximity are deliberately not identity keys: this operation
+/// edits radii, and neighbouring corner patches may be very close together.
+fn carry_member_identities(
+    topo: &Topology,
+    source: SolidId,
+    seed: FaceId,
+    result: SolidId,
+    map: &mut EvolutionMap,
+) -> Result<(), OperationsError> {
+    let before = recognize_blend_cluster(topo, source, seed)?;
+    let outputs = remus_topology::explorer::solid_faces(topo, result)?;
+    let adjacency = topo.build_adjacency(result)?;
+    let source_adjacency = topo.build_adjacency(source)?;
+    // Bands first acquire their mapped plane/cylinder supports, then corner
+    // patches acquire the mapped bands. Recognizing the entire result again
+    // would require equal-radius corner recognition after an unequal edit.
+    for _ in 0..before.members.len() {
+        let mut matches = Vec::new();
+        for member in &before.members {
+            let [source] = member.faces.as_slice() else {
+                continue;
+            };
+            if map.modified.contains_key(&source.index()) {
+                continue;
+            }
+            // Unequal radii can move a corner's contact off a root support
+            // onto its neighbouring band. Its incident bands still identify
+            // the same sharp corner; requiring the old direct root contact
+            // would incorrectly delete that corner's handle.
+            let supports = if member.kind == BlendMemberKind::CornerPatch {
+                source_adjacency
+                    .neighbors_of_face(*source)
+                    .iter()
+                    .copied()
+                    .filter(|&face| before.member_of(face).is_some())
+                    .collect::<Vec<_>>()
+            } else {
+                member.supports.clone()
+            };
+            if member.kind == BlendMemberKind::CornerPatch && supports.len() < 2 {
+                continue;
+            }
+            let Some(mut roots) = supports
+                .iter()
+                .map(|face| {
+                    let [image] = map.modified.get(&face.index())?.as_slice() else {
+                        return None;
+                    };
+                    Some(*image)
+                })
+                .collect::<Option<Vec<_>>>()
+            else {
+                continue;
+            };
+            roots.compact_sort_unstable();
+            if roots.is_empty() {
+                continue;
+            }
+            let source_data = topo.face(*source)?;
+            let mut candidates = Vec::new();
+            for &target in &outputs {
+                let data = topo.face(target)?;
+                // Regenerated corner patches can reverse their parameterization;
+                // the face's reversal flag alone is not an orientation witness.
+                if data.surface().type_tag() != source_data.surface().type_tag()
+                    || map
+                        .modified
+                        .values()
+                        .any(|images| images.contains(&target.index()))
+                {
+                    continue;
+                }
+                let neighbours = adjacency.neighbors_of_face(target);
+                if roots
+                    .iter()
+                    .all(|index| neighbours.iter().any(|f| f.index() == *index))
+                {
+                    candidates.push(target);
+                }
+            }
+            if let [target] = candidates.as_slice() {
+                matches.push((source.index(), target.index()));
+            }
+        }
+        // A many-to-one match is ambiguous, even when each source found only one
+        // candidate. Keep the original deleted/generated claims in that case.
+        if matches.is_empty() {
+            break;
+        }
+        let mut changed = false;
+        for &(source, target) in &matches {
+            if matches.iter().filter(|(_, image)| *image == target).count() != 1 {
+                continue;
+            }
+            map.generated
+                .values_mut()
+                .for_each(|outputs| outputs.retain(|&out| out != target));
+            map.generated.retain(|_, outputs| !outputs.is_empty());
+            map.unresolved.remove(&target);
+            map.deleted.remove(&source);
+            map.add_modified(source, target);
+            map.origin = crate::evolution::EvolutionOrigin::Geometry;
+            changed = true;
+        }
+        if !changed {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn diameter_refusal(error: OperationsError, radius: f64) -> OperationsError {
+    if matches!(
+        &error,
+        OperationsError::Offset(remus_offset::OffsetError::TopologyChange { .. })
+            | OperationsError::BlendCluster(BlendClusterError::ReblendFailed { .. })
+    ) {
+        BlendClusterError::DiameterUnbuildable {
+            diameter: 2.0 * radius,
+            reason: error.to_string(),
+        }
+        .into()
+    } else {
+        error
+    }
 }
 
 /// Re-index an evolution: inputs through `inputs`, outputs through

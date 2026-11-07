@@ -479,11 +479,15 @@ fn convex_top_band_radius_edits_rebuild_the_group() {
             let (oracle_topo, oracle) = convex_oracle(side, radius);
             assert_matches_oracle(&topo, result.solid, &oracle_topo, oracle, &label);
 
-            // History: the edited band is deleted and rebuilt from its
-            // supports; every result face is accounted for. The ridge walk
+            // History: the edited band has a unique successor inferred from
+            // its recognized supports; every result face is accounted for. The ridge walk
             // reports no face origins, so this map is a geometric inference
             // (and says so).
-            assert!(result.evolution.deleted.contains(&band.index()), "{label}");
+            assert_eq!(
+                result.evolution.modified.get(&band.index()).map(Vec::len),
+                Some(1),
+                "{label}"
+            );
             let outputs: Vec<usize> = solid_faces(&topo, result.solid)
                 .unwrap()
                 .into_iter()
@@ -628,8 +632,8 @@ fn boss_diameter_sequence_rebuilds_the_group() {
 }
 
 /// The group route's own result: the plan (one five-edge R4 call), and a
-/// construction-derived face history that accounts for every result face,
-/// carries the boss wall to the resized wall and deletes the old blends.
+/// inferred face history that accounts for every result face and carries
+/// the boss wall and uniquely recognized blends to their successors.
 #[test]
 fn boss_group_route_reports_its_plan_and_history() {
     let (mut topo, solid) = gecko();
@@ -657,7 +661,10 @@ fn boss_group_route_reports_its_plan_and_history() {
         Some(&vec![new_boss.index()])
     );
     for face in cluster.faces() {
-        assert!(edit.evolution.deleted.contains(&face.index()));
+        assert_eq!(
+            edit.evolution.modified.get(&face.index()).map(Vec::len),
+            Some(1)
+        );
     }
 }
 
@@ -670,7 +677,7 @@ fn oversized_boss_diameters_are_refused_and_leave_the_body_alone() {
     // refuses the topology change.
     let error = resize_cylindrical_face(&mut topo, solid, boss, 20.0).unwrap_err();
     assert!(
-        matches!(&error, OperationsError::Offset(inner) if format!("{inner:?}").starts_with("TopologyChange")),
+        matches!(&error, OperationsError::BlendCluster(inner) if inner.code() == "cylinder-diameter-unbuildable"),
         "{error}"
     );
     assert_eq!(fingerprint(&topo, solid), before);
@@ -678,7 +685,7 @@ fn oversized_boss_diameters_are_refused_and_leave_the_body_alone() {
     // x = 0 face that no R4 round fits: the re-fillet refuses.
     let error = resize_cylindrical_face(&mut topo, solid, boss, 17.0).unwrap_err();
     assert!(
-        matches!(&error, OperationsError::BlendCluster(inner) if inner.code() == "blend-cluster-reblend-failed"),
+        matches!(&error, OperationsError::BlendCluster(inner) if inner.code() == "cylinder-diameter-unbuildable"),
         "{error}"
     );
     assert_eq!(fingerprint(&topo, solid), before);

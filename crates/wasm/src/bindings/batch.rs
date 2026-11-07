@@ -301,6 +301,8 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "replaceSurfaceJournaled"
         | "moveFacesJournaled"
         | "moveFacesJournaledWithQuality"
+        | "moveFacesPrepared"
+        | "moveFacesPreparedJournaled"
         | "offsetJournaled"
         | "extrudeJournaled"
         | "revolveJournaled"
@@ -1762,6 +1764,19 @@ impl RemusKernel {
                     SolidOperationDetailedResult::error(error.with_direct_operation("moveFaces"))
                 });
                 serde_json::to_value(result).map_err(StructuredWasmError::from)
+            }
+            "moveFacesPrepared" => {
+                let prepared = get_u32(args, "prepared")?;
+                let distance = get_f64(args, "distance")?;
+                let solid = self
+                    .move_faces_prepared_impl(prepared, distance)
+                    .map_err(StructuredWasmError::from)?;
+                Ok(serde_json::json!(solid))
+            }
+            "moveFacesPreparedJournaled" => {
+                let prepared = get_u32(args, "prepared")?;
+                let distance = get_f64(args, "distance")?;
+                self.move_faces_prepared_journaled_json(prepared, distance)
             }
             "resizeCylindricalFace" => {
                 let s = get_u32(args, "solid")?;
