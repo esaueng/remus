@@ -481,6 +481,24 @@ pub enum OperationsError {
     /// A blend (fillet/chamfer v2) error occurred.
     #[error("blend: {0}")]
     Blend(#[from] remus_blend::BlendError),
+    /// A chamfer of exactly the selected edges does not build, but the
+    /// selection is part of a longer tangent-continuous chain whose chamfer
+    /// does. [`blend_ops::chamfer_v2`] chamfers exactly its selection and
+    /// never propagates on its own; the caller chooses: chamfer `chain`
+    /// (or call [`blend_ops::chamfer_v2_tangent_chain`] on the selection),
+    /// or keep the selection and its refusal, `reason`.
+    #[error(
+        "chamfer: the selected edges {selected:?} end inside the tangent chain {chain:?}, whose chamfer builds; chamfer the whole chain: {reason}"
+    )]
+    ChamferTangentChainRequired {
+        /// Arena indices of the selected edges.
+        selected: Vec<usize>,
+        /// Arena indices of the whole tangent chain through the selection,
+        /// in chain order.
+        chain: Vec<usize>,
+        /// Why the selection alone refused.
+        reason: String,
+    },
 
     /// An exact blend-band resize was refused.
     #[error("resize blend: {0}")]

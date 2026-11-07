@@ -75,13 +75,29 @@ independently attributable runs. Timings include contention between cases.
 
 ## Cumulative scope
 
-The cumulative case starts at A0 plus R1, attempts cap z26 then z61.2, and then
-A2 through A7 on that same evolving body. It stops on the first refused or
-geometrically invalid prerequisite and marks later steps blocked. It never
-substitutes an isolated reference body. A3's free-end edge is a documented
-proxy, not a qualified identity from the video; A4 takes the free-end R1.5
-fillet branch, with other sizes and chamfers covered by isolated rows.
-The diameter 21.1 preview is discarded before committing 14.7.
+The rows follow the corrected spec of the round-2 application run. The
+cumulative case starts at A0 plus R1 and runs the application's order on one
+evolving body: cap z61.2 then z26 with sampled permission (256 stations), A2
+on the convex band along x = 0 (R4 -> 1.9), A3 R1 on the x = 0 / y = 18
+vertical edge, A4's 0.7 free-end chamfer (the single edge, a typed refusal
+naming its tangent chain, then the chain), the A5 negative-radius refusal,
+A6's 0.8 bottom chamfer from its seed's tangent chain, and A7 Ø14.6 -> 17 ->
+(21.1 preview, discarded) -> 14.7. The concave seam R4 -> 2 is skipped: no
+construction of it exists under the R4 shoulder (W3), so its isolated rows
+stay open. The case stops on the first refused or geometrically invalid
+prerequisite and marks later steps blocked; it never substitutes an isolated
+reference body.
+
+Isolated rows: `A1_quality_short` lowers the rimmed cap to z26 and
+`A1_quality_shoulder` takes it to z61.2 and then z26, both with sampled
+permission. The exact-only `move_faces` cap rows (`A1_short`, `A1_sequence`,
+`A1_shoulder`, `A1_rim_*`) are typed refusals by contract when they shorten
+into the shoulder. `A2_convex_*` resize to R1.9, `A2_sequence` drags the x = 0
+band R4 -> 1.5 -> 1.9, and `A3` is A2 followed by the corrected vertical edge
+(the four proxy rows are gone).
+
+The same order, with every oracle and the twelve-edge A6 outline, is the CI
+test `crates/operations/tests/video_parity_full_order.rs`.
 
 ## Sharp-body rebuild spike
 

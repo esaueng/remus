@@ -210,6 +210,18 @@ impl StructuredWasmError {
     /// cause without matching prose.
     pub(crate) fn blend_failure(error: remus_operations::OperationsError) -> Self {
         let code = remus_operations::blend_ops::blend_failure_code(&error);
+        let chain: Option<Vec<u32>> =
+            if let remus_operations::OperationsError::ChamferTangentChainRequired {
+                chain, ..
+            } = &error
+            {
+                chain
+                    .iter()
+                    .map(|&index| u32::try_from(index).ok())
+                    .collect()
+            } else {
+                None
+            };
         let boundary_unproved = code == "unsupported-variable-boundary";
         let unsupported = code == "unsupported-face-face-blend" || boundary_unproved;
         let mut structured = if boundary_unproved {
@@ -223,6 +235,13 @@ impl StructuredWasmError {
         structured
             .details
             .insert("kernelCode".to_string(), Value::from(code));
+        if let Some(chain) = chain {
+            // Edge handles are arena indices: the caller can select these
+            // directly and chamfer the whole chain.
+            structured
+                .details
+                .insert("chainEdges".to_string(), Value::from(chain));
+        }
         structured
     }
 
@@ -1249,6 +1268,26 @@ mod work_limit_tests {
             assert_eq!(structured.details["limit"], 50_000_000);
             assert_eq!(structured.details["actual"], 50_000_001);
         }
+    }
+
+    #[test]
+    fn chamfer_chain_refusal_names_the_chain_handles() {
+        let error = remus_operations::OperationsError::ChamferTangentChainRequired {
+            selected: vec![43],
+            chain: vec![43, 40, 41, 44, 45],
+            reason: "chamfer: unsupported configuration: corner on a curved face".into(),
+        };
+        let message = error.to_string();
+        let structured = super::StructuredWasmError::blend_failure(error);
+        assert_eq!(structured.message, message);
+        assert_eq!(
+            structured.details["kernelCode"],
+            "chamfer-tangent-chain-required"
+        );
+        assert_eq!(
+            structured.details["chainEdges"],
+            serde_json::json!([43, 40, 41, 44, 45])
+        );
     }
 
     #[test]

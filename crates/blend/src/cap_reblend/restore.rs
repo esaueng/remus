@@ -40,6 +40,9 @@ struct Corner {
     old_q: VertexId,
     end: Point3,
     p_curve: NurbsCurve,
+    /// The shoulder rail when the shoulder contact is not a latitude circle
+    /// (a walked transition's rail across the shoulder).
+    q_curve: Option<NurbsCurve>,
 }
 
 /// Restore the full lower shoulder on an owned disposable reconstruction body.
@@ -98,7 +101,11 @@ fn restore(
         if contacts.is_empty() {
             continue;
         }
-        let field = CanalNormal::new(data)?;
+        let field = CanalNormal::contour_field(data)?;
+        // A walked transition (a smaller convex band run into a seam round
+        // and up the shoulder) rides the shoulder with its own radius; a
+        // rolling-ball corner shares the shoulder's.
+        let walked = CanalNormal::new(data).is_err();
         let [contact] = contacts.as_slice() else {
             return Err(refusal("restored corner has multiple old cap contacts"));
         };
@@ -116,7 +123,7 @@ fn restore(
                     FaceSurface::Torus(t)
                         if t.z_axis().dot(axis) > 1.0 - 1e-10
                             && topo.face(other)?.is_reversed()
-                            && (t.minor_radius() - field.radius).abs() < 1e-7 =>
+                            && (walked || (t.minor_radius() - field.radius).abs() < 1e-7) =>
                     {
                         shoulder_edges.push((edge, other));
                     }
@@ -175,12 +182,24 @@ fn restore(
                 return Err(refusal("full corner endpoint leaves its analytic supports"));
             }
         }
-        let p_curve = NurbsCurve::new(
-            1,
-            surface.knots_v().to_vec(),
-            surface.control_points()[0].clone(),
-            surface.weights()[0].clone(),
-        )?;
+        let rail = |row: usize| {
+            NurbsCurve::new(
+                1,
+                surface.knots_v().to_vec(),
+                surface.control_points()[row].clone(),
+                surface.weights()[row].clone(),
+            )
+        };
+        let p_curve = rail(0)?;
+        // A walked corner closes on a collapsed section at the spring: both
+        // rails end there, and its shoulder contact is the far rail.
+        let q_curve = if matches!(topo.edge(*q)?.curve(), EdgeCurve::Circle(_)) {
+            None
+        } else if walked && (surface.evaluate(1.0, 1.0) - end).length() <= 1e-7 {
+            Some(rail(2)?)
+        } else {
+            return Err(refusal("full shoulder contact has no circular authority"));
+        };
         corners.push(Corner {
             face,
             boss: *boss,
@@ -192,6 +211,7 @@ fn restore(
             old_q,
             end,
             p_curve,
+            q_curve,
         });
     }
     let [a, b] = corners.as_slice() else {
@@ -199,12 +219,30 @@ fn restore(
             "restoring a joined shoulder requires two qualified corner carriers",
         ));
     };
-    if a.boss != b.boss || a.shoulder != b.shoulder {
+    if a.shoulder != b.shoulder {
         return Err(refusal("restored corners do not share one shoulder"));
     }
-    let (boss, shoulder) = (a.boss, a.shoulder);
+    let shoulder = a.shoulder;
     let FaceSurface::Torus(torus) = topo.face(shoulder)?.surface() else {
         return Err(refusal("restored shoulder changed carrier"));
+    };
+    let springs = |face: FaceId| -> Result<bool, BlendError> {
+        Ok(
+            matches!(topo.face(face)?.surface(), FaceSurface::Cylinder(c)
+            if (torus.major_radius() - torus.minor_radius() - c.radius()).abs() <= 1e-7),
+        )
+    };
+    // Both corners stand on the boss, or one stands on a seam round the cap
+    // also cut: a seam tangent to the boss along the ruling through that
+    // corner's spring end (the walked corner of a smaller top band).
+    let (boss, seam) = if a.boss == b.boss {
+        (a.boss, None)
+    } else if springs(a.boss)? && !springs(b.boss)? {
+        (a.boss, Some(1))
+    } else if springs(b.boss)? && !springs(a.boss)? {
+        (b.boss, Some(0))
+    } else {
+        return Err(refusal("restored corners do not share one boss"));
     };
     let FaceSurface::Cylinder(cylinder) = topo.face(boss)?.surface() else {
         return Err(refusal("restored boss changed carrier"));
@@ -243,12 +281,81 @@ fn restore(
         vertex_images.insert(corner.old_p, end);
         vertex_images.insert(corner.old_q, end);
         removed.insert(corner.contact);
-        let p = extend_p(topo, corner, end)?;
-        let q = extend_q(topo, corner, end)?;
+        let p = extend_rail(topo, corner.p, corner.old_p, &corner.p_curve, end)?;
+        let q = match &corner.q_curve {
+            Some(curve) => extend_rail(topo, corner.q, corner.old_q, curve, end)?,
+            None => extend_q(topo, corner, end)?,
+        };
         replacements.insert(corner.p, p);
         replacements.insert(corner.q, q);
         edge_images.push((corner.p, p));
         edge_images.push((corner.q, q));
+    }
+    // A seam round the cap cut: its cap contact goes, and its ruling on the
+    // boss runs back up to the spring end its corner closes on.
+    let mut restored = vec![boss, shoulder];
+    if let Some(index) = seam {
+        let corner = &corners[index];
+        let end = ends[index];
+        let seam = corner.boss;
+        let contacts: Vec<_> = face_edges(topo, seam)?
+            .into_iter()
+            .filter(|&edge| {
+                adjacency
+                    .faces_for_edge(edge)
+                    .iter()
+                    .any(|f| rims.contains(f))
+            })
+            .collect();
+        let [contact] = contacts.as_slice() else {
+            return Err(refusal("restored seam has no unique old cap boundary"));
+        };
+        let data = topo.edge(*contact)?;
+        let ruling_top = if data.start() == corner.old_p {
+            data.end()
+        } else if data.end() == corner.old_p {
+            data.start()
+        } else {
+            return Err(refusal("restored seam's cap boundary misses its corner"));
+        };
+        let rulings: Vec<_> = face_edges(topo, seam)?
+            .into_iter()
+            .filter(|&edge| {
+                adjacency.faces_for_edge(edge).contains(&boss)
+                    && topo.edge(edge).is_ok_and(|e| {
+                        matches!(e.curve(), EdgeCurve::Line)
+                            && (e.start() == ruling_top || e.end() == ruling_top)
+                    })
+            })
+            .collect();
+        let [ruling] = rulings.as_slice() else {
+            return Err(refusal("restored seam has no unique ruling on its boss"));
+        };
+        let data = topo.edge(*ruling)?;
+        let (from, to) = (data.start(), data.end());
+        let bottom = if from == ruling_top { to } else { from };
+        let foot = topo.vertex(bottom)?.point();
+        let top = topo.vertex(ruling_top)?.point();
+        let direction = (top - foot).normalize()?;
+        let offset = corner.end - foot;
+        if (offset - direction * offset.dot(direction)).length() > 1e-7
+            || offset.dot(direction) <= (top - foot).length()
+        {
+            return Err(refusal(
+                "restored seam ruling does not reach the spring end",
+            ));
+        }
+        let line = if from == ruling_top {
+            remus_topology::edge::Edge::new(end, bottom, EdgeCurve::Line)
+        } else {
+            remus_topology::edge::Edge::new(bottom, end, EdgeCurve::Line)
+        };
+        let line = topo.add_edge(line);
+        vertex_images.insert(ruling_top, end);
+        removed.insert(*contact);
+        replacements.insert(*ruling, line);
+        edge_images.push((*ruling, line));
+        restored.push(seam);
     }
     let mut spring_contacts = BTreeSet::new();
     for support in [boss, shoulder] {
@@ -266,7 +373,7 @@ fn restore(
         };
         spring_contacts.insert(*contact);
     }
-    for face in corners.iter().map(|c| c.face).chain([boss, shoulder]) {
+    for face in corners.iter().map(|c| c.face).chain(restored) {
         let data = topo.face(face)?;
         if !data.inner_wires().is_empty() {
             return Err(refusal("restoring a shoulder with holes is unsupported"));
@@ -300,11 +407,19 @@ fn restore(
     })
 }
 
-fn extend_p(topo: &mut Topology, corner: &Corner, end: VertexId) -> Result<EdgeId, BlendError> {
-    let data = topo.edge(corner.p)?;
-    let at_start = data.start() == corner.old_p;
+/// The clipped rail `edge` (ending at `old` on the cap contact) run on along
+/// its corner's full rail `curve` to the spring `end` at the rail's `v = 1`.
+fn extend_rail(
+    topo: &mut Topology,
+    edge: EdgeId,
+    old: VertexId,
+    curve: &NurbsCurve,
+    end: VertexId,
+) -> Result<EdgeId, BlendError> {
+    let data = topo.edge(edge)?;
+    let at_start = data.start() == old;
     let other = if at_start { data.end() } else { data.start() };
-    let foot = project_point_to_curve(&corner.p_curve, topo.vertex(other)?.point(), 1e-9)?;
+    let foot = project_point_to_curve(curve, topo.vertex(other)?.point(), 1e-9)?;
     if foot.distance > 1e-7 {
         return Err(refusal(
             "full boss contact does not retain its old endpoint",
@@ -315,13 +430,7 @@ fn extend_p(topo: &mut Topology, corner: &Corner, end: VertexId) -> Result<EdgeI
     } else {
         (other, end, (foot.parameter, 1.0))
     };
-    add_certified_curve_edge(
-        topo,
-        a,
-        b,
-        EdgeCurve::NurbsCurve(corner.p_curve.clone()),
-        domain,
-    )
+    add_certified_curve_edge(topo, a, b, EdgeCurve::NurbsCurve(curve.clone()), domain)
 }
 
 fn extend_q(topo: &mut Topology, corner: &Corner, end: VertexId) -> Result<EdgeId, BlendError> {

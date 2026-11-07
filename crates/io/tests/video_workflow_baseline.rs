@@ -13,7 +13,12 @@
 //! Fixtures default to tests/data. `REMUS_VIDEO_MODE=cumulative|spike|all`
 //! selects the sequential A1-A7 repro, sharp-body rebuild spike, or everything.
 //! Known-open rows are labelled XFAIL, but still FAIL the acceptance assertion.
-//! A3 selections remain proxies until the post-A2 edge identity is established.
+//! Rows follow the corrected spec of the round-2 application run: A1 shortens
+//! the rimmed cap to z26 with sampled permission (256 stations), A2 resizes the
+//! convex band along x = 0 (R4 -> 1.5 -> 1.9), A3 rounds the x = 0 / y = 18
+//! vertical edge after A2, and the cumulative order skips the concave R2 seam
+//! (an isolated XFAIL row). Exact-only cap moves into the shoulder are typed
+//! refusals by contract.
 
 #![allow(
     clippy::unwrap_used,
@@ -59,10 +64,7 @@ const CASES: &[&str] = &[
     "A2_concave_x",
     "A2_concave_y",
     "A2_sequence",
-    "A3_x",
-    "A3_y",
-    "A3_boss_x",
-    "A3_boss_y",
+    "A3",
     "A4_fillet_1.5",
     "A4_fillet_3.7",
     "A4_chamfer_0.7",
@@ -128,15 +130,14 @@ fn install_logger() {
 fn expected_today(case: &str) -> &'static str {
     if case.starts_with("W3_") {
         "SPIKE"
-    } else if case.starts_with("A2")
-        || case.starts_with("A7")
-        || case == "cumulative"
-        || case.starts_with("A1") && !case.contains("tall")
-        || matches!(case, "A6_chain" | "A6_loop" | "A3_boss_x" | "A3_boss_y")
-    {
+    } else if case.starts_with("A2_concave") {
+        // No construction of the R2 seam under the R4 shoulder (W3).
         "XFAIL (open)"
-    } else if case.starts_with("A3") {
-        "PROXY only"
+    } else if matches!(
+        case,
+        "A1_short" | "A1_sequence" | "A1_shoulder" | "A1_rim_short" | "A1_rim_shoulder"
+    ) {
+        "PASS (typed exact-only refusal)"
     } else {
         "PASS"
     }
@@ -648,13 +649,13 @@ fn cap(t: &Topology, s: SolidId) -> FaceId {
     solid_faces(t,s).unwrap().into_iter().filter(|&f|matches!(t.face(f).unwrap().surface(),FaceSurface::Plane {normal,..} if normal.z().abs()>0.999))
         .max_by(|&a,&b| {let z=|f| {let f=t.face(f).unwrap(); match f.surface(){FaceSurface::Plane{normal,d}=>d/normal.z(),_=>unreachable!()}}; z(a).total_cmp(&z(b))}).unwrap()
 }
-fn band(t: &Topology, s: SolidId, vertical: bool, side: bool) -> FaceId {
+fn band_at(t: &Topology, s: SolidId, vertical: bool, side: bool, radius: f64) -> FaceId {
     solid_faces(t, s)
         .unwrap()
         .into_iter()
         .find(|&f| match t.face(f).unwrap().surface() {
             FaceSurface::Cylinder(c) => {
-                near(c.radius(), 4.0)
+                near(c.radius(), radius)
                     && (c.axis().z().abs() > 0.99) == vertical
                     && if vertical {
                         if side {
@@ -877,33 +878,20 @@ fn worker(case: &str) {
     match case {
         "cumulative" => cumulative(case, &mut t, s, &mut rows),
         "A1_quality_short" | "A1_quality_shoulder" => {
-            let f = cap(&t, s);
-            let d = if case.ends_with("short") { -13. } else { -10. };
-            attempt(
-                case,
-                "cap with sampled permission",
-                &mut t,
-                s,
-                json!({"delta":d,"stations":513}),
-                |t| {
-                    remus_operations::face_move_quality::move_faces_with_quality(
-                        t,
-                        s,
-                        &[f],
-                        d,
-                        Some(remus_operations::face_move_quality::FaceMoveApproximation {
-                            stations: 513,
-                        }),
-                    )
-                    .map(|b| {
-                        (
-                            b.result.solid,
-                            format!("move_faces_with_quality::{:?}", b.quality),
-                        )
-                    })
-                },
-                &mut rows,
-            );
+            // z26 directly, and the application's order: z61.2, then z26.
+            let deltas: &[f64] = if case.ends_with("short") {
+                &[-10.0]
+            } else {
+                &[25.2, -35.2]
+            };
+            let mut current = s;
+            for &d in deltas {
+                let f = cap(&t, current);
+                let Some(out) = sampled_cap_move(case, &mut t, current, f, d, &mut rows) else {
+                    break;
+                };
+                current = out;
+            }
         }
         "reference" | "sharp" => save(
             case,
@@ -991,8 +979,13 @@ fn worker(case: &str) {
                     &mut rows,
                 ) {
                     current = out;
-                } else if case == "A1_sequence" {
-                    break;
+                } else {
+                    // Exact-only shortening into the shoulder refuses typed;
+                    // the sampled rows below build it.
+                    rows.last_mut().unwrap()["allow_refusal"] = json!(d < 0.0);
+                    if case == "A1_sequence" {
+                        break;
+                    }
                 }
             }
         }
@@ -1022,7 +1015,7 @@ fn worker(case: &str) {
                 } else {
                     25.2
                 };
-                attempt(
+                let moved = attempt(
                     case,
                     &format!("cap with R1 rim delta {d}"),
                     &mut t,
@@ -1034,29 +1027,35 @@ fn worker(case: &str) {
                     },
                     &mut rows,
                 );
+                if moved.is_none() {
+                    rows.last_mut().unwrap()["allow_refusal"] = json!(d < 0.0);
+                }
             }
         }
         c if c.starts_with("A2") => {
+            // `(vertical, side, from, to)`. The application's A2 drags the
+            // convex band along x = 0 (axis Y) R4 -> 1.5 -> 1.9.
             let selections = if c == "A2_sequence" {
-                vec![(false, true), (true, false), (false, false)]
+                vec![(false, false, 4.0, 1.5), (false, false, 1.5, 1.9)]
             } else {
-                vec![(c.contains("concave"), c.ends_with('x'))]
+                let vertical = c.contains("concave");
+                let r = if vertical { 2.0 } else { 1.9 };
+                vec![(vertical, c.ends_with('x'), 4.0, r)]
             };
             let mut current = s;
-            for (vertical, side) in selections {
-                let f = band(&t, current, vertical, side);
-                let r = if vertical { 2.0 } else { 1.5 };
+            for (vertical, side, from, r) in selections {
+                let f = band_at(&t, current, vertical, side, from);
                 if let Some(out) = attempt(
                     case,
                     &format!(
-                        "{} side={side} R4->{r}",
+                        "{} side={side} R{from}->{r}",
                         if vertical { "concave" } else { "convex" }
                     ),
                     &mut t,
                     current,
-                    json!({"face":f.index(),"expected_radius":4,"new_radius":r}),
+                    json!({"face":f.index(),"expected_radius":from,"new_radius":r}),
                     |t| {
-                        resize_blend::resize_blend(t, current, f, 4.0, r)
+                        resize_blend::resize_blend(t, current, f, from, r)
                             .map(|b| (b.solid, "resize_blend".into()))
                     },
                     &mut rows,
@@ -1067,56 +1066,34 @@ fn worker(case: &str) {
                 }
             }
         }
-        "A3_x" | "A3_y" => {
-            // The reference selection is visually ambiguous. Probe BOTH vertical
-            // free-end side boundaries (each runs into the existing top round).
-            let x = case == "A3_x";
-            let e = solid_edges(&t, s)
-                .unwrap()
-                .into_iter()
-                .find(|&e| {
-                    let (a, b) = endpoints(&t, e);
-                    (a.z() - b.z()).abs() > 10.0
-                        && if x {
-                            near(a.x(), 30.)
-                                && near(b.x(), 30.)
-                                && near(a.y(), 0.)
-                                && near(b.y(), 0.)
-                        } else {
-                            near(a.x(), 0.)
-                                && near(b.x(), 0.)
-                                && near(a.y(), 18.)
-                                && near(b.y(), 18.)
-                        }
-                })
-                .unwrap();
-            attempt(
+        "A3" => {
+            // After A2 (the x = 0 convex band at R1.9), R1 on the x = 0 /
+            // y = 18 vertical edge: its chain turns through the band's end
+            // arc onto the y = 18 top edge.
+            let f = band_at(&t, s, false, false, 4.0);
+            if let Some(a2) = attempt(
                 case,
-                "vertical boundary into R4 round, R1",
+                "A2 convex x = 0 R4->1.9",
                 &mut t,
                 s,
-                json!({"edge":e.index()}),
-                |t| fillet(t, s, &[e], 1.0),
+                json!({"face":f.index(),"expected_radius":4,"new_radius":1.9}),
+                |t| {
+                    resize_blend::resize_blend(t, s, f, 4.0, 1.9)
+                        .map(|b| (b.solid, "resize_blend".into()))
+                },
                 &mut rows,
-            );
-        }
-        "A3_boss_x" | "A3_boss_y" => {
-            let x = case.ends_with('x');
-            let adj = AdjacencyIndex::build(&t, s).unwrap();
-            let e=solid_edges(&t,s).unwrap().into_iter().find(|&e| {
-                let(a,b)=endpoints(&t,e);
-                (a.z()-b.z()).abs()>10.0 && (if x {near(a.y(),0.)&&near(b.y(),0.)}else{near(a.x(),0.)&&near(b.x(),0.)}) &&
-                adj.faces_for_edge(e).iter().any(|&f|matches!(t.face(f).unwrap().surface(),FaceSurface::Cylinder(c) if near(c.radius(),4.0)&&c.axis().z().abs()>0.99))
-            }).unwrap();
-            attempt(
-                case,
-                "near-boss vertical seam R1 (selection ambiguity)",
-                &mut t,
-                s,
-                json!({"edge":e.index()}),
-                |t| fillet(t, s, &[e], 1.0),
-                &mut rows,
-            );
+            ) {
+                let e = a3_edge(&t, a2);
+                attempt(
+                    case,
+                    "A3 x = 0 / y = 18 vertical edge R1",
+                    &mut t,
+                    a2,
+                    json!({"edge":e.index(),"radius":1}),
+                    |t| fillet(t, a2, &[e], 1.0),
+                    &mut rows,
+                );
+            }
         }
         c if c.starts_with("A4") || c == "A5" => {
             let e = end_edge(&t, s);
@@ -1267,37 +1244,21 @@ fn add_rim(case: &str, t: &mut Topology, s: SolidId, rows: &mut Vec<Value>) -> O
 }
 
 fn cumulative(case: &str, t: &mut Topology, mut s: SolidId, rows: &mut Vec<Value>) {
-    // Commit only successful candidates. Stop immediately on refusal or invalid
-    // geometry: later operations must never run on a substituted fresh body.
+    // The round-2 application order on one body, without the concave R2 seam
+    // (no construction; its isolated row stays open). Commit only successful
+    // candidates. Stop immediately on refusal or invalid geometry: later
+    // operations must never run on a substituted fresh body.
     for step in 1..=7 {
         let out = match step {
             1 => {
+                // Lengthen to z61.2, then shorten to z26 into the shoulder.
                 let mut next = Some(s);
-                for distance in [-10., 35.2] {
+                for distance in [25.2, -35.2] {
                     let Some(current) = next else {
                         break;
                     };
                     let f = cap(t, current);
-                    next = attempt(
-                        case,
-                        "A1 cap to z26 then z61.2",
-                        t,
-                        current,
-                        json!({"delta":distance}),
-                        |t| {
-                            remus_operations::face_move_quality::move_faces_with_quality(
-                                t,
-                                current,
-                                &[f],
-                                distance,
-                                Some(remus_operations::face_move_quality::FaceMoveApproximation {
-                                    stations: 513,
-                                }),
-                            )
-                            .map(|b| (b.result.solid, format!("{:?}", b.quality)))
-                        },
-                        rows,
-                    );
+                    next = sampled_cap_move(case, t, current, f, distance, rows);
                     if rows
                         .last()
                         .is_some_and(|r| !geometry_errors(&r["after"]).is_empty())
@@ -1309,60 +1270,55 @@ fn cumulative(case: &str, t: &mut Topology, mut s: SolidId, rows: &mut Vec<Value
                 next
             }
             2 => {
-                let mut next = Some(s);
-                for vertical in [false, true] {
-                    let Some(current) = next else {
-                        break;
-                    };
-                    let f = band(t, current, vertical, true);
-                    let r = if vertical { 2. } else { 1.5 };
-                    next = attempt(
-                        case,
-                        "A2 resize blend",
-                        t,
-                        current,
-                        json!({"new_radius":r}),
-                        |t| {
-                            resize_blend::resize_blend(t, current, f, 4., r)
-                                .map(|b| (b.solid, "resize_blend".into()))
-                        },
-                        rows,
-                    );
-                }
-                next
-            }
-            3 => {
-                let e = solid_edges(t, s)
-                    .unwrap()
-                    .into_iter()
-                    .find(|&e| {
-                        let (a, b) = endpoints(t, e);
-                        near(a.x(), 30.)
-                            && near(b.x(), 30.)
-                            && near(a.y(), 0.)
-                            && near(b.y(), 0.)
-                            && (a.z() - b.z()).abs() > 10.
-                    })
-                    .expect("A3 free-end proxy; exact post-A2 selection remains unqualified");
+                let f = band_at(t, s, false, false, 4.0);
                 attempt(
                     case,
-                    "A3 proxy R1 into blend",
+                    "A2 convex x = 0 R4->1.9",
                     t,
                     s,
-                    json!({"edge":e.index()}),
+                    json!({"face":f.index(),"expected_radius":4,"new_radius":1.9}),
+                    |t| {
+                        resize_blend::resize_blend(t, s, f, 4., 1.9)
+                            .map(|b| (b.solid, "resize_blend".into()))
+                    },
+                    rows,
+                )
+            }
+            3 => {
+                let e = a3_edge(t, s);
+                attempt(
+                    case,
+                    "A3 x = 0 / y = 18 vertical edge R1",
+                    t,
+                    s,
+                    json!({"edge":e.index(),"radius":1}),
                     |t| fillet(t, s, &[e], 1.),
                     rows,
                 )
             }
             4 => {
+                // The single free-end edge names its tangent chain; the chain
+                // is chamfered.
                 let e = end_edge(t, s);
                 attempt(
                     case,
-                    "A4 free end R1.5",
+                    "A4 free-end chamfer 0.7 (single edge)",
                     t,
                     s,
-                    json!({"value":1.5}),
-                    |t| fillet(t, s, &[e], 1.5),
+                    json!({"edge":e.index(),"distance":0.7}),
+                    |t| chamfer(t, s, &[e], 0.7),
+                    rows,
+                );
+                rows.last_mut().unwrap()["allow_refusal"] = json!(true);
+                let chain =
+                    remus_blend::g1_chain::expand_g1_chain(t, s, &[e], Tolerance::new()).unwrap();
+                attempt(
+                    case,
+                    "A4 free-end chamfer 0.7 (tangent chain)",
+                    t,
+                    s,
+                    json!({"edges":chain.iter().map(|e|e.index()).collect::<Vec<_>>(),"distance":0.7}),
+                    |t| chamfer(t, s, &chain, 0.7),
                     rows,
                 )
             }
@@ -1381,13 +1337,23 @@ fn cumulative(case: &str, t: &mut Topology, mut s: SolidId, rows: &mut Vec<Value
                 if out.is_some() { None } else { Some(s) }
             }
             6 => {
-                let edges = bottom(t, s);
+                let outline = bottom(t, s);
+                let seed = outline
+                    .iter()
+                    .copied()
+                    .find(|&e| {
+                        let (a, b) = endpoints(t, e);
+                        near(a.y(), 0.) && near(b.y(), 0.) && (a.x() - b.x()).abs() > 10.
+                    })
+                    .unwrap();
+                let edges = remus_blend::g1_chain::expand_g1_chain(t, s, &[seed], Tolerance::new())
+                    .unwrap();
                 attempt(
                     case,
-                    "A6 closed bottom outline",
+                    "A6 bottom chamfer 0.8 (seed tangent chain)",
                     t,
                     s,
-                    json!({"distance":0.8}),
+                    json!({"seed":seed.index(),"edges":edges.iter().map(|e|e.index()).collect::<Vec<_>>()}),
                     |t| chamfer(t, s, &edges, 0.8),
                     rows,
                 )
@@ -1410,10 +1376,57 @@ fn cumulative(case: &str, t: &mut Topology, mut s: SolidId, rows: &mut Vec<Value
         }
         s = out.unwrap();
     }
-    save(
+    save(case, &json!({"attempts":rows,"completed_A7":true}));
+}
+
+/// The cap moved by `distance` with the application's sampled permission.
+fn sampled_cap_move(
+    case: &str,
+    t: &mut Topology,
+    s: SolidId,
+    f: FaceId,
+    distance: f64,
+    rows: &mut Vec<Value>,
+) -> Option<SolidId> {
+    attempt(
         case,
-        &json!({"attempts":rows,"completed_A7":true,"selection_qualification":"A3 proxy; video edge still unqualified"}),
-    );
+        &format!("cap delta {distance} with sampled permission"),
+        t,
+        s,
+        json!({"face":f.index(),"delta":distance,"stations":256}),
+        |t| {
+            remus_operations::face_move_quality::move_faces_with_quality(
+                t,
+                s,
+                &[f],
+                distance,
+                Some(remus_operations::face_move_quality::FaceMoveApproximation { stations: 256 }),
+            )
+            .map(|b| {
+                (
+                    b.result.solid,
+                    format!("move_faces_with_quality::{:?}", b.quality),
+                )
+            })
+        },
+        rows,
+    )
+}
+
+/// The A3 edge: the block's x = 0 / y = 18 vertical edge.
+fn a3_edge(t: &Topology, s: SolidId) -> EdgeId {
+    solid_edges(t, s)
+        .unwrap()
+        .into_iter()
+        .find(|&e| {
+            let (a, b) = endpoints(t, e);
+            (a.z() - b.z()).abs() > 10.0
+                && near(a.x(), 0.)
+                && near(b.x(), 0.)
+                && near(a.y(), 18.)
+                && near(b.y(), 18.)
+        })
+        .expect("x = 0 / y = 18 vertical edge")
 }
 
 // Re-identify surviving sharp support intersections after each earlier band.

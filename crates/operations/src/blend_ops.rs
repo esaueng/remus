@@ -2715,6 +2715,7 @@ pub fn blend_failure_code(error: &OperationsError) -> &'static str {
             "resource-limit"
         }
         OperationsError::PartialResult { .. } => "partial-result",
+        OperationsError::ChamferTangentChainRequired { .. } => "chamfer-tangent-chain-required",
         OperationsError::InvalidInput { .. } => "invalid-input",
         OperationsError::Unsupported {
             operation: "fillet_variable",
@@ -2726,10 +2727,67 @@ pub fn blend_failure_code(error: &OperationsError) -> &'static str {
 
 /// Chamfer edges with two distances (v2 engine).
 ///
+/// Exactly the selected edges are chamfered; the selection never propagates
+/// along tangent continuations ([`chamfer_v2_tangent_chain`] does). When the
+/// selection alone does not build but ends inside a longer tangent chain
+/// whose chamfer builds — a free-end edge running on through a round's end
+/// arc and down a vertical edge — the refusal is
+/// [`OperationsError::ChamferTangentChainRequired`], naming the chain so the
+/// caller can select it. Every other refusal is returned as it stands.
+///
 /// # Errors
 /// Returns `OperationsError` if distances are non-positive, edges are empty,
 /// or the blend computation fails.
 pub fn chamfer_v2(
+    topo: &mut Topology,
+    solid: SolidId,
+    edges: &[EdgeId],
+    d1: f64,
+    d2: f64,
+) -> Result<BlendResult, OperationsError> {
+    let refusal = match chamfer_v2_selection(topo, solid, edges, d1, d2) {
+        Ok(result) => return Ok(result),
+        Err(refusal) => refusal,
+    };
+    // Size verdicts and malformed requests stand; so does a selection that
+    // is already its whole tangent chain.
+    if matches!(
+        refusal,
+        OperationsError::Blend(BlendError::RadiusTooLarge { .. })
+            | OperationsError::InvalidInput { .. }
+    ) || edges.is_empty()
+    {
+        return Err(refusal);
+    }
+    let tolerance = remus_math::tolerance::Tolerance::new();
+    let Ok(chains) = remus_blend::g1_chain::g1_chains(topo, solid, edges, tolerance) else {
+        return Err(refusal);
+    };
+    let mut chain: Vec<EdgeId> = Vec::new();
+    for edge in chains.into_iter().flatten() {
+        if !chain.contains(&edge) {
+            chain.push(edge);
+        }
+    }
+    if chain.len() <= dedup_seed_edges(edges).len() || edges.iter().any(|e| !chain.contains(e)) {
+        return Err(refusal);
+    }
+    // Name the chain only when its chamfer builds: probed, then rolled back.
+    let snapshot = remus_topology::transaction::RollbackSnapshot::capture(topo);
+    let builds = chamfer_v2_selection(topo, solid, &chain, d1, d2).is_ok();
+    snapshot.restore(topo);
+    if !builds {
+        return Err(refusal);
+    }
+    Err(OperationsError::ChamferTangentChainRequired {
+        selected: edges.iter().map(|edge| edge.index()).collect(),
+        chain: chain.iter().map(|edge| edge.index()).collect(),
+        reason: refusal.to_string(),
+    })
+}
+
+/// [`chamfer_v2`] of exactly `edges`, without the tangent-chain diagnosis.
+fn chamfer_v2_selection(
     topo: &mut Topology,
     solid: SolidId,
     edges: &[EdgeId],
@@ -2821,7 +2879,7 @@ pub fn chamfer_v2_tangent_chain(
     if edges.is_empty() {
         edges = seeds.to_vec();
     }
-    chamfer_v2(topo, solid, &edges, d1, d2)
+    chamfer_v2_selection(topo, solid, &edges, d1, d2)
 }
 
 /// Disjoint rims and outer ridges can require different construction engines.
@@ -2891,7 +2949,7 @@ fn chamfer_by_feature(
             };
             live.push(*edge);
         }
-        current = chamfer_v2(topo, current, &live, d1, d2)?.solid;
+        current = chamfer_v2_selection(topo, current, &live, d1, d2)?.solid;
     }
     let result = BlendResult {
         solid: current,

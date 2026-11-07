@@ -6127,6 +6127,7 @@ pub fn resize_blend_failure_code(error: &OperationsError) -> &'static str {
         | OperationsError::Math(_)
         | OperationsError::Algo(_)
         | OperationsError::Blend(_)
+        | OperationsError::ChamferTangentChainRequired { .. }
         | OperationsError::Check(_)
         | OperationsError::Geometry(_)
         | OperationsError::Heal(_)

@@ -110,8 +110,10 @@ pub struct PreparedGroupEdit {
     source: ContentKey,
     group: SharpGroup,
     target: Target,
-    /// The group recognized on the source, for the identity carry.
-    before: BlendCluster,
+    /// The group recognized on the source, for the identity carry; absent
+    /// when the source's cap was lowered into its shoulder (its group is
+    /// recognized on the lifted copy only).
+    before: Option<BlendCluster>,
     /// Whether the attempt in front of the group route refuses every value.
     learned: bool,
 }
@@ -122,7 +124,7 @@ impl std::fmt::Debug for PreparedGroupEdit {
             .field("solid", &self.solid)
             .field("face", &self.face)
             .field("kind", &self.kind)
-            .field("members", &self.before.members.len())
+            .field("members", &self.group.cluster.members.len())
             .field("learned_refusal", &self.learned)
             .finish_non_exhaustive()
     }
@@ -155,7 +157,7 @@ impl PreparedGroupEdit {
                 "the face is not a band of a recognized blend group that removes to sharp",
             ));
         };
-        let before = recognize_blend_cluster(topo, solid, face)?;
+        let before = recognize_blend_cluster(topo, solid, face).ok();
         let learned = probe_band(topo, solid, face, expected_radius)?;
         Ok(Self {
             solid,
@@ -194,7 +196,7 @@ impl PreparedGroupEdit {
                 "the face carries no recognized blend group that removes to sharp",
             ));
         };
-        let before = recognize_blend_cluster(topo, solid, face)?;
+        let before = recognize_blend_cluster(topo, solid, face).ok();
         let learned = probe_cylinder(topo, solid, face, radius)?;
         Ok(Self {
             solid,
@@ -409,7 +411,7 @@ impl PreparedGroupEdit {
             &work,
             &self.group.inputs,
             &built,
-            Some(&self.before),
+            self.before.as_ref(),
         )
     }
 }

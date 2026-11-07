@@ -21,6 +21,11 @@
 //!   history, and they join the re-fillet plan as one more stage, placed in
 //!   the planner's order (concave before convex, larger radii first).
 //!
+//! A body whose rounded cap was lowered into its shoulder with sampled
+//! permission has no group recognizable as it stands (its rim bands roll on
+//! sampled corner patches); the band and cylinder routes edit it with the cap
+//! lifted clear and lower the cap back afterwards (`joined_cap`).
+//!
 //! The whole route runs on a private copy of the solid; only the finished,
 //! verified result is copied into the caller's arena (inside a
 //! transaction). Any refusal (the sharp edit, an unbuildable radius set, a
@@ -49,6 +54,7 @@ use remus_topology::face::FaceId;
 use remus_topology::journal::{EntityKey, EntityKind};
 use remus_topology::solid::SolidId;
 
+use super::joined_cap::{CapLift, lift_joined_cap, lower_joined_cap};
 use super::reblend::{
     Gate, ReblendStage, compose_evolution, plan_reblend, reblend_restoration,
     reblend_restoration_gated,
@@ -101,6 +107,45 @@ pub(super) struct SharpGroup {
     pub(super) cluster: BlendCluster,
     /// The sharp parent on the copy.
     pub(super) restoration: SharpRestoration,
+    /// The joined cap lifted clear of its shoulder before the group was
+    /// recognized, when the body's cap had been lowered into it
+    /// (`joined_cap`); the edit lowers it back.
+    pub(super) lift: Option<CapLift>,
+}
+
+/// `seed`'s group on the copied `solid`, recognized as it stands or, when
+/// the body's cap was lowered into its shoulder, with that cap lifted clear
+/// first. `None` when neither recognizes a group.
+fn recognize_on_copy(
+    work: &mut Topology,
+    solid: SolidId,
+    seed: FaceId,
+) -> Result<Option<(SolidId, FaceId, BlendCluster, Option<CapLift>)>, OperationsError> {
+    if let Ok(cluster) = recognize_blend_cluster(work, solid, seed) {
+        return Ok(Some((solid, seed, cluster, None)));
+    }
+    let Some((lifted, lifted_seed, lift)) = lift_joined_cap(work, solid, seed)? else {
+        return Ok(None);
+    };
+    let Ok(cluster) = recognize_blend_cluster(work, lifted, lifted_seed) else {
+        return Ok(None);
+    };
+    Ok(Some((lifted, lifted_seed, cluster, Some(lift))))
+}
+
+/// Finish `built` on `work`: lower a lifted cap back into its shoulder.
+fn finish(group: &SharpGroup, work: &mut Topology, built: Built) -> Result<Built, OperationsError> {
+    let Some(lift) = &group.lift else {
+        return Ok(built);
+    };
+    let (solid, evolution) = crate::performance::timed("blend_group.lower_cap", || {
+        lower_joined_cap(work, built.solid, lift, &built.evolution)
+    })?;
+    Ok(Built {
+        solid,
+        evolution,
+        ..built
+    })
 }
 
 /// A private copy: the arena, its entity maps, and `(copy face index, source
@@ -140,11 +185,12 @@ pub(super) fn band_group(
     let Some(&seed) = copied.face_map.get(&face.index()) else {
         return Ok(None);
     };
-    let solid = copied.solid;
-    let Ok(cluster) = recognize_blend_cluster(&work, solid, seed) else {
+    let Some((solid, lifted_seed, cluster, lift)) =
+        recognize_on_copy(&mut work, copied.solid, seed)?
+    else {
         return Ok(None);
     };
-    let Some(member) = cluster.member_of(seed) else {
+    let Some(member) = cluster.member_of(lifted_seed) else {
         return Ok(None);
     };
     let band = &cluster.members[member];
@@ -174,6 +220,7 @@ pub(super) fn band_group(
             seed,
             cluster,
             restoration,
+            lift,
         },
         member,
     )))
@@ -204,8 +251,9 @@ pub(super) fn cylinder_group(
     let Some(&seed) = copied.face_map.get(&face.index()) else {
         return Ok(None);
     };
-    let solid = copied.solid;
-    let Ok(cluster) = recognize_blend_cluster(&work, solid, seed) else {
+    let Some((solid, lifted_seed, cluster, lift)) =
+        recognize_on_copy(&mut work, copied.solid, seed)?
+    else {
         return Ok(None);
     };
     if cluster.seed_is_member {
@@ -219,7 +267,7 @@ pub(super) fn cylinder_group(
     let wall = restoration
         .faces
         .iter()
-        .find_map(|&(source, result)| (source == seed).then_some(result))
+        .find_map(|&(source, result)| (source == lifted_seed).then_some(result))
         .ok_or_else(|| lost("the edited wall did not survive the group removal"))?;
     Ok(Some((
         SharpGroup {
@@ -228,6 +276,7 @@ pub(super) fn cylinder_group(
             seed,
             cluster,
             restoration,
+            lift,
         },
         wall,
     )))
@@ -259,6 +308,7 @@ pub(super) fn build_band(
         stages: rebuilt.stages,
         engines: rebuilt.engines,
     };
+    let built = finish(group, &mut work, built)?;
     Ok((work, built))
 }
 
@@ -318,6 +368,8 @@ pub(super) fn build_cylinder(
         stages: rebuilt.stages,
         engines: rebuilt.engines,
     };
+    let built =
+        finish(group, &mut work, built).map_err(|error| diameter_refusal(error, new_radius))?;
     Ok((work, built))
 }
 
@@ -646,14 +698,19 @@ pub(super) fn copy_out(
             .collect();
         outputs.compact_sort_unstable();
         let mut evolution = translate(&built.evolution, inputs, &outputs);
+        // A body whose cap was lowered into its shoulder has no group
+        // recognizable as it stands (it was edited lifted): its members keep
+        // their composed deleted/generated history.
         let recognized;
         let before = if let Some(before) = before {
-            before
+            Some(before)
         } else {
-            recognized = recognize_blend_cluster(topo, solid, face)?;
-            &recognized
+            recognized = recognize_blend_cluster(topo, solid, face).ok();
+            recognized.as_ref()
         };
-        carry_member_identities(topo, before, solid, output.solid, &mut evolution)?;
+        if let Some(before) = before {
+            carry_member_identities(topo, before, solid, output.solid, &mut evolution)?;
+        }
         Ok::<_, OperationsError>((output, evolution))
     })?;
     Ok(GroupEdit {
