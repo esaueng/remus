@@ -303,6 +303,9 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "moveFacesJournaledWithQuality"
         | "moveFacesPrepared"
         | "moveFacesPreparedJournaled"
+        | "previewPreparedGroupEdit"
+        | "commitPreparedGroupEdit"
+        | "commitPreparedGroupEditJournaled"
         | "offsetJournaled"
         | "extrudeJournaled"
         | "revolveJournaled"
@@ -1777,6 +1780,27 @@ impl RemusKernel {
                 let prepared = get_u32(args, "prepared")?;
                 let distance = get_f64(args, "distance")?;
                 self.move_faces_prepared_journaled_json(prepared, distance)
+            }
+            "previewPreparedGroupEdit" => {
+                let prepared = get_u32(args, "prepared")?;
+                let value = get_f64(args, "value")?;
+                let solid = self
+                    .preview_prepared_group_edit_impl(prepared, value)
+                    .map_err(StructuredWasmError::operation_failed)?;
+                Ok(serde_json::json!(solid))
+            }
+            "commitPreparedGroupEdit" => {
+                let prepared = get_u32(args, "prepared")?;
+                let value = get_f64(args, "value")?;
+                let solid = self
+                    .commit_prepared_group_edit_impl(prepared, value)
+                    .map_err(StructuredWasmError::operation_failed)?;
+                Ok(serde_json::json!(solid))
+            }
+            "commitPreparedGroupEditJournaled" => {
+                let prepared = get_u32(args, "prepared")?;
+                let value = get_f64(args, "value")?;
+                self.commit_prepared_group_edit_journaled_json(prepared, value)
             }
             "resizeCylindricalFace" => {
                 let s = get_u32(args, "solid")?;

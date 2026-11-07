@@ -71,6 +71,7 @@
 //! no binding yet.
 
 mod edit;
+mod prepared;
 mod reblend;
 mod remove;
 mod sharp;
@@ -98,6 +99,7 @@ pub(crate) use edit::group_fillet_result;
 pub use edit::{
     GroupEdit, fillet_through_blend_group, resize_band_through_group, resize_cylinder_through_group,
 };
+pub use prepared::{GroupEditKind, PreparedGroupEdit};
 pub use reblend::{
     GroupReblend, ReblendStage, compose_evolution, plan_reblend, reblend_restoration,
 };
@@ -391,6 +393,7 @@ pub fn recognize_blend_cluster(
     solid: SolidId,
     seed: FaceId,
 ) -> Result<BlendCluster, OperationsError> {
+    let _span = crate::performance::span("blend_group.recognize");
     let faces = solid_faces(topo, solid)?;
     if !faces.contains(&seed) {
         return Err(BlendClusterError::InvalidSeed {

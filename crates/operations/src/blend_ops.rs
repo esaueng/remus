@@ -36,6 +36,20 @@ pub fn set_display_only_blends(enabled: bool) {
     DISPLAY_ONLY_BLENDS.with(|flag| flag.set(enabled));
 }
 
+/// Run `f` with [`set_display_only_blends`] on, restoring the previous
+/// setting afterwards however `f` ends.
+pub(crate) fn display_only_scope<T>(f: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            set_display_only_blends(self.0);
+        }
+    }
+    let _restore = Restore(display_only_blends());
+    set_display_only_blends(true);
+    f()
+}
+
 /// Whether [`set_display_only_blends`] is on for this thread.
 #[must_use]
 pub fn display_only_blends() -> bool {

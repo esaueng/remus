@@ -267,6 +267,15 @@ pub enum BlendClusterError {
         /// The refusal of every attempted stage order.
         reason: String,
     },
+    /// A prepared group edit was requested for a face no blend-group route
+    /// edits (not a band of a recognized group, or not a support carrying
+    /// one, or a group that does not remove to sharp); the unprepared edit
+    /// answers it.
+    #[error("no blend-group edit can be prepared here: {reason}")]
+    NotPrepared {
+        /// Refusal detail.
+        reason: String,
+    },
 }
 
 impl BlendClusterError {
@@ -286,6 +295,7 @@ impl BlendClusterError {
             Self::SharpRebuildFailed { .. } => "blend-cluster-sharp-rebuild-failed",
             Self::InvalidReblend { .. } => "blend-cluster-invalid-reblend",
             Self::ReblendFailed { .. } => "blend-cluster-reblend-failed",
+            Self::NotPrepared { .. } => "blend-cluster-not-prepared",
         }
     }
 }

@@ -58,6 +58,10 @@ pub struct RemusKernel {
     /// Session state outside the topology: checkpoints neither save nor
     /// restore it, and each prepared move checks its source on every call.
     pub(crate) prepared_moves: crate::bindings::prepared_move::PreparedMoves,
+    /// Blend-group edits prepared for interactive drags
+    /// (`prepareResizeBlend`, `prepareResizeCylindricalFace`). Session state
+    /// outside the topology, like `prepared_moves`.
+    pub(crate) prepared_group_edits: crate::bindings::prepared_group_edit::PreparedGroupEdits,
     /// The content caches this session reads (RFC 0009). Every kernel on a
     /// thread holds the thread's default scope, so they share content-keyed
     /// hits; caches not yet moved into a scope are still thread-local.
@@ -114,6 +118,8 @@ impl RemusKernel {
                 remus_check::classify::ClassificationCache::new(),
             ),
             prepared_moves: crate::bindings::prepared_move::PreparedMoves::default(),
+            prepared_group_edits: crate::bindings::prepared_group_edit::PreparedGroupEdits::default(
+            ),
             caches: remus_operations::cache::thread_default_scope(),
         }
     }

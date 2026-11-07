@@ -131,6 +131,7 @@ pub fn remove_blend_cluster(
     solid: SolidId,
     cluster: &BlendCluster,
 ) -> Result<SharpRestoration, OperationsError> {
+    let _span = crate::performance::span("blend_group.remove");
     let all: Vec<usize> = (0..cluster.members.len()).collect();
     remove_blend_members(topo, solid, cluster, &all)
 }

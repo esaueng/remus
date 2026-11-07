@@ -88,6 +88,24 @@ pub struct ReblendStage {
     pub sharp_edges: Vec<usize>,
 }
 
+/// How much of the acceptance work a re-fillet does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Gate {
+    /// Every guard: each stage's blend postconditions (the volume oracle and
+    /// the convex material guard included) and the module's postconditions
+    /// (strict validation, a watertight manifold mesh, API/mesh volume
+    /// agreement). What every edit that keeps its result runs.
+    Full,
+    /// A live preview frame: the stages run as display-only blends
+    /// ([`crate::blend_ops::set_display_only_blends`]), which keep their
+    /// structural checks (every named edge rounded, a closed outer shell, no
+    /// validation error the input did not have) and skip the two measuring
+    /// guards; the finished body must still pass strict validation with a
+    /// closed outer shell. The mesh and volume postconditions are left to the
+    /// commit, which runs [`Gate::Full`].
+    Preview,
+}
+
 /// A re-filleted group.
 #[derive(Debug, Clone)]
 pub struct GroupReblend {
@@ -302,6 +320,17 @@ pub fn reblend_restoration(
     sharp_edges: &[Vec<EdgeId>],
     plans: &[Vec<ReblendStage>],
 ) -> Result<GroupReblend, OperationsError> {
+    reblend_restoration_gated(topo, solid, sharp_edges, plans, Gate::Full)
+}
+
+/// [`reblend_restoration`] under `gate`.
+pub(super) fn reblend_restoration_gated(
+    topo: &mut Topology,
+    solid: SolidId,
+    sharp_edges: &[Vec<EdgeId>],
+    plans: &[Vec<ReblendStage>],
+    gate: Gate,
+) -> Result<GroupReblend, OperationsError> {
     if plans.is_empty() {
         return Err(invalid("no re-fillet plan"));
     }
@@ -333,8 +362,12 @@ pub fn reblend_restoration(
                 )));
             }
         }
-        match remus_topology::transaction::run_transacted(topo, |topo| {
-            run_plan(topo, solid, sharp_edges, &carriers, plan)
+        let _attempt = crate::performance::span("blend_group.plan_attempt");
+        match remus_topology::transaction::run_transacted(topo, |topo| match gate {
+            Gate::Full => run_plan(topo, solid, sharp_edges, &carriers, plan, gate),
+            Gate::Preview => crate::blend_ops::display_only_scope(|| {
+                run_plan(topo, solid, sharp_edges, &carriers, plan, gate)
+            }),
         }) {
             Ok(result) => return Ok(result),
             Err(error) => refusals.push(format!("{}: {error}", describe(plan))),
@@ -371,6 +404,7 @@ fn run_plan(
     sharp_edges: &[Vec<EdgeId>],
     carriers: &[Vec<SeedCarrier>],
     plan: &[ReblendStage],
+    gate: Gate,
 ) -> Result<GroupReblend, OperationsError> {
     let tolerance = Tolerance::new().linear * CARRIER_TOLERANCE;
     let mut current = solid;
@@ -408,6 +442,7 @@ fn run_plan(
             }
             edges
         };
+        let stage_span = crate::performance::span("blend_group.stage");
         let result = match stage.blend {
             StageBlend::Fillet => fillet_cascade(topo, current, &edges, stage.radius)?,
             StageBlend::Chamfer {
@@ -426,6 +461,8 @@ fn run_plan(
             }
             .into());
         }
+        drop(stage_span);
+        let _history = crate::performance::span("blend_group.stage_history");
         let step = match result.face_origins.as_ref() {
             Some(origins) => crate::blend_ops::evolution_from_blend_origins(
                 topo,
@@ -442,7 +479,10 @@ fn run_plan(
         engines.push(result.engine);
         current = result.solid;
     }
-    postconditions(topo, current)?;
+    crate::performance::timed("blend_group.postconditions", || match gate {
+        Gate::Full => postconditions(topo, current),
+        Gate::Preview => preview_postconditions(topo, current),
+    })?;
     Ok(GroupReblend {
         solid: current,
         stages: plan.to_vec(),
@@ -670,34 +710,61 @@ fn sorted<'a>(
     entries
 }
 
+/// A preview frame's acceptance: a closed outer shell and strict
+/// validation, the B-rep half of [`postconditions`]. Every stage has already
+/// passed its blend's structural checks.
+fn preview_postconditions(topo: &Topology, solid: SolidId) -> Result<(), OperationsError> {
+    let shell = topo.shell(topo.solid(solid)?.outer_shell())?;
+    if remus_topology::validation::validate_shell_closed(shell, topo).is_err() {
+        return Err(BlendClusterError::ReblendFailed {
+            reason: "the re-filleted preview has an open outer shell".into(),
+        }
+        .into());
+    }
+    strict_validation(topo, solid)
+}
+
+/// Strict check-crate validation of the re-filleted body.
+fn strict_validation(topo: &Topology, solid: SolidId) -> Result<(), OperationsError> {
+    let report = crate::performance::timed("blend_group.post.validate", || {
+        remus_check::validate::validate_solid(
+            topo,
+            solid,
+            &remus_check::validate::ValidateOptions::default(),
+        )
+    })?;
+    if report.is_valid() {
+        return Ok(());
+    }
+    let detail = report
+        .issues
+        .iter()
+        .filter(|issue| issue.severity == remus_check::validate::Severity::Error)
+        .take(3)
+        .map(|issue| format!("{} ({:?})", issue.description, issue.entity))
+        .collect::<Vec<_>>()
+        .join("; ");
+    Err(BlendClusterError::ReblendFailed {
+        reason: format!(
+            "the re-filleted body fails validation with {} error(s): {detail}",
+            report.error_count()
+        ),
+    }
+    .into())
+}
+
 /// Strict validation, a watertight manifold mesh and API/mesh volume
 /// agreement.
 fn postconditions(topo: &Topology, solid: SolidId) -> Result<(), OperationsError> {
     let failed =
         |reason: String| -> OperationsError { BlendClusterError::ReblendFailed { reason }.into() };
-    let report = remus_check::validate::validate_solid(
-        topo,
-        solid,
-        &remus_check::validate::ValidateOptions::default(),
-    )?;
-    if !report.is_valid() {
-        let detail = report
-            .issues
-            .iter()
-            .filter(|issue| issue.severity == remus_check::validate::Severity::Error)
-            .take(3)
-            .map(|issue| format!("{} ({:?})", issue.description, issue.entity))
-            .collect::<Vec<_>>()
-            .join("; ");
-        return Err(failed(format!(
-            "the re-filleted body fails validation with {} error(s): {detail}",
-            report.error_count()
-        )));
-    }
+    strict_validation(topo, solid)?;
     let bounds = crate::measure::solid_bounding_box(topo, solid)?;
     let diagonal = (bounds.max - bounds.min).length();
     let deflection = diagonal * MESH_DEFLECTION;
-    let mesh = crate::tessellate::tessellate_solid(topo, solid, deflection)?;
+    let mesh = crate::performance::timed("blend_group.post.mesh", || {
+        crate::tessellate::tessellate_solid(topo, solid, deflection)
+    })?;
     let boundary = crate::tessellate::boundary_edge_count(&mesh);
     let non_manifold = crate::tessellate::non_manifold_edge_count(&mesh);
     if boundary != 0 || non_manifold != 0 {
@@ -705,7 +772,9 @@ fn postconditions(topo: &Topology, solid: SolidId) -> Result<(), OperationsError
             "the re-filleted body meshes with {boundary} boundary and {non_manifold} non-manifold edges"
         )));
     }
-    let volume = crate::measure::solid_volume(topo, solid, deflection)?;
+    let volume = crate::performance::timed("blend_group.post.volume", || {
+        crate::measure::solid_volume(topo, solid, deflection)
+    })?;
     let Some(&origin) = mesh.positions.first() else {
         return Err(failed("the re-filleted body has an empty mesh".into()));
     };
