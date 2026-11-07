@@ -471,7 +471,14 @@ impl PreparedSolid<'_> {
                 {
                     Ok(FaceSurface::Nurbs(s)) => SpanBoxes::for_strip(s)
                         .or_else(|| SpanBoxes::with_limit(s, MAX_BOUNDARY_SPANS)),
-                    _ => None,
+                    Ok(
+                        FaceSurface::Plane { .. }
+                        | FaceSurface::Cylinder(_)
+                        | FaceSurface::Cone(_)
+                        | FaceSurface::Sphere(_)
+                        | FaceSurface::Torus(_),
+                    )
+                    | Err(_) => None,
                 }
             })
             .as_ref()
@@ -493,7 +500,14 @@ impl PreparedSolid<'_> {
                     .map(remus_topology::face::Face::surface)
                 {
                     Ok(FaceSurface::Nurbs(surface)) => SpanBoxes::for_surface(surface),
-                    _ => None,
+                    Ok(
+                        FaceSurface::Plane { .. }
+                        | FaceSurface::Cylinder(_)
+                        | FaceSurface::Cone(_)
+                        | FaceSurface::Sphere(_)
+                        | FaceSurface::Torus(_),
+                    )
+                    | Err(_) => None,
                 }
             })
             .as_ref()
