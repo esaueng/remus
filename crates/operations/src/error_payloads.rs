@@ -172,6 +172,16 @@ impl ResizeBlendError {
 /// [`recognize_blend_cluster`](crate::blend_cluster::recognize_blend_cluster).
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum BlendClusterError {
+    /// A cylindrical support cannot reach this diameter while retaining its blends.
+    #[error(
+        "diameter {diameter} mm cannot be built with the existing supports and blends; try a smaller diameter: {reason}"
+    )]
+    DiameterUnbuildable {
+        /// Requested diameter, in model units.
+        diameter: f64,
+        /// Sharp-wall or re-fillet refusal.
+        reason: String,
+    },
     /// The seed does not name a face of the solid.
     #[error("invalid blend-cluster seed: {reason}")]
     InvalidSeed {
@@ -264,6 +274,7 @@ impl BlendClusterError {
     #[must_use]
     pub const fn code(&self) -> &'static str {
         match self {
+            Self::DiameterUnbuildable { .. } => "cylinder-diameter-unbuildable",
             Self::InvalidSeed { .. } => "blend-cluster-invalid-seed",
             Self::NoDependentBlends { .. } => "blend-cluster-no-blends",
             Self::UnrecognizedMember { .. } => "blend-cluster-unrecognized-member",
