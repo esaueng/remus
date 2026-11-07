@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1793975868151,
+  "lastUpdate": 1794058392907,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -142321,6 +142321,304 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 60186,
             "range": "± 319",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Peter",
+            "username": "petertoday",
+            "email": "171875562+petertoday@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "1aed2db51f7976356716ad96b5eaa09a1f221ba0",
+          "message": "feat(blend): unequal-radius concave seam/shoulder corners (#1593)\n\nSpec step A2, concave half (video step 6). On the filleted Gentle-Gecko\npart, a vertical boss seam can now go R4 → R2 / R2.6 under the R4\nshoulder with the convex top rounds kept. Before this, `fillet_cascade`\nbuilt neither stage order (W3 spike), so the group route refused with\n`blend-cluster-reblend-failed`.\n\n**Stacked:** this branches from the video-parity integration commit\n45d42a4f (PRs #1572–#1585, not yet on `main`). Only commit `9dfeff24` is\nnew here. Review that commit, or retarget after those PRs merge.\n\n## Construction\n- **Concave run in one call, each run at its own radius.** `seam_chain`\ngets per-run sizes, exposed as `blend_ops::fillet_cascade_radii`. The\nseam cylinder and shoulder torus mitre exactly as equal runs do, and\nstay exact.\n- **Corner patch (`equal_radius_boss_corner`, generalised).** The convex\nround closes the corner. A ball rolls on the boss over the round, and\nits radius ramps from the seam's to the shoulder's along `3t²−2t³` (zero\nslope at both ends). The ball centre lies on the boss offset `6+r` and\non the round offset `r_c+r`.\n- The patch is the envelope of that sphere family: each section is the\nball's characteristic circle.\n  - It is tangent to the boss and the round along the contacts.\n- Its end sections are the seam cylinder's latitude and the torus's\nmeridian.\n  - Equal radii build bit-for-bit as before.\n- **Fold guard.** For a small round under a large radius change, the\nenvelope folds (no G1 surface exists). That set is now refused with a\ntyped error, leaving the body unchanged. The domain table is in\n`docs/design/unequal-radius-boss-corner.md`. The video's sets build:\nR2.6 seam with R1.6 / R1.9 rounds.\n- **Group route.**\n- The planner tries all concave runs as one mixed-radius stage first\n(`ReblendStage::radii`).\n- The recognizer reads variable-radius corners. It recovers each\nstation's ball from the section circle and the contact rail, and\nmeasures each station at its own radius. Later edits (video step 7, A3,\nA7) can therefore remove the group again.\n  - A variable-radius carrier recognised as a *band* is refused.\n\n## Verification\nNew fixtures are in\n`crates/operations/tests/fillet_unequal_boss_corner.rs`. On the base\nthey cannot build: the API does not exist, and the group route refused\nthese edits, as the old `blend_group_edit` test asserted.\n\n- **From the sharp part.**\n  - Cases:\n- seams [R2, R4], [R4, R2], [R2, R2] and [R2.6, R4] under the R4\nshoulder, with R4 rounds and the R1 cap rim;\n    - seams [R2, R4] with R1.9 rounds.\n  - Each body passes both validators.\n  - 0 mesh boundary and 0 non-manifold edges at diag×5e-5 and diag×2e-5.\n- API vs mesh volume agrees to ≤ 1.2e-5 relative (≤ 4.5e-6 at the finer\ndeflection).\n  - The census is exact except the two corner patches.\n  - Inside/outside probes pass on both sides of every corner patch.\n- **Group route (`resize_blend` → `resize_band_through_group`).**\n- Seam R4→2 on either side and R4→2.6 each match a fresh construction\n(entity counts, census, volume to 1e-6). The source is byte-identical\nafterwards, and evolution accounts for every face.\n- **Cumulative body (A2 R1.9 + A3 + A6), then seam R4→2 on either\nside.** Matches a fresh construction; the bottom chamfer is carried.\n- **Video A2 sequence on one body:** step 4 (x0 round R4→1.9), step 6\n(y0 seam R4→2.6), step 7 (y0 round R4→1.6, giving a corner of seam 2.6 /\nshoulder 4 / round 1.6), then seam R2.6→3.\n  - Every step passes the full verification bar.\n- Seam R3→R2 over the R1.6 round folds, and is a typed refusal with the\nbody unchanged.\n- **G1 across every corner-patch boundary** (largest normal angle at 63\nstations per edge):\n  - unequal corners: 0.02–0.13°, edge-to-surface gap ≤ 5.2e-6;\n  - the existing equal-R4 corner: 0.04–0.11°, gap ≤ 4.8e-6.\n  - Both are 513-section ruled patches.\n- Between stations, the patch stays within 2e-5 of the radius scale of\nthe exact section (unit test).\n- **Local runs.**\n- The full `remus-blend` and `remus-operations` suites under WSL:\neverything passes. Three old expectations were updated:\n    - the concave refusal now uses an R20 seam;\n    - one prepared-edit refusal moved to R20;\n    - the cumulative refusal became a success test.\n- `cargo clippy -D warnings` is clean on both crates, `cargo +1.88\ncheck` passes, and remus-blend rustdoc is clean.\n- Policy scripts pass: det-hash, wildcard arms, edge-domain authority,\ndoc paths, doc module map.\n- **Pre-existing failures from the integration base (files this PR does\nnot touch):**\n- `check-boundaries.sh` / `check-ops-module-graph.py`:\n`blend_cluster/prepared.rs` → `journal_ops`;\n  - O4.7: three `prepared_group_edit` wasm exports;\n  - operations rustdoc: `prepared.rs` links to private `self`.\n- **Not run here:** `remus-io` / wasm test suites, hosted CI.\n\n## Risks\n- **Narrow configuration.** Only the boss/block corner family is\ncovered: a planar wall and top meeting a cylindrical boss with a convex\ntop round. The fold domain is refused rather than solved. Extending the\nramp down the seam would widen it.\n- **Wider recognizer.** It now accepts smoothly varying station radii in\nits measured read, guarded by per-station residuals and the band\nrefusal.\n- **Mesh-broken results from the new entry.** `fillet_cascade_radii` has\nthe same postconditions as `fillet_cascade`, which do not include mesh\nwatertightness. An extreme request (seam R20) built a body with mesh\nboundary edges that only the group route's mesh postcondition rejected.\nThe live-preview gate skips that mesh check.\n- **The W3 spike harness** still tries only the one-radius stage orders,\nso its seam-2 columns are unchanged.\n\nWASM-Size: +32 KiB raw, unequal-radius boss corners and variable-radius\ncorner recognition, Tier: core (part of the existing fillet and\nblend-group edit paths)\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-11-07T08:59:53Z",
+          "url": "https://github.com/esaueng/remus/commit/1aed2db51f7976356716ad96b5eaa09a1f221ba0"
+        },
+        "date": 1794058388580,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 947095,
+            "range": "± 1215",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1019970,
+            "range": "± 1601",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 21620,
+            "range": "± 213",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 6481572,
+            "range": "± 64650",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 6439817,
+            "range": "± 86568",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 6319961,
+            "range": "± 6492",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 22290,
+            "range": "± 16",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 3028932,
+            "range": "± 4130",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 24896321,
+            "range": "± 1182718",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 28,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 89,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 66,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 183,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 167,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 680,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 143,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 296,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 199,
+            "range": "± 14",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 449,
+            "range": "± 16",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 858,
+            "range": "± 10",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 2745,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 16,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 26,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 80,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 74,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "surface_projection/cached_grid/3",
+            "value": 18627,
+            "range": "± 32",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "surface_projection/cached_grid/9",
+            "value": 116014,
+            "range": "± 410",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/bilinear_hit",
+            "value": 3169,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_secant",
+            "value": 11792,
+            "range": "± 138",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_miss",
+            "value": 41799,
+            "range": "± 1193",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/quadratic_hit",
+            "value": 4208,
+            "range": "± 10",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 417828,
+            "range": "± 1749",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 2212760,
+            "range": "± 5764",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 117476,
+            "range": "± 382",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 240142,
+            "range": "± 418",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/plane_torus_grid",
+            "value": 291916,
+            "range": "± 587",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 50469,
+            "range": "± 452",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/narrow_bump_flank",
+            "value": 27157,
+            "range": "± 86",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_hit",
+            "value": 16673,
+            "range": "± 40",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_miss",
+            "value": 90318,
+            "range": "± 808",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_grid_build",
+            "value": 113095,
+            "range": "± 173",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 501800,
+            "range": "± 39893",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 6840115,
+            "range": "± 151493",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 474909,
+            "range": "± 1668",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 954229,
+            "range": "± 955",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 81919,
+            "range": "± 2307",
             "unit": "ns/iter"
           }
         ]
