@@ -1516,6 +1516,28 @@ export class RemusKernel {
      */
     classifyPointWinding(solid: number, x: number, y: number, z: number, tolerance: number): string;
     /**
+     * Keep a prepared group edit at `value`: returns what `resizeBlend` or
+     * `resizeCylindricalFace` returns for the prepared source, face and
+     * value, under every guard.
+     *
+     * # Errors
+     *
+     * As `previewPreparedGroupEdit`, with the unprepared call's refusals.
+     */
+    commitPreparedGroupEdit(prepared: number, value: number): number;
+    /**
+     * Keep a prepared group edit at `value` with its evolution entry: the
+     * JSON `{"solid", "op"}` and the journal entry `resizeBlendJournaled` or
+     * `resizeCylindricalFaceJournaled` returns and records for the prepared
+     * source, face and value.
+     *
+     * # Errors
+     *
+     * The unprepared journaled call's structured refusals, an unknown
+     * handle or a stale source. A refusal restores topology and history.
+     */
+    commitPreparedGroupEditJournaled(prepared: number, value: number): string;
+    /**
      * Find common (shared) edges between two adjacent 2D polygons.
      *
      * Both polygons are flat arrays `[x,y, x,y, ...]`.
@@ -4045,6 +4067,54 @@ export class RemusKernel {
      */
     prepareMoveFaces(solid: number, faces: Uint32Array): number;
     /**
+     * Prepare live radius edits of the blend band containing `face`
+     * (`resizeBlend` through its blend group) for an interactive drag.
+     *
+     * `expected_radius` is the band's current radius, as `resizeBlend`
+     * takes it. Returns an opaque handle for `previewPreparedGroupEdit`,
+     * `commitPreparedGroupEdit` and `commitPreparedGroupEditJournaled`;
+     * release it with `releasePreparedGroupEdit` when the drag ends.
+     * Preparing edits nothing.
+     *
+     * # Errors
+     *
+     * A code-prefixed refusal: `blend-radius-mismatch` for a wrong witness,
+     * `blend-cluster-not-prepared` when the band is not a member of a
+     * recognized blend group that removes to sharp (use `resizeBlend`), or
+     * an invalid handle; also when 16 prepared group edits are live.
+     */
+    prepareResizeBlend(solid: number, face: number, expected_radius: number): number;
+    /**
+     * Prepare live radius edits of the cylindrical support `face` (a boss
+     * wall resized through the blend group it carries, as
+     * `resizeCylindricalFace` does) for an interactive drag.
+     *
+     * # Errors
+     *
+     * As `prepareResizeBlend`; `blend-cluster-not-prepared` when the wall
+     * carries no recognized blend group that removes to sharp (use
+     * `resizeCylindricalFace`).
+     */
+    prepareResizeCylindricalFace(solid: number, face: number): number;
+    /**
+     * One preview frame of a prepared group edit at `value` (the band's new
+     * radius, or the wall's new radius): returns the frame's solid handle.
+     *
+     * The geometry is the group route's for `value`, built with
+     * display-only blends and accepted on a closed shell and strict
+     * validation. Values are source-relative: restore the drag's checkpoint
+     * before each frame, as for `moveFacesPrepared`. Keep a value with
+     * `commitPreparedGroupEdit` or `commitPreparedGroupEditJournaled`.
+     *
+     * # Errors
+     *
+     * A code-prefixed refusal (the codes `resizeBlend` uses), an unknown or
+     * released handle, a non-finite value, or a source that changed since
+     * preparation (`invalid input: prepared group edit is stale`; prepare
+     * again). A refusal leaves the topology unchanged.
+     */
+    previewPreparedGroupEdit(prepared: number, value: number): number;
+    /**
      * Project one edge along a direction onto a face's trimmed region.
      * Returns the §8 typed ProjectedCurves object. Refusals throw with the
      * stable `project-curve:<code>` prefix; omitted options use defaults.
@@ -4127,6 +4197,10 @@ export class RemusKernel {
      * Returns a JSON string describing the recognized features.
      */
     recognizeFeatures(solid: number, deflection: number): string;
+    /**
+     * Release a prepared group edit. Returns whether `prepared` was live.
+     */
+    releasePreparedGroupEdit(prepared: number): boolean;
     /**
      * Release a prepared move. Returns whether `prepared` was live.
      */
@@ -4239,8 +4313,23 @@ export class RemusKernel {
      * cannot re-intersect: `details.neighborSurfaceType` names its surface
      * type and `details.neighborFace` its handle) or `unclassified`, and
      * `details.surfaceType` is the selected face's surface type.
+     *
+     * A full-turn wall whose seam with a sphere carries a rolling-ball
+     * fillet takes the fillet along: the band is removed to the exact sharp
+     * seam, the wall is resized, and the measured ball radius is rolled back
+     * onto the new seam in one transaction. `details.reblend` then holds
+     * `radius`, `sourceBand` (the input band handles) and, for a freeform
+     * band, `sourceDeviation`/`resultDeviation` (each band's measured
+     * distance from its rolling-ball envelope, model units). An exact
+     * (torus) band is rebuilt exactly or refused. A freeform (NURBS) band
+     * has no exact form; it is rebuilt at the same approximate quality only
+     * with `allowApproximate: true`, and the result reports
+     * `quality: "approximate"` with `approximateFaces`. Without the
+     * permission such a wall refuses with category `quality_refused`
+     * (`exact_only_unattainable`, `details.reason:
+     * "approximate_reblend_not_permitted"`).
      */
-    resizeCylindricalFaceDetailed(solid: number, face: number, radius: number): SolidOperationDetailedResult;
+    resizeCylindricalFaceDetailed(solid: number, face: number, radius: number, allow_approximate?: boolean | null): SolidOperationDetailedResult;
     /**
      * Resize a cylindrical wall and record its construction history.
      *
