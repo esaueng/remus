@@ -30,6 +30,10 @@ impl AxialBlendClearance {
         self.fixed
     }
 
+    pub(super) const fn moving(&self) -> FaceId {
+        self.moving
+    }
+
     /// Whether the fixed blend is a full rim of the carrier: a moving partial
     /// spring then meets it at whichever angular positions it covers.
     pub(super) const fn fixed_is_full_rim(&self) -> bool {
