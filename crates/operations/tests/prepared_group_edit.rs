@@ -403,15 +403,16 @@ fn prepared_refusals_keep_the_unprepared_codes() {
         reference.unwrap_err().to_string()
     );
 
-    // The concave seam round R4 → 2 under the R4 shoulder has no
-    // construction: prepared and unprepared refuse it with one code.
+    // A concave seam round R4 → 20 under the R4 shoulder has no
+    // construction (its band leaves no valid corner): prepared and
+    // unprepared refuse it with one code.
     let seam = x0_member(&topo, solid, Convexity::Concave);
     let seam_edit = PreparedGroupEdit::prepare_band(&topo, solid, seam, 4.0).unwrap();
-    let (_, reference) = unprepared(&topo, solid, seam, seam_edit.kind(), 2.0);
+    let (_, reference) = unprepared(&topo, solid, seam, seam_edit.kind(), 20.0);
     let expected = code(&reference.unwrap_err());
     assert_eq!(expected, "blend-cluster-reblend-failed");
     assert_eq!(
-        code(&seam_edit.preview(&mut topo, 2.0).unwrap_err()),
+        code(&seam_edit.preview(&mut topo, 20.0).unwrap_err()),
         expected
     );
     assert_eq!(fingerprint(&topo, solid), before);

@@ -13,9 +13,10 @@
 //! - **A2 convex half** (`resize_blend`): each longitudinal top band
 //!   R4 -> 1.5 and R4 -> 1.9, the seams, shoulder and the other band staying
 //!   R4.
-//! - **A2 concave half, out of scope**: a seam R4 -> 2 under an R4 shoulder
-//!   has no construction (the W3 spike); it must be a typed refusal that
-//!   leaves the body byte-identical.
+//! - **A2 concave half**: a seam R4 -> 2 under an R4 shoulder builds
+//!   through the group (`fillet_unequal_boss_corner.rs`); a seam too large
+//!   for its wall (R20) has no valid construction and must be a typed
+//!   refusal that leaves the body byte-identical.
 //! - **A7** (`resize_cylindrical_face`): the boss diameter 12 -> 14.6 -> 17
 //!   -> 21.1 -> 14.7 chained on one body; oversized diameters are typed
 //!   refusals with the body unchanged.
@@ -503,15 +504,15 @@ fn convex_top_band_radius_edits_rebuild_the_group() {
 }
 
 // ---------------------------------------------------------------------------
-// A2, concave half: out of scope, refused.
+// A2, concave half: an unbuildable seam radius is refused.
 
 #[test]
-fn concave_seam_radius_edit_is_refused_and_leaves_the_body_alone() {
+fn unbuildable_concave_seam_radius_is_refused_and_leaves_the_body_alone() {
     for side in [Side::AlongX, Side::AlongY] {
         let (mut topo, solid) = gecko();
         let before = fingerprint(&topo, solid);
         let seam = seam_band(&topo, solid, side);
-        let error = resize_blend(&mut topo, solid, seam, 4.0, 2.0).unwrap_err();
+        let error = resize_blend(&mut topo, solid, seam, 4.0, 20.0).unwrap_err();
         assert_eq!(
             resize_blend_failure_code(&error),
             "blend-cluster-reblend-failed",
@@ -523,7 +524,7 @@ fn concave_seam_radius_edit_is_refused_and_leaves_the_body_alone() {
         assert_eq!(fingerprint(&topo, solid).0, before.0, "{side:?}");
         // The group route itself runs on a private arena: not even a slot.
         let slots = topo.allocated_slot_count();
-        let error = resize_band_through_group(&mut topo, solid, seam, 4.0, 2.0).unwrap_err();
+        let error = resize_band_through_group(&mut topo, solid, seam, 4.0, 20.0).unwrap_err();
         assert!(
             matches!(&error, OperationsError::BlendCluster(inner) if inner.code() == "blend-cluster-reblend-failed"),
             "{error}"

@@ -256,6 +256,14 @@ Gecko can already be resized sharply through those public exact routes is false
 at this kernel revision. Do not infer unequal-radius success from A0 or browser
 parity from any of these native results.
 
+**Follow-up (unequal corners):** the R2 seam / R4 shoulder corner now builds
+when the concave runs go in one call at their own radii
+(`fillet_cascade_radii`) and the convex rounds close the corner with a
+variable-radius rolling-ball envelope; the group route uses that as its first
+plan. The spike above still tries only the one-radius stage orders, so its
+seam-2 columns are unchanged. Construction, the radius sets it refuses and the
+measurements: `docs/design/unequal-radius-boss-corner.md`.
+
 ## Validation and artifacts
 
 Local: ignored-suite compilation, touched-crate formatting, focused Clippy with

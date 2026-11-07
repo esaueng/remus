@@ -2215,6 +2215,96 @@ pub fn fillet_cascade(
     })
 }
 
+/// [`fillet_cascade`] with a radius of its own for each edge set: one
+/// feature whose edges are rounded at different radii.
+///
+/// Sets of one radius are [`fillet_cascade`] of all their edges. Otherwise
+/// the walking builder takes the sets together, as one call: a concave
+/// seam along a boss whose runs differ in radius (a seam up a block wall at
+/// one radius, the shoulder across its top at another) is built as one chain,
+/// each band at its own radius, mitring where two meet — a later convex
+/// round then closes the corner between unequal seam and shoulder bands.
+/// Run separately, the second band would have to end on the first, which no
+/// engine builds. The result passes the same closed-shell, validation and
+/// volume postconditions as every fillet, the volume bounded by the
+/// smallest and largest radius.
+///
+/// # Errors
+///
+/// `InvalidInput` for an empty selection or a radius that is not finite and
+/// positive; otherwise the walking engine's typed refusal. Every error leaves
+/// the topology as it was.
+pub fn fillet_cascade_radii(
+    topo: &mut Topology,
+    solid: SolidId,
+    sets: &[(Vec<EdgeId>, f64)],
+) -> Result<BlendResult, OperationsError> {
+    let mut edges: Vec<EdgeId> = Vec::new();
+    let (mut smallest, mut largest) = (f64::INFINITY, 0.0f64);
+    for (set, radius) in sets {
+        if !radius.is_finite() || *radius <= 0.0 {
+            return Err(OperationsError::InvalidInput {
+                reason: format!("radius must be finite and positive, got {radius}"),
+            });
+        }
+        if set.is_empty() {
+            continue;
+        }
+        smallest = smallest.min(*radius);
+        largest = largest.max(*radius);
+        edges.extend(set.iter().copied());
+    }
+    if edges.is_empty() {
+        return Err(OperationsError::InvalidInput {
+            reason: "no edges specified".into(),
+        });
+    }
+    if smallest.to_bits() == largest.to_bits() {
+        return fillet_cascade(topo, solid, &edges, largest);
+    }
+    let deduped = dedup_seed_edges(&edges);
+    if deduped.len() != edges.len() {
+        return Err(OperationsError::InvalidInput {
+            reason: "an edge is named in more than one radius set".into(),
+        });
+    }
+    reject_seed_selection_larger_than_solid(topo, solid, "fillet", &edges)?;
+    for (set, radius) in sets {
+        if !set.is_empty() {
+            reject_blend_into_hole(topo, solid, set, *radius)?;
+            refuse_cavity_in_blend_reach(topo, solid, set, *radius, "fillet")?;
+        }
+    }
+    crate::classify::mesh_memo::scoped(|| {
+        crate::measure::volume_memo::scoped(|| {
+            attempt_with_lazy_material_guard(topo, solid, &edges, largest, |t| {
+                transactional(t, |t| {
+                    let mut builder = FilletBuilder::new(t, solid);
+                    for (set, radius) in sets {
+                        if !set.is_empty() {
+                            builder.add_edges(set, *radius);
+                        }
+                    }
+                    let result = builder.build()?;
+                    validate_complete_blend(
+                        t,
+                        "fillet",
+                        solid,
+                        &result,
+                        &edges,
+                        BlendSize::VariableFillet {
+                            min_radius: smallest,
+                            max_radius: largest,
+                        },
+                    )?;
+                    reject_open_shell(t, result.solid)?;
+                    Ok(result)
+                })
+            })
+        })
+    })
+}
+
 fn fillet_cascade_attempts(
     topo: &mut Topology,
     solid: SolidId,

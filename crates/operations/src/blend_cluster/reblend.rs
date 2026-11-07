@@ -12,14 +12,22 @@
 //! after it, which this order cannot reproduce, and is refused. A radius edit
 //! overrides some bands' radii; [`plan_reblend`] turns order and overrides
 //! into candidate stage plans, and [`reblend_restoration`] runs them through
-//! [`fillet_cascade`] until one builds.
+//! [`fillet_cascade`] (or [`fillet_cascade_radii`] for a mixed-radius stage)
+//! until one builds.
 //!
 //! # Plans
 //!
-//! Each suggested step is split by radius (larger first). The first candidate
-//! then merges neighbouring stages of equal radius into one call, which is
-//! how the group is built in the first place (an all-R4 boss group is one
-//! five-edge fillet, the only order that yields its equal-radius corners).
+//! Each suggested step is split by radius (larger first). When the concave
+//! stages carry several radii (a seam edited away from its shoulder), the
+//! first candidate builds them as one mixed-radius stage, each run at its
+//! own radius: a seam and a shoulder of different radii meet in a mitre only
+//! when built together, and the convex round after them closes their corner
+//! with an unequal-radius corner patch. Built one radius at a time, the
+//! second band would have to end on the first, which no engine does. The
+//! next candidate merges neighbouring stages of equal radius into one call,
+//! which is how the group is built in the first place (an all-R4 boss group
+//! is one five-edge fillet, the only order that yields its equal-radius
+//! corners).
 //! The unmerged split and, where one convexity carries several radii, the
 //! smaller-first split follow. Each carries the chamfer stages last, larger
 //! distance first; with several chamfer stages the same fillet candidates
@@ -40,7 +48,8 @@
 //! # Postconditions
 //!
 //! A fillet can return a body whose B-rep closes while its faces do not mesh
-//! together (an unequal concave seam/shoulder corner does, see the W3 spike),
+//! together (a lone seam band of a different radius than the shoulder it
+//! runs into does, see the W3 spike),
 //! so the finished body must pass strict validation and mesh watertight, with
 //! its mesh volume agreeing with the API volume, before it is accepted. Each
 //! attempt runs in its own transaction, so a refused one leaves nothing
@@ -63,7 +72,9 @@ use remus_topology::solid::SolidId;
 
 use super::{BlendCluster, BlendClusterError, BlendMemberKind, Convexity, StageBlend};
 use crate::OperationsError;
-use crate::blend_ops::{SeedCarrier, chamfer_v2, chamfer_v2_tangent_chain, fillet_cascade};
+use crate::blend_ops::{
+    SeedCarrier, chamfer_v2, chamfer_v2_tangent_chain, fillet_cascade, fillet_cascade_radii,
+};
 use crate::evolution::EvolutionMap;
 
 /// Deflection of the watertightness postcondition, as a fraction of the
@@ -86,6 +97,10 @@ pub struct ReblendStage {
     pub blend: StageBlend,
     /// Indices into [`BlendCluster::sharp_edges`], ascending.
     pub sharp_edges: Vec<usize>,
+    /// A mixed-radius fillet stage's radius for each of
+    /// [`Self::sharp_edges`] (then [`Self::radius`] is the largest); empty
+    /// when every edge takes [`Self::radius`].
+    pub radii: Vec<f64>,
 }
 
 /// How much of the acceptance work a re-fillet does.
@@ -204,6 +219,7 @@ pub fn plan_reblend(
                     radius: step.radius,
                     blend: step.blend,
                     sharp_edges,
+                    radii: Vec::new(),
                 });
             }
             continue;
@@ -226,6 +242,7 @@ pub fn plan_reblend(
                     radius,
                     blend: StageBlend::Fillet,
                     sharp_edges: vec![index],
+                    radii: Vec::new(),
                 }),
             }
         }
@@ -261,6 +278,45 @@ pub fn plan_reblend(
         stage.sharp_edges.compact_sort_unstable();
     }
 
+    // The concave runs as one call when they differ in radius, each run at
+    // its own (they may be suggested as separate steps once a seam already
+    // has a radius of its own): a seam and a shoulder of different radii
+    // meet in a mitre only when built together, and a later convex round
+    // closes their corner (see `fillet_cascade_radii`). Built one radius at
+    // a time the second band would have to end on the first.
+    let mut mixed: Vec<ReblendStage> = Vec::new();
+    let mut any_mixed = false;
+    let mut index = 0;
+    while index < split.len() {
+        let (convexity, first) = &split[index];
+        let mut end = index + 1;
+        while end < split.len()
+            && split[end].0 == *convexity
+            && *convexity == Convexity::Concave
+            && split[end].1.blend == StageBlend::Fillet
+            && first.blend == StageBlend::Fillet
+        {
+            end += 1;
+        }
+        if end - index > 1 {
+            let mut pairs: Vec<(usize, f64)> = split[index..end]
+                .iter()
+                .flat_map(|(_, stage)| stage.sharp_edges.iter().map(|&edge| (edge, stage.radius)))
+                .collect();
+            pairs.compact_sort_unstable_by_key(|&(edge, _)| edge);
+            mixed.push(ReblendStage {
+                radius: pairs.iter().map(|&(_, r)| r).fold(0.0, f64::max),
+                blend: StageBlend::Fillet,
+                sharp_edges: pairs.iter().map(|&(edge, _)| edge).collect(),
+                radii: pairs.iter().map(|&(_, r)| r).collect(),
+            });
+            any_mixed = true;
+        } else {
+            mixed.push(first.clone());
+        }
+        index = end;
+    }
+
     let unmerged: Vec<ReblendStage> = split.iter().map(|(_, stage)| stage.clone()).collect();
     let mut merged: Vec<ReblendStage> = Vec::new();
     for stage in &unmerged {
@@ -290,7 +346,12 @@ pub fn plan_reblend(
     }
     let mut plans = Vec::new();
     for chamfer_order in &chamfer_orders {
-        for fillets in [&merged, &unmerged, &ascending] {
+        let candidates: Vec<&Vec<ReblendStage>> = if any_mixed {
+            vec![&mixed, &merged, &unmerged, &ascending]
+        } else {
+            vec![&merged, &unmerged, &ascending]
+        };
+        for fillets in candidates {
             let mut candidate = fillets.clone();
             candidate.extend(chamfer_order.iter().cloned());
             if !plans.contains(&candidate) {
@@ -389,6 +450,9 @@ fn invalid(reason: impl Into<String>) -> OperationsError {
 fn describe(plan: &[ReblendStage]) -> String {
     plan.iter()
         .map(|stage| match stage.blend {
+            StageBlend::Fillet if !stage.radii.is_empty() => {
+                format!("R{:?} {:?}", stage.radii, stage.sharp_edges)
+            }
             StageBlend::Fillet => format!("R{} {:?}", stage.radius, stage.sharp_edges),
             StageBlend::Chamfer { .. } => {
                 format!("chamfer {} {:?}", stage.radius, stage.sharp_edges)
@@ -411,15 +475,16 @@ fn run_plan(
     let mut evolution: Option<EvolutionMap> = None;
     let mut engines = Vec::with_capacity(plan.len());
     for (position, stage) in plan.iter().enumerate() {
-        let edges: Vec<EdgeId> = if position == 0 {
+        // The stage's edges, by sharp edge.
+        let per_sharp: Vec<Vec<EdgeId>> = if position == 0 {
             stage
                 .sharp_edges
                 .iter()
-                .flat_map(|&index| sharp_edges[index].iter().copied())
+                .map(|&index| sharp_edges[index].clone())
                 .collect()
         } else {
             let live = solid_edges(topo, current)?;
-            let mut edges = Vec::new();
+            let mut per_sharp = Vec::with_capacity(stage.sharp_edges.len());
             for &index in &stage.sharp_edges {
                 let on: Vec<EdgeId> = live
                     .iter()
@@ -438,12 +503,26 @@ fn run_plan(
                     }
                     .into());
                 }
-                edges.extend(on);
+                per_sharp.push(on);
             }
-            edges
+            per_sharp
         };
+        let edges: Vec<EdgeId> = per_sharp.iter().flatten().copied().collect();
         let stage_span = crate::performance::span("blend_group.stage");
         let result = match stage.blend {
+            StageBlend::Fillet if !stage.radii.is_empty() => {
+                let mut sets: Vec<(Vec<EdgeId>, f64)> = Vec::new();
+                for (on, &radius) in per_sharp.iter().zip(&stage.radii) {
+                    match sets
+                        .iter_mut()
+                        .find(|(_, existing)| existing.to_bits() == radius.to_bits())
+                    {
+                        Some((set, _)) => set.extend(on.iter().copied()),
+                        None => sets.push((on.clone(), radius)),
+                    }
+                }
+                fillet_cascade_radii(topo, current, &sets)?
+            }
             StageBlend::Fillet => fillet_cascade(topo, current, &edges, stage.radius)?,
             StageBlend::Chamfer {
                 tangent_chain: true,

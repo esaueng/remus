@@ -1115,6 +1115,39 @@ impl Recognizer<'_> {
         Some((offset * sense, foot))
     }
 
+    /// The ball radius of `face`'s section through `point`: the form's
+    /// radius, or a variable-radius carrier's interpolated between the two
+    /// stations either side of the point.
+    fn radius_at(&self, face: FaceId, form: &Form, point: Point3) -> Option<f64> {
+        let Form::Sampled { canal, .. } = form else {
+            return Some(form.radius());
+        };
+        let sections = &canal.sections;
+        if sections
+            .iter()
+            .all(|section| (section.radius - canal.radius).abs() <= 1e-6 * canal.radius)
+        {
+            return Some(canal.radius);
+        }
+        let data = self.topo.face(face).ok()?;
+        let (_, v) = sampled_project_measured(data, point).ok()?;
+        let after = sections.partition_point(|section| section.v < v);
+        Some(match (after.checked_sub(1), sections.get(after)) {
+            (Some(before), Some(next)) => {
+                let (a, b) = (&sections[before], next);
+                let fraction = if b.v > a.v {
+                    ((v - a.v) / (b.v - a.v)).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                (b.radius - a.radius).mul_add(fraction, a.radius)
+            }
+            (None, Some(first)) => first.radius,
+            (Some(last), None) => sections[last].radius,
+            (None, None) => return None,
+        })
+    }
+
     /// Largest rolling-ball residual of `face`'s ball at `points` against a
     /// support: the centre's offset from `ball` (signed by convexity) and the
     /// distance from the centre's foot to the contact point.
@@ -1126,13 +1159,10 @@ impl Recognizer<'_> {
         support: FaceId,
         points: &[Point3],
     ) -> Option<f64> {
-        let expected = if convex {
-            -form.radius()
-        } else {
-            form.radius()
-        };
         let mut residual = 0.0_f64;
         for point in points {
+            let radius = self.radius_at(face, form, *point)?;
+            let expected = if convex { -radius } else { radius };
             let centre = self.centre(face, form, *point)?;
             let (offset, foot) = self.support_offset(support, centre)?;
             residual = residual
@@ -1197,16 +1227,19 @@ impl Recognizer<'_> {
                     .distance_tolerance()
                     .max(other_form.as_ref().map_or(0.0, Form::distance_tolerance));
                 let continues = other_form.as_ref().is_ok_and(|other_form| {
-                    (other_form.radius() - form.radius()).abs() <= distance
-                        && points.iter().all(|point| {
-                            match (
-                                self.centre(face, &form, *point),
-                                self.centre(other, other_form, *point),
-                            ) {
-                                (Some(a), Some(b)) => (a - b).length() <= distance,
-                                _ => false,
+                    points.iter().all(|point| {
+                        match (
+                            self.radius_at(face, &form, *point),
+                            self.radius_at(other, other_form, *point),
+                            self.centre(face, &form, *point),
+                            self.centre(other, other_form, *point),
+                        ) {
+                            (Some(r), Some(s), Some(a), Some(b)) => {
+                                (r - s).abs() <= distance && (a - b).length() <= distance
                             }
-                        })
+                            _ => false,
+                        }
+                    })
                 });
                 if continues {
                     if matches!(other_form, Ok(Form::Cylinder { .. } | Form::Torus { .. })) {
@@ -1313,11 +1346,9 @@ impl Recognizer<'_> {
         canal: &SampledCanal,
         links: &[Link],
     ) -> Result<f64, String> {
-        let expected = if canal.convex {
-            -canal.radius
-        } else {
-            canal.radius
-        };
+        // Each section at its own radius: one common radius, or a variable
+        // carrier's (an unequal boss corner's evolving ball).
+        let signed = |radius: f64| if canal.convex { -radius } else { radius };
         let mut rails: [Vec<FaceId>; 2] = [Vec::new(), Vec::new()];
         for link in links
             .iter()
@@ -1339,37 +1370,39 @@ impl Recognizer<'_> {
             return Err("sampled carrier lost its surface".into());
         };
         // The support a section end touches is the rail support nearest it.
-        let residual = |centre: Point3, contact: Option<Point3>, side: usize| -> Option<f64> {
-            rails[side]
-                .iter()
-                .filter_map(|support| {
-                    let (offset, foot) = self.support_offset(*support, centre)?;
-                    let at = contact.map_or(0.0, |contact| (foot - contact).length());
-                    Some((offset - expected).abs().max(at))
-                })
-                .min_by(f64::total_cmp)
-        };
+        let residual =
+            |centre: Point3, expected: f64, contact: Option<Point3>, side: usize| -> Option<f64> {
+                rails[side]
+                    .iter()
+                    .filter_map(|support| {
+                        let (offset, foot) = self.support_offset(*support, centre)?;
+                        let at = contact.map_or(0.0, |contact| (foot - contact).length());
+                        Some((offset - expected).abs().max(at))
+                    })
+                    .min_by(f64::total_cmp)
+            };
         let mut deviation = 0.0_f64;
         for section in &canal.sections {
             for (side, contact) in [(0, section.start), (1, section.end)] {
-                let value = residual(section.centre, Some(contact), side)
+                let value = residual(section.centre, signed(section.radius), Some(contact), side)
                     .ok_or_else(|| "a section's support has no closed form".to_string())?;
                 deviation = deviation.max(value);
             }
         }
         for pair in canal.sections.windows(2) {
             let v = 0.5 * (pair[0].v + pair[1].v);
+            let radius = 0.5 * (pair[0].radius + pair[1].radius);
             let probe = surface.evaluate(0.5, v);
             let centre =
                 sampled_section_centre_measured(data, probe).map_err(|error| error.to_string())?;
             for side in 0..2 {
-                let value = residual(centre, None, side)
+                let value = residual(centre, signed(radius), None, side)
                     .ok_or_else(|| "a section's support has no closed form".to_string())?;
                 deviation = deviation.max(value);
             }
             for step in 0..=4_u32 {
                 let point = surface.evaluate(f64::from(step) / 4.0, v);
-                deviation = deviation.max(((point - centre).length() - canal.radius).abs());
+                deviation = deviation.max(((point - centre).length() - radius).abs());
             }
         }
         Ok(deviation)
@@ -1884,6 +1917,21 @@ fn assemble(
         members.push((index, MemberSharp::Vertex(vertex)));
     }
     members.compact_sort_unstable_by_key(|(index, _)| *index);
+    // A variable-radius carrier is an unequal corner's evolving ball; as a
+    // band it would have no one radius to re-fillet at.
+    for (index, sharp) in &members {
+        if let (MemberSharp::Edge(_), Form::Sampled { canal, .. }) = (sharp, &drafts[*index].form)
+            && canal
+                .sections
+                .iter()
+                .any(|section| (section.radius - canal.radius).abs() > 1e-6 * canal.radius)
+        {
+            return Err(no_sharp(
+                drafts[*index].faces[0],
+                "a band whose ball radius varies has no one radius to re-fillet at",
+            ));
+        }
+    }
 
     let out: Vec<BlendMember> = members
         .iter()

@@ -1,10 +1,32 @@
-//! Rolling sections for a boss seam crossing an equal-radius convex round.
+//! Rolling sections for a boss seam crossing a convex round.
 //!
 //! The boss is parallel to local Z. The convex strip has its axis parallel to
 //! local X, at local Y = r, Z = 0. Its rolling-ball offset has radius 2r;
 //! the boss offset has radius R+r. Their intersection determines each centre.
 //! Unlike rounding the concave seam first and walking a convex ridge over it,
 //! this construction keeps the boss as the rail throughout the corner.
+//!
+//! # Unequal radii
+//!
+//! The concave seam up the block wall (radius `r_s`), the concave shoulder
+//! round the boss on the block top (`r_h`) and the convex round (`r_c`) need
+//! not agree. The ball then still rolls on the boss over the convex round,
+//! but its radius runs from `r_s` (where the round leaves the wall) to `r_h`
+//! (where it reaches the top) by the Hermite ramp `r(t) = r_s + (r_h −
+//! r_s)(3t² − 2t³)`, `t` the quarter turn about the round's axis: its centre
+//! lies on the boss offset `ρ = R + r(t)` and on the round's offset at
+//! `r_c + r(t)`. The patch is the envelope of that sphere family, the
+//! surface the rolling ball actually sweeps: each section is the ball's
+//! characteristic circle, cut by the plane `(X − c)·c′ = −r r′`. Both
+//! contacts lie on it (the boss contact because `d|c_xy|/dt = r′`, the
+//! round's because its offset grows at the same rate), so the patch is
+//! tangent to the boss and the round along them. `r′` vanishes at both
+//! ends, where the section is the seam cylinder's latitude and the shoulder
+//! torus's meridian, so it meets both bands G1. (A great circle of each ball
+//! through the same contacts, the evolving-radius section of a walked
+//! variable fillet, would cut up to a sixth of the radius change into the
+//! neighbouring balls on so short a spine.) Equal radii are the special
+//! case `r′ ≡ 0`, built exactly as before.
 
 use std::f64::consts::FRAC_PI_2;
 
@@ -67,6 +89,182 @@ pub fn sections(
     Ok(sections)
 }
 
+/// Whether the patch through `sections` folds: somewhere its normal turns
+/// against the side the ball is on (a section point's motion from one
+/// station to the next reverses against its neighbours').
+///
+/// The envelope of a growing ball rolled over a tightly bent spine is not
+/// regular: when the round is small against the radius change (an R2 seam
+/// under an R4 shoulder over a round below about R1.9), the characteristic
+/// circles near the shoulder sweep back over themselves and the envelope
+/// develops a cusp. No G1 patch rides that; the corner is refused instead.
+fn folds(sections: &[CircSection]) -> bool {
+    let arc = |section: &CircSection, u: f64| {
+        let (cp0, cp1, cp2, w) = crate::walker::section_arc(section);
+        let b = [(1.0 - u) * (1.0 - u), 2.0 * u * (1.0 - u) * w, u * u];
+        let sum = b[0] + b[1] + b[2];
+        let o = Point3::new(0.0, 0.0, 0.0);
+        o + ((cp0 - o) * b[0] + (cp1 - o) * b[1] + (cp2 - o) * b[2]) * (1.0 / sum)
+    };
+    let mut sign: Option<bool> = None;
+    for pair in sections.windows(2) {
+        for k in 1..16 {
+            let u = f64::from(k) / 16.0;
+            let here = arc(&pair[0], u);
+            let along = arc(&pair[0], u + 1e-4) - arc(&pair[0], u - 1e-4);
+            let next = arc(&pair[1], u) - here;
+            let side = along.cross(next).dot(here - pair[0].center);
+            if side.abs() <= f64::MIN_POSITIVE {
+                continue;
+            }
+            match sign {
+                None => sign = Some(side > 0.0),
+                Some(positive) if positive != (side > 0.0) => return true,
+                Some(_) => {}
+            }
+        }
+    }
+    false
+}
+
+/// The three radii meeting at a boss corner.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CornerRadii {
+    /// The convex round the corner rides over (the call's radius).
+    pub convex: f64,
+    /// The concave seam up the block wall.
+    pub seam: f64,
+    /// The concave shoulder round the boss on the block top.
+    pub shoulder: f64,
+}
+
+impl CornerRadii {
+    /// All three the same.
+    #[must_use]
+    pub const fn equal(radius: f64) -> Self {
+        Self {
+            convex: radius,
+            seam: radius,
+            shoulder: radius,
+        }
+    }
+
+    fn is_equal(self) -> bool {
+        self.seam.to_bits() == self.convex.to_bits()
+            && self.shoulder.to_bits() == self.convex.to_bits()
+    }
+
+    /// Ball radius and its derivative at `t`.
+    fn ball(self, t: f64) -> (f64, f64) {
+        let rise = self.shoulder - self.seam;
+        let smooth = t * t * (-2.0f64).mul_add(t, 3.0);
+        (rise.mul_add(smooth, self.seam), rise * 6.0 * t * (1.0 - t))
+    }
+}
+
+/// Circular sections of the corner for any radii: the characteristic
+/// circles of the rolling-ball envelope (see the module documentation).
+pub fn sections_with_radii(
+    frame: CornerFrame,
+    boss_radius: f64,
+    radii: CornerRadii,
+    count: usize,
+) -> Result<Vec<CircSection>, BlendError> {
+    if radii.is_equal() {
+        return sections(frame, boss_radius, radii.convex, count);
+    }
+    let valid = |r: f64| r.is_finite() && r > 0.0;
+    if !valid(boss_radius)
+        || !valid(radii.convex)
+        || !valid(radii.seam)
+        || !valid(radii.shoulder)
+        || !(16..=2048).contains(&count)
+    {
+        return Err(BlendError::InvalidInput {
+            reason: "invalid boss-corner radii or station count".into(),
+        });
+    }
+    let mut sections = Vec::with_capacity(count);
+    for index in 0..count {
+        #[allow(clippy::cast_precision_loss)]
+        let t = index as f64 / (count - 1) as f64;
+        sections.push(section_with_radii(frame, boss_radius, radii, t)?);
+    }
+    Ok(sections)
+}
+
+/// The ball at corner station `t`: its centre and radius.
+#[cfg(test)]
+pub fn ball_at(frame: CornerFrame, boss_radius: f64, radii: CornerRadii, t: f64) -> (Point3, f64) {
+    let ([x, y, z], _, r, _) = spine_with_radii(boss_radius, radii, t);
+    (frame.origin + frame.x * x + frame.y * y + frame.z * z, r)
+}
+
+/// Local (x, y, z) of the ball centre at `t` and its derivative.
+fn spine_with_radii(
+    boss_radius: f64,
+    radii: CornerRadii,
+    t: f64,
+) -> ([f64; 3], [f64; 3], f64, f64) {
+    let (r, dr) = radii.ball(t);
+    let angle = (t - 1.0) * FRAC_PI_2;
+    let (sin, cos) = angle.sin_cos();
+    let reach = radii.convex + r;
+    let y = reach.mul_add(sin, radii.convex);
+    let z = reach * cos;
+    let dy = dr.mul_add(sin, reach * cos * FRAC_PI_2);
+    let dz = dr.mul_add(cos, -reach * sin * FRAC_PI_2);
+    let offset = boss_radius + r;
+    let x = offset.mul_add(offset, -y * y).sqrt();
+    let dx = offset.mul_add(dr, -y * dy) / x;
+    ([x, y, z], [dx, dy, dz], r, dr)
+}
+
+fn section_with_radii(
+    frame: CornerFrame,
+    boss_radius: f64,
+    radii: CornerRadii,
+    t: f64,
+) -> Result<CircSection, BlendError> {
+    let point = |p: [f64; 3]| frame.origin + frame.x * p[0] + frame.y * p[1] + frame.z * p[2];
+    let ([x, y, z], d, r, dr) = spine_with_radii(boss_radius, radii, t);
+    if !x.is_finite() || x <= 0.0 {
+        return Err(invalid("boss corner spine leaves the boss offset"));
+    }
+    let angle = (t - 1.0) * FRAC_PI_2;
+    let (sin, cos) = angle.sin_cos();
+    let boss = boss_radius / (boss_radius + r);
+    let centre = point([x, y, z]);
+    // The characteristic circle: the ball cut by (X − c)·c′ = −r r′. It
+    // exists only while the ball grows slower than its centre moves.
+    let speed2 = d[0].mul_add(d[0], d[1].mul_add(d[1], d[2] * d[2]));
+    let (center, radius) = if dr == 0.0 {
+        (centre, r)
+    } else {
+        let squared = r * r * (1.0 - dr * dr / speed2);
+        if squared <= 0.0 || !squared.is_finite() {
+            return Err(invalid(
+                "boss corner ball radius changes faster than its spine",
+            ));
+        }
+        let tangent = frame.x * d[0] + frame.y * d[1] + frame.z * d[2];
+        (centre - tangent * (r * dr / speed2), squared.sqrt())
+    };
+    Ok(CircSection {
+        p1: point([x * boss, y * boss, z]),
+        p2: point([
+            x,
+            radii.convex.mul_add(sin, radii.convex),
+            radii.convex * cos,
+        ]),
+        center,
+        radius,
+        uv1: (0.0, 0.0),
+        uv2: (0.0, 0.0),
+        t,
+    })
+}
+
 fn section_at(frame: CornerFrame, boss_radius: f64, radius: f64, t: f64) -> CircSection {
     let point = |x, y, z| frame.origin + frame.x * x + frame.y * y + frame.z * z;
     let offset = boss_radius + radius;
@@ -118,6 +316,7 @@ struct Sources {
     far: VertexId,
     frame: CornerFrame,
     boss_radius: f64,
+    radii: CornerRadii,
     far_x: f64,
     mitre: Vec<EdgeId>,
 }
@@ -146,10 +345,20 @@ fn detect(
     }
     touched.compact_sort_unstable_by_key(|face| face.index());
     touched.dedup();
-    let tori:Vec<_>=touched.iter().copied().filter(|face|topo.face(*face).is_ok_and(|f|f.is_reversed()&&matches!(f.surface(),FaceSurface::Torus(t) if (t.minor_radius()-radius).abs()<1e-7))).collect();
-    let [torus] = tori.as_slice() else {
+    // The shoulder and seam bands may have radii of their own (see the
+    // module documentation); `radius` is the convex round's.
+    let tori: Vec<_> = touched
+        .iter()
+        .copied()
+        .filter(|face| {
+            topo.face(*face)
+                .is_ok_and(|f| f.is_reversed() && matches!(f.surface(), FaceSurface::Torus(_)))
+        })
+        .collect();
+    let Some(torus) = single_or_equal(topo, &tori, radius)? else {
         return Ok(None);
     };
+    let torus = &torus;
     let torus_data = topo.face(*torus)?;
     let FaceSurface::Torus(ts) = torus_data.surface() else {
         return Ok(None);
@@ -189,7 +398,7 @@ fn detect(
     for &face in &touched {
         let f = topo.face(face)?;
         if f.is_reversed()
-            && matches!(f.surface(),FaceSurface::Cylinder(c) if (c.radius()-radius).abs()<1e-7&&c.axis().cross(z).length()<1e-10)
+            && matches!(f.surface(),FaceSurface::Cylinder(c) if c.axis().cross(z).length()<1e-10)
             && face_edges(topo, face)?
                 .iter()
                 .any(|edge| ts_edges.contains(edge))
@@ -197,11 +406,34 @@ fn detect(
             verticals.push(face);
         }
     }
-    let [vertical] = verticals.as_slice() else {
+    let Some(vertical) = single_or_equal(topo, &verticals, radius)? else {
         return Ok(None);
     };
+    let vertical = &vertical;
     let vertical_edges = face_edges(topo, *vertical)?;
-    let boss_radius = ts.major_radius() - radius;
+    let FaceSurface::Cylinder(vertical_surface) = topo.face(*vertical)?.surface() else {
+        return Ok(None);
+    };
+    let radii = CornerRadii {
+        convex: radius,
+        seam: vertical_surface.radius(),
+        shoulder: ts.minor_radius(),
+    };
+    // Equal radii, or a seam and shoulder that differ (whatever the round):
+    // a round of its own between an equal seam and shoulder rides into the
+    // seam band instead (`fillet_into_seam_band`).
+    let tolerance = 1e-7;
+    let equal =
+        (radii.seam - radius).abs() < tolerance && (radii.shoulder - radius).abs() < tolerance;
+    if !equal && (radii.seam - radii.shoulder).abs() < tolerance {
+        return Ok(None);
+    }
+    let radii = if equal {
+        CornerRadii::equal(radius)
+    } else {
+        radii
+    };
+    let boss_radius = ts.major_radius() - radii.shoulder;
     if boss_radius <= 0.0 {
         return Ok(None);
     }
@@ -215,10 +447,7 @@ fn detect(
     if (ts.center() - boss_surface.origin()).cross(z).length() > 1e-7 {
         return Ok(None);
     }
-    let FaceSurface::Cylinder(vertical_surface) = topo.face(*vertical)?.surface() else {
-        return Ok(None);
-    };
-    let on_wall = vertical_surface.origin() - boss_surface.origin() + y * radius;
+    let on_wall = vertical_surface.origin() - boss_surface.origin() + y * radii.seam;
     let along = on_wall - z * on_wall.dot(z);
     let x = along.normalize()?;
     if x.dot(y).abs() > 1e-10 || x.dot(z).abs() > 1e-10 {
@@ -233,10 +462,15 @@ fn detect(
     }
     let origin = boss_surface.origin() + z * (h - radius);
     let frame = CornerFrame { origin, x, y, z };
-    let expected = ((boss_radius + radius).powi(2) - radius * radius).sqrt();
+    let expected = ((boss_radius + radii.seam).powi(2) - radii.seam * radii.seam).sqrt();
     if (along.length() - expected).abs() > 1e-7
-        || ((ts.center() - origin).dot(z) - 2.0 * radius).abs() > 1e-7
+        || ((ts.center() - origin).dot(z) - (radius + radii.shoulder)).abs() > 1e-7
     {
+        return Ok(None);
+    }
+    // Where the patch leaves the top: the round must reach past it.
+    let top_reach = ((boss_radius + radii.shoulder).powi(2) - radius * radius).sqrt();
+    if !top_reach.is_finite() {
         return Ok(None);
     }
     let (far, far_point) = if coord(pa, frame).x() > coord(pb, frame).x() {
@@ -245,7 +479,7 @@ fn detect(
         (edge.end(), pb)
     };
     let far_x = coord(far_point, frame).x();
-    if far_x <= expected + 1e-7 {
+    if far_x <= expected.max(top_reach) + 1e-7 {
         return Ok(None);
     }
     let ends: Vec<_> = source_faces
@@ -297,9 +531,39 @@ fn detect(
         far,
         frame,
         boss_radius,
+        radii,
         far_x,
         mitre,
     }))
+}
+
+/// The one candidate band, or the one of the call's radius among several.
+fn single_or_equal(
+    topo: &Topology,
+    candidates: &[FaceId],
+    radius: f64,
+) -> Result<Option<FaceId>, BlendError> {
+    if let [only] = candidates {
+        return Ok(Some(*only));
+    }
+    let mut equal = Vec::new();
+    for &face in candidates {
+        let surface = topo.face(face)?.surface();
+        let band = if let FaceSurface::Torus(t) = surface {
+            t.minor_radius()
+        } else if let FaceSurface::Cylinder(c) = surface {
+            c.radius()
+        } else {
+            continue;
+        };
+        if (band - radius).abs() < 1e-7 {
+            equal.push(face);
+        }
+    }
+    Ok(match equal.as_slice() {
+        [only] => Some(*only),
+        _ => None,
+    })
 }
 
 fn contact_curve(points: Vec<Point3>) -> Result<NurbsCurve, BlendError> {
@@ -444,7 +708,15 @@ pub fn blend(
         return Ok(None);
     };
     log::debug!(
-        "equal radius boss corner qualified: top={} wall={} torus={} vertical={} boss={} end={}",
+        "{} boss corner qualified: seam={} shoulder={} convex={} top={} wall={} torus={} vertical={} boss={} end={}",
+        if source.radii.is_equal() {
+            "equal radius"
+        } else {
+            "unequal radius"
+        },
+        source.radii.seam,
+        source.radii.shoulder,
+        source.radii.convex,
         source.top.index(),
         source.wall.index(),
         source.torus.index(),
@@ -454,14 +726,19 @@ pub fn blend(
     );
     let original = solid_faces(topo, solid)?;
     let seam = crossed_seam(topo, adjacency, &source, radius)?;
-    let mut samples = sections(source.frame, source.boss_radius, radius, 513)?;
+    let mut samples = sections_with_radii(source.frame, source.boss_radius, source.radii, 513)?;
+    if !source.radii.is_equal() && folds(&samples) {
+        return Err(invalid(format!(
+            "boss corner envelope folds: a ball growing from R{} to R{} cannot ride an R{} round",
+            source.radii.seam, source.radii.shoulder, source.radii.convex
+        )));
+    }
     let seam_station = if let Some((_, _, parameter)) = seam {
-        samples.push(section_at(
-            source.frame,
-            source.boss_radius,
-            radius,
-            parameter,
-        ));
+        samples.push(if source.radii.is_equal() {
+            section_at(source.frame, source.boss_radius, radius, parameter)
+        } else {
+            section_with_radii(source.frame, source.boss_radius, source.radii, parameter)?
+        });
         samples.compact_sort_by(|a, b| a.t.total_cmp(&b.t));
         samples.dedup_by(|a, b| (a.t - b.t).abs() < 1e-12);
         Some(
@@ -505,8 +782,8 @@ pub fn blend(
     let [a, b, c, d, ew, et]: [VertexId; 6] = nodes
         .try_into()
         .map_err(|_| invalid("boss-corner node count"))?;
-    let bottom = minor_arc(topo, c, a, first.center, radius)?;
-    let top = minor_arc(topo, d, b, last.center, radius)?;
+    let bottom = minor_arc(topo, c, a, first.center, first.radius)?;
+    let top = minor_arc(topo, d, b, last.center, last.radius)?;
     let far_center = frame.origin + frame.x * source.far_x + frame.y * radius;
     let end = minor_arc(topo, ew, et, far_center, radius)?;
     let wall = topo.add_edge(Edge::new(a, ew, EdgeCurve::Line));
@@ -690,11 +967,18 @@ fn crossed_seam(
         if local.x() <= 0.0 {
             continue;
         }
-        let cy = local.y() * (source.boss_radius + radius) / source.boss_radius;
-        if cy <= -radius + 1e-8 || cy >= radius - 1e-8 {
-            continue;
-        }
-        let t = (((cy - radius) / (2.0 * radius)).asin() + FRAC_PI_2) / FRAC_PI_2;
+        let t = if source.radii.is_equal() {
+            let cy = local.y() * (source.boss_radius + radius) / source.boss_radius;
+            if cy <= -radius + 1e-8 || cy >= radius - 1e-8 {
+                continue;
+            }
+            (((cy - radius) / (2.0 * radius)).asin() + FRAC_PI_2) / FRAC_PI_2
+        } else {
+            let Some(t) = seam_station(source, local.y().atan2(local.x())) else {
+                continue;
+            };
+            t
+        };
         let lower = if coord(pa, source.frame).z() < coord(pb, source.frame).z() {
             data.start()
         } else {
@@ -707,6 +991,34 @@ fn crossed_seam(
     }
     Ok(found)
 }
+/// The corner station whose boss contact lies at angle `target` about the
+/// boss axis (from the frame's X towards its Y), strictly inside the corner;
+/// the contact's angle is the centre's, and rises monotonically.
+fn seam_station(source: &Sources, target: f64) -> Option<f64> {
+    let angle = |t: f64| {
+        let ([x, y, _], _, _, _) = spine_with_radii(source.boss_radius, source.radii, t);
+        y.atan2(x)
+    };
+    let (lo, hi) = (angle(0.0), angle(1.0));
+    let margin = 1e-8 / source.boss_radius;
+    if !(lo + margin..=hi - margin).contains(&target) {
+        return None;
+    }
+    let (mut a, mut b) = (0.0f64, 1.0f64);
+    for _ in 0..200 {
+        let m = 0.5 * (a + b);
+        if angle(m) < target {
+            a = m;
+        } else {
+            b = m;
+        }
+        if b - a < 1e-15 {
+            break;
+        }
+    }
+    Some(0.5 * (a + b))
+}
+
 fn boundary_arc(wire: &[OrientedEdge], a: usize, b: usize) -> Vec<OrientedEdge> {
     let mut arc = Vec::new();
     let mut pos = a;
@@ -804,6 +1116,173 @@ mod tests {
 
     use super::*;
     use remus_math::vec::Vec3;
+
+    fn local(frame: Frame3, p: Point3) -> Vec3 {
+        let d = p - frame.origin;
+        Vec3::new(d.dot(frame.x), d.dot(frame.y), d.dot(frame.z))
+    }
+
+    const UNEQUAL: [(f64, CornerRadii); 4] = [
+        (
+            6.0,
+            CornerRadii {
+                convex: 4.0,
+                seam: 2.0,
+                shoulder: 4.0,
+            },
+        ),
+        (
+            6.0,
+            CornerRadii {
+                convex: 4.0,
+                seam: 2.6,
+                shoulder: 4.0,
+            },
+        ),
+        (
+            6.0,
+            CornerRadii {
+                convex: 1.9,
+                seam: 2.0,
+                shoulder: 4.0,
+            },
+        ),
+        (
+            0.006,
+            CornerRadii {
+                convex: 0.004,
+                seam: 0.005,
+                shoulder: 0.002,
+            },
+        ),
+    ];
+
+    /// Every ball centre is on both offsets at its own radius, both
+    /// contacts are on their supports and on the section, each section is
+    /// the ball's characteristic circle (on the ball, its plane normal to
+    /// the spine), and the end sections are the seam cylinder's latitude and
+    /// the shoulder torus's meridian.
+    #[test]
+    fn unequal_sections_are_characteristic_circles_on_both_offsets() {
+        let frame =
+            Frame3::from_normal(Point3::new(3.0, -7.0, 2.0), Vec3::new(1.0, 2.0, 3.0)).unwrap();
+        for (boss_radius, radii) in UNEQUAL {
+            let sections = sections_with_radii(frame.into(), boss_radius, radii, 1025).unwrap();
+            let scale = radii.convex.max(radii.seam).max(radii.shoulder);
+            let tolerance = scale * 1e-10;
+            for section in &sections {
+                let ([x, y, z], d, r, _) = spine_with_radii(boss_radius, radii, section.t);
+                let ball = frame.origin + frame.x * x + frame.y * y + frame.z * z;
+                let tangent = (frame.x * d[0] + frame.y * d[1] + frame.z * d[2])
+                    .normalize()
+                    .unwrap();
+                let p = local(frame, section.p1);
+                let q = local(frame, section.p2);
+                assert!((x.hypot(y) - (boss_radius + r)).abs() < tolerance);
+                assert!(((y - radii.convex).hypot(z) - (radii.convex + r)).abs() < tolerance);
+                assert!((p.x().hypot(p.y()) - boss_radius).abs() < tolerance);
+                assert!(((q.y() - radii.convex).hypot(q.z()) - radii.convex).abs() < tolerance);
+                for contact in [section.p1, section.p2] {
+                    assert!(
+                        ((contact - section.center).length() - section.radius).abs() < tolerance
+                    );
+                    assert!(((contact - ball).length() - r).abs() < tolerance);
+                }
+                assert!((section.center - ball).cross(tangent).length() < tolerance);
+                let normal = (section.p1 - section.center)
+                    .cross(section.p2 - section.center)
+                    .normalize()
+                    .unwrap();
+                assert!(
+                    normal.cross(tangent).length() < 1e-9,
+                    "{normal:?} {tangent:?}"
+                );
+            }
+            let (first, last) = (&sections[0], &sections[sections.len() - 1]);
+            let c = local(frame, first.center);
+            assert!((first.radius - radii.seam).abs() < tolerance);
+            assert!((c.y() + radii.seam).abs() < tolerance && c.z().abs() < tolerance);
+            let c = local(frame, last.center);
+            assert!((last.radius - radii.shoulder).abs() < tolerance);
+            assert!((c.y() - radii.convex).abs() < tolerance);
+            assert!((c.z() - (radii.convex + radii.shoulder)).abs() < tolerance);
+            assert!((c.x().hypot(c.y()) - (boss_radius + radii.shoulder)).abs() < tolerance);
+        }
+    }
+
+    /// The sampled patch through 513 sections stays on the exact sections
+    /// between them: midway between two stations it is within `2e-5` of the
+    /// radius scale of the exact section there.
+    #[test]
+    fn unequal_patch_stays_on_the_envelope_between_sections() {
+        let frame =
+            Frame3::from_normal(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0)).unwrap();
+        for (boss_radius, radii) in UNEQUAL {
+            let sections = sections_with_radii(frame.into(), boss_radius, radii, 513).unwrap();
+            let surface = crate::walker::approximate_blend_surface_linear_v(&sections).unwrap();
+            let scale = radii.convex.max(radii.seam).max(radii.shoulder);
+            let mut worst = 0.0f64;
+            for i in 0..512 {
+                let v = (f64::from(i) + 0.5) / 512.0;
+                let exact = section_with_radii(frame.into(), boss_radius, radii, v).unwrap();
+                let axis = (exact.p1 - exact.center)
+                    .cross(exact.p2 - exact.center)
+                    .normalize()
+                    .unwrap();
+                for k in 0..=8 {
+                    let point = surface.evaluate(f64::from(k) / 8.0, v);
+                    let d = point - exact.center;
+                    let height = d.dot(axis);
+                    let planar = (d - axis * height).length();
+                    worst = worst.max((planar - exact.radius).hypot(height));
+                }
+            }
+            assert!(worst < 2e-5 * scale, "{radii:?}: {worst}");
+        }
+    }
+
+    /// A growing ball over a small round folds the envelope; the corner
+    /// is refused there, and only there.
+    #[test]
+    fn folding_envelopes_are_detected() {
+        let frame =
+            Frame3::from_normal(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0)).unwrap();
+        for (seam, convex, fold) in [
+            (2.0, 4.0, false),
+            (2.0, 1.9, false),
+            (2.6, 1.6, false),
+            (2.6, 4.0, false),
+            (6.0, 1.0, false),
+            (2.0, 1.6, true),
+            (1.0, 1.0, true),
+            (2.6, 1.0, true),
+        ] {
+            let radii = CornerRadii {
+                convex,
+                seam,
+                shoulder: 4.0,
+            };
+            let sections = sections_with_radii(frame.into(), 6.0, radii, 513).unwrap();
+            assert_eq!(folds(&sections), fold, "{radii:?}");
+        }
+        for radius in [1.0, 4.0] {
+            let sections = sections(frame.into(), 6.0, radius, 513).unwrap();
+            assert!(!folds(&sections), "equal R{radius}");
+        }
+    }
+
+    /// Equal radii take the original closed form bit for bit.
+    #[test]
+    fn equal_radii_keep_the_equal_sections() {
+        let frame =
+            Frame3::from_normal(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0)).unwrap();
+        let a = sections(frame.into(), 6.0, 4.0, 257).unwrap();
+        let b = sections_with_radii(frame.into(), 6.0, CornerRadii::equal(4.0), 257).unwrap();
+        for (a, b) in a.iter().zip(&b) {
+            assert_eq!((a.p1, a.p2, a.center), (b.p1, b.p2, b.center));
+            assert_eq!(a.radius.to_bits(), b.radius.to_bits());
+        }
+    }
 
     #[test]
     fn centres_and_contacts_obey_both_analytic_offsets() {

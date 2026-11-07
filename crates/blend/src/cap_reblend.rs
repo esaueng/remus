@@ -320,7 +320,14 @@ fn detach_cap_detours(
 struct CanalNormal<'a> {
     surface: &'a remus_math::nurbs::surface::NurbsSurface,
     sign: f64,
+    /// The common radius, or the largest of a variable-radius carrier.
     radius: f64,
+    /// Each station's ball radius (zero for an unresolved station).
+    radii: Vec<f64>,
+    /// Each station's ball centre on a variable-radius carrier, whose
+    /// sections are the balls' characteristic circles rather than great
+    /// circles; empty when the section centres are the ball centres.
+    centres: Vec<Point3>,
     /// Stations whose section is resolved (all of them for a strict read);
     /// a measured read leaves out collapsed sections at either end.
     resolved: std::ops::Range<usize>,
@@ -334,8 +341,104 @@ enum StationCheck {
     Strict,
     /// A walked carrier read for measurement: stations agree on one radius
     /// within `measured::MEASURED_RADIUS_DRIFT`, and a run of collapsed sections (a
-    /// band riding out to a tangent point) may close either end.
+    /// band riding out to a tangent point) may close either end. A carrier
+    /// whose ball radius evolves (an unequal boss corner's ramp from its
+    /// seam radius to its shoulder radius) is read too when its station
+    /// radii change smoothly, at most `VARIABLE_RADIUS_STEP` from one
+    /// station to the next; the caller measures each station at its own
+    /// radius.
     Measured,
+}
+
+/// Largest relative change of the section radius between two neighbouring
+/// stations of a variable-radius carrier read for measurement.
+const VARIABLE_RADIUS_STEP: f64 = 2e-2;
+
+/// The direction of a rail through its stations at `index`: the derivative
+/// of the three-point quadratic through it and its neighbours by chord
+/// length, second order however unevenly the stations are spaced (a
+/// station is inserted where the boss's own seam crosses a corner).
+fn rail_direction(
+    rail: &[Point3],
+    index: usize,
+    resolved: std::ops::Range<usize>,
+) -> Result<Vec3, BlendError> {
+    let (a, b, c, end) = if index == resolved.start {
+        (index, index + 1, index + 2, 0)
+    } else if index + 1 == resolved.end {
+        (index - 2, index - 1, index, 2)
+    } else {
+        (index - 1, index, index + 1, 1)
+    };
+    let (d1, d2) = (rail[b] - rail[a], rail[c] - rail[b]);
+    let (h1, h2) = (d1.length(), d2.length());
+    if h1 <= 0.0 || h2 <= 0.0 {
+        return Err(refusal("variable-radius carrier has coincident stations"));
+    }
+    // Divided differences of the quadratic through the three stations.
+    let (s1, s2) = (d1 * (1.0 / h1), d2 * (1.0 / h2));
+    let curvature = (s2 - s1) * (1.0 / (h1 + h2));
+    Ok(match end {
+        0 => s1 - curvature * h1,
+        2 => s2 + curvature * h2,
+        _ => s1 + curvature * h1,
+    })
+}
+
+/// The ball behind each resolved station of a variable-radius carrier.
+///
+/// The envelope of a sphere family touches each sphere along its
+/// characteristic circle, which is not a great circle when the radius
+/// changes: the ball's centre is off the section's plane, on its axis. The
+/// envelope's normal at a section end is the ball's radius there, normal
+/// to both the section circle and the contact rail, so the centre is where
+/// that normal line meets the section axis. Both ends must name one centre
+/// (a carrier off the family is refused). On return `radii` holds each
+/// station's ball radius; a great-circle section yields its own centre.
+fn ball_centres(
+    surface: &remus_math::nurbs::surface::NurbsSurface,
+    resolved: std::ops::Range<usize>,
+    radii: &mut [f64],
+) -> Result<Vec<Point3>, BlendError> {
+    let rows = surface.control_points();
+    let weights = surface.weights();
+    let n = rows[0].len();
+    let mut centres = vec![Point3::new(0.0, 0.0, 0.0); n];
+    for index in resolved.clone() {
+        let (first, apex, last) = (rows[0][index], rows[1][index], rows[2][index]);
+        let square = weights[1][index] * weights[1][index];
+        let middle = first + (last - first) * 0.5;
+        let circle = middle + (middle - apex) * (square / (1.0 - square));
+        let axis = (first - circle).cross(last - circle).normalize()?;
+        if resolved.len() < 3 {
+            return Err(refusal("variable-radius carrier has too few sections"));
+        }
+        let mut offsets = [0.0; 2];
+        for (slot, row) in [0_usize, 2].into_iter().enumerate() {
+            let contact = rows[row][index];
+            let rail = rail_direction(&rows[row], index, resolved.clone())?;
+            let normal = axis.cross(contact - circle).cross(rail).normalize()?;
+            // c = circle + s·axis with c − contact parallel to the normal.
+            let across = axis.cross(normal);
+            let denominator = across.dot(across);
+            if denominator < 1e-12 {
+                return Err(refusal(
+                    "variable-radius carrier normal runs along its section axis",
+                ));
+            }
+            offsets[slot] = -(circle - contact).cross(normal).dot(across) / denominator;
+        }
+        let scale = (first - circle).length();
+        if (offsets[0] - offsets[1]).abs() > 1e-4 * scale {
+            return Err(refusal(
+                "variable-radius carrier sections are not one ball's characteristic circles",
+            ));
+        }
+        let centre = circle + axis * (0.5 * (offsets[0] + offsets[1]));
+        centres[index] = centre;
+        radii[index] = (first - centre).length();
+    }
+    Ok(centres)
 }
 
 /// Largest middle weight of a resolved circular section: above it the
@@ -364,6 +467,10 @@ impl<'a> CanalNormal<'a> {
             return Err(refusal("cap canal station has no parameter extent"));
         }
         let fraction = ((v - lo) / (hi - lo)).clamp(0.0, 1.0);
+        if !self.centres.is_empty() {
+            let (a, b) = (self.centres[index], self.centres[index + 1]);
+            return Ok(a + (b - a) * fraction);
+        }
         let p = |row: usize| {
             surface.control_points()[row][index]
                 + (surface.control_points()[row][index + 1] - surface.control_points()[row][index])
@@ -448,6 +555,8 @@ impl<'a> CanalNormal<'a> {
             return Err(refusal("cap corner has no circular sections"));
         }
         let mut expected = None;
+        let mut variable = false;
+        let mut radii = vec![0.0; n];
         for index in 0..n {
             let weight = surface.weights()[1][index];
             if surface.weights()[0][index].to_bits() != 1.0_f64.to_bits()
@@ -468,21 +577,45 @@ impl<'a> CanalNormal<'a> {
             let square = weight * weight;
             let centre = middle + (middle - apex) * (square / (1.0 - square));
             let radius = (first - centre).length();
-            let source = expected.get_or_insert(radius);
+            let source = *expected.get_or_insert(radius);
             if !radius.is_finite()
                 || radius <= 0.0
                 || (radius - (last - centre).length()).abs() > radius * drift + 1e-9
-                || (radius - *source).abs() > radius * drift + 1e-9
             {
                 return Err(refusal(
                     "cap corner does not retain one circular-section radius",
                 ));
             }
+            if (radius - source).abs() > radius * drift + 1e-9 {
+                if !matches!(check, StationCheck::Measured) {
+                    return Err(refusal(
+                        "cap corner does not retain one circular-section radius",
+                    ));
+                }
+                variable = true;
+            }
+            radii[index] = radius;
+        }
+        let mut largest = expected.ok_or_else(|| refusal("cap corner has no circular sections"))?;
+        let mut centres = Vec::new();
+        if variable {
+            centres = ball_centres(surface, resolved.clone(), &mut radii)?;
+            largest = radii[resolved.start];
+            for pair in radii[resolved.clone()].windows(2) {
+                if (pair[1] - pair[0]).abs() > VARIABLE_RADIUS_STEP * pair[0].min(pair[1]) {
+                    return Err(refusal(
+                        "cap corner does not retain one circular-section radius",
+                    ));
+                }
+                largest = largest.max(pair[1]);
+            }
         }
         let mut field = Self {
             surface,
             sign: 1.0,
-            radius: expected.ok_or_else(|| refusal("cap corner has no circular sections"))?,
+            radius: largest,
+            radii,
+            centres,
             resolved,
         };
         // Probe the middle of the resolved stations (the whole carrier on a
@@ -558,6 +691,9 @@ pub struct SampledSection {
     pub v: f64,
     /// Rolling-ball centre of the station's circular section.
     pub centre: Point3,
+    /// The section's radius: the carrier's common radius, or this station's
+    /// own on a variable-radius carrier.
+    pub radius: f64,
     /// Section end on the carrier's `U = 0` boundary.
     pub start: Point3,
     /// Section end on the carrier's `U = 1` boundary.
@@ -571,7 +707,9 @@ pub struct SampledSection {
 /// certify the surface between stations; callers measure that themselves.
 #[derive(Clone, Debug)]
 pub struct SampledCanal {
-    /// Common radius of every stored section.
+    /// Common radius of every stored section; on a variable-radius carrier
+    /// (a measured read only) the largest section radius, each section
+    /// carrying its own.
     pub radius: f64,
     /// Whether the face's outward normal points away from the section
     /// centres (a convex round) rather than toward them (a concave one).
@@ -604,6 +742,7 @@ fn canal_of(field: &CanalNormal<'_>) -> Result<SampledCanal, BlendError> {
         sections.push(SampledSection {
             v,
             centre: field.centre(v)?,
+            radius: field.radii[index],
             start: rows[0][index],
             end: rows[2][index],
         });
@@ -1417,4 +1556,47 @@ fn reblend_impl(
             }),
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+    use crate::equal_radius_boss_corner::{CornerRadii, ball_at, sections_with_radii};
+    use remus_math::frame::Frame3;
+
+    /// A variable-radius envelope carrier (an unequal boss corner) gives
+    /// back each station's ball, centre and radius, to the sampling's second
+    /// order.
+    #[test]
+    fn variable_carrier_stations_recover_their_balls() {
+        let frame =
+            Frame3::from_normal(Point3::new(1.0, 2.0, -3.0), Vec3::new(0.0, 0.0, 1.0)).unwrap();
+        for radii in [
+            CornerRadii {
+                convex: 4.0,
+                seam: 2.0,
+                shoulder: 4.0,
+            },
+            CornerRadii {
+                convex: 1.9,
+                seam: 2.6,
+                shoulder: 4.0,
+            },
+        ] {
+            let sections = sections_with_radii(frame.into(), 6.0, radii, 513).unwrap();
+            let surface = crate::walker::approximate_blend_surface_linear_v(&sections).unwrap();
+            let mut found = vec![0.0; sections.len()];
+            let centres = ball_centres(&surface, 0..sections.len(), &mut found).unwrap();
+            let mut worst = 0.0f64;
+            for (index, section) in sections.iter().enumerate() {
+                let (centre, radius) = ball_at(frame.into(), 6.0, radii, section.t);
+                worst = worst
+                    .max((centres[index] - centre).length())
+                    .max((found[index] - radius).abs());
+            }
+            assert!(worst < 5e-5, "{radii:?}: {worst}");
+        }
+    }
 }

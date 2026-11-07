@@ -214,10 +214,12 @@ impl<'a> Loft<'a> {
         let start = surface.evaluate(0.0, v);
         let end = surface.evaluate(1.0, v);
         let middle = surface.evaluate(0.5, v);
+        let centre = circumcentre(start, middle, end)
+            .ok_or_else(|| refusal("lofted carrier section has collapsed"))?;
         Ok(SampledSection {
             v,
-            centre: circumcentre(start, middle, end)
-                .ok_or_else(|| refusal("lofted carrier section has collapsed"))?,
+            centre,
+            radius: (start - centre).length(),
             start,
             end,
         })
@@ -252,7 +254,9 @@ fn circumcentre(a: Point3, b: Point3, c: Point3) -> Option<Point3> {
 ///
 /// # Errors
 /// Refuses carriers outside both families, or whose sections disagree on
-/// their radius by more than one part in a million.
+/// their radius by more than one part in a million, unless a station
+/// carrier's radius evolves smoothly from station to station (then each
+/// [`SampledSection::radius`] is that station's own).
 pub fn sampled_canal_measured(face: &Face) -> Result<SampledCanal, BlendError> {
     Measured::read(face)?.canal()
 }
