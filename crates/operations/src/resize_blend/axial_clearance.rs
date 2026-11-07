@@ -300,7 +300,7 @@ fn edge_levels(
 pub(super) fn separated_boundary_travel(
     topo: &Topology,
     carrier: FaceId,
-    moved_vertices: &std::collections::HashSet<remus_topology::vertex::VertexId>,
+    is_moved: impl Fn(remus_topology::vertex::VertexId) -> bool,
     direction: Vec3,
 ) -> Result<Option<(f64, f64)>, OperationsError> {
     if !matches!(
@@ -314,10 +314,7 @@ pub(super) fn separated_boundary_travel(
     let mut fixed = Vec::new();
     for edge in face_edges(topo, carrier)? {
         let data = topo.edge(edge)?;
-        match (
-            moved_vertices.contains(&data.start()),
-            moved_vertices.contains(&data.end()),
-        ) {
+        match (is_moved(data.start()), is_moved(data.end())) {
             (true, true) => {
                 let Some(bounds) = edge_levels(topo, edge, direction)? else {
                     return Ok(None);
@@ -453,7 +450,7 @@ mod tests {
                         > 0.99
                 })
                 .unwrap();
-            let moved = face_vertices(&topo, lid).unwrap().into_iter().collect();
+            let moved: DetHashSet<_> = face_vertices(&topo, lid).unwrap().into_iter().collect();
             for &face in &faces {
                 if topo
                     .face(face)
@@ -466,9 +463,10 @@ mod tests {
                 {
                     continue;
                 }
-                let (lower, upper) = separated_boundary_travel(&topo, face, &moved, direction)
-                    .unwrap()
-                    .unwrap();
+                let (lower, upper) =
+                    separated_boundary_travel(&topo, face, |v| moved.contains(&v), direction)
+                        .unwrap()
+                        .unwrap();
                 assert!((-5.999) > lower);
                 assert!(-6.0 <= lower);
                 assert!(25.0 < upper);
@@ -488,7 +486,7 @@ mod tests {
                     > 0.99
             })
             .unwrap();
-        let moved = face_vertices(&topo, side).unwrap().into_iter().collect();
+        let moved: DetHashSet<_> = face_vertices(&topo, side).unwrap().into_iter().collect();
         let neighbour = faces
             .iter()
             .copied()
@@ -502,9 +500,14 @@ mod tests {
             })
             .unwrap();
         assert!(
-            separated_boundary_travel(&topo, neighbour, &moved, Vec3::new(0.0, 0.0, 1.0))
-                .unwrap()
-                .is_none()
+            separated_boundary_travel(
+                &topo,
+                neighbour,
+                |v| moved.contains(&v),
+                Vec3::new(0.0, 0.0, 1.0)
+            )
+            .unwrap()
+            .is_none()
         );
     }
 

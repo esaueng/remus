@@ -2637,7 +2637,7 @@ pub(crate) fn analyze_translation(
                     axial_clearance::separated_boundary_travel(
                         topo,
                         face,
-                        &entities.vertices,
+                        |v| entities.vertices.contains(&v),
                         direction,
                     )
                 })
