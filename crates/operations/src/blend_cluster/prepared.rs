@@ -22,7 +22,7 @@
 //!   measuring checks are nearly all of an edit's time. A frame is a display
 //!   result; keep a value with a commit.
 //! - [`PreparedGroupEdit::commit`] and
-//!   [`PreparedGroupEdit::commit_journaled`] are the unprepared
+//!   `journal_ops::commit_prepared_group_edit_journaled` are the unprepared
 //!   [`crate::resize_blend::resize_blend`] /
 //!   [`crate::push_pull::resize_cylindrical_face`] and their journaled
 //!   variants, with the group route served from the preparation: the same
@@ -69,7 +69,6 @@ use super::edit::{
 use super::reblend::Gate;
 use super::{BlendCluster, BlendClusterError, GroupEdit, recognize_blend_cluster};
 use crate::OperationsError;
-use crate::journal_ops::JournaledSolidOp;
 use crate::measure::volume_memo::{ContentKey, solid_move_key};
 use crate::resize_blend::{ResizeBlendError, ResizeBlendResult};
 
@@ -102,7 +101,7 @@ enum Target {
 }
 
 /// A blend-group edit of one face of one source solid, prepared for
-/// repeated values. See the [module docs](self).
+/// repeated values. See the module docs.
 pub struct PreparedGroupEdit {
     solid: SolidId,
     face: FaceId,
@@ -244,7 +243,7 @@ impl PreparedGroupEdit {
     /// A live preview frame at `value`: the result solid, copied into `topo`.
     ///
     /// The geometry is the group route's for `value`, built with display-only
-    /// blends under the frame gate (see the [module docs](self)); commit the
+    /// blends under the frame gate (see the module docs); commit the
     /// value to keep it.
     ///
     /// # Errors
@@ -277,48 +276,29 @@ impl PreparedGroupEdit {
         self.unprepared(topo, value, Gate::Full)
     }
 
-    /// [`Self::commit`] with its evolution entry: what
-    /// [`crate::journal_ops::resize_blend_journaled`] or
-    /// [`crate::journal_ops::resize_cylindrical_face_journaled`] returns and
-    /// records for the prepared source, face and `value`.
-    ///
-    /// # Errors
-    ///
-    /// A stale-source [`OperationsError::InvalidInput`], or exactly the
-    /// unprepared journaled call's refusal. Topology and history are
-    /// unchanged on every error.
-    pub fn commit_journaled(
+    /// The group route at `value` under every guard, as the band route of
+    /// the journaled commit (`journal_ops::commit_prepared_group_edit_journaled`)
+    /// takes it.
+    pub(crate) fn committed_band_route(
         &self,
         topo: &mut Topology,
         value: f64,
-    ) -> Result<JournaledSolidOp, OperationsError> {
-        let _span = crate::performance::span("blend_group.commit");
-        self.require_current(topo)?;
-        let (solid, face) = (self.solid, self.face);
-        match self.kind {
-            GroupEditKind::BandRadius { expected_radius } => {
-                crate::journal_ops::resize_blend_journaled_with(
-                    topo,
-                    solid,
-                    face,
-                    expected_radius,
-                    value,
-                    |topo| self.band_route(topo, value, Gate::Full),
-                )
-            }
-            GroupEditKind::CylinderRadius { .. } => {
-                crate::journal_ops::resize_cylindrical_face_journaled_with(
-                    topo,
-                    solid,
-                    face,
-                    value,
-                    |topo| self.group_edit(topo, value, Gate::Full).map(Some),
-                )
-            }
-        }
+    ) -> Result<Option<ResizeBlendResult>, OperationsError> {
+        self.band_route(topo, value, Gate::Full)
     }
 
-    fn require_current(&self, topo: &Topology) -> Result<(), OperationsError> {
+    /// The group route at `value` under every guard, as the cylinder route
+    /// of the journaled commit takes it.
+    pub(crate) fn committed_group_edit(
+        &self,
+        topo: &mut Topology,
+        value: f64,
+    ) -> Result<Option<GroupEdit>, OperationsError> {
+        self.group_edit(topo, value, Gate::Full).map(Some)
+    }
+
+    /// Refuses, editing nothing, when the source changed since preparation.
+    pub(crate) fn require_current(&self, topo: &Topology) -> Result<(), OperationsError> {
         if self.is_current(topo) {
             Ok(())
         } else {
