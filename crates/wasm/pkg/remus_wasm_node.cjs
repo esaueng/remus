@@ -7645,13 +7645,29 @@ class RemusKernel {
      * cannot re-intersect: `details.neighborSurfaceType` names its surface
      * type and `details.neighborFace` its handle) or `unclassified`, and
      * `details.surfaceType` is the selected face's surface type.
+     *
+     * A full-turn wall whose seam with a sphere carries a rolling-ball
+     * fillet takes the fillet along: the band is removed to the exact sharp
+     * seam, the wall is resized, and the measured ball radius is rolled back
+     * onto the new seam in one transaction. `details.reblend` then holds
+     * `radius`, `sourceBand` (the input band handles) and, for a freeform
+     * band, `sourceDeviation`/`resultDeviation` (each band's measured
+     * distance from its rolling-ball envelope, model units). An exact
+     * (torus) band is rebuilt exactly or refused. A freeform (NURBS) band
+     * has no exact form; it is rebuilt at the same approximate quality only
+     * with `allowApproximate: true`, and the result reports
+     * `quality: "approximate"` with `approximateFaces`. Without the
+     * permission such a wall refuses with category `quality_refused`
+     * (`exact_only_unattainable`, `details.reason:
+     * "approximate_reblend_not_permitted"`).
      * @param {number} solid
      * @param {number} face
      * @param {number} radius
+     * @param {boolean | null} [allow_approximate]
      * @returns {SolidOperationDetailedResult}
      */
-    resizeCylindricalFaceDetailed(solid, face, radius) {
-        const ret = wasm.remuskernel_resizeCylindricalFaceDetailed(this.__wbg_ptr, solid, face, radius);
+    resizeCylindricalFaceDetailed(solid, face, radius, allow_approximate) {
+        const ret = wasm.remuskernel_resizeCylindricalFaceDetailed(this.__wbg_ptr, solid, face, radius, isLikeNone(allow_approximate) ? 0xFFFFFF : allow_approximate ? 1 : 0);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
