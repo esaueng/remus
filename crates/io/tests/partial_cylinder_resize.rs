@@ -59,6 +59,14 @@ fn qualify(radius: f64, use_replacement: bool) {
     );
     let report = validate_solid(&topo, result).unwrap();
     assert_eq!((report.error_count(), report.warning_count()), (0, 0));
+    // Re-trimmed rims on the planar caps keep a provable (projected) p-curve.
+    let strict = remus_check::validate::validate_solid(
+        &topo,
+        result,
+        &remus_check::validate::ValidateOptions::default(),
+    )
+    .unwrap();
+    assert!(strict.issues.is_empty(), "{:?}", strict.issues);
     assert!((solid_volume(&topo, result, 0.01).unwrap() - expected_volume(radius)).abs() < 1e-6);
     let cylinders: Vec<_> = solid_faces(&topo, result)
         .unwrap()

@@ -22,12 +22,19 @@
 //!
 //! The band is one NURBS surface through every section, linear between
 //! stations, so its long boundaries are exactly the contact polylines the
-//! faces are trimmed along; like every walked band it is an approximation. A
-//! chamfer is the ruled surface between the contacts of the ball whose chord
-//! it is, which sets back the requested distance from a right-angled edge and
-//! runs out with the fillet's contacts.
+//! faces are trimmed along; like every walked band it is an approximation.
+//! A fillet whose chain starts along a straight edge between two planes is
+//! exact there, though: while the ball touches both planes and the spine is
+//! still on that edge, the band is the planes' fillet cylinder. That run is
+//! stored as a cylinder face, trimmed along lines on the planes, and the
+//! walked band starts from the circle it ends on.
+//!
+//! A chamfer is the ruled surface between the contacts of the ball whose
+//! chord it is, which sets back the requested distance from a right-angled
+//! edge and runs out with the fillet's contacts.
 
 use remus_math::nurbs::surface::NurbsSurface;
+use remus_math::surfaces::CylindricalSurface;
 use remus_math::traits::ParametricSurface;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
@@ -36,7 +43,7 @@ use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
 use remus_topology::face::{Face, FaceId, FaceSurface};
 use remus_topology::shell::{Shell, ShellId};
 use remus_topology::solid::{Solid, SolidId};
-use remus_topology::vertex::VertexId;
+use remus_topology::vertex::{Vertex, VertexId};
 use remus_topology::wire::{OrientedEdge, Wire};
 
 use crate::analytic::edge_material_frames_at;
@@ -118,6 +125,231 @@ struct March {
     /// For each side, the index of the section where it hands over to its
     /// next face; the next run starts there.
     switches: [Vec<usize>; 2],
+}
+
+/// The start of a fillet's march while the ball still touches the two
+/// planes the chain starts between and the spine is still on their common
+/// edge. The band is exactly the planes' fillet cylinder there.
+struct StraightRun {
+    /// The section where the run ends.
+    end: usize,
+    radius: f64,
+    /// Outward unit normals of side 0's and side 1's planes.
+    normals: [Vec3; 2],
+    /// A point of the line the ball's centre runs along, and its unit
+    /// direction, along the march.
+    origin: Point3,
+    axis: Vec3,
+    /// A point of the planes' common line: the sharp edge the run rounds.
+    edge_point: Point3,
+}
+
+impl StraightRun {
+    /// The straight run of a fillet march: both sides start on planes and
+    /// the march starts along their common straight edge. It ends where the
+    /// first side hands over to its next face or where the spine leaves that
+    /// edge, whichever comes first (past the edge the sections lie in the
+    /// next spine edge's normal planes, off the cylinder). When no station
+    /// lands on the edge's end, one is inserted there and `switches` shifted
+    /// past it. Every section of the run must lie on the planes' fillet
+    /// cylinder within `tolerance`; the run is then put exactly on it by
+    /// [`Self::place`].
+    #[allow(clippy::too_many_arguments)]
+    fn find(
+        topo: &Topology,
+        ridge: &Ridge,
+        spine_edges: &[EdgeId],
+        v_start: VertexId,
+        switches: &mut [Vec<usize>; 2],
+        sections: &mut Vec<CircSection>,
+        radius: f64,
+        tolerance: f64,
+    ) -> Result<Option<Self>, BlendError> {
+        let Some(handover) = switches.iter().filter_map(|at| at.first().copied()).min() else {
+            return Ok(None);
+        };
+        if handover < 1 || handover + 1 >= sections.len() || ridge.concave {
+            return Ok(None);
+        }
+        let mut planes = Vec::with_capacity(2);
+        for side in &ridge.sides {
+            let face = topo.face(side.faces[0])?;
+            let FaceSurface::Plane { normal, d } = face.surface() else {
+                return Ok(None);
+            };
+            let (Ok(unit), scale) = (normal.normalize(), normal.length()) else {
+                return Ok(None);
+            };
+            let d = d / scale;
+            planes.push(if face.is_reversed() {
+                (-unit, -d)
+            } else {
+                (unit, d)
+            });
+        }
+        let ((n0, d0), (n1, d1)) = (planes[0], planes[1]);
+        let cross = n0.cross(n1);
+        let sin_squared = cross.length_squared();
+        if sin_squared < 1e-12 {
+            return Ok(None);
+        }
+        // The point of the line `n0·x = h0, n1·x = h1` closest to the origin.
+        let line_point = |h0: f64, h1: f64| {
+            Point3::new(0.0, 0.0, 0.0)
+                + (n1.cross(cross) * h0 + cross.cross(n0) * h1) * (1.0 / sin_squared)
+        };
+        let mut axis = cross * (1.0 / sin_squared.sqrt());
+        if (sections[1].center - sections[0].center).dot(axis) < 0.0 {
+            axis = -axis;
+        }
+        let mut run = Self {
+            end: handover,
+            radius,
+            normals: [n0, n1],
+            // A convex ball's centre lies `radius` inside both planes.
+            origin: line_point(d0 - radius, d1 - radius),
+            axis,
+            edge_point: line_point(d0, d1),
+        };
+
+        // The spine's first edge in march order must be that common edge;
+        // its far vertex is where the spine leaves it.
+        let (Some(&first), Some(&last)) = (spine_edges.first(), spine_edges.last()) else {
+            return Ok(None);
+        };
+        let edge = topo.edge(if ridge.reversed { last } else { first })?;
+        if !matches!(edge.curve(), EdgeCurve::Line) {
+            return Ok(None);
+        }
+        let far = if edge.start() == v_start {
+            edge.end()
+        } else if edge.end() == v_start {
+            edge.start()
+        } else {
+            return Ok(None);
+        };
+        for vertex in [v_start, far] {
+            let point = topo.vertex(vertex)?.point();
+            if (run.corner(point) - point).length() > tolerance {
+                return Ok(None);
+            }
+        }
+        let level = |point: Point3| (point - run.origin).dot(run.axis);
+        let edge_end = level(topo.vertex(far)?.point());
+
+        let on_cylinder = |section: &CircSection| {
+            let center = run.project(section.center);
+            (section.radius - radius).abs() <= tolerance
+                && (section.center - center).length() <= tolerance
+                && (section.p1 - (center + n0 * radius)).length() <= tolerance
+                && (section.p2 - (center + n1 * radius)).length() <= tolerance
+        };
+        let mut end = 0;
+        while end < handover
+            && level(sections[end + 1].center) <= edge_end + tolerance
+            && on_cylinder(&sections[end + 1])
+        {
+            end += 1;
+        }
+        if !on_cylinder(&sections[0]) {
+            return Ok(None);
+        }
+        if end < handover && (level(sections[end].center) - edge_end).abs() > tolerance {
+            // The next station is past the edge's end: a section of its
+            // own there, unless the march left the cylinder before it.
+            if level(sections[end + 1].center) <= edge_end {
+                return Ok(None);
+            }
+            let (before, after) = (&sections[end], &sections[end + 1]);
+            let fraction =
+                (edge_end - level(before.center)) / (level(after.center) - level(before.center));
+            let mut section = CircSection {
+                center: run.origin + run.axis * edge_end,
+                t: fraction.mul_add(after.t - before.t, before.t),
+                ..before.clone()
+            };
+            run.place(&mut section);
+            end += 1;
+            sections.insert(end, section);
+            for at in switches.iter_mut().flatten() {
+                if *at >= end {
+                    *at += 1;
+                }
+            }
+        }
+        if end < 1 || end + 1 >= sections.len() {
+            return Ok(None);
+        }
+        run.end = end;
+        Ok(Some(run))
+    }
+
+    /// The point of the centre line level with `point` along the axis.
+    fn project(&self, point: Point3) -> Point3 {
+        self.origin + self.axis * (point - self.origin).dot(self.axis)
+    }
+
+    /// The point of the sharp edge level with `point`.
+    fn corner(&self, point: Point3) -> Point3 {
+        self.edge_point + self.axis * (point - self.edge_point).dot(self.axis)
+    }
+
+    /// Put `section` exactly on the cylinder, level with its walked centre.
+    fn place(&self, section: &mut CircSection) {
+        let center = self.project(section.center);
+        section.center = center;
+        section.p1 = center + self.normals[0] * self.radius;
+        section.p2 = center + self.normals[1] * self.radius;
+        section.radius = self.radius;
+    }
+
+    /// Centre the run's end section level with the contact of the side
+    /// that hands over there (now on its seam), and put the other contact
+    /// on the circle there. `false` when a handing-over contact is not on
+    /// that circle.
+    fn settle(&self, section: &mut CircSection, switches: &[Vec<usize>; 2]) -> bool {
+        let handing: Vec<usize> = (0..2)
+            .filter(|&k| switches[k].first() == Some(&self.end))
+            .collect();
+        let contact =
+            |section: &CircSection, k: usize| if k == 0 { section.p1 } else { section.p2 };
+        let Some(&first) = handing.first() else {
+            // It ends where the spine leaves the straight edge, already on
+            // the cylinder.
+            return true;
+        };
+        let center = self.project(contact(section, first));
+        let tolerance = remus_math::tolerance::Tolerance::new().linear;
+        for &k in &handing {
+            let offset = contact(section, k) - center;
+            if offset.dot(self.axis).abs() > tolerance
+                || (offset.length() - self.radius).abs() > tolerance
+            {
+                log::debug!(
+                    "ridge chain: handover contact {k} is {} off the straight run's end circle",
+                    (offset.length() - self.radius).abs()
+                );
+                return false;
+            }
+        }
+        section.center = center;
+        if !handing.contains(&0) {
+            section.p1 = center + self.normals[0] * self.radius;
+        }
+        if !handing.contains(&1) {
+            section.p2 = center + self.normals[1] * self.radius;
+        }
+        true
+    }
+
+    /// The cylinder the band is along the run.
+    fn cylinder(&self) -> Result<CylindricalSurface, BlendError> {
+        Ok(CylindricalSurface::new(
+            self.origin,
+            self.axis,
+            self.radius,
+        )?)
+    }
 }
 
 /// Blend each chain in `chains` as one band, in turn, when every one of them
@@ -355,6 +587,7 @@ fn blend_one(
         }
     };
     let mut sections = march.sections;
+    let mut switches = march.switches;
     let count = sections.len();
     if ridge.runout {
         // The ball's contacts close onto the end vertex.
@@ -377,15 +610,38 @@ fn blend_one(
         };
     }
 
+    // While the ball still touches the two planes the chain starts between,
+    // the band is exactly their fillet cylinder: put those sections on it.
+    let touch = 1e-5 * size.max(1.0);
+    let mut straight = match blend {
+        RidgeBlend::Fillet(radius) => StraightRun::find(
+            topo,
+            &ridge,
+            spine_edges,
+            v_start,
+            &mut switches,
+            &mut sections,
+            radius,
+            touch,
+        )?,
+        RidgeBlend::Chamfer(_) => None,
+    };
+    if let Some(run) = &straight {
+        for section in &mut sections[..=run.end] {
+            run.place(section);
+        }
+    }
+    // The run may have gained a section where the spine leaves its edge.
+    let count = sections.len();
+
     // Every run starts and ends on its face's boundary: an end edge, or the
     // seam it hands over at. The walker leaves the contact within its own
     // tolerance of that edge; put it on the edge, so the vertex the trims
     // split it at is certified.
-    let touch = 1e-5 * size.max(1.0);
     for k in 0..2 {
         let faces = &ridge.sides[k].faces;
         let mut stops = vec![(0, faces[0])];
-        for (run, &at) in march.switches[k].iter().enumerate() {
+        for (run, &at) in switches[k].iter().enumerate() {
             stops.push((at, faces[run]));
         }
         if !ridge.runout {
@@ -403,21 +659,35 @@ fn blend_one(
             }
         }
     }
+    // Where the straight run ends on a side's handover, centre its last
+    // section on that contact, which now lies on its seam, so the circle the
+    // cylinder and the walked transition share passes through both of its
+    // vertices.
+    if let Some(run) = &straight
+        && !run.settle(&mut sections[run.end], &switches)
+    {
+        straight = None;
+    }
+    // The first section the walked band starts from.
+    let walked_from = straight.as_ref().map_or(0, |run| run.end);
 
     #[allow(clippy::cast_precision_loss)]
     let station = |index: usize| index as f64 / (count - 1) as f64;
     log::debug!(
         target: "remus_approx",
-        "blend: ridge chain over {}+{} faces — {count} walked sections, approximate NURBS blend surface",
+        "blend: ridge chain over {}+{} faces — {} walked sections (exact cylinder over the first {walked_from}), approximate NURBS blend surface",
         ridge.sides[0].faces.len(),
         ridge.sides[1].faces.len(),
+        count - walked_from,
     );
     let contacts = [
         sections_to_contact_curve(&sections, |section| section.p1)?,
         sections_to_contact_curve(&sections, |section| section.p2)?,
     ];
     let band = match blend {
-        RidgeBlend::Fillet(_) => FaceSurface::Nurbs(approximate_blend_surface_linear_v(&sections)?),
+        RidgeBlend::Fillet(_) => FaceSurface::Nurbs(approximate_blend_surface_linear_v(
+            &sections[walked_from..],
+        )?),
         RidgeBlend::Chamfer(_) => FaceSurface::Nurbs(ruled_band(&sections)?),
     };
     let mut replacements = remus_math::det_hash::DetHashMap::default();
@@ -427,7 +697,11 @@ fn blend_one(
 
     // Each side's faces, in march order: each run ends where the next one
     // starts, on the vertex the earlier trim made.
+    // On a split band each side's first edge is the straight run's line,
+    // ending on the vertex the run's end circle starts from.
     let mut side_edges: [Vec<EdgeId>; 2] = [Vec::new(), Vec::new()];
+    let mut edge_faces: [Vec<FaceId>; 2] = [Vec::new(), Vec::new()];
+    let mut split_vertices: [Option<VertexId>; 2] = [None, None];
     let mut side_ends: [(VertexId, VertexId); 2] = [(v_start, v_start), (v_start, v_start)];
     for k in 0..2 {
         let side = &ridge.sides[k];
@@ -438,12 +712,12 @@ fn blend_one(
             let first = if index == 0 {
                 0
             } else {
-                march.switches[k][index - 1]
+                switches[k][index - 1]
             };
             let last = if index + 1 == runs {
                 count - 1
             } else {
-                march.switches[k][index]
+                switches[k][index]
             };
             let face = current(&replacements, original);
             let mut wire = topo.wire(topo.face(face)?.outer_wire())?.edges().to_vec();
@@ -473,13 +747,39 @@ fn blend_one(
                 };
                 (from, to)
             };
-            let edge = add_certified_curve_edge(
-                topo,
-                from_vertex,
-                to_vertex,
-                EdgeCurve::NurbsCurve(contacts[k].clone()),
-                (station(first), station(last)),
-            )?;
+            let mut run_edges = Vec::with_capacity(2);
+            match &straight {
+                Some(run) if index == 0 => {
+                    // The line along the plane up to the run's end, then the
+                    // walked contact on from there.
+                    let split = if run.end == last {
+                        to_vertex
+                    } else {
+                        topo.add_vertex(Vertex::new(
+                            pick(&sections[run.end], k),
+                            remus_math::tolerance::Tolerance::new().linear,
+                        ))
+                    };
+                    run_edges.push(topo.add_edge(Edge::new(from_vertex, split, EdgeCurve::Line)));
+                    if run.end != last {
+                        run_edges.push(add_certified_curve_edge(
+                            topo,
+                            split,
+                            to_vertex,
+                            EdgeCurve::NurbsCurve(contacts[k].clone()),
+                            (station(run.end), station(last)),
+                        )?);
+                    }
+                    split_vertices[k] = Some(split);
+                }
+                _ => run_edges.push(add_certified_curve_edge(
+                    topo,
+                    from_vertex,
+                    to_vertex,
+                    EdgeCurve::NurbsCurve(contacts[k].clone()),
+                    (station(first), station(last)),
+                )?),
+            }
             let (Some(from), Some(to)) = (
                 trimmer::vertex_occurrence(
                     topo,
@@ -505,12 +805,16 @@ fn blend_one(
                 &[CutPiece {
                     from,
                     to,
-                    edges: vec![OrientedEdge::new(edge, true)],
+                    edges: run_edges
+                        .iter()
+                        .map(|&edge| OrientedEdge::new(edge, true))
+                        .collect(),
                 }],
                 spine_edges,
             )?;
             replacements.insert(original, trimmed);
-            side_edges[k].push(edge);
+            edge_faces[k].extend(run_edges.iter().map(|_| original));
+            side_edges[k].extend(run_edges);
             first_vertex.get_or_insert(from_vertex);
             last_vertex = Some(to_vertex);
         }
@@ -562,7 +866,28 @@ fn blend_one(
             })?,
         )
     };
-    let mut loop_edges: Vec<OrientedEdge> = side_edges[0]
+    let trim_failure = || BlendError::TrimmingFailure {
+        face: ridge.sides[0].faces[0],
+    };
+    // The circle the straight run ends on, from side 0's vertex on it to
+    // side 1's.
+    let split = match (&straight, split_vertices) {
+        (None, _) => None,
+        (Some(run), [Some(a), Some(b)]) => {
+            let center = sections[run.end].center;
+            let arc = make_end_arc(topo, a, b, center, run.axis, run.radius, run.corner(center))?
+                .ok_or_else(trim_failure)?;
+            Some((run, a, b, arc))
+        }
+        (Some(_), _) => return Err(trim_failure()),
+    };
+    // The straight run's line on each side opens that side's edges.
+    let lead = usize::from(split.is_some());
+
+    // The walked band: along side 0, across the end section (none at a
+    // run-out), back along side 1, and across the start section or, past a
+    // straight run, back across the circle it ends on.
+    let mut loop_edges: Vec<OrientedEdge> = side_edges[0][lead..]
         .iter()
         .map(|&edge| OrientedEdge::new(edge, true))
         .collect();
@@ -573,31 +898,43 @@ fn blend_one(
         ));
     }
     loop_edges.extend(
-        side_edges[1]
+        side_edges[1][lead..]
             .iter()
             .rev()
             .map(|&edge| OrientedEdge::new(edge, false)),
     );
-    loop_edges.push(OrientedEdge::new(
-        start_edge,
-        topo.edge(start_edge)?.start() == side_ends[1].0,
-    ));
+    // The cylinder: along side 0's line, across the circle, back along
+    // side 1's line and across the start section.
+    let start_forward = topo.edge(start_edge)?.start() == side_ends[1].0;
+    let mut cylinder_loop = if let Some((_, a, b, arc)) = split {
+        let arc_from_a = topo.edge(arc)?.start() == a;
+        loop_edges.push(OrientedEdge::new(arc, topo.edge(arc)?.start() == b));
+        Some(vec![
+            OrientedEdge::new(side_edges[0][0], true),
+            OrientedEdge::new(arc, arc_from_a),
+            OrientedEdge::new(side_edges[1][0], false),
+            OrientedEdge::new(start_edge, start_forward),
+        ])
+    } else {
+        loop_edges.push(OrientedEdge::new(start_edge, start_forward));
+        None
+    };
     // Every contact edge must run against its trimmed face's use of it; the
     // trims fix which way that is.
     let first_face = current(&replacements, ridge.sides[0].faces[0]);
     match effective_use(topo, first_face, side_edges[0][0])? {
-        Some(true) => loop_edges = reversed_loop(&loop_edges),
-        Some(false) => {}
-        None => {
-            return Err(BlendError::TrimmingFailure {
-                face: ridge.sides[0].faces[0],
-            });
+        Some(true) => {
+            loop_edges = reversed_loop(&loop_edges);
+            cylinder_loop = cylinder_loop.map(|edges| reversed_loop(&edges));
         }
+        Some(false) => {}
+        None => return Err(trim_failure()),
     }
     for k in 0..2 {
-        for (&original, &edge) in ridge.sides[k].faces.iter().zip(&side_edges[k]) {
+        for (&original, &edge) in edge_faces[k].iter().zip(&side_edges[k]) {
             let along_band = loop_edges
                 .iter()
+                .chain(cylinder_loop.iter().flatten())
                 .find(|oe| oe.edge() == edge)
                 .map(OrientedEdge::is_forward);
             let along_face = effective_use(topo, current(&replacements, original), edge)?;
@@ -610,30 +947,38 @@ fn blend_one(
     // cuts away) and away from it on a concave one (the corner it fills). A
     // chamfer section has no ball centre to judge by, so both go by the
     // spine.
-    let middle = &sections[count / 2];
-    let (u, v) = (0.5, station(count / 2));
-    let point = band.evaluate(u, v).ok_or(BlendError::TrimmingFailure {
-        face: ridge.sides[0].faces[0],
-    })?;
+    let walked = count - walked_from;
+    let middle = &sections[walked_from + walked / 2];
+    #[allow(clippy::cast_precision_loss)]
+    let (u, v) = (0.5, (walked / 2) as f64 / (walked - 1) as f64);
+    let point = band.evaluate(u, v).ok_or_else(trim_failure)?;
     let ridge_point = spine.evaluate(topo, middle.t * length)?;
     let toward_ridge = band.normal(u, v).dot(ridge_point - point) > 0.0;
     let reversed = toward_ridge == ridge.concave;
     if reversed {
         loop_edges = reversed_loop(&loop_edges);
     }
-    let effective_from =
-        |loop_edges: &[OrientedEdge], edge: EdgeId| -> Result<VertexId, BlendError> {
-            let forward = loop_edges
-                .iter()
-                .find(|oe| oe.edge() == edge)
-                .is_some_and(|oe| oe.is_forward() != reversed);
-            let edge = topo.edge(edge)?;
-            Ok(if forward { edge.start() } else { edge.end() })
-        };
-    let start_from = effective_from(&loop_edges, start_edge)?;
+    let effective_from = |topo: &Topology,
+                          loop_edges: &[OrientedEdge],
+                          reversed: bool,
+                          edge: EdgeId|
+     -> Result<VertexId, BlendError> {
+        let forward = loop_edges
+            .iter()
+            .find(|oe| oe.edge() == edge)
+            .is_some_and(|oe| oe.is_forward() != reversed);
+        let edge = topo.edge(edge)?;
+        Ok(if forward { edge.start() } else { edge.end() })
+    };
     let end_from = match end {
-        Some(end) => Some(effective_from(&loop_edges, end)?),
+        Some(end) => Some(effective_from(topo, &loop_edges, reversed, end)?),
         None => None,
+    };
+    // The start section closes the cylinder when there is one.
+    let mut start_from = if cylinder_loop.is_none() {
+        Some(effective_from(topo, &loop_edges, reversed, start_edge)?)
+    } else {
+        None
     };
     let band_wire = topo.add_wire(Wire::new(loop_edges, true)?);
     let mut band_face = Face::new(band_wire, Vec::new(), band);
@@ -646,6 +991,30 @@ fn blend_one(
         .flat_map(|side| side.faces.iter().copied())
         .collect();
     let mut created = vec![(band_face, supports_faces)];
+    if let (Some((run, ..)), Some(mut edges)) = (split, cylinder_loop) {
+        // Its natural normal points away from the axis: out of the corner
+        // on a convex ridge, like the band.
+        let section = &sections[run.end / 2];
+        let mid_chord = section.p1 + (section.p2 - section.p1) * 0.5;
+        let outward = (mid_chord - section.center)
+            .normalize()
+            .map_err(|_| trim_failure())?;
+        let point = section.center + outward * run.radius;
+        let toward_ridge = outward.dot(run.corner(section.center) - point) > 0.0;
+        let reversed = toward_ridge == ridge.concave;
+        if reversed {
+            edges = reversed_loop(&edges);
+        }
+        start_from = Some(effective_from(topo, &edges, reversed, start_edge)?);
+        let wire = topo.add_wire(Wire::new(edges, true)?);
+        let mut face = Face::new(wire, Vec::new(), FaceSurface::Cylinder(run.cylinder()?));
+        face.set_reversed(reversed);
+        created.push((
+            topo.add_face(face),
+            vec![ridge.sides[0].faces[0], ridge.sides[1].faces[0]],
+        ));
+    }
+    let start_from = start_from.ok_or_else(trim_failure)?;
     let mut ends = vec![(
         v_start,
         start_edge,

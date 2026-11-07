@@ -340,6 +340,68 @@ impl<'a, F: BlendFunction> Walker<'a, F> {
         Some((params, sec))
     }
 
+    /// [`Self::solve_section`] with the converged parameters refined by up to
+    /// three further Newton steps, each kept only while it lowers the
+    /// residual.
+    ///
+    /// The walker's convergence gate accepts any residual under `tol_3d`,
+    /// which leaves neighbouring stations with independent errors of that
+    /// size. Resampling differentiates across stations, so it needs them
+    /// converged to rounding instead.
+    pub(crate) fn solve_section_polished(
+        &self,
+        s: f64,
+        guess: Option<BlendParams>,
+    ) -> Option<(BlendParams, CircSection)> {
+        let ctx = self.make_context(s).ok()?;
+        self.func.validate_context(&ctx).ok()?;
+        let initial = guess.unwrap_or_else(|| {
+            let (u1, v1) = self.surf1.project_point(ctx.guide_point);
+            let (u2, v2) = self.surf2.project_point(ctx.guide_point);
+            BlendParams { u1, v1, u2, v2 }
+        });
+        let mut params = self.newton_solve(initial, &ctx)?;
+        let mut residual =
+            Self::residual_norm(&self.func.value(self.surf1, self.surf2, &params, &ctx));
+        for _ in 0..3 {
+            let f = self.func.value(self.surf1, self.surf2, &params, &ctx);
+            let j = self.func.jacobian(self.surf1, self.surf2, &params, &ctx);
+            let Some(delta) = solve_4x4(&j, &[-f[0], -f[1], -f[2], -f[3]]) else {
+                break;
+            };
+            let candidate = BlendParams {
+                u1: params.u1 + delta[0],
+                v1: params.v1 + delta[1],
+                u2: params.u2 + delta[2],
+                v2: params.v2 + delta[3],
+            };
+            let next =
+                Self::residual_norm(&self.func.value(self.surf1, self.surf2, &candidate, &ctx));
+            if next.partial_cmp(&residual) != Some(std::cmp::Ordering::Less) {
+                break;
+            }
+            params = candidate;
+            residual = next;
+        }
+        let sec = self.func.section(self.surf1, self.surf2, &params, &ctx);
+        Some((params, sec))
+    }
+
+    /// The topology the spine is evaluated in.
+    pub(crate) const fn topo(&self) -> &Topology {
+        self.topo
+    }
+
+    /// The configuration this walker solves with.
+    pub(crate) const fn config(&self) -> &WalkerConfig {
+        &self.config
+    }
+
+    /// The spine this walker follows.
+    pub(crate) const fn spine(&self) -> &Spine {
+        self.spine
+    }
+
     /// Walk the blend along the spine from `s_start` to `s_end`.
     ///
     /// Uses adaptive step control: starts with a large step, halves on Newton
@@ -533,42 +595,7 @@ fn approximate_blend_surface_with_v_degree(
     let mut w_end = Vec::with_capacity(n);
 
     for sec in sections {
-        let half_angle = sec.half_angle();
-        let w_mid = half_angle.cos();
-
-        let cp0 = sec.p1;
-        let cp2 = sec.p2;
-
-        // cp1 = apex (middle control point) of the rational quadratic arc.
-        // For the standard circular-arc representation (apex weight = cos θ),
-        // the apex is the tangent intersection at distance r/cos θ from the
-        // center along the chord-midpoint bisector. The chord midpoint M sits
-        // at distance r·cos θ from the center, so
-        //   apex = center + (M − center) / cos²θ = center + (M − center) / w_mid²
-        // Using 1/w_mid (instead of 1/w_mid²) places the apex on the arc and
-        // yields a non-circular conic.
-        let midpoint = Point3::new(
-            (cp0.x() + cp2.x()) * 0.5,
-            (cp0.y() + cp2.y()) * 0.5,
-            (cp0.z() + cp2.z()) * 0.5,
-        );
-
-        let cp1 = if w_mid.abs() > 1e-15 {
-            let center_to_mid = Vec3::new(
-                midpoint.x() - sec.center.x(),
-                midpoint.y() - sec.center.y(),
-                midpoint.z() - sec.center.z(),
-            );
-            let scale = 1.0 / (w_mid * w_mid);
-            Point3::new(
-                sec.center.x() + center_to_mid.x() * scale,
-                sec.center.y() + center_to_mid.y() * scale,
-                sec.center.z() + center_to_mid.z() * scale,
-            )
-        } else {
-            midpoint
-        };
-
+        let (cp0, cp1, cp2, w_mid) = section_arc(sec);
         arc_start.push(cp0);
         arc_apex.push(cp1);
         arc_end.push(cp2);
@@ -590,6 +617,44 @@ fn approximate_blend_surface_with_v_degree(
     )?;
 
     Ok(surf)
+}
+
+/// A section's rational quadratic arc: start, apex and end control points
+/// and the apex weight `cos(half_angle)`.
+///
+/// For the standard circular-arc representation (apex weight = cos θ), the
+/// apex is the tangent intersection at distance r/cos θ from the center along
+/// the chord-midpoint bisector. The chord midpoint M sits at distance r·cos θ
+/// from the center, so
+///   apex = center + (M − center) / cos²θ = center + (M − center) / w_mid²
+/// Using 1/w_mid (instead of 1/w_mid²) places the apex on the arc and yields
+/// a non-circular conic. Falls back to the chord midpoint when the arc
+/// approaches a half-turn (cos θ → 0).
+pub fn section_arc(sec: &CircSection) -> (Point3, Point3, Point3, f64) {
+    let w_mid = sec.half_angle().cos();
+    let cp0 = sec.p1;
+    let cp2 = sec.p2;
+    let midpoint = Point3::new(
+        (cp0.x() + cp2.x()) * 0.5,
+        (cp0.y() + cp2.y()) * 0.5,
+        (cp0.z() + cp2.z()) * 0.5,
+    );
+    let cp1 = if w_mid.abs() > 1e-15 {
+        let center_to_mid = Vec3::new(
+            midpoint.x() - sec.center.x(),
+            midpoint.y() - sec.center.y(),
+            midpoint.z() - sec.center.z(),
+        );
+        let scale = 1.0 / (w_mid * w_mid);
+        Point3::new(
+            sec.center.x() + center_to_mid.x() * scale,
+            sec.center.y() + center_to_mid.y() * scale,
+            sec.center.z() + center_to_mid.z() * scale,
+        )
+    } else {
+        midpoint
+    };
+    (cp0, cp1, cp2, w_mid)
 }
 
 /// Build a uniform clamped knot vector for `n` control points and `degree`.

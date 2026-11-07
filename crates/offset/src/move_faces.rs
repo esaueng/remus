@@ -1,5 +1,6 @@
 //! Topology-preserving planar face moves.
 
+mod partial_cylinder;
 mod quarter_cylinder;
 
 use remus_math::compact_sort::CompactSort;
@@ -1610,9 +1611,15 @@ fn validate_replacement_clearance<V: std::ops::Deref<Target = [FaceId]>>(
     if let FaceSurface::Cylinder(cylinder) = replacement
         && !selected_face.is_reversed()
     {
-        return quarter_cylinder::validate_clearance(
-            topo, selected, cylinder, edge_faces, tolerance,
-        );
+        // The four-edge quarter sector keeps its sector-exact certificate;
+        // every other outward wall takes the general partial-turn one.
+        let quarter_shaped = selected_face.inner_wires().is_empty()
+            && topo.wire(selected_face.outer_wire())?.edges().len() == 4;
+        return if quarter_shaped {
+            quarter_cylinder::validate_clearance(topo, selected, cylinder, edge_faces, tolerance)
+        } else {
+            partial_cylinder::validate_clearance(topo, selected, cylinder, edge_faces, tolerance)
+        };
     }
 
     for (&edge_index, faces) in edge_faces {

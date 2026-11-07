@@ -295,6 +295,40 @@ fn run(chamfer: bool) {
                     .filter(|&f| matches!(topo.face(f).unwrap().surface(), FaceSurface::Nurbs(_)))
                     .collect();
                 assert_eq!(bands.len(), selection.len(), "{label}: one band per edge");
+                // A fillet's straight run, up to where the spine leaves the
+                // block's top edge at `K`, is stored as the exact quarter
+                // cylinder on that edge's axis; only the climb is walked.
+                if !chamfer {
+                    let straight: Vec<(f64, f64)> = solid_faces(&topo, result.solid)
+                        .unwrap()
+                        .into_iter()
+                        .filter(|f| !faces_before.contains(f))
+                        // The trimmed seam cylinder is new too, at SEAM.
+                        .filter_map(|f| match topo.face(f).unwrap().surface() {
+                            FaceSurface::Cylinder(c) if (c.radius() - size).abs() < 1e-12 => {
+                                Some(c.clone())
+                            }
+                            _ => None,
+                        })
+                        .map(|c| {
+                            let (axis, origin) = (c.axis(), c.origin());
+                            // (offset from the front wall, from the top).
+                            if axis.x().abs() > 1.0 - 1e-12 {
+                                (origin.y(), BLOCK.2 - origin.z())
+                            } else {
+                                assert!(axis.y().abs() > 1.0 - 1e-12, "{label}: axis {axis:?}");
+                                (origin.x(), BLOCK.2 - origin.z())
+                            }
+                        })
+                        .collect();
+                    assert_eq!(straight.len(), selection.len(), "{label}: straight runs");
+                    for (wall, top) in straight {
+                        assert!(
+                            (wall - size).abs() < 1e-12 && (top - size).abs() < 1e-12,
+                            "{label}: straight run's axis {wall}, {top} in from the faces"
+                        );
+                    }
+                }
 
                 // Each band starts square at the block's far face and runs out
                 // at the chain end. It hands over to the torus on the top's

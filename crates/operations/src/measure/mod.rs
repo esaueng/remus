@@ -43,7 +43,9 @@ pub use reuse::{
     clear_measurement_reuse, enable_default_measurement_reuse, enable_measurement_reuse,
     measurement_reuse_stats, set_measurement_reuse_enabled, set_measurement_reuse_limits,
 };
-pub(crate) use volume::{gauss_unqualified_face, negligible_volume, shell_signed_volume};
+pub(crate) use volume::{
+    gauss_unqualified_face, negligible_volume, shell_signed_volume, volume_tessellation_deflection,
+};
 pub use volume::{
     mass_properties, oriented_solid_volume, solid_center_of_mass, solid_is_inverted, solid_volume,
     solid_volume_from_faces,

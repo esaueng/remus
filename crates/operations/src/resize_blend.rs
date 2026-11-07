@@ -2402,6 +2402,9 @@ pub(crate) struct TranslationAnalysis {
     direction: Vec3,
     swept: crate::push_pull::SweptRegionCheck,
     axial_clearance: Vec<axial_clearance::AxialBlendClearance>,
+    /// Whether the result must also mesh closed: some carrier the move
+    /// stretches is not certified by the exact axial bounds.
+    mesh_postcondition: bool,
     /// The translated entities, or the reason the boundary classification
     /// refuses them, which the move reports only after the swept-region
     /// check, as it always has.
@@ -2412,6 +2415,44 @@ struct TranslatedEntities {
     vertices: HashSet<VertexId>,
     edges: Vec<EdgeId>,
     faces: HashSet<FaceId>,
+    /// The line edges the move stretches: one end translates, the other stays.
+    stretched: Vec<StretchedLine>,
+}
+
+/// A line edge parallel to the move with exactly one translated end.
+#[derive(Clone, Copy, Debug)]
+struct StretchedLine {
+    edge: EdgeId,
+    /// Signed extent from the fixed end to the moving end along the move.
+    reach: f64,
+}
+
+impl StretchedLine {
+    /// The translation keeps the edge's direction only while its moving end
+    /// stays on the same side of its fixed end: refuses a `distance` that
+    /// would collapse the edge to a point or turn it around, which leaves the
+    /// carrier's wire folded over itself in a body the per-face validators
+    /// still accept.
+    fn check(self, distance: f64) -> Result<(), OperationsError> {
+        let after = self.reach + distance;
+        let reason = if after.abs() <= Tolerance::new().linear {
+            "collapse"
+        } else if after.is_sign_positive() != self.reach.is_sign_positive() {
+            "reverse"
+        } else {
+            return Ok(());
+        };
+        Err(remus_offset::OffsetError::TopologyChange {
+            face: None,
+            edge: Some(self.edge),
+            reason: format!(
+                "line edge {} with one moving end would {reason}: a move of {distance} against a fixed-to-moving extent of {}",
+                self.edge.index(),
+                self.reach
+            ),
+        }
+        .into())
+    }
 }
 
 /// The distance-independent half of
@@ -2501,7 +2542,7 @@ pub(crate) fn analyze_translation(
     let adjacency = solid_adjacency(topo, solid)?;
     let invariant_carriers =
         invariant_boundary_carriers(topo, &adjacency, &moved_faces, direction)?;
-    let axial_clearance = axial_clearance::axial_blend_clearances(
+    let axial = axial_clearance::axial_blend_clearances(
         topo,
         &adjacency,
         &source_faces,
@@ -2519,12 +2560,22 @@ pub(crate) fn analyze_translation(
         direction,
     )?;
     let entities = translated_entities(topo, solid, &adjacency, moved_faces, direction)?;
+    let mesh_postcondition = match &entities {
+        Ok(entities) => entities.stretched.iter().any(|line| {
+            adjacency
+                .faces_for_edge(line.edge)
+                .iter()
+                .any(|face| !entities.faces.contains(face) && !axial.certified.contains(face))
+        }),
+        Err(_) => true,
+    };
     Ok(TranslationAnalysis {
         source_faces,
         source_counts,
         direction,
         swept,
-        axial_clearance,
+        axial_clearance: axial.limits,
+        mesh_postcondition,
         entities,
     })
 }
@@ -2545,6 +2596,7 @@ fn translated_entities(
     }
     // `solid_edges` yields each edge once, so this stays duplicate-free.
     let mut translated_edges = Vec::new();
+    let mut stretched = Vec::new();
     for edge in remus_topology::explorer::solid_edges(topo, solid)? {
         let edge_data = topo.edge(edge)?;
         let start_moves = moved_vertices.contains(&edge_data.start());
@@ -2581,6 +2633,11 @@ fn translated_entities(
                         edge.index()
                     )));
                 }
+                let along = span.dot(direction);
+                stretched.push(StretchedLine {
+                    edge,
+                    reach: if end_moves { along } else { -along },
+                });
             }
             (false, false) => {}
         }
@@ -2589,6 +2646,7 @@ fn translated_entities(
         vertices: moved_vertices,
         edges: translated_edges,
         faces: moved_faces,
+        stretched,
     }))
 }
 
@@ -2656,6 +2714,9 @@ fn execute_translation(
         .entities
         .as_ref()
         .map_err(|reason| reconstruction(reason.clone()))?;
+    for line in &entities.stretched {
+        line.check(distance)?;
+    }
     let source_faces = &analysis.source_faces;
     let source_counts = analysis.source_counts;
     let translation = BlendTranslation {
@@ -2695,12 +2756,17 @@ fn execute_translation(
     // comparison with its original slack, so those bodies behave as before.
     let _volume = crate::performance::span("move_faces.blend.translation_volume");
     // Keep the established cached-integral path for general blend moves.
-    // Only the axial shoulder/rim family needs the boundary shortcut: its
-    // sampled corner carriers can otherwise exhaust the integration budget.
-    let boundary_change = if analysis.axial_clearance.is_empty() {
-        None
-    } else {
+    // Only the axial shoulder/rim family (a spring bounded by a fixed full
+    // rim) needs the boundary shortcut: its sampled corner carriers can
+    // otherwise exhaust the integration budget.
+    let boundary_change = if analysis
+        .axial_clearance
+        .iter()
+        .any(axial_clearance::AxialBlendClearance::fixed_is_full_rim)
+    {
         translation_shadow::volume_change(topo, &translation.faces, translation.delta)?
+    } else {
+        None
     };
     let (volume_change, volume_slack) = if let Some(read) = boundary_change {
         (read.volume, read.uncertainty.max(1e-7))
@@ -2732,6 +2798,9 @@ fn execute_translation(
             "blend-aware move changed volume by {volume_change}, inconsistent with distance {distance}"
         )));
     }
+    if analysis.mesh_postcondition {
+        require_closed_mesh(topo, result)?;
+    }
 
     let boundary_pairs =
         copied
@@ -2752,6 +2821,30 @@ fn execute_translation(
         )?,
         boundary_pairs,
     })
+}
+
+/// Refuses a translation result whose mesh does not close.
+///
+/// The exact validators judge each face's boundary on its own. A stretched
+/// carrier whose wire folds over itself passes them, yet bounds no volume:
+/// meshed, the fold shows as open boundary edges. This whole-body check is
+/// the translation's backstop wherever the exact axial bounds do not
+/// certify every carrier the move stretches. It meshes at the volume API's
+/// own deflection clamp: coarser meshes weld across such a fold and come out
+/// closed.
+fn require_closed_mesh(topo: &Topology, solid: SolidId) -> Result<(), OperationsError> {
+    let _closure = crate::performance::span("move_faces.blend.translation_mesh_closure");
+    let deflection = crate::measure::volume_tessellation_deflection(topo, solid, f64::INFINITY);
+    // Closure reads positions and indices only, so skip shading normals.
+    let mesh = crate::tessellate::tessellate_solid_for_measurement(topo, solid, deflection)?;
+    let quality = crate::tessellate::welded_mesh_quality(&mesh);
+    if quality.is_watertight() {
+        return Ok(());
+    }
+    Err(reconstruction(format!(
+        "translation-invariant blend move does not close: its mesh at deflection {deflection} has {} boundary and {} non-manifold edges",
+        quality.boundary_edges, quality.non_manifold_edges
+    )))
 }
 
 fn remap_faces(
@@ -7793,5 +7886,39 @@ mod tests {
                 format!("{storage:?}"),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod stretched_line_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::StretchedLine;
+
+    fn line(reach: f64) -> StretchedLine {
+        let mut topo = remus_topology::Topology::new();
+        let solid = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        let edge = remus_topology::explorer::solid_edges(&topo, solid).unwrap()[0];
+        StretchedLine { edge, reach }
+    }
+
+    #[test]
+    fn a_stretched_line_may_lengthen_or_shorten_but_not_collapse_or_reverse() {
+        // The boss seam from its fixed corner-patch end at z=26.93 up to the
+        // moving rim at z=35.
+        let seam = line(35.0 - 26.928_203_230_275_51);
+        for distance in [25.2, 1.0, -1.0, -8.0] {
+            assert!(seam.check(distance).is_ok(), "{distance}");
+        }
+        let collapse = seam.check(-seam.reach).unwrap_err().to_string();
+        assert!(collapse.contains("would collapse"), "{collapse}");
+        let reverse = seam.check(-10.0).unwrap_err().to_string();
+        assert!(reverse.contains("would reverse"), "{reverse}");
+        // A moving end below its fixed end mirrors the bound.
+        let hanging = line(-4.0);
+        assert!(hanging.check(-6.0).is_ok());
+        assert!(hanging.check(3.9).is_ok());
+        assert!(hanging.check(4.0).is_err());
+        assert!(hanging.check(5.0).is_err());
     }
 }

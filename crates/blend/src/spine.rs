@@ -172,6 +172,13 @@ impl Spine {
         self
     }
 
+    /// Unrotated station that [`Spine::with_origin`] moved the parameter
+    /// origin to; `0` unless it did.
+    #[must_use]
+    pub const fn origin(&self) -> f64 {
+        self.origin
+    }
+
     /// Per-edge traversal flags: `false` where the chain runs against the
     /// edge's own start→end orientation.
     #[must_use]
