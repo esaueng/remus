@@ -95,15 +95,32 @@ pub(super) fn active() -> bool {
     })
 }
 
-/// Reorder/group/cavity fallbacks can try other private arenas and optional
-/// routes. Keep them on the full commit route instead of certifying a partial
-/// trace of those speculative builds.
-pub(super) fn disable() {
+fn mark() -> Option<usize> {
     CAPTURE.with(|slot| {
-        if let Some(checks) = slot.borrow_mut().as_mut() {
-            checks.branched = true;
+        slot.borrow()
+            .as_ref()
+            .map(|checks| checks.obligations.len())
+    })
+}
+
+fn declined(mark: Option<usize>) {
+    CAPTURE.with(|slot| {
+        if let (Some(mark), Some(checks)) = (mark, slot.borrow_mut().as_mut()) {
+            checks.branched |= checks.obligations.len() != mark;
+            checks.obligations.truncate(mark);
         }
     });
+}
+
+/// Observe an optional fallback without changing its transaction semantics.
+/// A declined route that deferred a guard cannot certify a later candidate.
+pub fn optional<T, E>(run: impl FnOnce() -> Result<Option<T>, E>) -> Result<Option<T>, E> {
+    let mark = mark();
+    let result = run();
+    if !matches!(&result, Ok(Some(_))) {
+        declined(mark);
+    }
+    result
 }
 
 pub(super) fn material(
@@ -137,19 +154,10 @@ pub fn transaction<T, E>(
     topo: &mut Topology,
     run: impl FnOnce(&mut Topology) -> Result<T, E>,
 ) -> Result<T, E> {
-    let mark = CAPTURE.with(|slot| {
-        slot.borrow()
-            .as_ref()
-            .map(|checks| checks.obligations.len())
-    });
+    let mark = mark();
     let result = remus_topology::transaction::run_transacted(topo, run);
     if result.is_err() {
-        CAPTURE.with(|slot| {
-            if let (Some(mark), Some(checks)) = (mark, slot.borrow_mut().as_mut()) {
-                checks.branched |= checks.obligations.len() != mark;
-                checks.obligations.truncate(mark);
-            }
-        });
+        declined(mark);
     }
     result
 }
@@ -258,5 +266,22 @@ mod tests {
         });
         assert!(checks.is_some());
         assert!(!active());
+    }
+
+    #[test]
+    fn optional_decline_after_a_guard_disables_adoption() {
+        let mut topo = Topology::new();
+        let solid = crate::primitives::make_box(&mut topo, 1.0, 2.0, 3.0).unwrap();
+        let (result, checks) = capture(|| {
+            optional::<(), ()>(|| {
+                group(&topo, solid);
+                Ok(None)
+            })
+        });
+        assert!(result.unwrap().is_none());
+        assert!(checks.is_none());
+        let (result, checks) = capture(|| optional::<(), ()>(|| Ok(None)));
+        assert!(result.unwrap().is_none());
+        assert!(checks.is_some());
     }
 }

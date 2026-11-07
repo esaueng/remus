@@ -2325,19 +2325,20 @@ fn fillet_cascade_attempts(
         Ok(result) => return Ok(result),
         Err(error) => error,
     };
-    preview_checks::disable();
     // A chain that runs onto an earlier band can be refused only because of
     // the order the fillets were made in: rebuild those bands after this one,
     // as the order that builds would have. The original refusal stays the
     // answer when that does not apply or does not build.
-    if let Ok(Some(result)) = transactional(topo, |t| {
-        crate::resize_blend::fillet_across_earlier_blends(
-            t,
-            solid,
-            edges,
-            radius,
-            fillet_cascade_engines,
-        )
+    if let Ok(Some(result)) = preview_checks::optional(|| {
+        transactional(topo, |t| {
+            crate::resize_blend::fillet_across_earlier_blends(
+                t,
+                solid,
+                edges,
+                radius,
+                fillet_cascade_engines,
+            )
+        })
     }) {
         return Ok(result);
     }
@@ -2345,20 +2346,24 @@ fn fillet_cascade_attempts(
     // sampled corners, which the reorder above cannot take off one by one):
     // remove the whole group to sharp and re-fillet it with the selection as
     // one more stage, in the planner's order.
-    if let Ok(Some(edit)) =
+    if let Ok(Some(edit)) = preview_checks::optional(|| {
         crate::blend_cluster::fillet_through_blend_group(topo, solid, edges, radius)
-    {
+    }) {
         return Ok(crate::blend_cluster::group_fillet_result(edges, edit));
     }
     // Features that touch each other, which no engine takes in one pass,
     // can each build once the one before it has: a seam, then the edges
     // that run into its band, then those that run into theirs.
-    if let Ok(Some(result)) = transactional(topo, |t| {
-        fillet_touching_features_in_steps(t, solid, edges, radius)
+    if let Ok(Some(result)) = preview_checks::optional(|| {
+        transactional(topo, |t| {
+            fillet_touching_features_in_steps(t, solid, edges, radius)
+        })
     }) {
         return Ok(result);
     }
-    match transactional(topo, |t| fillet_carrying_cavities(t, solid, edges, radius)) {
+    match preview_checks::optional(|| {
+        transactional(topo, |t| fillet_carrying_cavities(t, solid, edges, radius))
+    }) {
         Ok(Some(result)) => Ok(result),
         Ok(None) | Err(_) => Err(refusal),
     }
