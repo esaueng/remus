@@ -80,6 +80,8 @@ export const remuskernel_circularPatternJournaled: (a: number, b: number, c: num
 export const remuskernel_classifyPoint: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
 export const remuskernel_classifyPointRobust: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
 export const remuskernel_classifyPointWinding: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
+export const remuskernel_commitPreparedGroupEdit: (a: number, b: number, c: number) => [number, number, number];
+export const remuskernel_commitPreparedGroupEditJournaled: (a: number, b: number, c: number) => [number, number, number, number];
 export const remuskernel_commonSegment2d: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
 export const remuskernel_composeTransforms: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
 export const remuskernel_compoundCut: (a: number, b: number, c: number, d: number) => [number, number, number];
@@ -325,6 +327,9 @@ export const remuskernel_polygonBoolean2d: (a: number, b: number, c: number, d: 
 export const remuskernel_polygonUnion2d: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
 export const remuskernel_polygonsIntersect2d: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const remuskernel_prepareMoveFaces: (a: number, b: number, c: number, d: number) => [number, number, number];
+export const remuskernel_prepareResizeBlend: (a: number, b: number, c: number, d: number) => [number, number, number];
+export const remuskernel_prepareResizeCylindricalFace: (a: number, b: number, c: number) => [number, number, number];
+export const remuskernel_previewPreparedGroupEdit: (a: number, b: number, c: number) => [number, number, number];
 export const remuskernel_projectCurveOntoFace: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
 export const remuskernel_projectCurvesOntoSketchPlane: (a: number, b: number, c: number, d: number, e: number, f: number, g: any) => [number, number, number, number];
 export const remuskernel_projectCurvesOntoSolid: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number];
@@ -334,6 +339,7 @@ export const remuskernel_projectSilhouettes: (a: number, b: number, c: number, d
 export const remuskernel_propagateAttributesForOp: (a: number, b: number, c: number) => [number, number, number, number];
 export const remuskernel_pushPullFace: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const remuskernel_recognizeFeatures: (a: number, b: number, c: number) => [number, number, number, number];
+export const remuskernel_releasePreparedGroupEdit: (a: number, b: number) => number;
 export const remuskernel_releasePreparedMove: (a: number, b: number) => number;
 export const remuskernel_removeBlendsJournaled: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const remuskernel_removeDegenerateEdges: (a: number, b: number, c: number) => [number, number, number];
@@ -345,7 +351,7 @@ export const remuskernel_resizeBlend: (a: number, b: number, c: number, d: numbe
 export const remuskernel_resizeBlendJournaled: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
 export const remuskernel_resizeBlendWithEvolution: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const remuskernel_resizeCylindricalFace: (a: number, b: number, c: number, d: number) => [number, number, number];
-export const remuskernel_resizeCylindricalFaceDetailed: (a: number, b: number, c: number, d: number) => [number, number, number];
+export const remuskernel_resizeCylindricalFaceDetailed: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const remuskernel_resizeCylindricalFaceJournaled: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const remuskernel_resolveOperationOutput: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
 export const remuskernel_resolveRef: (a: number, b: number, c: number) => [number, number, number, number];
