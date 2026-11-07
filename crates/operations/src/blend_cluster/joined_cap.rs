@@ -29,6 +29,7 @@
 //! `resizeCylindricalFace`).
 
 use remus_blend::cap_reblend::{CapReblendApproximation, sampled_section_radius};
+use remus_math::compact_sort::CompactSort;
 use remus_math::vec::Vec3;
 use remus_topology::Topology;
 use remus_topology::adjacency::AdjacencyIndex;
@@ -190,7 +191,7 @@ fn joined_at(
         .flat_map(|edge| adjacency.faces_for_edge(edge).iter().copied())
         .filter(|&face| face != cap)
         .collect();
-    rims.sort_unstable_by_key(|face| face.index());
+    rims.compact_sort_unstable_by_key(|face| face.index());
     rims.dedup();
     if rims.len() < 2 {
         return Ok(None);

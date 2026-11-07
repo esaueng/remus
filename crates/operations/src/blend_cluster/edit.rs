@@ -113,6 +113,10 @@ pub(super) struct SharpGroup {
     pub(super) lift: Option<CapLift>,
 }
 
+/// The group a route edits: the solid it was recognized on (the copy, or the
+/// copy with its cap lifted), the seed's image there, the group and the lift.
+type Recognized = (SolidId, FaceId, BlendCluster, Option<CapLift>);
+
 /// `seed`'s group on the copied `solid`, recognized as it stands or, when
 /// the body's cap was lowered into its shoulder, with that cap lifted clear
 /// first. `None` when neither recognizes a group.
@@ -120,7 +124,7 @@ fn recognize_on_copy(
     work: &mut Topology,
     solid: SolidId,
     seed: FaceId,
-) -> Result<Option<(SolidId, FaceId, BlendCluster, Option<CapLift>)>, OperationsError> {
+) -> Result<Option<Recognized>, OperationsError> {
     if let Ok(cluster) = recognize_blend_cluster(work, solid, seed) {
         return Ok(Some((solid, seed, cluster, None)));
     }

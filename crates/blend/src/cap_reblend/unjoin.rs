@@ -115,15 +115,14 @@ fn restore(
     // foot a later band is cut round. The boundary is split there, on the
     // copy of every face that uses it.
     let mut replaced = DetHashMap::default();
-    let seam = match candidates.into_iter().min_by_key(|vertex| vertex.index()) {
-        Some(seam) => seam,
-        None => {
-            let point = parametric_seam_point(topo, solid, boss, rims, &cylinder, axis, level)?;
-            let mut scope = EditScope::new(topo, solid_faces(topo, solid)?)?;
-            let mut edit = scope.edit(&mut replaced);
-            split_body_boundary_at(topo, &mut edit, boss, point, 1e-6)?
-                .ok_or_else(|| refusal("separated cap's seam ruling misses its boss boundary"))?
-        }
+    let seam = if let Some(seam) = candidates.into_iter().min_by_key(|vertex| vertex.index()) {
+        seam
+    } else {
+        let point = parametric_seam_point(topo, solid, boss, rims, &cylinder, axis, level)?;
+        let mut scope = EditScope::new(topo, solid_faces(topo, solid)?)?;
+        let mut edit = scope.edit(&mut replaced);
+        split_body_boundary_at(topo, &mut edit, boss, point, 1e-6)?
+            .ok_or_else(|| refusal("separated cap's seam ruling misses its boss boundary"))?
     };
     let boss = live(&replaced, boss);
     let reference = radial(topo.vertex(seam)?.point())?;

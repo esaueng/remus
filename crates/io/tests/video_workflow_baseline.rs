@@ -5,7 +5,8 @@
 //! REMUS_VIDEO_OUTPUT to an empty evidence directory. Run with:
 //! cargo test -p remus-io --profile ci-test --test video_workflow_baseline -- --ignored --nocapture
 //!
-//! The coordinator isolates each case in a process (180 s limit), writes the
+//! The coordinator isolates each case in a process (180 s limit; 900 s for
+//! the diameter sequences and the cumulative order), writes the
 //! complete table, then ASSERTS acceptance. The report-only spike is separate.
 //! Failed prerequisites are recorded; acceptance probes start at W-Fillet + R1.
 //! Output includes exact errors, before/after validation, dual-deflection
@@ -140,6 +141,17 @@ fn expected_today(case: &str) -> &'static str {
         "PASS (typed exact-only refusal)"
     } else {
         "PASS"
+    }
+}
+
+/// Seconds a case's process may run. The diameter sequences and the
+/// cumulative order rebuild a whole blend group per step and measure every
+/// result at two deflections, so they get longer than the single edits.
+fn case_limit(case: &str) -> u64 {
+    if matches!(case, "cumulative" | "A7_sequence" | "A7_after_bottom") {
+        900
+    } else {
+        180
     }
 }
 
@@ -476,13 +488,13 @@ fn run_case(case: &str) -> (String, bool, Vec<String>) {
             }
             break;
         }
-        if started.elapsed() > Duration::from_secs(180) {
+        if started.elapsed() > Duration::from_secs(case_limit(case)) {
             process_ok = false;
             child.kill().unwrap();
             child.wait().unwrap();
             save(
                 &format!("{case}_process"),
-                &json!({"case":case,"timeout_seconds":180,"last_progress":"see case.json and case.log"}),
+                &json!({"case":case,"timeout_seconds":case_limit(case),"last_progress":"see case.json and case.log"}),
             );
             break;
         }
@@ -775,14 +787,20 @@ where
             }
         }
         if let Some(d) = selection["diameter"].as_f64() {
+            // Below the cap and its rim, wherever the cap now stands (z26
+            // once A1 has shortened the boss).
+            let z = match t.face(cap(t, out)).unwrap().surface() {
+                FaceSurface::Plane { normal, d: offset } => (offset / normal.z() - 3.0).min(30.0),
+                _ => 30.0,
+            };
             probe(
                 "inside_edited_wall",
-                Point3::new(0., -d / 2. + 0.5, 30.),
+                Point3::new(0., -d / 2. + 0.5, z),
                 "Ok(Inside)",
             );
             probe(
                 "outside_edited_wall",
-                Point3::new(0., -d / 2. - 0.5, 30.),
+                Point3::new(0., -d / 2. - 0.5, z),
                 "Ok(Outside)",
             );
         }
@@ -983,6 +1001,7 @@ fn worker(case: &str) {
                     // Exact-only shortening into the shoulder refuses typed;
                     // the sampled rows below build it.
                     rows.last_mut().unwrap()["allow_refusal"] = json!(d < 0.0);
+                    save(case, &json!({"case":case,"attempts":rows}));
                     if case == "A1_sequence" {
                         break;
                     }
@@ -1029,6 +1048,7 @@ fn worker(case: &str) {
                 );
                 if moved.is_none() {
                     rows.last_mut().unwrap()["allow_refusal"] = json!(d < 0.0);
+                    save(case, &json!({"case":case,"attempts":rows}));
                 }
             }
         }

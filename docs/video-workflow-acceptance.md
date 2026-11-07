@@ -121,6 +121,31 @@ observed equal-radius corner or general ridge-chain family (the latter is the
 family exercised by `fillet_into_seam_band`). Diagnostics may include refused
 earlier cascade attempts; they are not a new stable public corner-family API.
 
+## Acceptance results with the joined-cap group route (W14)
+
+Measured on the W14 branch (the local integration of #1572 and #1574-#1585
+plus this change) under WSL, ci-test profile. 32 of 34 rows pass; the two
+concave R2 seam rows remain the open XFAIL (no construction under the R4
+shoulder). The cumulative row passes when run alone and in the full table.
+
+| Step (cumulative, one body) | Result | Census (plane/cyl/cone/torus/nurbs) | API volume |
+|---|---|---|---|
+| A0 + R1 rim | built | 7/5/0/2/2 | 16339.8724 |
+| A1 z61.2 (sampled permission) | built | 7/5/0/2/2 | 19189.9235 |
+| A1 z26 (sampled cap join) | built | 7/5/0/3/4 | 15207.7253 |
+| A2 x = 0 band R4 -> 1.9 | built (cap lifted, edited, lowered) | 7/5/0/4/4 | 15241.6912 |
+| A3 x = 0 / y = 18 edge R1 | built | 7/7/0/4/5 | 15230.3409 |
+| A4 single free-end edge | typed refusal `chamfer-tangent-chain-required`, names the five-edge chain | unchanged | unchanged |
+| A4 chain 0.7 | built | 10/7/2/4/5 | 15214.8760 |
+| A5 R -1 | typed `invalid-input` refusal | unchanged | unchanged |
+| A6 seed chain 0.8 | built | 13/7/6/4/5 | 15185.9944 |
+| A7 Ø14.6 / 17 / 21.1 (discarded) / 14.7 | built | 13/7/6/4/5 each | 16290.2523 / 17496.6934 / 19974.0237 / 16336.9303 |
+
+Every built row passes both validators, the dual-deflection watertight mesh
+checks, API/mesh volume agreement and the feature probes. The sampled faces
+are the two original corner patches, A1's two rim bands and A3's lofted turn;
+A2's walked transition replaces one corner patch.
+
 ## Acceptance results at kernel f4b5d747
 
 | Step | Current result | Evidence |
