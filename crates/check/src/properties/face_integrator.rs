@@ -5249,6 +5249,17 @@ impl QuadraticRow {
         if last == 0 || knots[last - 1].to_bits() != v.to_bits() {
             return None;
         }
+        // The shortcut reads the column the right-continuous span selects,
+        // which equals the evaluator's value only at a simple knot or at a
+        // degree-one clamped end (multiplicity two). An over-clamped end
+        // carries an empty span whose column the evaluator never uses, so
+        // decline and let the ordinary evaluator choose the last non-empty
+        // span.
+        let multiplicity = last - knots.partition_point(|&k| k < v);
+        let clamped_end = multiplicity == 2 && (last == 2 || last == knots.len());
+        if multiplicity != 1 && !clamped_end {
+            return None;
+        }
         let col = last
             .saturating_sub(2)
             .min(surface.control_points()[0].len() - 1);
