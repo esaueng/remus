@@ -339,6 +339,7 @@ Quick reference — find the right file for any task:
 | Analytic fast paths (plane-plane, plane-cyl, etc.) | `analytic.rs` |
 | Fillet builder (orchestration) | `fillet_builder.rs` |
 | Chamfer builder (orchestration) | `chamfer_builder.rs` |
+| Exact chamfers along tangent and mitred edge chains on one planar floor (plane strips, cones on arcs) | `chamfer_floor_chain.rs` |
 | Exact straight-ridge chamfers on proven spline extrusion supports | `chamfer_extrusion.rs` |
 | Ruled chamfers on monotone spline rims of linear extrusions | `chamfer_spline_rim.rs` |
 | Whole-carrier hole clearance for spline chamfers | `chamfer_clearance.rs` |

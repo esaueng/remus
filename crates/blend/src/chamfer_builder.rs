@@ -222,6 +222,22 @@ impl<'a> ChamferBuilder<'a> {
             )? {
                 return Ok(result);
             }
+            // Runs of edges round one planar floor, mixing straight edges
+            // and arcs (a block's bottom outline through seam rounds and a
+            // boss foot): one exact assembly that cuts each face once.
+            if !ridge_chains
+                && let Some(result) = crate::chamfer_floor_chain::chamfer(
+                    topo,
+                    &adjacency,
+                    &edges,
+                    first_d1,
+                    &mut scope,
+                    &original_faces,
+                    &inner_shells,
+                )?
+            {
+                return Ok(result);
+            }
             if ridge_chains {
                 let chains = crate::g1_chain::g1_chains(
                     topo,
@@ -523,7 +539,7 @@ impl<'a> ChamferBuilder<'a> {
 ///
 /// Returns [`BlendError`] if the edge is non-manifold, if topology lookups
 /// fail, or if the analytic path cannot produce a result.
-fn compute_chamfer_stripe(
+pub(crate) fn compute_chamfer_stripe(
     topo: &Topology,
     adjacency: &remus_topology::adjacency::AdjacencyIndex,
     edge_id: EdgeId,
