@@ -331,6 +331,11 @@ struct CanalNormal<'a> {
     /// Stations whose section is resolved (all of them for a strict read);
     /// a measured read leaves out collapsed sections at either end.
     resolved: std::ops::Range<usize>,
+    /// Whether the sections are only measured, not certified, to be the
+    /// rolling balls' characteristic circles (a walked transition): the
+    /// carrier's normal is then read off its own surface, not the radial
+    /// field of its sections.
+    measured: bool,
 }
 
 /// How strictly a sampled carrier's stations must agree.
@@ -446,10 +451,11 @@ fn ball_centres(
 const RESOLVED_WEIGHT: f64 = 0.999;
 
 impl<'a> CanalNormal<'a> {
-    fn centre(&self, v: f64) -> Result<Point3, BlendError> {
-        let surface = self.surface;
-        let n = surface.control_points()[0].len();
-        let knots = surface.knots_v();
+    /// The resolved span holding `v`: its first station and the fraction
+    /// of the way to the next.
+    fn span(&self, v: f64) -> Result<(usize, f64), BlendError> {
+        let n = self.surface.control_points()[0].len();
+        let knots = self.surface.knots_v();
         let mut index = knots
             .partition_point(|&knot| knot <= v)
             .saturating_sub(2)
@@ -466,7 +472,12 @@ impl<'a> CanalNormal<'a> {
         if hi <= lo {
             return Err(refusal("cap canal station has no parameter extent"));
         }
-        let fraction = ((v - lo) / (hi - lo)).clamp(0.0, 1.0);
+        Ok((index, ((v - lo) / (hi - lo)).clamp(0.0, 1.0)))
+    }
+
+    fn centre(&self, v: f64) -> Result<Point3, BlendError> {
+        let surface = self.surface;
+        let (index, fraction) = self.span(v)?;
         if !self.centres.is_empty() {
             let (a, b) = (self.centres[index], self.centres[index + 1]);
             return Ok(a + (b - a) * fraction);
@@ -617,6 +628,7 @@ impl<'a> CanalNormal<'a> {
             radii,
             centres,
             resolved,
+            measured: matches!(check, StationCheck::Measured),
         };
         // Probe the middle of the resolved stations (the whole carrier on a
         // strict read, so its middle span holds v = 0.5 as before).
@@ -652,7 +664,44 @@ impl<'a> CanalNormal<'a> {
         (knots[self.resolved.start + 1], knots[self.resolved.end])
     }
     fn normal(&self, u: f64, v: f64) -> Result<Vec3, BlendError> {
-        Ok((self.surface.evaluate(u, v) - self.centre(v)?).normalize()? * self.sign)
+        let radial = (self.surface.evaluate(u, v) - self.centre(v)?).normalize()? * self.sign;
+        if !self.measured {
+            return Ok(radial);
+        }
+        // A walked transition's sections are arcs of one radius, but not
+        // the characteristic circles of the sweep they sample: their planes
+        // lean off the ball path, and the radial field leans off the
+        // carrier by degrees (7.6° on the R1.5-band / R4-seam transition of
+        // the Gentle-Gecko). A contour solved on it lands off the carrier's
+        // true contact, folding where it leaves an exact neighbour. The
+        // carrier's own normal at the two stations, blended across the span
+        // so the contour root stays continuous, is the contact's.
+        let (index, fraction) = self.span(v)?;
+        let a = self.station_normal(u, index)?;
+        let b = self.station_normal(u, index + 1)?;
+        let normal = (a + (b - a) * fraction).normalize()?;
+        Ok(if normal.dot(radial) < 0.0 {
+            -normal
+        } else {
+            normal
+        })
+    }
+
+    /// The carrier's surface normal at section parameter `u` of station
+    /// `index`, up to sign: the section's tangent there across the chord
+    /// between the neighbouring stations (one-sided at either end).
+    fn station_normal(&self, u: f64, index: usize) -> Result<Vec3, BlendError> {
+        const STEP: f64 = 1e-6;
+        let surface = self.surface;
+        let knots = surface.knots_v();
+        let n = surface.control_points()[0].len();
+        let at = |station: usize| knots[station + 1];
+        let v = at(index);
+        let along =
+            surface.evaluate((u + STEP).min(1.0), v) - surface.evaluate((u - STEP).max(0.0), v);
+        let across = surface.evaluate(u, at((index + 1).min(n - 1)))
+            - surface.evaluate(u, at(index.saturating_sub(1)));
+        Ok(along.cross(across).normalize()?)
     }
 }
 
