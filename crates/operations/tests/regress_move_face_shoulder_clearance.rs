@@ -81,13 +81,27 @@ fn shoulder() -> (Topology, SolidId, FaceId) {
 }
 
 fn shoulder_at(height: f64, cap_height: f64) -> (Topology, SolidId, FaceId) {
+    shoulder_with(height, cap_height, 1.8, 5.0)
+}
+
+/// An R6 boss on a 30x18 block of `height`, its cap rounded by `rim`, then
+/// the boss/block perimeter rounded by `radius`. The shoulder wraps only the
+/// quarter of the boss inside the block.
+fn shoulder_with(
+    height: f64,
+    cap_height: f64,
+    rim: f64,
+    radius: f64,
+) -> (Topology, SolidId, FaceId) {
     let mut topo = Topology::new();
     let block = make_box(&mut topo, 30.0, 18.0, height).unwrap();
     let boss = make_cylinder(&mut topo, 6.0, cap_height).unwrap();
     let blank = boolean(&mut topo, BooleanOp::Fuse, boss, block).unwrap();
     let cap = top_at(&topo, blank, cap_height);
-    let rim = face_edges(&topo, cap).unwrap();
-    let rounded = fillet_cascade(&mut topo, blank, &rim, 1.8).unwrap().solid;
+    let cap_edges = face_edges(&topo, cap).unwrap();
+    let rounded = fillet_cascade(&mut topo, blank, &cap_edges, rim)
+        .unwrap()
+        .solid;
     let perimeter: Vec<_> = solid_edges(&topo, rounded)
         .unwrap()
         .into_iter()
@@ -117,7 +131,7 @@ fn shoulder_at(height: f64, cap_height: f64) -> (Topology, SolidId, FaceId) {
         })
         .collect();
     assert_eq!(perimeter.len(), 5);
-    let solid = fillet_cascade(&mut topo, rounded, &perimeter, 5.0)
+    let solid = fillet_cascade(&mut topo, rounded, &perimeter, radius)
         .unwrap()
         .solid;
     let top = top_at(&topo, solid, height);
@@ -125,7 +139,7 @@ fn shoulder_at(height: f64, cap_height: f64) -> (Topology, SolidId, FaceId) {
     // Rectangle [r,W] x [r,D], less the circular bite of the R+r
     // shoulder between its two exact tangent points. This distinguishes
     // the support-first corner from a convex ridge walked over a seam.
-    let r = 5.0_f64;
+    let r = radius;
     let rail = 6.0_f64 + r;
     let tangent = (rail * rail - r * r).sqrt();
     let bite = 0.5 * rail * rail * (std::f64::consts::FRAC_PI_2 - 2.0 * (r / rail).asin())
@@ -468,5 +482,138 @@ fn cap_join_respects_rigid_placement_and_uniform_scale() {
                 before
             );
         }
+    }
+}
+
+/// Volume of `solid`'s mesh at `deflection`, refusing an open or
+/// non-manifold mesh.
+fn closed_mesh_volume(topo: &Topology, solid: SolidId, deflection: f64) -> f64 {
+    let mesh = remus_operations::tessellate::tessellate_solid(topo, solid, deflection).unwrap();
+    let quality = remus_operations::tessellate::welded_mesh_quality(&mesh);
+    assert!(quality.is_watertight(), "mesh at {deflection}: {quality:?}");
+    let origin = mesh.positions[0];
+    mesh.indices
+        .chunks_exact(3)
+        .map(|ix| {
+            let a = mesh.positions[ix[0] as usize] - origin;
+            let b = mesh.positions[ix[1] as usize] - origin;
+            let c = mesh.positions[ix[2] as usize] - origin;
+            a.dot(b.cross(c)) / 6.0
+        })
+        .sum()
+}
+
+/// The verification bar for an accepted move: closed at two deflections no
+/// coarser than the volume clamp, API and mesh volumes agreeing, and the
+/// moved cap bounding material exactly where it now sits.
+fn assert_closed_solid(topo: &Topology, solid: SolidId, cap_height: f64) {
+    use remus_check::classify::{ClassifyOptions, PointClassification, classify_point};
+    use remus_math::vec::Point3;
+    assert!(validate_solid(topo, solid).unwrap().is_valid());
+    let bbox = remus_operations::measure::solid_bounding_box(topo, solid).unwrap();
+    let diag = (bbox.max - bbox.min).length();
+    let api = solid_volume(topo, solid, diag * 5e-5).unwrap();
+    for deflection in [diag * 5e-5, diag * 2.5e-5] {
+        let mesh = closed_mesh_volume(topo, solid, deflection);
+        assert!(
+            (mesh - api).abs() <= api * 1e-4,
+            "API volume {api} against mesh volume {mesh} at {deflection}"
+        );
+    }
+    let options = ClassifyOptions::default();
+    for (point, expected) in [
+        (
+            Point3::new(0.0, 0.0, cap_height - 0.5),
+            PointClassification::Inside,
+        ),
+        (
+            Point3::new(0.0, 0.0, cap_height + 0.5),
+            PointClassification::Outside,
+        ),
+        (
+            Point3::new(-5.5, 0.0, cap_height - 1.5),
+            PointClassification::Inside,
+        ),
+        (Point3::new(20.0, 9.0, 12.0), PointClassification::Inside),
+        (
+            Point3::new(-5.5, 0.0, cap_height + 0.2),
+            PointClassification::Outside,
+        ),
+    ] {
+        assert_eq!(
+            classify_point(topo, solid, point, &options).unwrap(),
+            expected,
+            "{point:?} with the cap at {cap_height}"
+        );
+    }
+}
+
+#[test]
+fn cap_cannot_cross_the_fixed_shoulder() {
+    // The Gentle-Gecko boss: an R4 shoulder wraps the quarter of the R6 boss
+    // inside the 30x18x24 block, meeting the boss on an arc at z=28. The R1
+    // cap rim meets the boss on a full circle at z=35, so the cap can come
+    // down 7 mm before the rim reaches the shoulder. Past that the rigid
+    // translation once returned a body both validators accepted, with an
+    // open mesh and a 2.4% API/mesh volume disagreement.
+    let (mut topo, solid, _) = shoulder_with(24.0, 36.0, 1.0, 4.0);
+    let cap = top_at(&topo, solid, 36.0);
+    let before = remus_io::arena_io::serialize_solid(&topo, solid).unwrap();
+    let counts = solid_entity_counts(&topo, solid).unwrap();
+    let faces = solid_faces(&topo, solid).unwrap();
+    let entries = topo.journal().entries().len();
+    let mut prepared = PreparedFaceMove::prepare(&topo, solid, &[cap]).unwrap();
+    let unchanged = |topo: &Topology| {
+        assert_eq!(
+            remus_io::arena_io::serialize_solid(topo, solid).unwrap(),
+            before
+        );
+        assert_eq!(solid_entity_counts(topo, solid).unwrap(), counts);
+        assert_eq!(solid_faces(topo, solid).unwrap(), faces);
+        assert_eq!(topo.journal().entries().len(), entries);
+    };
+    for distance in [-7.0, -7.5, -8.0, -9.0, -10.0, -11.5] {
+        let refusal = move_faces(&mut topo, solid, &[cap], distance)
+            .expect_err("the moving rim must not cross the fixed shoulder");
+        assert!(
+            refusal
+                .to_string()
+                .contains("moving blend reaches fixed rim face"),
+            "{distance}: {refusal}"
+        );
+        unchanged(&topo);
+        let refusal = prepared
+            .move_faces(&mut topo, distance)
+            .expect_err("prepared moves must enforce the same clearance");
+        assert!(
+            refusal
+                .to_string()
+                .contains("moving blend reaches fixed rim face"),
+            "{distance}: {refusal}"
+        );
+        unchanged(&topo);
+    }
+    // Shortening short of the shoulder, and lengthening (A1 taller), keep
+    // moving the rim rigidly and stay closed.
+    let source_volume = solid_volume(&topo, solid, 0.01).unwrap();
+    for distance in [-6.0, -3.0, 2.0, 25.2] {
+        let moved = move_faces(&mut topo, solid, &[cap], distance)
+            .unwrap_or_else(|error| panic!("distance {distance}: {error}"));
+        assert_eq!(solid_entity_counts(&topo, moved).unwrap(), counts);
+        top_at(&topo, moved, 36.0 + distance);
+        assert_closed_solid(&topo, moved, 36.0 + distance);
+        let volume = solid_volume(&topo, moved, 0.01).unwrap();
+        assert!((volume - source_volume).signum() == distance.signum());
+        unchanged(&topo);
+        let previewed = prepared
+            .move_faces(&mut topo, distance)
+            .unwrap_or_else(|error| panic!("prepared distance {distance}: {error}"));
+        assert_eq!(
+            solid_volume(&topo, previewed.solid, 0.01)
+                .unwrap()
+                .to_bits(),
+            volume.to_bits()
+        );
+        unchanged(&topo);
     }
 }
