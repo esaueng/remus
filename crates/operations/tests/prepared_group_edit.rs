@@ -22,7 +22,9 @@ use remus_operations::blend_cluster::{
     Convexity, GroupEditKind, PreparedGroupEdit, recognize_blend_cluster,
 };
 use remus_operations::blend_ops::{chamfer_v2_tangent_chain, fillet_cascade};
-use remus_operations::journal_ops::{resize_blend_journaled, resize_cylindrical_face_journaled};
+use remus_operations::journal_ops::{
+    commit_prepared_group_edit_journaled, resize_blend_journaled, resize_cylindrical_face_journaled,
+};
 use remus_operations::measure::solid_volume;
 use remus_operations::push_pull::resize_cylindrical_face;
 use remus_operations::resize_blend::{resize_blend, resize_blend_failure_code};
@@ -278,9 +280,8 @@ fn commit(topo: &mut Topology, prepared: &PreparedGroupEdit, value: f64, label: 
     let reference = reference.unwrap();
 
     let mut journaled_topo = topo.clone();
-    let journaled = prepared
-        .commit_journaled(&mut journaled_topo, value)
-        .unwrap();
+    let journaled =
+        commit_prepared_group_edit_journaled(&mut journaled_topo, prepared, value).unwrap();
     let mut unprepared_journal_topo = topo.clone();
     let unprepared_journaled = match kind {
         GroupEditKind::BandRadius { expected_radius } => resize_blend_journaled(

@@ -1181,6 +1181,40 @@ pub fn resize_blend_journaled(
     })
 }
 
+/// Keeps a prepared blend-group edit at `value` with its evolution entry.
+///
+/// Returns and records what [`resize_blend_journaled`] or
+/// [`resize_cylindrical_face_journaled`] does for the prepared source, face
+/// and `value`, with the group route served from the preparation under
+/// every guard.
+///
+/// # Errors
+///
+/// A stale-source [`OperationsError::InvalidInput`], or exactly the
+/// unprepared journaled call's refusal. Topology and history are unchanged
+/// on every error.
+pub fn commit_prepared_group_edit_journaled(
+    topo: &mut Topology,
+    prepared: &crate::blend_cluster::PreparedGroupEdit,
+    value: f64,
+) -> Result<JournaledSolidOp, OperationsError> {
+    let _span = crate::performance::span("blend_group.commit");
+    prepared.require_current(topo)?;
+    let (solid, face) = (prepared.solid(), prepared.face());
+    match prepared.kind() {
+        crate::blend_cluster::GroupEditKind::BandRadius { expected_radius } => {
+            resize_blend_journaled_with(topo, solid, face, expected_radius, value, |topo| {
+                prepared.committed_band_route(topo, value)
+            })
+        }
+        crate::blend_cluster::GroupEditKind::CylinderRadius { .. } => {
+            resize_cylindrical_face_journaled_with(topo, solid, face, value, |topo| {
+                prepared.committed_group_edit(topo, value)
+            })
+        }
+    }
+}
+
 /// [`resize_blend_journaled`] with its blend-group route supplied by the
 /// caller (the unprepared route, or a prepared group edit's cached one).
 pub(crate) fn resize_blend_journaled_with(
