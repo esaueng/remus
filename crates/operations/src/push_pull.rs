@@ -1043,7 +1043,20 @@ pub fn resize_cylindrical_face(
     }
 
     if !cylindrical_face_is_full_turn(topo, face, &cyl)? {
-        return resize_partial_cylindrical_face(topo, solid, face, &cyl, new_radius);
+        let refusal = match resize_partial_cylindrical_face(topo, solid, face, &cyl, new_radius) {
+            Ok(result) => return Ok(result),
+            Err(refusal) => refusal,
+        };
+        // A wall the blends it supports keep the partial path from moving
+        // (its seams, shoulder and the edges running into them are filleted)
+        // is resized through that group: remove it to sharp, resize the
+        // sharp wall exactly, re-fillet at the recorded radii.
+        return match crate::blend_cluster::resize_cylinder_through_group(
+            topo, solid, face, new_radius,
+        )? {
+            Some(edit) => Ok(edit.solid),
+            None => Err(refusal),
+        };
     }
 
     if let Some(result) =

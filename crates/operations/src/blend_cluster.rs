@@ -45,6 +45,8 @@
 //! WASM module tier: `core` once bound (it reads the live session's handles);
 //! no binding yet.
 
+mod edit;
+mod reblend;
 mod remove;
 mod sharp;
 
@@ -65,6 +67,10 @@ use crate::OperationsError;
 use crate::query::{edge_normal_angle, effective_face_normal};
 
 pub use crate::error_payloads::BlendClusterError;
+pub use edit::{GroupEdit, resize_band_through_group, resize_cylinder_through_group};
+pub use reblend::{
+    GroupReblend, ReblendStage, compose_evolution, plan_reblend, reblend_restoration,
+};
 pub use remove::{SharpRestoration, remove_blend_cluster, remove_blend_members};
 
 /// Normal angle (radians) up to which two exact analytic faces count as

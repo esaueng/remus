@@ -18,6 +18,21 @@ historical predecessor-line records, retained for provenance. The
 
 ### Added
 
+* **operations,wasm:** direct edits through a recognized blend group
+  (`blend_cluster::{plan_reblend, reblend_restoration,
+  resize_band_through_group, resize_cylinder_through_group}`). When the
+  per-band path refuses, `resize_blend` (WASM `resizeBlend`) removes the
+  band's whole dependent group to its exact sharp parent and re-fillets it
+  in planned stages with the band at its new radius, and the partial-turn
+  `resize_cylindrical_face` (WASM `resizeCylindricalFace`) removes the group
+  a boss wall supports, resizes the sharp wall exactly and re-fillets the
+  group at its recorded radii. On the filleted Gentle-Gecko this rounds a
+  convex top band R4 to 1.5 or 1.9 with the seams and shoulder at R4, and
+  walks the boss diameter 12 to 14.6, 17, 21.1 and 14.7. An unbuildable
+  radius set (a concave R2 seam under an R4 shoulder) or an oversized
+  diameter is a typed refusal (`blend-cluster-reblend-failed`, or the sharp
+  resize's topology change) that leaves the body unchanged; the route runs
+  on a private arena, so a refusal allocates nothing.
 * **operations,wasm:** a cylindrical wall whose seam with a sphere carries a
   rolling-ball fillet resizes with it (`resize_blend::
   resize_cylindrical_face_reblended`, WASM `resizeCylindricalFaceDetailed`

@@ -242,6 +242,21 @@ pub enum BlendClusterError {
         /// Refusal detail.
         reason: String,
     },
+    /// A re-fillet request is malformed: a radius override for something
+    /// that is not a removed band, or a radius that is not finite and
+    /// positive.
+    #[error("invalid blend-cluster re-fillet: {reason}")]
+    InvalidReblend {
+        /// Refusal detail.
+        reason: String,
+    },
+    /// No planned order of re-fillet stages builds the requested radius set
+    /// on the sharp body as one valid, watertight solid.
+    #[error("the blend group cannot be re-filleted: {reason}")]
+    ReblendFailed {
+        /// The refusal of every attempted stage order.
+        reason: String,
+    },
 }
 
 impl BlendClusterError {
@@ -258,6 +273,8 @@ impl BlendClusterError {
             Self::UnsupportedSupport { .. } => "blend-cluster-unsupported-support",
             Self::AmbiguousSharp { .. } => "blend-cluster-ambiguous-sharp",
             Self::SharpRebuildFailed { .. } => "blend-cluster-sharp-rebuild-failed",
+            Self::InvalidReblend { .. } => "blend-cluster-invalid-reblend",
+            Self::ReblendFailed { .. } => "blend-cluster-reblend-failed",
         }
     }
 }
