@@ -258,7 +258,12 @@ fn joined_at(
                 FaceSurface::Torus(torus) if torus.z_axis().cross(normal).length() < AXIS => {
                     height(torus.center()) + torus.minor_radius()
                 }
-                _ => face_vertices(topo, support)?
+                FaceSurface::Plane { .. }
+                | FaceSurface::Cylinder(_)
+                | FaceSurface::Cone(_)
+                | FaceSurface::Sphere(_)
+                | FaceSurface::Nurbs(_)
+                | FaceSurface::Torus(_) => face_vertices(topo, support)?
                     .into_iter()
                     .map(|vertex| topo.vertex(vertex).map(|data| height(data.point())))
                     .collect::<Result<Vec<_>, _>>()?
