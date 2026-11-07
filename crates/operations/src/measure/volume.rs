@@ -2462,11 +2462,7 @@ fn find_cap_circle(topo: &Topology, face_id: FaceId) -> Option<(Point3, f64)> {
 /// boolean result containing it, preserving the `volume(A ∪ B) == volume(A) +
 /// volume(B)` invariant for coincident-contact fuses. A curvature-radius cap
 /// would tessellate a shared face differently in each context and break it.
-pub(super) fn volume_tessellation_deflection(
-    topo: &Topology,
-    solid: SolidId,
-    requested: f64,
-) -> f64 {
+pub fn volume_tessellation_deflection(topo: &Topology, solid: SolidId, requested: f64) -> f64 {
     let Ok(aabb) = super::solid_bounding_box(topo, solid) else {
         return requested;
     };
