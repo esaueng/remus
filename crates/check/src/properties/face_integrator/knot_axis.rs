@@ -24,6 +24,11 @@ pub(super) fn retry<S: ParametricSurface, const AREA_ONLY: bool>(
             "knot-aligned quadrature needs more than {MAX_KNOT_ALIGNED_CELLS} cells"
         ))
     };
+    // The generator certificate is tied to linear v. Its caller can retry
+    // the ordinary rule, including this transpose, after a budget refusal.
+    if rule.ruled_guard {
+        return Err(refused());
+    }
     let Some(s) = surface.as_nurbs() else {
         return Err(refused());
     };

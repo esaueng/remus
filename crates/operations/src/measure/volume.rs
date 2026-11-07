@@ -693,12 +693,12 @@ fn edge_samples(curve: &EdgeCurve) -> u32 {
 
 /// The volume of `solid` from its boundary-trimmed face integrals, when they
 /// are certified to measure it; `None` sends the caller to the closed
-/// whole-solid mesh. This is S1: the strict validator's own fixed-order
-/// integrals, about the same shell references, through the thread's
-/// face-integral cache. After an edit the validation has already integrated
-/// every face, so the reading only sums; a face the cache re-expresses (about
-/// a moved reference, or translated by the edit) reads within rounding of a
-/// fresh integration, as the validator's probe does.
+/// whole-solid mesh. Fixed-order terms use the validator's face-integral
+/// cache, or exact-content readings retained by a prepared handle. Qualified
+/// linear-v NURBS spans instead integrate their straight generators
+/// analytically while keeping the independent curved-u quadrature orders.
+/// Their generator-wise area lower bound makes closure stricter; it never
+/// answers a surface-area request. All terms use the same shell reference.
 ///
 /// The integrator is not right for every face (its special paths each cover
 /// a family), so the reading is taken only when four certificates hold:
@@ -739,7 +739,9 @@ fn qualified_face_integral_volume(
     };
     // `negligible_volume` is the diagonal cubed times 1e-9.
     let extent = (floor / 1e-9).cbrt();
-    if !boundary_lies_on_faces(topo, &faces, BOUNDARY_GAP * extent)? {
+    if !crate::performance::timed("volume.boundary-support", || {
+        boundary_lies_on_faces(topo, &faces, BOUNDARY_GAP * extent)
+    })? {
         return Ok(None);
     }
     let order = remus_check::properties::PropertiesOptions::default().gauss_order;
@@ -809,11 +811,17 @@ fn qualified_shell_volume(
     let (mut volume, mut area, mut disagreement) = (0.0, 0.0, 0.0);
     let mut vector_area = Vec3::new(0.0, 0.0, 0.0);
     for fid in faces {
+        let _face_span = crate::performance::span(match topo.face(fid)?.surface() {
+            FaceSurface::Plane { .. } => "volume.face.plane",
+            FaceSurface::Cylinder(_) => "volume.face.cylinder",
+            FaceSurface::Cone(_) => "volume.face.cone",
+            FaceSurface::Sphere(_) => "volume.face.sphere",
+            FaceSurface::Torus(_) => "volume.face.torus",
+            FaceSurface::Nurbs(_) => "volume.face.nurbs",
+        });
         // The strict validator's own request: after an edit it already holds
         // every face, about this very reference.
-        let Ok(term) = remus_check::properties::face_cache::integrate_face_volume_about_memoized(
-            topo, fid, order, reference,
-        ) else {
+        let Ok(term) = super::guard_readings::integrate(topo, fid, order, reference) else {
             vol_trace(|| {
                 format!(
                     "face integrals declined: face {} did not integrate",
@@ -833,12 +841,8 @@ fn qualified_shell_volume(
         };
         // Gauss orders are not nested, so a lower one is an independent
         // reading: the two agree only where both have converged on the face.
-        let Ok(coarse) = remus_check::properties::face_cache::integrate_face_volume_about_memoized(
-            topo,
-            fid,
-            CONVERGENCE_ORDER,
-            reference,
-        ) else {
+        let Ok(coarse) = super::guard_readings::integrate(topo, fid, CONVERGENCE_ORDER, reference)
+        else {
             return Ok(None);
         };
         area += term.area;
@@ -847,13 +851,7 @@ fn qualified_shell_volume(
         // [`REFINEMENT_ORDER`]; its order-5 term is what the volume sums.
         let mut face_disagreement = (term.volume - coarse.volume).abs();
         if refine && face_disagreement > ORDER_AGREEMENT * term.volume.abs() {
-            let Ok(fine) =
-                remus_check::properties::face_cache::integrate_face_volume_about_memoized(
-                    topo,
-                    fid,
-                    REFINEMENT_ORDER,
-                    reference,
-                )
+            let Ok(fine) = super::guard_readings::integrate(topo, fid, REFINEMENT_ORDER, reference)
             else {
                 return Ok(None);
             };
@@ -883,6 +881,29 @@ fn qualified_shell_volume(
         return Ok(None);
     }
     Ok(Some((volume, disagreement)))
+}
+
+/// Precompute the fixed source's two independent guard orders. Qualification
+/// and convergence still run on the eventual result; only successful terms
+/// are retained, and an unsupported source keeps the normal fallback.
+pub(super) fn prime_guard_integrals(topo: &Topology, solid: SolidId) {
+    let Ok(data) = topo.solid(solid) else { return };
+    for shell in std::iter::once(data.outer_shell()).chain(data.inner_shells().iter().copied()) {
+        let Ok(shell) = topo.shell(shell) else {
+            continue;
+        };
+        let Ok(Some(reference)) = shell_reference(topo, shell.faces()) else {
+            continue;
+        };
+        for &face in shell.faces() {
+            for order in [
+                CONVERGENCE_ORDER,
+                remus_check::properties::PropertiesOptions::default().gauss_order,
+            ] {
+                let _ = super::guard_readings::integrate(topo, face, order, reference);
+            }
+        }
+    }
 }
 
 /// The vertex-box centre of `faces`, the reference [`shell_signed_volume`]

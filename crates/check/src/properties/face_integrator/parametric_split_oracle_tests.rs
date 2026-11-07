@@ -367,6 +367,7 @@ fn compare<S: ParametricSurface>(
                                     knots,
                                     reference: Point3::new(0.4, -0.7, 1.3),
                                     volume_only,
+                                    ruled_guard: false,
                                     flux: Some(&flux),
                                     cone_apex: None,
                                 };

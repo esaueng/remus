@@ -262,7 +262,7 @@ fn integrate_parametric_reference<S: ParametricSurface, const AREA_ONLY: bool>(
     Ok(acc.finish(sign))
 }
 
-fn surface(
+pub(super) fn surface(
     degree_u: usize,
     degree_v: usize,
     interior_u: &[f64],
@@ -317,7 +317,7 @@ fn surface(
     .expect("valid fixture surface")
 }
 
-fn surfaces() -> Vec<(&'static str, NurbsSurface)> {
+pub(super) fn surfaces() -> Vec<(&'static str, NurbsSurface)> {
     let interior = [0.25, 0.5, 0.5, 0.8];
     vec![
         ("bicubic", surface(3, 3, &interior, &[0.3, 0.7], false)),
@@ -358,7 +358,7 @@ fn circle(cu: f64, cv: f64, r: f64, n: usize) -> Vec<(f64, f64)> {
 /// v windows repeat), a wavy polygon with two pockets (windows change per
 /// row, one row can see more than the window cache holds), and a periodic
 /// outline straddling `u = 1`.
-fn trims() -> Vec<(&'static str, FaceUv)> {
+pub(super) fn trims() -> Vec<(&'static str, FaceUv)> {
     let wavy: Vec<(f64, f64)> = (0..=48)
         .map(|k| {
             let u = 0.05 + 0.9 * k as f64 / 48.0;
@@ -412,7 +412,7 @@ fn trims() -> Vec<(&'static str, FaceUv)> {
     ]
 }
 
-fn contribution_bits(c: &FaceContribution) -> [u64; 14] {
+pub(super) fn contribution_bits(c: &FaceContribution) -> [u64; 14] {
     [
         c.area,
         c.volume,
@@ -454,6 +454,7 @@ fn both<const AREA_ONLY: bool>(
             knots: None,
             reference: Point3::new(0.4, -1.25, 0.75),
             volume_only,
+            ruled_guard: false,
             flux: Some(&flux),
             cone_apex: None,
         };
@@ -545,7 +546,7 @@ fn nurbs_rows_reuse_windows_and_refuse_foreign_tables() {
     assert!(
         rows.windows
             .iter()
-            .all(|(key, _)| *key != (0.1f64.to_bits(), 0.8f64.to_bits())),
+            .all(|(key, _)| (key.0, key.1) != (0.1f64.to_bits(), 0.8f64.to_bits())),
         "the oldest window was evicted"
     );
     let other = surface(3, 3, &[0.5], &[0.5], false);

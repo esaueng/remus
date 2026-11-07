@@ -1552,6 +1552,7 @@ impl ConvexMaterialGuard {
         edges: &[EdgeId],
         radius: f64,
     ) -> Result<Option<Self>, OperationsError> {
+        let _span = crate::performance::span("blend.material.capture");
         let tol = remus_math::tolerance::Tolerance::new();
         let mut seen = std::collections::HashSet::new();
         let mut chains = Vec::new();
@@ -1602,8 +1603,9 @@ impl ConvexMaterialGuard {
                 ),
             });
         }
-        let Some(tube) =
-            crate::blend_material::sample_reach_tube(&self.pristine, &self.chains, self.reach)?
+        let Some(tube) = crate::performance::timed("blend.material.tube", || {
+            crate::blend_material::sample_reach_tube(&self.pristine, &self.chains, self.reach)
+        })?
         else {
             return Ok(());
         };

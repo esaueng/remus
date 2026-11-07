@@ -56,9 +56,15 @@ struct PreparedFace {
     /// Whether the ray prefilter takes the face: a NURBS support with a span
     /// count it takes, and a cached trim.
     prefilter: bool,
+    /// Refined local hulls of a narrow quadratic strip, shared with boundary
+    /// probes; also useful past the ordinary ray prefilter's span cap.
+    strip_prefilter: bool,
     /// Knot-span boxes of such a support for the ray prefilter, built on
     /// first use; `None` inside when they cannot be certified.
     span_boxes: std::sync::OnceLock<Option<ray_prefilter::SpanBoxes>>,
+    /// Point queries benefit from local hulls beyond the ray prefilter's
+    /// payoff cap, including long, narrow walked strips.
+    boundary_boxes: std::sync::OnceLock<Option<ray_prefilter::SpanBoxes>>,
 }
 
 /// The rectangle, in the boundary test's projection plane, that contains every
@@ -282,11 +288,13 @@ impl<'a> PreparedSolid<'a> {
                     .is_ok_and(|face| super::trim_is_uv_decided(face.surface()))
             });
             let trim = super::boundary::FaceTrimData::build(topo, fid).ok();
-            let (support_hull, prefilter) =
+            let (support_hull, prefilter, strip_prefilter) =
                 match topo.face(fid).map(remus_topology::face::Face::surface) {
-                    Ok(FaceSurface::Nurbs(surface)) => {
-                        (nurbs_support_hull(surface), ray_prefilter::takes(surface))
-                    }
+                    Ok(FaceSurface::Nurbs(surface)) => (
+                        nurbs_support_hull(surface),
+                        ray_prefilter::takes(surface),
+                        ray_prefilter::takes_strip(surface),
+                    ),
                     // Analytic distances are closed-form; nothing to skip.
                     Ok(
                         FaceSurface::Plane { .. }
@@ -295,13 +303,14 @@ impl<'a> PreparedSolid<'a> {
                         | FaceSurface::Sphere(_)
                         | FaceSurface::Torus(_),
                     )
-                    | Err(_) => (None, false),
+                    | Err(_) => (None, false, false),
                 };
             let trim_window = match (&trim, topo.face(fid)) {
                 (Some(trim), Ok(face)) => TrimWindow::of(face.surface(), trim),
                 _ => None,
             };
             let prefilter = prefilter && trim.is_some();
+            let strip_prefilter = strip_prefilter && trim.is_some();
             prepared_faces.push(PreparedFace {
                 fid,
                 trim,
@@ -310,7 +319,9 @@ impl<'a> PreparedSolid<'a> {
                 trim_window,
                 uv_window,
                 prefilter,
+                strip_prefilter,
                 span_boxes: std::sync::OnceLock::new(),
+                boundary_boxes: std::sync::OnceLock::new(),
             });
         }
         let bvh = Bvh::build(&face_aabbs);
@@ -415,6 +426,9 @@ impl<'a> PreparedSolid<'a> {
                 .support_hull
                 .is_some_and(|hull| hull_excludes(hull, point, tolerance))
             {
+                continue;
+            }
+            if self.boundary_misses_nurbs_face(prepared, point, tolerance) {
                 continue;
             }
             // A face whose trim polygon provably rejects the point cannot
@@ -584,7 +598,9 @@ impl PreparedSolid<'_> {
             let prepared = &self.prepared_faces[face_idx];
             // A NURBS support the ray provably misses contributes no crossing
             // (see `ray_misses_nurbs_face`).
-            if prepared.prefilter && self.ray_misses_nurbs_face(prepared, origin, direction) {
+            if (prepared.prefilter || prepared.strip_prefilter)
+                && self.ray_misses_nurbs_face(prepared, origin, direction)
+            {
                 skipped();
                 continue;
             }

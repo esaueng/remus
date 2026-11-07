@@ -65,6 +65,11 @@ kernel holds at most 16 live preparations; handles are never reused.
   refuses every value (below). It reads the caller's topology only. A face no
   group route edits is a typed `blend-cluster-not-prepared` refusal; a wrong
   witness is `blend-radius-mismatch`.
+  Eligible preparations also warm the source and sharp parent's independent
+  order-3/order-5 volume terms and, when the face mesh cache is enabled,
+  postcondition-quality meshes. Successful terms are retained under complete
+  face content, order and reference-point bits, within 4 MiB per handle.
+  Changed faces and changed references miss; warming failures certify nothing.
 - **Frame.** Clone the private arena, make the exact sharp edit (A7), plan
   and re-blend the group in the planned order with display-only blends
   ([`set_display_only_blends`]): each stage keeps its structural checks (every
@@ -92,6 +97,11 @@ kernel holds at most 16 live preparations; handles are never reused.
   adoption, and joined caps and groups containing chamfers still rebuild.
   Journaled commits keep the normal initial local attempt, begin, copy and
   record sequence, including operation-ID high-water behavior on rollback.
+  Positive-weight, continuous degree-one-v NURBS spans integrate their
+  straight generators analytically, retaining independent curved-u quadrature
+  and the original convergence/boundary checks. Their generator-wise area
+  lower bound makes closure qualification stricter and never answers an area
+  property query. Unsupported cases keep the original integrator.
 - **Learned refusal.** Preparation runs the attempt in front of the group
   route once on a scratch copy at a probe value. A refusal no value changes —
   the band's description or removal refuses (`BandNotAnalytic`,

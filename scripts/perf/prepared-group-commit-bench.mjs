@@ -47,14 +47,15 @@ for (const edit of ['A2', 'A7']) {
     const checkpoint = k.checkpoint();
     for (let sample = 0; sample < 3; sample++) {
       k.restore(checkpoint);
-      const prepared = edit === 'A2' ? k.prepareResizeBlend(solid, face, 4)
-        : k.prepareResizeCylindricalFace(solid, face);
+      const [prepared, prepareMs] = timed(() => edit === 'A2' ? k.prepareResizeBlend(solid, face, 4)
+        : k.prepareResizeCylindricalFace(solid, face));
       const [preview, previewMs] = timed(() => k.previewPreparedGroupEdit(prepared, value));
       const frame = k.serializeSolids(new Uint32Array([preview]));
       k.restore(checkpoint);
       k.setPerformanceTracing(true);
       const [result, commitMs] = timed(() => JSON.parse(k.commitPreparedGroupEditJournaled(prepared, value)));
       const phases = JSON.parse(k.drainPerformanceTrace());
+      if (process.env.REMUS_PERF_PHASES === '1') console.log(JSON.stringify({ edit, sample, phases }));
       k.setPerformanceTracing(false);
       const adopted = phases.some((phase) => phase.name === 'blend_group.adopt_preview');
       if (process.env.REMUS_EXPECT_PREVIEW_ADOPTION === '1') assert.ok(adopted, `${edit}: adopted preview`);
@@ -71,7 +72,7 @@ for (const edit of ['A2', 'A7']) {
       assert.equal(k.releasePreparedGroupEdit(prepared), true);
       const documentSha256 = createHash('sha256')
         .update(k.serializeSolids(new Uint32Array([result.solid]))).digest('hex');
-      console.log(JSON.stringify({ edit, sample, previewMs, commitMs, adopted, documentSha256 }));
+      console.log(JSON.stringify({ edit, sample, prepareMs, previewMs, commitMs, adopted, documentSha256 }));
     }
   } finally {
     k.free();

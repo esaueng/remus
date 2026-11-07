@@ -62,7 +62,7 @@
 //! `prepareResizeBlend`, `prepareResizeCylindricalFace`).
 
 use std::cell::Cell;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use remus_math::tolerance::Tolerance;
 use remus_offset::{OffsetError, UnsupportedMoveCause};
@@ -125,6 +125,7 @@ pub struct PreparedGroupEdit {
     learned: bool,
     /// Last private frame, independent of caller handles and checkpoint restores.
     preview: Mutex<Option<CachedPreview>>,
+    readings: Arc<crate::measure::guard_readings::GuardReadings>,
 }
 
 struct CachedPreview {
@@ -175,6 +176,7 @@ impl PreparedGroupEdit {
         };
         let before = recognize_blend_cluster(topo, solid, face).ok();
         let learned = probe_band(topo, solid, face, expected_radius)?;
+        let readings = prepare_readings(topo, solid, &group, learned);
         Ok(Self {
             solid,
             face,
@@ -185,6 +187,7 @@ impl PreparedGroupEdit {
             before,
             learned,
             preview: Mutex::new(None),
+            readings,
         })
     }
 
@@ -215,6 +218,7 @@ impl PreparedGroupEdit {
         };
         let before = recognize_blend_cluster(topo, solid, face).ok();
         let learned = probe_cylinder(topo, solid, face, radius)?;
+        let readings = prepare_readings(topo, solid, &group, learned);
         Ok(Self {
             solid,
             face,
@@ -225,6 +229,7 @@ impl PreparedGroupEdit {
             before,
             learned,
             preview: Mutex::new(None),
+            readings,
         })
     }
 
@@ -313,7 +318,9 @@ impl PreparedGroupEdit {
         else {
             return Ok(None);
         };
-        if crate::blend_ops::display_only_blends() || cached.checks.validate().is_err() {
+        if crate::blend_ops::display_only_blends()
+            || self.readings.enter(|| cached.checks.validate()).is_err()
+        {
             return Ok(None);
         }
         remus_blend::governor::checkpoint()?;
@@ -455,16 +462,7 @@ impl PreparedGroupEdit {
             Target::Band { member } => build_band(&self.group, work, member, value, gate),
             Target::Wall { wall } => build_cylinder(&self.group, work, wall, value, gate),
         };
-        let (built, checks) = if gate == Gate::Preview
-            && self.learned
-            && self.group.lift.is_none()
-            && self
-                .group
-                .cluster
-                .members
-                .iter()
-                .all(|member| !member.kind.is_chamfer())
-        {
+        let (built, checks) = if gate == Gate::Preview && can_adopt(&self.group, self.learned) {
             crate::blend_ops::preview_checks::capture(build)
         } else {
             (build(), None)
@@ -488,6 +486,32 @@ impl PreparedGroupEdit {
         }
         Ok(result)
     }
+}
+
+fn can_adopt(group: &SharpGroup, learned: bool) -> bool {
+    learned
+        && group.lift.is_none()
+        && group
+            .cluster
+            .members
+            .iter()
+            .all(|member| !member.kind.is_chamfer())
+}
+
+fn prepare_readings(
+    topo: &Topology,
+    solid: SolidId,
+    group: &SharpGroup,
+    learned: bool,
+) -> Arc<crate::measure::guard_readings::GuardReadings> {
+    let readings = crate::measure::guard_readings::GuardReadings::new();
+    if can_adopt(group, learned) {
+        readings.prime(topo, solid);
+        readings.prime(&group.work, group.restoration.solid);
+        super::reblend::prime_postcondition_mesh(topo, solid);
+        super::reblend::prime_postcondition_mesh(&group.work, group.restoration.solid);
+    }
+    readings
 }
 
 fn content_key(topo: &Topology, solid: SolidId) -> Result<ContentKey, OperationsError> {

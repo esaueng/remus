@@ -423,7 +423,7 @@ Quick reference — find the right file for any task:
 | Point-in-solid classification (ray casting) | `classify/mod.rs` |
 | Winding number classifier | `classify/winding.rs` |
 | Operation-local prepared context for repeated point classification (`PreparedSolid`) | `classify/prepared.rs` |
-| Knot-span boxes of NURBS faces and the ray prefilter they drive: a forward ray clear of every box gets no hit, so the prepared crossing count skips the face (boxes scanned in groups; faces past 400 spans left to the solver) | `classify/prepared/ray_prefilter.rs` |
+| Conservative NURBS span hulls for boundary-distance and ray pruning, with bounded quadratic-strip subdivision for long narrow bands; the original surface and solver remain authoritative | `classify/prepared/ray_prefilter.rs` |
 | Persistent whole-topology classification cache (`ClassificationCache`, PERF-Q02) | `classify/cache.rs` |
 | Narrow-bump far-flank crossing through the classifier's NURBS ray path (tests) | `classify/boundary/nurbs_bump_ray_tests.rs` |
 | Exact trim of sphere faces bounded by circle arcs on the sphere, any number of supports, non-convex or reversed (first crossing along a great-circle walk) | `classify/boundary/sphere_arcs.rs` |
@@ -456,6 +456,7 @@ Quick reference — find the right file for any task:
 | Independent polynomial Green-moment and authoritative-trim oracles (tests) | `properties/face_integrator/polynomial_boundary_tests.rs` |
 | Properties orchestrator (volume, area, CoM) | `properties/mod.rs` |
 | Opt-in content-keyed memo of fixed-order face integrals (`FaceIntegralCache`, PERF-V02 subset) | `properties/face_cache.rs` |
+| Knot-aligned basis-reuse bit oracle, independent ruled-generator quadrature and closed-form volume/flux oracles (tests) | `properties/face_integrator/knot_rows_oracle_tests.rs` |
 | Point-to-surface distance (all analytic types) | `distance/analytic.rs` |
 | Edge-to-edge distance | `distance/edge.rs` |
 | Point-to-solid, solid-to-solid distance | `distance/mod.rs` |
@@ -572,6 +573,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Spliced copy's aligned coedge-authority restore checked against the per-snapshot search on a drilled plate (tests) | `copy/tests/spliced_authority_oracle.rs` |
 | Measure (bbox, area, volume, CoM) | `measure/` (mod, volume, area, bounding_box, edge_length, helpers) |
 | Opt-in per-thread `solid_volume` memo keyed by topology cache identity and complete solid content | `measure/volume_memo.rs` |
+| Prepared-handle source and sharp-parent per-face guard readings, keyed on exact content, order and reference | `measure/guard_readings.rs` |
 | Exact reusable face-area and handle-independent volume measurements | `measure/reuse.rs`, `measure/reuse/tests.rs` |
 | Closed-form certificate that a straight-edged, axis-aligned planar outline passes the volume path's area-consistency probe without meshing | `measure/volume/planar_outline.rs` |
 | Certificate-implies-probe oracle, refusal cases and probe-mesh work guard (tests) | `measure/volume/planar_outline_tests.rs` |
@@ -631,6 +633,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Result-aware edge/vertex evolution induced from an exact face map (typed unresolved reasons, F/E/V completeness) | `boundary_evolution.rs` |
 | Compound operations | `compound_ops.rs` |
 | Blend v2 wrappers (fillet/chamfer) | `blend_ops.rs` |
+| Immutable deferred measuring obligations that certify adoption of a private prepared preview | `blend_ops/preview_checks.rs` |
 | Differential oracle for the fillet feature grouping: the pairwise polyline grouping before its connected-pair skip, box prefilter and early-exit scan, kept verbatim (tests) | `blend_ops/grouping_oracle_tests.rs` |
 | Sphere-boss seam fillet work counters (no whole-solid robust mesh, pinned walker steps) and the governed fillet cancellation/step-budget contract with rollback (tests) | `blend_ops/governed_fillet_tests.rs` |
 | Convex blend material-side acceptance | `blend_material.rs` |

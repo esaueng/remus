@@ -843,6 +843,21 @@ fn postconditions(topo: &Topology, solid: SolidId) -> Result<(), OperationsError
     measuring_postconditions(topo, solid)
 }
 
+/// Warm unchanged face meshes at the final postcondition's quality.
+pub(super) fn prime_postcondition_mesh(topo: &Topology, solid: SolidId) {
+    if crate::tessellate::face_mesh_cache_stats().is_none() {
+        return;
+    }
+    let _span = crate::performance::span("blend_group.prepare_mesh");
+    if let Ok(bounds) = crate::measure::solid_bounding_box(topo, solid) {
+        let deflection = (bounds.max - bounds.min).length() * MESH_DEFLECTION;
+        // Warm the existing exact-content face mesh cache. An error is not
+        // certified or remembered; acceptance still meshes the final body and
+        // checks every free/non-manifold edge and its independent volume.
+        let _ = crate::tessellate::tessellate_solid(topo, solid, deflection);
+    }
+}
+
 /// The remaining guards of an immutable frame that already passed validation.
 pub fn measuring_postconditions(topo: &Topology, solid: SolidId) -> Result<(), OperationsError> {
     let failed =

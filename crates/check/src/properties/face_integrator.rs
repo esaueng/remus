@@ -27,6 +27,8 @@ mod boundary_area;
 mod cylinder_band_tests;
 mod cylinder_green;
 mod knot_axis;
+#[cfg(test)]
+mod knot_rows_oracle_tests;
 mod loop_index;
 mod natural_rectangle;
 #[cfg(test)]
@@ -51,6 +53,9 @@ struct IntegrationRule<'a> {
     /// Omit unused moments in fixed orientation reads. Keep this a runtime
     /// policy so full and volume requests share the large integration code.
     volume_only: bool,
+    /// Qualification-only reduction of a positive-weight linear v span to
+    /// its straight generator. Its area term is a stricter lower bound.
+    ruled_guard: bool,
     /// Where a fixed-rule path records the face's vector area `∫ n dA`, taken
     /// over exactly the samples (or the closed form) its volume came from;
     /// see [`integrate_face_fixed_flux_about`]. Adaptive paths leave it unset.
@@ -85,6 +90,7 @@ impl<'a> IntegrationRule<'a> {
             knots: self.knots,
             reference: self.reference,
             volume_only: self.volume_only,
+            ruled_guard: self.ruled_guard,
             flux: self.flux,
             cone_apex: self.cone_apex,
         }
@@ -226,6 +232,7 @@ pub fn integrate_face_fixed_about(
             knots: None,
             reference,
             volume_only: false,
+            ruled_guard: false,
             flux: None,
             cone_apex: None,
         },
@@ -272,6 +279,77 @@ pub(crate) fn integrate_face_fixed_volume_flux_about(
     integrate_face_fixed_flux_impl(topo, face_id, gauss_order, reference, true)
 }
 
+/// A ruled face's acceptance terms, separate from surface-area properties.
+pub struct RuledGuardVolumeTerm {
+    /// Signed divergence-theorem volume contribution.
+    pub volume: f64,
+    /// Integrated oriented normal.
+    pub vector_area: Option<Vec3>,
+    /// Generator-wise lower bound on area, used only to make the shell's
+    /// closure test stricter. Never a surface-area measurement.
+    pub closure_area_lower_bound: f64,
+}
+
+/// Volume and vector area of a many-span, degree-one-v NURBS face, reducing
+/// each straight generator analytically.
+///
+/// The returned closure area is a lower
+/// bound for closure qualification, not a surface-area measurement. Curved-u
+/// quadrature, trim recovery, knot splitting and the work budget are retained.
+/// Other faces return `None` so callers keep their ordinary integration.
+///
+/// # Errors
+/// The geometry/reference errors of [`integrate_face_fixed_about`].
+pub fn integrate_ruled_guard_volume_about(
+    topo: &Topology,
+    face: FaceId,
+    order: usize,
+    reference: Point3,
+) -> Result<Option<RuledGuardVolumeTerm>, CheckError> {
+    let FaceSurface::Nurbs(surface) = topo.face(face)?.surface() else {
+        return Ok(None);
+    };
+    if surface.degree_v() != 1
+        || interior_knots(surface.knots_v(), surface.domain_v()).is_empty()
+        // A repeated interior degree-one knot permits a discontinuity: its
+        // right endpoint would not be the preceding generator's endpoint.
+        || surface.knots_v().windows(2).any(|w| w[0].partial_cmp(&w[1]) == Some(std::cmp::Ordering::Equal)
+            && w[0] > surface.domain_v().0 && w[0] < surface.domain_v().1)
+        || !surface
+            .weights()
+            .iter()
+            .flatten()
+            .all(|&w| w.is_finite() && w > 0.0)
+    {
+        return Ok(None);
+    }
+    if !reference.0.into_iter().all(f64::is_finite) {
+        return Err(CheckError::IntegrationFailed(
+            "integration reference point must be finite".into(),
+        ));
+    }
+    let flux = Cell::new(None);
+    let term = integrate_face_impl::<false>(
+        topo,
+        face,
+        IntegrationRule {
+            order,
+            adaptive: None,
+            knots: None,
+            reference,
+            volume_only: true,
+            ruled_guard: true,
+            flux: Some(&flux),
+            cone_apex: None,
+        },
+    )?;
+    Ok(Some(RuledGuardVolumeTerm {
+        closure_area_lower_bound: term.area,
+        volume: term.volume,
+        vector_area: flux.get(),
+    }))
+}
+
 fn integrate_face_fixed_flux_impl(
     topo: &Topology,
     face_id: FaceId,
@@ -297,6 +375,7 @@ fn integrate_face_fixed_flux_impl(
             knots: None,
             reference,
             volume_only,
+            ruled_guard: false,
             flux: Some(&flux),
             cone_apex: None,
         },
@@ -326,6 +405,7 @@ pub fn integrate_face_area(
             knots: None,
             reference: Point3::new(0.0, 0.0, 0.0),
             volume_only: false,
+            ruled_guard: false,
             flux: None,
             cone_apex: None,
         },
@@ -458,6 +538,7 @@ pub fn integrate_face_about(
             knots: None,
             reference,
             volume_only: false,
+            ruled_guard: false,
             flux: None,
             cone_apex: None,
         },
@@ -1281,6 +1362,7 @@ pub fn integrate_torus_band_face_about(
             knots: None,
             reference,
             volume_only: false,
+            ruled_guard: false,
             flux: None,
             cone_apex: None,
         },
@@ -4700,7 +4782,7 @@ struct NurbsRows<'s> {
     scale_v: f64,
     u_axis: FirstOrderAxis<'s>,
     /// `((a, b) bits, bases over (iv, gpv))` of recently used windows.
-    windows: Vec<((u64, u64), FirstOrderAxis<'s>)>,
+    windows: Vec<((u64, u64, usize), FirstOrderAxis<'s>)>,
     /// Slot the next new window replaces once `windows` is full.
     next: usize,
     params: Vec<f64>,
@@ -4721,13 +4803,18 @@ impl<'s> NurbsRows<'s> {
 
     /// Index into `windows` of the table for window `(a, b)`, building it
     /// on a miss from the abscissae the trimmed loop computes for it.
+    #[cfg(test)]
     #[allow(clippy::cast_precision_loss)]
     fn window(&mut self, a: f64, b: f64) -> usize {
-        let key = (a.to_bits(), b.to_bits());
+        self.window_cells(a, b, patch_count(b - a, self.scale_v))
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    fn window_cells(&mut self, a: f64, b: f64, nv: usize) -> usize {
+        let key = (a.to_bits(), b.to_bits(), nv);
         if let Some(index) = self.windows.iter().position(|(seen, _)| *seen == key) {
             return index;
         }
-        let nv = patch_count(b - a, self.scale_v);
         let dv_patch = (b - a) / nv as f64;
         let v_scale = dv_patch / 2.0;
         self.params.clear();
@@ -4762,31 +4849,42 @@ impl<'s> NurbsRows<'s> {
         self.u_axis.refill(&[u]);
         for &(a, b) in spans {
             let nv = patch_count(b - a, self.scale_v);
-            let dv_patch = (b - a) / nv as f64;
-            let v_scale = dv_patch / 2.0;
-            let window = self.window(a, b);
-            let table = &self.windows[window].1;
-            let mut k = 0;
-            for iv in 0..nv {
-                for gpv in self.gauss_pts {
-                    let w = gpu_w * gpv.w * u_scale * v_scale;
-                    if let Some((p, du, dv)) =
-                        self.surface.first_order_at(&self.u_axis, 0, table, k)
-                    {
-                        acc.add_sample::<AREA_ONLY>(
-                            Point3::new(p.x(), p.y(), p.z()),
-                            du,
-                            dv,
-                            w,
-                            reference,
-                        );
-                    } else {
-                        let v_mid = dv_patch.fma(iv as f64, a) + v_scale;
-                        let v = v_scale.fma(gpv.x, v_mid);
-                        acc.add::<_, AREA_ONLY>(self.surface, u, v, w, reference, scratch);
-                    }
-                    k += 1;
+            self.add_window::<AREA_ONLY>(acc, (u, gpu_w, u_scale), (a, b, nv), reference, scratch);
+        }
+    }
+
+    /// One knot-aligned v window, with exactly the caller's cell count.
+    #[allow(clippy::cast_precision_loss)]
+    fn add_window<const AREA_ONLY: bool>(
+        &mut self,
+        acc: &mut Accumulator,
+        (u, gpu_w, u_scale): (f64, f64, f64),
+        (a, b, nv): (f64, f64, usize),
+        reference: Point3,
+        scratch: &mut DerivativeScratch,
+    ) {
+        let dv_patch = (b - a) / nv as f64;
+        let v_scale = dv_patch / 2.0;
+        let window = self.window_cells(a, b, nv);
+        let table = &self.windows[window].1;
+        let mut k = 0;
+        for iv in 0..nv {
+            for gpv in self.gauss_pts {
+                let w = gpu_w * gpv.w * u_scale * v_scale;
+                if let Some((p, du, dv)) = self.surface.first_order_at(&self.u_axis, 0, table, k) {
+                    acc.add_sample::<AREA_ONLY>(
+                        Point3::new(p.x(), p.y(), p.z()),
+                        du,
+                        dv,
+                        w,
+                        reference,
+                    );
+                } else {
+                    let v_mid = dv_patch.fma(iv as f64, a) + v_scale;
+                    let v = v_scale.fma(gpv.x, v_mid);
+                    acc.add::<_, AREA_ONLY>(self.surface, u, v, w, reference, scratch);
                 }
+                k += 1;
             }
         }
     }
@@ -4975,6 +5073,21 @@ fn integrate_knot_aligned<S: ParametricSurface, const AREA_ONLY: bool>(
         ..Accumulator::default()
     };
     let mut scratch = DerivativeScratch::new();
+    let mut rows = surface
+        .as_nurbs()
+        .filter(|s| s.has_first_order_tables())
+        .map(|s| NurbsRows::new(s, gauss_pts, scale.v));
+    let ruled_axis = surface
+        .as_nurbs()
+        .filter(|s| rule.ruled_guard && s.has_first_order_tables())
+        .map(|s| {
+            let mut params = knots_v.clone();
+            params.extend([v_range.0, v_range.1]);
+            params.compact_sort_by(f64::total_cmp);
+            params.dedup();
+            let axis = s.first_order_axis_v(&params);
+            (params, axis)
+        });
     let (mut cuts, mut spans) = (Vec::new(), Vec::new());
     // Gauss lines integrated so far, each one `v` sub-cell at one `u`
     // abscissa: `order` of them make one tensor cell.
@@ -4997,6 +5110,15 @@ fn integrate_knot_aligned<S: ParametricSurface, const AREA_ONLY: bool>(
                 let u_mid = du_patch.fma(iu as f64, u0) + u_scale;
                 for gpu in gauss_pts {
                     let u = u_scale.fma(gpu.x, u_mid);
+                    if !preflight && let Some(rows) = rows.as_mut() {
+                        rows.u_axis.refill(&[u]);
+                    }
+                    let mut ruled_previous = None;
+                    let quadratic = surface.as_nurbs().and_then(|s| {
+                        (!preflight && rule.ruled_guard)
+                            .then(|| QuadraticRow::new(s, u))
+                            .flatten()
+                    });
                     if splits {
                         trim.v_spans_into(u, v_range, &mut cuts, &mut spans);
                     } else {
@@ -5025,6 +5147,40 @@ fn integrate_knot_aligned<S: ParametricSurface, const AREA_ONLY: bool>(
                             if preflight {
                                 continue;
                             }
+                            if rule.ruled_guard
+                                && let Some(nurbs) = surface.as_nurbs()
+                                && nurbs.degree_v() == 1
+                            {
+                                let axes = rows.as_ref().zip(ruled_axis.as_ref()).map(
+                                    |(rows, (params, axis))| {
+                                        (&rows.u_axis, params.as_slice(), axis)
+                                    },
+                                );
+                                add_ruled_generator(
+                                    &mut acc,
+                                    nurbs,
+                                    (u, gpu.w * u_scale),
+                                    (p0, p1),
+                                    rule.reference,
+                                    &mut scratch,
+                                    GeneratorReuse {
+                                        axes,
+                                        quadratic,
+                                        previous: &mut ruled_previous,
+                                    },
+                                )?;
+                                continue;
+                            }
+                            if let Some(rows) = rows.as_mut() {
+                                rows.add_window::<AREA_ONLY>(
+                                    &mut acc,
+                                    (u, gpu.w, u_scale),
+                                    (p0, p1, nv),
+                                    rule.reference,
+                                    &mut scratch,
+                                );
+                                continue;
+                            }
                             let dv_patch = (p1 - p0) / nv as f64;
                             let v_scale = dv_patch / 2.0;
                             for iv in 0..nv {
@@ -5051,6 +5207,130 @@ fn integrate_knot_aligned<S: ParametricSurface, const AREA_ONLY: bool>(
         rule.record_flux(acc.flux(sign));
     }
     Ok(Some(acc.finish(sign)))
+}
+
+type GeneratorAxes<'a, 's> = (&'a FirstOrderAxis<'s>, &'a [f64], &'a FirstOrderAxis<'s>);
+
+/// At a simple degree-one v knot only one control column contributes.
+/// A clamped quadratic u span has Bernstein basis, so that column's point
+/// and u derivative need three weighted poles and no v derivative.
+#[derive(Clone, Copy)]
+struct QuadraticRow {
+    basis: [f64; 3],
+    derivative: [f64; 3],
+}
+
+impl QuadraticRow {
+    fn new(surface: &NurbsSurface, u: f64) -> Option<Self> {
+        let knots = surface.knots_u();
+        if surface.degree_u() != 2
+            || surface.control_points().len() != 3
+            || knots.len() != 6
+            || knots[..3].iter().any(|k| k.to_bits() != knots[0].to_bits())
+            || knots[3..].iter().any(|k| k.to_bits() != knots[5].to_bits())
+        {
+            return None;
+        }
+        let width = knots[5] - knots[0];
+        if !width.is_finite() || width <= 0.0 || !(knots[0]..=knots[5]).contains(&u) {
+            return None;
+        }
+        let t = (u - knots[0]) / width;
+        let s = 1.0 - t;
+        Some(Self {
+            basis: [s * s, 2.0 * t * s, t * t],
+            derivative: [-2.0 * s / width, 2.0 * (s - t) / width, 2.0 * t / width],
+        })
+    }
+
+    fn endpoint(self, surface: &NurbsSurface, v: f64) -> Option<(Point3, Vec3)> {
+        let knots = surface.knots_v();
+        let last = knots.partition_point(|&k| k <= v);
+        if last == 0 || knots[last - 1].to_bits() != v.to_bits() {
+            return None;
+        }
+        let col = last
+            .saturating_sub(2)
+            .min(surface.control_points()[0].len() - 1);
+        let max_weight = (0..3)
+            .map(|i| surface.weights()[i][col])
+            .fold(0.0, f64::max);
+        let (mut p, mut du) = (Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 0.0));
+        let (mut w, mut dw) = (0.0, 0.0);
+        for i in 0..3 {
+            let weight = surface.weights()[i][col] / max_weight;
+            let pole = surface.control_points()[i][col];
+            let pole = Vec3::new(pole.x(), pole.y(), pole.z());
+            p += pole * (self.basis[i] * weight);
+            du += pole * (self.derivative[i] * weight);
+            w += self.basis[i] * weight;
+            dw += self.derivative[i] * weight;
+        }
+        p = Vec3::new(p.x() / w, p.y() / w, p.z() / w);
+        du -= p * dw;
+        du = Vec3::new(du.x() / w, du.y() / w, du.z() / w);
+        Some((Point3::new(p.x(), p.y(), p.z()), du))
+    }
+}
+
+struct GeneratorReuse<'a, 's> {
+    axes: Option<GeneratorAxes<'a, 's>>,
+    quadratic: Option<QuadraticRow>,
+    /// Adjacent v spans share the endpoint just evaluated, bit for bit.
+    previous: &'a mut Option<(u64, Point3, Vec3)>,
+}
+
+/// Integrate a straight generator analytically, with a stricter closure area.
+///
+/// On one positive-weight degree-one span, v is a monotone rational
+/// reparameterization of the segment P0 -> P1. In its linear coordinate s,
+/// N(s) = ((1-s) P0_u + s P1_u) x (P1-P0). Its vector area and (P-R).N
+/// integrate at the mean normal (the generator dotted with either normal is
+/// zero). Trimming adds terms parallel to the generator to the endpoint u
+/// derivatives; their cross product is zero too. The closure denominator uses
+/// |integral N| <= integral |N|, never a larger area.
+fn add_ruled_generator(
+    acc: &mut Accumulator,
+    surface: &NurbsSurface,
+    (u, weight): (f64, f64),
+    (a, b): (f64, f64),
+    reference: Point3,
+    scratch: &mut DerivativeScratch,
+    reuse: GeneratorReuse<'_, '_>,
+) -> Result<(), CheckError> {
+    let domain = surface.domain_v();
+    if a < domain.0 || b > domain.1 {
+        return Err(CheckError::IntegrationFailed(
+            "ruled trim exceeds the knot domain".into(),
+        ));
+    }
+    let mut endpoint = |v: f64| {
+        if let Some(value) = reuse.quadratic.and_then(|row| row.endpoint(surface, v)) {
+            return value;
+        }
+        if let Some((u_axis, params, v_axis)) = reuse.axes
+            && let Ok(index) = params.binary_search_by(|p| p.total_cmp(&v))
+            && let Some((p, du, _)) = surface.first_order_at(u_axis, 0, v_axis, index)
+        {
+            return (Point3::new(p.x(), p.y(), p.z()), du);
+        }
+        let (p, du, _, _, _) = surface.span_hinted_point_and_partials_with_scratch(u, v, scratch);
+        (p, du)
+    };
+    let (p0, du0) = reuse
+        .previous
+        .as_ref()
+        .filter(|(bits, _, _)| *bits == a.to_bits())
+        .map_or_else(|| endpoint(a), |&(_, p, du)| (p, du));
+    let (p1, du1) = endpoint(b);
+    *reuse.previous = Some((b.to_bits(), p1, du1));
+    let n = ((du0 + du1) * 0.5).cross(p1 - p0);
+    acc.area += weight * n.length();
+    acc.vol += weight * (p0 - reference).dot(n) / 3.0;
+    acc.nx += weight * n.x();
+    acc.ny += weight * n.y();
+    acc.nz += weight * n.z();
+    Ok(())
 }
 
 /// Choose the UV domain a face's quadrature runs over, and how its boundary
@@ -5379,6 +5659,7 @@ mod tests {
                     knots: None,
                     reference: Point3::new(0.0, 0.0, 0.0),
                     volume_only: false,
+                    ruled_guard: false,
                     flux: None,
                     cone_apex: None,
                 },
@@ -6519,6 +6800,7 @@ mod tests {
                 knots: Some(knots),
                 reference: Point3::new(0.0, 0.0, 0.0),
                 volume_only: false,
+                ruled_guard: false,
                 flux: None,
                 cone_apex: None,
             };
@@ -6586,6 +6868,7 @@ mod tests {
             knots: Some(knots),
             reference: Point3::new(0.0, 0.0, 0.0),
             volume_only: false,
+            ruled_guard: false,
             flux: None,
             cone_apex: None,
         };
@@ -6659,6 +6942,7 @@ mod tests {
             knots: Some(knots),
             reference: Point3::new(0.0, 0.0, 0.0),
             volume_only: false,
+            ruled_guard: false,
             flux: None,
             cone_apex: None,
         };
@@ -6702,6 +6986,7 @@ mod tests {
             knots: Some(knots),
             reference: Point3::new(0.0, 0.0, 0.0),
             volume_only: false,
+            ruled_guard: false,
             flux: None,
             cone_apex: None,
         };
@@ -6746,6 +7031,7 @@ mod tests {
             knots: Some(knots),
             reference: Point3::new(0.0, 0.0, 0.0),
             volume_only: false,
+            ruled_guard: false,
             flux: None,
             cone_apex: None,
         };
@@ -6794,6 +7080,7 @@ mod tests {
             knots: Some(knots),
             reference: Point3::new(0.0, 0.0, 0.0),
             volume_only: false,
+            ruled_guard: false,
             flux: None,
             cone_apex: None,
         };
@@ -6865,6 +7152,7 @@ mod cylinder_row_tests {
                     knots: None,
                     reference: Point3::new(0.2, -0.3, 0.4),
                     volume_only,
+                    ruled_guard: false,
                     flux: Some(&flux),
                     cone_apex: None,
                 },
@@ -6883,6 +7171,7 @@ mod cylinder_row_tests {
                     knots: None,
                     reference: Point3::new(0.2, -0.3, 0.4),
                     volume_only,
+                    ruled_guard: false,
                     flux: Some(&flux),
                     cone_apex: None,
                 },
