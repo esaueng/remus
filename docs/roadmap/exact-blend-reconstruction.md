@@ -75,6 +75,19 @@ placements. Broader qualification remains in progress. Sampled construction must
 require explicit approximation permission and disclose its quality; exact-only
 calls continue to refuse it atomically.
 
+The converse edit, a rounded cap descending into a fixed shoulder (reference
+step A1 "shorten"), uses the same reconstruction. On the Gentle-Gecko boss
+(30x18x24 block, R6 boss, R4 shoulder/seams/corners, R1 cap rim) the cap comes
+down from z=36 to heights below 29 and above 24 (probed from 28.9999 to 24.0001;
+regressions at 28.99 to 24.1, including the reference's z=26): the shoulder
+torus and corner patches are kept and trimmed by the cap plane, the rim
+re-rolls on the boss and the shoulder as exact tori with exact circular
+contacts, and only the two corner bands are sampled. A joined cap moves again from its plane alone: deeper, back
+up while joined, or out to a full circular rim, matching a single move from the
+original body. A cap barely past first contact (10 um refuses; 0.1 mm builds)
+and a cap reaching the block top refuse atomically. Descending results must also
+mesh closed.
+
 The core operation is owned by `operations/src/face_move_quality.rs` and the
 bounded translation/reconstruction adapter by
 `operations/src/resize_blend/axial_rim_join.rs`. The existing exact-only APIs
