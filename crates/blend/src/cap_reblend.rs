@@ -2,8 +2,10 @@
 //!
 //! The cap's rolling-ball centres lie in its inward parallel plane. Their
 //! contour on the inward offsets of the retained supports determines the new
-//! contact curves. This builder is explicitly approximate on walked corner
-//! carriers; callers must preserve that quality and validate the assembled body.
+//! contact curves. A band rolled on an axial cylinder or torus is an exact
+//! torus whose two contacts are exact circles. This builder is explicitly
+//! approximate on walked corner carriers; callers must preserve that quality
+//! and validate the assembled body.
 
 mod restore;
 pub use restore::{SupportExtension, restore_joined_support_limits_in_place};
@@ -61,6 +63,9 @@ struct Node {
     vertex: Option<VertexId>,
     top_vertex: Option<VertexId>,
     cross_edge: Option<EdgeId>,
+    /// Distance from the node to the axial analytic supports it borders,
+    /// when small enough for exact band contacts to share its vertices.
+    exact_residual: Option<f64>,
 }
 
 struct Support {
@@ -69,8 +74,20 @@ struct Support {
     b: usize,
     sections: Vec<CircSection>,
     surface: FaceSurface,
+    /// The exact contact circles of a band rolled on an analytic support;
+    /// `None` for a sampled corner, whose contacts stay station polylines.
+    exact: Option<ExactContacts>,
     lower_edge: Option<EdgeId>,
     upper_edge: Option<EdgeId>,
+}
+
+/// The two contacts of a band rolled on an axial analytic support: the
+/// support contact and the cap contact are coaxial circles traversed over
+/// one shared angular span, from the band's start node to its end node.
+struct ExactContacts {
+    lower: Circle3D,
+    upper: Circle3D,
+    span: (f64, f64),
 }
 
 fn refusal(reason: impl Into<String>) -> BlendError {
@@ -187,6 +204,7 @@ fn roots(
                 vertex: None,
                 top_vertex: None,
                 cross_edge: None,
+                exact_residual: None,
             });
         }
     }
@@ -608,6 +626,34 @@ fn nurbs_sections(
     Ok(sections)
 }
 
+/// Largest distance from a contour node to the axial analytic supports it
+/// borders, or `None` when it exceeds `1e-5` of the band radius. A sampled
+/// source contact may lie slightly off the exact surface it bounds; exact
+/// band contacts are built on that surface, so their shared vertices must
+/// cover the gap. A larger gap keeps the sampled contacts through the node.
+fn support_residual(
+    topo: &Topology,
+    faces: &[FaceId; 2],
+    point: Point3,
+    radius: f64,
+) -> Result<Option<f64>, BlendError> {
+    let mut residual: f64 = 0.0;
+    for &face in faces {
+        let surface = topo.face(face)?.surface();
+        if !matches!(surface, FaceSurface::Cylinder(_) | FaceSurface::Torus(_)) {
+            continue;
+        }
+        let (u, v) = surface
+            .project_point(point)
+            .ok_or_else(|| refusal("cap contour node projection failed"))?;
+        let on_surface = surface
+            .evaluate(u, v)
+            .ok_or_else(|| refusal("cap contour node evaluation failed"))?;
+        residual = residual.max((on_surface - point).length());
+    }
+    Ok((residual.is_finite() && residual <= radius * 1e-5).then_some(residual))
+}
+
 fn polyline(points: Vec<Point3>) -> Result<NurbsCurve, BlendError> {
     let n = points.len();
     if n < 2 {
@@ -683,7 +729,7 @@ fn analytic_sections(
     b: &Node,
     advance: f64,
     contour: CapContour,
-) -> Result<(Vec<CircSection>, FaceSurface), BlendError> {
+) -> Result<(Vec<CircSection>, FaceSurface, ExactContacts), BlendError> {
     let CapContour {
         axis,
         level,
@@ -695,7 +741,8 @@ fn analytic_sections(
         .surface()
         .project_point(a.point)
         .ok_or_else(|| refusal("cap analytic start projection failed"))?;
-    let (base_center, base_radius, contact_v, major, reference) = match f.surface() {
+    let (base_center, base_radius, contact_v, contact_height, major, reference) = match f.surface()
+    {
         FaceSurface::Cylinder(cylinder) if cylinder.axis().dot(axis) > 1.0 - 1e-10 => {
             let sign = if f.is_reversed() { -1.0 } else { 1.0 };
             let center = cylinder.origin() + axis * (level - height(cylinder.origin(), axis));
@@ -703,6 +750,7 @@ fn analytic_sections(
                 center,
                 cylinder.radius(),
                 0.0,
+                level,
                 cylinder.radius() - radius * sign,
                 cylinder.x_axis(),
             )
@@ -722,6 +770,7 @@ fn analytic_sections(
                 center,
                 torus.major_radius() + torus.minor_radius() * v.cos(),
                 v,
+                height(torus.center(), axis) + torus.minor_radius() * v.sin(),
                 torus.major_radius() + radial,
                 torus.x_axis(),
             )
@@ -770,7 +819,21 @@ fn analytic_sections(
         sections[index].center = node.center;
         sections[index].p2 = node.center + axis * radius;
     }
-    Ok((sections, FaceSurface::Torus(cap_torus)))
+    // Both contacts share the support's angular parameter. A clockwise
+    // span is the same arc on the circle about the reversed axis, whose
+    // parameter is the negated angle, so the edge domain still increases.
+    let (normal, start) = if advance >= 0.0 {
+        (axis, u0)
+    } else {
+        (-axis, -u0)
+    };
+    let at_height = |level: f64| base_center + axis * (level - height(base_center, axis));
+    let exact = ExactContacts {
+        lower: Circle3D::new_with_ref(at_height(contact_height), normal, base_radius, reference)?,
+        upper: Circle3D::new_with_ref(base_center + axis * radius, normal, major, reference)?,
+        span: (start, start + advance.abs()),
+    };
+    Ok((sections, FaceSurface::Torus(cap_torus), exact))
 }
 
 /// Rebuild the selected planar cap against its joined lower supports.
@@ -932,8 +995,19 @@ fn reblend_impl(
             split_images.extend(children.map(|child| (source, child)));
         }
         let vertex = split.vertex;
+        // The node lies on its source edge. An exact band contact meets it
+        // on the analytic support itself, so the node's vertices must also
+        // cover the source edge's measured distance from that support.
+        node.exact_residual = support_residual(topo, &node.faces, node.point, radius)?;
+        let tolerance = node
+            .exact_residual
+            .map_or(1e-7, |residual| residual.mul_add(1.5, 1e-7));
+        let split_tolerance = topo.vertex(vertex)?.tolerance();
+        topo.vertex_mut(vertex)?
+            .set_tolerance(split_tolerance.max(tolerance))?;
         node.vertex = Some(vertex);
-        node.top_vertex = Some(topo.add_vertex(Vertex::new(node.center + axis * radius, 1e-7)));
+        node.top_vertex =
+            Some(topo.add_vertex(Vertex::new(node.center + axis * radius, tolerance)));
         let pa = node.point;
         let pb = node.center + axis * radius;
         let ca = (pa - node.center).normalize()?;
@@ -993,26 +1067,30 @@ fn reblend_impl(
             radius,
             count: approximation.stations,
         };
-        let (sections, surface) = match topo.face(face)?.surface() {
+        let (sections, surface, exact) = match topo.face(face)?.surface() {
             FaceSurface::Nurbs(_) => {
                 let sections = nurbs_sections(topo, face, &nodes[a], &nodes[b], contour)?;
                 let surface = FaceSurface::Nurbs(
                     crate::walker::approximate_blend_surface_linear_v(&sections)?,
                 );
-                (sections, surface)
+                (sections, surface, None)
             }
             FaceSurface::Plane { .. }
             | FaceSurface::Cylinder(_)
             | FaceSurface::Cone(_)
             | FaceSurface::Sphere(_)
-            | FaceSurface::Torus(_) => analytic_sections(
-                topo,
-                live(&replacements, face),
-                &nodes[a],
-                &nodes[b],
-                angular_advance(topo, face, &kept)?,
-                contour,
-            )?,
+            | FaceSurface::Torus(_) => {
+                let (sections, surface, exact) = analytic_sections(
+                    topo,
+                    live(&replacements, face),
+                    &nodes[a],
+                    &nodes[b],
+                    angular_advance(topo, face, &kept)?,
+                    contour,
+                )?;
+                let shared = nodes[a].exact_residual.is_some() && nodes[b].exact_residual.is_some();
+                (sections, surface, shared.then_some(exact))
+            }
         };
         log::debug!(
             "cap rebuild: support {} contour constructed from node {} to {}",
@@ -1026,6 +1104,7 @@ fn reblend_impl(
             b,
             sections,
             surface,
+            exact,
             lower_edge: None,
             upper_edge: None,
         });
@@ -1033,8 +1112,22 @@ fn reblend_impl(
     for support in &mut supports {
         let a = &nodes[support.a];
         let b = &nodes[support.b];
-        let lower = polyline(support.sections.iter().map(|section| section.p1).collect())?;
-        let upper = polyline(support.sections.iter().map(|section| section.p2).collect())?;
+        let (lower, upper, span) = match &support.exact {
+            Some(exact) => (
+                EdgeCurve::Circle(exact.lower.clone()),
+                EdgeCurve::Circle(exact.upper.clone()),
+                exact.span,
+            ),
+            None => (
+                EdgeCurve::NurbsCurve(polyline(
+                    support.sections.iter().map(|section| section.p1).collect(),
+                )?),
+                EdgeCurve::NurbsCurve(polyline(
+                    support.sections.iter().map(|section| section.p2).collect(),
+                )?),
+                (0.0, 1.0),
+            ),
+        };
         let av = a
             .vertex
             .ok_or_else(|| refusal("cap lower vertex missing"))?;
@@ -1047,20 +1140,8 @@ fn reblend_impl(
         let bt = b
             .top_vertex
             .ok_or_else(|| refusal("cap upper vertex missing"))?;
-        support.lower_edge = Some(add_certified_curve_edge(
-            topo,
-            av,
-            bv,
-            EdgeCurve::NurbsCurve(lower),
-            (0.0, 1.0),
-        )?);
-        support.upper_edge = Some(add_certified_curve_edge(
-            topo,
-            at,
-            bt,
-            EdgeCurve::NurbsCurve(upper),
-            (0.0, 1.0),
-        )?);
+        support.lower_edge = Some(add_certified_curve_edge(topo, av, bv, lower, span)?);
+        support.upper_edge = Some(add_certified_curve_edge(topo, at, bt, upper, span)?);
         let current = live(&replacements, support.face);
         let wire = topo
             .wire(topo.face(current)?.outer_wire())?
