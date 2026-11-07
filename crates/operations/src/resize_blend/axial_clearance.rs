@@ -286,6 +286,102 @@ fn edge_levels(
     })
 }
 
+/// A sufficient no-new-crossing certificate for one invariant carrier.
+/// Moving curves translate rigidly, fixed curves stay put, and every other
+/// boundary edge is a line parallel to the translation (checked by the
+/// caller). Two parallel stretched lines cannot acquire an interior crossing;
+/// a curve can enter such a line only through its fixed or moving endpoint.
+/// Thus it suffices to keep every moving curve separated from every fixed
+/// curve and fixed endpoint throughout the move. Axial hulls prove that
+/// separation conservatively, without unrolling a periodic carrier.
+///
+/// This certifies only the edit, not the validity of an arbitrary input.
+/// Overlapping/unsupported hulls decline and retain the mesh postcondition.
+pub(super) fn separated_boundary_travel(
+    topo: &Topology,
+    carrier: FaceId,
+    moved_vertices: &std::collections::HashSet<remus_topology::vertex::VertexId>,
+    direction: Vec3,
+) -> Result<Option<(f64, f64)>, OperationsError> {
+    if !matches!(
+        topo.face(carrier)?.surface(),
+        FaceSurface::Plane { .. } | FaceSurface::Cylinder(_)
+    ) {
+        return Ok(None);
+    }
+    let level = |p: Point3| (p - Point3::new(0.0, 0.0, 0.0)).dot(direction);
+    let mut moving = Vec::new();
+    let mut fixed = Vec::new();
+    for edge in face_edges(topo, carrier)? {
+        let data = topo.edge(edge)?;
+        match (
+            moved_vertices.contains(&data.start()),
+            moved_vertices.contains(&data.end()),
+        ) {
+            (true, true) => {
+                let Some(bounds) = edge_levels(topo, edge, direction)? else {
+                    return Ok(None);
+                };
+                moving.push(bounds);
+            }
+            (false, false) => {
+                let Some(bounds) = edge_levels(topo, edge, direction)? else {
+                    return Ok(None);
+                };
+                fixed.push(bounds);
+            }
+            (start_moves, _) => {
+                if !matches!(data.curve(), EdgeCurve::Line) {
+                    return Ok(None);
+                }
+                let p = topo
+                    .vertex(if start_moves {
+                        data.end()
+                    } else {
+                        data.start()
+                    })?
+                    .point();
+                fixed.push((level(p), level(p)));
+                // A moving vertex can meet this carrier only at a corner,
+                // without an incident wholly moving edge on this face.
+                // Bound that endpoint as well as the moving curves.
+                let p = topo
+                    .vertex(if start_moves {
+                        data.start()
+                    } else {
+                        data.end()
+                    })?
+                    .point();
+                moving.push((level(p), level(p)));
+            }
+        }
+    }
+    if moving.is_empty() || fixed.is_empty() {
+        return Ok(None);
+    }
+    let mut lower = f64::NEG_INFINITY;
+    let mut upper = f64::INFINITY;
+    let tol = Tolerance::new().linear;
+    for (moving_low, moving_high) in moving {
+        for &(fixed_low, fixed_high) in &fixed {
+            if ![moving_low, moving_high, fixed_low, fixed_high]
+                .iter()
+                .all(|x| x.is_finite())
+            {
+                return Ok(None);
+            }
+            if moving_low > fixed_high + tol {
+                lower = lower.max(fixed_high - moving_low + tol);
+            } else if fixed_low > moving_high + tol {
+                upper = upper.min(fixed_low - moving_high - tol);
+            } else {
+                return Ok(None);
+            }
+        }
+    }
+    Ok(Some((lower, upper)))
+}
+
 /// The bound a fixed edge spanning `[low, high]` puts on a full spring, or
 /// `None` when the edge straddles the spring's level.
 fn level_limit(spring: &Spring, fixed: FaceId, low: f64, high: f64) -> Option<AxialBlendClearance> {
@@ -336,6 +432,81 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::panic)]
 
     use super::*;
+
+    #[test]
+    fn separated_planar_boundaries_certify_only_travel_before_contact() {
+        use remus_topology::explorer::{face_vertices, solid_faces};
+        let mut topo = Topology::new();
+        let solid = crate::primitives::make_box(&mut topo, 2.0, 3.0, 6.0).unwrap();
+        let faces = solid_faces(&topo, solid).unwrap();
+        for sign in [-1.0, 1.0] {
+            let direction = Vec3::new(0.0, 0.0, sign);
+            let lid = faces
+                .iter()
+                .copied()
+                .find(|&face| {
+                    topo.face(face)
+                        .unwrap()
+                        .effective_plane_normal()
+                        .unwrap()
+                        .dot(direction)
+                        > 0.99
+                })
+                .unwrap();
+            let moved = face_vertices(&topo, lid).unwrap().into_iter().collect();
+            for &face in &faces {
+                if topo
+                    .face(face)
+                    .unwrap()
+                    .effective_plane_normal()
+                    .unwrap()
+                    .dot(direction)
+                    .abs()
+                    > 0.01
+                {
+                    continue;
+                }
+                let (lower, upper) = separated_boundary_travel(&topo, face, &moved, direction)
+                    .unwrap()
+                    .unwrap();
+                assert!((-5.999) > lower);
+                assert!(-6.0 <= lower);
+                assert!(25.0 < upper);
+            }
+        }
+        // Moving a vertical side sideways is outside the caller's invariant
+        // carrier contract; along Z its moving/fixed edge hulls overlap.
+        let side = faces
+            .iter()
+            .copied()
+            .find(|&face| {
+                topo.face(face)
+                    .unwrap()
+                    .effective_plane_normal()
+                    .unwrap()
+                    .x()
+                    > 0.99
+            })
+            .unwrap();
+        let moved = face_vertices(&topo, side).unwrap().into_iter().collect();
+        let neighbour = faces
+            .iter()
+            .copied()
+            .find(|&face| {
+                topo.face(face)
+                    .unwrap()
+                    .effective_plane_normal()
+                    .unwrap()
+                    .y()
+                    > 0.99
+            })
+            .unwrap();
+        assert!(
+            separated_boundary_travel(&topo, neighbour, &moved, Vec3::new(0.0, 0.0, 1.0))
+                .unwrap()
+                .is_none()
+        );
+    }
 
     fn faces() -> (FaceId, FaceId) {
         let mut topo = Topology::new();

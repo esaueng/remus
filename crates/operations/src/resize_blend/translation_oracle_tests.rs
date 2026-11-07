@@ -17,6 +17,7 @@ use std::cell::{Cell, RefCell};
 use super::*;
 
 thread_local! {
+    pub(super) static FORCE_WHOLE_CLOSURE: Cell<bool> = const { Cell::new(false) };
     /// Makes `translated_faces_volume_change` decline, so the move takes the
     /// whole-body mesh comparison.
     pub(super) static FORCE_MESH_VOLUME: Cell<bool> = const { Cell::new(false) };
@@ -339,6 +340,7 @@ struct Reset;
 
 impl Drop for Reset {
     fn drop(&mut self) {
+        FORCE_WHOLE_CLOSURE.with(|force| force.set(false));
         set_memos(false);
         FORCE_MESH_VOLUME.with(|force| force.set(false));
         VALIDATION_PROBE.with(|probe| probe.replace(None));
@@ -347,6 +349,35 @@ impl Drop for Reset {
 
 type Mover =
     fn(&mut Topology, SolidId, &[FaceId], f64) -> Result<BlendMoveEntities, OperationsError>;
+
+#[test]
+fn scoped_closure_matches_whole_body_guard() {
+    let _reset = Reset;
+    let (topo, solid, face, _, _) = super::tests::filleted_cube_support_and_band();
+    for distance in [-4.0, -0.5, 0.25, 1.0] {
+        for memos in [false, true] {
+            FORCE_WHOLE_CLOSURE.with(|force| force.set(true));
+            let whole = run(
+                &topo,
+                move_translation_invariant_blend_region,
+                solid,
+                &[face],
+                distance,
+                memos,
+            );
+            FORCE_WHOLE_CLOSURE.with(|force| force.set(false));
+            let scoped = run(
+                &topo,
+                move_translation_invariant_blend_region,
+                solid,
+                &[face],
+                distance,
+                memos,
+            );
+            assert_eq!(scoped, whole, "distance {distance}, memos {memos}");
+        }
+    }
+}
 
 fn run(
     source: &Topology,
