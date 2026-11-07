@@ -379,7 +379,41 @@ pub fn blend(
     inner_shells: &[ShellId],
     requested: &[EdgeId],
 ) -> Result<Option<BlendResult>, BlendError> {
-    let Some(plan) = plan(topo, adjacency, edges, kind)? else {
+    blend_sized(
+        topo,
+        adjacency,
+        edges,
+        kind,
+        &[],
+        scope,
+        original_faces,
+        inner_shells,
+        requested,
+    )
+}
+
+/// [`blend`] with a size of their own for some edges: `sizes` pairs an edge
+/// with the radius (or chamfer distance) of its run, and `kind`'s size holds
+/// for every other edge. The edges of one run (one support) must share a
+/// size. Runs of different sizes mitre as equal ones do: each band carries on
+/// past the corner to where it meets the other.
+///
+/// # Errors
+///
+/// As [`blend`].
+#[allow(clippy::too_many_arguments)]
+pub fn blend_sized(
+    topo: &mut Topology,
+    adjacency: &AdjacencyIndex,
+    edges: &[EdgeId],
+    kind: SeamBlend,
+    sizes: &[(EdgeId, f64)],
+    scope: &mut EditScope,
+    original_faces: &[FaceId],
+    inner_shells: &[ShellId],
+    requested: &[EdgeId],
+) -> Result<Option<BlendResult>, BlendError> {
+    let Some(plan) = plan(topo, adjacency, edges, kind, sizes)? else {
         return refused(line!());
     };
     log::debug!(
@@ -402,12 +436,27 @@ fn plan(
     adjacency: &AdjacencyIndex,
     edges: &[EdgeId],
     kind: SeamBlend,
+    sizes: &[(EdgeId, f64)],
 ) -> Result<Option<Plan>, BlendError> {
-    let size = match kind {
+    let base = match kind {
         SeamBlend::Fillet(r) | SeamBlend::Chamfer(r) => r,
     };
-    if edges.is_empty() || !size.is_finite() || size <= 0.0 {
+    let size_of = |edge: EdgeId| {
+        sizes
+            .iter()
+            .find(|(e, _)| *e == edge)
+            .map_or(base, |&(_, size)| size)
+    };
+    if edges.is_empty() || !base.is_finite() || base <= 0.0 {
         return refused(line!());
+    }
+    let mut size = base;
+    for &edge in edges {
+        let own = size_of(edge);
+        if !own.is_finite() || own <= 0.0 {
+            return refused(line!());
+        }
+        size = size.max(own);
     }
     // Every edge between two distinct faces, one of them common to all.
     let mut pairs = Vec::with_capacity(edges.len());
@@ -500,6 +549,17 @@ fn plan(
                 return refused(line!());
             }
         }
+        let run_size = size_of(ordered[first]);
+        if ordered[first..last]
+            .iter()
+            .any(|&edge| (size_of(edge) - run_size).abs() > 1e-12 * run_size.max(1.0))
+        {
+            return refused(line!());
+        }
+        let run_kind = match kind {
+            SeamBlend::Fillet(_) => SeamBlend::Fillet(run_size),
+            SeamBlend::Chamfer(_) => SeamBlend::Chamfer(run_size),
+        };
         let (from, to) = (vertices[first], vertices[last]);
         let Some(run) = make_run(
             topo,
@@ -511,7 +571,7 @@ fn plan(
             &ordered[first..last],
             from,
             to,
-            kind,
+            run_kind,
         )?
         else {
             return refused(line!());

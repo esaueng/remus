@@ -55,10 +55,10 @@ use remus_operations::blend_cluster::{
     StageBlend, fillet_through_blend_group, plan_reblend, recognize_blend_cluster,
     remove_blend_cluster, resize_cylinder_through_group,
 };
-use remus_operations::blend_ops::{chamfer_v2_tangent_chain, fillet_cascade};
+use remus_operations::blend_ops::{chamfer_v2_tangent_chain, fillet_cascade, fillet_cascade_radii};
 use remus_operations::measure::solid_volume;
 use remus_operations::push_pull::resize_cylindrical_face;
-use remus_operations::resize_blend::{resize_blend, resize_blend_failure_code};
+use remus_operations::resize_blend::resize_blend;
 use remus_operations::tessellate::{
     TriangleMesh, boundary_edge_count, non_manifold_edge_count, tessellate_solid,
 };
@@ -651,6 +651,19 @@ fn workflow(steps: &[Step], band: f64) -> (Topology, SolidId) {
 /// edge in one call, the x = 0 top edge at `band`, the A3 edges at R1, then
 /// the chamfer chains.
 fn workflow_oracle(steps: &[Step], band: f64, radius: f64) -> (Topology, SolidId) {
+    workflow_oracle_seams(steps, band, radius, [4.0, 4.0])
+}
+
+/// [`workflow_oracle`] with the seams on the y = 0 and x = 0 faces at
+/// `seams`: unequal seams go in one concave call with the R4 shoulder, each
+/// at its own radius, and the y = 0 top edge follows at R4 (the planner's
+/// mixed concave stage, then its convex stages).
+fn workflow_oracle_seams(
+    steps: &[Step],
+    band: f64,
+    radius: f64,
+    seams: [f64; 2],
+) -> (Topology, SolidId) {
     assert_eq!(steps.first(), Some(&Step::A2));
     let (mut topo, sharp) = gecko_sharp();
     let boss = boss_of(&topo, sharp);
@@ -670,7 +683,38 @@ fn workflow_oracle(steps: &[Step], band: f64, radius: f64) -> (Topology, SolidId
         })
         .collect();
     assert_eq!(r4.len(), 4);
-    solid = fillet_cascade(&mut topo, solid, &r4, 4.0).unwrap().solid;
+    if seams.iter().all(|&seam| (seam - 4.0).abs() < 1e-12) {
+        solid = fillet_cascade(&mut topo, solid, &r4, 4.0).unwrap().solid;
+    } else {
+        let mut sets = vec![
+            (Vec::new(), 4.0),
+            (Vec::new(), seams[0]),
+            (Vec::new(), seams[1]),
+        ];
+        let mut y0_top = Vec::new();
+        for &edge in &r4 {
+            let (a, b) = edge_ends(&topo, edge);
+            let vertical = (a.z() - b.z()).abs() > 1.0;
+            if vertical && a.y().abs() < 1e-7 {
+                sets[1].0.push(edge);
+            } else if vertical && a.x().abs() < 1e-7 {
+                sets[2].0.push(edge);
+            } else if vertical || matches!(topo.edge(edge).unwrap().curve(), EdgeCurve::Circle(_)) {
+                sets[0].0.push(edge);
+            } else {
+                y0_top.push(edge);
+            }
+        }
+        assert_eq!(y0_top.len(), 1, "the y = 0 top edge");
+        solid = fillet_cascade_radii(&mut topo, solid, &sets).unwrap().solid;
+        let y0 = line_where(
+            &topo,
+            solid,
+            |p| p.y().abs() < 1e-7 && (p.z() - 24.0).abs() < 1e-7,
+            "y = 0 top edge",
+        );
+        solid = fillet_cascade(&mut topo, solid, &[y0], 4.0).unwrap().solid;
+    }
     let x0 = line_where(&topo, solid, x0_top, "x = 0 top edge");
     solid = fillet_cascade(&mut topo, solid, &[x0], band).unwrap().solid;
     if steps.contains(&Step::A3) {
@@ -861,21 +905,72 @@ fn cumulative_a2_a3_a4_then_boss_diameters() {
     boss_sequence_after(&[Step::A2, Step::A3, Step::A4], 1.9);
 }
 
+/// The concave seam round on the block's y = 0 face.
+fn y0_seam(topo: &Topology, solid: SolidId) -> FaceId {
+    let cluster = recognize_blend_cluster(topo, solid, boss_of(topo, solid)).unwrap();
+    let seams: Vec<FaceId> = cluster
+        .members
+        .iter()
+        .filter(|m| m.convexity == Convexity::Concave)
+        .flat_map(|m| m.faces.iter().copied())
+        .filter(|&face| {
+            matches!(topo.face(face).unwrap().surface(), FaceSurface::Cylinder(c)
+            if c.origin().y() < -1.0)
+        })
+        .collect();
+    assert_eq!(seams.len(), 1, "one seam round on the y = 0 face");
+    seams[0]
+}
+
+/// A2's concave half on the cumulative body (A2 convex R1.9, A3, A6): a
+/// seam R4 -> R2 under the R4 shoulder, on the x = 0 face (its corner rides
+/// over the R1.9 band) and on the y = 0 face (over the R4 band). The whole
+/// group, A3's round and the bottom chamfer chain included, is rebuilt with
+/// the seam and shoulder in one concave stage, matching a fresh
+/// construction; the source is untouched.
+#[test]
+fn concave_seam_edit_rebuilds_the_cumulative_body() {
+    let steps = [Step::A2, Step::A3, Step::A6];
+    let (mut topo, solid) = workflow(&steps, 1.9);
+    let before = fingerprint(&topo, solid);
+    for (x0, seams) in [(true, [4.0, 2.0]), (false, [2.0, 4.0])] {
+        let label = format!("seams {seams:?} on the cumulative body");
+        let seam = if x0 {
+            x0_seam(&topo, solid)
+        } else {
+            y0_seam(&topo, solid)
+        };
+        let result = resize_blend(&mut topo, solid, seam, 4.0, 2.0).unwrap();
+        assert_eq!(fingerprint(&topo, solid), before, "{label}: source");
+        verify(&topo, result.solid, &label);
+        // The seam no longer fills the corner an R4 seam fills.
+        let probe = if x0 {
+            Point3::new(-0.5, 6.6, 10.0)
+        } else {
+            Point3::new(6.6, -0.5, 10.0)
+        };
+        assert_eq!(
+            classify(&topo, solid, probe),
+            PointClassification::Inside,
+            "{label}: R4 seam before"
+        );
+        assert_eq!(
+            classify(&topo, result.solid, probe),
+            PointClassification::Outside,
+            "{label}: R2 seam after"
+        );
+        assert_bottom_chamfer(&topo, result.solid, 6.0, &label);
+        let (oracle_topo, oracle) = workflow_oracle_seams(&steps, 1.9, 6.0, seams);
+        assert_matches_oracle(&topo, result.solid, &oracle_topo, oracle, &label);
+    }
+}
+
 /// Steps with no construction are typed refusals that leave the cumulative
-/// body byte-identical: the concave seam R4 -> 2 under the R4 shoulder,
-/// and oversized boss diameters.
+/// body byte-identical: oversized boss diameters.
 #[test]
 fn unbuildable_cumulative_steps_are_refused() {
     let (mut topo, solid) = workflow(&[Step::A2, Step::A3, Step::A6], 1.9);
     let before = fingerprint(&topo, solid);
-    let seam = x0_seam(&topo, solid);
-    let error = resize_blend(&mut topo, solid, seam, 4.0, 2.0).unwrap_err();
-    assert_eq!(
-        resize_blend_failure_code(&error),
-        "blend-cluster-reblend-failed",
-        "{error}"
-    );
-    assert_eq!(fingerprint(&topo, solid), before);
     let boss = boss_of(&topo, solid);
     let error = resize_cylindrical_face(&mut topo, solid, boss, 20.0).unwrap_err();
     assert!(

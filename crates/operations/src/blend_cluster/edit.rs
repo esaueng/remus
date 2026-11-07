@@ -548,6 +548,7 @@ fn group_fillet(
         radius,
         blend: StageBlend::Fillet,
         sharp_edges: vec![extra],
+        radii: Vec::new(),
     };
     // The planner's order: concave before convex, larger radii first; the
     // new stage after the group's stages of its own side and radius, and

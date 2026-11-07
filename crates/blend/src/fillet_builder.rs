@@ -202,17 +202,34 @@ impl<'a> FilletBuilder<'a> {
         // A concave seam along a boss whose other face turns sharp corners
         // (or runs round the boss) is one assembly: each run's band carries
         // on past a corner to mitre with the next.
-        if !external_support_side && let [RadiusLaw::Constant(radius)] = laws.as_slice() {
+        // Runs of different constant radii (one edge set each) mitre the same
+        // way, each band at its own radius.
+        let constants: Option<Vec<f64>> = laws
+            .iter()
+            .map(|law| match law {
+                RadiusLaw::Constant(radius) => Some(*radius),
+                _ => None,
+            })
+            .collect();
+        if !external_support_side
+            && let Some(constants) = constants
+            && let Some(&radius) = constants.first()
+        {
             let edges: Vec<EdgeId> = chain_work
                 .iter()
                 .flat_map(|(chain, _)| chain.iter().copied())
                 .collect();
+            let sizes: Vec<(EdgeId, f64)> = chain_work
+                .iter()
+                .flat_map(|(chain, law)| chain.iter().map(|&edge| (edge, constants[*law])))
+                .collect();
             let requested: Vec<EdgeId> = seeds_by_law.iter().flatten().copied().collect();
-            if let Some(result) = crate::seam_chain::blend(
+            if let Some(result) = crate::seam_chain::blend_sized(
                 topo,
                 &adjacency,
                 &edges,
-                crate::seam_chain::SeamBlend::Fillet(*radius),
+                crate::seam_chain::SeamBlend::Fillet(radius),
+                &sizes,
                 &mut scope,
                 &original_faces,
                 &inner_shells,
