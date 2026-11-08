@@ -331,6 +331,11 @@ struct CanalNormal<'a> {
     /// Stations whose section is resolved (all of them for a strict read);
     /// a measured read leaves out collapsed sections at either end.
     resolved: std::ops::Range<usize>,
+    /// Whether the sections are only measured, not certified, to be the
+    /// rolling balls' characteristic circles (a walked transition): the
+    /// carrier's normal is then read off its own surface, not the radial
+    /// field of its sections.
+    measured: bool,
 }
 
 /// How strictly a sampled carrier's stations must agree.
@@ -446,10 +451,11 @@ fn ball_centres(
 const RESOLVED_WEIGHT: f64 = 0.999;
 
 impl<'a> CanalNormal<'a> {
-    fn centre(&self, v: f64) -> Result<Point3, BlendError> {
-        let surface = self.surface;
-        let n = surface.control_points()[0].len();
-        let knots = surface.knots_v();
+    /// The resolved span holding `v`: its first station and the fraction
+    /// of the way to the next.
+    fn span(&self, v: f64) -> Result<(usize, f64), BlendError> {
+        let n = self.surface.control_points()[0].len();
+        let knots = self.surface.knots_v();
         let mut index = knots
             .partition_point(|&knot| knot <= v)
             .saturating_sub(2)
@@ -466,7 +472,12 @@ impl<'a> CanalNormal<'a> {
         if hi <= lo {
             return Err(refusal("cap canal station has no parameter extent"));
         }
-        let fraction = ((v - lo) / (hi - lo)).clamp(0.0, 1.0);
+        Ok((index, ((v - lo) / (hi - lo)).clamp(0.0, 1.0)))
+    }
+
+    fn centre(&self, v: f64) -> Result<Point3, BlendError> {
+        let surface = self.surface;
+        let (index, fraction) = self.span(v)?;
         if !self.centres.is_empty() {
             let (a, b) = (self.centres[index], self.centres[index + 1]);
             return Ok(a + (b - a) * fraction);
@@ -617,6 +628,7 @@ impl<'a> CanalNormal<'a> {
             radii,
             centres,
             resolved,
+            measured: matches!(check, StationCheck::Measured),
         };
         // Probe the middle of the resolved stations (the whole carrier on a
         // strict read, so its middle span holds v = 0.5 as before).
@@ -651,9 +663,102 @@ impl<'a> CanalNormal<'a> {
         }
         (knots[self.resolved.start + 1], knots[self.resolved.end])
     }
+    /// The outward contact normal at `(u, v)`: the radial field of the
+    /// sections on a strict read, the carrier's own normal in the span
+    /// holding `v` (the one after it at a station) on a measured one.
     fn normal(&self, u: f64, v: f64) -> Result<Vec3, BlendError> {
-        Ok((self.surface.evaluate(u, v) - self.centre(v)?).normalize()? * self.sign)
+        let (index, _) = self.span(v)?;
+        self.span_normal(u, v, index)
     }
+
+    /// [`Self::normal`] at `(u, v)` read in span `index` (between stations
+    /// `index` and `index + 1`), so a station's two spans can be told apart.
+    ///
+    /// A walked transition's sections are arcs of one radius, but not the
+    /// characteristic circles of the sweep they sample: their planes lean
+    /// off the ball path, and their radial field leans off the carrier by
+    /// degrees (7.6 degrees on the R1.5-band / R4-seam transition of the
+    /// Gentle-Gecko). A contour solved on that field lands off the
+    /// carrier's true contact and folds where it leaves an exact neighbour.
+    /// Nor does a field blended across stations follow the carrier: one
+    /// displaced station tilts it by degrees on the spans beside it. The
+    /// contact's normal is the carrier's own, from the derivatives of the
+    /// span itself (its analytic partials). The carrier is linear between
+    /// stations, so that normal turns at each station; [`crease_contact`]
+    /// places a contact there.
+    fn span_normal(&self, u: f64, v: f64, index: usize) -> Result<Vec3, BlendError> {
+        // How far inside its upper station a span's own normal is read: the
+        // carrier's derivatives there belong to the next span.
+        const INSIDE: f64 = 1e-12;
+        let radial = (self.surface.evaluate(u, v) - self.centre(v)?).normalize()? * self.sign;
+        if !self.measured {
+            return Ok(radial);
+        }
+        let knots = self.surface.knots_v();
+        let (lo, hi) = (knots[index + 1], knots[index + 2]);
+        let at = v.clamp(lo, hi - INSIDE * (hi - lo));
+        let normal = self.surface.normal(u, at)?;
+        Ok(if normal.dot(radial) < 0.0 {
+            -normal
+        } else {
+            normal
+        })
+    }
+
+    /// The interior resolved station whose parameter `v` lies on, if any.
+    fn station_at(&self, v: f64) -> Option<usize> {
+        let knots = self.surface.knots_v();
+        let n = self.surface.control_points()[0].len();
+        let tolerance = 1e-12 * (knots[knots.len() - 1] - knots[0]).max(1.0);
+        self.resolved
+            .clone()
+            .filter(|&station| station > 0 && station + 1 < n)
+            .find(|&station| (knots[station + 1] - v).abs() <= tolerance)
+    }
+}
+
+/// A rolling-ball contact on the crease a measured carrier makes at station
+/// `station`, where its spans meet only in position: the ball touches the
+/// crease line, and its centre lies along a normal between the two spans'
+/// normals there that puts it on the contour's level.
+///
+/// `None` when no normal between them does (the contour's root is not on
+/// this crease).
+fn crease_contact(
+    field: &CanalNormal<'_>,
+    u: f64,
+    station: usize,
+    contour: CapContour,
+) -> Result<Option<(Point3, Vec3)>, BlendError> {
+    let CapContour {
+        axis,
+        level,
+        radius,
+        ..
+    } = contour;
+    let v = field.surface.knots_v()[station + 1];
+    let point = field.surface.evaluate(u, v);
+    let before = field.span_normal(u, v, station - 1)?;
+    let after = field.span_normal(u, v, station)?;
+    let value = |s: f64| -> Result<(f64, Vec3), BlendError> {
+        let normal = (before + (after - before) * s).normalize()?;
+        Ok((height(point - normal * radius, axis) - level, normal))
+    };
+    let first = value(0.0)?.0;
+    if first * value(1.0)?.0 > 0.0 {
+        return Ok(None);
+    }
+    let (mut lo, mut hi) = (0.0, 1.0);
+    for _ in 0..60 {
+        let mid = f64::midpoint(lo, hi);
+        if value(mid)?.0 * first > 0.0 {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let (residual, normal) = value(f64::midpoint(lo, hi))?;
+    Ok((residual.abs() <= 1e-7).then_some((point, normal)))
 }
 
 /// Radius of a qualified sampled circular-section carrier.
@@ -845,10 +950,20 @@ fn nurbs_sections(
             }
             let v = f64::midpoint(lo, hi);
             let (residual, point, normal) = value(v)?;
-            if residual.abs() > 1e-7 {
+            if residual.abs() <= 1e-7 {
+                (point, point - normal * radius, (u, v))
+            } else if let Some(station) = field.station_at(lo).or_else(|| field.station_at(hi))
+                && let Some((point, normal)) = crease_contact(&field, u, station, contour)?
+            {
+                // The root is a station's crease: the ball touches it there.
+                (
+                    point,
+                    point - normal * radius,
+                    (u, surface.knots_v()[station + 1]),
+                )
+            } else {
                 return Err(refusal("cap corner contour root was unresolved"));
             }
-            (point, point - normal * radius, (u, v))
         };
         sections.push(CircSection {
             p1: point,
@@ -1597,6 +1712,113 @@ mod tests {
                     .max((found[index] - radius).abs());
             }
             assert!(worst < 5e-5, "{radii:?}: {worst}");
+        }
+    }
+
+    /// A measured carrier whose stations do not follow one sweep: sixteen
+    /// quarter-circle sections stacked along Z, the last displaced 0.5 sideways
+    /// and one radius off by 5e-7 (so the strict read refuses and the measured
+    /// one accepts). A field blended across stations leaned up to 7 degrees
+    /// off this carrier on the spans beside the displaced station, and a
+    /// 256-station R0.2 contour solved on it put its ball centres 0.023 mm off
+    /// the carrier's own normal. The contact normal is the carrier's own: in
+    /// a span it is the surface normal, and at a station's crease it lies
+    /// between the two spans' normals.
+    #[test]
+    fn measured_contour_follows_the_carrier_normal() {
+        let sections: Vec<_> = (0..16)
+            .map(|i| {
+                let x = if i == 15 { 0.5 } else { 0.0 };
+                let r = if i == 14 { 1.000_000_5 } else { 1.0 };
+                let c = Point3::new(x, 0.0, f64::from(i));
+                CircSection {
+                    p1: c + Vec3::new(r, 0.0, 0.0),
+                    p2: c + Vec3::new(0.0, r, 0.0),
+                    center: c,
+                    radius: r,
+                    uv1: (0.0, 0.0),
+                    uv2: (0.0, 0.0),
+                    t: f64::from(i) / 15.0,
+                }
+            })
+            .collect();
+        let surface = crate::walker::approximate_blend_surface_linear_v(&sections).unwrap();
+        let knots = surface.knots_v().to_vec();
+        // The carrier's normal, outward for `reversed`, from the span on
+        // `side` of `v` (-1 before, +1 after) when `v` is a station.
+        let actual = |u: f64, v: f64, side: f64, reversed: bool| {
+            let normal = surface
+                .normal(u, (v + side * 1e-9).clamp(0.0, 1.0))
+                .unwrap();
+            if reversed { -normal } else { normal }
+        };
+        let angle = |a: Vec3, b: Vec3| a.dot(b).clamp(-1.0, 1.0).acos().to_degrees();
+        for reversed in [false, true] {
+            let mut topo = Topology::new();
+            let a = topo.add_vertex(Vertex::new(Point3::new(0.0, 0.0, 0.0), 1e-7));
+            let b = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+            let edge = topo.add_edge(remus_topology::edge::Edge::new(a, b, EdgeCurve::Line));
+            let wire =
+                topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], false).unwrap());
+            let mut face = Face::new(wire, vec![], FaceSurface::Nurbs(surface.clone()));
+            face.set_reversed(reversed);
+            let id = topo.add_face(face.clone());
+
+            let field = CanalNormal::contour_field(&face).unwrap();
+            assert!(field.measured, "the strict read refuses this carrier");
+            for (u, v) in [(0.5, 0.9), (0.0, 0.9), (1.0, 0.9), (0.5, 0.97), (0.3, 0.45)] {
+                let error = angle(field.normal(u, v).unwrap(), actual(u, v, 0.0, reversed));
+                assert!(
+                    error < 1e-4,
+                    "reversed {reversed}: ({u}, {v}) off by {error} degrees"
+                );
+            }
+
+            let radius = 0.2;
+            let node = |u: f64| {
+                let point = surface.evaluate(u, 0.9);
+                Node {
+                    edge,
+                    parameter: 0.0,
+                    faces: [id, id],
+                    point,
+                    center: point - actual(u, 0.9, 0.0, reversed) * radius,
+                    vertex: None,
+                    top_vertex: None,
+                    cross_edge: None,
+                    exact_residual: None,
+                }
+            };
+            let (first, last) = (node(0.0), node(1.0));
+            let contour = CapContour {
+                axis: Vec3::new(0.0, 0.0, 1.0),
+                level: height(first.center, Vec3::new(0.0, 0.0, 1.0)),
+                radius,
+                count: 256,
+            };
+            let sections = nurbs_sections(&topo, id, &first, &last, contour).unwrap();
+            let mut worst = 0.0_f64;
+            for section in &sections {
+                let (u, v) = section.uv1;
+                let towards = (section.p1 - section.center) * (1.0 / radius);
+                assert!((towards.length() - 1.0).abs() < 1e-9);
+                let on_station = knots.iter().any(|&knot| (knot - v).abs() < 1e-12);
+                if on_station && v > 0.0 && v < 1.0 {
+                    // On a crease: between the two spans' normals.
+                    let (before, after) =
+                        (actual(u, v, -1.0, reversed), actual(u, v, 1.0, reversed));
+                    let excess =
+                        angle(towards, before) + angle(towards, after) - angle(before, after);
+                    worst = worst.max(excess.to_radians() * radius);
+                } else {
+                    let correct = section.p1 - actual(u, v, 0.0, reversed) * radius;
+                    worst = worst.max((correct - section.center).length());
+                }
+            }
+            assert!(
+                worst < 1e-6,
+                "reversed {reversed}: centre off the carrier normal by {worst} mm"
+            );
         }
     }
 }
