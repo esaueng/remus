@@ -17,11 +17,11 @@ Models: 166 passed / 1000 total (16.60%).
 
 ## Failure taxonomy
 
-- `invalid_input`: 800
+- `invalid_input`: 801
 - `invalid_topology`: 7
 - `resource_limit`: 9
 - `tolerance_violation`: 2
-- `unsupported`: 16
+- `unsupported`: 15
 
 ## First failure codes
 
@@ -29,8 +29,8 @@ Models: 166 passed / 1000 total (16.60%).
 - `boolean` / `operation_invalid_topology`: 7
 - `read` / `import_limit_exceeded`: 9
 - `read` / `step_contains_no_solids`: 10
-- `read` / `step_parse_error`: 772
-- `read` / `unsupported_step_entity`: 16
+- `read` / `step_parse_error`: 773
+- `read` / `unsupported_step_entity`: 15
 - `tessellate` / `tessellation_not_watertight`: 2
 
 ## Import failure families (heuristic)
@@ -38,8 +38,8 @@ Models: 166 passed / 1000 total (16.60%).
 Triage hints only; these do not establish whether an input is valid.
 
 - `resource_limit`: 9
-- `endpoint_authority`: 33
+- `endpoint_authority`: 39
 - `face_boundary`: 1
-- `unsupported_entity`: 16
+- `unsupported_entity`: 15
 - `no_solids`: 10
-- `unknown`: 738
+- `unknown`: 733
