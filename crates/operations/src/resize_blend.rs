@@ -2462,9 +2462,10 @@ pub(crate) struct TranslationAnalysis {
     direction: Vec3,
     swept: crate::push_pull::SweptRegionCheck,
     axial_clearance: Vec<axial_clearance::AxialBlendClearance>,
-    /// Whether the result must also mesh closed: some carrier the move
-    /// stretches is not certified by the exact axial bounds.
-    mesh_postcondition: bool,
+    /// Conservative no-crossing travel intervals for carriers not already
+    /// certified by full-spring bounds. A missing or exceeded interval keeps
+    /// the original whole-body mesh postcondition.
+    mesh_clearances: Vec<Option<(f64, f64)>>,
     /// The translated entities, or the reason the boundary classification
     /// refuses them, which the move reports only after the swept-region
     /// check, as it always has.
@@ -2620,14 +2621,29 @@ pub(crate) fn analyze_translation(
         direction,
     )?;
     let entities = translated_entities(topo, solid, &adjacency, moved_faces, direction)?;
-    let mesh_postcondition = match &entities {
-        Ok(entities) => entities.stretched.iter().any(|line| {
-            adjacency
-                .faces_for_edge(line.edge)
+    let mesh_clearances = match &entities {
+        Ok(entities) => {
+            let mut carriers: Vec<_> = entities
+                .stretched
                 .iter()
-                .any(|face| !entities.faces.contains(face) && !axial.certified.contains(face))
-        }),
-        Err(_) => true,
+                .flat_map(|line| adjacency.faces_for_edge(line.edge).iter().copied())
+                .filter(|face| !entities.faces.contains(face) && !axial.certified.contains(face))
+                .collect();
+            carriers.compact_sort_unstable_by_key(|face| face.index());
+            carriers.dedup();
+            carriers
+                .into_iter()
+                .map(|face| {
+                    axial_clearance::separated_boundary_travel(
+                        topo,
+                        face,
+                        |v| entities.vertices.contains(&v),
+                        direction,
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        }
+        Err(_) => Vec::new(), // execution refuses before reaching the mesh check
     };
     Ok(TranslationAnalysis {
         source_faces,
@@ -2635,7 +2651,7 @@ pub(crate) fn analyze_translation(
         direction,
         swept,
         axial_clearance: axial.limits,
-        mesh_postcondition,
+        mesh_clearances,
         entities,
     })
 }
@@ -2858,7 +2874,15 @@ fn execute_translation(
             "blend-aware move changed volume by {volume_change}, inconsistent with distance {distance}"
         )));
     }
-    if analysis.mesh_postcondition {
+    let certified = analysis.mesh_clearances.iter().all(|interval| {
+        interval.is_some_and(|(lower, upper)| distance > lower && distance < upper)
+    });
+    #[cfg(test)]
+    let certified =
+        certified && !translation_oracle_tests::FORCE_WHOLE_CLOSURE.with(std::cell::Cell::get);
+    if certified {
+        let _route = crate::performance::span("move_faces.blend.translation_boundary_certificate");
+    } else {
         require_closed_mesh(topo, result)?;
     }
 
