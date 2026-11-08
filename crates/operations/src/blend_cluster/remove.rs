@@ -1314,6 +1314,9 @@ fn history(
             final_vertex(image).map(|vertex| EntityKey::vertex(vertex.index())),
         ));
     }
+    // Callers binary-search this by source key, and keys order vertices
+    // before edges: sort it, edges and vertices together.
+    boundary_history.compact_sort_unstable_by_key(|(source, _)| *source);
     Ok(SharpRestoration {
         solid: output.solid,
         removed: removed.to_vec(),
