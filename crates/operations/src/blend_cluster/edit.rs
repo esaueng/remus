@@ -24,7 +24,8 @@
 //! A body whose rounded cap was lowered into its shoulder with sampled
 //! permission has no group recognizable as it stands (its rim bands roll on
 //! sampled corner patches); the band and cylinder routes edit it with the cap
-//! lifted clear and lower the cap back afterwards (`joined_cap`).
+//! lifted clear and lower the cap back afterwards (`joined_cap`), and so does
+//! the fillet route.
 //!
 //! The whole route runs on a private copy of the solid; only the finished,
 //! verified result is copied into the caller's arena (inside a
@@ -505,6 +506,52 @@ pub fn fillet_through_blend_group(
 }
 
 fn group_fillet(
+    work: &mut Topology,
+    solid: SolidId,
+    selected: &[EdgeId],
+    radius: f64,
+) -> Result<Option<Built>, OperationsError> {
+    if let Some(built) = group_fillet_as_is(work, solid, selected, radius)? {
+        return Ok(Some(built));
+    }
+    // A body whose cap was lowered into its shoulder has no group
+    // recognizable as it stands: fillet it with the cap lifted clear, as the
+    // band and cylinder routes edit it, and lower the cap back after.
+    let adjacency = work.build_adjacency(solid)?;
+    let Some(&seed) = selected
+        .first()
+        .and_then(|&edge| adjacency.faces_for_edge(edge).first())
+    else {
+        return Ok(None);
+    };
+    let Some((lifted, _, lift)) = lift_joined_cap(work, solid, seed)? else {
+        return Ok(None);
+    };
+    let Some(lifted_selection) = selected
+        .iter()
+        .map(|&edge| lift.edge_image(work, edge))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return Ok(None);
+    };
+    let Some(built) = group_fillet_as_is(work, lifted, &lifted_selection, radius)? else {
+        return Ok(None);
+    };
+    let (solid, evolution) = crate::performance::timed("blend_group.lower_cap", || {
+        lower_joined_cap(work, built.solid, &lift, &built.evolution)
+    })?;
+    // The seed names the group on the copy: the lifted body's seed has no
+    // source there.
+    Ok(Some(Built {
+        solid,
+        seed,
+        evolution,
+        ..built
+    }))
+}
+
+/// [`group_fillet`] on `solid` as it stands.
+fn group_fillet_as_is(
     work: &mut Topology,
     solid: SolidId,
     selected: &[EdgeId],

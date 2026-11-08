@@ -33,8 +33,10 @@ use remus_math::compact_sort::CompactSort;
 use remus_math::vec::Vec3;
 use remus_topology::Topology;
 use remus_topology::adjacency::AdjacencyIndex;
+use remus_topology::edge::EdgeId;
 use remus_topology::explorer::{face_edges, face_vertices, solid_faces};
 use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::journal::EntityKind;
 use remus_topology::solid::SolidId;
 
 use super::reblend::compose_evolution;
@@ -57,6 +59,9 @@ pub(super) struct CapLift {
     pub(super) permission: CapReblendApproximation,
     /// Face evolution from the copied body to the lifted one.
     pub(super) evolution: EvolutionMap,
+    /// `(copied edge index, lifted edge index)` for every edge the lift
+    /// carried to exactly one image, ascending.
+    pub(super) edges: Vec<(usize, usize)>,
 }
 
 /// A planar cap whose rim rolls over sampled supports, with its rim radius,
@@ -84,7 +89,7 @@ pub(super) fn lift_joined_cap(
     let permission = CapReblendApproximation {
         stations: joined.stations,
     };
-    let Ok(((moved, _), _)) = crate::face_move_quality::edit_with_quality(
+    let Ok(((moved, pairs), _)) = crate::face_move_quality::edit_with_quality(
         work,
         solid,
         &[joined.cap],
@@ -105,6 +110,21 @@ pub(super) fn lift_joined_cap(
     ) else {
         return Ok(None);
     };
+    // An edge the lift split has no one image; it is left out.
+    let mut edges: Vec<(usize, usize)> = pairs
+        .iter()
+        .filter(|(source, target)| {
+            source.kind == EntityKind::Edge && target.kind == EntityKind::Edge
+        })
+        .map(|(source, target)| (source.index, target.index))
+        .collect();
+    edges.compact_sort_unstable();
+    let split: Vec<usize> = edges
+        .windows(2)
+        .filter(|pair| pair[0].0 == pair[1].0)
+        .map(|pair| pair[0].0)
+        .collect();
+    edges.retain(|(source, _)| split.binary_search(source).is_err());
     Ok(Some((
         moved.solid,
         lifted_seed,
@@ -113,8 +133,21 @@ pub(super) fn lift_joined_cap(
             distance: joined.lift,
             permission,
             evolution: moved.evolution,
+            edges,
         },
     )))
+}
+
+impl CapLift {
+    /// The lifted image of the copied body's `edge`, when the lift carried
+    /// it to exactly one edge.
+    pub(super) fn edge_image(&self, work: &Topology, edge: EdgeId) -> Option<EdgeId> {
+        let at = self
+            .edges
+            .binary_search_by_key(&edge.index(), |&(source, _)| source)
+            .ok()?;
+        work.edge_id_from_index(self.edges[at].1)
+    }
 }
 
 /// Lower the lifted cap of an edited body back by the lift, with the same
