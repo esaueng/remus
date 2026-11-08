@@ -13,27 +13,43 @@
 //! such a body with its cap lifted clear of the shoulder and lowers it back
 //! with the permission it was lowered with (`blend_cluster/joined_cap.rs`).
 //!
-//! The steps, as the round-2 application run selected them:
+//! The steps at the acceptance spec's values, in the order the OpenZCAD
+//! application runs them on one cumulative body:
 //!
-//! - **A2**: the convex top band along the x = 0 face, R4 -> 1.9.
-//! - **A3**: R1 on the x = 0 / y = 18 vertical edge.
-//! - **A4**: the free-end top edge chamfered 0.7. Picked alone it does not
-//!   build (its corners lie on the band end arcs) and `chamfer_v2` names the
-//!   five-edge tangent chain; the chain builds.
+//! - **A2 convex**: the convex top band along the x = 0 face, R4 -> 1.5.
+//!   The cap lowered back past the band's walked corner patch used to fold
+//!   (`regress_cap_descent_walked_corner`).
+//! - **A2 concave**: the concave vertical seam R4 -> 2 on the opposite side,
+//!   the y = 0 face, as the video does it (its step 6). The seam beside the
+//!   R1.5 band would put its corner in the unequal corner's fold domain and
+//!   refuses typed, editing nothing.
+//! - **A3**: R1 on the x = 0 / y = 18 vertical edge (22.5 mm long once the
+//!   band is R1.5, as in the video).
+//! - **A5** (the video's step 9, before its A4 edits): a negative fillet
+//!   radius on the free-end top edge refuses and leaves the body unchanged.
+//! - **A4**: the one picked free-end top edge filleted R1.5 and R3.7 (built,
+//!   inspected and discarded, as the video undoes them). Both radii exceed
+//!   A3's R1 band the edge's tangent chain runs over, so they build through
+//!   the blend group, the R1 band re-filleted after the new round. Then the
+//!   edge chamfered 0.7, which is kept: picked alone it does not chamfer (its
+//!   corners lie on the band end arcs) and `chamfer_v2` names the five-edge
+//!   tangent chain; the chain builds. The broad chamfer the video builds and
+//!   undoes (5) is the ignored `broad_free_end_chamfer_consumes_the_rounds`:
+//!   no chamfer engine yet builds a setback larger than the rounds its chain
+//!   crosses.
 //! - **A6**: the 0.8 bottom chamfer from one seed edge (its seven-edge tangent
 //!   chain), and the application's twelve-edge closed bottom outline, which
 //!   adds the free end's bottom edge and the A4 stripes' feet, mitred.
 //! - **A7**: the boss Ø12 -> 14.6 -> 17 -> (21.1 previewed through the
-//!   prepared API) -> 14.7.
+//!   prepared API, then cancelled) -> 14.7, and an oversize Ø60 refusing.
 //!
 //! Every result meets PLAN.md's verification bar (both validators, watertight
-//! manifold meshes at two deflections, API against independent mesh volume),
-//! is probed at the edited feature, keeps planes, cylinders, cones and tori
-//! analytic and has exactly two sampled faces more than the same edits
-//! without A1 (the rim bands A1 made). Each group edit matches its fresh
-//! construction in the planner's order — the sharp part, the fillets, the
-//! rim, the chamfer chains, then the cap lowered — in face count, face census
-//! and volume.
+//! manifold meshes at two deflections and at the application's display
+//! deflection, API against independent mesh volume), is probed at the edited
+//! feature and keeps planes, cylinders, cones and tori analytic. Every group
+//! edit goes through the prepared API as the application drives it: a
+//! preview the kernel returns must commit (the preview/commit contract), and
+//! the commit is the unprepared call's result.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -42,7 +58,7 @@ use std::collections::BTreeMap;
 use remus_check::classify::{ClassifyOptions, PointClassification, classify_point};
 use remus_math::vec::{Point3, Vec3};
 use remus_operations::OperationsError;
-use remus_operations::blend_cluster::{BlendClusterError, PreparedGroupEdit};
+use remus_operations::blend_cluster::{BlendClusterError, GroupEditKind, PreparedGroupEdit};
 use remus_operations::blend_ops::{chamfer_v2, chamfer_v2_tangent_chain, fillet_cascade};
 use remus_operations::face_move_quality::{
     FaceMoveApproximation, FaceMoveQuality, move_faces_with_quality,
@@ -68,8 +84,16 @@ const SAMPLED: Option<FaceMoveApproximation> = Some(FaceMoveApproximation { stat
 const FREE_END: f64 = 0.7;
 /// The video's bottom chamfer distance.
 const BOTTOM: f64 = 0.8;
-/// A2's band radius.
-const BAND: f64 = 1.9;
+/// A2's convex band radius (the spec's R4 -> 1.5).
+const BAND: f64 = 1.5;
+/// A2's concave seam radius (the spec's R4 -> 2).
+const SEAM: f64 = 2.0;
+/// The free-end fillet radii A4 builds and discards.
+const END_FILLETS: [f64; 2] = [1.5, 3.7];
+/// The broad free-end chamfer A4 builds and discards.
+const END_BROAD: f64 = 5.0;
+/// The application's display deflection (`tessellateSolidGroupedBinary`).
+const DISPLAY: f64 = 0.005;
 
 // ---------------------------------------------------------------------------
 // Fixtures and picks.
@@ -168,6 +192,21 @@ fn x0_seam(topo: &Topology, solid: SolidId) -> FaceId {
         })
         .collect();
     assert_eq!(seams.len(), 1, "one seam round on the x = 0 face");
+    seams[0]
+}
+
+/// The concave seam round on the block's y = 0 face.
+fn y0_seam(topo: &Topology, solid: SolidId) -> FaceId {
+    let seams: Vec<FaceId> = solid_faces(topo, solid)
+        .unwrap()
+        .into_iter()
+        .filter(|&face| {
+            matches!(topo.face(face).unwrap().surface(), FaceSurface::Cylinder(c)
+                if c.axis().cross(Vec3::new(0.0, 0.0, 1.0)).length() < 1e-9
+                    && c.origin().y() < -1.0)
+        })
+        .collect();
+    assert_eq!(seams.len(), 1, "one seam round on the y = 0 face");
     seams[0]
 }
 
@@ -288,6 +327,19 @@ fn verify(topo: &Topology, solid: SolidId, label: &str) -> f64 {
     assert!(strict.is_valid(), "{label}: {:?}", strict.issues);
     let diagonal = bbox_diagonal(topo, solid);
     let volume = solid_volume(topo, solid, diagonal * 1e-5).unwrap();
+    // The display mesh must close too; its chordal volume error is not
+    // held to the measuring bar.
+    let display = tessellate_solid(topo, solid, DISPLAY).unwrap();
+    assert_eq!(
+        boundary_edge_count(&display),
+        0,
+        "{label} at display {DISPLAY}"
+    );
+    assert_eq!(
+        non_manifold_edge_count(&display),
+        0,
+        "{label} at display {DISPLAY}"
+    );
     for deflection in [diagonal * 5e-5, diagonal * 2e-5] {
         let mesh = tessellate_solid(topo, solid, deflection).unwrap();
         assert_eq!(boundary_edge_count(&mesh), 0, "{label} at {deflection}");
@@ -366,7 +418,8 @@ fn assert_sampled(topo: &Topology, solid: SolidId, sampled: usize, label: &str) 
     assert_eq!(
         census.get("nurbs").copied().unwrap_or(0),
         sampled,
-        "{label}: {census:?}"
+        "{label}: {census:?}; sampled faces span {:?}",
+        sampled_extents(topo, solid)
     );
     for tag in census.keys() {
         assert!(
@@ -374,6 +427,34 @@ fn assert_sampled(topo: &Topology, solid: SolidId, sampled: usize, label: &str) 
             "{label}: {census:?}"
         );
     }
+}
+
+/// The vertex bounding box of every sampled face, rounded to 0.01 mm.
+fn sampled_extents(topo: &Topology, solid: SolidId) -> Vec<[f64; 6]> {
+    let round = |value: f64| (value * 100.0).round() / 100.0;
+    solid_faces(topo, solid)
+        .unwrap()
+        .into_iter()
+        .filter(|&face| matches!(topo.face(face).unwrap().surface(), FaceSurface::Nurbs(_)))
+        .map(|face| {
+            let mut extent = [
+                f64::INFINITY,
+                f64::INFINITY,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                f64::NEG_INFINITY,
+                f64::NEG_INFINITY,
+            ];
+            for vertex in face_vertices(topo, face).unwrap() {
+                let point = topo.vertex(vertex).unwrap().point();
+                for (axis, value) in [point.x(), point.y(), point.z()].into_iter().enumerate() {
+                    extent[axis] = extent[axis].min(round(value));
+                    extent[axis + 3] = extent[axis + 3].max(round(value));
+                }
+            }
+            extent
+        })
+        .collect()
 }
 
 /// The cap at z26 with its R1 rim round the boss of radius `radius`: just
@@ -415,9 +496,10 @@ fn gecko_sharp() -> (Topology, SolidId) {
     import(include_str!("data/gentle_gecko_sharp.step"))
 }
 
-/// The four sharp edges of a (resized) sharp Gecko with boss radius `r` that
-/// stay at R4: the two seams, the shoulder and the y = 0 top edge.
-fn sharp_r4_edges(topo: &Topology, solid: SolidId, r: f64) -> Vec<EdgeId> {
+/// The four sharp edges of the sharp Gecko that stay at R4: the two seams,
+/// the shoulder and the y = 0 top edge.
+fn sharp_r4_edges(topo: &Topology, solid: SolidId) -> Vec<EdgeId> {
+    let r = 6.0;
     let mut found = Vec::new();
     for edge in solid_edges(topo, solid).unwrap() {
         let (a, b) = edge_ends(topo, edge);
@@ -451,29 +533,13 @@ fn sharp_r4_edges(topo: &Topology, solid: SolidId, r: f64) -> Vec<EdgeId> {
     found
 }
 
-/// The video's later steps on the body.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Step {
-    A3,
-    A4,
-    A6,
-}
-
-/// Fresh construction of the edited body in the planner's order: the sharp
-/// Gecko (boss radius `radius`), the R4 network, the x = 0 top band at
-/// `band`, the R1 stage (the cap rim with A3's edges), the chamfer chains
-/// (the larger first), then the cap lowered from z36 to z26 with A1's
-/// permission.
-fn oracle(band: f64, radius: f64, steps: &[Step]) -> (Topology, SolidId) {
+/// Fresh construction of A2's convex edit in the planner's order: the sharp
+/// Gecko, the R4 network, the x = 0 top band at `band`, the cap rim, then
+/// the cap lowered from z36 to z26 with A1's permission.
+fn oracle(band: f64) -> (Topology, SolidId) {
     let (mut topo, sharp) = gecko_sharp();
-    let mut solid = if (radius - 6.0).abs() < 1e-12 {
-        sharp
-    } else {
-        let boss = boss_of(&topo, sharp);
-        resize_cylindrical_face(&mut topo, sharp, boss, radius).unwrap()
-    };
-    let r4 = sharp_r4_edges(&topo, solid, radius);
-    solid = fillet_cascade(&mut topo, solid, &r4, 4.0).unwrap().solid;
+    let r4 = sharp_r4_edges(&topo, sharp);
+    let mut solid = fillet_cascade(&mut topo, sharp, &r4, 4.0).unwrap().solid;
     let x0 = line_where(
         &topo,
         solid,
@@ -482,29 +548,8 @@ fn oracle(band: f64, radius: f64, steps: &[Step]) -> (Topology, SolidId) {
     );
     solid = fillet_cascade(&mut topo, solid, &[x0], band).unwrap().solid;
     let cap = top_at(&topo, solid, 36.0);
-    let mut r1 = face_edges(&topo, cap).unwrap();
-    if steps.contains(&Step::A3) {
-        r1.push(a3_pick(&topo, solid));
-        r1.push(line_where(
-            &topo,
-            solid,
-            |p| (p.y() - 18.0).abs() < 1e-7 && (p.z() - 24.0).abs() < 1e-7,
-            "y = 18 top edge",
-        ));
-    }
-    solid = fillet_cascade(&mut topo, solid, &r1, 1.0).unwrap().solid;
-    if steps.contains(&Step::A6) {
-        let pick = bottom_pick(&topo, solid);
-        solid = chamfer_v2_tangent_chain(&mut topo, solid, &[pick], BOTTOM, BOTTOM)
-            .unwrap()
-            .solid;
-    }
-    if steps.contains(&Step::A4) {
-        let pick = a4_pick(&topo, solid);
-        solid = chamfer_v2_tangent_chain(&mut topo, solid, &[pick], FREE_END, FREE_END)
-            .unwrap()
-            .solid;
-    }
+    let rim = face_edges(&topo, cap).unwrap();
+    solid = fillet_cascade(&mut topo, solid, &rim, 1.0).unwrap().solid;
     let cap = top_at(&topo, solid, 36.0);
     let lowered = move_faces_with_quality(&mut topo, solid, &[cap], -10.0, SAMPLED).unwrap();
     assert_eq!(
@@ -515,25 +560,129 @@ fn oracle(band: f64, radius: f64, steps: &[Step]) -> (Topology, SolidId) {
 }
 
 // ---------------------------------------------------------------------------
+// Group edits as the application drives them.
+
+/// A group edit's prepared preview at `value`, then its commit.
+///
+/// The application previews every drag frame through the prepared API and
+/// keeps the value with a commit. A preview the kernel returns must commit:
+/// the contract fails if the preview builds and the commit refuses (or the
+/// reverse). The commit is checked against the unprepared call, and the
+/// source stays byte-identical throughout. Returns the committed solid, or
+/// the refusal both agree on.
+fn group_edit(
+    topo: &mut Topology,
+    solid: SolidId,
+    face: FaceId,
+    kind: GroupEditKind,
+    value: f64,
+    label: &str,
+) -> Result<SolidId, OperationsError> {
+    let before = fingerprint(topo, solid);
+    let prepared = match kind {
+        GroupEditKind::BandRadius { expected_radius } => {
+            PreparedGroupEdit::prepare_band(topo, solid, face, expected_radius)
+        }
+        GroupEditKind::CylinderRadius { .. } => {
+            PreparedGroupEdit::prepare_cylinder(topo, solid, face)
+        }
+    };
+    let unprepared = |topo: &mut Topology| match kind {
+        GroupEditKind::BandRadius { expected_radius } => {
+            resize_blend(topo, solid, face, expected_radius, value).map(|result| result.solid)
+        }
+        GroupEditKind::CylinderRadius { .. } => resize_cylindrical_face(topo, solid, face, value),
+    };
+    let result = match &prepared {
+        Ok(prepared) => {
+            let preview = prepared.preview(topo, value);
+            assert_eq!(fingerprint(topo, solid), before, "{label}: preview source");
+            let committed = prepared.commit(topo, value);
+            assert_eq!(fingerprint(topo, solid), before, "{label}: commit source");
+            match (&preview, &committed) {
+                (Ok(_), Err(error)) => {
+                    panic!("{label}: the preview built but the commit refused: {error}")
+                }
+                (Err(error), Ok(_)) => {
+                    panic!("{label}: the commit built but the preview refused: {error}")
+                }
+                _ => {}
+            }
+            committed
+        }
+        Err(error) => {
+            assert!(
+                matches!(
+                    error,
+                    OperationsError::BlendCluster(BlendClusterError::NotPrepared { .. })
+                ),
+                "{label}: preparation: {error}"
+            );
+            unprepared(topo)
+        }
+    };
+    if prepared.is_ok() {
+        // The commit is the unprepared call's answer.
+        let direct = unprepared(topo);
+        match (&result, &direct) {
+            (Ok(committed), Ok(direct)) => {
+                assert_eq!(
+                    census(topo, *committed),
+                    census(topo, *direct),
+                    "{label}: prepared and unprepared census"
+                );
+                let a = solid_volume(topo, *committed, 1e-3).unwrap();
+                let b = solid_volume(topo, *direct, 1e-3).unwrap();
+                assert!(
+                    (a - b).abs() <= 1e-9 * b,
+                    "{label}: prepared {a} vs unprepared {b}"
+                );
+            }
+            (Err(_), Err(_)) => {}
+            (Ok(_), Err(error)) => panic!("{label}: the unprepared call refused: {error}"),
+            (Err(error), Ok(_)) => panic!("{label}: the prepared commit refused: {error}"),
+        }
+    }
+    assert_eq!(fingerprint(topo, solid), before, "{label}: source");
+    result
+}
+
+/// [`group_edit`] that must build.
+fn group_edit_ok(
+    topo: &mut Topology,
+    solid: SolidId,
+    face: FaceId,
+    kind: GroupEditKind,
+    value: f64,
+    label: &str,
+) -> SolidId {
+    group_edit(topo, solid, face, kind, value, label)
+        .unwrap_or_else(|error| panic!("{label}: {error}"))
+}
+
+// ---------------------------------------------------------------------------
 // The order.
 
-/// A1 then A2 through A6 on one body, each step verified. Returns the A6
-/// body and the A4 body before it (for the application's twelve-edge A6
-/// selection).
-fn a1_to_a6() -> (Topology, SolidId, SolidId) {
+/// A1 then A2 and A3 on one body at the spec's values, each step verified.
+fn a1_to_a3() -> (Topology, SolidId) {
     let (mut topo, solid) = a1();
     assert_sampled(&topo, solid, 4, "A1");
     assert_cap_at_26(&topo, solid, 6.0, "A1");
 
-    // A2: the convex band R4 -> 1.9 through the joined cap.
-    let before = fingerprint(&topo, solid);
+    // A2 convex: the band R4 -> 1.5 through the joined cap.
     let band = x0_band(&topo, solid);
-    let a2 = resize_blend(&mut topo, solid, band, 4.0, BAND)
-        .unwrap()
-        .solid;
-    assert_eq!(fingerprint(&topo, solid), before, "A2: source");
-    verify(&topo, a2, "A2");
-    // The R1.9 band leaves material the R4 band took.
+    let a2 = group_edit_ok(
+        &mut topo,
+        solid,
+        band,
+        GroupEditKind::BandRadius {
+            expected_radius: 4.0,
+        },
+        BAND,
+        "A2 convex",
+    );
+    verify(&topo, a2, "A2 convex");
+    // The R1.5 band leaves material the R4 band took.
     probe(
         &topo,
         a2,
@@ -541,14 +690,64 @@ fn a1_to_a6() -> (Topology, SolidId, SolidId) {
             (Point3::new(0.6, 14.0, 23.4), true),
             (Point3::new(0.2, 14.0, 23.8), false),
         ],
-        "A2",
+        "A2 convex",
     );
-    assert_cap_at_26(&topo, a2, 6.0, "A2");
-    // The band's walked transition replaces one R4 corner patch; A1's two
-    // rim bands are the only other sampled faces beside the two corners.
-    assert_sampled(&topo, a2, 4, "A2");
-    let (oracle_topo, oracle_solid) = oracle(BAND, 6.0, &[]);
-    assert_matches_oracle(&topo, a2, &oracle_topo, oracle_solid, "A2");
+    assert_cap_at_26(&topo, a2, 6.0, "A2 convex");
+    assert_sampled(&topo, a2, 4, "A2 convex");
+    let (oracle_topo, oracle_solid) = oracle(BAND);
+    assert_matches_oracle(&topo, a2, &oracle_topo, oracle_solid, "A2 convex");
+
+    // The seam on the band's own side cannot go R2: its corner joins the R2
+    // seam, the R4 shoulder and the R1.5 band, inside the unequal corner's
+    // fold domain (`docs/design/unequal-radius-boss-corner.md`). It refuses
+    // typed, its preview refuses too, and the body is unchanged.
+    let same_side = x0_seam(&topo, a2);
+    let error = group_edit(
+        &mut topo,
+        a2,
+        same_side,
+        GroupEditKind::BandRadius {
+            expected_radius: 4.0,
+        },
+        SEAM,
+        "A2 concave beside the band",
+    )
+    .unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            OperationsError::BlendCluster(BlendClusterError::ReblendFailed { .. })
+        ),
+        "{error}"
+    );
+
+    // A2 concave: as the video does it (its step 6), the vertical seam on
+    // the opposite side, the y = 0 face, R4 -> 2.
+    let seam = y0_seam(&topo, a2);
+    let a2 = group_edit_ok(
+        &mut topo,
+        a2,
+        seam,
+        GroupEditKind::BandRadius {
+            expected_radius: 4.0,
+        },
+        SEAM,
+        "A2 concave",
+    );
+    verify(&topo, a2, "A2 concave");
+    // Air inside the R2 ball that the R4 round filled; material near the
+    // seam corner both rounds fill.
+    probe(
+        &topo,
+        a2,
+        &[
+            (Point3::new(7.3, -0.3, 12.0), false),
+            (Point3::new(6.3, -0.1, 12.0), true),
+        ],
+        "A2 concave",
+    );
+    assert_cap_at_26(&topo, a2, 6.0, "A2 concave");
+    assert_sampled(&topo, a2, 4, "A2 concave");
 
     // A3: R1 on the corrected vertical edge, turning through the band.
     let pick = a3_pick(&topo, a2);
@@ -565,10 +764,59 @@ fn a1_to_a6() -> (Topology, SolidId, SolidId) {
         "A3",
     );
     assert_sampled(&topo, a3, 5, "A3");
+    (topo, a3)
+}
 
-    // A4: the free-end top edge alone names its chain; the chain builds.
+/// [`a1_to_a3`], then A5, A4 and A6 on the same body, each step verified.
+/// Returns the A6 body and the A4 body before it (for the application's
+/// twelve-edge A6 selection).
+fn a1_to_a6() -> (Topology, SolidId, SolidId) {
+    let (mut topo, a3) = a1_to_a3();
+
+    // A5 (the video's step 9, before its A4 edits): a negative radius on
+    // the free-end top edge refuses and leaves the body as it was.
     let before = fingerprint(&topo, a3);
     let pick = a4_pick(&topo, a3);
+    assert!(
+        fillet_cascade(&mut topo, a3, &[pick], -1.0).is_err(),
+        "A5 built"
+    );
+    assert_eq!(fingerprint(&topo, a3), before, "A5: source");
+
+    // A4: the free-end fillets the video builds and undoes, from the one
+    // picked edge as the application sends it. Both radii are larger than
+    // the A3 band its tangent chain runs over, so they build through the
+    // blend group: the R1 band is re-filleted after the new round.
+    let before = fingerprint(&topo, a3);
+    for radius in END_FILLETS {
+        let label = format!("A4 fillet R{radius}");
+        let pick = a4_pick(&topo, a3);
+        let filleted = fillet_cascade(&mut topo, a3, &[pick], radius)
+            .unwrap_or_else(|error| panic!("{label}: {error}"))
+            .solid;
+        assert_eq!(fingerprint(&topo, a3), before, "{label}: source");
+        verify(&topo, filleted, &label);
+        // The edge's corner is gone; the ball's side of the round is not.
+        let inside = 30.0 - 0.4 * radius;
+        probe(
+            &topo,
+            filleted,
+            &[
+                (Point3::new(29.8, 9.0, 23.8), false),
+                (Point3::new(inside, 9.0, 24.0 - 0.4 * radius), true),
+            ],
+            &label,
+        );
+        // One sampled face more than A3: the corner where the re-filleted
+        // R1 band meets the new round at the free end.
+        assert_sampled(&topo, filleted, 6, &label);
+    }
+
+    // A4's broad chamfer (5) is `broad_free_end_chamfer_consumes_the_rounds`.
+    let pick = a4_pick(&topo, a3);
+
+    // A4: the retained 0.7 chamfer. The edge alone names its chain; the
+    // chain builds.
     let chain = match chamfer_v2(&mut topo, a3, &[pick], FREE_END, FREE_END) {
         Err(OperationsError::ChamferTangentChainRequired {
             selected, chain, ..
@@ -627,11 +875,12 @@ fn a1_to_a6() -> (Topology, SolidId, SolidId) {
     (topo, a6, a4)
 }
 
-/// A1 -> A2 -> A3 -> A4 -> A6 -> A7 Ø14.6 -> 17 -> (21.1 previewed) -> 14.7
-/// on one body: every step builds, verifies and matches its fresh
-/// construction; the joined cap stays at z26 with its rim throughout.
+/// A1 -> A2 convex 1.5 -> A2 concave 2 -> A3 -> A4 -> A5 -> A6 -> A7
+/// Ø14.6 -> 17 -> (21.1 previewed) -> 14.7 on one body, then an oversize Ø60:
+/// every step builds and verifies (the oversize refuses typed, editing
+/// nothing); the joined cap stays at z26 with its rim throughout.
 #[test]
-fn full_video_order_after_the_shortened_cap() {
+fn full_video_order_at_spec_values() {
     let (mut topo, mut solid, _) = a1_to_a6();
     let census_before = census(&topo, solid);
     for diameter in [14.6_f64, 17.0, 21.1, 14.7] {
@@ -639,20 +888,30 @@ fn full_video_order_after_the_shortened_cap() {
         let radius = diameter / 2.0;
         let before = fingerprint(&topo, solid);
         let boss = boss_of(&topo, solid);
+        let kind = GroupEditKind::CylinderRadius {
+            radius: boss_radius(&topo, boss),
+        };
         if (diameter - 21.1).abs() < 1e-12 {
             // Previewed through the prepared API, then cancelled.
-            let prepared = PreparedGroupEdit::prepare_cylinder(&topo, solid, boss).unwrap();
-            let preview = prepared.preview(&mut topo, radius).unwrap();
+            let prepared = PreparedGroupEdit::prepare_cylinder(&topo, solid, boss)
+                .unwrap_or_else(|error| panic!("{label}: {error}"));
+            let preview = prepared
+                .preview(&mut topo, radius)
+                .unwrap_or_else(|error| panic!("{label}: {error}"));
             assert_eq!(fingerprint(&topo, solid), before, "{label}: source");
             assert_boss_wall(&topo, preview, radius, &label);
             assert_eq!(census(&topo, preview), census_before, "{label}: census");
             let mesh = tessellate_solid(&topo, preview, 0.05).unwrap();
             assert_eq!(boundary_edge_count(&mesh), 0, "{label}");
             assert_eq!(non_manifold_edge_count(&mesh), 0, "{label}");
+            // The cancelled preview commits too.
+            let committed = prepared
+                .commit(&mut topo, radius)
+                .unwrap_or_else(|error| panic!("{label}: previewed, commit refused: {error}"));
+            verify(&topo, committed, &label);
             continue;
         }
-        let result = resize_cylindrical_face(&mut topo, solid, boss, radius).unwrap();
-        assert_eq!(fingerprint(&topo, solid), before, "{label}: source");
+        let result = group_edit_ok(&mut topo, solid, boss, kind, radius, &label);
         verify(&topo, result, &label);
         assert_eq!(census(&topo, result), census_before, "{label}: census");
         assert_boss_wall(&topo, result, radius, &label);
@@ -669,24 +928,17 @@ fn full_video_order_after_the_shortened_cap() {
             ],
             &label,
         );
-        let (oracle_topo, oracle_solid) = oracle(BAND, radius, &[Step::A3, Step::A4, Step::A6]);
-        assert_matches_oracle(&topo, result, &oracle_topo, oracle_solid, &label);
         solid = result;
     }
-}
 
-/// The steps that have no construction refuse typed and leave the body
-/// byte-identical: the concave seam R4 -> 2 under the shoulder, and a boss
-/// diameter the block cannot hold.
-#[test]
-fn unbuildable_steps_after_the_shortened_cap_refuse() {
-    let (mut topo, solid, _) = a1_to_a6();
+    // An oversize diameter refuses with the diameter-fit refusal, editing
+    // nothing.
     let before = fingerprint(&topo, solid);
-    let seam = x0_seam(&topo, solid);
-    resize_blend(&mut topo, solid, seam, 4.0, 2.0).unwrap_err();
-    assert_eq!(fingerprint(&topo, solid), before);
     let boss = boss_of(&topo, solid);
-    let error = resize_cylindrical_face(&mut topo, solid, boss, 30.0).unwrap_err();
+    let kind = GroupEditKind::CylinderRadius {
+        radius: boss_radius(&topo, boss),
+    };
+    let error = group_edit(&mut topo, solid, boss, kind, 30.0, "A7 oversize").unwrap_err();
     assert!(
         matches!(
             &error,
@@ -695,6 +947,13 @@ fn unbuildable_steps_after_the_shortened_cap_refuse() {
         "{error}"
     );
     assert_eq!(fingerprint(&topo, solid), before);
+}
+
+fn boss_radius(topo: &Topology, boss: FaceId) -> f64 {
+    match topo.face(boss).unwrap().surface() {
+        FaceSurface::Cylinder(cylinder) => cylinder.radius(),
+        other => panic!("boss wall is {}", other.type_tag()),
+    }
 }
 
 /// The application's A6 selection after A4: the bottom face's twelve-edge
@@ -772,6 +1031,36 @@ fn closed_bottom_outline_after_the_free_end_chamfer() {
             label,
         );
     }
+}
+
+/// A4's broad free-end chamfer (the video builds 5.2 and undoes it), from
+/// the body after A3.
+///
+/// Open: the chain's setback runs over A3's R1 band, whose radius is below
+/// the chord ball's (`d/√2` ≈ 3.5), so no ball rolls on it and the bevel would
+/// have to mitre across the band and trim it; past 4.5 even the R4 band ends
+/// fail to trim. The flat bevel refuses to re-trim curved neighbours. Both
+/// need a construction the chamfer engines do not have.
+#[test]
+#[ignore = "open: a chamfer larger than the rounds its chain crosses (A4 chamfer 5)"]
+fn broad_free_end_chamfer_consumes_the_rounds() {
+    let (mut topo, a3) = a1_to_a3();
+    let before = fingerprint(&topo, a3);
+    let pick = a4_pick(&topo, a3);
+    let broad = chamfer_v2_tangent_chain(&mut topo, a3, &[pick], END_BROAD, END_BROAD)
+        .unwrap_or_else(|error| panic!("A4 chamfer {END_BROAD}: {error}"))
+        .solid;
+    assert_eq!(fingerprint(&topo, a3), before, "A4 broad: source");
+    verify(&topo, broad, "A4 chamfer 5");
+    probe(
+        &topo,
+        broad,
+        &[
+            (Point3::new(28.0, 9.0, 22.5), false),
+            (Point3::new(27.0, 9.0, 21.5), true),
+        ],
+        "A4 chamfer 5",
+    );
 }
 
 /// Closed-form material removed by an equal-distance `d` chamfer round the
