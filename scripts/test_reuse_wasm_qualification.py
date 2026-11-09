@@ -1,12 +1,14 @@
 """Negative controls for protected-main package qualification reuse."""
 
 import copy
+from contextlib import redirect_stdout
 import hashlib
 import io
 import os
 import json
 from pathlib import Path
 import runpy
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -109,8 +111,86 @@ class QualificationTests(unittest.TestCase):
             with mock.patch("subprocess.check_output", side_effect=git):
                 checker["check"]("HEAD", source, rebuilt_directory=rebuilt)
                 (rebuilt / checker["ROOTS"][0] / "kernel.wasm").write_bytes(b"substituted bytes")
-                with self.assertRaisesRegex(ValueError, "differ from the source rebuild"):
+                with self.assertRaisesRegex(ValueError, "differ from the source rebuild") as caught:
                     checker["check"]("HEAD", source, rebuilt_directory=rebuilt)
+                self.assertEqual(caught.exception.reason, "package_mismatch")
+
+    def test_provenance_failures_have_a_stable_reason_without_weakening_the_contract(self):
+        checker = runpy.run_path(str(Path(__file__).with_name("check-wasm-package-integrity.py")))
+        with self.assertRaisesRegex(ValueError, "provenance") as caught:
+            checker["manifest_contract"](json.dumps({"name": "fixture", "homepage": "https://example.invalid"}))
+        self.assertEqual(caught.exception.reason, "provenance_mismatch")
+
+    def test_trace_distinguishes_ineligible_runs_from_changed_inputs(self):
+        trace = subject["QualificationTrace"]()
+        namespace = subject["reuse"].__globals__
+        history = {"workflow_runs": [dict(self.run, run_attempt=2), self.run]}
+        with mock.patch.dict(namespace, api=mock.Mock(side_effect=[{"protected": True}, history]),
+                             identical_inputs=mock.Mock(return_value=False)), \
+                mock.patch.dict(os.environ, GITHUB_REPOSITORY=subject["REPOSITORY"]):
+            self.assertIsNone(subject["reuse"](trace))
+        self.assertEqual(trace.report(False)["rejections"],
+                         {"ineligible_run": 1, "inputs_or_ancestry_differ": 1})
+
+    def test_expiry_and_unqualified_runtime_suites_are_reported_but_never_reused(self):
+        for expired in (False, True):
+            trace = subject["QualificationTrace"]()
+            artifact = dict(self.artifact, id=7, name="committed-wasm-package", expired=expired)
+            jobs = copy.deepcopy(self.jobs)
+            if not expired:
+                jobs["jobs"][0]["conclusion"] = "failure"
+            replies = [{"protected": True}, {"workflow_runs": [self.run]},
+                       {"total_count": 1, "artifacts": [artifact]}, jobs]
+            with mock.patch.dict(subject["reuse"].__globals__, api=mock.Mock(side_effect=replies),
+                                 identical_inputs=mock.Mock(return_value=True)), \
+                    mock.patch.dict(os.environ, GITHUB_REPOSITORY=subject["REPOSITORY"]):
+                self.assertIsNone(subject["reuse"](trace))
+            reason = "artifact_expired" if expired else "artifact_or_jobs_unqualified"
+            self.assertEqual(trace.report(False)["rejections"], {reason: 1})
+
+    def test_success_trace_still_requires_the_existing_digest_and_integrity_checks(self):
+        payload, digest = self.archive()
+        artifact = dict(self.artifact, **digest, id=7, name="committed-wasm-package")
+        run = dict(self.run, html_url="https://example.invalid/qualified-run")
+        replies = [{"protected": True}, {"workflow_runs": [run]},
+                   {"total_count": 1, "artifacts": [artifact]}, self.jobs, payload]
+        trace = subject["QualificationTrace"]()
+        checker = mock.Mock()
+        namespace = subject["reuse"].__globals__
+        with mock.patch.dict(namespace, api=mock.Mock(side_effect=replies),
+                             identical_inputs=mock.Mock(return_value=True)), \
+                mock.patch("runpy.run_path", return_value={"check": checker}), \
+                mock.patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0)), \
+                mock.patch.dict(os.environ, GITHUB_REPOSITORY=subject["REPOSITORY"]):
+            proof = subject["reuse"](trace)
+        self.assertEqual(proof, {"source": run["head_sha"], "run": run["html_url"],
+                                 "artifact": 7, "digest": digest["digest"]})
+        checker.assert_called_once_with("HEAD", subject["ROOT"], rebuilt_directory=mock.ANY)
+        self.assertEqual(trace.report(True)["outcome"], "reused")
+        self.assertEqual(trace.report(True)["stage"], "verified_package_install")
+
+    def test_fallback_reports_only_allowlisted_reason_codes_and_never_exception_payloads(self):
+        checker = runpy.run_path(str(Path(__file__).with_name("check-wasm-package-integrity.py")))
+        private = "private-response-material-must-not-be-logged"
+        malformed = ValueError(private)
+        malformed.reason = [private]
+        for error, expected in ((RuntimeError(private), "proof_unavailable"),
+                                (malformed, "proof_unavailable"),
+                                (checker["PackageIntegrityError"]("provenance_mismatch", private), "provenance_mismatch")):
+            def unavailable(trace):
+                trace.stage = "package_integrity"
+                raise error
+
+            with tempfile.TemporaryDirectory() as temporary:
+                output, summary = (Path(temporary) / name for name in ("outputs", "summary"))
+                with mock.patch.dict(subject["main"].__globals__, reuse=unavailable), \
+                        mock.patch.dict(os.environ, GITHUB_OUTPUT=str(output), GITHUB_STEP_SUMMARY=str(summary)), \
+                        redirect_stdout(io.StringIO()) as captured:
+                    subject["main"]()
+                self.assertEqual(output.read_text(), "reused=false\n")
+                self.assertIn(expected, captured.getvalue())
+                self.assertIn("package_integrity", summary.read_text())
+                self.assertNotIn(private, captured.getvalue() + summary.read_text())
 
     def test_workflow_retains_clean_rebuild_and_size_gate_when_proof_is_missing(self):
         workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/wasm-version.yml").read_text()
@@ -127,7 +207,7 @@ class QualificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "outputs"
             with mock.patch.dict(namespace, reuse=mock.Mock(side_effect=RuntimeError("unavailable"))), \
-                    mock.patch.dict(os.environ, GITHUB_OUTPUT=str(output)):
+                    mock.patch.dict(os.environ, GITHUB_OUTPUT=str(output), GITHUB_STEP_SUMMARY=""):
                 subject["main"]()
             self.assertEqual(output.read_text(), "reused=false\n")
 

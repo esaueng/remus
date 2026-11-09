@@ -2,6 +2,7 @@
 """Reuse only a protected-main artifact with identical inputs and tested bytes."""
 
 import hashlib
+from collections import Counter
 import io
 import json
 import os
@@ -19,6 +20,23 @@ PACKAGE_ROOTS = ("crates/wasm/pkg", "crates/wasm-io/pkg")
 REQUIRED_JOBS = {"checks / WASM Build & Validate", "checks / WASM runtime (smoke)",
                  "checks / WASM runtime (tarball-consumer)", "checks / CI Pass"}
 MAX_BYTES = 128 * 1024 * 1024
+INTEGRITY_REASONS = {"provenance_mismatch", "package_mismatch", "invalid_package_layout"}
+
+
+class QualificationTrace:
+    """Describe proof selection using controlled stages and aggregate counts."""
+
+    def __init__(self):
+        self.stage = "repository"
+        self.rejections = Counter()
+
+    def reject(self, reason):
+        self.rejections[reason] += 1
+
+    def report(self, reused, reason=None):
+        return {"schema": 1, "outcome": "reused" if reused else "rebuild",
+                "stage": self.stage, "reason": reason or ("qualified" if reused else "no_matching_proof"),
+                "rejections": dict(sorted(self.rejections.items()))}
 
 
 def eligible_run(run):
@@ -76,38 +94,59 @@ def identical_inputs(source):
     return True
 
 
-def reuse():
+def reuse(trace=None):
+    trace = QualificationTrace() if trace is None else trace
     if os.environ.get("GITHUB_REPOSITORY", "").lower() != REPOSITORY.lower():
+        trace.reject("repository_mismatch")
         return None
+    trace.stage = "protected_main"
     if api("branches/main").get("protected") is not True:
+        trace.reject("main_unprotected")
         return None
+    trace.stage = "candidate_history"
     history = api("actions/workflows/ci.yml/runs?branch=main&event=push&status=success&per_page=20")
     for run in history.get("workflow_runs", []):
-        if not eligible_run(run) or not identical_inputs(run["head_sha"]):
+        if not eligible_run(run):
+            trace.reject("ineligible_run")
             continue
+        trace.stage = "source_inputs"
+        if not identical_inputs(run["head_sha"]):
+            trace.reject("inputs_or_ancestry_differ")
+            continue
+        trace.stage = "artifact_metadata"
         artifacts = api(f"actions/runs/{run['id']}/artifacts?per_page=100")
         if artifacts.get("total_count") != len(artifacts.get("artifacts", [])):
+            trace.reject("incomplete_artifact_listing")
             continue
         candidates = [a for a in artifacts["artifacts"] if a.get("name") == "committed-wasm-package"]
         if len(candidates) != 1:
+            trace.reject("missing_or_duplicate_artifact")
             continue
         artifact = candidates[0]
+        trace.stage = "required_jobs"
         jobs = api(f"actions/runs/{run['id']}/jobs?filter=latest&per_page=100")
         if not tested_artifact(jobs, artifact):
+            trace.reject("artifact_expired" if artifact.get("expired") is True else "artifact_or_jobs_unqualified")
             continue
-        payload = package_archive(api(f"actions/artifacts/{artifact['id']}/zip", binary=True), artifact)
+        trace.stage = "artifact_download"
+        downloaded = api(f"actions/artifacts/{artifact['id']}/zip", binary=True)
+        trace.stage = "archive_contract"
+        payload = package_archive(downloaded, artifact)
         with tempfile.TemporaryDirectory(prefix="remus-qualified-package-") as temporary:
             directory = Path(temporary)
             archive = directory / "packages.tar.gz"
             archive.write_bytes(payload)
             # Never extract an Actions artifact into the source checkout. The
             # existing installer validates every path/type before extraction.
+            trace.stage = "archive_install"
             subprocess.run([sys.executable, str(ROOT / "scripts/install-wasm-package-archive.py"),
                             str(archive), *PACKAGE_ROOTS], cwd=directory, check=True)
             checker = runpy.run_path(str(ROOT / "scripts/check-wasm-package-integrity.py"))
+            trace.stage = "package_integrity"
             checker["check"]("HEAD", ROOT, rebuilt_directory=directory)
             # The size gate must consume the verified bytes, even if an
             # earlier local test modified the checkout's generated files.
+            trace.stage = "verified_package_install"
             subprocess.run([sys.executable, str(ROOT / "scripts/install-wasm-package-archive.py"),
                             str(archive), *PACKAGE_ROOTS], cwd=ROOT, check=True)
         return {"source": run["head_sha"], "run": run["html_url"],
@@ -117,15 +156,31 @@ def reuse():
 
 def main():
     proof = None
+    trace = QualificationTrace()
+    reason = None
     try:
-        proof = reuse()
-    except Exception:
+        proof = reuse(trace)
+    except Exception as error:
         # An unavailable, expired, malformed or mismatched proof requires the
         # unchanged clean rebuild. Never turn retrieval failure into success.
+        # Never echo an exception body: remote responses or local paths may
+        # contain private data. Keep the existing fail-closed rebuild fallback.
+        code = getattr(error, "reason", None)
+        reason = code if isinstance(code, str) and code in INTEGRITY_REASONS else "proof_unavailable"
+    if proof is None:
         print("No complete protected-main qualification proof; rebuilding both packages.")
+    report = trace.report(proof is not None, reason)
+    print(json.dumps({"qualification": report}, sort_keys=True))
     if output := os.environ.get("GITHUB_OUTPUT"):
         with open(output, "a") as stream:
             stream.write(f"reused={str(proof is not None).lower()}\n")
+    if summary := os.environ.get("GITHUB_STEP_SUMMARY"):
+        with open(summary, "a") as stream:
+            stream.write("### WASM qualification selection\n\n"
+                         f"Outcome: **{report['outcome']}**. Stage: `{report['stage']}`. "
+                         f"Reason: `{report['reason']}`.\n\n")
+            for code, count in report["rejections"].items():
+                stream.write(f"- `{code}`: {count}\n")
     if proof:
         print(json.dumps(proof, indent=2))
         if summary := os.environ.get("GITHUB_STEP_SUMMARY"):

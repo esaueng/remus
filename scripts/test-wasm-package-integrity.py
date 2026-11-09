@@ -6,17 +6,20 @@ import os
 from pathlib import Path
 import runpy
 import subprocess
+import sys
 import textwrap
 import unittest
 
 HERE = Path(__file__).resolve().parent
 checker = runpy.run_path(str(HERE / "check-wasm-package-integrity.py"))
-Fixture = runpy.run_path(str(HERE / "test-package-refresh-pr.py"))["PackageRefreshTests"]
+# Keep the shared fixture class inside its namespace: exporting a TestCase
+# class here makes unittest run the publisher suite a second time implicitly.
+FIXTURES = runpy.run_path(str(HERE / "test-package-refresh-pr.py"))
 
 
 class IntegrityTests(unittest.TestCase):
     def setUp(self):
-        fixture = Fixture()
+        fixture = FIXTURES["PackageRefreshTests"]()
         fixture.setUp()
         self.addCleanup(fixture.doCleanups)
         self.git = fixture.git
@@ -36,6 +39,22 @@ class IntegrityTests(unittest.TestCase):
 
     def check(self):
         checker["check"](self.revision, self.repo)
+
+    def test_shared_fixture_does_not_duplicate_the_explicit_publisher_suite(self):
+        def cases(suite):
+            for item in suite:
+                if isinstance(item, unittest.TestSuite):
+                    yield from cases(item)
+                else:
+                    yield item
+
+        discovered = list(cases(unittest.TestLoader().loadTestsFromModule(sys.modules[__name__])))
+        self.assertTrue(discovered)
+        self.assertFalse(any(isinstance(case, FIXTURES["PackageRefreshTests"]) for case in discovered))
+        workflow = (HERE.parent / ".github/workflows/wasm-version.yml").read_text()
+        self.assertIn("bash scripts/test-publish-credentials.sh", workflow)
+        contract = (HERE / "test-publish-credentials.sh").read_text()
+        self.assertIn('python3 "$SCRIPT_DIR/test-package-refresh-pr.py"', contract)
 
     def test_identical_payload_passes_with_version_and_publisher_stamping(self):
         for root in checker["ROOTS"]:
@@ -108,8 +127,9 @@ class IntegrityTests(unittest.TestCase):
         path = self.repo / checker["ROOTS"][0] / "kernel.js"
         path.unlink()
         path.symlink_to("package.json")
-        with self.assertRaisesRegex(ValueError, "Symlink"):
+        with self.assertRaisesRegex(ValueError, "Symlink") as caught:
             self.check()
+        self.assertEqual(caught.exception.reason, "invalid_package_layout")
 
     def test_existing_version_gate_depends_on_integrity(self):
         workflow = (HERE.parent / ".github/workflows/wasm-version.yml").read_text()
