@@ -18,6 +18,7 @@ use super::nurbs::tessellate_nurbs;
 use super::*;
 
 mod analytic_grid_oracle;
+mod coil_chart;
 mod face_cache;
 mod mesh_oracles;
 pub(super) mod mesh_passes;

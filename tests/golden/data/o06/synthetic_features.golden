@@ -13,4 +13,4 @@ features=1
 chamfer face=12 adjacent=[8,11] angle=0.7853981633974483
 fixture=filleted_box
 features=1
-fillet_like face=6 area=15.707963267946676
+fillet_like face=6 area=15.707963267948967
