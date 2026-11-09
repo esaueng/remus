@@ -8,6 +8,22 @@ historical predecessor-line records, retained for provenance. The
 
 ### Fixed
 
+* **algo,math:** exact booleans against a NURBS face of many spans (a
+  helical sweep side covering every turn) silently dropped the tool: a box
+  straddling a half-coil's wire fused into the coil alone and intersected
+  into the whole box. The FF broad phase bounded a NURBS face by samples of
+  its boundary, which on a tube half lie on the wire's middle radius, so the
+  faces past it were never paired; it now adds the control-net box for a
+  face that spans its whole carrier and bulges past that boundary. Plane ×
+  NURBS sections seeded from a fixed 32 × 32 grid, under one sample a span
+  on such a face, and chained into fragments; the grid now takes four
+  samples a knot span per direction (32 at least, 4097 at most). A section
+  loop lying wholly inside an open patch now comes back closed instead of
+  open by a grid spacing. That pair now refuses typed: the exact pipeline
+  still does not split a curved NURBS face by open sections. The letter-pocket
+  gate fixture moved to a pocket the raw GFA still leaves open, since the
+  original one now meets letter flanks the old box missed (they bulge up to
+  0.036 past their sampled edges).
 * **operations:** blend-group edits after a rounded cap was shortened into
   its shoulder. A cap lowered with sampled permission (A1) re-rolls its rim
   over the sampled corner patches, and those sampled rim bands made every

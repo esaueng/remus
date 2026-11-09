@@ -501,13 +501,12 @@ fn post(topo: &mut Topology) -> SolidId {
 }
 
 /// Downstream robustness: the coil must fuse with a solid that cuts through
-/// it. The exact-only pipeline cannot do it yet — the general plane × NURBS
-/// and analytic × NURBS sections seed from a fixed grid over the whole face,
-/// which on a face spanning every turn is under one sample per span, so the
-/// sections come back fragmented (the same pipeline also refuses the faceted
-/// [`crate::helix::helical_sweep`] spring). It refuses typed rather than
-/// answering wrong, and the disclosed approximate fallback fuses the pair
-/// into a valid solid of the right volume.
+/// it. The exact-only pipeline cannot do it yet: it neither clips sections
+/// to a genuinely curved NURBS face nor splits one by open sections (the
+/// same pipeline also refuses the faceted [`crate::helix::helical_sweep`]
+/// spring). It refuses typed rather than answering wrong, and the disclosed
+/// approximate fallback fuses the pair into a valid solid of the right
+/// volume.
 #[test]
 fn spring_fuses_with_a_post_through_two_coils() {
     use crate::boolean::{BooleanOp, BooleanQuality, boolean, boolean_with_context};
@@ -543,36 +542,59 @@ fn spring_fuses_with_a_post_through_two_coils() {
 }
 
 /// A box straddling the wire of a half-turn coil: four corners inside the
-/// wire, four outside. The exact fuse currently returns the coil alone (and
-/// the exact intersection the whole box) because the fragmented plane ×
-/// NURBS sections leave the box unsplit and it is classified by an inside
-/// corner. Kept as the reproducer for that boolean-engine defect.
+/// wire, four outside. The exact fuse used to return the coil alone (and the
+/// exact intersection the whole box): the broad phase bounded each tube half
+/// by its rails on the wire's middle radius and never paired it with the
+/// box faces past them, and the plane sections it did compute came back
+/// fragmented. With both fixed the pipeline sees the cut; the boolean must
+/// now answer correctly or refuse typed — never drop the box.
 #[test]
-#[ignore = "known exact-boolean defect: plane × multi-span NURBS sections fragment and the fuse drops the box"]
 fn half_coil_fuses_with_a_box_straddling_its_wire() {
-    let mut topo = Topology::new();
-    let profile = circle_face(
-        &mut topo,
-        Point3::new(12.0, 0.0, 0.0),
-        Vec3::new(0.0, 1.0, 0.0),
-        1.5,
-    );
-    let coil = helical_sweep_in_place(&mut topo, profile, origin(), Z, 5.0, 0.5).unwrap();
-    let tool = crate::primitives::make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
-    crate::transform::transform_solid(
-        &mut topo,
-        tool,
-        &remus_math::mat::Mat4::translation(-1.0, 11.0, 0.5),
-    )
-    .unwrap();
-    let coil_volume = volume(&topo, coil);
-    let fused =
-        crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Fuse, coil, tool).unwrap();
-    assert_valid(&topo, fused, "half coil ∪ box");
-    assert!(
-        volume(&topo, fused) > coil_volume + 1e-3,
-        "the box's outside corners are lost"
-    );
+    use crate::boolean::{BooleanOp, boolean};
+
+    let build = || {
+        let mut topo = Topology::new();
+        let profile = circle_face(
+            &mut topo,
+            Point3::new(12.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            1.5,
+        );
+        let coil = helical_sweep_in_place(&mut topo, profile, origin(), Z, 5.0, 0.5).unwrap();
+        let tool = crate::primitives::make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
+        crate::transform::transform_solid(
+            &mut topo,
+            tool,
+            &remus_math::mat::Mat4::translation(-1.0, 11.0, 0.5),
+        )
+        .unwrap();
+        (topo, coil, tool)
+    };
+    let (topo, coil, tool) = build();
+    let (coil_volume, box_volume) = (volume(&topo, coil), volume(&topo, tool));
+    // Four corners in, four out: the overlap is strictly inside the box.
+    for (op, label) in [
+        (BooleanOp::Fuse, "fuse"),
+        (BooleanOp::Intersect, "intersect"),
+    ] {
+        let (mut topo, coil, tool) = build();
+        match boolean(&mut topo, op, coil, tool) {
+            Ok(result) => {
+                assert_valid(&topo, result, label);
+                let v = volume(&topo, result);
+                let (lo, hi) = match op {
+                    BooleanOp::Fuse => (coil_volume, coil_volume + box_volume),
+                    _ => (0.0, box_volume),
+                };
+                assert!(
+                    v > lo + 1e-3 && v < hi - 1e-3,
+                    "{label}: {v} outside ({lo}, {hi})"
+                );
+            }
+            Err(OperationsError::ExactOnlyUnattainable) => {}
+            Err(other) => panic!("{label}: expected a result or a typed refusal, got {other:?}"),
+        }
+    }
 }
 
 fn face_from_edges(

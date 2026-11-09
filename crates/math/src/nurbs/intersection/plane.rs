@@ -8,6 +8,59 @@ use crate::vec::Vec3;
 use super::chaining::build_curves_from_points;
 use super::{IntersectionCurve, IntersectionPoint, MAX_NEWTON_ITER};
 
+/// Seed samples per knot span in [`span_adaptive_samples`].
+const SEEDS_PER_SPAN: usize = 4;
+
+/// Most seed samples [`span_adaptive_samples`] gives one direction.
+const MAX_SPAN_ADAPTIVE_SAMPLES: usize = 4097;
+
+/// Most seed samples [`span_adaptive_samples`] gives the whole grid.
+const MAX_SPAN_ADAPTIVE_GRID: usize = 1 << 20;
+
+/// Number of distinct knot spans of a clamped knot vector over `domain`.
+fn knot_spans(knots: &[f64], (lo, hi): (f64, f64)) -> usize {
+    let mut spans = 1;
+    let mut last = lo;
+    for &k in knots {
+        if k > last && k < hi {
+            spans += 1;
+            last = k;
+        }
+    }
+    spans
+}
+
+/// Per-direction seed-grid sizes for [`intersect_plane_nurbs_grid`] that give
+/// every knot span several samples.
+///
+/// A fixed square grid ignores the span structure: on a face of many spans in
+/// one direction (a helical sweep side covering every turn has 70 spans a
+/// turn) it puts under one sample in each span, the zero crossings come out
+/// far apart along that direction and dense across it, and nearest-neighbour
+/// chaining breaks one section into many fragments. Each direction here gets
+/// `max(min_samples, 4 · spans + 1)` samples, at most 4097, and the larger
+/// direction is reduced so the grid stays within 2²⁰ samples. A surface with
+/// at most `(min_samples − 1) / 4` spans each way keeps the plain
+/// `min_samples × min_samples` grid.
+#[must_use]
+pub fn span_adaptive_samples(surface: &NurbsSurface, min_samples: usize) -> (usize, usize) {
+    let axis = |knots: &[f64], domain: (f64, f64)| {
+        (SEEDS_PER_SPAN * knot_spans(knots, domain) + 1)
+            .max(min_samples)
+            .min(MAX_SPAN_ADAPTIVE_SAMPLES.max(min_samples))
+    };
+    let mut n_u = axis(surface.knots_u(), surface.domain_u());
+    let mut n_v = axis(surface.knots_v(), surface.domain_v());
+    if n_u.saturating_mul(n_v) > MAX_SPAN_ADAPTIVE_GRID {
+        if n_u >= n_v {
+            n_u = (MAX_SPAN_ADAPTIVE_GRID / n_v).max(min_samples);
+        } else {
+            n_v = (MAX_SPAN_ADAPTIVE_GRID / n_u).max(min_samples);
+        }
+    }
+    (n_u, n_v)
+}
+
 /// Intersect a plane with a NURBS surface.
 ///
 /// Returns a list of intersection curves (there may be multiple
@@ -18,7 +71,9 @@ use super::{IntersectionCurve, IntersectionPoint, MAX_NEWTON_ITER};
 /// - `surface`: The NURBS surface
 /// - `plane_normal`: Normal of the cutting plane
 /// - `plane_d`: Signed distance from origin (`n · p = d` for points on plane)
-/// - `samples`: Grid resolution for finding seed points (e.g., 50)
+/// - `samples`: Grid resolution for finding seed points (e.g., 50), the same
+///   in both directions; see [`intersect_plane_nurbs_grid`] for a grid sized
+///   per direction
 ///
 /// # Errors
 ///
@@ -29,18 +84,36 @@ pub fn intersect_plane_nurbs(
     plane_d: f64,
     samples: usize,
 ) -> Result<Vec<IntersectionCurve>, MathError> {
-    let n = samples.max(10);
+    intersect_plane_nurbs_grid(surface, plane_normal, plane_d, samples, samples)
+}
+
+/// [`intersect_plane_nurbs`] seeded from a `samples_u × samples_v` grid
+/// (each at least 10), for example sized by [`span_adaptive_samples`].
+///
+/// # Errors
+///
+/// Returns an error if NURBS evaluation fails or curve fitting fails.
+#[allow(clippy::too_many_lines)]
+pub fn intersect_plane_nurbs_grid(
+    surface: &NurbsSurface,
+    plane_normal: Vec3,
+    plane_d: f64,
+    samples_u: usize,
+    samples_v: usize,
+) -> Result<Vec<IntersectionCurve>, MathError> {
+    let n_u = samples_u.max(10);
+    let n_v = samples_v.max(10);
 
     // Phase 1: Sample the signed distance field on a grid.
-    let mut distances = vec![vec![0.0_f64; n]; n];
+    let mut distances = vec![vec![0.0_f64; n_v]; n_u];
 
     let (u_min, u_max) = surface.domain_u();
     let (v_min, v_max) = surface.domain_v();
 
     #[allow(clippy::cast_precision_loss)]
-    let u_step = (u_max - u_min) / (n - 1) as f64;
+    let u_step = (u_max - u_min) / (n_u - 1) as f64;
     #[allow(clippy::cast_precision_loss)]
-    let v_step = (v_max - v_min) / (n - 1) as f64;
+    let v_step = (v_max - v_min) / (n_v - 1) as f64;
 
     #[allow(clippy::cast_precision_loss)]
     for (i, row) in distances.iter_mut().enumerate() {
@@ -68,8 +141,8 @@ pub fn intersect_plane_nurbs(
     let mut crossing_points: Vec<(f64, f64, super::Point3)> = Vec::new();
 
     #[allow(clippy::cast_precision_loss)]
-    for i in 0..n - 1 {
-        for j in 0..n - 1 {
+    for i in 0..n_u - 1 {
+        for j in 0..n_v - 1 {
             let d00 = distances[i][j];
             let d10 = distances[i + 1][j];
             let d01 = distances[i][j + 1];
@@ -98,7 +171,7 @@ pub fn intersect_plane_nurbs(
             }
 
             // Top edge (i,j+1) -> (i+1,j+1): owned by the last row only.
-            if j + 1 == n - 1 && d01 * d11 < 0.0 {
+            if j + 1 == n_v - 1 && d01 * d11 < 0.0 {
                 let t = d01 / (d01 - d11);
                 let u = u0.mul_add(1.0 - t, u1 * t);
                 let pt = surface.evaluate(u, v1);
@@ -106,7 +179,7 @@ pub fn intersect_plane_nurbs(
             }
 
             // Right edge (i+1,j) -> (i+1,j+1): owned by the last column only.
-            if i + 1 == n - 1 && d10 * d11 < 0.0 {
+            if i + 1 == n_u - 1 && d10 * d11 < 0.0 {
                 let t = d10 / (d10 - d11);
                 let v = v0.mul_add(1.0 - t, v1 * t);
                 let pt = surface.evaluate(u1, v);
@@ -236,7 +309,35 @@ fn chain_spans_closed_direction(
     })
 }
 
-/// Close only a sampled loop spanning a geometrically closed carrier seam.
+/// Whether both ends of a chain lie at least two grid steps inside every
+/// open parameter boundary of the carrier.
+///
+/// A plane section of a smooth patch ends only on the patch boundary or
+/// closes on itself, so a chain whose two ends are both well inside the
+/// domain is a closed loop the nearest-neighbour walk left open by one grid
+/// spacing. The open-rim case `close_transversal_loop` must keep open (an
+/// arc stopping a grid spacing short of its own rim) has its ends on that
+/// rim and is excluded here.
+fn chain_ends_interior(
+    surface: &NurbsSurface,
+    params: &[(f64, f64)],
+    u_step: f64,
+    v_step: f64,
+) -> bool {
+    let (Some(&first), Some(&last)) = (params.first(), params.last()) else {
+        return false;
+    };
+    let (u_lo, u_hi) = surface.domain_u();
+    let (v_lo, v_hi) = surface.domain_v();
+    [first, last].iter().all(|&(u, v)| {
+        (surface.is_periodic_u() || (u > u_lo + 2.0 * u_step && u < u_hi - 2.0 * u_step))
+            && (surface.is_periodic_v() || (v > v_lo + 2.0 * v_step && v < v_hi - 2.0 * v_step))
+    })
+}
+
+/// Close sampled loops: the single chain spanning a geometrically closed
+/// carrier seam, and any chain whose ends both lie inside the carrier
+/// ([`chain_ends_interior`]).
 fn close_transversal_loop(
     curves: &mut [super::IntersectionCurve],
     refined: &[IntersectionPoint],
@@ -244,10 +345,23 @@ fn close_transversal_loop(
     v_step: f64,
     surface: &NurbsSurface,
 ) {
-    if curves.len() != 1 || refined.len() <= 8 {
+    if refined.len() <= 8 {
         return;
     }
-    let curve = &curves[0];
+    let single = curves.len() == 1;
+    for curve in curves.iter_mut() {
+        close_one_loop(curve, single, refined, u_step, v_step, surface);
+    }
+}
+
+fn close_one_loop(
+    curve: &mut super::IntersectionCurve,
+    single: bool,
+    refined: &[IntersectionPoint],
+    u_step: f64,
+    v_step: f64,
+    surface: &NurbsSurface,
+) {
     if curve.points.len() <= 8 {
         return;
     }
@@ -270,7 +384,8 @@ fn close_transversal_loop(
         }
     }
     let params: Vec<(f64, f64)> = curve.points.iter().map(|p| p.param1).collect();
-    if !chain_spans_closed_direction(surface, &params, u_step, v_step) {
+    let seam_loop = single && chain_spans_closed_direction(surface, &params, u_step, v_step);
+    if !seam_loop && !chain_ends_interior(surface, &params, u_step, v_step) {
         return;
     }
     // Grid spacing in model units at the loop: the larger of the two
@@ -283,17 +398,27 @@ fn close_transversal_loop(
         0.5 * (first.y() + last.y()),
         0.5 * (first.z() + last.z()),
     );
-    let (u_m, v_m) = match crate::nurbs::projection::project_point_to_surface(surface, mid, 1e-7) {
-        Ok(proj) => (proj.u, proj.v),
-        Err(_) => return,
+    // An interior loop reads the metric at its own two ends instead: their
+    // parameters are known, and a projection of the midpoint can seed on the
+    // wrong turn of a surface that winds.
+    let metric_at: Vec<(f64, f64)> = if seam_loop {
+        match crate::nurbs::projection::project_point_to_surface(surface, mid, 1e-7) {
+            Ok(proj) => vec![(proj.u, proj.v)],
+            Err(_) => return,
+        }
+    } else {
+        vec![params[0], params[params.len() - 1]]
     };
-    if !u_m.is_finite() || !v_m.is_finite() {
-        return;
+    let mut grid_model = 1e-12_f64;
+    for (u_m, v_m) in metric_at {
+        if !u_m.is_finite() || !v_m.is_finite() {
+            return;
+        }
+        let derivs = surface.derivatives(u_m, v_m, 1);
+        grid_model = grid_model
+            .max(derivs[1][0].length() * u_step)
+            .max(derivs[0][1].length() * v_step);
     }
-    let derivs = surface.derivatives(u_m, v_m, 1);
-    let grid_model = (derivs[1][0].length() * u_step)
-        .max(derivs[0][1].length() * v_step)
-        .max(1e-12);
     if gap > 2.0 * grid_model {
         return;
     }
@@ -334,10 +459,7 @@ fn close_transversal_loop(
     if (start - first).length() > gap.max(1e-6) {
         return;
     }
-    curves[0] = super::IntersectionCurve {
-        curve: fitted,
-        points: curve.points.clone(),
-    };
+    curve.curve = fitted;
 }
 
 /// Refine a plane-surface intersection point using Newton iteration.
