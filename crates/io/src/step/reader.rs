@@ -1085,6 +1085,7 @@ enum EntityKind {
     TrimmedCurve,
     UncertaintyMeasureWithUnit,
     Vector,
+    VertexLoop,
     VertexPoint,
     VolumeUnit,
     VolumeMeasure,
@@ -1174,6 +1175,7 @@ impl EntityKind {
             Self::TrimmedCurve => "TRIMMED_CURVE",
             Self::UncertaintyMeasureWithUnit => "UNCERTAINTY_MEASURE_WITH_UNIT",
             Self::Vector => "VECTOR",
+            Self::VertexLoop => "VERTEX_LOOP",
             Self::VertexPoint => "VERTEX_POINT",
             Self::VolumeUnit => "VOLUME_UNIT",
             Self::VolumeMeasure => "VOLUME_MEASURE",
@@ -1269,6 +1271,7 @@ fn classify_entity_type(raw: &str) -> EntityKind {
         "TRIMMED_CURVE" => Some(EntityKind::TrimmedCurve),
         "UNCERTAINTY_MEASURE_WITH_UNIT" => Some(EntityKind::UncertaintyMeasureWithUnit),
         "VECTOR" => Some(EntityKind::Vector),
+        "VERTEX_LOOP" => Some(EntityKind::VertexLoop),
         "VERTEX_POINT" => Some(EntityKind::VertexPoint),
         "VOLUME_UNIT" => Some(EntityKind::VolumeUnit),
         "VOLUME_MEASURE" => Some(EntityKind::VolumeMeasure),
@@ -1364,6 +1367,7 @@ fn classify_entity_type(raw: &str) -> EntityKind {
         b"TRIMMED_CURVE" => EntityKind::TrimmedCurve,
         b"UNCERTAINTY_MEASURE_WITH_UNIT" => EntityKind::UncertaintyMeasureWithUnit,
         b"VECTOR" => EntityKind::Vector,
+        b"VERTEX_LOOP" => EntityKind::VertexLoop,
         b"VERTEX_POINT" => EntityKind::VertexPoint,
         b"VOLUME_UNIT" => EntityKind::VolumeUnit,
         b"VOLUME_MEASURE" => EntityKind::VolumeMeasure,
@@ -2990,6 +2994,10 @@ const FACE_BOUND_SURFACE_RESIDUAL: f64 = 2.0 * FACE_BOUND_CLASSIFICATION_DEFLECT
 /// revolution behind coincident endpoints or a zero midpoint deviation.
 const FACE_BOUND_SAMPLE_DEPTH: u32 = 16;
 
+/// Equator arcs of a whole sphere imported from a `VERTEX_LOOP` face, as in
+/// the native two-hemisphere layout.
+const VERTEX_LOOP_SPHERE_ARCS: usize = 4;
+
 /// Resource ceilings for geometric classification of one attacker-controlled
 /// `ADVANCED_FACE`.  Ordinary B-Reps use only a handful of bounds per face;
 /// these caps keep containment and adaptive curve sampling predictably bounded.
@@ -3478,6 +3486,10 @@ impl<'a> StepBuilder<'a> {
             outer_slot,
             "outer shell",
         )?;
+        // Include the enclosing solid in the budget before its shell can
+        // allocate geometry. A whole-sphere constructor reserves its complete
+        // boundary at once and must refuse an undersized budget atomically.
+        self.reserve_entities(1)?;
         let shell_id = self.build_shell(shell_ref, false)?;
 
         let mut inner_shells = Vec::new();
@@ -3518,7 +3530,6 @@ impl<'a> StepBuilder<'a> {
             }
         }
 
-        self.reserve_entities(1)?;
         let solid_id = self.topo.add_solid(Solid::new(shell_id, inner_shells));
         let name_attrs = if is_complex {
             find_exact_composite_component(&attrs, "REPRESENTATION_ITEM")
@@ -3602,18 +3613,210 @@ impl<'a> StepBuilder<'a> {
             }
         };
 
+        // Charge the parent before constructing its faces, so a batched
+        // face allocation cannot consume the shell's remaining entity slot.
+        self.reserve_entities(1)?;
         let mut face_ids = Vec::new();
-        for face_ref in face_refs {
-            let face_id = self.build_face(face_ref, flip)?;
-            face_ids.push(face_id);
+        let whole_sphere = match face_refs.as_slice() {
+            [face_ref] if entity.kind == EntityKind::ClosedShell => {
+                self.build_vertex_loop_sphere(*face_ref, flip)?
+            }
+            _ => None,
+        };
+        if let Some(hemispheres) = whole_sphere {
+            face_ids.extend(hemispheres);
+        } else {
+            for face_ref in face_refs {
+                let face_id = self.build_face(face_ref, flip)?;
+                face_ids.push(face_id);
+            }
         }
 
         let shell = Shell::new(face_ids).map_err(|e| IoError::ParseError {
             reason: format!("failed to build shell from STEP: {e}"),
         })?;
-        self.reserve_entities(1)?;
         let shell_id = self.topo.add_shell(shell);
         Ok(shell_id)
+    }
+
+    /// Build a whole-sphere shell emitted as one `ADVANCED_FACE` on a
+    /// `SPHERICAL_SURFACE` whose only bound is a `VERTEX_LOOP` at a point
+    /// of the sphere.
+    ///
+    /// ISO 10303-42 lets a vertex loop bound a face on a closed surface: the
+    /// face is the whole surface, and the loop vertex is a degenerate
+    /// boundary point that removes no area. Remus has no one-face periodic
+    /// sphere; its native full sphere ([`remus_operations::primitives::make_sphere`])
+    /// is two hemispheres sharing an exact equator circle, which is also what
+    /// the STEP writer emits. This builds that same layout on the file's own
+    /// spherical frame, so the import is the native carrier rather than an
+    /// approximation, and the loop vertex is checked against the surface but
+    /// not kept as topology.
+    ///
+    /// Returns `Ok(None)` when the face is not this layout, leaving it to
+    /// [`Self::build_face`], which refuses any other `VERTEX_LOOP` bound
+    /// precisely.
+    fn build_vertex_loop_sphere(
+        &mut self,
+        face_ref: u64,
+        flip: bool,
+    ) -> Result<Option<Vec<remus_topology::face::FaceId>>, IoError> {
+        let face = self.get_entity(face_ref)?;
+        if face.kind != EntityKind::AdvancedFace {
+            return Ok(None);
+        }
+        let attrs = face.attrs.clone();
+        let slots = split_attr_slots(&attrs);
+        let Some(AttrSlot::List(list)) = slots.get(1) else {
+            return Ok(None);
+        };
+        let Ok(bound_refs) = exact_reference_list(list) else {
+            return Ok(None);
+        };
+        let [bound_ref] = bound_refs.as_slice() else {
+            return Ok(None);
+        };
+        let bound_ref = *bound_ref;
+        let bound = self.get_entity(bound_ref)?;
+        if !matches!(
+            bound.kind,
+            EntityKind::FaceOuterBound | EntityKind::FaceBound
+        ) {
+            return Ok(None);
+        }
+        let bound_kind = bound.kind.as_str();
+        let bound_attrs = bound.attrs.clone();
+        let bound_slots = split_attr_slots(&bound_attrs);
+        let loop_ref =
+            required_reference_attribute(bound_kind, bound_ref, &bound_slots, 1, "bound")?;
+        // The orientation of a point boundary carries no sense, but the
+        // attribute is still mandatory.
+        required_logical_attribute(bound_kind, bound_ref, &bound_slots, 2, "orientation")?;
+        if self.get_entity(loop_ref)?.kind != EntityKind::VertexLoop {
+            return Ok(None);
+        }
+
+        let surface_ref =
+            required_reference_attribute("ADVANCED_FACE", face_ref, &slots, 2, "face_geometry")?;
+        if self.get_entity(surface_ref)?.kind != EntityKind::SphericalSurface {
+            return Ok(None);
+        }
+        let surface_reversed =
+            !required_logical_attribute("ADVANCED_FACE", face_ref, &slots, 3, "same_sense")?;
+        let face_reversed = surface_reversed != flip;
+        let names = [self.imported_name(&attrs)?, self.imported_name(&attrs)?];
+
+        let loop_attrs = self.get_entity(loop_ref)?.attrs.clone();
+        let loop_slots = split_attr_slots(&loop_attrs);
+        let vertex_ref =
+            required_reference_attribute("VERTEX_LOOP", loop_ref, &loop_slots, 1, "loop_vertex")?;
+        let vertex = self.get_entity(vertex_ref)?;
+        if vertex.kind != EntityKind::VertexPoint {
+            return Err(IoError::UnsupportedEntity {
+                entity: format!(
+                    "{} as VERTEX_LOOP #{loop_ref} loop_vertex (expected VERTEX_POINT)",
+                    diagnostic_entity_type(vertex)
+                ),
+            });
+        }
+        let vertex_attrs = vertex.attrs.clone();
+        let vertex_slots = split_attr_slots(&vertex_attrs);
+        let point_ref = required_reference_attribute(
+            "VERTEX_POINT",
+            vertex_ref,
+            &vertex_slots,
+            1,
+            "vertex_geometry",
+        )?;
+        let point = self.build_cartesian_point(point_ref)?;
+
+        let FaceSurface::Sphere(sphere) = self.build_surface(surface_ref)? else {
+            return Ok(None);
+        };
+        let center = sphere.center();
+        let radius = sphere.radius();
+        let tolerance = Tolerance::new().linear;
+        let off_surface = ((point - center).length() - radius).abs();
+        if !off_surface.is_finite() || off_surface > tolerance {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "VERTEX_LOOP #{loop_ref} of ADVANCED_FACE #{face_ref}: vertex #{vertex_ref} lies \
+                     {off_surface:e} mm off SPHERICAL_SURFACE #{surface_ref} (tolerance {tolerance:e} mm)"
+                ),
+            });
+        }
+
+        // Four equator vertices, four equator arcs, two wires, two faces,
+        // two loops and eight coedges. The shell and solid charge separately.
+        self.reserve_entities(22)?;
+        let equator = Circle3D::new_with_ref(center, sphere.z_axis(), radius, sphere.x_axis())
+            .map_err(|e| IoError::ParseError {
+                reason: format!("SPHERICAL_SURFACE #{surface_ref} equator: {e}"),
+            })?;
+        let vertices: Vec<VertexId> = (0..VERTEX_LOOP_SPHERE_ARCS)
+            .map(|i| {
+                let angle = std::f64::consts::TAU * i as f64 / VERTEX_LOOP_SPHERE_ARCS as f64;
+                self.topo
+                    .add_vertex(Vertex::new(equator.evaluate(angle), tolerance))
+            })
+            .collect();
+        let edges: Vec<_> = (0..VERTEX_LOOP_SPHERE_ARCS)
+            .map(|i| {
+                let start = std::f64::consts::TAU * i as f64 / VERTEX_LOOP_SPHERE_ARCS as f64;
+                let end = std::f64::consts::TAU * (i + 1) as f64 / VERTEX_LOOP_SPHERE_ARCS as f64;
+                let mut edge = Edge::new(
+                    vertices[i],
+                    vertices[(i + 1) % VERTEX_LOOP_SPHERE_ARCS],
+                    EdgeCurve::Circle(equator.clone()),
+                );
+                edge.set_trim(Some((start, end)));
+                self.topo.add_edge(edge)
+            })
+            .collect();
+        // Wires stay relative to the carrier, as every imported face's do;
+        // `face_reversed` (same_sense composed with an enclosing
+        // ORIENTED_CLOSED_SHELL) reverses both hemispheres together.
+        let north = Wire::new(
+            edges
+                .iter()
+                .map(|&edge| OrientedEdge::new(edge, true))
+                .collect(),
+            true,
+        )
+        .map_err(|e| IoError::ParseError {
+            reason: format!("VERTEX_LOOP sphere #{face_ref} north equator: {e}"),
+        })?;
+        let south = Wire::new(
+            edges
+                .iter()
+                .rev()
+                .map(|&edge| OrientedEdge::new(edge, false))
+                .collect(),
+            true,
+        )
+        .map_err(|e| IoError::ParseError {
+            reason: format!("VERTEX_LOOP sphere #{face_ref} south equator: {e}"),
+        })?;
+        let mut faces = Vec::with_capacity(2);
+        for (wire, name) in [north, south].into_iter().zip(names) {
+            let wire = self.topo.add_wire(wire);
+            let surface = FaceSurface::Sphere(sphere.clone());
+            let face_id = if face_reversed {
+                self.topo
+                    .add_face(Face::new_reversed(wire, Vec::new(), surface))
+            } else {
+                self.topo.add_face(Face::new(wire, Vec::new(), surface))
+            };
+            if let Some(name) = name {
+                let attributes = remus_topology::attributes::EntityAttributes {
+                    name: Some(name),
+                    ..Default::default()
+                };
+                self.topo.set_face_attributes(face_id, attributes)?;
+            }
+            faces.push(face_id);
+        }
+        Ok(Some(faces))
     }
 
     /// Narrow only a proven two-rim circular band. Arbitrary trimmed faces
@@ -3749,6 +3952,15 @@ impl<'a> StepBuilder<'a> {
                 2,
                 "orientation",
             )?;
+            if self.get_entity(loop_ref)?.kind == EntityKind::VertexLoop {
+                return Err(IoError::UnsupportedEntity {
+                    entity: format!(
+                        "VERTEX_LOOP #{loop_ref} bounding ADVANCED_FACE #{face_ref}: a vertex-loop \
+                         bound is supported only as the sole bound of a closed shell's only face, \
+                         on a SPHERICAL_SURFACE (a whole sphere)"
+                    ),
+                });
+            }
             let (wire, pending) = self.build_edge_loop(
                 loop_ref,
                 surface_ref,
