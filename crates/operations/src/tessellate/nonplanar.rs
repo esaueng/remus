@@ -4877,9 +4877,19 @@ pub(super) fn interior_grid_resolution(
                 let (d0, d1) = if axis_u { s.domain_u() } else { s.domain_v() };
                 if periodic(axis_u) {
                     let angular = span / (d1 - d0) * std::f64::consts::TAU;
+                    // The closed direction bends with its own iso-curves'
+                    // radius, not the whole net's: a coil's tube turns about
+                    // its profile radius, while its net spans the coil.
+                    let (turn, len) = if axis_u { bending_u } else { bending_v };
+                    let iso = len / turn;
+                    let radius = if iso.is_finite() && iso > 0.0 {
+                        r.min(iso)
+                    } else {
+                        r
+                    };
                     return Some(
                         segments_for_chord_deviation_a(
-                            r,
+                            radius,
                             angular,
                             deflection,
                             angular_tol * 0.5,

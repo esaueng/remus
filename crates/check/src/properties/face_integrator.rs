@@ -1084,10 +1084,22 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
                         found = Some(reseeded);
                     }
                 }
-                found.map_or(
+                let (u, v) = found.map_or(
                     ((full.0.0 + full.0.1) * 0.5, (full.1.0 + full.1.1) * 0.5),
                     |proj| (proj.u, proj.v),
-                )
+                );
+                // A point on the seam of a surface closed in `u` projects to
+                // either image of it. The boundary unwraps from its first
+                // sample, so a loop that starts on the seam's far image
+                // (`u = hi`, a contact edge starting at its seam vertex)
+                // would put the whole face a period past the knot domain,
+                // where the surface clamps. Read the seam as its near image.
+                let seam_eps = 1e-9 * (full.0.1 - full.0.0);
+                if periodic_u && u >= full.0.1 - seam_eps {
+                    (full.0.0, v)
+                } else {
+                    (u, v)
+                }
             };
             let ((u_range, v_range), outline) =
                 face_uv_bounds(topo, face_id, &project, periodic_u, periodic_v, full)?;

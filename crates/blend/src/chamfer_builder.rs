@@ -331,6 +331,18 @@ impl<'a> ChamferBuilder<'a> {
                 blend_face_origins.push((band, vec![sr.stripe.face1, sr.stripe.face2]));
                 continue;
             }
+            // A walked closed rim (a planar cap on a closed NURBS tube): the
+            // same seam-aware band assembly a walked fillet rim takes.
+            if crate::fillet_builder::closed_walking_rim_info(topo, &sr.stripe)? {
+                let band = crate::fillet_builder::assemble_closed_walking_rim(
+                    topo,
+                    &sr.stripe,
+                    &mut face_replacements,
+                )?;
+                rim_band_faces.push(band);
+                blend_face_origins.push((band, vec![sr.stripe.face1, sr.stripe.face2]));
+                continue;
+            }
             if let Some(rim) = closed_rim_info(topo, &sr.stripe)? {
                 match assemble_closed_rim(topo, &sr.stripe, &rim, &mut face_replacements) {
                     Ok(band) => {
@@ -573,6 +585,11 @@ pub(crate) fn compute_chamfer_stripe(
 
     if let Some(result) =
         crate::chamfer_extrusion::stripe(topo, adjacency, spine.clone(), face1, face2, d1, d2)?
+    {
+        return Ok(result);
+    }
+    if let Some(result) =
+        crate::fillet_builder::closed_walked_chamfer_stripe(topo, &spine, face1, face2, d1, d2)?
     {
         return Ok(result);
     }
