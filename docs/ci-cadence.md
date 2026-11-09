@@ -110,3 +110,22 @@ No fourfold speedup is assumed. Hash partitions do not balance by measured
 duration, and compilation, package validation or runner availability may remain
 the limiting stage. Add duration-based partition assignment only if recorded
 imbalance justifies that extra maintenance.
+
+## Package qualification diagnostics
+
+The version guard still requires committed packages to match a clean source
+build or the existing exact protected-main qualification proof. Every reuse
+decision now emits a compact `qualification` JSON record and job summary with
+the outcome, last evaluated stage and aggregate rejection counts. These show
+changed inputs, ineligible runs, incomplete artifact listings, expired evidence
+and unqualified runtime jobs separately. An exception reports a controlled
+reason code and stage without echoing its potentially private payload.
+
+`package_mismatch` means a committed file or manifest contract differs from
+the rebuilt pair; `provenance_mismatch` means the committed publisher metadata
+is wrong; `invalid_package_layout` rejects missing packages or unsupported
+entries and symlinks. Unavailable or malformed external evidence remains
+`proof_unavailable` and sets `reused=false`, selecting the existing clean build.
+The same source, first-attempt main run, artifact digest, complete successful
+runtime suites and package comparisons are required. Diagnostics do not
+expand reuse eligibility or replace a size/version check.

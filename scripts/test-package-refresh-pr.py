@@ -42,11 +42,18 @@ class PackageRefreshTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.repo = self.root / 'checkout'
         self.repo.mkdir()
-        self.env = dict(os.environ, GIT_AUTHOR_NAME='fixture', GIT_COMMITTER_NAME='fixture',
-                        GIT_AUTHOR_EMAIL='fixture@example.invalid',
-                        GIT_COMMITTER_EMAIL='fixture@example.invalid',
-                        GITHUB_REPOSITORY=REPO, GIT_CONFIG_COUNT='1',
-                        GIT_CONFIG_KEY_0='core.hooksPath', GIT_CONFIG_VALUE_0='/dev/null')
+        # Retain the shared commit/push hooks. Use the checkout's configured
+        # identity locally; unconfigured CI runners retain synthetic fixtures.
+        identity = {}
+        for key, fallback in (('name', 'fixture'), ('email', 'fixture@example.invalid')):
+            configured = subprocess.run(['git', 'config', '--get', 'user.' + key],
+                                        cwd=SCRIPT.parent.parent, capture_output=True,
+                                        text=True, check=False)
+            value = configured.stdout.strip() if configured.returncode == 0 else ''
+            identity[key] = value or fallback
+        self.env = dict(os.environ, GIT_AUTHOR_NAME=identity['name'], GIT_COMMITTER_NAME=identity['name'],
+                        GIT_AUTHOR_EMAIL=identity['email'], GIT_COMMITTER_EMAIL=identity['email'],
+                        GITHUB_REPOSITORY=REPO)
         subprocess.run(['git', 'init', '--bare', str(self.root / 'remote.git')],
                        check=True, capture_output=True)
         self.git('init', '-b', 'main')
@@ -138,6 +145,10 @@ class PackageRefreshTests(unittest.TestCase):
                                 input=json.dumps({'body': body, 'growth': growth, 'hardLimit': hard_limit}),
                                 capture_output=True, text=True, check=True)
         return json.loads(result.stdout)
+
+    def test_fixture_preserves_inherited_hooks_configuration(self):
+        for key in ('GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0'):
+            self.assertEqual(self.env.get(key), os.environ.get(key))
 
     def test_carries_source_declarations_so_declared_growth_passes_the_gate(self):
         squash = 'WASM-Size: +100 KiB raw, curve projection, Tier: core (writes the journal)'

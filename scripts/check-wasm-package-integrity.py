@@ -10,6 +10,14 @@ ROOTS = ("crates/wasm/pkg", "crates/wasm-io/pkg")
 REPOSITORY = "https://github.com/esaueng/remus"
 
 
+class PackageIntegrityError(ValueError):
+    """A rejected package contract with a stable, non-sensitive reason code."""
+
+    def __init__(self, reason, message):
+        super().__init__(message)
+        self.reason = reason
+
+
 def manifest_contract(data, generated=False):
     package = json.loads(data)
     # The publisher stamps these exact fields after xtask finishes. Validate
@@ -19,7 +27,7 @@ def manifest_contract(data, generated=False):
     if generated:
         package.update(provenance)
     elif any(package.get(key) != value for key, value in provenance.items()):
-        raise ValueError("Committed package provenance does not match the publisher")
+        raise PackageIntegrityError("provenance_mismatch", "Committed package provenance does not match the publisher")
     # Release numbering has its own gate; xtask may advance it when it detects
     # rebuilt output. All other fields and nested export order must match.
     package.pop("version", None)
@@ -44,17 +52,17 @@ def check(revision, directory=Path("."), rebuilt_directory=None):
             mode, kind, _ = metadata.split()
             name = raw_name.decode()
             if mode != b"100644" or kind != b"blob":
-                raise ValueError(f"Unsupported committed package entry: {name}")
+                raise PackageIntegrityError("invalid_package_layout", f"Unsupported committed package entry: {name}")
             committed[name] = git("show", f"{commit}:{name}")
         if not committed:
-            raise ValueError(f"Committed package is missing: {root}")
+            raise PackageIntegrityError("invalid_package_layout", f"Committed package is missing: {root}")
         package = rebuilt_directory / root
         if package.is_symlink() or not package.is_dir():
-            raise ValueError(f"Rebuilt package is missing or a symlink: {root}")
+            raise PackageIntegrityError("invalid_package_layout", f"Rebuilt package is missing or a symlink: {root}")
         rebuilt = {}
         for path in package.rglob("*"):
             if path.is_symlink():
-                raise ValueError(f"Symlink in rebuilt package: {path}")
+                raise PackageIntegrityError("invalid_package_layout", f"Symlink in rebuilt package: {path}")
             if path.is_file():
                 rebuilt[path.relative_to(rebuilt_directory).as_posix()] = path.read_bytes()
         for name in sorted(committed.keys() | rebuilt.keys()):
@@ -75,7 +83,7 @@ def check(revision, directory=Path("."), rebuilt_directory=None):
             if not equal:
                 mismatches.append(label)
     if mismatches:
-        raise ValueError("Committed packages differ from the source rebuild: " + ", ".join(mismatches))
+        raise PackageIntegrityError("package_mismatch", "Committed packages differ from the source rebuild: " + ", ".join(mismatches))
     print("Committed WASM package integrity passed")
 
 
