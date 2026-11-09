@@ -3772,3 +3772,127 @@ mod corner_pocket_section_38131028280 {
         }
     }
 }
+
+/// A plane slicing a bump wholly inside an open patch meets it in a closed
+/// loop that touches no boundary. The nearest-neighbour walk leaves such a
+/// loop open by a grid spacing; it must come back closed.
+#[test]
+fn plane_nurbs_interior_loop_on_an_open_patch_comes_back_closed() {
+    let dome = dome_surface();
+    for height in [0.0, 0.25] {
+        let curves = intersect_plane_nurbs(&dome, Vec3::new(0.0, 0.0, 1.0), height, 32).unwrap();
+        assert_eq!(curves.len(), 1, "z = {height}: one loop");
+        let curve = &curves[0].curve;
+        let (t0, t1) = curve.domain();
+        let gap = (curve.evaluate(t0) - curve.evaluate(t1)).length();
+        assert!(gap < 1e-9, "z = {height}: loop left open by {gap}");
+        for k in 0..=64 {
+            let p = curve.evaluate(t0 + (t1 - t0) * f64::from(k) / 64.0);
+            assert!(
+                (p.z() - height).abs() < 1e-3,
+                "z = {height}: {p:?} off the plane"
+            );
+        }
+    }
+}
+
+/// The outer half of a radius-1.5 wire tube coiled three turns at radius 12,
+/// pitch 5: a rational quadratic half circle swept by rational quadratic
+/// arc spans, 70 a turn, with the rise added per control row (the helical
+/// sweep side face).
+fn coil_outer_half() -> NurbsSurface {
+    use std::f64::consts::{FRAC_1_SQRT_2, TAU};
+    // Profile half circle in the XZ plane about (12, 0, 0): top, outer, bottom.
+    let profile = [
+        (12.0, 1.5),
+        (13.5, 1.5),
+        (13.5, 0.0),
+        (13.5, -1.5),
+        (12.0, -1.5),
+    ];
+    let profile_weights = [1.0, FRAC_1_SQRT_2, 1.0, FRAC_1_SQRT_2, 1.0];
+    let (turns, pitch, spans) = (3.0_f64, 5.0_f64, 210_usize);
+    #[allow(clippy::cast_precision_loss)]
+    let n = spans as f64;
+    let half = 0.5 * TAU * turns / n;
+    let mut rows = Vec::new(); // (cos, sin, scale, rise, weight)
+    for k in 0..=2 * spans {
+        #[allow(clippy::cast_precision_loss)]
+        let f = k as f64 / (2.0 * n);
+        let (sin, cos) = (TAU * turns * f).sin_cos();
+        let middle = k % 2 == 1;
+        rows.push((
+            cos,
+            sin,
+            if middle { 1.0 / half.cos() } else { 1.0 },
+            pitch * turns * f,
+            if middle { half.cos() } else { 1.0 },
+        ));
+    }
+    let control_points = profile
+        .iter()
+        .map(|&(r, z)| {
+            rows.iter()
+                .map(|&(c, s, scale, rise, _)| Point3::new(r * c * scale, r * s * scale, z + rise))
+                .collect()
+        })
+        .collect();
+    let weights = profile_weights
+        .iter()
+        .map(|&w| rows.iter().map(|row| w * row.4).collect())
+        .collect();
+    let mut knots_v = vec![0.0; 3];
+    for k in 1..spans {
+        #[allow(clippy::cast_precision_loss)]
+        let t = k as f64 / n;
+        knots_v.extend([t, t]);
+    }
+    knots_v.extend([1.0; 3]);
+    NurbsSurface::new(
+        2,
+        2,
+        vec![0.0, 0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 1.0],
+        knots_v,
+        control_points,
+        weights,
+    )
+    .unwrap()
+}
+
+/// A plane cutting a face of many spans in one direction: a fixed 32 × 32
+/// seed grid puts under one sample in each of the 210 spans, the crossings
+/// chain apart and one section comes back in fragments. The span-adaptive
+/// grid gives every span samples and the section comes back whole.
+#[test]
+fn plane_sections_of_a_many_span_coil_face_come_back_whole() {
+    let coil = coil_outer_half();
+    let (samples_u, samples_v) = span_adaptive_samples(&coil, 32);
+    assert_eq!((samples_u, samples_v), (32, 4 * 210 + 1));
+    // z = 7.5 leaves the top rail at 1.2 turns and reaches the bottom rail
+    // at 1.8: one open section across the face.
+    // y = 13.2 grazes the outer bulge a quarter turn into every turn: three
+    // closed loops inside the face (the fixed grid returns five fragments).
+    for (normal, d, expected, closed) in [
+        (Vec3::new(0.0, 0.0, 1.0), 7.5, 1, false),
+        (Vec3::new(0.0, 1.0, 0.0), 13.2, 3, true),
+    ] {
+        let fixed = intersect_plane_nurbs(&coil, normal, d, 32).unwrap();
+        if closed {
+            // The fixed grid loses the loops: fragments, and a turn missing.
+            assert_ne!(fixed.len(), expected, "the fixed grid fragments the loops");
+        }
+        let curves = intersect_plane_nurbs_grid(&coil, normal, d, samples_u, samples_v).unwrap();
+        assert_eq!(curves.len(), expected, "plane {normal:?} = {d}");
+        for ic in &curves {
+            let (t0, t1) = ic.curve.domain();
+            let gap = (ic.curve.evaluate(t0) - ic.curve.evaluate(t1)).length();
+            assert_eq!(gap < 1e-9, closed, "plane {normal:?} = {d}: end gap {gap}");
+            for point in &ic.points {
+                let on = point.point - Point3::new(0.0, 0.0, 0.0);
+                assert!((normal.dot(on) - d).abs() < 1e-9);
+                let (u, v) = point.param1;
+                assert!((coil.evaluate(u, v) - point.point).length() < 1e-9);
+            }
+        }
+    }
+}

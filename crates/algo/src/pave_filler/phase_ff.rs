@@ -6171,11 +6171,20 @@ fn compute_face_bbox(topo: &Topology, face_id: FaceId, tol: Tolerance) -> Result
         FaceSurface::Torus(t) if face_boundary_all_degenerate(topo, face_id, tol)? => {
             Some(t.aabb())
         }
-        // B24: exhaustive over `FaceSurface` — spheres and full tori
-        // widen the AABB above; planes, cylinders, cones, NURBS, and
-        // trimmed tori are bounded by their boundary samples alone.
+        // A NURBS face spanning its whole carrier bulges past its boundary
+        // as a sphere does: a tube half swept round a helix is bounded by
+        // rails on its middle radius while the tube reaches a wire radius
+        // further in and out, so the boundary box missed every plane cutting
+        // the outer half of the wire and the pair was never intersected.
+        FaceSurface::Nurbs(_) => match Aabb3::try_from_points(points.iter().copied()) {
+            Some(boundary) => whole_carrier_nurbs_hull(topo, face_id, tol, &boundary)?,
+            None => None,
+        },
+        // B24: exhaustive over `FaceSurface` — spheres, full tori and
+        // whole-carrier NURBS widen the AABB above; planes, cylinders,
+        // cones, trimmed NURBS and trimmed tori are bounded by their
+        // boundary samples alone.
         FaceSurface::Plane { .. }
-        | FaceSurface::Nurbs(_)
         | FaceSurface::Cylinder(_)
         | FaceSurface::Cone(_)
         | FaceSurface::Torus(_) => None,
@@ -6191,6 +6200,66 @@ fn compute_face_bbox(topo: &Topology, face_id: FaceId, tol: Tolerance) -> Result
             max: Point3::new(0.0, 0.0, 0.0),
         },
     })
+}
+
+/// The control-net box of a NURBS face that reaches all four corners of its
+/// carrier and bulges out of its `boundary` box, `None` for any other face.
+///
+/// The net box holds the whole surface (positive weights keep it in the
+/// net's convex hull), so it is a sound bound for any face of the carrier;
+/// reaching every corner is what makes it a tight one rather than the box of
+/// a much larger surface a small trimmed face was cut from. The bulge test
+/// samples the carrier a few times per knot span (at most 33 nodes an axis)
+/// and keeps every face whose samples stay inside its boundary box — most
+/// faces — on exactly the box it had.
+fn whole_carrier_nurbs_hull(
+    topo: &Topology,
+    face_id: FaceId,
+    tol: Tolerance,
+    boundary: &Aabb3,
+) -> Result<Option<Aabb3>, AlgoError> {
+    const MAX_BULGE_NODES: usize = 33;
+    let face = topo.face(face_id)?;
+    let FaceSurface::Nurbs(nurbs) = face.surface() else {
+        return Ok(None);
+    };
+    let (u0, u1) = nurbs.domain_u();
+    let (v0, v1) = nurbs.domain_v();
+    let corners = [(u0, v0), (u1, v0), (u0, v1), (u1, v1)].map(|(u, v)| nurbs.evaluate(u, v));
+    let mut reached = [false; 4];
+    for wire in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+        for oe in topo.wire(wire)?.edges() {
+            let edge = topo.edge(oe.edge())?;
+            for vertex in [edge.start(), edge.end()] {
+                let vertex = topo.vertex(vertex)?;
+                let reach = vertex.tolerance().max(tol.linear);
+                for (corner, hit) in corners.iter().zip(reached.iter_mut()) {
+                    *hit |= (vertex.point() - *corner).length() <= reach;
+                }
+            }
+        }
+    }
+    if !reached.iter().all(|&hit| hit) {
+        return Ok(None);
+    }
+    let (n_u, n_v) = nurbs_isect::span_adaptive_samples(nurbs, 9);
+    let (n_u, n_v) = (n_u.min(MAX_BULGE_NODES), n_v.min(MAX_BULGE_NODES));
+    let reach = boundary.expanded(tol.linear);
+    let bulges = (0..n_u).any(|i| {
+        #[allow(clippy::cast_precision_loss)]
+        let u = (u1 - u0).mul_add(i as f64 / (n_u - 1) as f64, u0);
+        (0..n_v).any(|j| {
+            #[allow(clippy::cast_precision_loss)]
+            let v = (v1 - v0).mul_add(j as f64 / (n_v - 1) as f64, v0);
+            !reach.contains_point(nurbs.evaluate(u, v))
+        })
+    });
+    if !bulges {
+        return Ok(None);
+    }
+    Ok(super::helpers::finite_aabb(
+        nurbs.control_points().iter().flatten().copied(),
+    ))
 }
 
 /// The points of a circle or ellipse arc that are extreme along each world
@@ -6380,10 +6449,20 @@ fn compute_face_bboxes_against(
     for &fid in faces {
         let conservative = match topo.face(fid)?.surface() {
             FaceSurface::Sphere(_) | FaceSurface::Torus(_) => None,
-            FaceSurface::Plane { .. }
-            | FaceSurface::Nurbs(_)
-            | FaceSurface::Cylinder(_)
-            | FaceSurface::Cone(_) => conservative_face_bbox(topo, fid)?,
+            // The boundary curves alone do not hold a whole-carrier NURBS
+            // face (see `whole_carrier_nurbs_hull`); add its net.
+            FaceSurface::Nurbs(_) => match conservative_face_bbox(topo, fid)? {
+                Some(boundary) => match whole_carrier_nurbs_hull(topo, fid, tol, &boundary)? {
+                    Some(hull) => {
+                        Some(boundary.union(hull.expanded(super::helpers::coordinate_slack(hull))))
+                    }
+                    None => Some(boundary),
+                },
+                None => None,
+            },
+            FaceSurface::Plane { .. } | FaceSurface::Cylinder(_) | FaceSurface::Cone(_) => {
+                conservative_face_bbox(topo, fid)?
+            }
         };
         match conservative {
             Some(bbox)
@@ -8422,7 +8501,12 @@ fn plane_nurbs_intersection(
     d: f64,
     nurbs: &remus_math::nurbs::surface::NurbsSurface,
 ) -> Result<Vec<RawCurve>, AlgoError> {
-    let isect_curves = nurbs_isect::intersect_plane_nurbs(nurbs, normal, d, NURBS_SAMPLES)?;
+    // Seed every knot span, not a fixed square grid: a face of many spans in
+    // one direction (a helical sweep side over every turn) otherwise gets
+    // under one sample a span and its sections chain into fragments.
+    let (samples_u, samples_v) = nurbs_isect::span_adaptive_samples(nurbs, NURBS_SAMPLES);
+    let isect_curves =
+        nurbs_isect::intersect_plane_nurbs_grid(nurbs, normal, d, samples_u, samples_v)?;
 
     let mut results = Vec::new();
     for ic in isect_curves {
@@ -8505,6 +8589,10 @@ fn nurbs_nurbs_intersection(
     nb: &remus_math::nurbs::surface::NurbsSurface,
     context: &OperationContext,
 ) -> Result<Vec<RawCurve>, AlgoError> {
+    // Seeds come from Bezier subdivision, one patch per knot span pair, so
+    // a face of many spans is already seeded span by span. `NURBS_SAMPLES`
+    // sizes only the grid fallback that runs when subdivision finds nothing;
+    // that scan compares every sample pair, so it is not grown per span.
     let isect_curves = nurbs_isect::intersect_nurbs_nurbs_with_context(
         na,
         nb,
@@ -12286,6 +12374,9 @@ mod helper_oracle_tests;
 
 #[cfg(test)]
 mod ruled_plane_tests;
+
+#[cfg(test)]
+mod multi_span_section_tests;
 
 #[cfg(test)]
 mod junction_snap_oracle_tests;

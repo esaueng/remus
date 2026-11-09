@@ -100,3 +100,38 @@ fn batch_multi_section_sweep_refusal_matches_the_direct_path() {
     assert!(out[0].get("error").is_some(), "{out:?}");
     assert_eq!(counts(&kernel), before);
 }
+
+/// `helicalSweepInPlace` refuses overlapping coils (a 2-tall square, pitch
+/// 1.5, two turns) without touching the session, directly and in a batch;
+/// a clear pitch sweeps.
+#[test]
+fn refused_helical_sweep_in_place_leaves_the_session_unchanged() {
+    let mut kernel = RemusKernel::new();
+    let profile = square(&mut kernel);
+    let before = counts(&kernel);
+    let axis_origin = [4.0, 0.0, 0.0];
+    let axis_dir = [0.0, 1.0, 0.0];
+    let refused = kernel.helical_sweep_in_place_impl(profile, axis_origin, axis_dir, 1.5, 2.0);
+    assert!(refused.is_err());
+    assert_eq!(counts(&kernel), before);
+
+    let out: Vec<serde_json::Value> = serde_json::from_str(
+        &kernel.execute_batch(
+            &serde_json::json!([{"op": "helicalSweepInPlace", "args": {
+                "profile": profile,
+                "axisOriginX": 4.0, "axisOriginY": 0.0, "axisOriginZ": 0.0,
+                "axisDirX": 0.0, "axisDirY": 1.0, "axisDirZ": 0.0,
+                "pitch": 1.5, "turns": 2.0
+            }}])
+            .to_string(),
+        ),
+    )
+    .unwrap();
+    assert!(out[0].get("error").is_some(), "{out:?}");
+    assert_eq!(counts(&kernel), before);
+
+    kernel
+        .helical_sweep_in_place_impl(profile, axis_origin, axis_dir, 2.5, 2.0)
+        .unwrap();
+    assert_eq!(counts(&kernel)[5], before[5] + 1);
+}

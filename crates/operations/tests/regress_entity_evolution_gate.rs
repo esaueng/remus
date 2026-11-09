@@ -85,8 +85,11 @@ fn holder_and_pocket(origin: [f64; 3], size: [f64; 3]) -> (Topology, SolidId, So
 #[test]
 fn entity_evolution_routes_refuse_open_letter_pocket_like_boolean() {
     // The letters stand 0.4 on the x = -12 wall (y 16..21, z 12..47); this
-    // pocket ends inside the lettering, sinking 1 below the wall.
-    let (original, holder, pocket) = holder_and_pocket([-13.0, 15.0, 20.0], [3.0, 7.0, 10.0]);
+    // pocket ends inside the lettering, sinking 1 below the wall. (It sat at
+    // z = 20 until the FF broad phase bounded the letter flanks' bulge past
+    // their sampled edges; that pocket now meets flanks it used to skip and
+    // the raw GFA refuses outright, so it no longer exercises the gate.)
+    let (original, holder, pocket) = holder_and_pocket([-13.0, 15.0, 22.0], [3.0, 7.0, 10.0]);
 
     // Precondition: the raw GFA still builds an open shell here. If it stops
     // doing so, this fixture no longer exercises the gate; pick a new one.

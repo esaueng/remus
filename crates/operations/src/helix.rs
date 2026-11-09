@@ -4,6 +4,10 @@
 //! The helix is approximated as a NURBS curve using rational quadratic
 //! Bezier segments (same technique used for circular arcs). The profile
 //! face is then swept along this path using the existing sweep operation.
+//!
+//! [`helical_sweep_in_place`] is the exact alternative: it screws the profile
+//! about an axis from where it sits, with round rational side faces instead
+//! of path-sweep facets.
 
 use std::f64::consts::PI;
 
@@ -14,6 +18,10 @@ use remus_topology::face::FaceId;
 use remus_topology::solid::SolidId;
 
 use crate::OperationsError;
+
+mod in_place;
+
+pub use in_place::helical_sweep_in_place;
 
 /// Upper bound on the NURBS segments generated for one helix.
 ///
