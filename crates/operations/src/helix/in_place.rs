@@ -105,10 +105,22 @@ fn rise_deviation_bound(alpha: f64, rise: f64) -> f64 {
 }
 
 /// The axial-rise tolerance for a given pitch: `1e-6 · |pitch|`, but never
-/// tighter than the kernel's linear tolerance. The relative target keeps the
-/// span count independent of scale (70 spans per turn whenever
-/// `|pitch| ≥ 0.1`); the floor stops a tiny pitch from demanding precision
-/// below what the kernel resolves (fewer spans per turn below that).
+/// tighter than the kernel's linear tolerance.
+///
+/// **Deliberately looser than the linear tolerance** once `|pitch| > 0.1`:
+/// at pitch 5 the side faces may sit up to 5 µm off the exact screw surface
+/// (the [`rise_deviation_bound`], an axial offset only), not 0.1 µm. The
+/// span count grows with the cube root of `|pitch| / tolerance`, so holding
+/// 1e-7 would take 257 spans a turn at pitch 5 and about 700 at pitch 100
+/// instead of 70. Every span is control rows in each side face, so that
+/// multiplies the STEP size (a 3-turn spring is ~0.7 MB at 70 spans a turn)
+/// and the cost of every intersection, projection and tessellation against
+/// the faces, for an error far below any manufacturing or modelling
+/// significance. The relative target also keeps the span count independent
+/// of scale; the floor stops a tiny pitch from demanding precision below
+/// what the kernel resolves (fewer spans a turn below `|pitch| = 0.1`).
+/// Topology is unaffected: rails are the faces' own boundary rows and the
+/// end cap is exact, so edges lie on their faces exactly.
 fn rise_tolerance(pitch: f64) -> f64 {
     (RISE_RELATIVE_TOLERANCE * pitch.abs()).max(Tolerance::new().linear)
 }
@@ -722,7 +734,10 @@ fn check_coil_clearance(
 /// reaches. Over a span of angle `α` rising `h` it deviates by at most
 /// `1.07·|h|·α²/(72√3)`, displacing points purely along the axis, and the
 /// span count keeps that within `1e-6·|pitch|` (never tighter than the
-/// kernel's linear tolerance): 70 spans per turn for `|pitch| ≥ 0.1`. The
+/// kernel's linear tolerance): 70 spans per turn for `|pitch| ≥ 0.1`. This
+/// is deliberately looser than the linear tolerance (5 µm at pitch 5): the
+/// tighter target would take 257 spans a turn there, multiplying STEP size
+/// and intersection cost for no modelling gain. The
 /// start cap is the profile's own plane and edges; the end cap is the
 /// profile moved rigidly by the full motion.
 ///
