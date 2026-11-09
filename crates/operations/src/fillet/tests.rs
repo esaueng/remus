@@ -3146,3 +3146,83 @@ fn variable_boundary_outside_precision_proof_refuses_typed_and_rolls_back() {
         before
     );
 }
+
+/// The rolling-ball engine on the four quarter arcs a box-corner fuse leaves
+/// on a post's top rim (OpenZCAD; see
+/// `tests/regress_quarter_arc_rim_fillet.rs`). Each arc sweeps a torus of
+/// ring radius `R − r`. The engine took it only as a ring torus and from
+/// `r = R/2` up lofted the arcs between straight edges, squaring the cap; the
+/// spindle torus is the same exact surface, so every radius is exact.
+#[test]
+fn rolling_ball_rounds_quarter_arc_rim_as_spindle_torus() {
+    for radius in [2.9, 3.0, 3.1, 3.8, 5.0] {
+        let mut topo = Topology::new();
+        let block = crate::primitives::make_box(&mut topo, 30.0, 18.0, 24.0).unwrap();
+        let post = crate::primitives::make_cylinder(&mut topo, 6.0, 31.25).unwrap();
+        let fused = crate::compound_ops::fuse_solids(&mut topo, &[block, post]).unwrap();
+        crate::heal::unify_faces_checked(&mut topo, fused).unwrap();
+        let rim: Vec<EdgeId> = solid_edges(&topo, fused)
+            .unwrap()
+            .into_iter()
+            .filter(|&e| {
+                let edge = topo.edge(e).unwrap();
+                [edge.start(), edge.end()]
+                    .iter()
+                    .all(|&v| (topo.vertex(v).unwrap().point().z() - 31.25).abs() < 1e-9)
+            })
+            .collect();
+        assert_eq!(rim.len(), 4, "the fuse leaves four quarter arcs");
+        let (solid, _) =
+            fillet_rolling_ball_with_origins(&mut topo, fused, &rim, radius, true).unwrap();
+        for f in solid_faces(&topo, solid).unwrap() {
+            assert!(
+                !matches!(topo.face(f).unwrap().surface(), FaceSurface::Nurbs(_)),
+                "r {radius}: no lofted strip"
+            );
+        }
+        let lines_above_box = solid_edges(&topo, solid)
+            .unwrap()
+            .into_iter()
+            .filter(|&e| {
+                let edge = topo.edge(e).unwrap();
+                matches!(edge.curve(), EdgeCurve::Line)
+                    && [edge.start(), edge.end()]
+                        .iter()
+                        .all(|&v| topo.vertex(v).unwrap().point().z() > 25.0)
+            })
+            .count();
+        assert_eq!(
+            lines_above_box, 0,
+            "r {radius}: no chord on the rounded rim"
+        );
+    }
+}
+
+/// The loft path's chord guard measures how far a strip's straight boundary
+/// on one side cuts across its contacts: zero along a straight contact, the
+/// sagitta `ρ(1 − cos θ/2)` across an arc of radius `ρ` and angle `θ`.
+#[test]
+fn planar_contact_chord_sag_is_the_contact_sagitta() {
+    let straight: Vec<[Point3; 3]> = (0..7)
+        .map(|i| {
+            let t = f64::from(i);
+            [
+                Point3::new(t, 0.0, 0.0),
+                Point3::new(t, 1.0, 1.0),
+                Point3::new(t, 0.0, 1.0),
+            ]
+        })
+        .collect();
+    assert!(super::rolling_ball::planar_contact_chord_sag(&straight, 0) < 1e-12);
+    let rho = 2.2;
+    let arc: Vec<[Point3; 3]> = (0..=12)
+        .map(|i| {
+            let a = std::f64::consts::FRAC_PI_2 * f64::from(i) / 12.0;
+            let p = Point3::new(rho * a.cos(), rho * a.sin(), 0.0);
+            [p, p, p]
+        })
+        .collect();
+    let sag = super::rolling_ball::planar_contact_chord_sag(&arc, 2);
+    let expected = rho * (1.0 - std::f64::consts::FRAC_PI_4.cos());
+    assert!((sag - expected).abs() < 1e-12, "sag {sag} vs {expected}");
+}

@@ -46,6 +46,8 @@ pub mod transforms;
 #[cfg(test)]
 mod batch_optional_args_tests;
 #[cfg(test)]
+mod blend_edge_coherence_tests;
+#[cfg(test)]
 mod chamfer_freeform_tests;
 #[cfg(test)]
 mod cylinder_cross_fuse_all_tests;

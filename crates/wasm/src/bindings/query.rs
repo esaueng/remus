@@ -1374,7 +1374,9 @@ impl RemusKernel {
         }
     }
 
-    /// Project a 3D point onto a face surface using Newton iteration.
+    /// Project a 3D point onto a face's untrimmed surface: in closed form on
+    /// planes, cylinders, cones, spheres and tori, by Newton iteration from a
+    /// grid seed on NURBS.
     ///
     /// Returns `[u, v, px, py, pz, distance]`.
     #[wasm_bindgen(js_name = "projectPointOnSurface")]
@@ -1465,47 +1467,28 @@ impl RemusKernel {
                 let dist = (proj - target).length();
                 Ok(vec![best_u, best_v, proj.x(), proj.y(), proj.z(), dist])
             }
-            _ => {
-                // For analytic surfaces, use grid search (no Newton for now)
-                let mut best_u = 0.0;
-                let mut best_v = 0.0;
-                let mut best_dist = f64::MAX;
-                let n_grid = 16;
-                for iu in 0..=n_grid {
-                    for iv in 0..=n_grid {
-                        #[allow(clippy::cast_precision_loss)]
-                        let u = 2.0 * PI * (iu as f64) / (n_grid as f64);
-                        #[allow(clippy::cast_precision_loss)]
-                        let v = -PI + 2.0 * PI * (iv as f64) / (n_grid as f64);
-                        let p = match face_data.surface() {
-                            FaceSurface::Cylinder(cyl) => cyl.evaluate(u, v),
-                            FaceSurface::Cone(cone) => cone.evaluate(u, v),
-                            FaceSurface::Sphere(sph) => sph.evaluate(u, v),
-                            FaceSurface::Torus(tor) => tor.evaluate(u, v),
-                            _ => continue,
-                        };
-                        let d = (p - target).length();
-                        if d < best_dist {
-                            best_dist = d;
-                            best_u = u;
-                            best_v = v;
-                        }
-                    }
-                }
-                let proj = match face_data.surface() {
-                    FaceSurface::Cylinder(cyl) => cyl.evaluate(best_u, best_v),
-                    FaceSurface::Cone(cone) => cone.evaluate(best_u, best_v),
-                    FaceSurface::Sphere(sph) => sph.evaluate(best_u, best_v),
-                    FaceSurface::Torus(tor) => tor.evaluate(best_u, best_v),
-                    _ => target,
-                };
+            surface @ (FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_)) => {
+                // Closed-form foot of the perpendicular. A grid search over a
+                // fixed `[0, 2π] × [−π, π]` box used to stand in for it, which
+                // on a cylinder or cone (`v` is axial length) covered only a
+                // band about three units either side of the axis origin: a
+                // point on the wall's own rim read tens of units off it.
+                let (u, v) = surface
+                    .project_point(target)
+                    .ok_or_else(|| JsError::new("surface projection failed"))?;
+                let proj = surface
+                    .evaluate(u, v)
+                    .ok_or_else(|| JsError::new("surface evaluation failed"))?;
                 Ok(vec![
-                    best_u,
-                    best_v,
+                    u,
+                    v,
                     proj.x(),
                     proj.y(),
                     proj.z(),
-                    best_dist,
+                    (proj - target).length(),
                 ])
             }
         }

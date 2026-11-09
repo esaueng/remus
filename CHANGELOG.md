@@ -8,6 +8,23 @@ historical predecessor-line records, retained for provenance. The
 
 ### Fixed
 
+* **operations,geometry,wasm:** a fillet on a cylinder rim that a boolean
+  split into co-circular quarter arcs (a post fused onto a box corner) is
+  now the exact torus at every radius. The rolling-ball engine took each
+  arc's torus only as a ring torus (`R − r > r`); from half the rim radius
+  up it lofted the arcs between straight edges: a square cap, seams
+  ~1.1 mm inside the torus at R6 r3.8, 1.1–1.8 mm³ too much material
+  removed, and a clean validation. It now takes the spindle torus too —
+  which also makes exact the tori of later fillets that run over an
+  earlier band's end arc at half its radius or more — and refuses to loft
+  a curved planar contact between straight edges. `getEdgeCurveType` no
+  longer calls a degree-1 polyline that is not straight (a walked blend
+  contact) `LINE`, which made consumers read the walked contacts of the
+  mixed-seam and union-junction corner fillets as chords 0.29 r off both
+  faces, and `projectPointOnSurface` projects onto cylinders, cones,
+  spheres and tori in closed form instead of grid-searching a fixed
+  `v ∈ [−π, π]` box that put points on a cylinder's own rim tens of units
+  off it.
 * **io:** STEP export relocates a seam crossing a window in a qualified
   cylindrical band (OpenZCAD #1243: two overlapping axial cylinders, both
   union orders). The writer computes the window's angular extent from
