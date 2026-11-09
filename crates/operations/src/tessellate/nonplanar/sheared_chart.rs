@@ -23,7 +23,19 @@
 //!
 //! A chart whose directions meet at more than `acos(SHEAR_COS)` keeps the
 //! established per-axis grid: every converted primitive (orthogonal
-//! parameter lines) and every existing mesh is untouched.
+//! parameter lines) keeps its grid points.
+//!
+//! Such a chart still triangulates in surface lengths along each axis:
+//! [`metric_v_scale`] is the diagonal of the same factor, `√(G/E)`, and the
+//! CDT scales `v` by it instead of squaring up the parameter box. Knot units
+//! say nothing about length: an in-place helical sweep's side face spans
+//! `[0, 1]` across a unit half circle (π long) and `[0, 1]` along five turns
+//! about an axis 10 away (≈ 314 long), and the squared-up box compressed
+//! the surface's `v` 94-fold. Delaunay in that chart joined each cap sample
+//! to the interior-grid column a hair beside it, up to nine rows along, and
+//! those slivers (0.004 wide, up to 2 long) folded inside out on the bending
+//! tube. Scaling an axis moves no grid or boundary point, so only the
+//! connectivity changes (the coil keeps its exact triangle counts).
 
 use remus_math::nurbs::surface::NurbsSurface;
 use remus_math::vec::{Point2, Vec3};
@@ -188,6 +200,27 @@ impl ShearedChart {
             n_v,
         }
     }
+}
+
+/// The CDT's `v` scale that makes a parameter step along `v` as long, in
+/// chart units, as it is on the surface relative to a step along `u`:
+/// `√(G/E)` of the first fundamental form averaged over the parameter box
+/// `(u_min, u_max, v_min, v_max)`. `None` when the averaged metric is
+/// degenerate (a direction of zero speed everywhere sampled), where the
+/// caller keeps the squared-up parameter box.
+pub(super) fn metric_v_scale(surface: &NurbsSurface, bounds: (f64, f64, f64, f64)) -> Option<f64> {
+    let (u_min, u_max, v_min, v_max) = bounds;
+    let (mut e, mut g) = (0.0_f64, 0.0_f64);
+    for u in lattice(u_min, u_max, METRIC_SAMPLES) {
+        for v in lattice(v_min, v_max, METRIC_SAMPLES) {
+            let d = surface.derivatives(u, v, 1);
+            let (su, sv) = (d[1][0], d[0][1]);
+            e += su.dot(su);
+            g += sv.dot(sv);
+        }
+    }
+    let scale = (g / e).sqrt();
+    (e > 0.0 && g > 0.0 && scale.is_finite() && scale > 0.0).then_some(scale)
 }
 
 /// Curvature of the surface curve through a point in parameter direction

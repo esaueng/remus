@@ -8,6 +8,25 @@ historical predecessor-line records, retained for provenance. The
 
 ### Fixed
 
+* **operations:** display meshes of a round in-place helical sweep folded
+  inside out just before each end cap (dark streaks on the tube): 244
+  facets on 2.5 turns of a unit circle 10 from the axis at pitch 2.5, 986
+  on five, plus 1–3 % slivers up to 3.3 long. The non-planar CDT squared up
+  each NURBS face's parameter box, but knot units are not lengths: a side
+  face spanning `[0, 1]` across a half circle (π long) and `[0, 1]` along
+  five turns (≈ 314) was triangulated in a chart that compressed it 94-fold
+  along the coil, and each cap sample was fanned to the interior-grid column
+  beside it. A NURBS chart now scales `v` by its averaged first fundamental
+  form, `√(G/E)` (thread flanks keep their sheared metric chart, recovered
+  cylinder walls the squared box). No grid or boundary point moves, so only
+  connectivity changes (the coil keeps its exact triangle counts); it has no
+  inward facets or slivers and its longest side edge is 0.30.
+  Mesh-derived goldens moved with the connectivity: the hammer holder's
+  approximate fillet areas at deflection 0.08 by at most 9e-4 relative
+  (each still within 3e-3 of its exact integral), near-zero tangent edge
+  angles in their last digits with every verdict unchanged, the synthetic
+  fillet's area to 5π within 1e-15, and a 0.01-deflection measured volume
+  by 1.4e-12.
 * **algo,math:** exact booleans against a NURBS face of many spans (a
   helical sweep side covering every turn) silently dropped the tool: a box
   straddling a half-coil's wire fused into the coil alone and intersected

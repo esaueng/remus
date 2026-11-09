@@ -3418,6 +3418,10 @@ pub(super) fn tessellate_nonplanar_cdt(
     // grid and the Delaunay criterion see lengths on the surface (see
     // `sheared_chart`). Section-circle walls and ellipse trims keep the
     // parameter box: their special-case seeding reads raw parameter spans.
+    // Every other NURBS chart keeps its per-axis grid but scales `v` by the
+    // averaged metric rather than squaring the box (see `v_scale`): Delaunay
+    // is not invariant under an axis scale, and a box squared in knot units
+    // can misstate the surface's aspect a hundredfold.
     let sheared = match chart_surface {
         FaceSurface::Nurbs(surface)
             if !has_section_circle
@@ -3437,7 +3441,27 @@ pub(super) fn tessellate_nonplanar_cdt(
         | FaceSurface::Torus(_) => None,
     };
     let v_scale = if du > 1e-15 && dv > 1e-15 {
-        du / dv
+        // A NURBS chart triangulates in surface lengths along each axis
+        // (see `sheared_chart::metric_v_scale`): its knot units are not
+        // lengths, and squaring up its parameter box folded slivers on a
+        // many-turn coil. Analytic carriers, and section-circle walls that
+        // chart through their recovered cylinder, keep the squared box.
+        let metric = match chart_surface {
+            FaceSurface::Nurbs(surface)
+                if sheared.is_none()
+                    && !(has_section_circle
+                        && remus_algo::wall_chart(face_data.surface()).is_some()) =>
+            {
+                sheared_chart::metric_v_scale(surface, (u_min, u_max, v_min, v_max))
+            }
+            FaceSurface::Nurbs(_)
+            | FaceSurface::Plane { .. }
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_) => None,
+        };
+        metric.unwrap_or(du / dv)
     } else {
         1.0
     };
