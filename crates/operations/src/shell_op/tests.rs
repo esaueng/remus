@@ -1593,3 +1593,67 @@ fn l_bracket_fold_boundary_is_scale_stable_and_partial_fold_refuses() {
         "the unequal-arm partial-fold refusal must roll back every allocation"
     );
 }
+
+/// OpenZCAD #1247: a reversed planar face bounds material exactly like an
+/// un-reversed one. A boolean notch leaves the tool's walls as reversed
+/// planes (and a STEP `same_sense = .F.` face imports the same way); the
+/// fold detector paired their effective normal with the stored traversal,
+/// read every such sound wall as inverted, and refused the hollow as
+/// "outside the qualified uniform-L collapse cell".
+#[test]
+fn shell_accepts_reversed_planar_walls() {
+    let mut topo = Topology::new();
+    let blank = crate::primitives::make_box(&mut topo, 20.0, 16.0, 12.0).unwrap();
+    let tool = crate::primitives::make_box(&mut topo, 10.0, 8.0, 20.0).unwrap();
+    crate::transform::transform_solid(
+        &mut topo,
+        tool,
+        &remus_math::mat::Mat4::translation(10.0, 8.0, -4.0),
+    )
+    .unwrap();
+    let notched =
+        crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Cut, blank, tool).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&topo, notched).unwrap();
+    assert!(
+        faces.iter().any(|face| {
+            let face = topo.face(*face).unwrap();
+            face.is_reversed() && matches!(face.surface(), FaceSurface::Plane { .. })
+        }),
+        "the notch must carry reversed planar walls for this regression"
+    );
+    let top = faces
+        .iter()
+        .copied()
+        .filter(|&face| {
+            let FaceSurface::Plane { normal, d } = topo.face(face).unwrap().surface() else {
+                return false;
+            };
+            let sense = if topo.face(face).unwrap().is_reversed() {
+                -1.0
+            } else {
+                1.0
+            };
+            (normal.z() * sense - 1.0).abs() < 1e-12 && (d * sense - 12.0).abs() < 1e-9
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(top.len(), 1);
+
+    // Outer L: 20x16 less a 10x8 notch, 12 high (2880). Inner L at 2 mm:
+    // 16x12 less 10x8 = 112, 8 high closed (896) or 10 high open (1120).
+    for (open, expected) in [(&[][..], 1984.0), (&top[..], 1760.0)] {
+        let hollow = shell(&mut topo, notched, 2.0, open).unwrap();
+        // The closed hollow keeps the native closed-box layout (outer and
+        // cavity skins in one shell), which strict validation reports as
+        // disconnected for a plain box too; the open shell is one component.
+        if !open.is_empty() {
+            let report = crate::validate::validate_solid(&topo, hollow).unwrap();
+            assert!(report.is_valid(), "{:?}", report.issues);
+        }
+        let volume = crate::measure::solid_volume(&topo, hollow, 0.01).unwrap();
+        assert!(
+            (volume - expected).abs() <= expected * 1e-9,
+            "open={}: volume {volume} vs {expected}",
+            open.len()
+        );
+    }
+}

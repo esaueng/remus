@@ -88,6 +88,8 @@ pub mod assembly {
         for &solid in &solids {
             validate_component_solid(topo, solid)?;
         }
+        let relocated = super::seam::relocate_crossed_seams(topo, &solids, &[])?;
+        let topo = relocated.as_ref().unwrap_or(topo);
         let uncertainty = export_uncertainty(topo, &solids, &[])?;
         let mut context = StepWriteContext::new(StepWriteOptions {
             product_name: assembly.name().into(),
@@ -305,6 +307,8 @@ pub mod assembly {
     }
 }
 
+mod seam;
+
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
@@ -453,6 +457,10 @@ pub fn write_step_bodies_with_options(
         });
     }
 
+    // A STEP face may not run its seam through one of its own holes; move
+    // any such seam on a private copy before anything is written.
+    let relocated = seam::relocate_crossed_seams(topo, solids, sheets)?;
+    let topo = relocated.as_ref().unwrap_or(topo);
     let uncertainty = export_uncertainty(topo, solids, sheets)?;
 
     let mut ctx = StepWriteContext::new(options.clone());
