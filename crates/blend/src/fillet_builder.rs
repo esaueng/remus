@@ -1417,8 +1417,19 @@ fn qualified_closed_curved_pair(first: &FaceSurface, second: &FaceSurface) -> bo
             matches!(second, FaceSurface::Cylinder(_) | FaceSurface::Cone(_))
         }
         FaceSurface::Sphere(_) => matches!(second, FaceSurface::Cylinder(_)),
-        FaceSurface::Plane { .. } | FaceSurface::Torus(_) | FaceSurface::Nurbs(_) => false,
+        // A planar cap on a NURBS tube closed round the rim (the end of an
+        // in-place helical sweep of a circle), in either order.
+        FaceSurface::Plane { .. } => closed_nurbs_tube(second),
+        FaceSurface::Nurbs(_) => {
+            closed_nurbs_tube(first) && matches!(second, FaceSurface::Plane { .. })
+        }
+        FaceSurface::Torus(_) => false,
     }
+}
+
+/// A NURBS support closed in `u`, seamed along its own `u` boundary.
+fn closed_nurbs_tube(surface: &FaceSurface) -> bool {
+    matches!(surface, FaceSurface::Nurbs(nurbs) if nurbs.is_periodic_u())
 }
 
 fn closed_quadric_rim_info(
@@ -2268,6 +2279,17 @@ fn contact_support_deviation(
     (0..=4096)
         .map(|i| {
             let point = contact.evaluate((t1 - t0).mul_add(f64::from(i) / 4096.0, t0));
+            if let FaceSurface::Plane { normal, d } = support {
+                // A plane has no parameter chart to project through.
+                let length = normal.length();
+                return if length > 0.0 {
+                    ((point.x() * normal.x() + point.y() * normal.y() + point.z() * normal.z()) - d)
+                        .abs()
+                        / length
+                } else {
+                    f64::INFINITY
+                };
+            }
             support
                 .project_point(point)
                 .and_then(|(u, v)| support.evaluate(u, v))
@@ -2276,7 +2298,10 @@ fn contact_support_deviation(
         .fold(0.0_f64, f64::max)
 }
 
-fn closed_walking_rim_info(topo: &Topology, stripe: &Stripe) -> Result<bool, BlendError> {
+pub(crate) fn closed_walking_rim_info(
+    topo: &Topology,
+    stripe: &Stripe,
+) -> Result<bool, BlendError> {
     if !stripe.spine.is_closed()
         || stripe.spine.edges().is_empty()
         || !matches!(stripe.surface, FaceSurface::Nurbs(_))
@@ -2394,27 +2419,53 @@ fn rebuild_closed_walking_support(
             rebuilt_uses.push(use_);
             continue;
         }
-        if !matches!(edge.curve(), EdgeCurve::Line) {
-            return Err(BlendError::TrimmingFailure { face: face_id });
-        }
         let edge_start = edge.start();
         let edge_end = edge.end();
+        let new_start = if touches_start {
+            contact_vertex
+        } else {
+            edge_start
+        };
+        let new_end = if touches_end {
+            contact_vertex
+        } else {
+            edge_end
+        };
         let replacement = if let Some(existing) = replacements.get(&use_.edge()) {
             *existing
         } else {
-            let replacement = topo.add_edge(Edge::new(
-                if touches_start {
-                    contact_vertex
-                } else {
-                    edge_start
-                },
-                if touches_end {
-                    contact_vertex
-                } else {
-                    edge_end
-                },
-                EdgeCurve::Line,
-            ));
+            let replacement = match edge.curve() {
+                EdgeCurve::Line => topo.add_edge(Edge::new(new_start, new_end, EdgeCurve::Line)),
+                // A NURBS tube's seam (its own `u`-boundary iso-curve) is
+                // cut back to where the contact meets it; the support seam
+                // origin put the contact on it.
+                EdgeCurve::NurbsCurve(curve) if touches_start != touches_end => {
+                    let curve = curve.clone();
+                    let (d0, d1) = edge
+                        .strict_domain()
+                        .map_err(|_| BlendError::TrimmingFailure { face: face_id })?;
+                    let at = remus_math::nurbs::projection::project_point_to_curve(
+                        &curve,
+                        topo.vertex(contact_vertex)?.point(),
+                        1e-12,
+                    )
+                    .map_err(|_| BlendError::TrimmingFailure { face: face_id })?
+                    .parameter;
+                    let domain = if touches_start { (at, d1) } else { (d0, at) };
+                    if domain.0.is_nan() || domain.1.is_nan() || domain.0 >= domain.1 {
+                        return Err(BlendError::TrimmingFailure { face: face_id });
+                    }
+                    add_certified_curve_edge(
+                        topo,
+                        new_start,
+                        new_end,
+                        EdgeCurve::NurbsCurve(curve),
+                        domain,
+                    )
+                    .map_err(|_| BlendError::TrimmingFailure { face: face_id })?
+                }
+                _ => return Err(BlendError::TrimmingFailure { face: face_id }),
+            };
             replacements.insert(use_.edge(), replacement);
             replacement
         };
@@ -2474,7 +2525,7 @@ fn reverse_face_outer_wire(topo: &mut Topology, face_id: FaceId) -> Result<FaceI
     Ok(topo.add_face(face))
 }
 
-fn assemble_closed_walking_rim(
+pub(crate) fn assemble_closed_walking_rim(
     topo: &mut Topology,
     stripe: &Stripe,
     face_replacements: &mut DetHashMap<FaceId, FaceId>,
@@ -2608,23 +2659,39 @@ fn assemble_closed_walking_rim(
     // direction is reversed, and the direction toward the centre differs by
     // up to the section's opening angle between the two contacts.
     let support = topo.face(rebuilt_faces[0])?;
-    let (su, sv) = support
-        .surface()
-        .project_point(points[0])
-        .ok_or(BlendError::TrimmingFailure { face: faces[0] })?;
-    let mut support_normal = support.surface().normal(su, sv);
+    let mut support_normal = if let FaceSurface::Plane { normal, .. } = support.surface() {
+        // A plane has no parameter chart; its normal is the same everywhere.
+        *normal
+    } else {
+        let (su, sv) = support
+            .surface()
+            .project_point(points[0])
+            .ok_or(BlendError::TrimmingFailure { face: faces[0] })?;
+        support.surface().normal(su, sv)
+    };
     if support.is_reversed() {
         support_normal = -support_normal;
     }
-    let concave = support_normal.dot(section.center - points[0]) > 0.0;
     let corner = band_surface
         .evaluate(0.0, 0.0)
         .ok_or(BlendError::TrimmingFailure { face: faces[0] })?;
-    let toward_center = (section.center - corner).normalize()?;
-    let desired_normal = if concave {
-        toward_center
+    let desired_normal = if section.radius > 0.0 {
+        let concave = support_normal.dot(section.center - points[0]) > 0.0;
+        let toward_center = (section.center - corner).normalize()?;
+        if concave {
+            toward_center
+        } else {
+            -toward_center
+        }
     } else {
-        -toward_center
+        // A chamfer section is a straight chord with no ball centre. The
+        // second contact lies below the first support for a convex edge
+        // (into the material), and the band then faces the edge it cut
+        // away; a concave band faces away from it.
+        let concave = support_normal.dot(points[1] - points[0]) > 0.0;
+        let guide = stripe.spine.evaluate(topo, 0.0)?;
+        let toward_edge = (guide - corner).normalize()?;
+        if concave { -toward_edge } else { toward_edge }
     };
     let surface_normal = band_surface.normal(0.0, 0.0);
     let band_reversed = surface_normal.dot(desired_normal) < 0.0;
@@ -3088,32 +3155,49 @@ fn walked_band<F: crate::blend_func::BlendFunction>(
         });
     }
     let analytic = |surface: &FaceSurface| !matches!(surface, FaceSurface::Nurbs(_));
-    if spine.is_closed() && analytic(surf1) && analytic(surf2) {
+    // A NURBS support closed round the rim's other direction (a swept
+    // circle's tube): the walker solved its contacts on the surface itself,
+    // so the resampled fit is measured on it like an analytic support's.
+    let closed_nurbs =
+        |surface: &FaceSurface| matches!(surface, FaceSurface::Nurbs(n) if n.is_periodic_u());
+    let fits = |surface: &FaceSurface| analytic(surface) || closed_nurbs(surface);
+    if spine.is_closed() && fits(surf1) && fits(surf2) {
         let fit = crate::closed_walk::fit_closed_walk(
             walker,
             &walk_result.sections,
             [(ps1, support_periods(surf1)), (ps2, support_periods(surf2))],
-        )?;
+        );
+        let strict = analytic(surf1) && analytic(surf2);
         // Only the closed-rim assembly records a contact tolerance above the
         // linear one (`assemble_closed_walking_rim`); elsewhere the edges
         // would claim 1e-7.
-        if fit.deviation > 0.5 * remus_math::tolerance::Tolerance::new().linear
-            && !qualified_closed_curved_pair(surf1, surf2)
-        {
-            return Err(BlendError::WalkingFailure {
-                edge: spine.edges()[0],
-                t: 0.0,
-                residual: fit.deviation,
-            });
+        let within = |fit: &crate::closed_walk::ClosedWalkFit| {
+            fit.deviation <= 0.5 * remus_math::tolerance::Tolerance::new().linear
+                || qualified_closed_curved_pair(surf1, surf2)
+        };
+        match fit {
+            Ok(fit) if within(&fit) => {
+                return Ok(WalkedBand {
+                    surface: FaceSurface::Nurbs(fit.surface),
+                    contact1: fit.contact1,
+                    contact2: fit.contact2,
+                    pcurve1: fit.pcurve1,
+                    pcurve2: fit.pcurve2,
+                    sections: fit.sections,
+                });
+            }
+            Ok(fit) if strict => {
+                return Err(BlendError::WalkingFailure {
+                    edge: spine.edges()[0],
+                    t: 0.0,
+                    residual: fit.deviation,
+                });
+            }
+            Err(error) if strict => return Err(error),
+            // A NURBS support the fit cannot follow keeps the march's own
+            // sections, as before closed NURBS supports were resampled.
+            Ok(_) | Err(_) => {}
         }
-        return Ok(WalkedBand {
-            surface: FaceSurface::Nurbs(fit.surface),
-            contact1: fit.contact1,
-            contact2: fit.contact2,
-            pcurve1: fit.pcurve1,
-            pcurve2: fit.pcurve2,
-            sections: fit.sections,
-        });
     }
     let surface = if spine.is_closed() {
         approximate_blend_surface_linear_v(&walk_result.sections)?
@@ -3150,6 +3234,20 @@ fn support_seam_origin<F: crate::blend_func::BlendFunction>(
     faces: [FaceId; 2],
     surfaces: [&dyn remus_math::traits::ParametricSurface; 2],
 ) -> Result<Option<f64>, BlendError> {
+    support_seam_origin_with(&|s| walker.find_start(s), topo, spine, faces, surfaces)
+}
+
+/// How far round a support the contact at a spine station sits from its seam.
+type SeamMismatch<'a> = Box<dyn Fn(f64) -> Result<f64, BlendError> + 'a>;
+
+/// [`support_seam_origin`] with the section at a station solved by `start`.
+fn support_seam_origin_with(
+    start: &dyn Fn(f64) -> Result<crate::blend_func::BlendParams, BlendError>,
+    topo: &Topology,
+    spine: &Spine,
+    faces: [FaceId; 2],
+    surfaces: [&dyn remus_math::traits::ParametricSurface; 2],
+) -> Result<Option<f64>, BlendError> {
     if !spine.is_closed() || spine.length() <= 0.0 {
         return Ok(None);
     }
@@ -3162,14 +3260,25 @@ fn support_seam_origin<F: crate::blend_func::BlendFunction>(
             spine_vertices.push((entry, station));
         }
     }
+    let length = spine.length();
     for (side, &face_id) in faces.iter().enumerate() {
         let face = topo.face(face_id)?;
-        let FaceSurface::Cylinder(cylinder) = face.surface() else {
-            continue;
+        // The support's own seam: a cylinder's axis-parallel line, or the
+        // `u`-boundary iso-curve of a NURBS face closed in `u` (a swept
+        // circle's tube). Each is used twice by its face's wire.
+        let seam_curve_fits = |curve: &EdgeCurve| match face.surface() {
+            FaceSurface::Cylinder(_) => matches!(curve, EdgeCurve::Line),
+            FaceSurface::Nurbs(surface) => {
+                surface.is_periodic_u() && matches!(curve, EdgeCurve::NurbsCurve(_))
+            }
+            _ => false,
         };
-        let Ok(axis) = cylinder.axis().normalize() else {
+        if !matches!(
+            face.surface(),
+            FaceSurface::Cylinder(_) | FaceSurface::Nurbs(_)
+        ) {
             continue;
-        };
+        }
         let mut seam_vertex = None;
         for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
         {
@@ -3180,7 +3289,7 @@ fn support_seam_origin<F: crate::blend_func::BlendFunction>(
                     continue;
                 }
                 let edge = topo.edge(edge_id)?;
-                if !matches!(edge.curve(), EdgeCurve::Line) {
+                if !seam_curve_fits(edge.curve()) {
                     continue;
                 }
                 for vertex in [edge.start(), edge.end()] {
@@ -3196,30 +3305,63 @@ fn support_seam_origin<F: crate::blend_func::BlendFunction>(
         let Some((vertex, station)) = seam_vertex else {
             continue;
         };
-        let x_axis = cylinder.x_axis();
-        let y_axis = axis.cross(x_axis);
-        let azimuth = |point: Point3| {
-            let offset = point - cylinder.origin();
-            offset.dot(y_axis).atan2(offset.dot(x_axis))
-        };
-        let target = azimuth(topo.vertex(vertex)?.point());
         let surface = surfaces[side];
-        let length = spine.length();
-        let mismatch = |s: f64| -> Result<f64, BlendError> {
-            let params = walker.find_start(s.rem_euclid(length))?;
-            let (u, v) = if side == 0 {
+        let contact = |s: f64| -> Result<(f64, f64), BlendError> {
+            let params = start(s.rem_euclid(length))?;
+            Ok(if side == 0 {
                 (params.u1, params.v1)
             } else {
                 (params.u2, params.v2)
-            };
-            let delta = azimuth(surface.evaluate(u, v)) - target;
-            Ok(
-                (delta + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU)
-                    - std::f64::consts::PI,
-            )
+            })
+        };
+        let signed_turn =
+            |delta: f64, period: f64| (delta + 0.5 * period).rem_euclid(period) - 0.5 * period;
+        // `mismatch(s)`: how far round the support the contact at station
+        // `s` sits from the seam, signed and in the support's own periodic
+        // coordinate; `scale` turns it into a length.
+        let (mismatch, scale): (SeamMismatch<'_>, f64) = match face.surface() {
+            FaceSurface::Cylinder(cylinder) => {
+                let Ok(axis) = cylinder.axis().normalize() else {
+                    continue;
+                };
+                let x_axis = cylinder.x_axis();
+                let y_axis = axis.cross(x_axis);
+                let origin = cylinder.origin();
+                let azimuth = move |point: Point3| {
+                    let offset = point - origin;
+                    offset.dot(y_axis).atan2(offset.dot(x_axis))
+                };
+                let target = azimuth(topo.vertex(vertex)?.point());
+                (
+                    Box::new(move |s| {
+                        let (u, v) = contact(s)?;
+                        Ok(signed_turn(
+                            azimuth(surface.evaluate(u, v)) - target,
+                            std::f64::consts::TAU,
+                        ))
+                    }),
+                    cylinder.radius(),
+                )
+            }
+            FaceSurface::Nurbs(nurbs) => {
+                // The seam is the surface's own `u` boundary; the walker
+                // keeps a closed direction's parameter inside its domain.
+                let (u0, u1) = nurbs.domain_u();
+                let period = u1 - u0;
+                let (seam_u, seam_v) = surface.project_point(topo.vertex(vertex)?.point());
+                let speed = surface.partial_u(seam_u, seam_v).length();
+                (
+                    Box::new(move |s| {
+                        let (u, _) = contact(s)?;
+                        Ok(signed_turn(u - u0, period))
+                    }),
+                    speed,
+                )
+            }
+            _ => continue,
         };
         let at_vertex = mismatch(station)?;
-        if (at_vertex * cylinder.radius()).abs() <= remus_math::tolerance::Tolerance::new().linear {
+        if (at_vertex * scale).abs() <= remus_math::tolerance::Tolerance::new().linear {
             return Ok(None);
         }
         // Bracket the root next to the seam vertex, then bisect.
@@ -3617,6 +3759,128 @@ pub(crate) fn sections_to_contact_curve(
 }
 
 /// Parameter periods `(u, v)` of a support surface.
+/// A chamfer along a closed rim between a planar cap and a NURBS tube closed
+/// round the rim (the end of an in-place helical sweep of a circle), or
+/// `None` for any other configuration.
+///
+/// No analytic construction applies, so the band is walked: at every
+/// station the contacts sit in the spine's normal plane at the requested
+/// setbacks from the edge ([`crate::blend_func::ChamferBlend`]), each
+/// section seeded from the rolling ball of radius `d1` there. The walk
+/// starts where the tube contact meets the tube's own seam (as a fillet's
+/// does) and is resampled into C¹ cubic contacts measured on their supports
+/// ([`crate::closed_walk`]); every section is a straight chord, so the band
+/// is ruled. [`assemble_closed_walking_rim`] then builds it like a fillet
+/// band.
+///
+/// # Errors
+///
+/// Walking or fitting failures, and topology lookups.
+pub(crate) fn closed_walked_chamfer_stripe(
+    topo: &Topology,
+    spine: &Spine,
+    face1: FaceId,
+    face2: FaceId,
+    d1: f64,
+    d2: f64,
+) -> Result<Option<StripeResult>, BlendError> {
+    use crate::blend_func::ChamferBlend;
+
+    let face1_data = topo.face(face1)?;
+    let face2_data = topo.face(face2)?;
+    let (surf1, surf2) = (face1_data.surface().clone(), face2_data.surface().clone());
+    let plane_tube = matches!(surf1, FaceSurface::Plane { .. }) && closed_nurbs_tube(&surf2)
+        || closed_nurbs_tube(&surf1) && matches!(surf2, FaceSurface::Plane { .. });
+    if !spine.is_closed() || spine.length() <= 0.0 || !plane_tube {
+        return Ok(None);
+    }
+    let Some(frames) = analytic::edge_material_frames(topo, spine, face1, face2)? else {
+        return Ok(None);
+    };
+    let Some(concave) = frames.concave() else {
+        return Ok(None);
+    };
+    let mut adapter1 = None;
+    let mut adapter2 = None;
+    let base1 = surface_ref_or_adapter(&surf1, &mut adapter1);
+    let base2 = surface_ref_or_adapter(&surf2, &mut adapter2);
+    let flipped1 = FlippedNormalSurface::new(base1);
+    let flipped2 = FlippedNormalSurface::new(base2);
+    let ps1 = ball_side(base1, &flipped1, face1_data.is_reversed(), concave);
+    let ps2 = ball_side(base2, &flipped2, face2_data.is_reversed(), concave);
+    let config = WalkerConfig {
+        tol_3d: 5.0 * remus_math::tolerance::Tolerance::new().linear,
+        max_step_fraction: 0.01,
+        ..WalkerConfig::default()
+    };
+    let ball = ConstRadBlend { radius: d1 };
+    let chamfer = ChamferBlend { d1, d2 };
+
+    // A chamfer section from the guide point alone is singular (both
+    // setback directions vanish there); the ball of radius `d1` touches each
+    // face about that far from the edge and seeds it.
+    let seeded = |spine: &Spine, s: f64| -> Result<crate::blend_func::BlendParams, BlendError> {
+        let seed = Walker::new(&ball, ps1, ps2, spine, topo, config).find_start(s)?;
+        Walker::new(&chamfer, ps1, ps2, spine, topo, config)
+            .solve_section(s, Some(seed))
+            .map(|(params, _)| params)
+            .ok_or_else(|| BlendError::StartSolutionFailure {
+                edge: spine.edges()[0],
+                t: s / spine.length(),
+            })
+    };
+    let origin = support_seam_origin_with(
+        &|s| seeded(spine, s),
+        topo,
+        spine,
+        [face1, face2],
+        [ps1, ps2],
+    )?;
+    let spine = origin.map_or_else(|| spine.clone(), |origin| spine.clone().with_origin(origin));
+    let walker = Walker::new(&chamfer, ps1, ps2, &spine, topo, config);
+    let start = seeded(&spine, 0.0)?;
+    let mut walked = walker.walk(start, 0.0, spine.length())?.sections;
+    // The walk closes on its first section: close it exactly, as the fillet
+    // band does.
+    if let (Some(first), Some(last)) = (walked.first().cloned(), walked.last_mut()) {
+        let closure = (last.p1 - first.p1)
+            .length()
+            .max((last.p2 - first.p2).length());
+        if closure > 10.0 * config.tol_3d {
+            return Err(BlendError::WalkingFailure {
+                edge: spine.edges()[0],
+                t: 1.0,
+                residual: closure,
+            });
+        }
+        last.p1 = first.p1;
+        last.p2 = first.p2;
+        last.center = first.center;
+    }
+    let fit = crate::closed_walk::fit_closed_walk(
+        &walker,
+        &walked,
+        [
+            (ps1, support_periods(&surf1)),
+            (ps2, support_periods(&surf2)),
+        ],
+    )?;
+    Ok(Some(StripeResult {
+        stripe: Stripe {
+            spine,
+            surface: FaceSurface::Nurbs(fit.surface),
+            pcurve1: fit.pcurve1,
+            pcurve2: fit.pcurve2,
+            contact1: fit.contact1,
+            contact2: fit.contact2,
+            face1,
+            face2,
+            sections: fit.sections,
+        },
+        new_edges: Vec::new(),
+    }))
+}
+
 fn support_periods(face_surface: &FaceSurface) -> (Option<f64>, Option<f64>) {
     match face_surface {
         FaceSurface::Cylinder(_) | FaceSurface::Cone(_) | FaceSurface::Sphere(_) => {

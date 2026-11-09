@@ -266,9 +266,16 @@ fn fit_with_stations<F: BlendFunction>(
         // On the walked branch: within half a ball radius of the walked
         // centre polyline, or within its chord where the walk's stations are
         // too sparse for its chords to follow the centre's path.
+        // A chamfer's straight section has no ball: its reach is half its
+        // chord instead.
         let on_branch = |section: &CircSection| {
+            let reach = if section.radius == 0.0 {
+                0.5 * (section.p2 - section.p1).length()
+            } else {
+                0.5 * section.radius.abs()
+            };
             expected.is_some_and(|(center, chord)| {
-                (section.center - center).length() <= (0.5 * section.radius.abs()).max(chord)
+                (section.center - center).length() <= reach.max(chord)
             })
         };
         let solved = walker
@@ -370,6 +377,29 @@ fn fit_with_stations<F: BlendFunction>(
                 }
             }
             uv.push([u, v]);
+        }
+        // A NURBS support clamps outside its knot domain, so a contact
+        // unwrapped from the far image of its seam (`u = hi` rather than
+        // `lo`) would read the clamped boundary for its whole turn. Move the
+        // run whole periods to sit in the domain. Analytic supports are
+        // periodic in their own trigonometry and keep their values.
+        if let Some(nurbs) = supports[side].0.as_nurbs() {
+            let domains = [nurbs.domain_u(), nurbs.domain_v()];
+            for (axis, period) in [u_period, v_period].into_iter().enumerate() {
+                let Some(period) = period else { continue };
+                let (lo, hi) = uv
+                    .iter()
+                    .fold((f64::INFINITY, f64::NEG_INFINITY), |acc, p| {
+                        (acc.0.min(p[axis]), acc.1.max(p[axis]))
+                    });
+                let middle = f64::midpoint(domains[axis].0, domains[axis].1);
+                let turns = ((f64::midpoint(lo, hi) - middle) / period).round();
+                if turns != 0.0 && turns.is_finite() {
+                    for point in &mut uv {
+                        point[axis] -= turns * period;
+                    }
+                }
+            }
         }
         let poles = piecewise_poles(&uv, &layout);
         let points: Vec<Point2> = poles.iter().map(|p| Point2::new(p[0], p[1])).collect();

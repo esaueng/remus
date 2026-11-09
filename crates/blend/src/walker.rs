@@ -198,6 +198,43 @@ pub struct WalkResult {
     pub end_params: BlendParams,
 }
 
+/// `x` brought into the knot domain `(lo, hi)` of a closed direction, a
+/// whole number of periods away.
+fn wrap_period(x: f64, (lo, hi): (f64, f64)) -> f64 {
+    let period = hi - lo;
+    if period.is_nan() || period <= 0.0 || !x.is_finite() || (lo..=hi).contains(&x) {
+        return x;
+    }
+    lo + (x - lo).rem_euclid(period)
+}
+
+/// `(u, v)` with each closed direction of a NURBS support wrapped into its
+/// knot domain.
+///
+/// A NURBS surface clamps a parameter outside its knot domain, so a Newton
+/// step across a closed surface's seam (a swept circle's tube, the
+/// rolling-ball contact just past `u = 0`) would land on the clamped edge,
+/// where the derivatives no longer follow the surface, and stall. The
+/// surface is the same point set a period away, so the step continues on the
+/// other side of the seam instead. Analytic supports are periodic in their
+/// own trigonometry and open NURBS are left alone.
+fn wrap_closed(surface: &dyn ParametricSurface, u: f64, v: f64) -> (f64, f64) {
+    let Some(nurbs) = surface.as_nurbs() else {
+        return (u, v);
+    };
+    let u = if nurbs.is_periodic_u() {
+        wrap_period(u, nurbs.domain_u())
+    } else {
+        u
+    };
+    let v = if nurbs.is_periodic_v() {
+        wrap_period(v, nurbs.domain_v())
+    } else {
+        v
+    };
+    (u, v)
+}
+
 // ──────────────────────────── Walker ────────────────────────────
 
 /// Newton-Raphson walking engine that traces a blend surface along a spine.
@@ -282,6 +319,8 @@ impl<'a, F: BlendFunction> Walker<'a, F> {
             params.v1 += delta[1];
             params.u2 += delta[2];
             params.v2 += delta[3];
+            (params.u1, params.v1) = wrap_closed(self.surf1, params.u1, params.v1);
+            (params.u2, params.v2) = wrap_closed(self.surf2, params.u2, params.v2);
         }
 
         let f = self.func.value(self.surf1, self.surf2, &params, ctx);

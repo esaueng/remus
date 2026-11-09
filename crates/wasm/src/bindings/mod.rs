@@ -62,6 +62,8 @@ mod gridfinity_tests;
 #[cfg(test)]
 mod growing_holder_volume_tests;
 #[cfg(test)]
+mod helical_coil_cap_tests;
+#[cfg(test)]
 mod holed_face_tests;
 #[cfg(test)]
 mod mixed_notch_tests;

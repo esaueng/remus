@@ -90,14 +90,14 @@ fn spring(topo: &mut Topology) -> (FaceId, SolidId) {
 }
 
 #[test]
-fn circle_spring_is_two_caps_two_round_sides_and_exact_volume() {
+fn circle_spring_is_two_caps_one_round_side_and_exact_volume() {
     let mut topo = Topology::new();
     let (profile, solid) = spring(&mut topo);
     assert_valid(&topo, solid, "spring");
     assert_eq!(
         census(&topo, solid),
-        (2, 2, 0),
-        "2 planar caps + 2 NURBS sides"
+        (2, 1, 0),
+        "2 planar caps + 1 seamed NURBS side"
     );
 
     // Pappus holds for a screw motion: V = A · 2π x̄ · turns.
@@ -247,8 +247,8 @@ fn holed_profile_sweeps_inward_hole_walls_and_exact_volume() {
     let profile = holed_profile(&mut topo);
     let solid = helical_sweep_in_place(&mut topo, profile, origin(), Z, 4.0, 1.5).unwrap();
     assert_valid(&topo, solid, "holed coil");
-    // 4 rectangle sides + 2 hole halves.
-    assert_eq!(census(&topo, solid), (2, 6, 0));
+    // 4 rectangle sides + 1 seamed hole wall.
+    assert_eq!(census(&topo, solid), (2, 5, 0));
     // Area-weighted centroid distance from the axis.
     let (outer_area, outer_x) = (12.0, 8.0);
     let (hole_area, hole_x) = (PI * 0.8 * 0.8, 9.0);
@@ -677,7 +677,7 @@ fn ellipse_and_closed_nurbs_profiles_sweep_exactly() {
     );
     let solid = helical_sweep_in_place(&mut topo, profile, origin(), Z, 4.0, 2.0).unwrap();
     assert_valid(&topo, solid, "elliptic coil");
-    assert_eq!(census(&topo, solid), (2, 2, 0));
+    assert_eq!(census(&topo, solid), (2, 1, 0));
     let exact = PI * 1.2 * 0.7 * TAU * 10.0 * 2.0;
     assert!(rel(volume(&topo, solid), exact) < 1e-4);
 
@@ -698,7 +698,7 @@ fn ellipse_and_closed_nurbs_profiles_sweep_exactly() {
     );
     let solid = helical_sweep_in_place(&mut topo, profile, origin(), Z, 4.0, 2.0).unwrap();
     assert_valid(&topo, solid, "NURBS-circle coil");
-    assert_eq!(census(&topo, solid), (2, 2, 0));
+    assert_eq!(census(&topo, solid), (2, 1, 0));
     let exact = PI * TAU * 10.0 * 2.0;
     assert!(rel(volume(&topo, solid), exact) < 1e-4);
 }
@@ -716,4 +716,257 @@ fn perpendicular_profile_beside_the_axis_twists_exactly() {
     let exact = PI * 6.0 * 1.5;
     let measured = volume(&topo, solid);
     assert!(rel(measured, exact) < 1e-4, "{measured} vs {exact}");
+}
+
+/// esaueng/remus#1623: the coil the issue measured, a radius-5 circle 25 from
+/// the Z axis, pitch 23.5, two turns.
+fn issue_coil(topo: &mut Topology) -> SolidId {
+    let profile = circle_face(
+        topo,
+        Point3::new(25.0, 0.0, 0.0),
+        Vec3::new(0.0, 1.0, 0.0),
+        5.0,
+    );
+    helical_sweep_in_place(topo, profile, origin(), Z, 23.5, 2.0).unwrap()
+}
+
+/// Every planar cap's outer-wire edges.
+fn cap_edges(topo: &Topology, solid: SolidId) -> Vec<Vec<remus_topology::edge::EdgeId>> {
+    solid_faces(topo, solid)
+        .unwrap()
+        .into_iter()
+        .filter(|&f| matches!(topo.face(f).unwrap().surface(), FaceSurface::Plane { .. }))
+        .map(|f| {
+            topo.wire(topo.face(f).unwrap().outer_wire())
+                .unwrap()
+                .edges()
+                .iter()
+                .map(OrientedEdge::edge)
+                .collect()
+        })
+        .collect()
+}
+
+/// Each cap of a circle coil is bounded by one closed circle (not two half
+/// circles with identical endpoints and lengths), the side is one face, and
+/// its one longitudinal edge is a true seam: the side face on both sides of
+/// it, smooth across it. Nothing else runs along the coil.
+#[test]
+fn circle_coil_caps_are_one_closed_circle_and_the_side_is_self_seamed() {
+    let mut topo = Topology::new();
+    let solid = issue_coil(&mut topo);
+    assert_valid(&topo, solid, "issue coil");
+    assert_eq!(census(&topo, solid), (2, 1, 0));
+    let edges = remus_topology::explorer::solid_edges(&topo, solid).unwrap();
+    assert_eq!(edges.len(), 3, "two cap circles and one seam");
+
+    let caps = cap_edges(&topo, solid);
+    assert_eq!(caps.len(), 2);
+    for cap in &caps {
+        assert_eq!(cap.len(), 1, "one edge bounds each cap");
+        let edge = topo.edge(cap[0]).unwrap();
+        assert_eq!(edge.start(), edge.end(), "the cap edge is closed");
+        let EdgeCurve::Circle(circle) = edge.curve() else {
+            panic!("the cap edge is the exact circle");
+        };
+        assert!((circle.radius() - 5.0).abs() < 1e-12);
+        let (t0, t1) = edge.strict_domain().unwrap();
+        assert!(((t1 - t0) - TAU).abs() < 1e-12, "a full turn");
+        let length = crate::measure::edge_length(&topo, cap[0]).unwrap();
+        assert!((length - TAU * 5.0).abs() < 1e-6, "length {length}");
+    }
+
+    let side = solid_faces(&topo, solid)
+        .unwrap()
+        .into_iter()
+        .find(|&f| matches!(topo.face(f).unwrap().surface(), FaceSurface::Nurbs(_)))
+        .unwrap();
+    let map = remus_topology::explorer::edge_to_face_map(&topo, solid).unwrap();
+    let seams: Vec<_> = edges
+        .iter()
+        .filter(|e| !caps.iter().any(|cap| cap.contains(e)))
+        .collect();
+    assert_eq!(seams.len(), 1);
+    let seam = *seams[0];
+    assert_eq!(
+        map.get(&seam.index()).map(|faces| &faces[..]),
+        Some(&[side, side][..]),
+        "the seam is self-owned"
+    );
+    assert!(
+        crate::query::self_seam_is_g1(&topo, seam, side).unwrap(),
+        "the side is smooth across its seam"
+    );
+    // The two-face verdict keeps its convention for a self-seam.
+    assert!(!crate::query::edge_is_g1(&topo, seam, side, side).unwrap());
+    let FaceSurface::Nurbs(surface) = topo.face(side).unwrap().surface() else {
+        unreachable!();
+    };
+    assert!(surface.is_periodic_u(), "closed across the profile");
+    assert!(!surface.is_periodic_v(), "open along the coil");
+
+    // Pappus: area × 2π·R × turns.
+    let exact = PI * 25.0 * TAU * 25.0 * 2.0;
+    let measured = volume(&topo, solid);
+    assert!(
+        rel(measured, exact) < 1e-3,
+        "volume {measured} vs {exact} (rel {:e})",
+        rel(measured, exact)
+    );
+}
+
+/// A closed profile edge with a corner at its vertex sweeps into a side face
+/// that meets itself at an angle along its seam: self-owned, but a crease.
+#[test]
+fn creased_closed_profile_seam_is_self_owned_but_not_smooth() {
+    use remus_topology::edge::Edge;
+    use remus_topology::vertex::Vertex;
+
+    // A closed quadratic B-spline teardrop in the XZ plane, pointed at its
+    // start point (10, 0, 0): its start and end tangents differ.
+    let points = vec![
+        Point3::new(10.0, 0.0, 0.0),
+        Point3::new(11.5, 0.0, 1.0),
+        Point3::new(10.0, 0.0, 2.5),
+        Point3::new(8.5, 0.0, 1.0),
+        Point3::new(10.0, 0.0, 0.0),
+    ];
+    let curve = remus_math::nurbs::curve::NurbsCurve::new(
+        2,
+        vec![0.0, 0.0, 0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0, 1.0, 1.0],
+        points,
+        vec![1.0; 5],
+    )
+    .unwrap();
+    let mut topo = Topology::new();
+    let tip = topo.add_vertex(Vertex::new(Point3::new(10.0, 0.0, 0.0), 1e-7));
+    let mut edge = Edge::new(tip, tip, EdgeCurve::NurbsCurve(curve));
+    edge.set_trim(Some((0.0, 1.0)));
+    let edge = topo.add_edge(edge);
+    let normal = Vec3::new(0.0, -1.0, 0.0);
+    let profile = face_from_edges(
+        &mut topo,
+        vec![OrientedEdge::new(edge, true)],
+        normal,
+        Point3::new(10.0, 0.0, 0.0),
+    );
+    let solid = helical_sweep_in_place(&mut topo, profile, origin(), Z, 4.0, 1.5).unwrap();
+    assert_valid(&topo, solid, "teardrop coil");
+    assert_eq!(census(&topo, solid), (2, 1, 0));
+
+    let map = remus_topology::explorer::edge_to_face_map(&topo, solid).unwrap();
+    let (seam, side) = map
+        .iter()
+        .find_map(|(&edge, faces)| match faces.as_slice() {
+            &[a, b] if a == b => Some((edge, a)),
+            _ => None,
+        })
+        .expect("a self-owned seam");
+    let seam = remus_topology::explorer::solid_edges(&topo, solid)
+        .unwrap()
+        .into_iter()
+        .find(|e| e.index() == seam)
+        .unwrap();
+    assert!(
+        !crate::query::self_seam_is_g1(&topo, seam, side).unwrap(),
+        "a creased seam is not smooth"
+    );
+}
+
+/// A cylinder's wall seam is smooth: the face is analytic across its period.
+#[test]
+fn cylinder_wall_seam_is_smooth() {
+    let mut topo = Topology::new();
+    let cylinder = crate::primitives::make_cylinder(&mut topo, 2.0, 4.0).unwrap();
+    let map = remus_topology::explorer::edge_to_face_map(&topo, cylinder).unwrap();
+    let mut seams = 0;
+    for edge in remus_topology::explorer::solid_edges(&topo, cylinder).unwrap() {
+        match map.get(&edge.index()).map(|faces| &faces[..]) {
+            Some(&[a, b]) if a == b => {
+                seams += 1;
+                assert!(crate::query::self_seam_is_g1(&topo, edge, a).unwrap());
+            }
+            Some(&[a, b]) => {
+                // A rim between a cap and the wall is not a self-seam.
+                assert!(!crate::query::self_seam_is_g1(&topo, edge, a).unwrap());
+                assert!(!crate::query::self_seam_is_g1(&topo, edge, b).unwrap());
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(seams, 1);
+}
+
+/// (F, E, V) of a solid.
+fn entity_counts(topo: &Topology, solid: SolidId) -> (usize, usize, usize) {
+    (
+        solid_faces(topo, solid).unwrap().len(),
+        remus_topology::explorer::solid_edges(topo, solid)
+            .unwrap()
+            .len(),
+        remus_topology::explorer::solid_vertices(topo, solid)
+            .unwrap()
+            .len(),
+    )
+}
+
+/// A blend of `size` on one cap rim of the issue coil, through the public
+/// cascade (`fillet`) or the walking chamfer (`chamfer`, what the binding
+/// runs after the planar bevel refuses a curved neighbour). Returns the
+/// volume it removed after checking the result is a valid, changed solid.
+fn blend_cap(cap: usize, size: f64, fillet: bool) -> f64 {
+    let mut topo = Topology::new();
+    let solid = issue_coil(&mut topo);
+    let before = volume(&topo, solid);
+    let counts = entity_counts(&topo, solid);
+    let rim = cap_edges(&topo, solid)[cap][0];
+    let label = format!(
+        "{} {size} on cap {cap}",
+        if fillet { "fillet" } else { "chamfer" }
+    );
+    let result = if fillet {
+        let edges = crate::query::filter_filletable_edges(&topo, solid, &[rim]).unwrap();
+        assert_eq!(edges, vec![rim], "{label}: the rim is filletable");
+        crate::blend_ops::fillet_cascade(&mut topo, solid, &edges, size)
+            .unwrap_or_else(|e| panic!("{label}: {e}"))
+    } else {
+        crate::blend_ops::chamfer_v2(&mut topo, solid, &[rim], size, size)
+            .unwrap_or_else(|e| panic!("{label}: {e}"))
+    };
+    assert!(!result.is_partial && result.failed.is_empty(), "{label}");
+    assert_valid(&topo, result.solid, &label);
+    let after = entity_counts(&topo, result.solid);
+    // One band face, two contact edges and its seam replace the rim.
+    assert_eq!(
+        after,
+        (counts.0 + 1, counts.1 + 2, counts.2 + 1),
+        "{label}: (F, E, V) {counts:?} -> {after:?}"
+    );
+    let mesh = crate::tessellate::tessellate_solid(&topo, result.solid, 0.05).unwrap();
+    assert_eq!(open_mesh_edges(&mesh), 0, "{label}: watertight");
+    before - volume(&topo, result.solid)
+}
+
+/// esaueng/remus#1623: a fillet and a chamfer of 1 round each cap rim of the
+/// issue coil, on the whole closed edge. Both remove material, about what a
+/// right-angled rim of the profile radius loses: a fillet the corner's
+/// `(1 − π/4)·r²`, a chamfer its `r²/2`, carried round the rim at the
+/// section's centroid (the cap meets the tube a few degrees off square, so
+/// the bounds are loose).
+#[test]
+fn fillet_and_chamfer_round_both_cap_rims() {
+    let fillet_corner = (1.0 - PI / 4.0) * TAU * (5.0 - (10.0 - 3.0 * PI) / (12.0 - 3.0 * PI));
+    let chamfer_corner = 0.5 * TAU * (5.0 - 1.0 / 3.0);
+    for cap in 0..2 {
+        let removed = blend_cap(cap, 1.0, true);
+        assert!(
+            removed > 0.8 * fillet_corner && removed < 1.2 * fillet_corner,
+            "fillet on cap {cap} removed {removed}, expected about {fillet_corner}"
+        );
+        let removed = blend_cap(cap, 1.0, false);
+        assert!(
+            removed > 0.8 * chamfer_corner && removed < 1.2 * chamfer_corner,
+            "chamfer on cap {cap} removed {removed}, expected about {chamfer_corner}"
+        );
+    }
 }

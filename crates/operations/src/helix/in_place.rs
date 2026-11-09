@@ -335,7 +335,7 @@ impl Screw {
     }
 }
 
-/// One profile boundary piece: a source edge, or half of a closed one.
+/// One profile boundary piece: a source edge.
 struct Piece {
     /// Start-cap edge geometry in the piece's natural direction.
     cap: EdgeCurve,
@@ -485,11 +485,38 @@ fn exact_piece(
     })
 }
 
-/// A piece end: its point and vertex tolerance.
-type End = (Point3, f64);
+/// `curve` with its knots mapped affinely onto `[0, 2π]` (same points,
+/// weights and shape; only the parameter is rescaled).
+///
+/// A closed profile edge sweeps into a side face closed in `u`, and the
+/// kernel reads a closed direction's period as a full turn: the face
+/// integrator unwraps a seam-straddling trim by `2π`. On a `[0, 1]` knot
+/// domain the trim collapses onto the seam and the face integrates to
+/// nothing; on `[0, 2π]` it is the whole domain.
+fn full_turn_knots(curve: &NurbsCurve) -> Result<NurbsCurve, OperationsError> {
+    let (d0, d1) = curve.domain();
+    let scale = TAU / (d1 - d0);
+    let knots = curve
+        .knots()
+        .iter()
+        // The end knots land exactly on `2π`, not a rounding away.
+        .map(|&k| {
+            if k.to_bits() == d1.to_bits() {
+                TAU
+            } else {
+                (k - d0) * scale
+            }
+        })
+        .collect();
+    Ok(NurbsCurve::new(
+        curve.degree(),
+        knots,
+        curve.control_points().to_vec(),
+        curve.weights().to_vec(),
+    )?)
+}
 
-/// Read one profile wire into traversal-ordered pieces, splitting closed
-/// edges into two exact halves.
+/// Read one profile wire into traversal-ordered pieces, one per edge.
 fn read_loop(topo: &Topology, wire: WireId, outer: bool) -> Result<Loop, OperationsError> {
     let linear = Tolerance::new().linear;
     let mut pieces = Vec::new();
@@ -512,44 +539,28 @@ fn read_loop(topo: &Topology, wire: WireId, outer: bool) -> Result<Loop, Operati
             )?,
         };
         let snap_tol = 10.0 * start_tol.max(end_tol);
-        // Natural-direction pieces: range, then each end with its vertex
-        // tolerance (a split point is a new vertex at the linear tolerance).
-        let natural: Vec<((f64, f64), End, End)> = if edge.start() == edge.end() {
-            let middle = f64::midpoint(domain.0, domain.1);
-            let mid = (
-                edge.curve().evaluate_with_endpoints(middle, start, end),
-                linear,
-            );
-            vec![
-                ((domain.0, middle), (start, start_tol), mid),
-                ((middle, domain.1), mid, (end, end_tol)),
-            ]
+        // One piece per edge, in its natural direction. A closed edge stays
+        // whole: its side face is closed across the profile and seamed by
+        // the rail its one vertex sweeps, like a cylinder's wall.
+        let (cap, trim, nurbs) = exact_piece(edge.curve(), domain, start, end)?;
+        let nurbs = snap(nurbs, start, end, snap_tol)?;
+        let nurbs = if edge.start() == edge.end() {
+            full_turn_knots(&nurbs)?
         } else {
-            vec![(domain, (start, start_tol), (end, end_tol))]
+            nurbs
         };
         let forward = oe.is_forward();
-        let mut built = Vec::with_capacity(natural.len());
-        for (range, a, b) in natural {
-            let (cap, trim, nurbs) = exact_piece(edge.curve(), range, a.0, b.0)?;
-            let nurbs = snap(nurbs, a.0, b.0, snap_tol)?;
-            built.push((
-                Piece {
-                    cap,
-                    trim,
-                    nurbs,
-                    forward,
-                },
-                a,
-                b,
-            ));
-        }
-        if !forward {
-            built.reverse();
-        }
-        for (piece, a, b) in built {
-            points.push(if forward { a } else { b });
-            pieces.push(piece);
-        }
+        points.push(if forward {
+            (start, start_tol)
+        } else {
+            (end, end_tol)
+        });
+        pieces.push(Piece {
+            cap,
+            trim,
+            nurbs,
+            forward,
+        });
     }
     if pieces.is_empty() {
         return Err(invalid("helical sweep profile wire has no edges"));
