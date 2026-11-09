@@ -68,6 +68,8 @@ mod holed_face_tests;
 #[cfg(test)]
 mod mixed_notch_tests;
 #[cfg(test)]
+mod oblique_circle_loft_tests;
+#[cfg(test)]
 mod qualify_convex_hull_tests;
 #[cfg(test)]
 mod qualify_edge_relations_tests;

@@ -8,6 +8,23 @@ historical predecessor-line records, retained for provenance. The
 
 ### Fixed
 
+* **operations,check:** a loft between parallel circles whose centres are
+  laterally offset (OpenZCAD #1253: r 25 at the origin, r 10 at (12, 0, 60))
+  fell to the polygon path in both `loft` and two-section `loft_smooth`: 32
+  planar side facets, 60 868.18 mm³ against the exact 61 261.06 (−0.64 %).
+  Such a stack now lofts as an oblique frustum: one exact full-turn circle
+  per section, planar caps, and per section pair one rational ruled band
+  joining equal angles of its rims, so every section parallel to the
+  profiles is the exact circle with linearly blended centre and radius. The
+  input rims require authoritative full-turn domains, parallel axes within
+  angular and radius-scaled linear bounds, and a control-net displacement
+  proof for recognized NURBS circles. The band's closed form and outward
+  normal are also checked on a grid; unqualified sections keep the old
+  path. `remus-check` recognizes the band's full natural rectangle (whole
+  circle rows on a straight seam), so `mass_properties` reads the exact
+  volume (the issue case to 1e-14) and centroid; `solid_volume` still meshes
+  NURBS bodies (1.6e-4 low at a 2.5e-3 deflection, converging). STEP keeps
+  both rims as circles and the band as a rational B-spline surface.
 * **io:** STEP export relocates a seam crossing a window in a qualified
   cylindrical band (OpenZCAD #1243: two overlapping axial cylinders, both
   union orders). The writer computes the window's angular extent from
