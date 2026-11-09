@@ -1,4 +1,4 @@
-//! Natural degree-(2, p) domains witnessed by every complete boundary image.
+//! Natural degree-(1, p) and degree-(2, p) domains witnessed by complete boundary images.
 
 use remus_math::compact_sort::CompactSort;
 use remus_math::nurbs::curve::NurbsCurve;
@@ -96,12 +96,149 @@ fn circular_section_matches(
     )
 }
 
+/// A ruled full-turn band: two rows joined by straight rails, each row the
+/// whole of one closed circle edge, and the band closed in v on one straight
+/// seam whose two uses are both v-boundaries (the oblique circle loft band).
+///
+/// The rows are witnessed exactly: a circle edge must convert, over its own
+/// full-turn domain, to the row's curve bit for bit in knots and weights and
+/// within `tolerance` in control points; a NURBS edge must be that row over
+/// its whole domain. Nothing here samples or projects.
+fn ruled_full_turn_is_complete(
+    topo: &Topology,
+    face: FaceId,
+    s: &NurbsSurface,
+) -> Result<bool, CheckError> {
+    let f = topo.face(face)?;
+    if !f.inner_wires().is_empty()
+        || s.degree_u() != 1
+        || s.control_points().len() != 2
+        || s.degree_v() == 0
+        || s.control_points()[0].len() < 3
+        || s.control_points()[1].len() != s.control_points()[0].len()
+        || s.is_periodic_u()
+        || !s.is_periodic_v()
+        || !clamped(s.knots_u(), 1, s.domain_u())
+        || !clamped(s.knots_v(), s.degree_v(), s.domain_v())
+    {
+        return Ok(false);
+    }
+    let points = s.control_points();
+    let weights = s.weights();
+    let n = points[0].len();
+    let magnitude = points
+        .iter()
+        .flatten()
+        .map(|p| p.x().abs().max(p.y().abs()).max(p.z().abs()))
+        .fold(1.0_f64, f64::max);
+    let tolerance = (128.0 * f64::EPSILON * magnitude).min(1e-7);
+    if points
+        .iter()
+        .any(|row| !close_point(row[0], row[n - 1], tolerance))
+    {
+        return Ok(false);
+    }
+    let rows = [
+        NurbsCurve::new(
+            s.degree_v(),
+            s.knots_v().to_vec(),
+            points[0].clone(),
+            weights[0].clone(),
+        )?,
+        NurbsCurve::new(
+            s.degree_v(),
+            s.knots_v().to_vec(),
+            points[1].clone(),
+            weights[1].clone(),
+        )?,
+    ];
+    let seam = (points[0][0], points[1][0]);
+    let wire = topo.wire(f.outer_wire())?;
+    if wire.edges().len() != 4
+        || remus_topology::validation::validate_wire_closed(wire, topo).is_err()
+    {
+        return Ok(false);
+    }
+    let turn = std::f64::consts::TAU;
+    let mut row_uses = [0_usize; 2];
+    let mut seam_uses = Vec::with_capacity(2);
+    for oe in wire.edges() {
+        let e = topo.edge(oe.edge())?;
+        let Ok(range) = e.strict_domain() else {
+            return Ok(false);
+        };
+        let start = topo.vertex(e.start())?.point();
+        let end = topo.vertex(e.end())?.point();
+        if !close_point(
+            e.curve().evaluate_with_endpoints(range.0, start, end),
+            start,
+            tolerance,
+        ) || !close_point(
+            e.curve().evaluate_with_endpoints(range.1, start, end),
+            end,
+            tolerance,
+        ) {
+            return Ok(false);
+        }
+        let row = match e.curve() {
+            EdgeCurve::Line => {
+                let along =
+                    close_point(start, seam.0, tolerance) && close_point(end, seam.1, tolerance);
+                let against =
+                    close_point(start, seam.1, tolerance) && close_point(end, seam.0, tolerance);
+                if !along && !against {
+                    return Ok(false);
+                }
+                seam_uses.push((oe.edge(), oe.is_forward()));
+                continue;
+            }
+            EdgeCurve::Circle(circle) => {
+                if e.start() != e.end()
+                    || ((range.1 - range.0).abs() - turn).abs() > 128.0 * f64::EPSILON * turn
+                {
+                    return Ok(false);
+                }
+                let Ok(rim) = remus_geometry::convert::circle_to_nurbs(circle, range.0, range.1)
+                else {
+                    return Ok(false);
+                };
+                rows.iter().position(|row| same_curve(row, &rim, tolerance))
+            }
+            EdgeCurve::NurbsCurve(curve) => {
+                let whole = curve.domain();
+                if e.start() != e.end()
+                    || range.0.min(range.1).to_bits() != whole.0.to_bits()
+                    || range.0.max(range.1).to_bits() != whole.1.to_bits()
+                {
+                    return Ok(false);
+                }
+                rows.iter()
+                    .position(|row| same_curve(row, curve, tolerance))
+            }
+            EdgeCurve::Ellipse(_) | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => None,
+        };
+        let Some(row) = row else {
+            return Ok(false);
+        };
+        row_uses[row] += 1;
+    }
+    Ok(row_uses == [1, 1]
+        && matches!(
+            seam_uses.as_slice(),
+            [(first, first_forward), (second, second_forward)]
+                if first == second && first_forward != second_forward
+        ))
+}
+
 /// Complete side coverage is a domain witness; no sampled projection decides it.
 pub(super) fn is_complete(
     topo: &Topology,
     face: FaceId,
     s: &NurbsSurface,
 ) -> Result<bool, CheckError> {
+    if s.degree_u() == 1 {
+        return ruled_full_turn_is_complete(topo, face, s);
+    }
     let f = topo.face(face)?;
     if !f.inner_wires().is_empty()
         || s.degree_u() != 2
@@ -384,5 +521,83 @@ mod tests {
         )
         .unwrap();
         assert!(!is_complete(&t, face, &changed).unwrap());
+    }
+
+    /// The oblique circle loft band: rows are full turns of two parallel
+    /// circles sharing a reference direction, closed on one straight seam.
+    fn oblique_band(rim_range: (f64, f64)) -> (Topology, FaceId, NurbsSurface) {
+        let mut t = Topology::new();
+        let z = Vec3::new(0.0, 0.0, 1.0);
+        let x = Vec3::new(1.0, 0.0, 0.0);
+        let lower = Circle3D::new_with_ref(Point3::new(0.0, 0.0, 0.0), z, 25.0, x).unwrap();
+        let upper = Circle3D::new_with_ref(Point3::new(12.0, 0.0, 60.0), z, 10.0, x).unwrap();
+        let turn = std::f64::consts::TAU;
+        let rims = [&upper, &lower]
+            .map(|c| remus_geometry::convert::circle_to_nurbs(c, 0.0, turn).unwrap());
+        let surface = NurbsSurface::new(
+            1,
+            2,
+            vec![0.0, 0.0, 1.0, 1.0],
+            rims[0].knots().to_vec(),
+            rims.iter().map(|r| r.control_points().to_vec()).collect(),
+            rims.iter().map(|r| r.weights().to_vec()).collect(),
+        )
+        .unwrap();
+        let low = t.add_vertex(Vertex::new(lower.evaluate(0.0), 1e-7));
+        let high = t.add_vertex(Vertex::new(upper.evaluate(0.0), 1e-7));
+        let mut ring = |v, c: &Circle3D, range| {
+            let mut e = Edge::new(v, v, EdgeCurve::Circle(c.clone()));
+            e.set_trim(Some(range));
+            t.add_edge(e)
+        };
+        let bottom = ring(low, &lower, rim_range);
+        let top = ring(high, &upper, (0.0, turn));
+        let seam = t.add_edge(Edge::new(low, high, EdgeCurve::Line));
+        let wire = t.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(bottom, true),
+                    OrientedEdge::new(seam, true),
+                    OrientedEdge::new(top, false),
+                    OrientedEdge::new(seam, false),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        let face = t.add_face(Face::new(wire, vec![], FaceSurface::Nurbs(surface.clone())));
+        (t, face, surface)
+    }
+
+    #[test]
+    fn ruled_full_turn_band_is_its_natural_rectangle() {
+        let turn = std::f64::consts::TAU;
+        let (t, face, s) = oblique_band((0.0, turn));
+        assert!(is_complete(&t, face, &s).unwrap());
+
+        // A rim that is not the row's whole turn is not a domain witness.
+        let (t, face, s) = oblique_band((0.0, turn - 0.25));
+        assert!(!is_complete(&t, face, &s).unwrap());
+
+        // Rows that moved off the stored rims decline.
+        let (t, face, s) = oblique_band((0.0, turn));
+        let mut points = s.control_points().to_vec();
+        points[1][3] = points[1][3] + Vec3::new(0.0, 0.0, 0.01);
+        let changed = NurbsSurface::new(
+            1,
+            2,
+            s.knots_u().to_vec(),
+            s.knots_v().to_vec(),
+            points,
+            s.weights().to_vec(),
+        )
+        .unwrap();
+        assert!(!is_complete(&t, face, &changed).unwrap());
+
+        // A hole leaves the rectangle incomplete.
+        let (mut t, face, s) = oblique_band((0.0, turn));
+        let outer = t.face(face).unwrap().outer_wire();
+        t.set_face_boundary_wires(face, outer, vec![outer]).unwrap();
+        assert!(!is_complete(&t, face, &s).unwrap());
     }
 }

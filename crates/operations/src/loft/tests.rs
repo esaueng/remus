@@ -349,7 +349,9 @@ fn make_circle_face_at(topo: &mut Topology, radius: f64, z: f64) -> FaceId {
     let center = Point3::new(0.0, 0.0, z);
     let circle = remus_math::curves::Circle3D::new(center, axis, radius).unwrap();
     let seam = topo.add_vertex(Vertex::new(circle.evaluate(0.0), tol_val));
-    let edge = topo.add_edge(Edge::new(seam, seam, EdgeCurve::Circle(circle)));
+    let mut edge = Edge::new(seam, seam, EdgeCurve::Circle(circle));
+    edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+    let edge = topo.add_edge(edge);
     let wire = Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap();
     let wid = topo.add_wire(wire);
     topo.add_face(Face::new(
@@ -370,7 +372,10 @@ fn make_nurbs_circle_face_at(topo: &mut Topology, radius: f64, z: f64) -> FaceId
     let nurbs =
         remus_geometry::convert::circle_to_nurbs(&circle, 0.0, 2.0 * std::f64::consts::PI).unwrap();
     let seam = topo.add_vertex(Vertex::new(circle.evaluate(0.0), tol_val));
-    let edge = topo.add_edge(Edge::new(seam, seam, EdgeCurve::NurbsCurve(nurbs)));
+    let range = nurbs.domain();
+    let mut edge = Edge::new(seam, seam, EdgeCurve::NurbsCurve(nurbs));
+    edge.set_trim(Some(range));
+    let edge = topo.add_edge(edge);
     let wire = Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap();
     let wid = topo.add_wire(wire);
     topo.add_face(Face::new(
@@ -441,7 +446,7 @@ fn loft_two_equal_circles_makes_cylinder() {
 }
 
 #[test]
-fn loft_non_coaxial_circles_falls_back_with_positive_volume() {
+fn loft_non_coaxial_circles_make_exact_oblique_band() {
     let mut topo = Topology::new();
     let bottom = make_circle_face_at(&mut topo, 10.0, 0.0);
     let tol_val = 1e-7;
@@ -449,7 +454,9 @@ fn loft_non_coaxial_circles_falls_back_with_positive_volume() {
     let center = Point3::new(8.0, 0.0, 20.0);
     let circle = remus_math::curves::Circle3D::new(center, axis, 5.0).unwrap();
     let seam = topo.add_vertex(Vertex::new(circle.evaluate(0.0), tol_val));
-    let edge = topo.add_edge(Edge::new(seam, seam, EdgeCurve::Circle(circle)));
+    let mut edge = Edge::new(seam, seam, EdgeCurve::Circle(circle));
+    edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+    let edge = topo.add_edge(edge);
     let wire = Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap();
     let wid = topo.add_wire(wire);
     let top = topo.add_face(Face::new(
@@ -462,10 +469,16 @@ fn loft_non_coaxial_circles_falls_back_with_positive_volume() {
     ));
 
     let solid = loft(&mut topo, &[bottom, top]).unwrap();
-    let vol = crate::measure::solid_volume(&topo, solid, 0.1).unwrap();
-    assert!(
-        vol > 0.0,
-        "non-coaxial loft should fall back to a positive-volume solid, got {vol}"
+    // The laterally offset pair is an oblique frustum: Cavalieri gives the
+    // same π·h·(R² + R·r + r²)/3 as the coaxial one, which the old 32-facet
+    // fallback under-filled.
+    let expected = std::f64::consts::PI * 20.0 / 3.0 * (100.0 + 50.0 + 25.0);
+    assert_oblique_circle_loft(
+        &topo,
+        solid,
+        &[(Point3::new(0.0, 0.0, 0.0), 10.0), (center, 5.0)],
+        axis,
+        expected,
     );
 }
 
@@ -1582,4 +1595,484 @@ fn wholly_repeated_polygon_junctions_refuse_without_mutation() {
         assert_eq!(topo.allocated_slot_count(), slots);
         assert_eq!(topo.journal().snapshot(), journal);
     }
+}
+
+/// A planar profile bounded by one full-turn circle about `axis`, stored as
+/// an analytic circle or as its exact rational NURBS (the sketch form).
+fn circle_section(
+    topo: &mut Topology,
+    center: Point3,
+    axis: Vec3,
+    radius: f64,
+    as_nurbs: bool,
+) -> FaceId {
+    let axis = axis.normalize().unwrap();
+    let circle = remus_math::curves::Circle3D::new(center, axis, radius).unwrap();
+    let seam = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+    let curve = if as_nurbs {
+        EdgeCurve::NurbsCurve(
+            remus_geometry::convert::circle_to_nurbs(&circle, 0.0, std::f64::consts::TAU).unwrap(),
+        )
+    } else {
+        EdgeCurve::Circle(circle)
+    };
+    let range = match &curve {
+        EdgeCurve::NurbsCurve(curve) => curve.domain(),
+        EdgeCurve::Circle(_) => (0.0, std::f64::consts::TAU),
+        _ => unreachable!(),
+    };
+    let mut edge = Edge::new(seam, seam, curve);
+    edge.set_trim(Some(range));
+    let edge = topo.add_edge(edge);
+    let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap());
+    topo.add_face(Face::new(
+        wire,
+        vec![],
+        FaceSurface::Plane {
+            normal: axis,
+            d: axis.dot(Vec3::new(center.x(), center.y(), center.z())),
+        },
+    ))
+}
+
+/// Oblique frustum volume by Cavalieri: only the axial height matters.
+fn oblique_frustum_volume(lower: (Point3, f64), upper: (Point3, f64), axis: Vec3) -> f64 {
+    let height = (upper.0 - lower.0).dot(axis.normalize().unwrap()).abs();
+    let (big, small) = (lower.1, upper.1);
+    std::f64::consts::PI * height / 3.0 * small.mul_add(small, big.mul_add(big, big * small))
+}
+
+/// The closed-form oblique stack at an axial height: the section circle's
+/// centre and radius, blended linearly between the bracketing sections.
+fn oblique_section_at(sections: &[(Point3, f64)], axis: Vec3, point: Point3) -> (Point3, f64) {
+    let origin = sections[0].0;
+    let height = |p: Point3| (p - origin).dot(axis);
+    let h = height(point);
+    let band = sections
+        .windows(2)
+        .find(|pair| {
+            let (a, b) = (height(pair[0].0), height(pair[1].0));
+            h >= a.min(b) - 1e-9 && h <= a.max(b) + 1e-9
+        })
+        .expect("sample lies between two sections");
+    let (a, b) = (height(band[0].0), height(band[1].0));
+    let t = ((h - a) / (b - a)).clamp(0.0, 1.0);
+    (
+        band[0].0 + (band[1].0 - band[0].0) * t,
+        (band[1].1 - band[0].1).mul_add(t, band[0].1),
+    )
+}
+
+/// Every #1253 invariant for an oblique circle loft through `sections`
+/// (centre, radius) in stacking order:
+/// - two planar caps and one curved band per section pair, nothing faceted;
+/// - one exact full-turn circle edge per section, at its centre and radius;
+/// - every band point on the closed-form section circle at its height, with
+///   the oriented B-rep normal pointing out of that circle;
+/// - strict validation, the exact Cavalieri volume, and a closed,
+///   consistently wound, outward display mesh.
+fn assert_oblique_circle_loft(
+    topo: &Topology,
+    solid: SolidId,
+    sections: &[(Point3, f64)],
+    axis: Vec3,
+    expected_volume: f64,
+) {
+    let axis = axis.normalize().unwrap();
+    let scale = sections.iter().map(|s| s.1).fold(0.0, f64::max);
+    let report = crate::validate::validate_solid(topo, solid).unwrap();
+    assert!(report.is_valid(), "oblique loft must validate: {report:?}");
+
+    let faces = remus_topology::explorer::solid_faces(topo, solid).unwrap();
+    let planes = faces
+        .iter()
+        .filter(|&&f| matches!(topo.face(f).unwrap().surface(), FaceSurface::Plane { .. }))
+        .count();
+    let bands: Vec<FaceId> = faces
+        .iter()
+        .copied()
+        .filter(|&f| matches!(topo.face(f).unwrap().surface(), FaceSurface::Nurbs(_)))
+        .collect();
+    assert_eq!(planes, 2, "only the two caps may be planar");
+    assert_eq!(
+        bands.len(),
+        sections.len() - 1,
+        "one curved band per section pair"
+    );
+    assert_eq!(faces.len(), sections.len() + 1, "no faceted side faces");
+
+    let edges = remus_topology::explorer::solid_edges(topo, solid).unwrap();
+    let mut circles: Vec<_> = edges
+        .iter()
+        .filter_map(|&e| match topo.edge(e).unwrap().curve() {
+            EdgeCurve::Circle(c) => Some(c.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        circles.len(),
+        sections.len(),
+        "one exact rim circle per section"
+    );
+    for &(center, radius) in sections {
+        let index = circles.iter().position(|c| {
+            (c.center() - center).length() <= 1e-9 * scale.max(1.0)
+                && (c.radius() - radius).abs() <= 1e-9 * scale.max(1.0)
+                && c.normal().dot(axis).abs() >= 1.0 - 1e-12
+        });
+        assert!(
+            index.is_some(),
+            "no exact rim for section {center:?} r {radius}"
+        );
+        circles.remove(index.unwrap());
+    }
+
+    for &band in &bands {
+        let face = topo.face(band).unwrap();
+        let FaceSurface::Nurbs(surface) = face.surface() else {
+            unreachable!()
+        };
+        for i in 0..=12 {
+            for j in 0..48 {
+                let (u, v) = (f64::from(i) / 12.0, (f64::from(j) + 0.25) / 48.0);
+                let point = surface.evaluate(u, v);
+                let (center, radius) = oblique_section_at(sections, axis, point);
+                let offset = point - center;
+                let axial = offset.dot(axis);
+                let radial = offset - axis * axial;
+                assert!(
+                    axial.abs() <= 1e-9 * scale.max(1.0)
+                        && (radial.length() - radius).abs() <= 1e-9 * scale.max(1.0),
+                    "band point {point:?} leaves the exact section circle: \
+                     radial {} vs {radius}",
+                    radial.length()
+                );
+                let mut normal = surface.normal(u, v).unwrap();
+                if face.is_reversed() {
+                    normal = normal * -1.0;
+                }
+                assert!(
+                    normal.dot(radial) > 0.0,
+                    "oriented band normal must point out of the section circle"
+                );
+            }
+        }
+    }
+
+    // The face integrals witness each band's full natural rectangle, so the
+    // Gauss mass properties read the exact Cavalieri volume. The centroid
+    // checks the lateral placement too: each section's area sits at its own
+    // centre, so the centroid blends the section centres by ∫ t·r(t)² dt.
+    let properties = crate::measure::mass_properties(topo, solid).unwrap();
+    let relative = (properties.mass - expected_volume).abs() / expected_volume;
+    assert!(
+        relative < 1e-9,
+        "oblique loft volume {} vs exact {expected_volume} (relative {relative:e})",
+        properties.mass
+    );
+    if let [(c0, big), (c1, small)] = *sections {
+        let k = small - big;
+        let weight = k.mul_add(k / 3.0, big.mul_add(big, big * k));
+        let moment = (k * k).mul_add(0.25, big.mul_add(big * 0.5, 2.0 * big * k / 3.0));
+        let centroid = c0 + (c1 - c0) * (moment / weight);
+        assert!(
+            (properties.center - centroid).length() <= 1e-9 * scale.max(1.0),
+            "oblique loft centroid {:?} vs exact {centroid:?}",
+            properties.center
+        );
+    }
+    // `solid_volume` measures NURBS bodies on the whole-solid mesh, an
+    // inscribed chord approximation (1.6e-4 low here, converging as the
+    // deflection shrinks). It must sit on the exact side of the old
+    // 32-facet loft's 6.4e-3 shortfall.
+    let meshed = crate::measure::solid_volume(topo, solid, scale * 1e-4).unwrap();
+    assert!(
+        meshed <= expected_volume && (expected_volume - meshed) / expected_volume < 1e-3,
+        "meshed volume {meshed} vs exact {expected_volume}"
+    );
+
+    let mesh = crate::tessellate::tessellate_solid(topo, solid, scale * 2e-3).unwrap();
+    assert!(crate::tessellate::is_watertight(&mesh));
+    assert_eq!(crate::tessellate::boundary_edge_count(&mesh), 0);
+    assert_eq!(crate::tessellate::non_manifold_edge_count(&mesh), 0);
+    let signed: f64 = mesh
+        .indices
+        .chunks_exact(3)
+        .map(|tri| {
+            let [a, b, c] = [0, 1, 2].map(|k| {
+                let p = mesh.positions[tri[k] as usize];
+                Vec3::new(p.x(), p.y(), p.z())
+            });
+            a.dot(b.cross(c)) / 6.0
+        })
+        .sum();
+    assert!(
+        (signed - expected_volume).abs() / expected_volume < 1e-2,
+        "display mesh must enclose the solid outward: {signed} vs {expected_volume}"
+    );
+}
+
+/// #1253: the r25 → r10 circles with the top centre moved 12 mm sideways.
+/// Ruled and smooth (two sections share the ruled geometry) used to emit 32
+/// planar facets 0.64 % short of the exact oblique frustum.
+#[test]
+fn offset_circle_loft_keeps_circular_rims_and_one_exact_curved_wall() {
+    type LoftFn = fn(&mut Topology, &[FaceId]) -> Result<SolidId, crate::OperationsError>;
+    let axis = Vec3::new(0.0, 0.0, 1.0);
+    let bottom = (Point3::new(0.0, 0.0, 0.0), 25.0);
+    let top = (Point3::new(12.0, 0.0, 60.0), 10.0);
+    let expected = oblique_frustum_volume(bottom, top, axis);
+    assert!((expected - 61_261.056_745_000_96).abs() < 1e-6);
+    for (name, method) in [("loft", loft as LoftFn), ("loft_smooth", loft_smooth)] {
+        for (first, second) in [(bottom, top), (top, bottom)] {
+            for as_nurbs in [false, true] {
+                let mut topo = Topology::new();
+                let a = circle_section(&mut topo, first.0, axis, first.1, as_nurbs);
+                let b = circle_section(&mut topo, second.0, axis, second.1, as_nurbs);
+                let solid = method(&mut topo, &[a, b]);
+                assert!(
+                    solid.is_ok(),
+                    "{name} nurbs={as_nurbs}: {:?}",
+                    solid.as_ref().err()
+                );
+                let solid = solid.unwrap();
+                assert_oblique_circle_loft(&topo, solid, &[first, second], axis, expected);
+            }
+        }
+    }
+}
+
+/// The aligned control still takes the analytic coaxial path.
+#[test]
+fn aligned_circle_loft_control_stays_one_analytic_cone() {
+    let mut topo = Topology::new();
+    let axis = Vec3::new(0.0, 0.0, 1.0);
+    let a = circle_section(&mut topo, Point3::new(0.0, 0.0, 0.0), axis, 25.0, false);
+    let b = circle_section(&mut topo, Point3::new(0.0, 0.0, 60.0), axis, 10.0, false);
+    let solid = loft(&mut topo, &[a, b]).unwrap();
+    let expected = oblique_frustum_volume(
+        (Point3::new(0.0, 0.0, 0.0), 25.0),
+        (Point3::new(0.0, 0.0, 60.0), 10.0),
+        axis,
+    );
+    assert_analytic_frustum_solid(&topo, solid, expected);
+}
+
+/// Placement and scale independence: a tilted stacking axis, lateral offsets
+/// larger than the radii, an oblique cylinder (equal radii) and 1e-2 … 1e3
+/// scales all keep the exact rims, band and volume.
+#[test]
+fn offset_circle_loft_is_exact_across_scales_and_placements() {
+    let tilted = Vec3::new(1.0, -2.0, 3.0).normalize().unwrap();
+    let side = tilted.cross(Vec3::new(0.0, 0.0, 1.0)).normalize().unwrap();
+    for scale in [1e-2, 1.0, 1e3] {
+        for (axis, lateral, radii) in [
+            (tilted, side * 40.0, (25.0, 10.0)),
+            (tilted, side * -7.0, (8.0, 8.0)),
+            (
+                Vec3::new(0.0, -1.0, 0.0),
+                Vec3::new(30.0, 0.0, -5.0),
+                (5.0, 20.0),
+            ),
+        ] {
+            let origin = Point3::new(3.0 * scale, -4.0 * scale, 5.0 * scale);
+            let lower = (origin, radii.0 * scale);
+            let upper = (origin + (axis * 60.0 + lateral) * scale, radii.1 * scale);
+            let expected = oblique_frustum_volume(lower, upper, axis);
+            let mut topo = Topology::new();
+            let a = circle_section(&mut topo, lower.0, axis, lower.1, false);
+            let b = circle_section(&mut topo, upper.0, axis, upper.1, true);
+            let solid = loft(&mut topo, &[a, b]).unwrap();
+            assert_oblique_circle_loft(&topo, solid, &[lower, upper], axis, expected);
+        }
+    }
+}
+
+/// A zig-zag stack of three offset circles keeps one exact band per pair
+/// and shares the middle rim between them.
+#[test]
+fn three_offset_circles_loft_into_two_exact_bands() {
+    let axis = Vec3::new(0.0, 0.0, 1.0);
+    let sections = [
+        (Point3::new(0.0, 0.0, 0.0), 20.0),
+        (Point3::new(10.0, 5.0, 30.0), 12.0),
+        (Point3::new(-6.0, 0.0, 50.0), 15.0),
+    ];
+    let expected = oblique_frustum_volume(sections[0], sections[1], axis)
+        + oblique_frustum_volume(sections[1], sections[2], axis);
+    let mut topo = Topology::new();
+    let faces: Vec<FaceId> = sections
+        .iter()
+        .map(|&(center, radius)| circle_section(&mut topo, center, axis, radius, false))
+        .collect();
+    let solid = loft(&mut topo, &faces).unwrap();
+    assert_oblique_circle_loft(&topo, solid, &sections, axis, expected);
+}
+
+/// Inputs outside the oblique stack's proof keep their legacy route: tilted
+/// (non-parallel) circles still loft through the polygon path, and a circle
+/// whose stored plane does not contain it is not trusted as a section.
+#[test]
+fn non_parallel_or_inconsistent_circle_sections_keep_the_legacy_loft() {
+    let z = Vec3::new(0.0, 0.0, 1.0);
+    let mut topo = Topology::new();
+    let a = circle_section(&mut topo, Point3::new(0.0, 0.0, 0.0), z, 25.0, false);
+    let tilted = Vec3::new(0.2, 0.0, 1.0);
+    let b = circle_section(&mut topo, Point3::new(12.0, 0.0, 60.0), tilted, 10.0, false);
+    let solid = loft(&mut topo, &[a, b]).unwrap();
+    let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
+    assert!(
+        faces.len() > 3,
+        "non-parallel circles are not an oblique stack"
+    );
+
+    let mut topo = Topology::new();
+    let a = circle_section(&mut topo, Point3::new(0.0, 0.0, 0.0), z, 25.0, false);
+    let b = circle_section(&mut topo, Point3::new(12.0, 0.0, 60.0), z, 10.0, false);
+    let outer = topo.face(b).unwrap().outer_wire();
+    let lifted = topo.add_face(Face::new(
+        outer,
+        vec![],
+        FaceSurface::Plane { normal: z, d: 61.0 },
+    ));
+    assert!(super::face_full_circle_section(&topo, lifted).is_none());
+    assert!(super::face_full_circle_section(&topo, b).is_some());
+    let _ = a;
+}
+
+#[test]
+fn oblique_circle_loft_does_not_flatten_nearly_parallel_sections() {
+    let z = Vec3::new(0.0, 0.0, 1.0);
+    // The old dot-product gate accepted the first tilt, although flattening
+    // its rim moves it 100 times farther than the linear tolerance. The
+    // second tilt is below angular tolerance but fails at this large radius.
+    for (tilt, radius) in [(1e-6, 10.0), (5e-13, 1e7)] {
+        let mut topo = Topology::new();
+        let a = circle_section(&mut topo, Point3::new(0.0, 0.0, 0.0), z, 25.0, false);
+        let b = circle_section(
+            &mut topo,
+            Point3::new(12.0, 0.0, 60.0),
+            Vec3::new(0.0, tilt, 1.0),
+            radius,
+            false,
+        );
+        let before = topo.allocated_slot_count();
+        assert!(
+            super::try_loft_parallel_circle_stack(&mut topo, &[a, b])
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(topo.allocated_slot_count(), before);
+    }
+    // A tiny angle between a circle and its own claimed cap plane can
+    // still move a large rim beyond linear tolerance. A seam point alone
+    // is insufficient to witness that the entire circle lies in the plane.
+    let mut topo = Topology::new();
+    let center = Point3::new(12.0, 0.0, 60.0);
+    let face = circle_section(&mut topo, center, z, 1e7, false);
+    let outer = topo.face(face).unwrap().outer_wire();
+    let normal = Vec3::new(5e-13, 5e-13, 1.0).normalize().unwrap();
+    let inconsistent = topo.add_face(Face::new(
+        outer,
+        vec![],
+        FaceSurface::Plane {
+            normal,
+            d: normal.dot(Vec3::new(center.x(), center.y(), center.z())),
+        },
+    ));
+    assert!(super::face_full_circle_section(&topo, inconsistent).is_none());
+}
+
+fn profile_with_curve_domain(
+    topo: &mut Topology,
+    center: Point3,
+    curve: EdgeCurve,
+    start: Point3,
+    trim: (f64, f64),
+) -> FaceId {
+    let seam = topo.add_vertex(Vertex::new(start, 1e-7));
+    let mut edge = Edge::new(seam, seam, curve);
+    edge.set_trim(Some(trim));
+    let edge = topo.add_edge(edge);
+    let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap());
+    topo.add_face(Face::new(
+        wire,
+        vec![],
+        FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: center.z(),
+        },
+    ))
+}
+
+#[test]
+fn oblique_circle_loft_does_not_replace_a_near_circle_with_a_fitted_circle() {
+    let center = Point3::new(12.0, 0.0, 60.0);
+    let circle = remus_math::curves::Circle3D::new(center, Vec3::new(0.0, 0.0, 1.0), 10.0).unwrap();
+    let canonical =
+        remus_geometry::convert::circle_to_nurbs(&circle, 0.0, std::f64::consts::TAU).unwrap();
+    // An affine stretch of the exact rational circle is an exact ellipse.
+    // The sampled recognizer accepts it at 1e-5, but changing its boundary
+    // into that fitted circle would exceed the kernel's 1e-7 tolerance.
+    let ellipse = remus_math::nurbs::curve::NurbsCurve::new(
+        canonical.degree(),
+        canonical.knots().to_vec(),
+        canonical
+            .control_points()
+            .iter()
+            .map(|p| {
+                Point3::new(
+                    center.x() + (p.x() - center.x()) * 1.000_000_2,
+                    p.y(),
+                    p.z(),
+                )
+            })
+            .collect(),
+        canonical.weights().to_vec(),
+    )
+    .unwrap();
+    assert!(matches!(
+        remus_geometry::convert::recognize_curve(&ellipse, 1e-5),
+        remus_geometry::convert::RecognizedCurve::Circle { .. }
+    ));
+    let mut topo = Topology::new();
+    let start = ellipse.control_points()[0];
+    let range = ellipse.domain();
+    let face = profile_with_curve_domain(
+        &mut topo,
+        center,
+        EdgeCurve::NurbsCurve(ellipse),
+        start,
+        range,
+    );
+    assert!(super::face_full_circle_section(&topo, face).is_none());
+}
+
+#[test]
+fn oblique_circle_loft_requires_the_original_full_turn_domain() {
+    let center = Point3::new(12.0, 0.0, 60.0);
+    let circle = remus_math::curves::Circle3D::new(center, Vec3::new(0.0, 0.0, 1.0), 10.0).unwrap();
+    let turn = std::f64::consts::TAU;
+    for range in [(0.0, turn * 0.5), (0.0, turn * 2.0)] {
+        let mut topo = Topology::new();
+        let face = profile_with_curve_domain(
+            &mut topo,
+            center,
+            EdgeCurve::Circle(circle.clone()),
+            circle.evaluate(0.0),
+            range,
+        );
+        assert!(super::face_full_circle_section(&topo, face).is_none());
+    }
+    let curve = remus_geometry::convert::circle_to_nurbs(&circle, 0.0, turn).unwrap();
+    let mut topo = Topology::new();
+    let start = curve.control_points()[0];
+    let face = profile_with_curve_domain(
+        &mut topo,
+        center,
+        EdgeCurve::NurbsCurve(curve),
+        start,
+        (0.25, 1.0),
+    );
+    assert!(super::face_full_circle_section(&topo, face).is_none());
 }
