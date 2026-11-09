@@ -48,5 +48,4 @@
 1 crates/topology/src/face.rs
 1 crates/wasm/src/bindings/gridfinity_tests.rs
 1 crates/wasm/src/bindings/operations.rs
-3 crates/wasm/src/bindings/query.rs
 1 crates/wasm/src/kernel.rs

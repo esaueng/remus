@@ -763,7 +763,10 @@ fn a1_to_a3() -> (Topology, SolidId) {
         ],
         "A3",
     );
-    assert_sampled(&topo, a3, 5, "A3");
+    // The turn over the R1.5 band's end arc is a spindle torus (ring 0.5
+    // inside a tube of 1), built exact since the rolling-ball arc stripe
+    // stopped lofting non-ring tori between straight edges.
+    assert_sampled(&topo, a3, 4, "A3");
     (topo, a3)
 }
 
@@ -807,9 +810,12 @@ fn a1_to_a6() -> (Topology, SolidId, SolidId) {
             ],
             &label,
         );
-        // One sampled face more than A3: the corner where the re-filleted
-        // R1 band meets the new round at the free end.
-        assert_sampled(&topo, filleted, 6, &label);
+        // As many sampled faces as A3: the corner that runs over an end arc
+        // as a spindle torus (the re-filleted R1 band over the R1.5 round's
+        // end arc; the R3.7 round over the R4 band's) is exact. It was one
+        // sampled face more until the rolling-ball arc stripe stopped
+        // lofting non-ring tori.
+        assert_sampled(&topo, filleted, 4, &label);
     }
 
     // A4's broad chamfer (5) is `broad_free_end_chamfer_consumes_the_rounds`.
@@ -854,7 +860,7 @@ fn a1_to_a6() -> (Topology, SolidId, SolidId) {
         ],
         "A4",
     );
-    assert_sampled(&topo, a4, 5, "A4");
+    assert_sampled(&topo, a4, 4, "A4");
 
     // A6 from its seed: the seven-edge bottom chain.
     let pick = bottom_pick(&topo, a4);
@@ -871,7 +877,7 @@ fn a1_to_a6() -> (Topology, SolidId, SolidId) {
         ],
         "A6",
     );
-    assert_sampled(&topo, a6, 5, "A6");
+    assert_sampled(&topo, a6, 4, "A6");
     (topo, a6, a4)
 }
 
@@ -1004,8 +1010,18 @@ fn closed_bottom_outline_after_the_free_end_chamfer() {
             .into_iter()
             .map(|deflection| (removed(deflection) - expected_removed).abs())
             .collect();
+        // Measured off meshes, the removal converges on the closed form as
+        // the deflection shrinks. Once every face the chamfer touches is
+        // exact (the A3 corner became an exact spindle torus) the
+        // measurement no longer depends on the deflection, and must then
+        // agree with the closed form ten times more tightly.
+        let converging = errors.windows(2).all(|pair| pair[1] < pair[0]);
+        let exact = errors
+            .windows(2)
+            .all(|pair| (pair[1] - pair[0]).abs() <= 1e-12);
         assert!(
-            errors.windows(2).all(|pair| pair[1] < pair[0]) && errors[2] <= 2e-4 * expected_removed,
+            (converging && errors[2] <= 2e-4 * expected_removed)
+                || (exact && errors[2] <= 2e-5 * expected_removed),
             "{label}: removal errors {errors:?} against closed form {expected_removed}"
         );
         // Every new face is an exact plane or cone.
