@@ -4875,6 +4875,39 @@ class RemusKernel {
         return ret[0] >>> 0;
     }
     /**
+     * Sweep a planar profile face by a screw motion about an axis line,
+     * starting where the profile sits (no radius: the coil radius is the
+     * profile's distance from the axis).
+     *
+     * The side faces are exact rational NURBS in the profile direction and
+     * exactly round about the axis; only the axial rise along each rational
+     * arc span is approximated, within `1e-6·|pitch|`. A positive `pitch`
+     * climbs along the axis direction, a negative one against it.
+     *
+     * # Errors
+     *
+     * Returns an error for non-finite inputs, a zero axis or pitch,
+     * non-positive or too many turns, a non-planar profile, a profile that
+     * touches, straddles or encircles the axis, or coils that would overlap.
+     * @param {number} profile
+     * @param {number} axis_origin_x
+     * @param {number} axis_origin_y
+     * @param {number} axis_origin_z
+     * @param {number} axis_dir_x
+     * @param {number} axis_dir_y
+     * @param {number} axis_dir_z
+     * @param {number} pitch
+     * @param {number} turns
+     * @returns {number}
+     */
+    helicalSweepInPlace(profile, axis_origin_x, axis_origin_y, axis_origin_z, axis_dir_x, axis_dir_y, axis_dir_z, pitch, turns) {
+        const ret = wasm.remuskernel_helicalSweepInPlace(this.__wbg_ptr, profile, axis_origin_x, axis_origin_y, axis_origin_z, axis_dir_x, axis_dir_y, axis_dir_z, pitch, turns);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
      * Imprints one solid's intersection edges onto another without removing
      * material. Returns JSON `{"solid", "op"}` for the new target and its
      * construction-derived journal entry.
