@@ -555,6 +555,10 @@ impl ParametricSurface for FlippedNormalSurface<'_> {
     fn partial_v(&self, u: f64, v: f64) -> Vec3 {
         self.inner.partial_v(u, v)
     }
+
+    fn as_nurbs(&self) -> Option<&remus_math::nurbs::surface::NurbsSurface> {
+        self.inner.as_nurbs()
+    }
 }
 
 /// Extract a `&dyn ParametricSurface` from a `FaceSurface`, or build a

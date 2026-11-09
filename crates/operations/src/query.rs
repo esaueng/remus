@@ -602,6 +602,114 @@ pub fn edge_is_g1(
     Ok(samples_are_g1(&samples))
 }
 
+/// Whether `face` is smooth (G1) across `edge`, one of its own seams: an edge
+/// its wire uses twice, with `face` on both sides.
+///
+/// [`edge_is_g1`] compares two distinct faces and says `false` for a
+/// self-seam; this compares the face with itself across the seam. At each of
+/// the edge's interior samples:
+///
+/// - On a NURBS surface closed in a parameter direction (the seam is that
+///   direction's domain boundary) the two sides are the surface at the two
+///   ends of the domain, `lo` and `hi`. Their one-sided normals must align as
+///   [`edge_is_g1`]'s do (`1 − n₋·n₊ ≤ 1e-10`); a closed surface whose two
+///   ends meet at an angle is a crease, not smooth.
+/// - On a cylinder, cone, sphere or torus the seam is a parameter period,
+///   across which the surface is analytic: smooth wherever its normal is
+///   defined (not at a cone apex or sphere pole).
+///
+/// A plane has no self-seam to be smooth across, and an edge that does not
+/// lie on a closed direction's domain boundary is not this face's seam; both
+/// answer `false`, as does any sample whose normal cannot be evaluated.
+///
+/// # Errors
+///
+/// Returns `OperationsError::Topology` if any referenced entity is invalid.
+pub fn self_seam_is_g1(
+    topo: &Topology,
+    edge: EdgeId,
+    face: FaceId,
+) -> Result<bool, OperationsError> {
+    let uses = face_edge_use_count(topo, face, edge)?;
+    if uses != 2 {
+        return Ok(false);
+    }
+    let samples = edge_samples(topo, edge)?;
+    let face_data = topo.face(face)?;
+    let aligned = |a: Vec3, b: Vec3| match (a.normalize(), b.normalize()) {
+        (Ok(a), Ok(b)) => 1.0 - a.dot(b) <= 1.0e-10,
+        _ => false,
+    };
+    Ok(match face_data.surface() {
+        FaceSurface::Nurbs(surface) => {
+            let (u_lo, u_hi) = surface.domain_u();
+            let (v_lo, v_hi) = surface.domain_v();
+            let tol = Tolerance::new().linear;
+            samples.into_iter().all(|point| {
+                let Ok(found) =
+                    remus_math::nurbs::projection::project_point_to_surface(surface, point, 1e-9)
+                else {
+                    return false;
+                };
+                if found.distance > 10.0 * tol {
+                    return false;
+                }
+                let (u, v) = (found.u, found.v);
+                // The seam is a closed direction's domain boundary: its point
+                // lies on the surface at both ends of that direction.
+                let on_both = |a: Point3, b: Point3| {
+                    (a - point).length() <= 10.0 * tol && (b - point).length() <= 10.0 * tol
+                };
+                if surface.is_periodic_u()
+                    && on_both(surface.evaluate(u_lo, v), surface.evaluate(u_hi, v))
+                {
+                    return match (surface.normal(u_lo, v), surface.normal(u_hi, v)) {
+                        (Ok(a), Ok(b)) => aligned(a, b),
+                        _ => false,
+                    };
+                }
+                if surface.is_periodic_v()
+                    && on_both(surface.evaluate(u, v_lo), surface.evaluate(u, v_hi))
+                {
+                    return match (surface.normal(u, v_lo), surface.normal(u, v_hi)) {
+                        (Ok(a), Ok(b)) => aligned(a, b),
+                        _ => false,
+                    };
+                }
+                false
+            })
+        }
+        FaceSurface::Cylinder(_)
+        | FaceSurface::Cone(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => samples
+            .into_iter()
+            .all(|point| effective_face_normal(topo, face, point).is_some_and(|n| aligned(n, n))),
+        FaceSurface::Plane { .. } => false,
+    })
+}
+
+/// How many times `face`'s wires use `edge`.
+fn face_edge_use_count(
+    topo: &Topology,
+    face: FaceId,
+    edge: EdgeId,
+) -> Result<usize, OperationsError> {
+    let face_data = topo.face(face)?;
+    let mut count = 0;
+    for wire in
+        std::iter::once(face_data.outer_wire()).chain(face_data.inner_wires().iter().copied())
+    {
+        count += topo
+            .wire(wire)?
+            .edges()
+            .iter()
+            .filter(|use_| use_.edge() == edge)
+            .count();
+    }
+    Ok(count)
+}
+
 /// Angle between the effective outward normals, sampled along the edge and
 /// reported in `[0, pi]`. This is deliberately not a signed 0..2pi dihedral.
 ///

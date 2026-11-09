@@ -25,6 +25,23 @@ historical predecessor-line records, retained for provenance. The
   spheres and tori in closed form instead of grid-searching a fixed
   `v ∈ [−π, π]` box that put points on a cylinder's own rim tens of units
   off it.
+* **operations,check:** a loft between parallel circles whose centres are
+  laterally offset (OpenZCAD #1253: r 25 at the origin, r 10 at (12, 0, 60))
+  fell to the polygon path in both `loft` and two-section `loft_smooth`: 32
+  planar side facets, 60 868.18 mm³ against the exact 61 261.06 (−0.64 %).
+  Such a stack now lofts as an oblique frustum: one exact full-turn circle
+  per section, planar caps, and per section pair one rational ruled band
+  joining equal angles of its rims, so every section parallel to the
+  profiles is the exact circle with linearly blended centre and radius. The
+  input rims require authoritative full-turn domains, parallel axes within
+  angular and radius-scaled linear bounds, and a control-net displacement
+  proof for recognized NURBS circles. The band's closed form and outward
+  normal are also checked on a grid; unqualified sections keep the old
+  path. `remus-check` recognizes the band's full natural rectangle (whole
+  circle rows on a straight seam), so `mass_properties` reads the exact
+  volume (the issue case to 1e-14) and centroid; `solid_volume` still meshes
+  NURBS bodies (1.6e-4 low at a 2.5e-3 deflection, converging). STEP keeps
+  both rims as circles and the band as a rational B-spline surface.
 * **io:** STEP export relocates a seam crossing a window in a qualified
   cylindrical band (OpenZCAD #1243: two overlapping axial cylinders, both
   union orders). The writer computes the window's angular extent from
@@ -106,6 +123,12 @@ historical predecessor-line records, retained for provenance. The
 * **blend:** the cap contour of a rounded cap lowered into its shoulder now
   crosses a walked corner (a smaller convex band's run into its seam round),
   solving on its resolved stations.
+* **algo:** three overlapping boxes now fuse to the same exact 26748 mm³
+  solid in every grouping and order (OpenZCAD #1246). A section ending at
+  a planar wall's reflex corner could become an out-and-back spur in the
+  greedy face walk, leaving the wall unsplit and the union open. A qualified
+  one-section planar spur now uses the existing DCEL trace when it refines
+  the partition and passes the boundary, winding and loop-health checks.
 
 ### Changed
 

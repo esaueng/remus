@@ -443,7 +443,7 @@ Quick reference — find the right file for any task:
 | Face Gauss integration, with area/volume/vector-flux-only orientation accumulation | `properties/face_integrator.rs` |
 | Recover a knot-budget refusal by sweeping a nonperiodic trim the other way | `properties/face_integrator/knot_axis.rs` |
 | Independent planar oracles for a trim crossing many spline knot spans (tests) | `properties/face_integrator/anisotropic_tests.rs` |
-| Complete degree-(2,1) natural NURBS rectangles certified from iso-row and circular-section boundary images | `properties/face_integrator/natural_rectangle.rs` |
+| Complete degree-(2,1) natural NURBS rectangles certified from iso-row and circular-section boundary images, and ruled degree-(1, q) full-turn bands whose rows are whole circle edges closed on one straight seam | `properties/face_integrator/natural_rectangle.rs` |
 | Bounded native Circle latitude domains, independent of trim sampling | `properties/face_integrator/sphere_latitude.rs` |
 | Bounded sampling of native-contiguous exact equator runs | `properties/face_integrator/sphere_latitude/partition_sampling.rs` |
 | Bounded h-refinement on an already resolved rectangular analytic domain | `properties/face_integrator/adaptive.rs` |
@@ -522,11 +522,13 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Primitives (box, cylinder, cone, sphere, torus) | `primitives.rs` |
 | Independent carrier and manifold oracles for the sphere equator | `primitives/sphere_equator_tests.rs` |
 | Boolean (union/cut/intersect) | `boolean/` (mod, types, classify, assembly, tests, nway_pairs_tests, disjoint_witness_tests) |
+| Three-box union grouping and order regression: exact volume, solid validation, closed oriented mesh, material probes, source preservation and STEP replay (OpenZCAD 1246) | `tests/regress_issue_1246_box_union_grouping.rs` |
 | Qualified local drilled-hole cut (through and blind holes; stages 1–2 of the local boolean) and its GFA oracle tests | `boolean/local_cut.rs`, `boolean/local_cut_tests.rs` |
 | Opt-in store-local cut, fuse and intersect: the GFA on the faces the tool touches, spliced onto the untouched ones (stage 4 of the local boolean), and its equivalence oracle tests | `boolean/store_local.rs`, `boolean/store_local_tests.rs` |
 | Mesh boolean (co-refinement) | `mesh_boolean.rs` |
 | Robust triangle-triangle intersection: the narrow phase shared by mesh co-refinement and validation's component-overlap check | `triangle_intersection.rs` |
 | Extrude, Revolve, Sweep, Loft, Pipe | `extrude.rs`, `revolve.rs`, `sweep.rs`, `loft.rs`, `pipe.rs` |
+| Exact loft between parallel full circles: coaxial cylinder/cone bands, and laterally offset (oblique) circles as one exact rational ruled band per section pair with circular rims | `loft.rs` (`try_loft_coaxial_circle_stack`, `try_loft_parallel_circle_stack`), `loft/tests.rs` |
 | Twisted extrusion: the straight extrusion's topology with the top cap turned, fitted helix edges and certified swept side faces (lands concentric with the axis stay exact cylinders while they sweep less than a full turn, and are swept like the rest past it); herringbone: two opposite-hand halves glued at their shared mid-plane edges | `extrude/twist.rs`, `extrude/twist/tests.rs` |
 | Tapered extrusion toward an apex: the straight extrusion's topology with the far cap scaled about the apex; lines sweep to planes through it, concentric circles to exact cones, other curves to ruled NURBS (a concentric hole stays a cylinder) | `extrude/taper.rs`, `extrude/taper/tests.rs` |
 | Involute spur, helical, herringbone, internal (ring) and rack gears as one extruded (helical: twisted; herringbone: twisted both ways) outline: dimensions, warnings, typed refusals, certified flank fit | `gear.rs` |
@@ -745,6 +747,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Primitive solid creation | `bindings/primitives.rs` |
 | Shape construction (vertices, edges, wires, faces) | `bindings/shapes.rs` |
 | Modeling operations (extrude, revolve, sweep, loft, fillet, etc.) | `bindings/operations.rs` |
+| Offset-circle ruled and two-section smooth lofts through direct and both batch routes: exact circular boundaries, curved side, validity and independent volume oracle (tests) | `bindings/oblique_circle_loft_tests.rs` |
 | Boolean operations (fuse, cut, intersect) | `bindings/booleans.rs` |
 | Typed modifier results (`moveFacesDetailed`, `resizeCylindricalFaceDetailed`, `filletDetailed`, `chamferDetailed`, `shellDetailed`, `offsetDetailed`, and the `filletV2`/`chamferV2`/`chamferDistanceAngle`/`filletVariable` twins) | `bindings/modifier_detailed.rs` |
 | `faceContentDigests` contract: drag ticks keep the digests of untouched faces (tests) | `bindings/face_digest_tests.rs` |
@@ -791,6 +794,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Direct and both batch WASM qualification of `fuseAll` on crossing cylinders (bar and drill, centred, off-centre, equal radius, three scales): split, validator-clean and equal to the pairwise `fuse` | `bindings/cylinder_cross_fuse_all_tests.rs` |
 | Direct (`cutDetailed`/`fuseDetailed`) and both batch WASM qualification of box × complete-torus booleans cut normal to the torus axis: Pappus closed-form volumes at three scales, both fuse orders, and the tilted cut refused rather than returned unchanged | `bindings/box_torus_cut_tests.rs` |
 | Direct (`intersectDetailed`/`cutDetailed`/`fuseDetailed`) and both batch WASM qualification of the measured volume of equal-radius perpendicular cylinders against the Steinmetz closed form at three scales, both operand orders | `bindings/steinmetz_measurement_tests.rs` |
+| In-place helical sweep of a circle (esaueng/remus#1623): each cap one closed circle, one side face whose self-owned seam `getSolidSmoothEdges` reports smooth, `filletDetailed`/`chamferDetailed` on either cap rim through the batch ops (contract tests) | `bindings/helical_coil_cap_tests.rs` |
 | Sphere-boss seam fillet through the batch ops (esaueng/remus#1561): closed display mesh at the consumer's settings, contacts on their supports within their recorded tolerance (contract test) | `bindings/sphere_boss_seam_fillet_tests.rs` |
 | Direct and both batch WASM qualification of the B38 sphere–torus orientation repair (P-Class 8.1 seeds 5201 and 1146): exact, validator-clean, slice-integral volumes, watertight meshes, refusal rollback | `bindings/sphere_torus_orientation_tests.rs` |
 | Entity-evolution and journal bindings | `bindings/evolution.rs` |

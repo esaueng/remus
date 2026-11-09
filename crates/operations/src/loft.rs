@@ -224,6 +224,15 @@ fn loft_impl(topo: &mut Topology, profiles: &[FaceId]) -> Result<SolidId, crate:
         return Ok(stack_solid);
     }
 
+    // Parallel circles whose centres are laterally offset (an oblique
+    // frustum). Each band is the exact ruled surface joining equal angles of
+    // its two rims: every section parallel to the profiles is an exact
+    // circle, so the polygon path's chord facets (32 planes, −0.64 % volume on
+    // the r25 → r10 case) are never needed.
+    if let Some(oblique_solid) = try_loft_parallel_circle_stack(topo, profiles)? {
+        return Ok(oblique_solid);
+    }
+
     // Curve-preserving path: when all profiles share the same boundary edge
     // structure (same edge count and per-edge curve type) and wind CCW, build
     // ruled surfaces per corresponding edge pair so curved edges stay curved —
@@ -1452,6 +1461,384 @@ fn build_coaxial_band_stack(
     let shell = Shell::new(faces).map_err(crate::OperationsError::Topology)?;
     let shell_id = topo.add_shell(shell);
     Ok(topo.add_solid(Solid::new(shell_id, vec![])))
+}
+
+/// Bound the original rational curve's displacement from a full circle.
+/// Equal positive weights and knots give the rational convex-hull bound:
+/// no point can move farther than the largest control-point displacement.
+/// The sampled recognizer supplies a candidate only, never this proof.
+fn full_circle_nurbs_matches(
+    curve: &remus_math::nurbs::curve::NurbsCurve,
+    center: Point3,
+    axis: Vec3,
+    radius: f64,
+    tolerance: f64,
+) -> bool {
+    let Some(&first) = curve.control_points().first() else {
+        return false;
+    };
+    if curve.weights().iter().any(|&weight| weight <= 0.0) {
+        return false;
+    }
+    for normal in [axis, axis * -1.0] {
+        let Ok(circle) =
+            remus_math::curves::Circle3D::new_with_ref(center, normal, radius, first - center)
+        else {
+            continue;
+        };
+        let Ok(expected) =
+            remus_geometry::convert::circle_to_nurbs(&circle, 0.0, std::f64::consts::TAU)
+        else {
+            continue;
+        };
+        if curve.degree() == expected.degree()
+            && curve.knots() == expected.knots()
+            && curve.weights() == expected.weights()
+            && curve.control_points().len() == expected.control_points().len()
+            && curve
+                .control_points()
+                .iter()
+                .zip(expected.control_points())
+                .all(|(&source, &target)| (source - target).length() <= tolerance)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// A full-turn circular section whose own circle agrees with its profile
+/// plane: centre, the circle's unit axis and radius.
+///
+/// [`face_recognized_circle`] reports the face's plane normal and never asks
+/// whether the circle lies in that plane. The oblique stack builds its rims
+/// and caps from the circles alone, so it also requires the curve's axis to
+/// be parallel to the plane normal, the centre to lie in the plane and the
+/// seam vertex to lie on the circle. Anything else stays on the legacy path.
+fn face_full_circle_section(topo: &Topology, face_id: FaceId) -> Option<(Point3, Vec3, f64)> {
+    let tol = Tolerance::new();
+    let (center, _, radius) = face_recognized_circle(topo, face_id)?;
+    let face = topo.face(face_id).ok()?;
+    let FaceSurface::Plane { normal, d } = face.surface() else {
+        return None;
+    };
+    let normal_length = normal.length();
+    if !normal_length.is_finite() || normal_length <= f64::EPSILON {
+        return None;
+    }
+    let plane_normal = *normal * (1.0 / normal_length);
+    let plane_offset = ((dot_normal_point(*normal, center) - d) / normal_length).abs();
+    if plane_offset > tol.linear {
+        return None;
+    }
+    let use_ = *topo.wire(face.outer_wire()).ok()?.edges().first()?;
+    let edge = topo.edge(use_.edge()).ok()?;
+    let range = edge.strict_domain().ok()?;
+    let axis = match edge.curve() {
+        EdgeCurve::Circle(circle) => {
+            let turn_error = ((range.1 - range.0).abs() - std::f64::consts::TAU).abs();
+            if turn_error > tol.angular || radius * turn_error > tol.linear * 0.5 {
+                return None;
+            }
+            circle.normal()
+        }
+        EdgeCurve::NurbsCurve(curve) => {
+            let whole = curve.domain();
+            if range.0.min(range.1).to_bits() != whole.0.to_bits()
+                || range.0.max(range.1).to_bits() != whole.1.to_bits()
+            {
+                return None;
+            }
+            match remus_geometry::convert::recognize_curve(curve, tol.linear * 100.0) {
+                remus_geometry::convert::RecognizedCurve::Circle { normal, .. }
+                    if full_circle_nurbs_matches(
+                        curve,
+                        center,
+                        normal,
+                        radius,
+                        tol.linear * 0.5,
+                    ) =>
+                {
+                    normal
+                }
+                remus_geometry::convert::RecognizedCurve::Circle { .. }
+                | remus_geometry::convert::RecognizedCurve::Line { .. }
+                | remus_geometry::convert::RecognizedCurve::Ellipse { .. }
+                | remus_geometry::convert::RecognizedCurve::Hyperbola { .. }
+                | remus_geometry::convert::RecognizedCurve::Parabola { .. }
+                | remus_geometry::convert::RecognizedCurve::NotRecognized => return None,
+            }
+        }
+        EdgeCurve::Line
+        | EdgeCurve::Ellipse(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => return None,
+    }
+    .normalize()
+    .ok()?;
+    let plane_axis_error = axis.cross(plane_normal).length();
+    if plane_axis_error > tol.angular || plane_offset + radius * plane_axis_error > tol.linear * 0.5
+    {
+        return None;
+    }
+    let seam_vertex = topo.vertex(edge.start()).ok()?;
+    let offset = seam_vertex.point() - center;
+    let radial = (offset - axis * offset.dot(axis)).length();
+    let seam_tolerance = tol.linear * 0.5;
+    if !radial.is_finite()
+        || (radial - radius).abs() > seam_tolerance
+        || offset.dot(axis).abs() > seam_tolerance
+    {
+        return None;
+    }
+    Some((center, axis, radius))
+}
+
+/// Mint a full-turn rim at the circle's own `evaluate(0)` seam only after its
+/// curve authority agrees with the exact seam and antipode oracles.
+fn add_certified_full_turn_ring(
+    topo: &mut Topology,
+    circle: remus_math::curves::Circle3D,
+    tolerance: f64,
+) -> Result<(VertexId, EdgeId), crate::OperationsError> {
+    let range = (0.0, std::f64::consts::TAU);
+    let center = circle.center();
+    let seam = center + circle.u_axis() * circle.radius();
+    let antipode = center - circle.u_axis() * circle.radius();
+    for (label, parameter, expected) in [
+        ("start seam", range.0, seam),
+        ("antipode", std::f64::consts::PI, antipode),
+        ("end seam", range.1, seam),
+    ] {
+        let residual = (circle.evaluate(parameter) - expected).length();
+        if !residual.is_finite() || residual > tolerance {
+            return Err(crate::OperationsError::InvalidInput {
+                reason: format!(
+                    "oblique loft ring {label} misses its exact oracle by {residual} mm"
+                ),
+            });
+        }
+    }
+    let seam_vertex = topo.add_vertex(Vertex::new(circle.evaluate(range.0), tolerance));
+    let mut edge = Edge::with_tolerance(
+        seam_vertex,
+        seam_vertex,
+        EdgeCurve::Circle(circle),
+        Some(tolerance),
+    );
+    edge.set_trim(Some(range));
+    edge.strict_domain()
+        .map_err(|error| crate::OperationsError::InvalidInput {
+            reason: format!("oblique loft ring has no authoritative full-turn domain: {error}"),
+        })?;
+    Ok((seam_vertex, topo.add_edge(edge)))
+}
+
+/// The exact ruled band between two parallel full circles that share an axis
+/// direction and a reference direction, joining equal circle angles.
+///
+/// Both rims convert at the same angular span, so their rational quadratic
+/// knots and weights are identical; a degree-1 rail between rows with equal
+/// weights is then the affine blend of equal-parameter rim points. The
+/// section at rail parameter `u` is therefore the exact circle whose centre
+/// and radius blend linearly — an oblique circular cone (or cylinder when
+/// the radii agree). That closed form, and the outward orientation, are
+/// checked on a grid before the surface is accepted; `None` keeps the
+/// legacy polygon path.
+///
+/// u runs from the upper rim to the lower rim and v around both rims, so
+/// `∂u × ∂v` (rail down × counter-clockwise tangent) points out of the solid.
+fn oblique_circle_band(
+    lower: &remus_math::curves::Circle3D,
+    upper: &remus_math::curves::Circle3D,
+    axis: Vec3,
+    tol: Tolerance,
+) -> Result<Option<NurbsSurface>, crate::OperationsError> {
+    const RAIL_SAMPLES: u32 = 8;
+    const TURN_SAMPLES: u32 = 32;
+    let turn = std::f64::consts::TAU;
+    let (Ok(lower_rim), Ok(upper_rim)) = (
+        remus_geometry::convert::circle_to_nurbs(lower, 0.0, turn),
+        remus_geometry::convert::circle_to_nurbs(upper, 0.0, turn),
+    ) else {
+        return Ok(None);
+    };
+    if lower_rim.degree() != upper_rim.degree()
+        || lower_rim.knots() != upper_rim.knots()
+        || lower_rim.weights() != upper_rim.weights()
+        || lower_rim.control_points().len() != upper_rim.control_points().len()
+    {
+        return Ok(None);
+    }
+    let surface = NurbsSurface::new(
+        1,
+        lower_rim.degree(),
+        vec![0.0, 0.0, 1.0, 1.0],
+        lower_rim.knots().to_vec(),
+        vec![
+            upper_rim.control_points().to_vec(),
+            lower_rim.control_points().to_vec(),
+        ],
+        vec![upper_rim.weights().to_vec(), lower_rim.weights().to_vec()],
+    )?;
+    for rail in 0..=RAIL_SAMPLES {
+        let u = f64::from(rail) / f64::from(RAIL_SAMPLES);
+        let center = upper.center() + (lower.center() - upper.center()) * u;
+        let radius = (lower.radius() - upper.radius()).mul_add(u, upper.radius());
+        for around in 0..TURN_SAMPLES {
+            let v = (f64::from(around) + 0.5) / f64::from(TURN_SAMPLES);
+            let offset = surface.evaluate(u, v) - center;
+            let axial = offset.dot(axis);
+            let radial = (offset - axis * axial).length();
+            if !radial.is_finite()
+                || axial.abs() > tol.linear
+                || (radial - radius).abs() > tol.linear
+            {
+                return Ok(None);
+            }
+            match surface.normal(u, v) {
+                Ok(normal) if normal.dot(offset) > 0.0 => {}
+                _ => return Ok(None),
+            }
+        }
+    }
+    Ok(Some(surface))
+}
+
+/// Loft a stack of parallel full circles whose centres are laterally offset.
+///
+/// Every circle's axis must be parallel to the first one, and the centres
+/// must advance strictly along that axis (each band has positive height);
+/// lateral offsets are free. The result keeps one exact full-turn circle per
+/// section, one exact ruled band per adjacent pair (see
+/// [`oblique_circle_band`]), and planar caps on the end circles. Returns
+/// `Ok(None)` without mutating `topo` for anything else, so the general loft
+/// keeps handling it.
+fn try_loft_parallel_circle_stack(
+    topo: &mut Topology,
+    profiles: &[FaceId],
+) -> Result<Option<SolidId>, crate::OperationsError> {
+    let tol = Tolerance::new();
+    let mut sections = Vec::with_capacity(profiles.len());
+    for &fid in profiles {
+        match face_full_circle_section(topo, fid) {
+            Some(section) => sections.push(section),
+            None => return Ok(None),
+        }
+    }
+    if sections.len() < 2 {
+        return Ok(None);
+    }
+    let (first_center, first_axis, first_radius) = sections[0];
+    let rise = (sections[1].0 - first_center).dot(first_axis);
+    if !rise.is_finite() || rise.abs() <= tol.linear {
+        return Ok(None);
+    }
+    // Orient the shared axis from the first section toward the second so
+    // the caps and band normals point out of the solid either way round.
+    let axis = if rise > 0.0 {
+        first_axis
+    } else {
+        first_axis * -1.0
+    };
+    let mut previous = f64::NEG_INFINITY;
+    for &(center, section_axis, radius) in &sections {
+        let height = (center - first_center).dot(axis);
+        let axis_error = section_axis.cross(axis).length();
+        if axis_error > tol.angular
+            || radius * axis_error > tol.linear * 0.5
+            || !radius.is_finite()
+            || radius <= tol.linear
+            || !height.is_finite()
+            || height <= previous + tol.linear
+        {
+            return Ok(None);
+        }
+        previous = height;
+    }
+
+    // One reference direction for every rim, so equal parameters face the
+    // same way and the seam is a straight generator of each band.
+    let reference = remus_math::curves::Circle3D::new(first_center, axis, first_radius)
+        .map_err(crate::OperationsError::Math)?
+        .u_axis();
+    let circles = sections
+        .iter()
+        .map(|&(center, _, radius)| {
+            remus_math::curves::Circle3D::new_with_ref(center, axis, radius, reference)
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(crate::OperationsError::Math)?;
+
+    // Certify every band before any allocation so a refusal leaves `topo`
+    // untouched for the fallback path.
+    let mut bands = Vec::with_capacity(circles.len() - 1);
+    for pair in circles.windows(2) {
+        match oblique_circle_band(&pair[0], &pair[1], axis, tol)? {
+            Some(surface) => bands.push(surface),
+            None => return Ok(None),
+        }
+    }
+
+    let mut ring_vertices = Vec::with_capacity(circles.len());
+    let mut ring_edges = Vec::with_capacity(circles.len());
+    for circle in &circles {
+        let (vertex, edge) = add_certified_full_turn_ring(topo, circle.clone(), tol.linear)?;
+        ring_vertices.push(vertex);
+        ring_edges.push(edge);
+    }
+
+    let mut faces = Vec::with_capacity(circles.len() + 1);
+    let bottom_normal = axis * -1.0;
+    let bottom_wire = topo.add_wire(Wire::new(
+        vec![OrientedEdge::new(ring_edges[0], false)],
+        true,
+    )?);
+    faces.push(topo.add_face(Face::new(
+        bottom_wire,
+        vec![],
+        FaceSurface::Plane {
+            normal: bottom_normal,
+            d: dot_normal_point(bottom_normal, circles[0].center()),
+        },
+    )));
+    for (band, surface) in bands.into_iter().enumerate() {
+        // The seam joins the two rims' `evaluate(0)` points: the surface's
+        // own v = 0 generator, since both rim rows start there with equal
+        // weights.
+        let seam = topo.add_edge(Edge::new(
+            ring_vertices[band],
+            ring_vertices[band + 1],
+            EdgeCurve::Line,
+        ));
+        let wire = topo.add_wire(Wire::new(
+            vec![
+                OrientedEdge::new(ring_edges[band], true),
+                OrientedEdge::new(seam, true),
+                OrientedEdge::new(ring_edges[band + 1], false),
+                OrientedEdge::new(seam, false),
+            ],
+            true,
+        )?);
+        faces.push(topo.add_face(Face::new(wire, vec![], FaceSurface::Nurbs(surface))));
+    }
+    let last = circles.len() - 1;
+    let top_wire = topo.add_wire(Wire::new(
+        vec![OrientedEdge::new(ring_edges[last], true)],
+        true,
+    )?);
+    faces.push(topo.add_face(Face::new(
+        top_wire,
+        vec![],
+        FaceSurface::Plane {
+            normal: axis,
+            d: dot_normal_point(axis, circles[last].center()),
+        },
+    )));
+
+    let shell = Shell::new(faces).map_err(crate::OperationsError::Topology)?;
+    let shell_id = topo.add_shell(shell);
+    Ok(Some(topo.add_solid(Solid::new(shell_id, vec![]))))
 }
 
 /// Recognize a planar face as a circle (center, plane normal, radius).
