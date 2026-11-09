@@ -7,6 +7,29 @@ App bindings, review rules and merge-queue settings are unchanged.
 
 ## Everyday feedback
 
+Run the repository policy before pushing:
+
+```bash
+python3 scripts/ci_preflight.py
+```
+
+This is the shared local/CI policy entrypoint staged in `fleet-ci-v13.yml`.
+Until that version is activated, the pinned v12 job retains its original
+commands. The runner preserves all 25 v12 checks, adds its own regressions,
+reports every failing check with its exit code, and continues so one run gives
+the complete policy result. Missing tools fail; they are never silently skipped.
+Use Python 3.11 or newer and install the pinned Rust toolchain,
+`cargo-machete` and `taplo-cli` first. The preflight does not replace Clippy,
+native tests or package qualification, and
+does not add another build to the Git hooks.
+
+Use `--json <output>` to retain compact outcomes and durations. In GitHub
+Actions the runner also writes the check table to the job summary. The staged
+callee retains that small JSON report for seven days, including after policy
+failures; it stores no environment or command output. Required check names,
+job dependencies, trust guards and test selection stay unchanged. Activate
+v13 only in a follow-up PR pinned to its landed main commit.
+
 The native path always executes the integration binaries listed in
 `.github/ci-test-suites.json`: boolean and planar parity, evolution, exact blend
 refusal, analytic chamfer, extrusion lineage, malformed mesh input, arena

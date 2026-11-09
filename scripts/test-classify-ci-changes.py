@@ -50,6 +50,38 @@ PR_618_PATHS = [
 ]
 
 
+def fixture_git():
+    """Keep shared hooks and use the checkout's identity for local fixtures."""
+    command = ["git"]
+    for key, fallback in (("user.name", "ci"), ("user.email", "ci@example.invalid")):
+        value = subprocess.run(["git", "config", "--get", key], cwd=ROOT,
+                               text=True, capture_output=True, check=False)
+        configured = value.stdout.strip() if value.returncode == 0 else ""
+        command += ["-c", key + "=" + (configured or fallback)]
+    return command + ["-c", "commit.gpgsign=false", "-c", "init.defaultBranch=main"]
+
+
+class FixtureGitTests(unittest.TestCase):
+    def test_configured_checkout_identity_is_used_without_overriding_hooks(self):
+        def configured(command, **kwargs):
+            self.assertEqual(kwargs["cwd"], ROOT)
+            return subprocess.CompletedProcess(command, 0, stdout={
+                "user.name": "public-fixture", "user.email": "fixture@example.invalid",
+            }[command[-1]] + "\n")
+
+        with mock.patch("subprocess.run", side_effect=configured):
+            command = fixture_git()
+        self.assertIn("user.name=public-fixture", command)
+        self.assertIn("user.email=fixture@example.invalid", command)
+        self.assertNotIn("core.hooksPath", " ".join(command))
+
+    def test_unconfigured_ci_runner_retains_the_existing_synthetic_fixture_identity(self):
+        with mock.patch("subprocess.run", return_value=subprocess.CompletedProcess([], 1, stdout="")):
+            command = fixture_git()
+        self.assertIn("user.name=ci", command)
+        self.assertIn("user.email=ci@example.invalid", command)
+
+
 def queue_reruns_pr_tier(value: bool):
     """Classify with the merge-queue switch set either way, whatever ships."""
     return mock.patch.object(MODULE, "QUEUE_RERUNS_PR_TIER", value)
@@ -168,8 +200,7 @@ class ClassifyCiChangesTests(unittest.TestCase):
                 event: str = "pull_request") -> dict[str, str]:
         """Classify a real two-commit diff through the CLI the changes job runs."""
         with tempfile.TemporaryDirectory(prefix="remus-classify-") as tmp:
-            git = ["git", "-c", "user.name=ci", "-c", "user.email=ci@example.invalid",
-                   "-c", "commit.gpgsign=false", "-c", "init.defaultBranch=main"]
+            git = fixture_git()
             def run(*args: str) -> None:
                 subprocess.run([*git, *args], cwd=tmp, check=True, capture_output=True)
             run("init", "-q")
