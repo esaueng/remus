@@ -8,6 +8,13 @@ historical predecessor-line records, retained for provenance. The
 
 ### Fixed
 
+* **algo:** three overlapping boxes now fuse to the same exact 26748 mm³
+  solid in every grouping and order (OpenZCAD #1246). A section ending at
+  a planar wall's reflex corner could become an out-and-back spur in the
+  greedy face walk, leaving the wall unsplit and the union open. A qualified
+  one-section planar spur now uses the existing DCEL trace when it refines
+  the partition and passes the boundary, winding and loop-health checks.
+
 * **operations:** display meshes of a round in-place helical sweep folded
   inside out just before each end cap (dark streaks on the tube): 244
   facets on 2.5 turns of a unit circle 10 from the axis at pitch 2.5, 986

@@ -522,6 +522,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Primitives (box, cylinder, cone, sphere, torus) | `primitives.rs` |
 | Independent carrier and manifold oracles for the sphere equator | `primitives/sphere_equator_tests.rs` |
 | Boolean (union/cut/intersect) | `boolean/` (mod, types, classify, assembly, tests, nway_pairs_tests, disjoint_witness_tests) |
+| Three-box union grouping and order regression: exact volume, solid validation, closed oriented mesh, material probes, source preservation and STEP replay (OpenZCAD 1246) | `tests/regress_issue_1246_box_union_grouping.rs` |
 | Qualified local drilled-hole cut (through and blind holes; stages 1–2 of the local boolean) and its GFA oracle tests | `boolean/local_cut.rs`, `boolean/local_cut_tests.rs` |
 | Opt-in store-local cut, fuse and intersect: the GFA on the faces the tool touches, spliced onto the untouched ones (stage 4 of the local boolean), and its equivalence oracle tests | `boolean/store_local.rs`, `boolean/store_local_tests.rs` |
 | Mesh boolean (co-refinement) | `mesh_boolean.rs` |
