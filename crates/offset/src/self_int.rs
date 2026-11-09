@@ -348,6 +348,15 @@ fn face_geometry(topo: &Topology, face_id: FaceId) -> Result<FaceGeometry, Offse
         all_edges_straight &= matches!(edge.curve(), EdgeCurve::Line);
         points.push(topo.vertex(oriented.oriented_start(edge))?.point());
     }
+    // A wire is stored in its carrier's sense, and `Face::reversed` flips
+    // both the normal and the traversal. Measure the area in the face's
+    // effective sense on both sides: a reversed plane (a boolean tool wall,
+    // or a STEP face with `same_sense = .F.`) bounds material exactly like an
+    // un-reversed one, and pairing its effective normal with the stored
+    // traversal reported every such sound face as folded.
+    if face.is_reversed() {
+        points.reverse();
+    }
     let signed_area = if is_planar {
         signed_area_along(&points, effective_normal)
     } else {
