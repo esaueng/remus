@@ -2911,11 +2911,20 @@ export class RemusKernel {
      */
     getSolidShells(solid: number): Uint32Array;
     /**
-     * Get the manifold edges whose two support faces meet smoothly (G1).
+     * Get the manifold edges across which the solid's boundary is smooth (G1).
      *
-     * These are visible topology boundaries with no sharp dihedral to blend.
-     * Periodic self-seams are not included. Uses the same native continuity
-     * test as blend selection normalization, without convexity meshing.
+     * An edge between two distinct faces is listed when their normals align
+     * along it: a visible topology boundary with no sharp dihedral to blend.
+     * Uses the same native continuity test as blend selection normalization,
+     * without convexity meshing.
+     *
+     * A self-owned edge (a face's own seam, the same face on both sides) is
+     * listed when the face is G1 across it
+     * ([`self_seam_is_g1`](remus_operations::query::self_seam_is_g1)): a
+     * cylinder's or torus's seam, or a closed NURBS face whose two domain
+     * ends meet tangentially, such as the side of an in-place helical sweep
+     * of a circle. A closed NURBS face that meets itself at an angle is a
+     * crease and is not listed.
      */
     getSolidSmoothEdges(solid: number): Uint32Array;
     /**
