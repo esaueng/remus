@@ -171,7 +171,10 @@ fn mixed_seam_fillet_edges_lie_on_their_faces() {
                     && at(b.z(), 26.0)
                     && at(length, 24.0))
         }
-        _ => false,
+        EdgeCurve::NurbsCurve(_)
+        | EdgeCurve::Ellipse(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => false,
     });
     assert_eq!(picked.len(), 3);
     let rounded = fillet(&mut kernel, body, &picked, 1.0);
@@ -194,7 +197,10 @@ fn union_junction_fillet_edges_lie_on_their_faces() {
                     && ((at(a.x(), 6.0) && at(b.x(), 6.0) && at(a.y(), 0.0) && at(b.y(), 0.0))
                         || (at(a.y(), 6.0) && at(b.y(), 6.0) && at(a.x(), 0.0) && at(b.x(), 0.0))))
         }
-        _ => false,
+        EdgeCurve::NurbsCurve(_)
+        | EdgeCurve::Ellipse(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => false,
     });
     assert_eq!(picked.len(), 5);
     let rounded = fillet(&mut kernel, body, &picked, 5.0);

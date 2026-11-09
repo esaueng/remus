@@ -762,6 +762,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Transform, copy, mirror, pattern | `bindings/transforms.rs` |
 | Typed affine transform results and refusals | `bindings/transform_detailed.rs` |
 | Topology query, edge/surface evaluation | `bindings/query.rs` |
+| Every edge of a filleted body lies on each face it bounds, read through `getEdgeCurveType`, `sampleEdge` and `projectPointOnSurface`: quarter-arc rim, mixed-seam and union-junction fillets (tests) | `bindings/blend_edge_coherence_tests.rs` |
 | Measurement (volume, area, bbox, distances) | `bindings/measure.rs` |
 | Read-only global maximum-distance binding | `bindings/maximum_distance.rs` |
 | Read-only signed draft-angle queries over live session handles | `bindings/draft_analysis.rs` |
