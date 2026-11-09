@@ -7886,6 +7886,51 @@ fn split_face_2d_impl(
         }
     }
 
+    // Reflex-corner spur rescue. The greedy walker takes the rightmost turn,
+    // which traces the region on the left only while every junction turns
+    // left. At a REFLEX corner of a hole-free plane face the boundary itself
+    // turns right, so a section leaving that corner into the face loses to
+    // it: the walker follows the boundary round the whole face and later runs
+    // the section out and back as a zero-area spur. The face then comes back
+    // unsplit (#1246: C's L-shaped x = 24 wall of a box union, cut along A's
+    // top through its reflex corner, lost the piece above A and left six free
+    // edges). A clean partition never carries an out-and-back spur, so the
+    // trigger is the failure itself. With two or more sections the planar
+    // arrangement fallbacks below already re-partition such a face; a single
+    // section has no other rescue. The DCEL trace's successor is a pure
+    // function of the graph and enumerates the true subdivision; adopt it only
+    // when it strictly refines the greedy result, keeps every boundary edge,
+    // covers no edge twice, has no spur, no degenerate area and no self-cross,
+    // and winds every loop the way the boundary winds.
+    if is_plane
+        && !u_periodic
+        && !v_periodic
+        && original_inner_wires.is_empty()
+        && all_edges.len() > n_boundary_edges
+        && sections.len() < 2
+        && loops_have_out_and_back(&loops, tol.linear)
+    {
+        let boundary = &all_edges[..n_boundary_edges];
+        let dcel = build_wire_loops_dcel(&all_edges, tol.linear, false, false);
+        let min_area = tol.linear * tol.linear;
+        let boundary_area = signed_area_2d(&sample_wire_loop_uv(boundary));
+        let wound_like_boundary = dcel.iter().all(|lp| {
+            let area = signed_area_2d(&sample_wire_loop_uv(lp));
+            area.abs() > min_area && (area > 0.0) == (boundary_area > 0.0)
+        });
+        if boundary_area.abs() > min_area
+            && dcel.len() > loops.len()
+            && wound_like_boundary
+            && !loops_have_out_and_back(&dcel, tol.linear)
+            && !loops_orphan_boundary_edges(&dcel, boundary, tol.linear)
+            && !wire_loops_duplicate_cover(&dcel, tol.linear)
+            && !wire_loops_have_degenerate_area(&dcel, tol.linear)
+            && !wire_loops_self_cross(&dcel, tol.linear)
+        {
+            loops = dcel;
+        }
+    }
+
     // Holes-integrated planar arrangement. When `integrate_holes_plane` wove the
     // hole boundaries into `all_edges`, that list is a complete planar
     // subdivision (boundary + trimmed sections + split hole edges). With TWO OR

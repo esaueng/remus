@@ -106,6 +106,12 @@ historical predecessor-line records, retained for provenance. The
 * **blend:** the cap contour of a rounded cap lowered into its shoulder now
   crosses a walked corner (a smaller convex band's run into its seam round),
   solving on its resolved stations.
+* **algo:** three overlapping boxes now fuse to the same exact 26748 mm³
+  solid in every grouping and order (OpenZCAD #1246). A section ending at
+  a planar wall's reflex corner could become an out-and-back spur in the
+  greedy face walk, leaving the wall unsplit and the union open. A qualified
+  one-section planar spur now uses the existing DCEL trace when it refines
+  the partition and passes the boundary, winding and loop-health checks.
 
 ### Changed
 
