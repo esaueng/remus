@@ -2464,7 +2464,15 @@ fn rebuild_closed_walking_support(
                     )
                     .map_err(|_| BlendError::TrimmingFailure { face: face_id })?
                 }
-                _ => return Err(BlendError::TrimmingFailure { face: face_id }),
+                // A NURBS seam touching the rim at both ends, or any other
+                // curve beside the rim, is not a seam this rebuild can cut.
+                EdgeCurve::NurbsCurve(_)
+                | EdgeCurve::Circle(_)
+                | EdgeCurve::Ellipse(_)
+                | EdgeCurve::Hyperbola(_)
+                | EdgeCurve::Parabola(_) => {
+                    return Err(BlendError::TrimmingFailure { face: face_id });
+                }
             };
             replacements.insert(use_.edge(), replacement);
             replacement
@@ -3271,7 +3279,11 @@ fn support_seam_origin_with(
             FaceSurface::Nurbs(surface) => {
                 surface.is_periodic_u() && matches!(curve, EdgeCurve::NurbsCurve(_))
             }
-            _ => false,
+            // Only those two supports carry a seam this search re-starts on.
+            FaceSurface::Plane { .. }
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_) => false,
         };
         if !matches!(
             face.surface(),
@@ -3358,7 +3370,10 @@ fn support_seam_origin_with(
                     speed,
                 )
             }
-            _ => continue,
+            FaceSurface::Plane { .. }
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_) => continue,
         };
         let at_vertex = mismatch(station)?;
         if (at_vertex * scale).abs() <= remus_math::tolerance::Tolerance::new().linear {
