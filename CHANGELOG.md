@@ -8,6 +8,27 @@ historical predecessor-line records, retained for provenance. The
 
 ### Fixed
 
+* **io:** STEP export relocates a seam crossing a window in a qualified
+  cylindrical band (OpenZCAD #1243: two overlapping axial cylinders, both
+  union orders). The writer computes the window's angular extent from
+  authoritative coaxial circular arcs and axial lines, then moves the seam
+  into a free gap on a private copy. Full-turn circular rims and planar
+  neighbours keep their geometry; stale p-curves are removed from moved
+  uses. Unsupported boundary representations keep the existing route.
+  Independent-reader checks cover validity, inside witnesses and closed
+  meshes for the motivating fixture. This is a bounded cylinder repair;
+  other periodic carriers and general spline windows remain unqualified.
+* **io:** a whole sphere written as one `ADVANCED_FACE` whose only bound is
+  a pole `VERTEX_LOOP` (OpenZCAD #1245) now imports as the native two-
+  hemisphere sphere on the file's frame, including a spherical void.
+  Other vertex-loop layouts are refused with a typed error naming the
+  loop. Generated names count toward the cumulative import budget, and
+  refusals leave the destination arena untouched.
+* **offset,operations:** Shell now accepts reversed planar walls in an
+  imported box (OpenZCAD #1247) and a native notched boolean result. The
+  fold detector measures both traversal and normal in the face's effective
+  sense; genuine folds still refuse. The imported 20 x 16 x 12 box at
+  thickness 2 has open-top volume 1920 and closed volume 2304.
 * **operations:** display meshes of a round in-place helical sweep folded
   inside out just before each end cap (dark streaks on the tube): 244
   facets on 2.5 turns of a unit circle 10 from the axis at pitch 2.5, 986
