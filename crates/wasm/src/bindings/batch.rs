@@ -356,6 +356,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "sweepWire"
         | "sweepWithOptions"
         | "helicalSweep"
+        | "helicalSweepInPlace"
         | "multiSectionSweep"
         | "guidedSweep"
         | "minkowskiSum"
@@ -2040,6 +2041,25 @@ impl RemusKernel {
                 )
                 .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(result)))
+            }
+            "helicalSweepInPlace" => {
+                let profile = get_u32(args, "profile")?;
+                let origin = [
+                    get_f64(args, "axisOriginX")?,
+                    get_f64(args, "axisOriginY")?,
+                    get_f64(args, "axisOriginZ")?,
+                ];
+                let axis_dir = [
+                    get_f64(args, "axisDirX")?,
+                    get_f64(args, "axisDirY")?,
+                    get_f64(args, "axisDirZ")?,
+                ];
+                let pitch = get_f64(args, "pitch")?;
+                let turns = get_f64(args, "turns")?;
+                let result = self
+                    .helical_sweep_in_place_impl(profile, origin, axis_dir, pitch, turns)
+                    .map_err(StructuredWasmError::from)?;
+                Ok(serde_json::json!(result))
             }
             "multiSectionSweep" => {
                 let faces: Vec<u32> = get_u32_array_optional(args, "faces")?;

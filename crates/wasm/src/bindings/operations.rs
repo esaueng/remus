@@ -1382,6 +1382,43 @@ impl RemusKernel {
         )?)
     }
 
+    /// Sweep a planar profile face by a screw motion about an axis line,
+    /// starting where the profile sits (no radius: the coil radius is the
+    /// profile's distance from the axis).
+    ///
+    /// The side faces are exact rational NURBS in the profile direction and
+    /// exactly round about the axis; only the axial rise along each rational
+    /// arc span is approximated, within `1e-6·|pitch|`. A positive `pitch`
+    /// climbs along the axis direction, a negative one against it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for non-finite inputs, a zero axis or pitch,
+    /// non-positive or too many turns, a non-planar profile, a profile that
+    /// touches, straddles or encircles the axis, or coils that would overlap.
+    #[wasm_bindgen(js_name = "helicalSweepInPlace")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn helical_sweep_in_place(
+        &mut self,
+        profile: u32,
+        axis_origin_x: f64,
+        axis_origin_y: f64,
+        axis_origin_z: f64,
+        axis_dir_x: f64,
+        axis_dir_y: f64,
+        axis_dir_z: f64,
+        pitch: f64,
+        turns: f64,
+    ) -> Result<u32, JsError> {
+        Ok(self.helical_sweep_in_place_impl(
+            profile,
+            [axis_origin_x, axis_origin_y, axis_origin_z],
+            [axis_dir_x, axis_dir_y, axis_dir_z],
+            pitch,
+            turns,
+        )?)
+    }
+
     // ── Split ─────────────────────────────────────────────────────
 
     /// Split a solid into two halves along a plane.
@@ -2844,6 +2881,40 @@ impl RemusKernel {
                 topo, face_id, origin, axis_dir, radius, pitch, turns, 8,
             )
         })?;
+        Ok(solid_id_to_u32(solid_id))
+    }
+
+    pub(crate) fn helical_sweep_in_place_impl(
+        &mut self,
+        profile: u32,
+        axis_origin: [f64; 3],
+        axis_dir: [f64; 3],
+        pitch: f64,
+        turns: f64,
+    ) -> Result<u32, WasmError> {
+        for (name, value) in [
+            ("axis_origin_x", axis_origin[0]),
+            ("axis_origin_y", axis_origin[1]),
+            ("axis_origin_z", axis_origin[2]),
+            ("axis_dir_x", axis_dir[0]),
+            ("axis_dir_y", axis_dir[1]),
+            ("axis_dir_z", axis_dir[2]),
+            ("pitch", pitch),
+        ] {
+            validate_finite(value, name)?;
+        }
+        validate_positive(turns, "turns")?;
+        let face_id = self.resolve_face(profile)?;
+        let origin = Point3::new(axis_origin[0], axis_origin[1], axis_origin[2]);
+        let axis_dir = Vec3::new(axis_dir[0], axis_dir[1], axis_dir[2]);
+        let solid_id = remus_operations::helix::helical_sweep_in_place(
+            self.topo_mut(),
+            face_id,
+            origin,
+            axis_dir,
+            pitch,
+            turns,
+        )?;
         Ok(solid_id_to_u32(solid_id))
     }
 
@@ -4858,6 +4929,39 @@ mod tests {
         );
         let solid = batch_solid_handle(&out, "helicalSweep");
         assert_batch_solid_geometry(&k, solid, "helicalSweep");
+    }
+
+    #[test]
+    fn helical_sweep_in_place_batch_dispatches_parameters() {
+        let mut k = RemusKernel::new();
+        let profile = k.make_rectangle(1.0, 1.0).unwrap();
+        // The unit square spans x ∈ [-0.5, 0.5] in the XY plane: an axis
+        // along Y through x = 3 leaves it beside the axis, in a meridian
+        // plane.
+        let out = dispatch(
+            &mut k,
+            "helicalSweepInPlace",
+            serde_json::json!({
+                "profile": profile,
+                "axisOriginX": 3.0,
+                "axisOriginY": 0.0,
+                "axisOriginZ": 0.0,
+                "axisDirX": 0.0,
+                "axisDirY": 1.0,
+                "axisDirZ": 0.0,
+                "pitch": 2.5,
+                "turns": 1.5,
+            }),
+        );
+        let solid = batch_solid_handle(&out, "helicalSweepInPlace");
+        assert_batch_solid_geometry(&k, solid, "helicalSweepInPlace");
+        let solid_id = k.resolve_solid(solid).unwrap();
+        // Pappus for a screw motion: unit area, centroid 3 from the axis.
+        let volume = remus_operations::measure::mass_properties(k.topo(), solid_id)
+            .unwrap()
+            .mass;
+        let exact = std::f64::consts::TAU * 3.0 * 1.5;
+        assert!((volume - exact).abs() < 1e-4 * exact, "{volume} vs {exact}");
     }
 
     #[test]

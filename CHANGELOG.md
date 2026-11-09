@@ -55,6 +55,16 @@ historical predecessor-line records, retained for provenance. The
 
 ### Added
 
+* **operations,wasm:** exact in-place helical sweep
+  (`helix::helical_sweep_in_place`, `helicalSweepInPlace`). The profile is
+  screwed about an axis from where it sits (no radius parameter, no move to
+  a helix start), and each profile edge sweeps into one round rational NURBS
+  face over every turn instead of path-sweep facets: a radius-1.5 wire 12
+  from the axis, pitch 5, three turns, is 2 planar caps and 2 NURBS sides
+  and measures within 2e-10 of the exact screw volume. Only the axial rise
+  along each rational arc span is approximated, within `1e-6·|pitch|` (70
+  spans per turn). Profiles touching, straddling or encircling the axis and
+  coils that would overlap are refused. `helicalSweep` is unchanged.
 * **blend,operations:** two chamfer chains that meet now build on one body,
   in either order. The floor-chain assembler closes an open run of a
   straight band on planes that are not square to it (an earlier chamfer's
