@@ -190,7 +190,10 @@ fn crossed_band(topo: &Topology, face_id: FaceId) -> Result<Option<SeamMove>, Io
                 }
                 rims.push((oriented.edge(), edge.start()));
             }
-            _ => return Ok(None),
+            EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => return Ok(None),
         }
     }
     let (Some((seam, _, 2)), [first, second]) = (seam, rims.as_slice()) else {

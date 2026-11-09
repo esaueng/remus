@@ -3486,6 +3486,10 @@ impl<'a> StepBuilder<'a> {
             outer_slot,
             "outer shell",
         )?;
+        // Include the enclosing solid in the budget before its shell can
+        // allocate geometry. A whole-sphere constructor reserves its complete
+        // boundary at once and must refuse an undersized budget atomically.
+        self.reserve_entities(1)?;
         let shell_id = self.build_shell(shell_ref, false)?;
 
         let mut inner_shells = Vec::new();
@@ -3526,7 +3530,6 @@ impl<'a> StepBuilder<'a> {
             }
         }
 
-        self.reserve_entities(1)?;
         let solid_id = self.topo.add_solid(Solid::new(shell_id, inner_shells));
         let name_attrs = if is_complex {
             find_exact_composite_component(&attrs, "REPRESENTATION_ITEM")
@@ -3610,6 +3613,9 @@ impl<'a> StepBuilder<'a> {
             }
         };
 
+        // Charge the parent before constructing its faces, so a batched
+        // face allocation cannot consume the shell's remaining entity slot.
+        self.reserve_entities(1)?;
         let mut face_ids = Vec::new();
         let whole_sphere = match face_refs.as_slice() {
             [face_ref] if entity.kind == EntityKind::ClosedShell => {
@@ -3629,7 +3635,6 @@ impl<'a> StepBuilder<'a> {
         let shell = Shell::new(face_ids).map_err(|e| IoError::ParseError {
             reason: format!("failed to build shell from STEP: {e}"),
         })?;
-        self.reserve_entities(1)?;
         let shell_id = self.topo.add_shell(shell);
         Ok(shell_id)
     }

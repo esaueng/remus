@@ -13,7 +13,7 @@
 
 use std::f64::consts::PI;
 
-use remus_io::step::reader::{read_step, read_step_with_limits};
+use remus_io::step::reader::{read_step, read_step_bodies_with_limits, read_step_with_limits};
 use remus_io::step::writer::write_step;
 use remus_io::{ImportLimits, IoError};
 use remus_math::vec::Point3;
@@ -234,7 +234,35 @@ fn hemisphere_entity_budget_includes_both_boundary_loops() {
     )
     .unwrap();
     assert_eq!(solids.len(), 1);
-    assert_eq!(topo.allocated_slot_count(), 24);
+    // Construction charges 24 entities. The existing rim normalizer then
+    // replaces the equator arcs, appending one edge and two loop/coedge
+    // pairs. Retired slots remain in this lifetime high-water count.
+    assert_eq!(topo.allocated_slot_count(), 29);
+
+    // A sheet owns the same boundary and one shell, with no enclosing
+    // solid. Precharging parents must not consume an extra solid slot.
+    let sheet_step = step
+        .replace(
+            "#12=MANIFOLD_SOLID_BREP('',#11);",
+            "#12=SHELL_BASED_SURFACE_MODEL('',(#11));",
+        )
+        .replace(
+            "#17=ADVANCED_BREP_SHAPE_REPRESENTATION",
+            "#17=SHAPE_REPRESENTATION",
+        );
+    let mut sheet_topo = Topology::new();
+    let sheet = read_step_bodies_with_limits(
+        &sheet_step,
+        &mut sheet_topo,
+        ImportLimits {
+            max_model_entities: 23,
+            ..ImportLimits::default()
+        },
+    )
+    .unwrap();
+    assert!(sheet.solids().is_empty());
+    assert_eq!(sheet.sheets().len(), 1);
+    assert_eq!(sheet_topo.allocated_slot_count(), 23);
 }
 
 /// An off-origin sphere on a tilted frame splits on its own equator.
