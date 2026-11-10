@@ -840,10 +840,9 @@ fn the_closed_circle_collector_reads_a_plane_faces_holes() {
         assert!((contacts.touches[0] - Point3::new(10.0 * s, 0.0, z)).length() < 1e-9 * s);
         let circle = circle_at((7.0 * s, 0.0), z, 3.0 * s);
         let project = |p: Point3| circle.project(p);
-        let (touch, bore) = (
-            project(contacts.touches[0]),
-            project(contacts.hole_crossings[0]),
-        );
+        // A crossing carries its own parameter.
+        let (touch, bore) = (project(contacts.touches[0]), contacts.hole_crossings[0].0);
+        assert!((bore - project(contacts.hole_crossings[0].1).rem_euclid(TAU)).abs() < 1e-12);
         // Spans kept from one bore crossing round through the touch pinch
         // the face; the same contacts with only the span away from the touch
         // kept (the partner face a patch on the bore's side) do not.
@@ -913,7 +912,7 @@ fn the_closed_circle_collector_refuses_a_hole_edge_grazing_a_flat_cone() {
         let (_, contacts) = hits(0.5).unwrap();
         assert_eq!(contacts.hole_crossings.len(), 2, "scale {s}");
         let y = (depth * (2.0 * radius - depth)).sqrt();
-        for p in &contacts.hole_crossings {
+        for (_, p) in &contacts.hole_crossings {
             assert!((p.y().abs() - y).abs() <= 1e-6 * y, "scale {s}: {p:?}");
         }
         // The steep cone's spans pass the gate: the arc over the hole is
@@ -1798,4 +1797,322 @@ fn a_short_chamfer_is_crossed_where_it_is_and_whole_holes_are_left_alone() {
             found.touches
         );
     }
+}
+
+// ── Arcs on, and nearly on, the section's own circle ────────────────────
+
+/// A hole bounded by the arc of a circle about `centre` (parameter zero on
+/// +x) over the angles `[−half, half]`, and then by straight edges through
+/// `tail`, back to the arc's start.
+#[derive(Clone, Debug)]
+struct ArcHole {
+    centre: (f64, f64),
+    radius: f64,
+    half: f64,
+    tail: Vec<(f64, f64)>,
+}
+
+impl ArcHole {
+    fn end(&self, sign: f64) -> (f64, f64) {
+        let angle = sign * self.half;
+        (
+            self.radius.mul_add(angle.cos(), self.centre.0),
+            self.radius.mul_add(angle.sin(), self.centre.1),
+        )
+    }
+
+    /// The hole's wire at height `z`.
+    fn wire(&self, topo: &mut Topology, z: f64) -> WireId {
+        let circle = Circle3D::new_with_ref(
+            Point3::new(self.centre.0, self.centre.1, z),
+            Z,
+            self.radius,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let (start, end) = (
+            vertex(topo, circle.evaluate(-self.half)),
+            vertex(topo, circle.evaluate(self.half)),
+        );
+        let mut arc = Edge::new(start, end, EdgeCurve::Circle(circle));
+        arc.set_trim(Some((-self.half, self.half)));
+        let mut edges = vec![OrientedEdge::new(topo.add_edge(arc), true)];
+        let mut previous = end;
+        for &(x, y) in &self.tail {
+            let next = vertex(topo, Point3::new(x, y, z));
+            edges.push(OrientedEdge::new(
+                topo.add_edge(Edge::new(previous, next, EdgeCurve::Line)),
+                true,
+            ));
+            previous = next;
+        }
+        edges.push(OrientedEdge::new(
+            topo.add_edge(Edge::new(previous, start, EdgeCurve::Line)),
+            true,
+        ));
+        topo.add_wire(Wire::new(edges, true).unwrap())
+    }
+
+    /// How deep `p` lies inside the hole: its distance from the boundary,
+    /// negative outside. A reference that shares nothing with the code
+    /// under test: even–odd along the ray toward +x (the arc met where its
+    /// circle meets the ray, within the arc's own angle), and the distance
+    /// to the arc and to each straight side.
+    fn depth(&self, p: (f64, f64)) -> f64 {
+        let (cx, cy) = self.centre;
+        let on_arc = |q: (f64, f64)| (q.1 - cy).atan2(q.0 - cx).abs() <= self.half;
+        let mut inside = false;
+        let mut distance = if on_arc(p) {
+            ((p.0 - cx).hypot(p.1 - cy) - self.radius).abs()
+        } else {
+            f64::INFINITY
+        };
+        let dy = p.1 - cy;
+        if dy.abs() < self.radius {
+            let reach = self.radius.mul_add(self.radius, -(dy * dy)).sqrt();
+            for x in [cx - reach, cx + reach] {
+                if x > p.0 && on_arc((x, p.1)) {
+                    inside = !inside;
+                }
+            }
+        }
+        let mut corners = vec![self.end(1.0)];
+        corners.extend_from_slice(&self.tail);
+        corners.push(self.end(-1.0));
+        for pair in corners.windows(2) {
+            let (a, b) = (pair[0], pair[1]);
+            let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+            let length_squared = dx.mul_add(dx, dy * dy);
+            let along = if length_squared > 0.0 {
+                ((p.0 - a.0).mul_add(dx, (p.1 - a.1) * dy) / length_squared).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            distance = distance.min((p.0 - a.0 - along * dx).hypot(p.1 - a.1 - along * dy));
+            if (a.1 > p.1) != (b.1 > p.1) && p.0 < a.0 + (p.1 - a.1) * dx / dy {
+                inside = !inside;
+            }
+        }
+        if inside { distance } else { -distance }
+    }
+
+    /// The deepest point of the kept arcs of the section `circle` inside
+    /// the hole, over a dense sampling: an even spread, and a geometric
+    /// ladder of steps (from a tenth of `band` up) either side of every
+    /// arc end and of the foot on the circle of every corner of the hole.
+    fn deepest_kept(&self, arcs: &[RawCurve], circle: &Circle3D, band: f64) -> f64 {
+        let z = circle.center().z();
+        let corners = [self.end(-1.0), self.end(1.0)]
+            .into_iter()
+            .chain(self.tail.iter().copied());
+        let centres = arcs
+            .iter()
+            .flat_map(|arc| [arc.t_range.0, arc.t_range.1])
+            .chain(corners.map(|(x, y)| circle.project(Point3::new(x, y, z))));
+        // Steps of 1.5^k tenths of the band, up to a tenth of a radian.
+        let first = 0.1 * band / circle.radius();
+        let ladder = centres.flat_map(|centre| {
+            (0..64)
+                .map(move |k| first * 1.5_f64.powi(k))
+                .take_while(|step| *step < 0.1)
+                .flat_map(move |step| [centre - step, centre + step])
+        });
+        (0..4000)
+            .map(|k| TAU * f64::from(k) / 4000.0)
+            .chain(ladder)
+            .filter(|&t| {
+                arcs.iter()
+                    .any(|arc| (t - arc.t_range.0).rem_euclid(TAU) <= arc.t_range.1 - arc.t_range.0)
+            })
+            .map(|t| {
+                let p = circle.evaluate(t);
+                self.depth((p.x(), p.y()))
+            })
+            .fold(f64::NEG_INFINITY, f64::max)
+    }
+}
+
+/// A short arc on the section's own circle does not hide the hole behind
+/// it.
+///
+/// The hole's boundary is the arc of the unit circle over ±1e-4 rad, then
+/// lines through (1.001, 0.0003) and (0.999, 0.00035): the section runs
+/// along the arc and on into the hole, 9.8e-5 deep at 2e-4 rad, and leaves
+/// it through the far side. The arc's zone used to be cut off by its chord
+/// moved a band toward the centre, which on an arc this short (its sagitta
+/// is 5e-9) let in the circle out to 4.6e-4 rad either side; the section's
+/// two crossings fell inside that one zone, between two gaps outside the
+/// hole, and were read as a touch. With no crossing, no span ended on the
+/// hole, and the span across it was emitted.
+///
+/// The zone is the arc's now. The change of side shows at the two ends of
+/// the overlap; where along it the section leaves the hole's boundary is
+/// not decidable (two vertices within the band, no root), so a span kept
+/// beside it is refused. Also with the arc's circle moved off the
+/// section's by 1e-9 to 1e-4.
+#[test]
+fn a_short_arc_on_the_sections_circle_does_not_hide_the_hole_behind_it() {
+    let half = 1e-4_f64;
+    let band = 1e-7;
+    let probe = Point3::new(0.0002_f64.cos(), 0.0002_f64.sin(), 50.0);
+    for offset in [0.0, 1e-9, 1e-8, 1e-7, 1e-6, 1e-5, 1e-4] {
+        let hole = ArcHole {
+            centre: (offset, 0.0),
+            radius: 1.0,
+            half,
+            tail: vec![(1.001, 0.0003), (0.999, 0.00035)],
+        };
+        let pair = Pair::new(
+            &[(-0.5, -2.0), (2.0, -2.0), (2.0, 2.0), (-0.5, 2.0)],
+            |topo| vec![hole.wire(topo, 50.0)],
+            (0.0, 0.0),
+            1.0,
+            1.0,
+        );
+        let EdgeCurve::Circle(circle) = &pair.raw.curve else {
+            panic!("a circle")
+        };
+        // The reference: the section is deep inside the hole at the probe.
+        let depth = hole.depth((probe.x(), probe.y()));
+        assert!(depth > 9e-5, "offset {offset}: {depth:e}");
+
+        let wire = pair.topo.face(pair.plane).unwrap().inner_wires()[0];
+        let certified = certify_hole(
+            &pair.topo,
+            wire,
+            &pair.raw.curve,
+            Some(&pair.surfaces.1),
+            Tolerance::new(),
+        )
+        .unwrap();
+        // Into the hole and out of it: two crossings, never a touch alone.
+        assert_eq!(certified.crossings().count(), 2, "offset {offset}");
+        match pair.trim() {
+            Ok(Some(arcs)) => {
+                assert!(
+                    !covers(&arcs, probe),
+                    "offset {offset}: the span through the hole was emitted"
+                );
+                let deepest = hole.deepest_kept(&arcs, circle, band);
+                assert!(
+                    deepest <= 2.0 * band,
+                    "offset {offset}: a kept arc runs {deepest:e} inside the hole"
+                );
+            }
+            Ok(None) => panic!("offset {offset}: the section crosses the hole and the outline"),
+            Err(error) => {
+                // On, or within the band of, the section's own circle the
+                // crossing along the overlap cannot be placed.
+                assert!(
+                    error.to_string().contains("cannot be told from a tangency")
+                        || error.to_string().contains("run past the crossing"),
+                    "offset {offset}: {error}"
+                );
+            }
+        }
+        if offset <= 1e-9 {
+            let error = pair
+                .trim()
+                .map(|_| ())
+                .expect_err("the crossing along the arc cannot be placed");
+            assert!(
+                error.to_string().contains("2 of its vertices"),
+                "offset {offset}: {error}"
+            );
+        }
+    }
+}
+
+/// A hole edge on, or nearly on, the section's own circle for a long
+/// stretch: the section and the hole's arc overlap within the band, and
+/// what the contact is shows only at the two ENDS of the overlap. Whatever
+/// the offset of the arc's circle (its centre moved by 0 to 1e-3 of the
+/// radius in two directions, its radius by 0 or a little either way) and
+/// whichever side the rest of the hole lies on, the trim refuses or keeps
+/// no point deeper than two bands inside the hole.
+#[test]
+fn an_arc_nearly_on_the_sections_circle_is_decided_at_the_ends_of_the_overlap() {
+    let band = 1e-7;
+    let mut outcomes = (0, 0);
+    for half in [1e-4_f64, 3e-3, 0.4] {
+        for offset in [0.0, 1e-9, 3e-8, 1e-7, 3e-7, 1e-6, 1e-5, 1e-4, 1e-3] {
+            for heading in [0.3_f64, 2.1] {
+                for grow in [0.0, -6e-8, 6e-8, 1e-6] {
+                    for outside in [true, false] {
+                        // The rest of the hole: a quadrilateral outside the
+                        // arc's circle, or inside it.
+                        let reach = if outside {
+                            1.0 + 3.0 * half.max(0.01)
+                        } else {
+                            0.6
+                        };
+                        let hole = ArcHole {
+                            centre: (offset * heading.cos(), offset * heading.sin()),
+                            radius: 1.0 + grow,
+                            half,
+                            tail: vec![
+                                (reach * (1.2 * half).cos(), reach * (1.2 * half).sin()),
+                                (reach * (-1.2 * half).cos(), reach * (-1.2 * half).sin()),
+                            ],
+                        };
+                        let pair = Pair::new(
+                            &[(-0.5, -2.0), (2.0, -2.0), (2.0, 2.0), (-0.5, 2.0)],
+                            |topo| vec![hole.wire(topo, 50.0)],
+                            (0.0, 0.0),
+                            1.0,
+                            1.0,
+                        );
+                        let EdgeCurve::Circle(circle) = &pair.raw.curve else {
+                            panic!("a circle")
+                        };
+                        match pair.trim() {
+                            Ok(Some(arcs)) => {
+                                outcomes.0 += 1;
+                                let deepest = hole.deepest_kept(&arcs, circle, band);
+                                assert!(
+                                    deepest <= 2.0 * band,
+                                    "{hole:?}: a kept arc runs {deepest:e} inside the hole"
+                                );
+                            }
+                            Ok(None) => panic!("{hole:?}: the section crosses the outline"),
+                            Err(_) => outcomes.1 += 1,
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Both happen: an arc well off the circle is trimmed, one on it is not.
+    assert!(outcomes.0 > 50 && outcomes.1 > 50, "{outcomes:?}");
+}
+
+/// A section that passes a hole's corner at fifty bands is not the hole's
+/// to refuse: it does not end on the hole, the certificate shows it clear
+/// of it, and the trim keeps it as it did before holes were read.
+#[test]
+fn a_section_clear_of_a_hole_corner_by_fifty_bands_is_kept() {
+    let pair = Pair::new(
+        &[(-0.5, -2.0), (2.0, -2.0), (2.0, 2.0), (-0.5, 2.0)],
+        |topo| {
+            let k = (1.0 + 5e-6) / 2.0_f64.sqrt();
+            vec![polygon_wire(
+                topo,
+                &[(k, k), (k + 0.1, k), (k + 0.1, k + 0.1), (k, k + 0.1)],
+                50.0,
+            )]
+        },
+        (0.0, 0.0),
+        1.0,
+        1.0,
+    );
+    let arcs = pair.trim().unwrap().unwrap();
+    assert_eq!(
+        arcs.len(),
+        3,
+        "{:?}",
+        arcs.iter().map(|a| a.t_range).collect::<Vec<_>>()
+    );
+    // The stretch beside the corner is among them.
+    let beside = Point3::new(0.5_f64.sqrt(), 0.5_f64.sqrt(), 50.0);
+    assert!(covers(&arcs, beside));
 }

@@ -3,13 +3,17 @@
 //!
 //! Random holes — simple polygons, slivers narrower than the tolerance band,
 //! polygons with a vertex within the band of the section, corners chamfered
-//! by short edges, holes smaller than the separation distance, and circles —
-//! against circles and ellipses of eccentricity up to 1000, at model scales
-//! 1e-3, 1 and 1e6. The reference shares no code with the certificate: the
-//! crossings come from the section's implicit quadratic along each edge in
-//! double-double arithmetic (about 31 significant digits), and the side of
-//! the hole a point of the section lies on from the polygon's winding number
-//! and its distance to the edges.
+//! by short edges, holes smaller than the separation distance, circles,
+//! loops with an arc as short as 1e-4 rad on (or within 1e-9 to 1e-3 of) the
+//! section's own circle, wedges whose corner lies 1e-9 to 1e-5 off an
+//! eccentric section, and round holes under an elliptical section (which
+//! the certificate cannot read) — against circles and ellipses of
+//! eccentricity up to 1000, at model scales 1e-3, 1 and 1e6. The reference
+//! shares no code with the certificate: the crossings come from the
+//! section's implicit quadratic along each edge in double-double arithmetic
+//! (about 31 significant digits), and the side of the hole a point of the
+//! section lies on from an even–odd ray count and its distance to the
+//! edges.
 //!
 //! What is asserted, for every case:
 //!
@@ -23,13 +27,24 @@
 //!   a span with something deep outside it;
 //! - the trim keeps no point that is deeper than the band off the face and
 //!   drops none that is deeper than the band on it;
+//! - on a DENSE sampling — an even spread, and a geometric ladder of steps
+//!   from a twentieth of the band up, either side of every kept span's ends,
+//!   of every exact crossing and of the foot of every hole vertex — no kept
+//!   span holds a point more than two bands inside the hole, and no
+//!   material farther than the separation distance from every kept span's
+//!   end is dropped ([`check_spans_dense`]);
 //! - a case with nothing near the tolerance (crossings and vertices far
 //!   apart, every excursion deep) is never refused.
+//!
+//! The last three families are trimmed on a face whose outline cuts the
+//! section too, so that spans which end on no hole exist and are judged.
 //!
 //! `cargo test -p remus-algo --lib plane_section_oracle -- --nocapture`
 //! prints the accepted and refused counts per family and scale. With
 //! `REMUS_SECTION_ORACLE_DUMP=<file>` every case's outcome is written there,
-//! one line each, for comparing two revisions.
+//! one line each, for comparing two revisions; `REMUS_SECTION_ORACLE_CASES`
+//! sets the number of cases per family and scale (60 by default, which is
+//! 1620 cases; 300 is 8100).
 
 // The tallies are the point of running this with `--nocapture`.
 #![allow(
@@ -55,7 +70,16 @@ use super::{
 
 const Z: Vec3 = Vec3::new(0.0, 0.0, 1.0);
 const SCALES: [f64; 3] = [1e-3, 1.0, 1e6];
+/// Cases per family and scale, unless `REMUS_SECTION_ORACLE_CASES` says
+/// otherwise.
 const CASES_PER_CELL: usize = 60;
+
+fn cases_per_cell() -> usize {
+    std::env::var("REMUS_SECTION_ORACLE_CASES")
+        .ok()
+        .and_then(|text| text.parse().ok())
+        .unwrap_or(CASES_PER_CELL)
+}
 
 // ── Double-double arithmetic ────────────────────────────────────────────
 
@@ -204,21 +228,69 @@ enum Family {
     Chamfer,
     Tiny,
     Circle,
+    /// A loop with a short arc on, or nearly on, the section's own circle.
+    ShortArc,
+    /// A wedge whose corner lies 1e-9 to 1e-5 off an eccentric section.
+    EccentricCorner,
+    /// A round hole under an elliptical section: not read.
+    Unread,
 }
 
-const FAMILIES: [Family; 6] = [
+const FAMILIES: [Family; 9] = [
     Family::Polygon,
     Family::Sliver,
     Family::VertexNear,
     Family::Chamfer,
     Family::Tiny,
     Family::Circle,
+    Family::ShortArc,
+    Family::EccentricCorner,
+    Family::Unread,
 ];
+
+impl Family {
+    /// Whether the family's cases are trimmed on a face whose outline cuts
+    /// the section (the families added with the dense check; the first six
+    /// keep the outline they were generated with, clear of the section).
+    fn cuts_the_outline(self) -> bool {
+        matches!(self, Self::ShortArc | Self::EccentricCorner | Self::Unread)
+    }
+}
 
 #[derive(Clone, Debug)]
 enum Hole {
     Polygon(Vec<(f64, f64)>),
-    Circle { centre: (f64, f64), radius: f64 },
+    Circle {
+        centre: (f64, f64),
+        radius: f64,
+    },
+    /// The arc of the circle `centre`, `radius` about the direction `mid`
+    /// (an angle), `half` either side of it, then straight edges through
+    /// `tail` back to the arc's start.
+    ArcLoop {
+        centre: (f64, f64),
+        radius: f64,
+        mid: f64,
+        half: f64,
+        tail: Vec<(f64, f64)>,
+    },
+}
+
+impl Hole {
+    /// The ends of an arc loop's arc: its start and its end.
+    fn arc_ends(&self) -> Option<[(f64, f64); 2]> {
+        let Self::ArcLoop {
+            centre,
+            radius,
+            mid,
+            half,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        Some([mid - half, mid + half].map(|angle| add(*centre, turned(angle), *radius)))
+    }
 }
 
 /// A closed section in the plane `z = 0`: centre, semi-axes and the major
@@ -323,6 +395,35 @@ impl Section {
         best
     }
 
+    /// The length the section covers per unit of its parameter at `t`.
+    fn speed(&self, t: f64) -> f64 {
+        let (sin, cos) = t.sin_cos();
+        (self.a * sin).hypot(self.b * cos)
+    }
+
+    /// The parameter of the section's point nearest `p`, by the same
+    /// bisection as [`Self::distance`].
+    fn foot(&self, p: (f64, f64)) -> f64 {
+        let gap = |t: f64| {
+            let q = self.at(t);
+            (q.0 - p.0).hypot(q.1 - p.1)
+        };
+        let mut centre = self.angle(p);
+        let mut best = gap(centre);
+        let mut width = 0.5;
+        for _ in 0..60 {
+            for t in [centre - width, centre + width] {
+                let d = gap(t);
+                if d < best {
+                    best = d;
+                    centre = t;
+                }
+            }
+            width *= 0.5;
+        }
+        centre
+    }
+
     /// The largest coordinate magnitude a crossing is computed from.
     fn coord(&self) -> f64 {
         self.centre.0.hypot(self.centre.1) + self.a
@@ -336,6 +437,22 @@ struct Case {
     index: usize,
     section: Section,
     hole: Hole,
+    /// The side of the face's outline that cuts the section, for the
+    /// families trimmed that way: the unit direction `d` it faces (from the
+    /// hole's site through the section's centre) and its distance from the
+    /// centre along it. The face is `(p − centre) · d ≤ distance`.
+    cut: Option<((f64, f64), f64)>,
+}
+
+impl Case {
+    /// How far inside the face's outline `p` lies; unbounded for a face
+    /// whose outline is clear of the section.
+    fn inside_outline(&self, p: (f64, f64)) -> f64 {
+        self.cut.map_or(f64::INFINITY, |(d, distance)| {
+            let c = self.section.centre;
+            distance - (p.0 - c.0).mul_add(d.0, (p.1 - c.1) * d.1)
+        })
+    }
 }
 
 fn add(p: (f64, f64), d: (f64, f64), k: f64) -> (f64, f64) {
@@ -350,10 +467,13 @@ fn make_case(family: Family, scale: f64, index: usize, rng: &mut Rng) -> Case {
     let s = scale;
     let band = 1e-7_f64;
     // The section: a circle, or an ellipse of ratio up to 1000.
-    let ratio = if family == Family::Circle {
-        1.0
-    } else {
-        [1.0, 1.0, 1.5, 10.0, 100.0, 1000.0][rng.below(6)]
+    let ratio = match family {
+        Family::Circle | Family::ShortArc => 1.0,
+        Family::EccentricCorner => [10.0, 100.0, 1000.0][rng.below(3)],
+        Family::Unread => [1.5, 10.0, 100.0, 1000.0][rng.below(4)],
+        Family::Polygon | Family::Sliver | Family::VertexNear | Family::Chamfer | Family::Tiny => {
+            [1.0, 1.0, 1.5, 10.0, 100.0, 1000.0][rng.below(6)]
+        }
     };
     let b = rng.range(0.5, 2.0) * s;
     let a = b * ratio;
@@ -465,6 +585,84 @@ fn make_case(family: Family, scale: f64, index: usize, rng: &mut Rng) -> Case {
                 radius,
             }
         }
+        Family::ShortArc => {
+            // The arc's circle: the section's own, or off it by 1e-9 to
+            // 1e-3 of the radius, in centre and in radius.
+            let off = |rng: &mut Rng| {
+                if rng.below(3) == 0 {
+                    0.0
+                } else {
+                    a * rng.decade(-9.0, -3.0)
+                }
+            };
+            let shift = off(rng);
+            let arc_centre = add(centre, turned(rng.range(0.0, TAU)), shift);
+            let grow = off(rng) * if rng.coin() { 1.0 } else { -1.0 };
+            let radius = a + grow;
+            // From 1e-4 rad to half a radian either side of the hole's site.
+            let half = rng.decade(-4.0, -0.3);
+            let mid = (on.1 - centre.1).atan2(on.0 - centre.0);
+            let polar = |angle: f64, reach: f64| add(centre, turned(mid + angle), reach * a);
+            let tail = match rng.below(3) {
+                // The rest of the hole outside the circle.
+                0 => {
+                    let reach = 1.0 + rng.range(2.0, 6.0) * half.max(0.01);
+                    vec![polar(1.2 * half, reach), polar(-1.2 * half, reach)]
+                }
+                // Inside it.
+                1 => {
+                    let reach = rng.range(0.4, 0.9);
+                    vec![polar(1.2 * half, reach), polar(-1.2 * half, reach)]
+                }
+                // Past one end of the arc, on both sides of the circle: the
+                // section runs along the arc and on into the hole.
+                _ => {
+                    let h = half.min(0.02);
+                    vec![
+                        polar(half + 2.0 * h, 1.0 + 10.0 * h),
+                        polar(half + 2.5 * h, 1.0 - 10.0 * h),
+                    ]
+                }
+            };
+            Hole::ArcLoop {
+                centre: arc_centre,
+                radius,
+                mid,
+                half,
+                tail,
+            }
+        }
+        Family::EccentricCorner => {
+            // A wedge pointing along the section, its corner a hair off it:
+            // where a point snapped to the corner re-projects far along an
+            // eccentric curve.
+            let offset = rng.decade(-9.0, -5.0) * if rng.coin() { 1.0 } else { -1.0 };
+            let tip = add(on, normal, offset);
+            let along = tangent.1.atan2(tangent.0) + if rng.coin() { 0.0 } else { PI };
+            let heading = along + rng.range(-0.6, 0.6);
+            let opening = rng.range(0.35, 2.0);
+            let length = rng.range(0.2, 0.8) * b;
+            Hole::Polygon(vec![
+                tip,
+                add(tip, turned(heading - 0.5 * opening), length),
+                add(tip, turned(heading + 0.5 * opening), length),
+            ])
+        }
+        Family::Unread => {
+            // A round hole across the section, beside it, or within a few
+            // bands of touching it from either side.
+            let radius = rng.range(0.1, 2.0) * b;
+            let distance = match rng.below(4) {
+                0 => rng.range(-5.0, 5.0).mul_add(band, radius),
+                1 => rng.range(-5.0, 5.0).mul_add(band, -radius),
+                2 => rng.range(-0.9, 0.9) * radius,
+                _ => rng.range(1.05, 3.0) * radius * if rng.coin() { 1.0 } else { -1.0 },
+            };
+            Hole::Circle {
+                centre: add(on, normal, distance),
+                radius,
+            }
+        }
     };
     let hole = match hole {
         Hole::Polygon(mut corners) => {
@@ -473,90 +671,151 @@ fn make_case(family: Family, scale: f64, index: usize, rng: &mut Rng) -> Case {
             }
             Hole::Polygon(corners)
         }
-        circle @ Hole::Circle { .. } => circle,
+        other @ (Hole::Circle { .. } | Hole::ArcLoop { .. }) => other,
     };
+    let cut = family.cuts_the_outline().then(|| {
+        let away = (centre.0 - on.0, centre.1 - on.1);
+        let length = away.0.hypot(away.1);
+        let d = (away.0 / length, away.1 / length);
+        // Three tenths of the way from the centre to the section's far
+        // side.
+        let support = (section.a * d.0.mul_add(section.u.0, d.1 * section.u.1))
+            .hypot(section.b * d.0.mul_add(section.v.0, d.1 * section.v.1));
+        (d, 0.3 * support)
+    });
     Case {
         family,
         scale,
         index,
         section,
         hole,
+        cut,
     }
 }
 
 // ── The reference ───────────────────────────────────────────────────────
 
-/// The exact crossings of the section with the hole: the chart angle and
-/// the point of each, from the implicit quadratic along every edge in
-/// double-double arithmetic (a root exactly at an edge's end belongs to the
-/// edge it starts).
-fn reference_crossings(section: &Section, hole: &Hole) -> Vec<(f64, (f64, f64))> {
-    let mut found = Vec::new();
+/// The exact crossings of the section with the straight edge `from → to`
+/// (a root exactly at the edge's end belongs to the edge it starts): the
+/// chart angle and the point of each, from the implicit quadratic along
+/// the edge in double-double arithmetic.
+fn segment_crossings(
+    section: &Section,
+    from: (f64, f64),
+    to: (f64, f64),
+    found: &mut Vec<(f64, (f64, f64))>,
+) {
     let (a, b) = (Dd::of(section.a), Dd::of(section.b));
     let u = (Dd::of(section.u.0), Dd::of(section.u.1));
     let v = (Dd::of(section.v.0), Dd::of(section.v.1));
     let c = (Dd::of(section.centre.0), Dd::of(section.centre.1));
+    let w = (Dd::of(from.0).sub(c.0), Dd::of(from.1).sub(c.1));
+    let d = (
+        Dd::of(to.0).sub(Dd::of(from.0)),
+        Dd::of(to.1).sub(Dd::of(from.1)),
+    );
+    // In the chart that maps the section to the unit circle.
+    let (wx, wy) = (dot_dd(w, u).div(a), dot_dd(w, v).div(b));
+    let (dx, dy) = (dot_dd(d, u).div(a), dot_dd(d, v).div(b));
+    let qa = dx.mul(dx).add(dy.mul(dy));
+    let half_b = wx.mul(dx).add(wy.mul(dy));
+    let qc = wx.mul(wx).add(wy.mul(wy)).sub(Dd::of(1.0));
+    let disc = half_b.mul(half_b).sub(qa.mul(qc));
+    if qa.value() <= 0.0 || disc.sign() < 0.0 {
+        return;
+    }
+    let root = disc.sqrt();
+    for sign in [-1.0, 1.0] {
+        let s = half_b.neg().add(root.mul(Dd::of(sign))).div(qa);
+        if s.sign() < 0.0 || s.sub(Dd::of(1.0)).sign() >= 0.0 {
+            continue;
+        }
+        let s = s.value();
+        let p = (
+            s.mul_add(to.0 - from.0, from.0),
+            s.mul_add(to.1 - from.1, from.1),
+        );
+        found.push((section.angle(p), p));
+        if disc.sign() == 0.0 {
+            break;
+        }
+    }
+}
+
+/// The exact crossings of a circular section with the circle `centre`,
+/// `radius`: the chord's foot `along` the centre line and its half-length
+/// `h`, in double-double arithmetic.
+fn circle_crossings(
+    section: &Section,
+    centre: (f64, f64),
+    radius: f64,
+    found: &mut Vec<(f64, (f64, f64))>,
+) {
+    let (r, rho) = (Dd::of(section.a), Dd::of(radius));
+    let c = (Dd::of(section.centre.0), Dd::of(section.centre.1));
+    let e = (Dd::of(centre.0).sub(c.0), Dd::of(centre.1).sub(c.1));
+    let d2 = e.0.mul(e.0).add(e.1.mul(e.1));
+    let d = d2.sqrt();
+    if d.value() <= 0.0 {
+        return;
+    }
+    let along = d2.add(r.mul(r)).sub(rho.mul(rho)).div(d.add(d));
+    let h2 = r.mul(r).sub(along.mul(along));
+    if h2.sign() < 0.0 {
+        return;
+    }
+    let h = h2.sqrt();
+    let (ex, ey) = (e.0.div(d), e.1.div(d));
+    for sign in [-1.0, 1.0] {
+        let hs = h.mul(Dd::of(sign));
+        let p = (
+            c.0.add(along.mul(ex)).sub(hs.mul(ey)).value(),
+            c.1.add(along.mul(ey)).add(hs.mul(ex)).value(),
+        );
+        found.push((section.angle(p), p));
+        if h2.sign() == 0.0 {
+            break;
+        }
+    }
+}
+
+/// The exact crossings of the section with the hole: the chart angle and
+/// the point of each. (A round hole under an elliptical section is a
+/// quartic and has none here: that family is judged on its spans alone.)
+fn reference_crossings(section: &Section, hole: &Hole) -> Vec<(f64, (f64, f64))> {
+    let mut found = Vec::new();
+    #[allow(clippy::float_cmp)]
+    let circular = section.a == section.b;
     match hole {
         Hole::Polygon(corners) => {
             for (i, &from) in corners.iter().enumerate() {
-                let to = corners[(i + 1) % corners.len()];
-                let w = (Dd::of(from.0).sub(c.0), Dd::of(from.1).sub(c.1));
-                let d = (
-                    Dd::of(to.0).sub(Dd::of(from.0)),
-                    Dd::of(to.1).sub(Dd::of(from.1)),
-                );
-                // In the chart that maps the section to the unit circle.
-                let (wx, wy) = (dot_dd(w, u).div(a), dot_dd(w, v).div(b));
-                let (dx, dy) = (dot_dd(d, u).div(a), dot_dd(d, v).div(b));
-                let qa = dx.mul(dx).add(dy.mul(dy));
-                let half_b = wx.mul(dx).add(wy.mul(dy));
-                let qc = wx.mul(wx).add(wy.mul(wy)).sub(Dd::of(1.0));
-                let disc = half_b.mul(half_b).sub(qa.mul(qc));
-                if qa.value() <= 0.0 || disc.sign() < 0.0 {
-                    continue;
-                }
-                let root = disc.sqrt();
-                for sign in [-1.0, 1.0] {
-                    let s = half_b.neg().add(root.mul(Dd::of(sign))).div(qa);
-                    if s.sign() < 0.0 || s.sub(Dd::of(1.0)).sign() >= 0.0 {
-                        continue;
-                    }
-                    let s = s.value();
-                    let p = (
-                        s.mul_add(to.0 - from.0, from.0),
-                        s.mul_add(to.1 - from.1, from.1),
-                    );
-                    found.push((section.angle(p), p));
-                    if disc.sign() == 0.0 {
-                        break;
-                    }
-                }
+                segment_crossings(section, from, corners[(i + 1) % corners.len()], &mut found);
             }
         }
         Hole::Circle { centre, radius } => {
-            // Two circles: the chord's foot `along` the centre line and its
-            // half-length `h`.
-            let (r, rho) = (a, Dd::of(*radius));
-            let e = (Dd::of(centre.0).sub(c.0), Dd::of(centre.1).sub(c.1));
-            let d2 = e.0.mul(e.0).add(e.1.mul(e.1));
-            let d = d2.sqrt();
-            if d.value() > 0.0 {
-                let along = d2.add(r.mul(r)).sub(rho.mul(rho)).div(d.add(d));
-                let h2 = r.mul(r).sub(along.mul(along));
-                if h2.sign() >= 0.0 {
-                    let h = h2.sqrt();
-                    let (ex, ey) = (e.0.div(d), e.1.div(d));
-                    for sign in [-1.0, 1.0] {
-                        let hs = h.mul(Dd::of(sign));
-                        let p = (
-                            c.0.add(along.mul(ex)).sub(hs.mul(ey)).value(),
-                            c.1.add(along.mul(ey)).add(hs.mul(ex)).value(),
-                        );
-                        found.push((section.angle(p), p));
-                        if h2.sign() == 0.0 {
-                            break;
-                        }
-                    }
+            if circular {
+                circle_crossings(section, *centre, *radius, &mut found);
+            }
+        }
+        Hole::ArcLoop {
+            centre,
+            radius,
+            mid,
+            half,
+            tail,
+        } => {
+            let mut on_circle = Vec::new();
+            circle_crossings(section, *centre, *radius, &mut on_circle);
+            found.extend(on_circle.into_iter().filter(|(_, p)| {
+                let angle = (p.1 - centre.1).atan2(p.0 - centre.0);
+                ((angle - mid + PI).rem_euclid(TAU) - PI).abs() <= *half
+            }));
+            if let Some([start, end]) = hole.arc_ends() {
+                let mut corners = vec![end];
+                corners.extend_from_slice(tail);
+                corners.push(start);
+                for pair in corners.windows(2) {
+                    segment_crossings(section, pair[0], pair[1], &mut found);
                 }
             }
         }
@@ -576,8 +835,65 @@ fn segment_distance(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
     (ap.0 - along * ab.0).hypot(ap.1 - along * ab.1)
 }
 
+/// The distance from `p` to the hole's boundary, and whether a ray from `p`
+/// toward +x meets the boundary an odd number of times.
+fn boundary_and_parity(p: (f64, f64), hole: &Hole) -> (f64, bool) {
+    let mut distance = f64::INFINITY;
+    let mut inside = false;
+    let mut side = |a: (f64, f64), b: (f64, f64)| {
+        distance = distance.min(segment_distance(p, a, b));
+        if (a.1 > p.1) != (b.1 > p.1) && p.0 < a.0 + (p.1 - a.1) * (b.0 - a.0) / (b.1 - a.1) {
+            inside = !inside;
+        }
+    };
+    match hole {
+        Hole::Polygon(corners) => {
+            for (i, &a) in corners.iter().enumerate() {
+                side(a, corners[(i + 1) % corners.len()]);
+            }
+        }
+        Hole::Circle { centre, radius } => {
+            let offset = (p.0 - centre.0).hypot(p.1 - centre.1);
+            return ((radius - offset).abs(), offset < *radius);
+        }
+        Hole::ArcLoop {
+            centre,
+            radius,
+            mid,
+            half,
+            tail,
+        } => {
+            if let Some([start, end]) = hole.arc_ends() {
+                let mut corners = vec![end];
+                corners.extend_from_slice(tail);
+                corners.push(start);
+                for pair in corners.windows(2) {
+                    side(pair[0], pair[1]);
+                }
+            }
+            let on_arc = |q: (f64, f64)| {
+                let angle = (q.1 - centre.1).atan2(q.0 - centre.0);
+                ((angle - mid + PI).rem_euclid(TAU) - PI).abs() <= *half
+            };
+            if on_arc(p) {
+                distance = distance.min(((p.0 - centre.0).hypot(p.1 - centre.1) - radius).abs());
+            }
+            let dy = p.1 - centre.1;
+            if dy.abs() < *radius {
+                let reach = radius.mul_add(*radius, -(dy * dy)).sqrt();
+                for x in [centre.0 - reach, centre.0 + reach] {
+                    if x > p.0 && on_arc((x, p.1)) {
+                        inside = !inside;
+                    }
+                }
+            }
+        }
+    }
+    (distance, inside)
+}
+
 /// How deep `p` lies inside the hole: its distance from the hole's
-/// boundary, negative outside.
+/// boundary, negative outside. A polygon's side is its winding number.
 fn depth_in_hole(p: (f64, f64), hole: &Hole) -> f64 {
     match hole {
         Hole::Polygon(corners) => {
@@ -597,14 +913,28 @@ fn depth_in_hole(p: (f64, f64), hole: &Hole) -> f64 {
                 distance
             }
         }
-        Hole::Circle { centre, radius } => radius - (p.0 - centre.0).hypot(p.1 - centre.1),
+        Hole::Circle { .. } | Hole::ArcLoop { .. } => ray_depth(p, hole),
     }
+}
+
+/// [`depth_in_hole`] by a method that shares nothing with the certificate
+/// or with the winding number above: an even–odd count along the ray toward
+/// +x, an arc met where its circle meets the ray within the arc's own
+/// angle. The reference of the dense check.
+fn ray_depth(p: (f64, f64), hole: &Hole) -> f64 {
+    let (distance, inside) = boundary_and_parity(p, hole);
+    if inside { distance } else { -distance }
 }
 
 fn hole_vertices(hole: &Hole) -> Vec<(f64, f64)> {
     match hole {
         Hole::Polygon(corners) => corners.clone(),
         Hole::Circle { .. } => Vec::new(),
+        Hole::ArcLoop { tail, .. } => {
+            let mut vertices = hole.arc_ends().map(Vec::from).unwrap_or_default();
+            vertices.extend_from_slice(tail);
+            vertices
+        }
     }
 }
 
@@ -655,6 +985,14 @@ fn is_clean(case: &Case, exact: &[(f64, (f64, f64))]) -> bool {
     let vertices = hole_vertices(&case.hole);
     let apart = |p: (f64, f64), q: (f64, f64)| (p.0 - q.0).hypot(p.1 - q.1);
     if exact.is_empty() || !exact.len().is_multiple_of(2) {
+        return false;
+    }
+    // A vertex is a point in model coordinates, rounded there, and the
+    // parameter a later stage reads off it moves along an eccentric section
+    // by that rounding times the ratio of the semi-axes. Where that reaches
+    // the band (a ratio of 100 at coordinates of 1e8) the section cannot
+    // end on a vertex at all, which is a tolerance the case is near.
+    if section.a / section.b * 4.0 * f64::EPSILON * section.coord() > 0.25 * band {
         return false;
     }
     for (i, x) in exact.iter().enumerate() {
@@ -719,6 +1057,42 @@ fn hole_wire(topo: &mut Topology, hole: &Hole) -> WireId {
             let circle = Circle3D::new(Point3::new(centre.0, centre.1, 0.0), Z, *radius).unwrap();
             circle_wire(topo, &circle, true)
         }
+        Hole::ArcLoop {
+            centre,
+            radius,
+            mid,
+            half,
+            tail,
+        } => {
+            let circle = Circle3D::new_with_ref(
+                Point3::new(centre.0, centre.1, 0.0),
+                Z,
+                *radius,
+                Vec3::new(mid.cos(), mid.sin(), 0.0),
+            )
+            .unwrap();
+            let (start, end) = (
+                vertex(topo, circle.evaluate(-half)),
+                vertex(topo, circle.evaluate(*half)),
+            );
+            let mut arc = Edge::new(start, end, EdgeCurve::Circle(circle));
+            arc.set_trim(Some((-half, *half)));
+            let mut edges = vec![OrientedEdge::new(topo.add_edge(arc), true)];
+            let mut previous = end;
+            for &(x, y) in tail {
+                let next = vertex(topo, Point3::new(x, y, 0.0));
+                edges.push(OrientedEdge::new(
+                    topo.add_edge(Edge::new(previous, next, EdgeCurve::Line)),
+                    true,
+                ));
+                previous = next;
+            }
+            edges.push(OrientedEdge::new(
+                topo.add_edge(Edge::new(previous, start, EdgeCurve::Line)),
+                true,
+            ));
+            topo.add_wire(Wire::new(edges, true).unwrap())
+        }
     }
 }
 
@@ -775,6 +1149,32 @@ fn refusal_kind(error: &AlgoError) -> String {
         (
             "another point it is split at",
             "crossings closer than the separation",
+        ),
+        (
+            "crosses the face's outline",
+            "outline crossing that is not a split point",
+        ),
+        (
+            "run past the crossing",
+            "crossing's parameter off its vertex",
+        ),
+        ("no exact contact", "unread hole within reach"),
+        (
+            "inside a span that does not end on it",
+            "crossing inside an uncertified span",
+        ),
+        (
+            "along a span that does not end on it",
+            "side undecided on an uncertified span",
+        ),
+        (
+            "along a span with no crossing of it",
+            "sides change without a crossing",
+        ),
+        ("its span was followed on", "probe disagrees"),
+        (
+            "from the section's point at its parameter",
+            "span end off the section",
         ),
         ("changes sides of loop", "crossing cannot be placed"),
         ("does not alternate", "sides do not alternate"),
@@ -967,12 +1367,26 @@ fn trim(case: &Case) -> Result<Option<Vec<(f64, f64)>>, AlgoError> {
     let mut topo = Topology::new();
     let half = 4.0 * section.a + 3.0 * section.b;
     let c = section.centre;
-    let outline = [
-        (c.0 - half, c.1 - half),
-        (c.0 + half, c.1 - half),
-        (c.0 + half, c.1 + half),
-        (c.0 - half, c.1 + half),
-    ];
+    let outline = case.cut.map_or(
+        [
+            (c.0 - half, c.1 - half),
+            (c.0 + half, c.1 - half),
+            (c.0 + half, c.1 + half),
+            (c.0 - half, c.1 + half),
+        ],
+        |(d, distance)| {
+            // The same square turned to face `d`, its side on that side
+            // moved in to cut the section.
+            let e = (-d.1, d.0);
+            [
+                (-half, -half),
+                (distance, -half),
+                (distance, half),
+                (-half, half),
+            ]
+            .map(|(x, y)| add(add(c, d, x), e, y))
+        },
+    );
     let outer = polygon_wire(&mut topo, &outline, 0.0);
     let hole = hole_wire(&mut topo, &case.hole);
     let plane = topo.add_face(Face::new(outer, vec![hole], plane_at(0.0)));
@@ -1075,6 +1489,137 @@ fn check_spans(
     Ok(())
 }
 
+/// The dense check on the spans a trim kept, against [`ray_depth`]: no kept
+/// point more than two bands inside the hole (or outside the outline), and
+/// no material dropped farther than the separation distance from every
+/// kept span's end.
+///
+/// The samples are an even spread, and a geometric ladder of steps — from a
+/// twentieth of the band, half as long again each time, up to a fifth of
+/// the section — either side of every kept span's ends, of every exact
+/// crossing and of the foot on the section of every hole vertex (of a
+/// round hole's centre, and across from it). A span that ends 2e-5 past
+/// its crossing on a section 0.001 wide is found by the ladder; an even
+/// spread of any practical density walks over it.
+///
+/// At model scale 1e6 the second half is asserted only where the trim found
+/// the outline's own crossings (`Ok(false)` reports a case where it did
+/// not). Those come from the collector as they always did, a root of each
+/// outline edge with the cut surface kept within an absolute 1e-6 of the
+/// section, and at that scale some are lost, with or without a hole on the
+/// face; a span between the split points that remain is then kept or
+/// dropped whole by its midpoint. Where the section crosses a hole the
+/// certificate reads the outline too and refuses such a span; where it does
+/// not, the hole plays no part in what is dropped. At the other scales the
+/// outline's crossings are found, and dropped material is dropped material.
+fn check_spans_dense(
+    case: &Case,
+    kept: &[(f64, f64)],
+    exact: &[(f64, (f64, f64))],
+) -> Result<bool, String> {
+    let section = &case.section;
+    let band = band_of(section);
+    // Two crossings are one within this, and a span between two copies of
+    // one crossing is a sliver under a millionth of the section's size.
+    let excused = (100.0 * band).max(4e-6 * section.a);
+    // The outline's own crossings keep the handling they had: a root of a
+    // line with the cut surface, to the rounding of that.
+    let outline_slack = 1e-4 * section.b;
+    let is_kept = |t: f64| {
+        kept.iter()
+            .any(|&(lo, hi)| (t - lo).rem_euclid(TAU) <= hi - lo)
+    };
+    let ends: Vec<(f64, f64)> = kept
+        .iter()
+        .flat_map(|&(lo, hi)| [section.at(lo), section.at(hi)])
+        .collect();
+    let mut centres: Vec<f64> = kept.iter().flat_map(|&(lo, hi)| [lo, hi]).collect();
+    centres.extend(exact.iter().map(|x| x.0));
+    centres.extend(hole_vertices(&case.hole).iter().map(|v| section.foot(*v)));
+    if let Hole::Circle { centre, .. } | Hole::ArcLoop { centre, .. } = &case.hole {
+        let foot = section.foot(*centre);
+        centres.extend([foot, foot + PI]);
+    }
+    // The outline's crossings, by bisection on the side of its cutting
+    // edge, are found by the trim when a kept span ends at each of them, or
+    // when the section beside it, on the face's side, is in the hole (no
+    // span of the face ends there).
+    let outline_found = case.scale < 1e6
+        || case.cut.is_none_or(|_| {
+            let side = |t: f64| case.inside_outline(section.at(t));
+            (0..4096).all(|k| {
+                let (mut lo, mut hi) =
+                    (TAU * f64::from(k) / 4096.0, TAU * f64::from(k + 1) / 4096.0);
+                if (side(lo) > 0.0) == (side(hi) > 0.0) {
+                    return true;
+                }
+                for _ in 0..60 {
+                    let mid = 0.5 * (lo + hi);
+                    if (side(mid) > 0.0) == (side(lo) > 0.0) {
+                        lo = mid;
+                    } else {
+                        hi = mid;
+                    }
+                }
+                let (crossing, inner) = if side(lo) > 0.0 { (lo, lo) } else { (hi, hi) };
+                let p = section.at(crossing);
+                let step = 4.0 * outline_slack / section.speed(inner);
+                let beside = section.at(if side(lo) > 0.0 {
+                    inner - step
+                } else {
+                    inner + step
+                });
+                ends.iter()
+                    .any(|end| (end.0 - p.0).hypot(end.1 - p.1) <= outline_slack)
+                    || ray_depth(beside, &case.hole) > -2.0 * band
+            })
+        });
+    let mut samples: Vec<f64> = (0..720).map(|k| TAU * f64::from(k) / 720.0).collect();
+    for centre in centres {
+        let speed = section.speed(centre);
+        // From a twentieth of the band up to a fifth of the section.
+        for k in 0..96 {
+            let length = 0.05 * band * 1.5_f64.powi(k);
+            if length >= 0.2 * section.a {
+                break;
+            }
+            let step = (length / speed).min(PI);
+            samples.extend([centre - step, centre + step]);
+        }
+    }
+    for t in samples {
+        let p = section.at(t);
+        let depth = ray_depth(p, &case.hole);
+        let inside_outline = case.inside_outline(p);
+        if is_kept(t) {
+            if depth > 2.0 * band {
+                return Err(format!(
+                    "a kept span runs {depth:e} inside the hole at parameter {t}"
+                ));
+            }
+            if inside_outline < -outline_slack {
+                return Err(format!(
+                    "a kept span runs {:e} outside the outline at parameter {t}",
+                    -inside_outline
+                ));
+            }
+        } else if outline_found
+            && depth < -2.0 * band
+            && inside_outline > outline_slack
+            && ends
+                .iter()
+                .all(|end| (end.0 - p.0).hypot(end.1 - p.1) > excused)
+        {
+            return Err(format!(
+                "material {:e} clear of the hole at parameter {t} was dropped, farther than \
+                 {excused:e} from every kept span's end",
+                -depth
+            ));
+        }
+    }
+    Ok(outline_found)
+}
+
 // ── The run ─────────────────────────────────────────────────────────────
 
 #[derive(Default)]
@@ -1092,7 +1637,7 @@ fn all_cases() -> Vec<Case> {
         for (s, &scale) in SCALES.iter().enumerate() {
             #[allow(clippy::cast_possible_truncation)]
             let mut rng = Rng(0x5EC7_10A1_u64 ^ ((f as u64) << 32) ^ ((s as u64) << 16));
-            for index in 0..CASES_PER_CELL {
+            for index in 0..cases_per_cell() {
                 cases.push(make_case(family, scale, index, &mut rng));
             }
         }
@@ -1154,6 +1699,15 @@ fn judge_collector(case: &Case) -> (Outcome, Result<f64, String>) {
     let exact = reference_crossings(&case.section, &case.hole);
     let clean = is_clean(case, &exact);
     let result = collect(case);
+    if case.family == Family::Unread {
+        // A round hole under an elliptical section is not read: the
+        // collector has nothing to say, and the trim is what is judged.
+        let verdict = match &result {
+            Ok(None) => Ok(0.0),
+            other => Err(format!("an unread hole was answered: {other:?}")),
+        };
+        return (outcome_of(&result), verdict);
+    }
     let verdict = match &result {
         Ok(Some(found)) => check_crossings(case, found, &exact).and_then(|worst| {
             if clean && found.len() != exact.len() {
@@ -1176,6 +1730,12 @@ fn judge_collector(case: &Case) -> (Outcome, Result<f64, String>) {
     (outcome_of(&result), verdict)
 }
 
+thread_local! {
+    /// Accepted trims whose kept spans do not end on the outline's
+    /// crossings: the collector lost one (see [`check_spans_dense`]).
+    static OUTLINES_LOST: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// One case through the trim: what became of it, and whether that is right
 /// by the reference.
 fn judge_trim(case: &Case) -> (Outcome, Result<f64, String>) {
@@ -1190,7 +1750,20 @@ fn judge_trim(case: &Case) -> (Outcome, Result<f64, String>) {
             .all(|x| (x.1.0 - seam.0).hypot(x.1.1 - seam.1) > far);
     let result = trim(case);
     let verdict = match &result {
-        Ok(Some(kept)) => check_spans(case, kept, &exact).map(|()| 0.0),
+        // A face whose outline cuts the section drops the span beyond it:
+        // the dense check knows the outline, the even one does not.
+        Ok(Some(kept)) => if case.cut.is_some() {
+            Ok(())
+        } else {
+            check_spans(case, kept, &exact)
+        }
+        .and_then(|()| check_spans_dense(case, kept, &exact))
+        .map(|outline_found| {
+            if !outline_found {
+                OUTLINES_LOST.with(|lost| lost.set(lost.get() + 1));
+            }
+            0.0
+        }),
         Ok(None) => {
             // Fewer than two split points: the section is not trimmed here
             // at all. Nothing deep inside the hole may be left.
@@ -1236,13 +1809,29 @@ fn run(level: &str, title: &str, judge: fn(&Case) -> (Outcome, Result<f64, Strin
                 bump(&mut kinds, kind);
             }
         }
+        // What is wrong, in a few words: the reason's first line with its
+        // numbers cut out, so that wrong answers of one kind count together.
+        let judged = verdict.as_ref().map_or_else(
+            |why| {
+                let kind: String = why
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
+                    .chars()
+                    .filter(|c| c.is_alphabetic() || *c == ' ')
+                    .take(60)
+                    .collect();
+                format!(
+                    "WRONG: {}",
+                    kind.split_whitespace().collect::<Vec<_>>().join(" ")
+                )
+            },
+            |_| "right".to_owned(),
+        );
         writeln!(
             lines,
-            "{level} {:?} {:e} {} {outcome:?} {}",
-            case.family,
-            case.scale,
-            case.index,
-            if verdict.is_ok() { "right" } else { "WRONG" }
+            "{level} {:?} {:e} {} {outcome:?} {judged}",
+            case.family, case.scale, case.index
         )
         .unwrap();
         match verdict {
@@ -1258,7 +1847,11 @@ fn run(level: &str, title: &str, judge: fn(&Case) -> (Outcome, Result<f64, Strin
         }
     }
     report(title, &tallies, &kinds);
-    println!("wrong answers: {wrong}");
+    println!(
+        "wrong answers: {wrong}; accepted trims with an outline crossing the collector \
+         lost (dropped material not judged there): {}",
+        OUTLINES_LOST.with(std::cell::Cell::get)
+    );
     dump(level, &lines);
     worst
 }

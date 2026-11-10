@@ -673,52 +673,200 @@ fn reverse_wire(topo: &mut Topology, wire_id: WireId) -> Result<WireId, AlgoErro
     Ok(topo.add_wire(wire))
 }
 
-/// How many times `wire_id` winds round the axis of the cylinder `surface`:
-/// ±1 for a rim, 0 for a loop that closes on the wall (a hole, or a rim, a
-/// seam, the other rim and the seam again). `None` when an edge cannot be
-/// sampled or a point has no chart.
-fn cylinder_wire_winding(topo: &Topology, wire_id: WireId, surface: &FaceSurface) -> Option<i64> {
-    let mut angles = Vec::new();
-    for oriented in topo.wire(wire_id).ok()?.edges() {
-        let edge = topo.edge(oriented.edge()).ok()?;
-        let mut points = Vec::new();
-        super::pcurve_compute::sample_edge_uniform(
-            edge.curve(),
-            topo.vertex(edge.start()).ok()?.point(),
-            topo.vertex(edge.end()).ok()?.point(),
-            edge.strict_domain().ok()?,
-            32,
-            oriented.is_forward(),
-            &mut points,
-        );
-        for point in points {
-            angles.push(surface.project_point(point)?.0);
+/// The angle `curve` turns through about the axis of `cylinder` from the
+/// parameter `from` to the parameter `to`, or `None` when it cannot be
+/// certified.
+///
+/// The turn is summed over pieces of the curve, and a piece counts only
+/// when it is certain to subtend less than a half turn at the axis: seen
+/// along the axis, it lies in a convex region that does not hold the axis.
+/// Then the angle between its two ends, taken in `(−π, π)`, IS the angle it
+/// turns through, however its parameter runs. A piece that is not certain
+/// is halved, within a budget.
+///
+/// - A line, a circle or an ellipse piece lies in the disc about its middle
+///   point whose radius is the curve's greatest speed times half the
+///   piece's parameter range.
+/// - A spline piece lies in the convex hull of its own control points
+///   (positive weights): certain when they all lie strictly within a half
+///   turn of one another about the axis. The piece is cut out of the curve
+///   by exact knot insertion.
+///
+/// The curve's speed along its parameter plays no part: an exact rational
+/// circle whose knots crowd three of its quarter turns into a thousandth
+/// of its range winds once, as its geometry does. (Uniform samples of it
+/// all fall in the fourth quarter but one, and the wrapped steps between
+/// them sum to nothing.)
+fn turn_about_axis(
+    curve: &remus_topology::edge::EdgeCurve,
+    (start, end): (Point3, Point3),
+    (from, to): (f64, f64),
+    cylinder: &remus_math::surfaces::CylindricalSurface,
+) -> Option<f64> {
+    use remus_topology::edge::EdgeCurve;
+    use std::f64::consts::{PI, TAU};
+    const BUDGET: usize = 1024;
+    let (x, y) = (cylinder.x_axis(), cylinder.y_axis());
+    // A point seen along the axis, and its angle there.
+    let flat = |p: Point3| {
+        let w = p - cylinder.origin();
+        (w.dot(x), w.dot(y))
+    };
+    let wrapped =
+        |a: (f64, f64), b: (f64, f64)| (b.1.atan2(b.0) - a.1.atan2(a.0) + PI).rem_euclid(TAU) - PI;
+    // The floor under a distance from the axis: nothing nearer than this
+    // has an angle about it.
+    let floor = 1e-9 * cylinder.radius();
+    if let EdgeCurve::NurbsCurve(nurbs) = curve {
+        if nurbs.weights().iter().any(|w| !w.is_finite() || *w <= 0.0) {
+            return None;
+        }
+        let (lo, hi) = (from.min(to), from.max(to));
+        let (d0, d1) = nurbs.domain();
+        // The part of the curve between the two parameters.
+        let mut piece = nurbs.clone();
+        if hi < d1 {
+            piece = remus_math::nurbs::knot_ops::curve_split(&piece, hi).ok()?.0;
+        }
+        if lo > d0 {
+            piece = remus_math::nurbs::knot_ops::curve_split(&piece, lo).ok()?.1;
+        }
+        let mut turned = 0.0;
+        let mut budget = BUDGET;
+        let mut pieces = vec![piece];
+        while let Some(piece) = pieces.pop() {
+            budget = budget.checked_sub(1)?;
+            let net: Vec<(f64, f64)> = piece.control_points().iter().map(|p| flat(*p)).collect();
+            let (&first, &last) = (net.first()?, net.last()?);
+            // Every control point within a half turn of the first, on both
+            // sides together: the hull does not hold the axis.
+            let mut span = (0.0_f64, 0.0_f64);
+            let mut clear = true;
+            for &point in &net {
+                if point.0.hypot(point.1) <= floor {
+                    clear = false;
+                    break;
+                }
+                let turn = wrapped(first, point);
+                span = (span.0.min(turn), span.1.max(turn));
+            }
+            if clear && span.1 - span.0 < PI - 1e-6 {
+                turned += wrapped(first, last);
+                continue;
+            }
+            let (p0, p1) = piece.domain();
+            let (left, right) =
+                remus_math::nurbs::knot_ops::curve_split(&piece, 0.5 * (p0 + p1)).ok()?;
+            pieces.extend([left, right]);
+        }
+        return Some(if from <= to { turned } else { -turned });
+    }
+    let speed = match curve {
+        EdgeCurve::Line => (end - start).length(),
+        EdgeCurve::Circle(circle) => circle.radius(),
+        EdgeCurve::Ellipse(ellipse) => ellipse.semi_major().max(ellipse.semi_minor()),
+        // B24: exhaustive over `EdgeCurve` — a spline is followed by its
+        // control net above; an open conic has no bound on its speed, and
+        // the wire is left unread.
+        EdgeCurve::NurbsCurve(_) | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => {
+            return None;
+        }
+    };
+    let at = |t: f64| flat(curve.evaluate_with_endpoints(t, start, end));
+    let mut turned = 0.0;
+    let mut budget = BUDGET;
+    let mut pieces = vec![(from, to)];
+    while let Some((t0, t1)) = pieces.pop() {
+        budget = budget.checked_sub(1)?;
+        let middle = at(0.5 * (t0 + t1));
+        let reach = 0.5 * speed * (t1 - t0).abs();
+        if middle.0.hypot(middle.1) > reach + floor {
+            turned += wrapped(at(t0), at(t1));
+        } else if reach <= floor {
+            // The curve passes through the axis.
+            return None;
+        } else {
+            let half = 0.5 * (t0 + t1);
+            pieces.extend([(t0, half), (half, t1)]);
         }
     }
-    let first = *angles.first()?;
-    angles.push(first);
-    let winding: f64 = angles
-        .windows(2)
-        .map(|pair| {
-            (pair[1] - pair[0] + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU)
-                - std::f64::consts::PI
-        })
-        .sum();
+    Some(turned)
+}
+
+/// How many times `wire_id` winds round the axis of the cylinder `surface`:
+/// ±1 for a rim, 0 for a loop that closes on the wall (a hole, or a rim, a
+/// seam, the other rim and the seam again). `None` when the wire cannot be
+/// read with certainty: an edge without a stored parameter range, a curve
+/// whose turn about the axis cannot be certified ([`turn_about_axis`]),
+/// edges that do not chain vertex to vertex, or a total that is not a
+/// whole number of turns.
+fn cylinder_wire_winding(topo: &Topology, wire_id: WireId, surface: &FaceSurface) -> Option<i64> {
+    let FaceSurface::Cylinder(cylinder) = surface else {
+        return None;
+    };
+    let wire = topo.wire(wire_id).ok()?;
+    let mut turned = 0.0;
+    let mut chain: Option<(
+        remus_topology::vertex::VertexId,
+        remus_topology::vertex::VertexId,
+    )> = None;
+    for oriented in wire.edges() {
+        let edge = topo.edge(oriented.edge()).ok()?;
+        // Closed by its vertices: each edge starts where the last ended,
+        // and the last ends where the first started.
+        let (from_vertex, to_vertex) = if oriented.is_forward() {
+            (edge.start(), edge.end())
+        } else {
+            (edge.end(), edge.start())
+        };
+        chain = Some(match chain {
+            None => (from_vertex, to_vertex),
+            Some((first, last)) if last == from_vertex => (first, to_vertex),
+            Some(_) => return None,
+        });
+        let (t0, t1) = edge.strict_domain().ok()?;
+        let range = if oriented.is_forward() {
+            (t0, t1)
+        } else {
+            (t1, t0)
+        };
+        turned += turn_about_axis(
+            edge.curve(),
+            (
+                topo.vertex(edge.start()).ok()?.point(),
+                topo.vertex(edge.end()).ok()?.point(),
+            ),
+            range,
+            cylinder,
+        )?;
+    }
+    let (first, last) = chain?;
+    let turns = (turned / std::f64::consts::TAU).round();
+    if first != last || (turned - turns * std::f64::consts::TAU).abs() > 0.1 {
+        return None;
+    }
     #[allow(clippy::cast_possible_truncation)]
-    Some((winding / std::f64::consts::TAU).round() as i64)
+    Some(turns as i64)
 }
 
 /// Refuse a cylinder face that has no end.
 ///
-/// A face of a cylinder is bounded along the axis only when its loops that
-/// wind round the axis come in pairs: two rims, or none (a loop that goes
-/// up a seam and back winds zero times, and so does a hole in the wall). A
-/// face with one winding loop runs on along the axis for ever. It is not a
-/// face of any solid, yet it passes every check downstream of assembly
-/// that looks at edges and vertices alone: a cutter standing in the plane
-/// of a shelled box's inner wall, through its floor, came back with the
-/// floor's ring as such a face (one rim, nothing above it), validator-clean
-/// and accepted, 96 mesh edges open.
+/// The wall of a cylinder is an annulus, and the boundary of a bounded
+/// piece of it winds round the axis zero times in all: its loops, each
+/// taken with the face on its left, have winding numbers that sum to
+/// nothing. So the absolute windings sum to an EVEN number — two rims, or
+/// none (a loop that goes up a seam and back winds zero times, and so does
+/// a hole in the wall). A face whose loops wind an odd number of times in
+/// all runs on along the axis for ever. It is not a face of any solid, yet
+/// it passes every check downstream of assembly that looks at edges and
+/// vertices alone: a cutter standing in the plane of a shelled box's inner
+/// wall, through its floor, came back with the floor's ring as such a face
+/// (one rim, nothing above it), validator-clean and accepted, 96 mesh edges
+/// open.
+///
+/// The argument needs every loop's winding, so a face with a loop that
+/// cannot be read with certainty is left alone ([`cylinder_wire_winding`]):
+/// the guard refuses only what it has counted.
 ///
 /// # Errors
 ///
@@ -726,20 +874,9 @@ fn cylinder_wire_winding(topo: &Topology, wire_id: WireId, surface: &FaceSurface
 fn reject_endless_cylinder_faces(topo: &Topology, faces: &[FaceId]) -> Result<(), AlgoError> {
     for &face_id in faces {
         let face = topo.face(face_id)?;
-        let surface = face.surface();
-        if !matches!(surface, FaceSurface::Cylinder(_)) {
-            continue;
-        }
-        let mut rims = 0_usize;
-        let mut readable = true;
-        for wire in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
-            match cylinder_wire_winding(topo, wire, surface) {
-                Some(0) => {}
-                Some(_) => rims += 1,
-                None => readable = false,
-            }
-        }
-        if readable && !rims.is_multiple_of(2) {
+        if let Some(rims) = cylinder_face_rim_count(topo, face)
+            && !rims.is_multiple_of(2)
+        {
             return Err(AlgoError::AssemblyFailed(format!(
                 "cylinder face {face_id:?} has {rims} boundary loop(s) winding round its axis: \
                  it is not bounded along the axis"
@@ -747,6 +884,39 @@ fn reject_endless_cylinder_faces(topo: &Topology, faces: &[FaceId]) -> Result<()
         }
     }
     Ok(())
+}
+
+/// The windings of a cylinder face's loops round its axis, as absolute
+/// values summed: `None` for a face of another surface, or one with a loop
+/// that cannot be read with certainty.
+fn cylinder_face_rim_count(topo: &Topology, face: &remus_topology::face::Face) -> Option<u64> {
+    let surface = face.surface();
+    if !matches!(surface, FaceSurface::Cylinder(_)) {
+        return None;
+    }
+    let mut rims = 0_u64;
+    for wire in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+        rims += cylinder_wire_winding(topo, wire, surface)?.unsigned_abs();
+    }
+    Some(rims)
+}
+
+/// Whether the cylinder face `face_id` is bounded along its axis.
+///
+/// `Some(true)` when every loop of the face could be read and they wind
+/// round the axis an even number of times in all, `Some(false)` when they
+/// wind an odd number of times (assembly refuses such a face: see
+/// `reject_endless_cylinder_faces`), and `None` for a face of another
+/// surface or one with a loop that cannot be read with certainty.
+///
+/// # Errors
+///
+/// [`AlgoError`] when the face does not exist.
+pub fn cylinder_face_is_bounded(
+    topo: &Topology,
+    face_id: FaceId,
+) -> Result<Option<bool>, AlgoError> {
+    Ok(cylinder_face_rim_count(topo, topo.face(face_id)?).map(|rims| rims.is_multiple_of(2)))
 }
 
 /// A tube-wrapping rim bounds an annulus, so it is not a contractible hole.
@@ -3193,7 +3363,7 @@ fn weld_coincident_vertices(
     // Keep the historical assembly allowance at NURBS surface/curve vertices.
     // Analytic-only contacts use the actual merge tolerance so a resolved
     // rim-to-wall gap cannot collapse onto a different carrier.
-    let snap = MERGE_TOL * crate::section_tolerance::VERTEX_WELD_FACTOR;
+    let snap = crate::section_tolerance::ASSEMBLY_WELD;
 
     // Collect distinct vertices (id + position) referenced by the faces.
     let mut seen: DetHashSet<VertexId> = DetHashSet::default();

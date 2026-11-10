@@ -226,6 +226,7 @@ fn assert_exact(
 
     let report = validate_solid(topo, solid).unwrap();
     assert!(report.is_valid(), "{what}: {:?}", report.issues);
+    assert_edge_uses(topo, solid, what);
 
     let mesh = tessellate_solid(topo, solid, 0.01 * s).unwrap();
     assert_eq!(boundary_edge_count(&mesh), 0, "{what}: open mesh edges");
@@ -239,6 +240,28 @@ fn assert_exact(
     assert!(
         (measured - volume).abs() <= VOLUME_TOL * volume,
         "{what}: volume {measured} vs closed form {volume}"
+    );
+}
+
+/// The edge-use census of the boundary representation itself: every edge
+/// of the solid is used exactly twice by its faces' loops (once each by two
+/// faces, or both ways by one, as a seam is). A section vertex one face
+/// carries and its neighbour does not shows here as an edge used once: the
+/// neighbour kept its unsplit edge.
+fn assert_edge_uses(topo: &Topology, solid: SolidId, what: &str) {
+    let mut uses: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
+    for face in solid_faces(topo, solid).unwrap() {
+        let face = topo.face(face).unwrap();
+        for wire in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            for oriented in topo.wire(wire).unwrap().edges() {
+                *uses.entry(oriented.edge().index()).or_default() += 1;
+            }
+        }
+    }
+    let odd: Vec<(usize, usize)> = uses.into_iter().filter(|(_, n)| *n != 2).collect();
+    assert!(
+        odd.is_empty(),
+        "{what}: edges not used exactly twice (edge index, uses): {odd:?}"
     );
 }
 
@@ -1479,7 +1502,7 @@ fn holed_plate(
 
 /// What a boolean of a holed plate came to.
 #[derive(Debug, PartialEq, Eq)]
-enum Certified {
+enum Outcome {
     /// Accepted, and exact: the closed-form volume, valid, a watertight
     /// mesh at both deflections, air and material where asked.
     Exact,
@@ -1494,14 +1517,14 @@ enum Certified {
 /// the curved area by its mesh), validates, meshes watertight at
 /// `deflections`, and classifies each of `probes` as stated (`true` is
 /// material).
-fn certify(
+fn hold_to_the_bar(
     bodies: &dyn Fn(&mut Topology) -> (SolidId, SolidId),
     op: BooleanOp,
     (volume, volume_tol): (f64, f64),
     (size, deflections): (f64, &[f64]),
     probes: &[((f64, f64, f64), bool)],
     what: &str,
-) -> Certified {
+) -> Outcome {
     let mut topo = Topology::new();
     let (plate, tool) = bodies(&mut topo);
     match boolean(&mut topo, op, plate, tool) {
@@ -1524,7 +1547,7 @@ fn certify(
                     "{what}: at {at:?}"
                 );
             }
-            Certified::Exact
+            Outcome::Exact
         }
         Err(OperationsError::ExactOnlyUnattainable) => {
             let mut topo = Topology::new();
@@ -1534,7 +1557,7 @@ fn certify(
                 BooleanOp::Fuse => remus_algo::bop::BooleanOp::Fuse,
                 BooleanOp::Intersect => remus_algo::bop::BooleanOp::Intersect,
             };
-            Certified::Refused(
+            Outcome::Refused(
                 remus_algo::gfa::boolean(&mut topo, algo_op, plate, tool)
                     .err()
                     .map(|error| error.to_string())
@@ -1612,7 +1635,7 @@ fn a_cylinder_through_a_notched_slot_is_exact_or_refused() {
                 ((1.0005, 0.5 * top, 0.025), false),
                 ((1.0005, -1e-3, 0.025), true),
             ];
-            let outcome = certify(
+            let outcome = hold_to_the_bar(
                 &bodies,
                 op,
                 (volume, 1e-9),
@@ -1621,8 +1644,8 @@ fn a_cylinder_through_a_notched_slot_is_exact_or_refused() {
                 &what,
             );
             match outcome {
-                Certified::Exact => assert!(stretch > 1.0, "{what}: accepted"),
-                Certified::Refused(why) => {
+                Outcome::Exact => assert!(stretch > 1.0, "{what}: accepted"),
+                Outcome::Refused(why) => {
                     assert!(stretch <= 1.0, "{what}: refused: {why}");
                     assert!(
                         why.contains("the distance at which two crossings are one"),
@@ -1652,7 +1675,7 @@ fn a_cylinder_grazing_a_hole_side_is_exact_or_refused() {
         let (bodies, volume) = unit_cylinder_through(&hole, op);
         // In the hole clear of the cylinder, and in the plate beside both.
         let probes = [((-0.05, 1.02, 0.025), false), ((0.3, 1.2, 0.025), true)];
-        let outcome = certify(
+        let outcome = hold_to_the_bar(
             &bodies,
             op,
             (volume, 1e-9),
@@ -1660,7 +1683,7 @@ fn a_cylinder_grazing_a_hole_side_is_exact_or_refused() {
             &probes,
             &what,
         );
-        assert_eq!(outcome, Certified::Exact, "{what}");
+        assert_eq!(outcome, Outcome::Exact, "{what}");
     }
 }
 
@@ -1717,7 +1740,7 @@ fn a_needle_through_a_hole_side_is_exact_or_refused() {
             let common = integrate(&section, &breaks, 1e-15 * PI * a * b * SLAB);
             let plate_volume = ((rect.1.0 - rect.0.0) * 0.008 - 1.6e-5) * SLAB;
             let volume = expected(op, plate_volume, PI * b * b * length, common);
-            let outcome = certify(
+            let outcome = hold_to_the_bar(
                 &bodies,
                 op,
                 (volume, 1e-9),
@@ -1726,8 +1749,8 @@ fn a_needle_through_a_hole_side_is_exact_or_refused() {
                 &what,
             );
             match outcome {
-                Certified::Exact => assert!(!named, "{what}: accepted"),
-                Certified::Refused(why) => {
+                Outcome::Exact => assert!(!named, "{what}: accepted"),
+                Outcome::Refused(why) => {
                     if named {
                         assert!(
                             why.contains("cannot be told from a tangency"),
@@ -1778,7 +1801,7 @@ fn a_large_cylinder_across_a_narrow_slot_is_exact_or_refused() {
         // it integrates by sampled quadrature (2.2e-5 off at deflection
         // 1e4, 2.2e-7 at 100). The mesh's volume, the validator, the
         // watertight mesh and the probes carry the exactness here.
-        let outcome = certify(
+        let outcome = hold_to_the_bar(
             &bodies,
             op,
             (volume, 1e-4),
@@ -1786,6 +1809,344 @@ fn a_large_cylinder_across_a_narrow_slot_is_exact_or_refused() {
             &probes,
             &what,
         );
-        assert_eq!(outcome, Certified::Exact, "{what}");
+        assert_eq!(outcome, Outcome::Exact, "{what}");
+    }
+}
+
+// ── The fourth review round's reproducers ───────────────────────────────
+
+/// A plate over the rectangle `(x0, y0) .. (x1, y1)` from z = 0 up
+/// `thickness`, with a through hole whose plan is the arc of the circle of
+/// radius `radius` about `(offset, 0)` over ±`half` rad and then straight
+/// sides through `tail`, back to the arc's start. The plan's area is its
+/// polygon's plus the circular segment between the arc and its chord.
+fn plate_with_an_arc_hole(
+    topo: &mut Topology,
+    ((x0, y0), (x1, y1)): ((f64, f64), (f64, f64)),
+    (offset, radius, half): (f64, f64, f64),
+    tail: &[(f64, f64)],
+    thickness: f64,
+) -> (SolidId, f64) {
+    use remus_math::curves::Circle3D;
+    use remus_math::vec::Vec3;
+    use remus_topology::builder::make_polygon_wire;
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::face::Face;
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
+
+    let normal = Vec3::new(0.0, 0.0, 1.0);
+    let outline: Vec<Point3> = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+        .iter()
+        .map(|&(x, y)| Point3::new(x, y, 0.0))
+        .collect();
+    let outer = make_polygon_wire(topo, &outline, 1e-7).unwrap();
+    let circle = Circle3D::new_with_ref(
+        Point3::new(offset, 0.0, 0.0),
+        normal,
+        radius,
+        Vec3::new(1.0, 0.0, 0.0),
+    )
+    .unwrap();
+    let (start, end) = (circle.evaluate(-half), circle.evaluate(half));
+    let vertex = |topo: &mut Topology, p: Point3| topo.add_vertex(Vertex::new(p, 1e-7));
+    let (first, last) = (vertex(topo, start), vertex(topo, end));
+    let mut arc = Edge::new(first, last, EdgeCurve::Circle(circle));
+    arc.set_trim(Some((-half, half)));
+    // Counter-clockwise: the arc, then the sides.
+    let mut edges = vec![topo.add_edge(arc)];
+    let mut previous = last;
+    for &(x, y) in tail {
+        let next = vertex(topo, Point3::new(x, y, 0.0));
+        edges.push(topo.add_edge(Edge::new(previous, next, EdgeCurve::Line)));
+        previous = next;
+    }
+    edges.push(topo.add_edge(Edge::new(previous, first, EdgeCurve::Line)));
+    // A hole runs clockwise about the face's normal: the same edges, the
+    // other way round.
+    let inner = Wire::new(
+        edges
+            .iter()
+            .rev()
+            .map(|&edge| OrientedEdge::new(edge, false))
+            .collect(),
+        true,
+    )
+    .unwrap();
+    let inner = topo.add_wire(inner);
+    let face = topo.add_face(Face::new(
+        outer,
+        vec![inner],
+        FaceSurface::Plane { normal, d: 0.0 },
+    ));
+    let plate = remus_operations::extrude::extrude(topo, face, normal, thickness).unwrap();
+    let mut corners = vec![(start.x(), start.y()), (end.x(), end.y())];
+    corners.extend_from_slice(tail);
+    let segment = 0.5 * radius * radius * (2.0 * half - (2.0 * half).sin());
+    let plan = polygon_area(&corners).abs() + segment;
+    let volume = ((x1 - x0) * (y1 - y0) - plan) * thickness;
+    let report = validate_solid(topo, plate).unwrap();
+    assert!(report.is_valid(), "arc-holed plate: {:?}", report.issues);
+    let built = solid_volume(topo, plate, 1e-4).unwrap();
+    assert!(
+        (built - volume).abs() <= 1e-9 * volume,
+        "arc-holed plate: volume {built} vs {volume}"
+    );
+    (plate, volume)
+}
+
+/// The fourth round's first finding through the public boolean: the unit
+/// cylinder through a plate whose hole has, for one side, an arc of ±1e-4
+/// rad of the cylinder's own circle (or of that circle moved by 1e-9), and
+/// then runs on behind it: (1.001, 0.0003), (0.999, 0.00035).
+///
+/// The section of the plate's faces with the cylinder runs along the arc
+/// and on into the hole, 9.8e-5 deep. The arc's zone used to reach 4.6e-4
+/// rad either side of it, the two crossings fell in it and were read as a
+/// touch, and the span across the hole was emitted. The crossing along the
+/// arc cannot be placed, so the boolean is refused by name; a result, if
+/// one were accepted, is held to the closed-form volume, a clean
+/// validation, a watertight mesh and air in the hole.
+#[test]
+fn a_cylinder_along_a_short_arc_of_a_hole_is_exact_or_refused() {
+    let half = 1e-4_f64;
+    let tail = [(1.001, 0.0003), (0.999, 0.00035)];
+    let rect = ((-0.5, -2.0), (2.0, 2.0));
+    let thickness = 0.05;
+    for offset in [0.0, 1e-9] {
+        for op in [BooleanOp::Cut, BooleanOp::Fuse] {
+            let what = format!("short arc, offset {offset}, {op:?}");
+            let mut plate_volume = 0.0;
+            let bodies = |topo: &mut Topology| {
+                let (plate, _) =
+                    plate_with_an_arc_hole(topo, rect, (offset, 1.0, half), &tail, thickness);
+                let tool = make_cylinder(topo, 1.0, 2.05).unwrap();
+                let placement = Mat4::translation(0.0, 0.0, -1.0) * Mat4::rotation_z(PI);
+                transform_solid(topo, tool, &placement).unwrap();
+                (plate, tool)
+            };
+            {
+                let mut topo = Topology::new();
+                plate_volume +=
+                    plate_with_an_arc_hole(&mut topo, rect, (offset, 1.0, half), &tail, thickness)
+                        .1;
+            }
+            // The hole's plan inside the unit disc: its polygon's part
+            // there, and the sliver between the arc and its chord (inside
+            // the disc to within the 1e-9 the arc's circle is moved by).
+            let corners = [
+                (offset + half.cos(), -half.sin()),
+                (offset + half.cos(), half.sin()),
+                tail[0],
+                tail[1],
+            ];
+            let segment = 0.5 * (2.0 * half - (2.0 * half).sin());
+            let in_hole = disc_in_polygon(1.0, (0.0, 0.0), &corners) + segment;
+            let common = thickness * (disc_in_rect(1.0, -0.5, 2.0, -2.0, 2.0) - in_hole);
+            let volume = expected(op, plate_volume, PI * 2.05, common);
+            // In the hole beside the cylinder: air. In the plate: material.
+            let probes = [((1.0004, 0.00025, 0.025), false), ((0.3, 1.2, 0.025), true)];
+            let outcome = hold_to_the_bar(
+                &bodies,
+                op,
+                (volume, 1e-9),
+                (1.0, &[1e-3, 2e-4]),
+                &probes,
+                &what,
+            );
+            match outcome {
+                Outcome::Exact => {}
+                // By name, in phase FF: the crossing along the arc has the
+                // arc's two ends within the tolerance of it and no root.
+                Outcome::Refused(why) => assert!(
+                    why.contains("2 of its vertices")
+                        && why.contains("cannot be told from a tangency"),
+                    "{what}: {why}"
+                ),
+            }
+        }
+    }
+}
+
+/// The fourth round's second finding through the public boolean: a
+/// cylinder of radius 0.001 laid nearly flat, whose section with the
+/// plate's top face is the ellipse `(cos t, 0.001 sin t)`, through a plate
+/// with a triangular hole whose corner stands 4e-8 off that ellipse at
+/// `t = 0.8`, pointing along it.
+///
+/// The crossing through the corner used to be re-projected from the corner
+/// onto the section, 2e-5 past the true crossing and 3.5e-6 into the hole.
+/// It keeps its own parameter now; but the corner is then a vertex whose
+/// chart angle a later stage would read 2e-5 off, and the section may not
+/// end on it: refused by name. A result, if one were accepted, is held to
+/// the slicing integral of the cylinder's elliptical sections less the
+/// triangle, over the plate's thickness.
+#[test]
+fn a_tilted_cylinder_through_a_hole_corner_is_exact_or_refused() {
+    let (a, b) = (1.0_f64, 0.001_f64);
+    let thickness = 5e-5;
+    let tan = ((a / b) * (a / b) - 1.0).sqrt();
+    let t0 = 0.8_f64;
+    let on = (a * t0.cos(), b * t0.sin());
+    let normal = {
+        let (nx, ny) = (t0.cos() / a, t0.sin() / b);
+        let length = nx.hypot(ny);
+        (nx / length, ny / length)
+    };
+    let tangent = (-normal.1, normal.0);
+    let reach = |along: f64, out: f64| {
+        (
+            on.0 + along * tangent.0 + out * normal.0,
+            on.1 + along * tangent.1 + out * normal.1,
+        )
+    };
+    let hole = [reach(0.0, 4e-8), reach(7e-4, 4e-4), reach(7e-4, -4e-4)];
+    let rect = ((-1.3, -0.5), (1.4, 0.5));
+    // Each horizontal section of the cylinder is the ellipse, slid along x
+    // by `tan` per unit of depth below the top face: its area, less the
+    // triangle's part of it (the unit disc against the triangle in the
+    // chart that maps the ellipse to it, times a·b).
+    let over_hole = |z: f64| {
+        let centre = (thickness - z) * tan;
+        let mapped: Vec<(f64, f64)> = hole
+            .iter()
+            .map(|&(x, y)| ((x - centre) / a, y / b))
+            .collect();
+        a * b * disc_in_polygon(1.0, (0.0, 0.0), &mapped)
+    };
+    let mut breaks = vec![0.0, thickness];
+    for &(x, y) in &hole {
+        let half = a * (1.0 - (y / b) * (y / b)).max(0.0).sqrt();
+        for centre in [x - half, x + half] {
+            let z = thickness - centre / tan;
+            if z > 0.0 && z < thickness {
+                breaks.push(z);
+            }
+        }
+    }
+    breaks.sort_by(f64::total_cmp);
+    let common = PI * a * b * thickness - integrate(&over_hole, &breaks, 1e-18);
+    for op in [BooleanOp::Cut, BooleanOp::Fuse] {
+        let what = format!("tilted cylinder through a hole corner, {op:?}");
+        let mut plate_volume = 0.0;
+        {
+            let mut topo = Topology::new();
+            plate_volume += holed_plate(&mut topo, rect, &hole, (0.0, thickness)).1;
+        }
+        // The cylinder: radius `b`, its axis through the origin of the top
+        // face, tilted so that the face cuts it in the ellipse; long enough
+        // for its caps to clear the plate.
+        let theta = (b / a).acos();
+        let (below, length) = (2.0 * a, 4.0 * a);
+        let bodies = |topo: &mut Topology| {
+            let (plate, _) = holed_plate(topo, rect, &hole, (0.0, thickness));
+            let tool = make_cylinder(topo, b, length).unwrap();
+            let placement = Mat4::translation(0.0, 0.0, thickness)
+                * Mat4::rotation_y(-theta)
+                * Mat4::translation(0.0, 0.0, -below)
+                * Mat4::rotation_z(PI / 2.0);
+            transform_solid(topo, tool, &placement).unwrap();
+            (plate, tool)
+        };
+        let volume = expected(op, plate_volume, PI * b * b * length, common);
+        let probes = [((0.0, 0.3, 0.5 * thickness), true)];
+        let outcome = hold_to_the_bar(
+            &bodies,
+            op,
+            (volume, 1e-9),
+            (1e-3, &[1e-5, 2e-6]),
+            &probes,
+            &what,
+        );
+        match outcome {
+            Outcome::Exact => {}
+            // By name, in phase FF: the corner the crossing is placed at
+            // re-projects 2e-5 along the section, and the face splitter
+            // reads a section end's parameter off its vertex.
+            Outcome::Refused(why) => assert!(
+                why.contains("re-projects") && why.contains("run past the crossing"),
+                "{what}: {why}"
+            ),
+        }
+    }
+}
+
+/// A cylinder whose top rim is an exact rational circle with crowded knots
+/// (three of its quarter turns in three thousandths of its parameter
+/// range), cut by a box at its foot.
+///
+/// The wall is bounded: a rim below, a rim above. Assembly's guard against
+/// a cylinder face with no end counted the spline rim from thirty-two
+/// uniform samples, which miss three of its quadrants, found one rim, and
+/// refused the wall by name. Whatever else becomes of this boolean (exact,
+/// against the closed form, or a typed refusal: a spline rim is not on the
+/// exact path, and the face splitter refuses this one's carried range, as
+/// it does without the guard), it is not that.
+#[test]
+fn a_cylinder_with_a_crowded_spline_rim_is_not_refused_for_having_no_end() {
+    use remus_math::nurbs::curve::NurbsCurve;
+    use remus_topology::edge::EdgeCurve;
+    use remus_topology::explorer::solid_edges;
+
+    let (r, h) = (2.0_f64, 3.0_f64);
+    let bodies = |topo: &mut Topology| {
+        let cylinder = make_cylinder(topo, r, h).unwrap();
+        for id in solid_edges(topo, cylinder).unwrap() {
+            let edge = topo.edge(id).unwrap();
+            let EdgeCurve::Circle(circle) = edge.curve() else {
+                continue;
+            };
+            if circle.center().z() < h - 0.1 {
+                continue;
+            }
+            let ring =
+                remus_geometry::convert::curve_to_nurbs::circle_to_nurbs(circle, 0.0, 2.0 * PI)
+                    .unwrap();
+            let crowded = NurbsCurve::new(
+                2,
+                vec![
+                    0.0, 0.0, 0.0, 0.001, 0.001, 0.002, 0.002, 0.003, 0.003, 1.0, 1.0, 1.0,
+                ],
+                ring.control_points().to_vec(),
+                ring.weights().to_vec(),
+            )
+            .unwrap();
+            // The circle still, at every parameter.
+            for k in 0..=64 {
+                let p = crowded.evaluate(f64::from(k) / 64.0);
+                assert!((p.x().hypot(p.y()) - r).abs() < 1e-12 && (p.z() - h).abs() < 1e-12);
+            }
+            let edge = topo.edge_mut(id).unwrap();
+            edge.set_curve(EdgeCurve::NurbsCurve(crowded));
+            edge.set_trim(Some((0.0, 1.0)));
+        }
+        // Every wall of the body is bounded, by the guard's own count.
+        for face in solid_faces(topo, cylinder).unwrap() {
+            assert_ne!(
+                remus_algo::cylinder_face_is_bounded(topo, face).unwrap(),
+                Some(false)
+            );
+        }
+        let tool = make_box(topo, 1.0, 1.0, 1.0).unwrap();
+        transform_solid(topo, tool, &Mat4::translation(1.0, -0.5, -0.5)).unwrap();
+        (cylinder, tool)
+    };
+    // The box's part of the cylinder: x in 1..2, |y| ≤ 0.5, z in 0..0.5.
+    let common = 0.5 * disc_in_rect(r, 1.0, 2.0, -0.5, 0.5);
+    let volume = expected(BooleanOp::Cut, PI * r * r * h, 1.0, common);
+    let outcome = hold_to_the_bar(
+        &bodies,
+        BooleanOp::Cut,
+        (volume, 1e-9),
+        (1.0, &[0.01, 0.002]),
+        &[((1.5, 0.0, 0.25), false), ((0.0, 0.0, 1.5), true)],
+        "crowded spline rim",
+    );
+    match outcome {
+        Outcome::Exact => {}
+        Outcome::Refused(why) => assert!(
+            !why.contains("not bounded along the axis"),
+            "refused for a rim the guard miscounted: {why}"
+        ),
     }
 }

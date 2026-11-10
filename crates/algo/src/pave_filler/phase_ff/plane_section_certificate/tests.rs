@@ -181,6 +181,27 @@ fn the_side_of_a_loop_with_arcs_matches_its_polygon() {
                 })
                 .fold(f64::INFINITY, f64::min)
         };
+        let reversed: Vec<PlanarLoopEdge> = outline
+            .iter()
+            .rev()
+            .map(|edge| match *edge {
+                PlanarLoopEdge::Segment(a, b) => PlanarLoopEdge::Segment(b, a),
+                PlanarLoopEdge::Arc {
+                    center,
+                    radius,
+                    start,
+                    mid,
+                    end,
+                } => PlanarLoopEdge::Arc {
+                    center,
+                    radius,
+                    start: end,
+                    mid,
+                    end: start,
+                },
+                circle @ PlanarLoopEdge::Circle { .. } => circle,
+            })
+            .collect();
         let mut decided = 0;
         for i in 0..=80 {
             for j in 0..=80 {
@@ -189,12 +210,18 @@ fn the_side_of_a_loop_with_arcs_matches_its_polygon() {
                     -1.5 + 3.0 * f64::from(j) / 80.0,
                 );
                 let side = loop_side(p, &outline, 1e-7);
+                // The second evaluation, by a different method, and with
+                // the loop traversed the other way round.
+                let ray = ray_side(p, &outline, 1e-7);
                 if distance(p) > 1e-3 {
                     let inside = crate::builder::classify_2d::point_in_polygon_2d(p, &polygon);
                     assert_eq!(side, Some(inside), "{name}: {p:?}");
+                    assert_eq!(ray, Some(inside), "{name}: ray at {p:?}");
+                    assert_eq!(ray_side(p, &reversed, 1e-7), Some(inside), "{name}: {p:?}");
                     decided += 1;
                 } else if distance(p) < 1e-9 {
                     assert_eq!(side, None, "{name}: on the loop at {p:?}");
+                    assert_eq!(ray, None, "{name}: ray on the loop at {p:?}");
                 }
             }
         }
@@ -213,6 +240,116 @@ fn the_side_of_a_loop_with_arcs_matches_its_polygon() {
     assert_eq!(loop_side(p2(0.0, 0.5), &d_shape, 1e-7), Some(true));
     assert_eq!(loop_side(polar(o, 1.0, 90.0), &d_shape, 1e-7), None);
     assert_eq!(loop_side(p2(0.3, 0.0), &d_shape, 1e-7), None);
+    // And by the ray count: the same answers, the arc's carrier and the
+    // diameter's line away from the loop included.
+    assert_eq!(ray_side(polar(o, 1.0, 270.0), &d_shape, 1e-7), Some(false));
+    assert_eq!(ray_side(p2(1.5, 0.0), &d_shape, 1e-7), Some(false));
+    assert_eq!(ray_side(p2(0.0, 0.5), &d_shape, 1e-7), Some(true));
+    assert_eq!(ray_side(polar(o, 1.0, 90.0), &d_shape, 1e-7), None);
+    assert_eq!(ray_side(p2(0.3, 0.0), &d_shape, 1e-7), None);
+    // A full circle, and a reflex arc (three quarters of a turn) closed by
+    // its chord: inside the chord's triangle, inside the far side of the
+    // arc, and outside.
+    let disc = [PlanarLoopEdge::Circle {
+        center: p2(2.0, 1.0),
+        radius: 0.5,
+        sense: -1.0,
+    }];
+    let pacman = [
+        arc(o, 1.0, 45.0, 315.0),
+        PlanarLoopEdge::Segment(polar(o, 1.0, 315.0), polar(o, 1.0, 45.0)),
+    ];
+    for (outline, p, inside) in [
+        (&disc[..], p2(2.2, 1.1), true),
+        (&disc[..], p2(2.6, 1.0), false),
+        (&pacman[..], p2(-0.5, 0.0), true),
+        (&pacman[..], p2(0.5, 0.0), true),
+        (&pacman[..], p2(0.9, 0.0), false),
+        (&pacman[..], p2(0.0, 1.2), false),
+    ] {
+        assert_eq!(ray_side(p, outline, 1e-7), Some(inside), "{p:?}");
+        assert_eq!(loop_side(p, outline, 1e-7), Some(inside), "{p:?}");
+    }
+}
+
+/// An arc's zone is the arc's, not its circle's.
+///
+/// The unit circle against an arc of the same circle of half-width `half`:
+/// the zone is the arc and the band's angle past each end, whatever the
+/// arc's length. (Cut off by the arc's chord moved a band inward, the zone
+/// of an arc of ±1e-4 rad reached ±4.6e-4.) An arc of more than a half turn
+/// is the union of its two half-planes; one whose circle is a little off
+/// the section's has the zone where the two are within the band, inside
+/// the arc's own turn only; and an arc too small to bracket is not read.
+#[test]
+fn an_arcs_zone_ends_at_the_arcs_ends() {
+    let model = SectionTolerance::at(1e-7, 1.0);
+    let section =
+        Circle3D::new_with_ref(Point3::new(0.0, 0.0, 0.0), Z, 1.0, Vec3::new(1.0, 0.0, 0.0))
+            .unwrap();
+    let conic = SectionConic::of_circle(&section);
+    let total = |spans: &[Span]| spans.iter().map(|span| span.length()).sum::<f64>();
+    let o = Point3::new(0.0, 0.0, 0.0);
+    for half in [1e-4_f64, 1e-2, 0.7, FRAC_PI_2, 2.5, 3.1] {
+        for mid in [0.0_f64, 2.3] {
+            let direction = Vec3::new(mid.cos(), mid.sin(), 0.0);
+            let (spans, _) = arc_stretch(&conic, o, 1.0, Some((direction, half)), model).unwrap();
+            // The stretches of one arc may overlap (a reflex arc's two
+            // half-planes): merge them.
+            let merged = merge_stretches(
+                spans
+                    .iter()
+                    .map(|&span| Stretch { span, edge: 0 })
+                    .collect(),
+            )
+            .unwrap();
+            assert_eq!(merged.len(), 1, "half {half}, mid {mid}: {spans:?}");
+            let zone = merged[0].0;
+            let wanted = 2.0 * (half + 1e-7);
+            assert!(
+                (zone.length() - wanted).abs() < 1e-9,
+                "half {half}, mid {mid}: zone {:e} long, the arc and its ends {wanted:e}",
+                zone.length()
+            );
+            // Centred on the arc.
+            assert!(zone.clearance(mid) <= 0.0 && zone.clearance(mid + half) <= 0.0);
+            assert!(zone.clearance(mid + half + 3e-7) > 0.0);
+            assert!(zone.clearance(mid - half - 3e-7) > 0.0);
+        }
+    }
+    // The whole circle has no ends.
+    let (whole, _) = arc_stretch(&conic, o, 1.0, None, model).unwrap();
+    assert!((total(&whole) - TAU).abs() < 1e-12, "{whole:?}");
+
+    // An arc of ±0.5 on the circle of radius 1 about (0.2, 0): the section
+    // crosses that circle at x = 0.1, y = ±√0.99 — angles ±1.67 from its
+    // centre, outside the arc. No zone; the carrier is not the edge.
+    let off = Point3::new(0.2, 0.0, 0.0);
+    let east = Vec3::new(1.0, 0.0, 0.0);
+    let (spans, _) = arc_stretch(&conic, off, 1.0, Some((east, 0.5)), model).unwrap();
+    assert!(spans.is_empty(), "{spans:?}");
+    // The same circle's arc of ±1.8 holds both crossings: two zones, each
+    // where the circles are within the band (2e-7 / sin of their angle).
+    let (spans, _) = arc_stretch(&conic, off, 1.0, Some((east, 1.8)), model).unwrap();
+    assert_eq!(spans.len(), 2, "{spans:?}");
+    let crossing = 0.99_f64.sqrt().atan2(0.1);
+    for span in &spans {
+        assert!(span.clearance(crossing) <= 0.0 || span.clearance(-crossing) <= 0.0);
+        assert!(span.length() < 1e-5, "{span:?}");
+    }
+
+    // An arc of radius 1e-6 (ten bands): its sector's corner lies farther
+    // than the zone's reach from it. Not read.
+    assert!(
+        arc_stretch(
+            &conic,
+            Point3::new(1.0, 0.0, 0.0),
+            1e-6,
+            Some((east, 0.5)),
+            model
+        )
+        .is_none()
+    );
 }
 
 /// A square plate `[−10, 10]²` at z = 0 with the given holes, and the unit
@@ -285,18 +422,27 @@ fn the_gate_certifies_spans_on_a_hole_and_leaves_the_rest_alone() {
     assert!(plan.first_refusal().is_none());
     // Crossing → π/2: on the face, certified.
     assert_eq!(
-        plan.keep(0, (up, FRAC_PI_2), true).unwrap(),
+        plan.keep(0, (up, FRAC_PI_2), Elsewhere::On).unwrap(),
         Kept::Certified
     );
     // π/2 → π: ends on no hole.
-    assert_eq!(plan.keep(1, (FRAC_PI_2, PI), true).unwrap(), Kept::AsBefore);
+    assert_eq!(
+        plan.keep(1, (FRAC_PI_2, PI), Elsewhere::On).unwrap(),
+        Kept::AsBefore
+    );
     // π → the other crossing: on the face.
-    assert_eq!(plan.keep(2, (PI, TAU - up), true).unwrap(), Kept::Certified);
+    assert_eq!(
+        plan.keep(2, (PI, TAU - up), Elsewhere::On).unwrap(),
+        Kept::Certified
+    );
     // Crossing → crossing, through the hole: certified off the face.
-    assert_eq!(plan.keep(3, (TAU - up, TAU + up), true).unwrap(), Kept::No);
+    assert_eq!(
+        plan.keep(3, (TAU - up, TAU + up), Elsewhere::On).unwrap(),
+        Kept::No
+    );
     // Whatever the collector drops stays dropped.
     for (index, span) in [(0, (up, FRAC_PI_2)), (1, (FRAC_PI_2, PI))] {
-        assert_eq!(plan.keep(index, span, false).unwrap(), Kept::No);
+        assert_eq!(plan.keep(index, span, Elsewhere::Off).unwrap(), Kept::No);
     }
     // The splitter's rule agrees with the kept spans' ends.
     plan.certify_hole_splits(&[0, 1, 2]).unwrap();
@@ -305,7 +451,7 @@ fn the_gate_certifies_spans_on_a_hole_and_leaves_the_rest_alone() {
     // run across the hole is refused, the one clear of it is not.
     let plan = certificate.plan(&splits[..3]);
     let error = plan
-        .keep(2, (PI, TAU + up), true)
+        .keep(2, (PI, TAU + up), Elsewhere::On)
         .expect_err("a span over a crossing that is not a split point");
     assert!(
         error
@@ -313,38 +459,54 @@ fn the_gate_certifies_spans_on_a_hole_and_leaves_the_rest_alone() {
             .contains("not among the points it is split at"),
         "{error}"
     );
-    assert_eq!(plan.keep(1, (FRAC_PI_2, PI), true).unwrap(), Kept::AsBefore);
+    assert_eq!(
+        plan.keep(1, (FRAC_PI_2, PI), Elsewhere::On).unwrap(),
+        Kept::AsBefore
+    );
 }
 
-/// A hole the certificate cannot read (an elliptical one) refuses a span
-/// that ends on another hole and comes within reach of it, and no other:
-/// not a span that stays clear of it, and not a span that ends on no hole.
+/// An elliptical hole (a full ellipse about `at`, semi-axes `a` along x and
+/// `b`), which the certificate cannot read.
+fn elliptical_hole(topo: &mut Topology, at: (f64, f64), (a, b): (f64, f64)) -> WireId {
+    let ellipse = Ellipse3D::new_with_ref(
+        Point3::new(at.0, at.1, 0.0),
+        Z,
+        a,
+        b,
+        Vec3::new(1.0, 0.0, 0.0),
+    )
+    .unwrap();
+    let seam = super::super::plane_hole_tests::vertex(topo, ellipse.evaluate(0.0));
+    let mut edge =
+        super::super::Edge::with_tolerance(seam, seam, EdgeCurve::Ellipse(ellipse), Some(1e-7));
+    edge.set_trim(Some((0.0, TAU)));
+    let edge = topo.add_edge(edge);
+    topo.add_wire(
+        remus_topology::wire::Wire::new(
+            vec![remus_topology::wire::OrientedEdge::new(edge, true)],
+            true,
+        )
+        .unwrap(),
+    )
+}
+
+/// A hole the certificate cannot read (an elliptical one) refuses every
+/// span that reaches it, whether the span ends on another hole or on none:
+/// a span that ends on no hole is emitted only when it is shown to pass
+/// through none. A span shown clear of the ellipse is kept — its box may
+/// well meet the ellipse's — and one shown to lie inside it is dropped.
 #[test]
-fn an_unread_hole_refuses_only_the_spans_that_reach_it() {
-    let unread = |at: (f64, f64)| {
-        move |topo: &mut Topology| {
-            let ellipse = Ellipse3D::new(Point3::new(at.0, at.1, 0.0), Z, 0.2, 0.1).unwrap();
-            let seam = super::super::plane_hole_tests::vertex(topo, ellipse.evaluate(0.0));
-            let mut edge = super::super::Edge::with_tolerance(
-                seam,
-                seam,
-                EdgeCurve::Ellipse(ellipse),
-                Some(1e-7),
-            );
-            edge.set_trim(Some((0.0, TAU)));
-            let edge = topo.add_edge(edge);
-            topo.add_wire(
-                remus_topology::wire::Wire::new(
-                    vec![remus_topology::wire::OrientedEdge::new(edge, true)],
-                    true,
-                )
-                .unwrap(),
-            )
-        }
-    };
+fn an_unread_hole_refuses_every_span_that_reaches_it() {
     let up = 0.3_f64.asin();
     let at = (0.0, 0.0);
-    for (elliptical_at, refused) in [((-1.0, 0.0), true), ((0.0, 5.0), false)] {
+    // The ellipse: across the section at (−1, 0); just inside it, its far
+    // end 2e-7 short of the section; well inside it; far away.
+    for (centre, axes, reached) in [
+        ((-1.0, 0.0), (0.2, 0.1), true),
+        ((-0.8 + 2e-7, 0.0), (0.2, 0.1), false),
+        ((-0.5, 0.0), (0.2, 0.1), false),
+        ((0.0, 5.0), (0.2, 0.1), false),
+    ] {
         let (topo, face, section, partner) = plate(
             |topo| {
                 vec![
@@ -353,7 +515,7 @@ fn an_unread_hole_refuses_only_the_spans_that_reach_it() {
                         &[(0.5, -0.3), (3.0, -0.3), (3.0, 0.3), (0.5, 0.3)],
                         0.0,
                     ),
-                    unread(elliptical_at)(topo),
+                    elliptical_hole(topo, centre, axes),
                 ]
             },
             at,
@@ -373,25 +535,365 @@ fn an_unread_hole_refuses_only_the_spans_that_reach_it() {
             on_circle(at, TAU - up),
         ];
         let plan = certificate.plan(&splits);
-        // Crossing → π/2 stays in x > 0, clear of an ellipse at (−1, 0).
+        // Crossing → π/2 stays in x > 0, clear of every one of them.
         assert_eq!(
-            plan.keep(0, (up, FRAC_PI_2), true).unwrap(),
-            Kept::Certified
+            plan.keep(0, (up, FRAC_PI_2), Elsewhere::On).unwrap(),
+            Kept::Certified,
+            "{centre:?}"
         );
-        // π/2 → 3π/2 passes (−1, 0) but ends on no hole.
-        assert_eq!(
-            plan.keep(1, (FRAC_PI_2, 1.5 * PI), true).unwrap(),
-            Kept::AsBefore
-        );
+        // π/2 → 3π/2 passes (−1, 0) and ends on no hole.
+        let passing = plan.keep(1, (FRAC_PI_2, 1.5 * PI), Elsewhere::On);
         // With the split at π/2 gone, the span from the crossing runs on
         // to 3π/2, through (−1, 0).
         let plan = certificate.plan(&[splits[0], splits[2], splits[3]]);
-        let long = plan.keep(0, (up, 1.5 * PI), true);
-        if refused {
-            let error = long.expect_err("a span that reaches an unread hole");
+        let long = plan.keep(0, (up, 1.5 * PI), Elsewhere::On);
+        if reached {
+            for refused in [passing, long] {
+                let error = refused.expect_err("a span that reaches an unread hole");
+                assert!(error.to_string().contains("no exact contact"), "{error}");
+            }
+        } else {
+            assert_eq!(passing.unwrap(), Kept::AsBefore, "{centre:?}");
+            assert_eq!(long.unwrap(), Kept::Certified, "{centre:?}");
+        }
+    }
+
+    // An ellipse that holds the whole section: every span lies inside the
+    // hole, and is dropped. One the section holds: every span is clear.
+    for (axes, kept) in [((3.0, 2.0), Kept::No), ((0.6, 0.3), Kept::AsBefore)] {
+        let (topo, face, section, partner) =
+            plate(|topo| vec![elliptical_hole(topo, (0.1, 0.0), axes)], at);
+        let certificate = PlaneSectionCertificate::of_face(
+            &topo,
+            face,
+            &section,
+            Some(&partner),
+            Tolerance::new(),
+        )
+        .unwrap();
+        let splits = [on_circle(at, 1.0), on_circle(at, 4.0)];
+        let plan = certificate.plan(&splits);
+        assert_eq!(
+            plan.keep(0, (1.0, 4.0), Elsewhere::On).unwrap(),
+            kept,
+            "{axes:?}"
+        );
+        assert_eq!(
+            plan.keep(1, (4.0, 1.0 + TAU), Elsewhere::On).unwrap(),
+            kept,
+            "{axes:?}"
+        );
+    }
+}
+
+/// A hole bounded by one closed spline: the rational quadratic circle of
+/// radius `r` about `at`, which the certificate cannot read.
+fn spline_hole(topo: &mut Topology, at: (f64, f64), r: f64) -> WireId {
+    let w = std::f64::consts::FRAC_1_SQRT_2;
+    let net: Vec<Point3> = [
+        (1.0, 0.0),
+        (1.0, 1.0),
+        (0.0, 1.0),
+        (-1.0, 1.0),
+        (-1.0, 0.0),
+        (-1.0, -1.0),
+        (0.0, -1.0),
+        (1.0, -1.0),
+        (1.0, 0.0),
+    ]
+    .iter()
+    .map(|&(x, y)| Point3::new(r.mul_add(x, at.0), r.mul_add(y, at.1), 0.0))
+    .collect();
+    let knots = vec![0.0, 0.0, 0.0, 1.0, 1.0, 2.0, 2.0, 3.0, 3.0, 4.0, 4.0, 4.0];
+    let curve = remus_math::nurbs::curve::NurbsCurve::new(
+        2,
+        knots,
+        net.clone(),
+        vec![1.0, w, 1.0, w, 1.0, w, 1.0, w, 1.0],
+    )
+    .unwrap();
+    let seam = super::super::plane_hole_tests::vertex(topo, net[0]);
+    let mut edge =
+        super::super::Edge::with_tolerance(seam, seam, EdgeCurve::NurbsCurve(curve), Some(1e-7));
+    edge.set_trim(Some((0.0, 4.0)));
+    let edge = topo.add_edge(edge);
+    topo.add_wire(
+        remus_topology::wire::Wire::new(
+            vec![remus_topology::wire::OrientedEdge::new(edge, true)],
+            true,
+        )
+        .unwrap(),
+    )
+}
+
+/// A spline hole is followed by the hulls of its control points: clear of
+/// the section it leaves a span to the collector, although the box of its
+/// control net meets the span's; across the section it refuses the span;
+/// around the section it holds it; and the same within a few bands.
+#[test]
+fn a_spline_hole_is_shown_clear_inside_or_refused() {
+    let at = (0.0, 0.0);
+    // A circle of radius 0.2: well inside the unit circle, 2e-7 short of
+    // it, across it, 2e-7 past it outside, and far away; then one of
+    // radius 3 around it.
+    for (centre, r, wanted) in [
+        ((-0.5, 0.0), 0.2, Some(Kept::AsBefore)),
+        ((-0.8 + 2e-7, 0.0), 0.2, Some(Kept::AsBefore)),
+        ((-1.0, 0.0), 0.2, None),
+        ((-0.8 + 5e-8, 0.0), 0.2, None),
+        ((-1.2 - 2e-7, 0.0), 0.2, Some(Kept::AsBefore)),
+        ((0.0, 5.0), 0.2, Some(Kept::AsBefore)),
+        ((0.3, 0.2), 3.0, Some(Kept::No)),
+    ] {
+        let (topo, face, section, partner) = plate(|topo| vec![spline_hole(topo, centre, r)], at);
+        let certificate = PlaneSectionCertificate::of_face(
+            &topo,
+            face,
+            &section,
+            Some(&partner),
+            Tolerance::new(),
+        )
+        .unwrap();
+        let splits = [on_circle(at, FRAC_PI_2), on_circle(at, 1.5 * PI)];
+        let plan = certificate.plan(&splits);
+        // π/2 → 3π/2 passes (−1, 0).
+        let kept = plan.keep(0, (FRAC_PI_2, 1.5 * PI), Elsewhere::On);
+        if let Some(wanted) = wanted {
+            assert_eq!(kept.unwrap(), wanted, "{centre:?} r {r}");
+        } else {
+            let error = kept.expect_err("a spline hole on the span");
+            assert!(error.to_string().contains("no exact contact"), "{error}");
+        }
+    }
+}
+
+/// A span the collector drops for the planar face is dropped whole, and
+/// must not run through a hole whose crossings are not split points: it
+/// would take the material either side of the hole with it. Dropped for
+/// the partner face, it is not this face's to refuse.
+#[test]
+fn a_span_dropped_for_the_plane_face_must_not_run_through_an_unread_hole() {
+    let at = (0.0, 0.0);
+    for (centre, crossed) in [((-1.0, 0.0), true), ((-0.5, 0.0), false)] {
+        let (topo, face, section, partner) =
+            plate(|topo| vec![elliptical_hole(topo, centre, (0.2, 0.1))], at);
+        let certificate = PlaneSectionCertificate::of_face(
+            &topo,
+            face,
+            &section,
+            Some(&partner),
+            Tolerance::new(),
+        )
+        .unwrap();
+        let splits = [on_circle(at, FRAC_PI_2), on_circle(at, 1.5 * PI)];
+        let plan = certificate.plan(&splits);
+        let span = (FRAC_PI_2, 1.5 * PI);
+        assert_eq!(plan.keep(0, span, Elsewhere::Off).unwrap(), Kept::No);
+        let dropped = plan.keep(0, span, Elsewhere::OffThePlane);
+        if crossed {
+            let error = dropped.expect_err("a dropped span through an unread hole");
             assert!(error.to_string().contains("no exact contact"), "{error}");
         } else {
-            assert_eq!(long.unwrap(), Kept::Certified);
+            assert_eq!(dropped.unwrap(), Kept::No);
+        }
+    }
+}
+
+/// A span that ends on no hole is emitted only clear of every hole.
+///
+/// The unit circle inside a square hole `[−3, 3]²` is crossed nowhere and
+/// ends on nothing: before, its spans were the collector's to keep. They
+/// lie inside the hole, and are dropped. Beside a hole it only touches
+/// (the square `[1, 3] × [−1, 1]`, tangent at (1, 0)) the span through the
+/// touch is kept: it stays within the band of the hole there, and outside
+/// it everywhere else.
+#[test]
+fn a_span_that_ends_on_no_hole_is_kept_only_clear_of_every_hole() {
+    let at = (0.0, 0.0);
+    for (corners, kept, touches) in [
+        (
+            [(-3.0, -3.0), (3.0, -3.0), (3.0, 3.0), (-3.0, 3.0)],
+            Kept::No,
+            0,
+        ),
+        (
+            [(1.0, -1.0), (3.0, -1.0), (3.0, 1.0), (1.0, 1.0)],
+            Kept::AsBefore,
+            1,
+        ),
+        (
+            [(1.5, -1.0), (3.0, -1.0), (3.0, 1.0), (1.5, 1.0)],
+            Kept::AsBefore,
+            0,
+        ),
+    ] {
+        let (topo, face, section, partner) =
+            plate(|topo| vec![polygon_wire(topo, &corners, 0.0)], at);
+        let certificate = PlaneSectionCertificate::of_face(
+            &topo,
+            face,
+            &section,
+            Some(&partner),
+            Tolerance::new(),
+        )
+        .unwrap();
+        assert_eq!(certificate.hole_crossings().count(), 0, "{corners:?}");
+        assert_eq!(certificate.hole_touches().count(), touches, "{corners:?}");
+        let splits = [on_circle(at, 2.0), on_circle(at, 5.0)];
+        let plan = certificate.plan(&splits);
+        assert_eq!(
+            plan.keep(0, (2.0, 5.0), Elsewhere::On).unwrap(),
+            kept,
+            "{corners:?}"
+        );
+        // 5 → 2 + τ passes (1, 0).
+        assert_eq!(
+            plan.keep(1, (5.0, 2.0 + TAU), Elsewhere::On).unwrap(),
+            kept,
+            "{corners:?}"
+        );
+    }
+}
+
+/// One parameter. A split point stands for a hole's crossing only at the
+/// crossing's own parameter: handed in at a parameter 3e-6 further along
+/// (its point re-projected, say), a span kept beside it is refused, as the
+/// span would run that far past the crossing. Within the band it is the
+/// same point.
+#[test]
+fn a_split_at_another_parameter_than_its_crossing_is_refused() {
+    let at = (0.0, 0.0);
+    let (topo, face, section, partner) = plate(
+        |topo| {
+            vec![polygon_wire(
+                topo,
+                &[(0.5, -0.3), (3.0, -0.3), (3.0, 0.3), (0.5, 0.3)],
+                0.0,
+            )]
+        },
+        at,
+    );
+    let certificate =
+        PlaneSectionCertificate::of_face(&topo, face, &section, Some(&partner), Tolerance::new())
+            .unwrap();
+    let up = 0.3_f64.asin();
+    let crossing = on_circle(at, up).1;
+    for (slip, refused) in [(0.0, false), (5e-8, false), (3e-6, true), (-3e-6, true)] {
+        let splits = [
+            (up + slip, crossing),
+            on_circle(at, FRAC_PI_2),
+            on_circle(at, PI),
+            on_circle(at, TAU - up),
+        ];
+        let plan = certificate.plan(&splits);
+        let kept = plan.keep(0, (up + slip, FRAC_PI_2), Elsewhere::On);
+        if refused {
+            let error = kept.expect_err("a span that ends past its crossing");
+            assert!(
+                error.to_string().contains("run past the crossing"),
+                "slip {slip}: {error}"
+            );
+        } else {
+            assert_eq!(kept.unwrap(), Kept::Certified, "slip {slip}");
+        }
+        // The span that does not end there is not the crossing's to refuse.
+        assert_eq!(
+            plan.keep(1, (FRAC_PI_2, PI), Elsewhere::On).unwrap(),
+            Kept::AsBefore
+        );
+    }
+}
+
+/// A crossing through a corner of the hole, on an eccentric section.
+///
+/// The ellipse `(cos t, 0.001 sin t)` and a triangular hole whose corner
+/// lies 4e-8 off it at `t = 0.8`, pointing along the tangent: the section
+/// enters the hole within 1e-7 of `t = 0.8`, and the corner is the
+/// crossing's vertex. Its chart angle is 0.80002786743: 2e-5 further along
+/// the section, 3.5e-6 inside the hole. The crossing keeps its own parameter;
+/// and since the face splitter still reads a section end's parameter off
+/// its vertex, a corner that re-projects past the band is refused as a
+/// vertex for the section to end on. The same corner 4e-11 off the section
+/// re-projects within the band and is kept.
+#[test]
+fn a_corner_off_an_eccentric_section_keeps_the_crossings_parameter_or_is_refused() {
+    let ellipse = Ellipse3D::new_with_ref(
+        Point3::new(0.0, 0.0, 0.0),
+        Z,
+        1.0,
+        0.001,
+        Vec3::new(1.0, 0.0, 0.0),
+    )
+    .unwrap();
+    let t0 = 0.8_f64;
+    let on = ellipse.evaluate(t0);
+    let tangent = ellipse.tangent(t0).normalize().unwrap();
+    let normal = Vec3::new(tangent.y(), -tangent.x(), 0.0);
+    // The cylinder of radius 0.001 tilted so that z = 0 cuts it in the
+    // ellipse.
+    let cos = 0.001_f64;
+    let axis = Vec3::new(-(1.0 - cos * cos).sqrt(), 0.0, cos);
+    let partner = FaceSurface::Cylinder(
+        CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0) + axis * -4.0, axis, 0.001).unwrap(),
+    );
+    let section = EdgeCurve::Ellipse(ellipse.clone());
+    for (off, refused) in [(4e-8_f64, true), (4e-11, false)] {
+        let corner = on + normal * off;
+        let far = |side: f64| on + tangent * 7e-4 + normal * (side * 4e-4);
+        let mut topo = Topology::new();
+        let outer = polygon_wire(
+            &mut topo,
+            &[(-3.0, -3.0), (3.0, -3.0), (3.0, 3.0), (-3.0, 3.0)],
+            0.0,
+        );
+        let xy = |p: Point3| (p.x(), p.y());
+        let hole = polygon_wire(&mut topo, &[xy(corner), xy(far(1.0)), xy(far(-1.0))], 0.0);
+        let face = topo.add_face(Face::new(outer, vec![hole], plane_at(0.0)));
+        let certificate = PlaneSectionCertificate::of_face(
+            &topo,
+            face,
+            &section,
+            Some(&partner),
+            Tolerance::new(),
+        )
+        .unwrap();
+        let crossings: Vec<(f64, Point3)> = certificate
+            .hole_crossings()
+            .map(|(_, c)| (c.t, c.at))
+            .collect();
+        assert_eq!(crossings.len(), 2, "{crossings:?}");
+        let (t, vertex) = crossings
+            .iter()
+            .copied()
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .unwrap();
+        // At the corner, with the parameter of a root of the section with
+        // one of the corner's two sides: a point of the section within the
+        // band of the corner, a hair either side of t0.
+        assert!((vertex - corner).length() < 1e-15, "{vertex:?}");
+        assert!(
+            (t - t0).abs() < 2e-7 && (ellipse.evaluate(t) - corner).length() <= 1e-7,
+            "off {off}: crossing parameter {t}"
+        );
+        // What its chart angle would have given.
+        let reprojected = ellipse.project(corner);
+        let slip = (ellipse.evaluate(reprojected) - ellipse.evaluate(t)).length();
+        assert_eq!(slip > 1e-7, refused, "off {off}: slip {slip:e}");
+
+        let mut splits = crossings.clone();
+        splits.push((3.0, ellipse.evaluate(3.0)));
+        splits.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let plan = certificate.plan(&splits);
+        // The span from the far split round to the corner.
+        let kept = plan.keep(2, (3.0, t + TAU), Elsewhere::On);
+        if refused {
+            let error = kept.expect_err("a corner that re-projects past the band");
+            assert!(
+                error.to_string().contains("run past the crossing"),
+                "{error}"
+            );
+        } else {
+            assert_eq!(kept.unwrap(), Kept::Certified);
         }
     }
 }
@@ -415,9 +917,12 @@ fn a_hole_the_section_runs_along_is_left_alone() {
     assert_eq!(certificate.hole_touches().count(), 0);
     let splits = [on_circle((0.0, 0.0), 1.0), on_circle((0.0, 0.0), 4.0)];
     let plan = certificate.plan(&splits);
-    assert_eq!(plan.keep(0, (1.0, 4.0), true).unwrap(), Kept::AsBefore);
     assert_eq!(
-        plan.keep(1, (4.0, 1.0 + TAU), true).unwrap(),
+        plan.keep(0, (1.0, 4.0), Elsewhere::On).unwrap(),
+        Kept::AsBefore
+    );
+    assert_eq!(
+        plan.keep(1, (4.0, 1.0 + TAU), Elsewhere::On).unwrap(),
         Kept::AsBefore
     );
 }

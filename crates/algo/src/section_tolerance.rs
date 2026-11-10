@@ -17,8 +17,8 @@
 //! computed in, which only matters once their rounding reaches the linear
 //! tolerance:
 //!
-//! - `band = max(linear, 32 ε · coord)`. Nearer than this, a point cannot be
-//!   told from lying on a curve. A probe is certified on one side of a loop
+//! - `band = max(linear, vertex tolerance, 32 ε · coord)`. Nearer than this,
+//!   a point cannot be told from lying on a curve. A probe is certified on one side of a loop
 //!   only farther than the band from it; two crossings within it are the
 //!   same point.
 //! - `weld = 10 · band`: the distance at which assembly welds two vertices.
@@ -41,6 +41,30 @@
 //! nothing downstream merges what phase FF separated, and nothing
 //! downstream separates what phase FF took for one point (two crossings
 //! within `band` become one vertex before any other stage sees them).
+//!
+//! # Every weld after phase FF
+//!
+//! The separation distance has to dominate every distance at which a later
+//! stage takes two vertices for one, at the caller's linear tolerance `L`
+//! as well as the default. Some of those welds are fixed lengths that do
+//! not follow `L`, so the band is floored at the vertex tolerance: a caller
+//! asking for `L = 1e-10` does not get a separation of `1e-8`, under
+//! assembly's fixed weld.
+//!
+//! | Stage | Takes two points for one within | Largest value |
+//! |---|---|---|
+//! | Face splitter, boundary acceptance and dedup; arrangement weld | [`split_weld`]: `clamp(1 % of the edge or loop, L, 100 L)` | `100 L` |
+//! | Face splitter, exact hole split ([`exact_line_splits`]) | [`VERTEX_WELD_FACTOR`] times `L` for one vertex; refuses under [`split_weld`] | `100 L` |
+//! | Assembly, position cells (`MERGE_TOL`) and vertex weld | [`VERTEX_TOL`]; [`VERTEX_WELD_FACTOR`] times that at a vertex on a spline | [`ASSEMBLY_WELD`] = 1e-6, fixed |
+//! | Assembly, straight-edge refinement | search within [`ASSEMBLY_WELD`], accepted on the line within [`VERTEX_TOL`] | 1e-6, fixed |
+//! | Operations, `merge_result_vertices` | rounded cells `L` wide | `√3 · L` |
+//! | Operations, open-result repair | rounded cells `max(10 L, 1e-6)` wide | `√3 · max(10 L, 1e-6)` ([`repair_weld`]) |
+//! | Healing (optional) | the linear tolerance it is given | `L` |
+//!
+//! With `band ≥ max(L, VERTEX_TOL)`, `separate = 100 · band` is at least
+//! `100 L` and at least 1e-5, which is every entry of the last column.
+//! `every_later_weld_is_within_the_separation_distance` asserts it for `L`
+//! from 1e-10 to 1e-4.
 
 use remus_math::compact_sort::CompactSort;
 use remus_math::vec::Point3;
@@ -55,6 +79,22 @@ pub(crate) const VERTEX_WELD_FACTOR: f64 = 10.0;
 
 /// No weld of the face splitter exceeds this many linear tolerances.
 pub(crate) const SPLIT_WELD_FACTOR: f64 = 100.0;
+
+/// The largest distance at which shell assembly takes two vertices for one,
+/// whatever the caller's linear tolerance: its weld at a vertex on a spline
+/// and the search radius of its straight-edge refinement.
+pub(crate) const ASSEMBLY_WELD: f64 = VERTEX_WELD_FACTOR * VERTEX_TOL;
+
+/// The largest distance at which the operations layer's open-result repair
+/// takes two vertices for one at linear tolerance `linear`: the diagonal of
+/// its rounding cell, `max(10 · linear, 1e-6)` wide. (Its vertex merge uses
+/// cells `linear` wide, and healing the tolerance it is given: both are
+/// under this.) Stated here, beside the distances it must stay under,
+/// because nothing in this crate can read it off the operations crate.
+#[cfg(test)]
+pub(crate) fn repair_weld(linear: f64) -> f64 {
+    3.0_f64.sqrt() * (10.0 * linear).max(1e-6)
+}
 
 /// The weld the face splitter applies to anchors on a boundary of size
 /// `extent` (an edge's length, or a loop's diagonal): one percent of it,
@@ -159,8 +199,14 @@ pub(crate) struct SectionTolerance {
 impl SectionTolerance {
     /// The model at linear tolerance `linear` for coordinates of magnitude
     /// `coord`.
+    ///
+    /// The band is never under the vertex tolerance: assembly's welds are
+    /// fixed lengths ([`ASSEMBLY_WELD`]) that a finer `linear` does not
+    /// shrink, and the separation distance has to stay over them.
     pub(crate) fn at(linear: f64, coord: f64) -> Self {
-        let band = linear.max(32.0 * f64::EPSILON * coord.abs());
+        let band = linear
+            .max(VERTEX_TOL)
+            .max(32.0 * f64::EPSILON * coord.abs());
         Self {
             band,
             weld: VERTEX_WELD_FACTOR * band,
@@ -218,6 +264,43 @@ mod tests {
         }
         let far = SectionTolerance::at(linear, 5.5e7);
         assert!((far.band - 3.9e-7).abs() < 1e-8, "{}", far.band);
+    }
+
+    /// The separation distance dominates every weld a later stage applies,
+    /// at the caller's linear tolerance as well as the default: the face
+    /// splitter's, assembly's fixed ones, and the operations layer's vertex
+    /// merge, open-result repair and healing.
+    #[test]
+    fn every_later_weld_is_within_the_separation_distance() {
+        for linear in [1e-10_f64, 1e-9, 1e-8, 1e-7, 1e-6, 1e-5, 1e-4] {
+            for coord in [1e-3_f64, 1.0, 1e3, 1e6, 5.5e7] {
+                let model = SectionTolerance::at(linear, coord);
+                let case = format!("linear {linear:e}, coordinates {coord:e}");
+                assert!(model.band >= linear.max(VERTEX_TOL), "{case}");
+                assert!(model.weld >= ASSEMBLY_WELD, "{case}");
+                for extent in [1e-6 * coord, coord, 1e3 * coord, f64::INFINITY] {
+                    assert!(split_weld(linear, extent) <= model.separate, "{case}");
+                }
+                // Assembly, whatever the caller's tolerance.
+                assert!(ASSEMBLY_WELD < model.separate, "{case}");
+                // Operations: vertex merge, open-result repair, healing.
+                assert!(3.0_f64.sqrt() * linear < model.separate, "{case}");
+                assert!(repair_weld(linear) < model.separate, "{case}");
+                assert!(linear < model.separate, "{case}");
+                // The exact hole split takes anchors within this of one
+                // another for one vertex; two distinct crossings are
+                // farther apart.
+                assert!(VERTEX_WELD_FACTOR * linear < model.separate, "{case}");
+                assert!(on_edge_band(linear) <= 2.0 * model.band, "{case}");
+            }
+        }
+        // A finer caller tolerance does not shrink the separation under
+        // assembly's fixed weld: before the floor it was 1e-8 here.
+        let fine = SectionTolerance::at(1e-10, 1.0);
+        assert!((fine.separate - 1e-5).abs() <= 1e-9 * 1e-5, "{fine:?}");
+        // A coarser one widens it with the splitter's weld.
+        let coarse = SectionTolerance::at(1e-5, 1.0);
+        assert!((coarse.separate - 1e-3).abs() <= 1e-9 * 1e-3, "{coarse:?}");
     }
 
     /// The splitter's rule for a hole edge: a point of the edge splits it

@@ -1,14 +1,23 @@
 //! A differential sweep of round cutters against holed planar faces, for
 //! comparing two revisions of the kernel.
 //!
-//! Not a pass/fail test: each of the three ignored tests (one per scale)
-//! runs 1260 booleans through the public `boolean` and writes one line per
-//! case, its outcome. Run it on two revisions and diff the files:
+//! Each of the three ignored tests (one per scale) runs 1260 booleans
+//! through the public `boolean` and writes one line per case, its outcome.
+//! Run it on the base revision to write the dumps, and on the revision
+//! under test with those dumps as its baseline:
 //!
 //! ```text
-//! REMUS_SWEEP_DUMP=/tmp/sweep-new cargo nextest run --cargo-profile ci-test \
+//! REMUS_SWEEP_DUMP=/tmp/sweep-base cargo nextest run --cargo-profile ci-test \
 //!     -p remus-operations --test sweep_shelled_wall_rim_notch --run-ignored all
+//! REMUS_SWEEP_BASELINE=/tmp/sweep-base REMUS_SWEEP_DUMP=/tmp/sweep-new cargo nextest run \
+//!     --cargo-profile ci-test -p remus-operations --test sweep_shelled_wall_rim_notch \
+//!     --run-ignored all
 //! ```
+//!
+//! With a baseline the run is a pass/fail test: it prints how every case
+//! moved between the two revisions and FAILS when a case that was exact on
+//! the baseline is anything else now, or one that was refused there is
+//! accepted with a defect now. Without one it only writes and tallies.
 //!
 //! The file uses only the public API, so it compiles unchanged on a
 //! revision that predates it.
@@ -337,6 +346,50 @@ fn sweep(s: f64) -> String {
     lines
 }
 
+/// An outcome's class: `exact`, `defect` or `refused`.
+fn class(line: &str) -> &'static str {
+    let outcome = line.rsplit("=> ").next().unwrap_or_default();
+    if outcome.starts_with("exact") {
+        "exact"
+    } else if outcome.starts_with("defect(") {
+        "defect"
+    } else {
+        "refused"
+    }
+}
+
+/// How every case moved from the baseline's outcome to this run's, and the
+/// two moves that must not happen: `(the transitions with their counts, the
+/// cases that were exact and are not, the cases that were refused and are
+/// accepted with a defect)`.
+fn compare(baseline: &str, lines: &str) -> (Vec<(String, usize)>, Vec<String>, Vec<String>) {
+    let case = |line: &str| line.split(" => ").next().unwrap_or_default().to_owned();
+    let before: std::collections::BTreeMap<String, &str> =
+        baseline.lines().map(|line| (case(line), line)).collect();
+    let mut moves: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let (mut lost, mut defects) = (Vec::new(), Vec::new());
+    for line in lines.lines() {
+        let Some(was) = before.get(&case(line)) else {
+            panic!("the baseline has no case {:?}", case(line));
+        };
+        let (from, to) = (class(was), class(line));
+        // An accepted defect is the same only when it is the same defect.
+        let key = if from == "defect" && to == "defect" && was != &line {
+            "defect -> defect (changed)".to_owned()
+        } else {
+            format!("{from} -> {to}")
+        };
+        *moves.entry(key).or_default() += 1;
+        if from == "exact" && to != "exact" {
+            lost.push(format!("{was}\n      now {line}"));
+        }
+        if from == "refused" && to == "defect" {
+            defects.push(format!("{was}\n      now {line}"));
+        }
+    }
+    (moves.into_iter().collect(), lost, defects)
+}
+
 fn run(s: f64) {
     let lines = sweep(s);
     let tally = |prefix: &str| lines.lines().filter(|l| l.contains(prefix)).count();
@@ -348,24 +401,70 @@ fn run(s: f64) {
         tally("=> refused(")
     );
     if let Ok(path) = std::env::var("REMUS_SWEEP_DUMP") {
-        std::fs::write(format!("{path}.{s}"), lines).unwrap();
+        std::fs::write(format!("{path}.{s}"), &lines).unwrap();
+    }
+    if let Ok(path) = std::env::var("REMUS_SWEEP_BASELINE") {
+        let baseline = std::fs::read_to_string(format!("{path}.{s}")).unwrap();
+        assert_eq!(baseline.lines().count(), lines.lines().count());
+        let (moves, lost, defects) = compare(&baseline, &lines);
+        for (transition, count) in &moves {
+            println!("scale {s}: {transition}: {count}");
+        }
+        assert!(
+            lost.is_empty(),
+            "scale {s}: {} case(s) exact on the baseline are not exact now:\n  {}",
+            lost.len(),
+            lost.join("\n  ")
+        );
+        assert!(
+            defects.is_empty(),
+            "scale {s}: {} case(s) refused on the baseline are accepted with a defect now:\n  {}",
+            defects.len(),
+            defects.join("\n  ")
+        );
     }
 }
 
+/// The comparison itself: a case that stays exact, one that becomes exact,
+/// and the two moves that fail the sweep.
 #[test]
-#[ignore = "differential sweep: run on two revisions and diff the dumps"]
+fn the_comparison_names_the_moves_that_must_not_happen() {
+    let baseline = "a => exact\nb => refused(X)\nc => exact\nd => refused(X)\ne => defect(v)\n";
+    let now = "a => exact\nb => exact\nc => refused(Y)\nd => defect(mesh)\ne => defect(w)\n";
+    let (moves, lost, defects) = compare(baseline, now);
+    let count = |key: &str| {
+        moves
+            .iter()
+            .find(|(transition, _)| transition == key)
+            .map_or(0, |(_, count)| *count)
+    };
+    assert_eq!(count("exact -> exact"), 1);
+    assert_eq!(count("refused -> exact"), 1);
+    assert_eq!(count("exact -> refused"), 1);
+    assert_eq!(count("refused -> defect"), 1);
+    assert_eq!(count("defect -> defect (changed)"), 1);
+    assert_eq!(lost.len(), 1, "{lost:?}");
+    assert!(lost[0].starts_with("c => exact"), "{lost:?}");
+    assert_eq!(defects.len(), 1, "{defects:?}");
+    assert!(defects[0].starts_with("d => refused"), "{defects:?}");
+    let (_, lost, defects) = compare(baseline, baseline);
+    assert!(lost.is_empty() && defects.is_empty());
+}
+
+#[test]
+#[ignore = "differential sweep: run on two revisions, the second with the first as its baseline"]
 fn sweep_at_scale_0_1() {
     run(0.1);
 }
 
 #[test]
-#[ignore = "differential sweep: run on two revisions and diff the dumps"]
+#[ignore = "differential sweep: run on two revisions, the second with the first as its baseline"]
 fn sweep_at_scale_1() {
     run(1.0);
 }
 
 #[test]
-#[ignore = "differential sweep: run on two revisions and diff the dumps"]
+#[ignore = "differential sweep: run on two revisions, the second with the first as its baseline"]
 fn sweep_at_scale_10() {
     run(10.0);
 }

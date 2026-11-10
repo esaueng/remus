@@ -5568,16 +5568,22 @@ fn trim_closed_curve_interval(raw: &RawCurve, t0: f64, t1: f64) -> Vec<RawCurve>
 /// A span between consecutive crossings that ends on no hole is kept when
 /// its midpoint is not off the planar face — outside the outline or inside
 /// one of those holes, decided on the loops themselves — and lies inside
-/// both faces' extents. A span that ends on a hole is kept only when the
-/// certificate puts it on the face
-/// ([`plane_section_certificate::SpanPlan::keep`]).
+/// both faces' extents, and the certificate shows it to pass through no
+/// hole within reach of the section (no work on a face without one). A
+/// span that ends on a hole is kept only when the certificate puts it on
+/// the face ([`plane_section_certificate::SpanPlan::keep`]).
+///
+/// A hole's crossing is a split point at the parameter the certificate
+/// decided it at, and the arc emitted ends at that parameter: it is not
+/// read back off the crossing's point.
 ///
 /// # Errors
 ///
 /// [`AlgoError::IntersectionFailed`] when the kept spans both end on a hole
 /// and touch a loop of the planar face (see [`PlaneFaceContacts::pinch`]),
-/// or when a span that ends on a hole would be kept but cannot be certified
-/// on the face or off it.
+/// when a span that ends on a hole would be kept but cannot be certified
+/// on the face or off it, or when a span that ends on none would be kept
+/// but cannot be certified clear of every hole or inside one.
 #[allow(clippy::too_many_arguments)]
 fn trim_ellipse_to_boundary_crossings(
     topo: &Topology,
@@ -5821,9 +5827,16 @@ fn trim_ellipse_to_boundary_crossings_impl(
     }
 
     // The holes, through the certificate: a hole's crossings are split
-    // points exactly as it placed them. One within the band of a split point
-    // already collected is that point; anything farther is its own, and the
-    // gate refuses a span kept beside two it cannot keep apart.
+    // points exactly as it placed them, each at the PARAMETER it decided the
+    // crossing at. That parameter is carried to the span's end and into the
+    // edge's trim; it is never read back off the crossing's point, which
+    // may be a hole vertex within the band of the section, and the chart
+    // angle of a point off an eccentric section is not the parameter of its
+    // foot. One within the band of a split point already collected is that
+    // point, with the parameter that point has on the section (the gate
+    // holds the two parameters to one stretch within the band of the
+    // crossing); anything farther is its own, and the gate refuses a span
+    // kept beside two it cannot keep apart.
     let certificate = plane_section_certificate::PlaneSectionCertificate::of_face(
         topo,
         plane_face,
@@ -5832,13 +5845,14 @@ fn trim_ellipse_to_boundary_crossings_impl(
         tol,
     )?;
     contacts.touches.extend(certificate.hole_touches());
+    let mut hole_splits: Vec<(f64, Point3)> = Vec::new();
     for (_, crossing) in certificate.hole_crossings() {
-        contacts.hole_crossings.push(crossing.at);
+        contacts.hole_crossings.push((crossing.t, crossing.at));
         if !crossings
             .iter()
             .any(|q| (*q - crossing.at).length() <= model.band)
         {
-            crossings.push(crossing.at);
+            hole_splits.push((crossing.t, crossing.at));
         }
     }
     // Every crossing with the outline and with the holes read is a split
@@ -5853,7 +5867,9 @@ fn trim_ellipse_to_boundary_crossings_impl(
     // partner cylinder, whose band between the floor and the rim then never
     // closed. Undecided — the point within tolerance of a loop, a span
     // touching it there — leaves a span that ends on no hole to the extent
-    // test, as before; a span that ends on a hole is the certificate's.
+    // test, as before; whether it may then be emitted is the gate's, which
+    // certifies it clear of every hole, and so is a span that ends on a
+    // hole.
     let off_face = |p: Point3| {
         let band = tol.linear * 10.0;
         planar_loop_side(loop_frame.project(p), &outer_outline, band) == Some(false)
@@ -5861,14 +5877,20 @@ fn trim_ellipse_to_boundary_crossings_impl(
     };
 
     // Need at least two crossings to bound an arc.
-    if crossings.len() < 2 {
+    if crossings.len() + hole_splits.len() < 2 {
         return None;
     }
 
-    // Map each crossing to its angular parameter, sort by angle.
+    // Each crossing with its parameter, sorted by it. A crossing of the
+    // outline, a seam or a rim is a root of a line or a conic with the cut
+    // surface in the face's plane: a point of the section, whose chart
+    // angle is its parameter (`push_crossing` kept it only within
+    // `SECTION_ROOT_TOL` of the section's point at that angle). A hole's
+    // crossing keeps the parameter the certificate gave it.
     let mut t_pts: Vec<(f64, Point3)> = crossings
         .into_iter()
         .map(|p| (sec.project(p).rem_euclid(std::f64::consts::TAU), p))
+        .chain(hole_splits)
         .collect();
     t_pts.compact_sort_by(|a, b| a.0.total_cmp(&b.0));
     // Drop a crossing reached twice (by two adjacent edges). Two crossings
@@ -5910,7 +5932,18 @@ fn trim_ellipse_to_boundary_crossings_impl(
         }
         let t_mid = 0.5 * (t0 + t1);
         let mid = sec.evaluate(t_mid);
-        let elsewhere = !off_face(mid) && ext_a.contains(mid) && ext_b.contains(mid);
+        let (plane_extent, partner_extent) = if plane_face == fa {
+            (ext_a, ext_b)
+        } else {
+            (ext_b, ext_a)
+        };
+        let elsewhere = if !partner_extent.contains(mid) {
+            plane_section_certificate::Elsewhere::Off
+        } else if off_face(mid) || !plane_extent.contains(mid) {
+            plane_section_certificate::Elsewhere::OffThePlane
+        } else {
+            plane_section_certificate::Elsewhere::On
+        };
         let kept = match plan.keep(i, (t0, t1), elsewhere) {
             Ok(plane_section_certificate::Kept::No) => continue,
             Ok(kept) => kept,
@@ -5972,7 +6005,10 @@ fn trim_ellipse_to_boundary_crossings_impl(
     }
     let spans: Vec<(f64, f64)> = arcs.iter().map(|arc| arc.t_range).collect();
     contacts.certificate = Some(certificate);
-    if let Some(pinch) = contacts.pinch(&spans, |p| sec.project(p), a_axis.max(b_axis), tol) {
+    // A touch's foot is a point of a loop edge within the band of the
+    // section, not of the section: its parameter is that of its nearest
+    // point there, not its chart angle.
+    if let Some(pinch) = contacts.pinch(&spans, |p| conic.nearest(p).1, a_axis.max(b_axis), tol) {
         *refusal = Some(pinch);
         return None;
     }
@@ -6464,8 +6500,9 @@ fn circle_touch_on_arc_edge(
 struct PlaneFaceContacts {
     /// The planar face, once it has contributed anything.
     face: Option<FaceId>,
-    /// Transversal crossings of the face's holes.
-    hole_crossings: Vec<Point3>,
+    /// Transversal crossings of the face's holes: the section's parameter
+    /// at each, as the certificate decided it, and the point.
+    hole_crossings: Vec<(f64, Point3)>,
     /// Touches of the outline or of a hole, strictly inside an edge.
     touches: Vec<Point3>,
     /// The certificate of the section against the face's loops, once its
@@ -6476,8 +6513,9 @@ struct PlaneFaceContacts {
 impl PlaneFaceContacts {
     /// The refusal for kept `spans` of the section (parameter ranges, the
     /// upper end possibly past a full turn) that both end on a hole and pass
-    /// through or end at a touch; `project` gives a point's parameter and
-    /// `radius` the section's size.
+    /// through or end at a touch; `project` gives the parameter of the
+    /// section's point nearest a touch's foot and `radius` the section's
+    /// size.
     ///
     /// What is left of the face then narrows to a point at the touch: a
     /// ring cut through from its hole to a tangency with its outline is one
@@ -6510,8 +6548,7 @@ impl PlaneFaceContacts {
         let face = self.face?;
         // A touch at tolerance spans a chord of half-length `sqrt(2·r·tol)`.
         let slack = ((2.0 * radius * tol.linear).sqrt() + tol.linear) / radius;
-        let on_kept_span = |p: &Point3| {
-            let t = project(*p);
+        let on_kept_span = |t: f64| {
             spans.iter().any(|&(t0, t1)| {
                 let turns = ((t0 - slack - t) / TAU).ceil();
                 TAU.mul_add(turns, t) <= t1 + slack
@@ -6523,9 +6560,10 @@ impl PlaneFaceContacts {
             self.certificate
                 .as_ref()
                 .and_then(|certificate| certificate.hole_touch_on(*p, spans))
-                .unwrap_or_else(|| on_kept_span(p))
+                .unwrap_or_else(|| on_kept_span(project(*p)))
         };
-        (self.hole_crossings.iter().any(on_kept_span)
+        // A crossing is at the parameter the certificate decided it at.
+        (self.hole_crossings.iter().any(|&(t, _)| on_kept_span(t))
             && self.touches.iter().any(touch_on_kept_span))
         .then(|| {
             AlgoError::IntersectionFailed(format!(
@@ -6560,8 +6598,9 @@ struct PlaneHoleCrossings {
 /// The refusal the gate raises as soon as a span ending at one of the
 /// hole's crossings is kept ([`plane_section_certificate::SpanPlan::keep`]):
 /// a crossing that cannot be placed, two closer than the separation
-/// distance, one that close to a vertex it is not at, or a straight edge
-/// whose chord with the section is not resolved.
+/// distance, one that close to a vertex it is not at, a straight edge whose
+/// chord with the section is not resolved, or a side of the hole that could
+/// not be read along a stretch of the section.
 #[cfg(test)]
 fn plane_hole_crossings(
     topo: &Topology,
@@ -6575,7 +6614,11 @@ fn plane_hole_crossings(
     else {
         return Ok(None);
     };
-    if let Some(why) = hole.crossings().find_map(|crossing| crossing.taint.clone()) {
+    if let Some(why) = hole
+        .crossings()
+        .find_map(|crossing| crossing.taint.clone())
+        .or_else(|| hole.undecided())
+    {
         return Err(AlgoError::IntersectionFailed(why));
     }
     Ok(Some(PlaneHoleCrossings {
@@ -10600,7 +10643,7 @@ fn closed_circle_boundary_crossings(
     if let Some(certificate) = certificate {
         contacts.touches.extend(certificate.hole_touches());
         for (_, crossing) in certificate.hole_crossings() {
-            contacts.hole_crossings.push(crossing.at);
+            contacts.hole_crossings.push((crossing.t, crossing.at));
             if !hits
                 .iter()
                 .any(|(_, q, _)| (*q - crossing.at).length() <= model.band)
@@ -10812,10 +10855,11 @@ fn hits_are_inscribed_polygon(hits: &[(f64, Point3)]) -> bool {
 /// `contacts` are the section's known contacts with the pair's plane face
 /// (empty when there is none): the call refuses, before any vertex is made,
 /// when the arcs it would keep pinch that face (see
-/// [`PlaneFaceContacts::pinch`]), or when an arc it would keep ends on a
-/// hole of that face and cannot be certified on the face (see
-/// [`plane_section_certificate::SpanPlan::keep`]). An arc that ends on a
-/// hole and is certified off the face is dropped.
+/// [`PlaneFaceContacts::pinch`]), when an arc it would keep ends on a
+/// hole of that face and cannot be certified on the face, or when one that
+/// ends on no hole cannot be certified to pass through none (see
+/// [`plane_section_certificate::SpanPlan::keep`]). An arc certified off the
+/// face — one that ends on a hole, or lies inside one — is dropped.
 #[allow(clippy::too_many_arguments)]
 fn emit_split_circle_arcs(
     topo: &mut Topology,
@@ -10985,7 +11029,10 @@ fn emit_split_circle_arcs(
         let mid_3d = circle.evaluate(t_mid);
         let on_pair = in_both(mid_3d);
         let kept = match &plan {
-            Some(plan) => plan.keep(i, (t0, t1), on_pair)? != plane_section_certificate::Kept::No,
+            Some(plan) => {
+                let elsewhere = plane_section_certificate::Elsewhere::of(on_pair);
+                plan.keep(i, (t0, t1), elsewhere)? != plane_section_certificate::Kept::No
+            }
             None => on_pair,
         };
         if !kept {
