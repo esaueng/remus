@@ -825,25 +825,7 @@ fn closed_rim_info(topo: &Topology, stripe: &Stripe) -> Result<Option<ClosedRimI
         }
     }
 
-    // When the contact moves INTO the wall, the rebuild shortens the wall to
-    // meet it, and only the wall's own axial extent says whether it has that
-    // much material to give — the shell would still close, and the tessellation
-    // would still be watertight, with the contact hanging off the end of the
-    // bore. A concave rim band extends the wall instead, which has no such
-    // bound; that case shows up as no extent in the setback direction.
-    {
-        let setback = axis.dot(wall_center - plate_center);
-        let wall_wire = topo.face(wall_face)?.outer_wire();
-        let (s_min, s_max) = wire_axial_range(topo, wall_wire, plate_center, axis)?;
-        let available = if setback >= 0.0 { s_max } else { -s_min };
-        let shortening = available > 1e-9 * (1.0 + setback.abs());
-        if shortening && setback.abs() >= available {
-            return Err(BlendError::RadiusTooLarge {
-                edge: rim_edge,
-                max_radius: available.max(0.0),
-            });
-        }
-    }
+    refuse_wall_setback(topo, wall_face, rim_edge, plate_center, wall_center, axis)?;
 
     Ok(Some(ClosedRimInfo {
         plane_face,
@@ -853,6 +835,31 @@ fn closed_rim_info(topo: &Topology, stripe: &Stripe) -> Result<Option<ClosedRimI
         wall_circle,
         cap_rim_wire,
     }))
+}
+
+/// A contact moving into a wall must stop before its far boundary. A concave
+/// band can extend the wall instead, with no extent in the setback direction;
+/// keep that construction unbounded, as in the rim-fillet guard.
+fn refuse_wall_setback(
+    topo: &Topology,
+    wall_face: FaceId,
+    rim_edge: EdgeId,
+    rim_center: Point3,
+    contact_center: Point3,
+    axis: Vec3,
+) -> Result<(), BlendError> {
+    let setback = axis.dot(contact_center - rim_center);
+    let wall_wire = topo.face(wall_face)?.outer_wire();
+    let (s_min, s_max) = wire_axial_range(topo, wall_wire, rim_center, axis)?;
+    let available = if setback >= 0.0 { s_max } else { -s_min };
+    let shortening = available > 1e-9 * (1.0 + setback.abs());
+    if shortening && setback.abs() >= available {
+        return Err(BlendError::RadiusTooLarge {
+            edge: rim_edge,
+            max_radius: available.max(0.0),
+        });
+    }
+    Ok(())
 }
 
 /// Assemble a full-revolution chamfer between two coaxial periodic walls (a
@@ -920,6 +927,24 @@ fn assemble_closed_wall_rim(
             radial_distance(start, axis_origin, axis),
             seam_dir,
         )?);
+    }
+    // The analytic stripe measured both original supports. Another rim may
+    // already have shortened either wall, so check their current boundaries
+    // before rebuilding them or allocating the band.
+    let rim_center = project_onto_axis(rim_vertex, axis_origin, axis);
+    for index in 0..2 {
+        let current = face_replacements
+            .get(&faces[index])
+            .copied()
+            .unwrap_or(faces[index]);
+        refuse_wall_setback(
+            topo,
+            current,
+            rim_edge,
+            rim_center,
+            circles[index].center(),
+            axis,
+        )?;
     }
     let points = [circles[0].evaluate(0.0), circles[1].evaluate(0.0)];
     let vertices = [
@@ -1021,6 +1046,18 @@ fn assemble_closed_rim(
     let wall_outer_wire = topo.face(current_wall)?.outer_wire();
     let wall_inner = topo.face(current_wall)?.inner_wires().to_vec();
     let wall_oriented: Vec<OrientedEdge> = topo.wire(wall_outer_wire)?.edges().to_vec();
+
+    // `closed_rim_info` measured the original wall. Two 2 mm chamfers each
+    // fit a 3 mm wall on their own but cross after the first rim is rebuilt.
+    // Like the fillet twin, re-measure the wall that will actually be trimmed.
+    refuse_wall_setback(
+        topo,
+        current_wall,
+        rim.rim_edge,
+        rim.plate_circle.center(),
+        rim.wall_circle.center(),
+        rim.wall_circle.normal(),
+    )?;
     let old_rim_vertex = topo.edge(rim.rim_edge)?.start();
 
     refuse_non_line_rim_neighbors(
