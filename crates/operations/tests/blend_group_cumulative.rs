@@ -798,11 +798,12 @@ fn a3_round_turns_through_the_a2_band() {
         let direct = fillet_cascade(&mut topo, a2, &[pick], 1.0).unwrap();
         assert_eq!(fingerprint(&topo, a2), before);
         verify(&topo, direct.solid, &label);
-        // Two exact R1 cylinders and the turn over the band's end arc (a
-        // spindle-torus patch, R1 inside R`band`, so lofted).
+        // Two exact R1 cylinders and the turn over the band's end arc: a
+        // spindle torus (ring `band − 1` inside a tube of 1), exact since the
+        // rolling-ball arc stripe stopped lofting non-ring tori.
         let mut expected = census(&topo, a2);
         *expected.entry("cylinder").or_insert(0) += 2;
-        *expected.entry("nurbs").or_insert(0) += 1;
+        *expected.entry("torus").or_insert(0) += 1;
         assert_eq!(census(&topo, direct.solid), expected, "{label}");
         for (point, inside) in [
             (Point3::new(0.15, 17.85, 12.0), false),

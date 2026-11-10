@@ -189,8 +189,20 @@ fn free_end_fillet_through_the_group_of_a_lowered_cap() {
                 "{label}: {point:?}"
             );
         }
-        // Planes, cylinders and tori stay analytic: the one new sampled face
-        // is the corner where the re-filleted R1 band meets the new round.
-        assert_eq!(sampled(&topo, result), source_sampled + 1, "{label}");
+        // Planes, cylinders and tori stay analytic, and so do the two corners
+        // that run over an end arc: one a ring torus, the other a spindle
+        // torus (the re-filleted R1 band over the R1.5 round's end arc, ring
+        // 0.5; the R3.7 round over the R4 band's, ring 0.3). The spindle one
+        // was the sampled face these fillets added until the rolling-ball arc
+        // stripe stopped lofting non-ring tori.
+        let tori = |solid: SolidId| {
+            solid_faces(&topo, solid)
+                .unwrap()
+                .into_iter()
+                .filter(|&face| matches!(topo.face(face).unwrap().surface(), FaceSurface::Torus(_)))
+                .count()
+        };
+        assert_eq!(sampled(&topo, result), source_sampled, "{label}");
+        assert_eq!(tori(result), tori(solid) + 2, "{label}");
     }
 }

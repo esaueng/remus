@@ -128,8 +128,9 @@ fn arc_station(
 }
 
 /// The torus a radius-`radius` fillet sweeps along `edge`, or `None` when the
-/// edge is not a circle in a plane beside a coaxial cylinder, the torus would
-/// not be a ring torus, or the stripe's contacts do not lie on it.
+/// edge is not a circle in a plane beside a coaxial cylinder, the ball's
+/// centre does not leave the axis (the sphere patch's case), or the stripe's
+/// contacts do not lie on it.
 ///
 /// `corners` are the stripe's contact points `[c1_start, c2_start, c2_end,
 /// c1_end]`, the `1` contacts on `surf1`.
@@ -151,7 +152,14 @@ pub fn arc_stripe_torus(
         band: [cs, ce],
         eps,
     } = arc_station(edge, surf1, surf2, corners, radius, tol)?;
-    if ring <= radius + eps {
+    // A zero ring is the sphere patch's case. Any positive ring is a torus
+    // the ball sweeps exactly, a spindle torus once the ring is no longer
+    // than the radius (a convex band filleted at half its own radius or
+    // more): the stripe is the arc's quarter of the tube on the far side of
+    // the ball centres from the axis, where the spindle does not cross
+    // itself. Declining it left the plane contact to a loft bounded by a
+    // straight chord.
+    if ring <= eps {
         return None;
     }
     let radial = |p: Point3, from: Point3| {

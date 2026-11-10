@@ -969,9 +969,17 @@ impl DetectedCurveKind {
 pub fn detect_curve_kind(curve: &NurbsCurve) -> DetectedCurveKind {
     const N_SAMPLES: usize = 16;
 
-    // Degree-1 non-rational curves are lines by definition.
+    // A degree-1 non-rational curve is a polyline through its control
+    // points: a line only when they are collinear. A walked blend contact is
+    // stored that way (hundreds of points along a quarter circle), and
+    // reporting it as a line told a consumer to read it as the straight
+    // segment between its ends, a chord far off both faces it bounds.
     if curve.degree() < 2 && !curve.is_rational() {
-        return DetectedCurveKind::Line;
+        return if control_points_collinear(curve.control_points()) {
+            DetectedCurveKind::Line
+        } else {
+            DetectedCurveKind::BSpline
+        };
     }
 
     // Non-rational degree-2+ curves cannot represent conics.
@@ -999,6 +1007,33 @@ pub fn detect_curve_kind(curve: &NurbsCurve) -> DetectedCurveKind {
     } else {
         DetectedCurveKind::BSpline
     }
+}
+
+/// Whether every point lies on the segment's line through the first and the
+/// farthest point, within the classifier's 0.01% relative budget. A point set
+/// with no extent is collinear.
+fn control_points_collinear(points: &[Point3]) -> bool {
+    let Some(&first) = points.first() else {
+        return true;
+    };
+    let tol = sample_extent(points) * 1e-4;
+    let Some(far) = points
+        .iter()
+        .copied()
+        .max_by(|a, b| (*a - first).length().total_cmp(&(*b - first).length()))
+    else {
+        return true;
+    };
+    let span = far - first;
+    let length = span.length();
+    if length <= tol {
+        return true;
+    }
+    let along = span * (1.0 / length);
+    points.iter().all(|&p| {
+        let offset = p - first;
+        (offset - along * offset.dot(along)).length() <= tol
+    })
 }
 
 /// Largest extent of a point set along any coordinate axis — a scale estimate
@@ -1142,6 +1177,41 @@ mod tests {
     fn detect_line_is_line() {
         let nurbs = line_to_nurbs(origin(), Point3::new(3.0, 4.0, 0.0)).unwrap();
         assert_eq!(detect_curve_kind(&nurbs), DetectedCurveKind::Line);
+    }
+
+    /// A degree-1 curve through collinear points (a straight run sampled more
+    /// than once) is still a line, its points in any order along it.
+    #[test]
+    fn detect_collinear_polyline_is_line() {
+        let points: Vec<Point3> = [0.0, 0.25, 0.7, 1.0]
+            .iter()
+            .map(|&t| Point3::new(3.0 * t, 4.0 * t, -t))
+            .collect();
+        let knots = vec![0.0, 0.0, 0.25, 0.7, 1.0, 1.0];
+        let nurbs = NurbsCurve::new(1, knots, points, vec![1.0; 4]).unwrap();
+        assert_eq!(detect_curve_kind(&nurbs), DetectedCurveKind::Line);
+    }
+
+    /// A walked blend contact is a degree-1 polyline along a curve: OpenZCAD's
+    /// mixed-seam r1 fillet stores its quarter-circle contact with 514 points.
+    /// Reporting it as a line made the consumer read it as the chord between
+    /// its ends, 0.29 r off both faces it bounds.
+    #[test]
+    fn detect_polyline_along_an_arc_is_bspline() {
+        #[allow(clippy::cast_precision_loss)]
+        let points: Vec<Point3> = (0..=64)
+            .map(|i| {
+                let t = std::f64::consts::FRAC_PI_2 * (i as f64) / 64.0;
+                Point3::new(t.cos(), t.sin(), 0.0)
+            })
+            .collect();
+        let count = points.len();
+        let mut knots = vec![0.0];
+        #[allow(clippy::cast_precision_loss)]
+        knots.extend((0..count).map(|i| (i as f64) / ((count - 1) as f64)));
+        knots.push(1.0);
+        let nurbs = NurbsCurve::new(1, knots, points, vec![1.0; count]).unwrap();
+        assert_eq!(detect_curve_kind(&nurbs), DetectedCurveKind::BSpline);
     }
 
     // ── not-recognized ───────────────────────────────────────────────────────

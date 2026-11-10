@@ -4683,6 +4683,33 @@ pub fn fillet_rolling_ball_with_origins(
                 analytic_boundary_curves.truncate(pushed);
             }
 
+            // The lofted strip's wire runs straight between its corner
+            // contacts, and a planar neighbour is rebuilt as the polygon those
+            // corners span. Along a curved edge whose contact on a plane is
+            // itself curved and that no exact branch above took, that is a
+            // chord across the true contact: a squared cap and a strip that
+            // is not bounded by its own edges, which still closes, validates
+            // and lands inside the volume envelope. (Quarter arcs of a rim
+            // filleted at half its radius or more reached here until the
+            // torus branch took spindle tori.) Refuse it.
+            if n_v > 2 {
+                let limit = (radius * 1e-3).max(1e-6);
+                for (side, surface) in [(0, surf1), (2, surf2)] {
+                    if !matches!(surface, FaceSurface::Plane { .. }) {
+                        continue;
+                    }
+                    let sag = planar_contact_chord_sag(&grid, side);
+                    if sag > limit {
+                        return Err(crate::OperationsError::InvalidInput {
+                            reason: format!(
+                                "the rolling-ball engine would bound a curved planar contact \
+                                 with a straight chord (sag {sag:.3e} > {limit:.3e})"
+                            ),
+                        });
+                    }
+                }
+            }
+
             let fillet_surface = if n_v == 2 {
                 // Line edge: exact rational quadratic arc × linear.
                 let arc_half = half_angle;
@@ -5971,6 +5998,29 @@ fn build_two_edge_corner_patch(
         reversed,
         inner_wires: vec![],
     })
+}
+
+/// Largest distance from the contacts in column `side` of a strip's section
+/// grid to the straight segment between its first and last contact: how far
+/// the strip's straight boundary on that side cuts across the real contact.
+pub(super) fn planar_contact_chord_sag(grid: &[[Point3; 3]], side: usize) -> f64 {
+    let (Some(first), Some(last)) = (grid.first(), grid.last()) else {
+        return 0.0;
+    };
+    let (start, end) = (first[side], last[side]);
+    let span = end - start;
+    let length_sq = span.dot(span);
+    grid.iter()
+        .map(|row| {
+            let offset = row[side] - start;
+            let t = if length_sq > 0.0 {
+                (offset.dot(span) / length_sq).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            (offset - span * t).length()
+        })
+        .fold(0.0, f64::max)
 }
 
 /// Area of a face's outer boundary wire, via Newell's method.
