@@ -572,6 +572,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | P-Class 7.4 acceptance oracles (exact cells, approximate disclosure, refusals, solid/2D paths) | `tests/qualify_project_curve.rs` |
 | Small cylindrical resizes: thin-sleeve cut and fuse below the chord sagitta, rim-rounded bores carrying their rounds, closed-form volumes (tests) | `tests/resize_cylinder_small_delta.rs` |
 | Torus notches thousands of units along long box edges and on 3e-4 edges against slicing-integral volumes, and interior points of large torus-grooved cubes classified (tests) | `tests/regress_torus_far_line_roots.rs` |
+| Rays tangent to a whole torus and a fillet's torus band (top/bottom circles, equators, tube, both horizontal rays touching) keep the GFA ray-cast parity: seeded sweeps against the closed-form solid, through the GFA and `remus-check` classifiers (tests) | `tests/regress_torus_tangent_ray_parity.rs` |
 | Transform, Mirror, Copy | `transform.rs`, `mirror.rs`, `copy.rs` |
 | Pcurves carried into a transformed face's UV chart (exact plane chart map, revolved-carrier `u` rotation, re-derived lift counts) | `transform/pcurves.rs` |
 | Map-based solid copy paths kept verbatim as differential oracles for `CopyPlan` (tests) | `copy/tests/legacy_oracle.rs` |

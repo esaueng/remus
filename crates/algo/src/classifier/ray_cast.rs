@@ -1874,18 +1874,18 @@ fn ray_geom_crossings(
             let Ok(dir) = ray_dir.normalize() else {
                 return (0, false);
             };
-            let roots =
-                remus_math::analytic_intersection::intersect_line_torus(surface, origin, dir);
+            let hits = remus_math::ray::ray_torus(origin, dir, surface);
             let mut count = 0;
             let mut suspicious = false;
             let near = 10.0 * tol.linear;
-            for (index, &t) in roots.iter().enumerate() {
+            for (index, hit) in hits.iter().enumerate() {
+                let t = hit.t;
                 if t <= tol.linear {
                     continue;
                 }
-                suspicious |= roots[index + 1..]
+                suspicious |= hits[index + 1..]
                     .iter()
-                    .any(|other| (other - t).abs() <= near);
+                    .any(|other| (other.t - t).abs() <= near);
                 let (mut u, mut v) = surface.project_point(origin + dir * t);
                 let tau = std::f64::consts::TAU;
                 u += tau * ((trim.centre.x() - u) / tau).round();
@@ -1898,7 +1898,9 @@ fn ray_geom_crossings(
                     crate::builder::classify_2d::distance_to_polygon_boundary(p, &trim.polygon)
                         <= trim.margin + near / metric;
                 if crate::builder::classify_2d::point_in_polygon_2d(p, &trim.polygon) {
-                    count += 1;
+                    let (crossing, uncertain) = torus_contact_parity(hit.kind);
+                    count += crossing;
+                    suspicious |= uncertain;
                 }
             }
             (count, suspicious)
@@ -2222,8 +2224,10 @@ fn ray_trimmed_cylinder_crossings(
 /// Count ray crossings with a full-major-revolution toroidal face.
 ///
 /// Roots come from the residual-verified ray/torus quartic in
-/// `remus_math`; each accepted root's tube angle must fall inside the
-/// face's periodic `v_band` (`None` accepts the whole tube). Near-tangent
+/// `remus_math`, qualified by [`remus_math::ray::ray_torus`]; each accepted
+/// root's tube angle must fall inside the face's periodic `v_band` (`None`
+/// accepts the whole tube). A tangential root counts no crossing (see
+/// [`torus_contact_parity`]); tangential and unclassified roots, near-tangent
 /// root pairs and hits near the band borders flag the ray as unreliable,
 /// mirroring the cylinder/cone grazing conventions.
 fn ray_torus_crossings(
@@ -2239,19 +2243,20 @@ fn ray_torus_crossings(
     let Ok(dir) = ray_dir.normalize() else {
         return (0, false);
     };
-    let roots = remus_math::analytic_intersection::intersect_line_torus(surface, origin, dir);
+    let hits = remus_math::ray::ray_torus(origin, dir, surface);
     let near_angle = near / surface.minor_radius().max(near);
     let mut crossings = 0;
     let mut suspicious = false;
-    for (i, &t) in roots.iter().enumerate() {
+    for (i, hit) in hits.iter().enumerate() {
+        let t = hit.t;
         if t <= tol.linear {
             continue;
         }
         // A close root pair is a graze: its two crossings cancel in parity
         // only if BOTH land in the band, so flag the ray instead of trusting
         // the count.
-        for &t2 in &roots[i + 1..] {
-            if (t2 - t).abs() <= near {
+        for other in &hits[i + 1..] {
+            if (other.t - t).abs() <= near {
                 suspicious = true;
             }
         }
@@ -2277,9 +2282,32 @@ fn ray_torus_crossings(
                 continue;
             }
         }
-        crossings += 1;
+        let (crossing, uncertain) = torus_contact_parity(hit.kind);
+        crossings += crossing;
+        suspicious |= uncertain;
     }
     (crossings, suspicious)
+}
+
+/// What one torus root inside a face's trim adds to a ray's crossing count,
+/// and whether it makes the ray's parity unreliable.
+///
+/// The quartic solver merges a tangent line's double root into one root, so
+/// a bare root count reads a tangency as one crossing and flips parity.
+/// [`remus_math::ray::ray_torus`] qualifies each root: a transversal one is
+/// one clean crossing; a tangential one (an even number of merged candidates)
+/// leaves parity unchanged and flags the ray, as the close root pair the
+/// solver used to return for it did; an unclassified one (an odd merge above
+/// one, or a lone root within `1e-6` rad of tangency, whose partner may have
+/// been lost) keeps its one crossing but flags the ray too. A torus holds no
+/// line, so no root is coincident; one would be uncertified like the last.
+fn torus_contact_parity(kind: remus_math::intersect::ContactKind) -> (i32, bool) {
+    use remus_math::intersect::ContactKind;
+    match kind {
+        ContactKind::Transversal => (1, false),
+        ContactKind::Tangential => (0, true),
+        ContactKind::Unclassified | ContactKind::Coincident => (1, true),
+    }
 }
 
 /// Count ray crossings with a bounded conical face.
@@ -2704,6 +2732,86 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A ray tangent to a torus face inside its trim touches it without
+    /// crossing: an even count, and the ray flagged. The solver returns the
+    /// contact as one merged root, which a bare root count read as one
+    /// crossing; checked on a whole torus, a banded patch and a triangular
+    /// trim, at three scales, with the contact inside and outside the trim.
+    #[test]
+    fn torus_tangent_rays_keep_parity() {
+        use super::super::torus_patch::TorusTrim;
+        use remus_math::surfaces::ToroidalSurface;
+        let mut contacts = 0;
+        for scale in [0.01, 1.0, 100.0] {
+            let surface = ToroidalSurface::with_axis(
+                Point3::new(2.0, -3.0, 4.0),
+                12.0 * scale,
+                3.0 * scale,
+                Vec3::new(1.0, 2.0, 3.0),
+            )
+            .unwrap();
+            for anchor in [0.8, 6.3] {
+                // The trim triangle `u + 0.8 v <= anchor + 1.2` over
+                // `u >= anchor - 0.4`, `v >= 1`.
+                let trimmed = FaceGeom::TrimmedTorus {
+                    surface: surface.clone(),
+                    trim: TorusTrim {
+                        polygon: vec![
+                            Point2::new(anchor - 0.4, 1.0),
+                            Point2::new(anchor + 0.4, 1.0),
+                            Point2::new(anchor - 0.4, 2.0),
+                        ],
+                        centre: Point2::new(anchor, 1.5),
+                        margin: 1e-8,
+                    },
+                };
+                let banded = FaceGeom::Torus {
+                    surface: surface.clone(),
+                    u_band: Some((anchor - 0.4, 0.8)),
+                    v_band: Some((1.0, 1.0)),
+                };
+                let whole = FaceGeom::Torus {
+                    surface: surface.clone(),
+                    u_band: None,
+                    v_band: None,
+                };
+                for (u, v, inside_trim) in [
+                    (anchor - 0.2, 1.3, true),
+                    (anchor + 0.3, 1.3, false),
+                    (anchor - 0.1, 1.15, true),
+                ] {
+                    // Along the circumference: tangent, and with `cos v > 0`
+                    // on the tube's convex outer half, so the line's only
+                    // contact with the torus is this double one.
+                    let p = surface.evaluate(u, v);
+                    let dir = surface.y_axis() * u.cos() - surface.x_axis() * u.sin();
+                    for back in [10.0, 0.5] {
+                        let origin = p - dir * (back * scale);
+                        let ahead = remus_math::ray::ray_torus(origin, dir, &surface)
+                            .iter()
+                            .any(|hit| hit.t > Tolerance::default().linear);
+                        contacts += usize::from(ahead);
+                        for (geom, holds) in [
+                            (&trimmed, inside_trim),
+                            (&banded, inside_trim),
+                            (&whole, true),
+                        ] {
+                            let (count, suspicious) =
+                                ray_geom_crossings(origin, dir, geom, Tolerance::default());
+                            assert_eq!(count % 2, 0, "{} at {u}, {v}", geom_kind(geom));
+                            assert!(
+                                suspicious || !ahead || !holds,
+                                "{} at {u}, {v}: tangency not flagged",
+                                geom_kind(geom)
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        assert!(contacts > 0);
     }
 
     #[test]
