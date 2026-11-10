@@ -1068,6 +1068,13 @@ const TORUS_CULL_MAX_REACH: f64 = 1e10;
 /// coefficients and of their evaluation, and the box is grown by a further
 /// `1e-9 Λ`, far above the rounding of this test.
 ///
+/// The solver forms its quartic about the line's closest point to the torus
+/// centre rather than about `origin`, along the direction re-normalised. That
+/// point is no farther from the centre than `origin`, so its `Λ` is at most
+/// this one, and `D` grows with `Λ`: a line that misses the box grown for
+/// this `Λ` misses the one grown for the solver's, and the argument holds
+/// there.
+///
 /// That covers every iterate whose fourth power is finite. An iterate that
 /// overflowed passes the filter's comparisons, so no line with `Λ` above
 /// [`TORUS_CULL_MAX_REACH`] is cleared: from about `Λ = 1.4e11` the solver

@@ -182,6 +182,7 @@ Quick reference — find the right file for any task:
 | Closed-form oracles for the SSI marcher's private branch geometry (tests) | `nurbs/intersection/surface_marching/oracle_tests.rs` |
 | Analytic-analytic intersection | `analytic_intersection.rs` |
 | Bit-exact oracle for the ray-torus quartic solver's Durand–Kerner cycle jump (tests) | `analytic_intersection/quartic_cycle_tests.rs` |
+| Line–torus roots from origins up to 10 000 tube sizes away and raw directions 1e-5 to 1e4 long, against a bisection reference; tangent `spread` measured from the line's closest point to the centre (tests) | `math/tests/regress_line_torus_far_origin.rs` |
 | Bit-exact oracles for the plane × torus section: the pre-change grid scan, greedy chaining and pipeline, grid line sign certificates (tests) | `analytic_intersection/plane_torus_oracle_tests.rs` |
 | AABB / bounding boxes | `aabb.rs` |
 | BVH (bounding volume hierarchy) | `bvh.rs` |
@@ -570,6 +571,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Directional curve projection onto faces, solids, sketch planes (P-Class 7.4: sweep-plane sections, coaxial circles, fitted-arc cell, clipping/seams, sketch-plane maps) | `project_curve.rs` |
 | P-Class 7.4 acceptance oracles (exact cells, approximate disclosure, refusals, solid/2D paths) | `tests/qualify_project_curve.rs` |
 | Small cylindrical resizes: thin-sleeve cut and fuse below the chord sagitta, rim-rounded bores carrying their rounds, closed-form volumes (tests) | `tests/resize_cylinder_small_delta.rs` |
+| Torus notches thousands of units along long box edges and on 3e-4 edges against slicing-integral volumes, and interior points of large torus-grooved cubes classified (tests) | `tests/regress_torus_far_line_roots.rs` |
 | Transform, Mirror, Copy | `transform.rs`, `mirror.rs`, `copy.rs` |
 | Pcurves carried into a transformed face's UV chart (exact plane chart map, revolved-carrier `u` rotation, re-derived lift counts) | `transform/pcurves.rs` |
 | Map-based solid copy paths kept verbatim as differential oracles for `CopyPlan` (tests) | `copy/tests/legacy_oracle.rs` |

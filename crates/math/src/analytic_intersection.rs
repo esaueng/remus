@@ -1726,17 +1726,101 @@ pub fn intersect_line_torus(torus: &ToroidalSurface, origin: Point3, dir: Vec3) 
 /// back as two candidates merged into one root, so an even count marks a
 /// contact without a parity change. The roots are bit-identical to
 /// [`intersect_line_torus`]'s, in the same order.
+///
+/// The quartic is solved on the line's own chart next to the torus (see
+/// [`LineTorusChart`]), not about the caller's origin and in units of the
+/// caller's direction. About a far origin the four roots cluster near
+/// `t = distance`, where the quartic's coefficients cancel and the solver's
+/// absolute filters dropped or merged real crossings (one chord in a
+/// hundred through the tube lost a root 1500 tube sizes away, nearly all at
+/// 5000); a direction shorter than about `3.2e-4` made the leading
+/// coefficient `|dir|⁴` fall under the solver's degree-drop threshold.
+/// A zero or non-finite direction, or a non-finite origin, has no chart and
+/// is solved as given, as it always was.
 pub(crate) fn intersect_line_torus_counted(
     torus: &ToroidalSurface,
     origin: Point3,
     dir: Vec3,
 ) -> Vec<(f64, usize)> {
+    let Some(chart) = LineTorusChart::new(torus, origin, dir) else {
+        return solve_line_torus(torus, origin, dir);
+    };
+    let mut roots = solve_line_torus(torus, chart.foot, chart.unit);
+    for (t, _) in &mut roots {
+        *t = chart.to_caller(*t);
+    }
+    roots
+}
+
+/// The real roots of the line–torus quartic about `origin` in units of
+/// `dir`, each polished, sorted ascending, with their multiplicities.
+fn solve_line_torus(torus: &ToroidalSurface, origin: Point3, dir: Vec3) -> Vec<(f64, usize)> {
     let (frame, mut roots) = line_torus_quartic_roots(torus, origin, dir);
     for (t, _) in &mut roots {
         *t = polish_line_torus_root(&frame, *t);
     }
     roots.compact_sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     roots
+}
+
+/// The chart the line–torus quartic is solved on: the caller's line
+/// `origin + t·dir` re-parameterised by arc length `s` from the foot of the
+/// torus centre on it, `foot + s·unit` with `unit = dir / |dir|`.
+///
+/// Every crossing lies within `R + r` of the foot, so the roots' magnitudes
+/// are set by the torus, not by how far away the caller's origin is, and
+/// the leading coefficient is one whatever `|dir|`. A root maps back as
+/// `t = (s + s0) / |dir|`, `s0` being the foot's arc length from the origin.
+pub(crate) struct LineTorusChart {
+    /// Closest point of the line to the torus centre.
+    foot: Point3,
+    /// Unit direction of the line.
+    unit: Vec3,
+    /// Arc length from the caller's origin to `foot`.
+    s0: f64,
+    /// `|dir|`: arc length per unit of the caller's `t`.
+    len: f64,
+}
+
+impl LineTorusChart {
+    /// The chart of `origin + t·dir`, or `None` when `dir` has no finite,
+    /// nonzero length or the foot is not finite.
+    pub(crate) fn new(torus: &ToroidalSurface, origin: Point3, dir: Vec3) -> Option<Self> {
+        let len = dir.length();
+        if !(len > 0.0 && len.is_finite()) {
+            return None;
+        }
+        let unit = Vec3::new(dir.x() / len, dir.y() / len, dir.z() / len);
+        let c = torus.center();
+        let o = Vec3::new(origin.x() - c.x(), origin.y() - c.y(), origin.z() - c.z());
+        let s0 = -o.dot(unit);
+        let foot = origin + unit * s0;
+        if !(s0.is_finite() && foot.x().is_finite() && foot.y().is_finite() && foot.z().is_finite())
+        {
+            return None;
+        }
+        Some(Self {
+            foot,
+            unit,
+            s0,
+            len,
+        })
+    }
+
+    /// The caller's `t` of the chart parameter `s`.
+    pub(crate) fn to_caller(&self, s: f64) -> f64 {
+        (s + self.s0) / self.len
+    }
+
+    /// The chart parameter `s` of the caller's `t`.
+    pub(crate) fn to_chart(&self, t: f64) -> f64 {
+        t.fma(self.len, -self.s0)
+    }
+
+    /// `|dir|`, the chart's arc length per unit of the caller's `t`.
+    pub(crate) const fn len(&self) -> f64 {
+        self.len
+    }
 }
 
 /// A line in a torus's frame: `(a, b, c)(t) = p0 + p1 t` relative to the
@@ -5219,6 +5303,39 @@ mod tests {
         let axis =
             intersect_line_torus(&torus, Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0));
         assert!(axis.is_empty(), "z-axis should miss the tube, got {axis:?}");
+    }
+
+    /// Lines with no chart (zero or non-finite direction, non-finite origin)
+    /// are solved about the caller's origin as given, bit for bit, as before
+    /// the solve moved to the line's closest point.
+    #[test]
+    fn line_torus_without_a_chart_is_solved_as_given() {
+        use super::{LineTorusChart, intersect_line_torus_counted, solve_line_torus};
+        let torus = ToroidalSurface::new(Point3::new(1.0, -2.0, 0.5), 1.5, 0.5).unwrap();
+        let finite = Point3::new(-5.0, 0.2, 0.1);
+        let cases = [
+            (finite, Vec3::new(0.0, 0.0, 0.0)),
+            (finite, Vec3::new(f64::NAN, 0.0, 1.0)),
+            (finite, Vec3::new(f64::INFINITY, 0.0, 1.0)),
+            (finite, Vec3::new(1e200, 1e200, 0.0)),
+            (Point3::new(f64::NAN, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0)),
+            (
+                Point3::new(f64::INFINITY, 0.0, 0.0),
+                Vec3::new(1.0, 0.0, 0.0),
+            ),
+        ];
+        let bits = |roots: &[(f64, usize)]| -> Vec<(u64, usize)> {
+            roots.iter().map(|&(t, m)| (t.to_bits(), m)).collect()
+        };
+        for (origin, dir) in cases {
+            assert!(LineTorusChart::new(&torus, origin, dir).is_none());
+            assert_eq!(
+                bits(&intersect_line_torus_counted(&torus, origin, dir)),
+                bits(&solve_line_torus(&torus, origin, dir)),
+                "{origin:?} {dir:?}"
+            );
+        }
+        assert!(intersect_line_torus_counted(&torus, finite, Vec3::new(0.0, 0.0, 0.0)).is_empty());
     }
 
     #[test]

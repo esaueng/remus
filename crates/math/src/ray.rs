@@ -454,8 +454,14 @@ const TORUS_GRAZE_SLOPE: f64 = 1e-6;
 /// [`ContactKind::Unclassified`] (an inflectional contact may cross), and a
 /// lone root meeting the surface within `1e-6` rad of tangency is
 /// [`ContactKind::Unclassified`] too. `spread` is the solver's merge radius
-/// `1e-9 (1 + |t|)` for every non-transversal hit. The roots are the same
-/// values, in the same order, as `intersect_line_torus` returns.
+/// for every non-transversal hit, in units of `t`: the solver works in arc
+/// length `s` from the line's closest point to the torus centre and merges
+/// candidates within `1e-9 (1 + |s|)`, so the spread is that over
+/// `|direction|`. Measured from the closest point rather than from `origin`,
+/// it is set by the torus's size, not by how far away the ray starts. A
+/// direction the solver cannot re-parameterise (zero or non-finite) keeps
+/// `1e-9 (1 + |t|)`. The roots are the same values, in the same order, as
+/// `intersect_line_torus` returns.
 #[must_use]
 pub fn ray_torus(origin: Point3, direction: Vec3, torus: &ToroidalSurface) -> Vec<RayHit> {
     let c = torus.center();
@@ -463,6 +469,7 @@ pub fn ray_torus(origin: Point3, direction: Vec3, torus: &ToroidalSurface) -> Ve
     let big_r = torus.major_radius();
     let d = Vec3::new(xa.dot(direction), ya.dot(direction), za.dot(direction));
     let d_len = d.length();
+    let chart = crate::analytic_intersection::LineTorusChart::new(torus, origin, direction);
     crate::analytic_intersection::intersect_line_torus_counted(torus, origin, direction)
         .into_iter()
         .map(|(t, count)| {
@@ -486,6 +493,8 @@ pub fn ray_torus(origin: Point3, direction: Vec3, torus: &ToroidalSurface) -> Ve
             };
             let spread = if kind == ContactKind::Transversal {
                 0.0
+            } else if let Some(chart) = &chart {
+                1e-9 * (1.0 + chart.to_chart(t).abs()) / chart.len()
             } else {
                 1e-9 * (1.0 + t.abs())
             };
