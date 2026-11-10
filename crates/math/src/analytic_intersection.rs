@@ -1788,7 +1788,7 @@ pub fn intersect_line_torus_contacts(
     origin: Point3,
     dir: Vec3,
 ) -> Vec<LineTorusContact> {
-    if let Some(contacts) = line_torus::certified_contacts(torus, origin, dir) {
+    if let Some(contacts) = line_torus::contacts_of_line(torus, origin, dir) {
         return contacts;
     }
     solve_line_torus(torus, origin, dir)

@@ -2,7 +2,7 @@
 //!
 //! # Contract
 //!
-//! For a finite line `origin + t·dir` and a torus, [`certified_contacts`]
+//! For a finite line `origin + t·dir` and a torus, [`contacts_of_line`]
 //! returns every real root of the line–torus quartic, each inside a window
 //! `[t_lo, t_hi]`, ascending:
 //!
@@ -998,8 +998,8 @@ impl<'a, B: Ball> Isolator<'a, B> {
             }
             // The split point is a root to within the arithmetic. Fence it
             // between the nearest points whose signs are certified.
-            let before = self.certified_towards(m, &left, -1.0)?;
-            let after = self.certified_towards(m, &r, 1.0)?;
+            let before = self.fence_towards(m, &left, -1.0)?;
+            let after = self.fence_towards(m, &r, 1.0)?;
             if before.x > left.x {
                 self.resolve(left, before, depth + 1)?;
             }
@@ -1034,7 +1034,7 @@ impl<'a, B: Ball> Isolator<'a, B> {
     /// out by fours from one grain, then brought back towards `m` by three
     /// bisections against the last step that did not; `end` itself when
     /// nothing nearer clears.
-    fn certified_towards(&mut self, m: f64, end: &Pt<B>, side: f64) -> Result<Pt<B>, Stop> {
+    fn fence_towards(&mut self, m: f64, end: &Pt<B>, side: f64) -> Result<Pt<B>, Stop> {
         let grain = self.chart.grain(m);
         let mut step = grain;
         let mut inner = 0.0;
@@ -1262,7 +1262,7 @@ impl Finisher<'_> {
 
 /// The certified contacts of `origin + t·dir` with `torus`, ascending, or
 /// `None` when the line has no chart or the wide solve ran out of budget.
-pub(super) fn certified_contacts(
+pub(super) fn contacts_of_line(
     torus: &ToroidalSurface,
     origin: Point3,
     dir: Vec3,

@@ -706,7 +706,7 @@ pub struct Tally {
     /// apart than `1e-12` torus sizes.
     pub merged: usize,
     /// Hits with an infinite spread: nothing certified.
-    pub uncertified: usize,
+    pub unbounded: usize,
 }
 
 impl Tally {
@@ -717,7 +717,7 @@ impl Tally {
             + self.outside_window
             + self.inaccurate
             + self.merged
-            + self.uncertified
+            + self.unbounded
     }
 }
 
@@ -751,8 +751,8 @@ pub fn judge(hits: &[RayHit], truth: &Truth, tally: &mut Tally) -> Option<String
     let mut settled = vec![false; hits.len()];
     for (i, hit) in hits.iter().enumerate() {
         if !hit.spread.is_finite() {
-            tally.uncertified += 1;
-            complain(format!("uncertified hit {hit:?}"));
+            tally.unbounded += 1;
+            complain(format!("unbounded hit {hit:?}"));
             settled[i] = true;
             continue;
         }

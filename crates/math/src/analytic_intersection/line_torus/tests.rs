@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::{
-    Ball, Chart, Plain, Poly, Wide, certified_contacts, cubic_roots_in_unit, exponent, ldexp,
+    Ball, Chart, Plain, Poly, Wide, contacts_of_line, cubic_roots_in_unit, exponent, ldexp,
     max_variations, two_prod, two_sum,
 };
 use crate::intersect::ContactKind;
@@ -214,7 +214,7 @@ fn bernstein_coefficients_reproduce_the_quartic() {
 }
 
 fn contacts(torus: &ToroidalSurface, origin: Point3, dir: Vec3) -> Vec<super::LineTorusContact> {
-    certified_contacts(torus, origin, dir).unwrap()
+    contacts_of_line(torus, origin, dir).unwrap()
 }
 
 /// Review round 3, finding 1: a large thin torus, the origin `1e-5` inside

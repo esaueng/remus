@@ -64,7 +64,7 @@ fn ray_torus_matches_the_reference_on_every_family() {
         }
     }
     let mut table = String::from(
-        "family                 lines  roots  own   lost phantom mislabel outside inaccurate merged uncertified\n",
+        "family                 lines  roots  own   lost phantom mislabel outside inaccurate merged   unbounded\n",
     );
     let mut total = Tally::default();
     for (family, t) in &tallies {
@@ -80,7 +80,7 @@ fn ray_torus_matches_the_reference_on_every_family() {
             t.outside_window,
             t.inaccurate,
             t.merged,
-            t.uncertified
+            t.unbounded
         )
         .unwrap();
         total.lines += t.lines;
@@ -92,7 +92,7 @@ fn ray_torus_matches_the_reference_on_every_family() {
         total.outside_window += t.outside_window;
         total.inaccurate += t.inaccurate;
         total.merged += t.merged;
-        total.uncertified += t.uncertified;
+        total.unbounded += t.unbounded;
     }
     writeln!(
         table,
@@ -107,7 +107,7 @@ fn ray_torus_matches_the_reference_on_every_family() {
         total.outside_window,
         total.inaccurate,
         total.merged,
-        total.uncertified
+        total.unbounded
     )
     .unwrap();
     writeln!(
