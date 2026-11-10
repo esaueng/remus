@@ -1362,8 +1362,12 @@ fn wall(topo: &mut Topology, surface: &CylindricalSurface, height: f64) -> FaceI
 /// The trim of the case's section on a square face that holds the whole
 /// section and the hole: the parameter ranges it keeps.
 fn trim(case: &Case) -> Result<Option<Vec<(f64, f64)>>, AlgoError> {
+    trim_at(case, Tolerance::new())
+}
+
+/// [`trim`] at a caller tolerance.
+fn trim_at(case: &Case, tol: Tolerance) -> Result<Option<Vec<(f64, f64)>>, AlgoError> {
     let section = &case.section;
-    let tol = Tolerance::new();
     let mut topo = Topology::new();
     let half = 4.0 * section.a + 3.0 * section.b;
     let c = section.centre;
@@ -1965,5 +1969,53 @@ fn a_span_ends_at_its_crossing_not_at_the_chart_angle_of_the_corner_it_snaps_to(
             error.to_string().contains("run past the crossing"),
             "{error}"
         ),
+    }
+}
+
+/// Review round 5. A hole whose arc runs `1e-8` inside the unit section,
+/// concentric with it, read at a caller tolerance of `1e-10`: the
+/// certificate (band floored at `1e-7`) calls the overlap a touch and
+/// places no crossing, while the collector's midpoint test, ten caller
+/// tolerances wide, found the span's midpoint inside the hole and dropped
+/// the span whole, from `t = 0` to `1.875`, with the material either side
+/// of the arc. The point at `t = 0.5` is `0.29` outside the hole.
+#[test]
+fn a_touch_at_a_tight_caller_tolerance_does_not_drop_the_span_beside_it() {
+    let section = Section::new((0.0, 0.0), 1.0, 1.0, 0.0);
+    let hole = Hole::ArcLoop {
+        centre: (0.0, 0.0),
+        radius: 1.0 - 1e-8,
+        mid: 1.0,
+        half: 0.2,
+        tail: vec![
+            add((0.0, 0.0), turned(1.3), 1.5),
+            add((0.0, 0.0), turned(0.7), 1.5),
+        ],
+    };
+    let case = Case {
+        family: Family::ShortArc,
+        scale: 1.0,
+        index: 0,
+        section,
+        hole,
+        cut: Some(((-1.0, 0.0), 0.3)),
+    };
+    let material = case.section.at(0.5);
+    assert!(ray_depth(material, &case.hole) < -0.1);
+    for linear in [1e-10, 1e-9, 1e-8, 1e-7] {
+        let tol = Tolerance {
+            linear,
+            ..Tolerance::new()
+        };
+        match trim_at(&case, tol) {
+            Ok(Some(kept)) => assert!(
+                kept.iter()
+                    .any(|&(lo, hi)| (0.5 - lo).rem_euclid(TAU) <= hi - lo),
+                "linear {linear:e}: material at t = 0.5 dropped, kept {kept:?}"
+            ),
+            Ok(None) => panic!("linear {linear:e}: the outline cuts the section"),
+            // A refusal is the certificate's to make; a silent drop is not.
+            Err(_) => {}
+        }
     }
 }

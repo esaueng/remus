@@ -5870,10 +5870,16 @@ fn trim_ellipse_to_boundary_crossings_impl(
     // test, as before; whether it may then be emitted is the gate's, which
     // certifies it clear of every hole, and so is a span that ends on a
     // hole.
+    // A hole is read to the certificate's own band, never a narrower one: it
+    // placed the hole's crossings and touches to that band, so a point it
+    // holds within the band of a hole's boundary is on a stretch it called
+    // a touch, not one inside the hole. A caller tolerance below the band's
+    // floor would otherwise drop a whole span, material and all, for a
+    // midpoint in a touch.
     let off_face = |p: Point3| {
         let band = tol.linear * 10.0;
         planar_loop_side(loop_frame.project(p), &outer_outline, band) == Some(false)
-            || certificate.inside_a_hole(p, band)
+            || certificate.inside_a_hole(p, band.max(model.band))
     };
 
     // Need at least two crossings to bound an arc.
