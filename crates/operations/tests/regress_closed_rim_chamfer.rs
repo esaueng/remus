@@ -656,6 +656,44 @@ fn overlapping_rim_chamfers_are_refused_without_changing_the_arena() {
     }
 }
 
+/// A first stripe that leaves less wall than the setback's own roundoff must
+/// not read as "the contact extends the wall": the second stripe is still
+/// bounded by what is left.
+#[test]
+fn rim_chamfers_that_nearly_exhaust_the_wall_are_refused() {
+    for (radius, height, slack) in [(5.0, 3.0, 2e-9), (5e6, 3e6, 1e-3)] {
+        let mut source = Topology::new();
+        let solid = primitives::make_cylinder(&mut source, radius, height).unwrap();
+        let rims = closed_rims(&source, solid);
+        assert_eq!(rims.len(), 2);
+        let d = height - slack;
+        for reverse in [false, true] {
+            let mut topo = source.clone();
+            let mut selected = rims.clone();
+            if reverse {
+                selected.reverse();
+            }
+            let before = live_arena_state(&topo);
+            let err = blend_ops::chamfer_v2(&mut topo, solid, &selected, d, d)
+                .err()
+                .expect("two setbacks of nearly the whole wall cannot both fit");
+            assert!(
+                matches!(
+                    err,
+                    OperationsError::Blend(BlendError::RadiusTooLarge { edge, .. })
+                        if edge == selected[1]
+                ),
+                "height={height}, reverse={reverse}: {err:?}"
+            );
+            assert_eq!(
+                live_arena_state(&topo),
+                before,
+                "height={height}, reverse={reverse}"
+            );
+        }
+    }
+}
+
 /// Preserve both fitting two-rim chamfers and a single larger setback. Each
 /// removed ring is a cylinder slice minus the retained cone frustum.
 #[test]

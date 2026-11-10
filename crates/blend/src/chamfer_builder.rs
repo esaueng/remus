@@ -851,9 +851,17 @@ fn refuse_wall_setback(
     let setback = axis.dot(contact_center - rim_center);
     let wall_wire = topo.face(wall_face)?.outer_wire();
     let (s_min, s_max) = wire_axial_range(topo, wall_wire, rim_center, axis)?;
-    let available = if setback >= 0.0 { s_max } else { -s_min };
-    let shortening = available > 1e-9 * (1.0 + setback.abs());
-    if shortening && setback.abs() >= available {
+    let (available, behind) = if setback >= 0.0 {
+        (s_max, -s_min)
+    } else {
+        (-s_min, s_max)
+    };
+    // The contact extends the wall only when the wall lies wholly behind the
+    // rim. Reading that from the wall's far side, not from how much of it is
+    // left ahead, keeps a wall an earlier stripe has nearly used up bounded.
+    let noise = 1e-9 * (1.0 + setback.abs());
+    let extending = available <= noise && behind > noise;
+    if !extending && setback.abs() >= available {
         return Err(BlendError::RadiusTooLarge {
             edge: rim_edge,
             max_radius: available.max(0.0),
