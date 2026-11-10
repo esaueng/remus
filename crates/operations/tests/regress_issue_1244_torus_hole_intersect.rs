@@ -19,6 +19,7 @@
 //! qualify; it must refuse with the arena unchanged or be exact.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use remus_math::compact_sort::CompactSort;
 use remus_math::mat::Mat4;
 use remus_math::vec::{Point3, Vec3};
 use remus_operations::OperationsError;
@@ -271,4 +272,205 @@ fn hole_axis_matches_the_placement() {
             PointClassification::Outside
         );
     }
+}
+
+// A consumer unifies the Boolean result's faces before displaying it. That
+// merges the two torus faces the section split along the meridian seam into
+// one face whose boundary is four closed wires meeting at vertices: the two
+// band boundaries, each winding the tube period, and two zero-area slits
+// along the equator seam that joined them. The chart tessellator read every
+// inner wire as a strictly interior hole and refused the winding band
+// boundary ("torus hole winds a parameter period"), at every deflection and
+// through every mesh entry point, though the unified solid validates and
+// classifies exactly. It now joins touching cycles into one boundary walk.
+
+/// The display tessellation a consumer requests for a prepared drag.
+const DISPLAY: (f64, f64) = (0.08, 0.24);
+
+fn unified(
+    build: fn() -> (Topology, SolidId, SolidId),
+    swap: bool,
+    entry: Entry,
+) -> (Topology, SolidId) {
+    let (mut topo, torus, block) = build();
+    let (a, b) = if swap { (block, torus) } else { (torus, block) };
+    let result = entry(&mut topo, a, b).unwrap();
+    let report = remus_operations::heal::unify_faces_checked(&mut topo, result).unwrap();
+    assert_eq!(report.input_errors, 0);
+    assert_eq!(report.result_errors, 0);
+    assert!(!report.reverted);
+    assert!(report.faces_merged >= 1, "nothing merged: {report:?}");
+    (topo, result)
+}
+
+/// The merged torus face, and the precondition that it is the touching-cycle
+/// shape: an inner wire sharing a vertex with the outer wire.
+fn merged_torus_face(topo: &Topology, solid: SolidId) -> remus_topology::face::FaceId {
+    let starts = |wire| {
+        topo.wire(wire)
+            .unwrap()
+            .edges()
+            .iter()
+            .map(|oe| oe.oriented_start(topo.edge(oe.edge()).unwrap()))
+            .collect::<Vec<_>>()
+    };
+    let faces = remus_topology::explorer::solid_faces(topo, solid).unwrap();
+    let tori: Vec<_> = faces
+        .into_iter()
+        .filter(|&f| topo.face(f).unwrap().surface().type_tag() == "torus")
+        .collect();
+    assert_eq!(tori.len(), 1, "the torus faces were not merged");
+    let face = topo.face(tori[0]).unwrap();
+    let outer = starts(face.outer_wire());
+    assert!(
+        face.inner_wires()
+            .iter()
+            .any(|&w| starts(w).iter().any(|v| outer.contains(v))),
+        "no inner wire touches the outer wire"
+    );
+    tori[0]
+}
+
+fn closed(mesh: &remus_operations::tessellate::TriangleMesh, what: &str) {
+    assert!(!mesh.indices.is_empty(), "{what}: empty mesh");
+    let quality = remus_operations::tessellate::welded_mesh_quality(mesh);
+    assert!(quality.is_watertight(), "{what}: {quality:?}");
+    assert_eq!(
+        remus_operations::tessellate::boundary_edge_count(mesh),
+        0,
+        "{what}: inconsistent winding"
+    );
+}
+
+#[test]
+fn unified_intersection_meshes_exactly() {
+    for (source, build) in [("imported", imported as fn() -> _), ("reloaded", reloaded)] {
+        for (name, entry) in ENTRIES {
+            for swap in [false, true] {
+                let what = format!("unified {source} {name} swap={swap}");
+                let (topo, result) = unified(build, swap, entry);
+                let torus_face = merged_torus_face(&topo, result);
+                // Every original oracle: witnesses, both volumes, analytic
+                // faces, strict validity.
+                check_exact(&topo, result, &what);
+                for (deflection, angular) in
+                    [DISPLAY, (0.004, remus_math::chord::DEFAULT_ANGULAR_TOL)]
+                {
+                    let (grouped, offsets) =
+                        remus_operations::tessellate::tessellate_solid_grouped_with_tolerance(
+                            &topo, result, deflection, angular,
+                        )
+                        .unwrap_or_else(|e| panic!("{what} grouped @{deflection}: {e:?}"));
+                    closed(&grouped, &format!("{what} grouped @{deflection}"));
+                    let plain = remus_operations::tessellate::tessellate_solid_with_tolerance(
+                        &topo, result, deflection, angular,
+                    )
+                    .unwrap();
+                    // Grouping only reorders triangles by face.
+                    assert_eq!(grouped.positions, plain.positions, "{what} @{deflection}");
+                    let mut a: Vec<_> = grouped.indices.chunks(3).map(<[u32]>::to_vec).collect();
+                    let mut b: Vec<_> = plain.indices.chunks(3).map(<[u32]>::to_vec).collect();
+                    a.compact_sort_unstable();
+                    b.compact_sort_unstable();
+                    assert_eq!(a, b, "{what} @{deflection}: grouped and plain differ");
+                    assert_eq!(*offsets.last().unwrap() as usize, grouped.indices.len());
+                }
+                // The face's own entry point charts the same boundary walk.
+                let face = remus_operations::tessellate::tessellate(&topo, torus_face, 0.004)
+                    .unwrap_or_else(|e| panic!("{what} per-face: {e:?}"));
+                assert!(!face.indices.is_empty(), "{what}: per-face mesh empty");
+            }
+        }
+    }
+}
+
+/// Builds a free torus face on the merged face's carrier from chosen wires
+/// of it, for the per-face entry point.
+fn torus_face_from(
+    topo: &mut Topology,
+    source: remus_topology::face::FaceId,
+    outer: Vec<remus_topology::wire::OrientedEdge>,
+    inner: Vec<Vec<remus_topology::wire::OrientedEdge>>,
+) -> remus_topology::face::FaceId {
+    use remus_topology::wire::Wire;
+    let surface = topo.face(source).unwrap().surface().clone();
+    let outer = topo.add_wire(Wire::new(outer, true).unwrap());
+    let inner = inner
+        .into_iter()
+        .map(|w| topo.add_wire(Wire::new(w, true).unwrap()))
+        .collect();
+    topo.add_face(remus_topology::face::Face::new(outer, inner, surface))
+}
+
+/// Negative controls on the same carrier and edges: cycles that wind the tube
+/// period without a seam path joining them bound no chart region and must
+/// still be refused, whether they touch the outer wire or not.
+#[test]
+fn winding_cycles_without_a_seam_path_still_refuse() {
+    let (mut topo, result) = unified(imported, false, ENTRIES[0].1);
+    let face_id = merged_torus_face(&topo, result);
+    let face = topo.face(face_id).unwrap();
+    let wires: Vec<Vec<_>> = std::iter::once(face.outer_wire())
+        .chain(face.inner_wires().iter().copied())
+        .map(|w| topo.wire(w).unwrap().edges().to_vec())
+        .collect();
+    let twice = |wire: &[remus_topology::wire::OrientedEdge]| {
+        wire.iter()
+            .filter(|oe| wire.iter().filter(|o| o.edge() == oe.edge()).count() == 2)
+            .count()
+    };
+    // The outer wire is one band boundary between the two uses of its slit;
+    // the inner wires are the drilled hole, the other slit and the other band
+    // boundary (face order is not assumed).
+    let outer = &wires[0];
+    assert_eq!(twice(outer), 2);
+    let band_a: Vec<_> = outer
+        .iter()
+        .filter(|oe| outer.iter().filter(|o| o.edge() == oe.edge()).count() == 1)
+        .copied()
+        .collect();
+    let slit = wires[1..]
+        .iter()
+        .find(|w| twice(w) == w.len())
+        .unwrap()
+        .clone();
+    let starts = |wire: &[remus_topology::wire::OrientedEdge]| {
+        wire.iter()
+            .map(|oe| oe.oriented_start(topo.edge(oe.edge()).unwrap()))
+            .collect::<Vec<_>>()
+    };
+    let slit_vertices = starts(&slit);
+    // The other band boundary is the cycle the slit touches; the drilled
+    // hole touches nothing.
+    let (band_b, drilled): (Vec<_>, Vec<_>) = wires[1..]
+        .iter()
+        .filter(|w| twice(w) == 0)
+        .cloned()
+        .partition(|w| starts(w).iter().any(|v| slit_vertices.contains(v)));
+    assert_eq!((band_b.len(), drilled.len()), (1, 1));
+
+    let expect_refusal =
+        |topo: &Topology, face, reason: &str| match remus_operations::tessellate::tessellate(
+            topo, face, 0.004,
+        ) {
+            Err(OperationsError::InvalidInput { reason: got }) => assert_eq!(got, reason),
+            other => panic!("expected refusal {reason:?}, got {other:?}"),
+        };
+    // Both band boundaries and the hole, no slits: an annulus, nothing touches.
+    let annulus = torus_face_from(
+        &mut topo,
+        face_id,
+        band_a,
+        vec![drilled[0].clone(), band_b[0].clone()],
+    );
+    expect_refusal(&topo, annulus, "torus hole winds a parameter period");
+    // One band boundary and its slit to the other slit, without the other
+    // band boundary: the touching slit splices, the walk still winds.
+    let open = torus_face_from(
+        &mut topo,
+        face_id,
+        outer.clone(),
+        vec![slit, drilled[0].clone()],
+    );
+    expect_refusal(&topo, open, "torus boundary winds a parameter period");
 }

@@ -2882,7 +2882,15 @@ pub(super) fn tessellate_nonplanar_cdt(
     use remus_math::vec::Point2;
     use remus_topology::edge::EdgeId;
 
-    let wire = topo.wire(face_data.outer_wire())?;
+    // A torus face's cycles that touch its outer wire join it into one
+    // boundary walk (see `touching_cycles`); other carriers keep their
+    // wires exactly as stored.
+    let chart_wires = touching_cycles::chart_wires(
+        topo,
+        face_data,
+        matches!(face_data.surface(), FaceSurface::Torus(_)),
+    )?;
+    let outer_edges: &[remus_topology::wire::OrientedEdge] = &chart_wires.outer;
     let tol_dup = 1e-10;
     // A NURBS carrier is charted in its own frame (PERF-D01): boundary
     // projection, grid sizing and normals read the control net relative to
@@ -2904,14 +2912,14 @@ pub(super) fn tessellate_nonplanar_cdt(
     // GFA band faces (wire carries a section Circle) project through the
     // exact wall chart (see below); a converted PRIMITIVE wall keeps the
     // established Newton path the seam-wall regression test pins.
-    let has_section_circle = wire.edges().iter().any(|oe| {
+    let has_section_circle = outer_edges.iter().any(|oe| {
         topo.edge(oe.edge())
             .is_ok_and(|e| matches!(e.curve(), EdgeCurve::Circle(_)))
     });
 
     // Fourth element: is_forward flag -- needed for seam UV assignment.
     let mut boundary_3d: Vec<(Point3, u32, EdgeId, bool)> = Vec::new();
-    for oe in wire.edges() {
+    for oe in outer_edges {
         let edge_id_local = oe.edge();
         let edge_idx = edge_id_local.index();
         let is_fwd = oe.is_forward();
@@ -2982,7 +2990,7 @@ pub(super) fn tessellate_nonplanar_cdt(
 
     // Torus holes must unwrap into the same bounded chart as the outer wire;
     // this is checked below before CDT constraints are inserted.
-    if !face_data.inner_wires().is_empty()
+    if !chart_wires.holes.is_empty()
         && !matches!(face_data.surface(), FaceSurface::Torus(_))
         && !matches!(face_data.surface(), FaceSurface::Nurbs(surface) if !surface.is_periodic_u() && !surface.is_periodic_v())
     {
@@ -2992,10 +3000,9 @@ pub(super) fn tessellate_nonplanar_cdt(
     }
 
     let mut hole_boundaries_3d: Vec<Vec<(Point3, u32, EdgeId, bool)>> = Vec::new();
-    for &hole_wire_id in face_data.inner_wires() {
-        let hole_wire = topo.wire(hole_wire_id)?;
+    for hole_wire in &chart_wires.holes {
         let mut hole: Vec<(Point3, u32, EdgeId, bool)> = Vec::new();
-        for oe in hole_wire.edges() {
+        for oe in hole_wire {
             let edge_id = oe.edge();
             let is_forward = oe.is_forward();
             let points_and_ids: Vec<(Point3, u32)> = if let Some(global_ids) =
@@ -3242,6 +3249,21 @@ pub(super) fn tessellate_nonplanar_cdt(
         }
     }
 
+    // A spliced walk is a chart polygon only if its lift closes: the step
+    // back from the last sample to the first, read in the unwrapped chart,
+    // must be one boundary step, not a period. A spliced torus boundary that
+    // still winds a period bounds no cut-open chart region; refuse it as an
+    // unspliced winding hole is refused below.
+    if chart_wires.spliced
+        && let (Some(first), Some(last)) = (boundary_uv.first(), boundary_uv.last())
+        && ((first.0 - last.0).abs() > std::f64::consts::PI
+            || (first.1 - last.1).abs() > std::f64::consts::PI)
+    {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: "torus boundary winds a parameter period".into(),
+        });
+    }
+
     // Compute (u,v) bounding box from a set of UV pairs.
     #[allow(clippy::items_after_statements)]
     fn uv_bounds(uvs: &[(f64, f64)]) -> (f64, f64, f64, f64) {
@@ -3262,7 +3284,7 @@ pub(super) fn tessellate_nonplanar_cdt(
     // Step 2b: Detect and fix degenerate seam edges.
     let (u_min, u_max, v_min, v_max) = {
         let mut wire_edge_counts: DetHashMap<usize, usize> = DetHashMap::default();
-        for oe in wire.edges() {
+        for oe in outer_edges {
             *wire_edge_counts.entry(oe.edge().index()).or_default() += 1;
         }
         let seam_edge_indices: DetHashSet<usize> = wire_edge_counts
@@ -3473,7 +3495,7 @@ pub(super) fn tessellate_nonplanar_cdt(
     let sheared = match chart_surface {
         FaceSurface::Nurbs(surface)
             if !has_section_circle
-                && !wire.edges().iter().any(|oriented| {
+                && !outer_edges.iter().any(|oriented| {
                     topo.edge(oriented.edge())
                         .is_ok_and(|edge| matches!(edge.curve(), EdgeCurve::Ellipse(_)))
                 }) =>
@@ -3714,7 +3736,7 @@ pub(super) fn tessellate_nonplanar_cdt(
             }
             prepared_boundary.is_on_boundary(point)
         };
-        let has_ellipse_wire = wire.edges().iter().any(|oriented| {
+        let has_ellipse_wire = outer_edges.iter().any(|oriented| {
             topo.edge(oriented.edge())
                 .is_ok_and(|edge| matches!(edge.curve(), EdgeCurve::Ellipse(_)))
         });
@@ -3769,7 +3791,7 @@ pub(super) fn tessellate_nonplanar_cdt(
         if matches!(
             face_data.surface(),
             FaceSurface::Cylinder(_) | FaceSurface::Cone(_)
-        ) && face_data.inner_wires().is_empty()
+        ) && chart_wires.holes.is_empty()
             && let Some(extra) = stepped_rim_interior_points(
                 topo,
                 face_data,
@@ -3802,7 +3824,7 @@ pub(super) fn tessellate_nonplanar_cdt(
         let has_nurbs_revolved_wire = matches!(
             face_data.surface(),
             FaceSurface::Cylinder(_) | FaceSurface::Cone(_)
-        ) && wire.edges().iter().any(|oriented| {
+        ) && outer_edges.iter().any(|oriented| {
             topo.edge(oriented.edge()).is_ok_and(|edge| {
                 if !matches!(edge.curve(), EdgeCurve::NurbsCurve(_)) {
                     return false;
@@ -5678,6 +5700,7 @@ fn sphere_native_arcs_in_hemisphere(
 
 mod collapsed_boundary;
 mod sheared_chart;
+mod touching_cycles;
 
 /// Prefer the carrier's own chart, then test great-circle frames against the
 /// entire sampled boundary. A meridian's normal alone does not identify the

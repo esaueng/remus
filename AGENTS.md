@@ -605,6 +605,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Differential oracle for the interior grid's boundary scans: the `(i + 1) % n` indexed containment and clearance loops kept verbatim (tests) | `tessellate/nonplanar/polygon_scan_oracle_tests.rs` |
 | Metric (first-fundamental-form) chart for an open NURBS face whose parameter lines run nearly parallel, e.g. a thread flank: interior grid and CDT in surface lengths; the averaged-metric `v` scale every other NURBS CDT chart triangulates with | `tessellate/nonplanar/sheared_chart.rs` |
 | Collapsed NURBS domain sides (a pole, or a blend rail stopping at a corner of its own radius) read from the control net, and monotone chart placement of the CDT boundary samples on them | `tessellate/nonplanar/collapsed_boundary.rs` |
+| One chart boundary for a torus face whose wires touch its outer wire: cycles sharing a vertex with it (seam slits and period-winding band boundaries left by face unification) spliced into one boundary walk | `tessellate/nonplanar/touching_cycles.rs` |
 | Thread flank display-mesh shading and density regressions (tests) | `tessellate/tests/sheared_chart.rs` |
 | In-place helical sweep (coil) display meshes: no side facet folds into the tube, no slivers (tests) | `tessellate/tests/coil_chart.rs` |
 | Projection retry for a NURBS face whose coarse seed grid fails: a narrow strip swept many turns, retried from a node in every knot span (tests) | `tessellate/nonplanar/frame_projection_tests.rs` |

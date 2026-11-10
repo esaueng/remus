@@ -8,6 +8,12 @@ historical predecessor-line records, retained for provenance. The
 
 ### Fixed
 
+* **operations:** a unified torus intersection can retain band boundaries
+  and seam slits as closed wires touching at vertices. Display, grouped and
+  per-face tessellation now join those cycles into the same boundary walk
+  before charting. Separate winding holes and a nonclosing joined walk still
+  refuse. OpenZCAD #1244 meshes after face unification through preview,
+  commit, undo/redo, cold reload and STEP round trip.
 * **algo:** circular-rim section clipping includes exact arc extrema in
   its face boxes. The sampled inscribed polygon could discard a genuine
   section after rotation, leaving a dangling graph that correctly refused.
