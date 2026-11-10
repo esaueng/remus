@@ -951,3 +951,414 @@ fn the_closed_circle_collector_refuses_a_hole_edge_grazing_a_flat_cone() {
         );
     }
 }
+
+// ── Contacts of the finite edge, corners and the merge distance ──────────
+
+/// The crossings of a section with one hole, through the ellipse trim's
+/// collector.
+fn hole_hits(
+    topo: &Topology,
+    hole: WireId,
+    section: &EdgeCurve,
+    surface: &FaceSurface,
+) -> Result<Option<super::PlaneHoleCrossings>, super::AlgoError> {
+    let centre = match section {
+        EdgeCurve::Circle(c) => c.center(),
+        EdgeCurve::Ellipse(e) => e.center(),
+        EdgeCurve::Line
+        | EdgeCurve::NurbsCurve(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => panic!("a closed section"),
+    };
+    let frame = crate::builder::plane_frame::PlaneFrame::from_normal_and_point(Z, centre);
+    plane_hole_crossings(topo, hole, section, surface, &frame, Tolerance::new())
+}
+
+/// The vertical cylinder of radius `r` about `(cx, cy)` and its section with
+/// z = 0.
+fn upright(cx: f64, cy: f64, r: f64) -> (EdgeCurve, FaceSurface) {
+    (
+        EdgeCurve::Circle(circle_at((cx, cy), 0.0, r)),
+        FaceSurface::Cylinder(CylindricalSurface::new(Point3::new(cx, cy, -1.0), Z, r).unwrap()),
+    )
+}
+
+/// The reviewer's case: axes (1000, 1) and a rectangular hole spanning
+/// x = 999.99999..1002.99999 at y = 10..11. The line of its near side
+/// crosses the section 1e-5 inside the major vertex, at y ≈ 0, where it
+/// grazes the tilted cylinder; the side itself, ten units away, never meets
+/// the section, which only spans y = −1..1. The chord's midpoint on the
+/// LINE was tested before the chord was found to miss the edge, so this
+/// disjoint hole refused the whole boolean. It contributes nothing.
+#[test]
+fn a_hole_beside_an_eccentric_section_whose_edge_line_grazes_it_contributes_nothing() {
+    let (ellipse, cylinder) = tilted_section(1000.0, 1.0, 0.0);
+    let mut topo = Topology::new();
+    let hole = polygon_wire(
+        &mut topo,
+        &[
+            (999.999_99, 10.0),
+            (1_002.999_99, 10.0),
+            (1_002.999_99, 11.0),
+            (999.999_99, 11.0),
+        ],
+        0.0,
+    );
+    let found = hole_hits(&topo, hole, &EdgeCurve::Ellipse(ellipse), &cylinder)
+        .expect("a disjoint hole is not refused")
+        .expect("a straight-edged hole is consulted");
+    assert!(found.crossings.is_empty(), "{:?}", found.crossings);
+    assert!(found.touches.is_empty(), "{:?}", found.touches);
+}
+
+/// Holes clear of the section whose four side LINES each cross it or
+/// graze it, at every side of the section: near the major vertices (where
+/// the lines graze the tilted cylinder), near the minor vertices, and a
+/// square off a circle's diagonal whose four lines all cross the circle.
+/// None contributes a crossing or a touch, at every scale.
+#[test]
+fn holes_clear_of_the_section_whose_edge_lines_cross_or_graze_it_contribute_nothing() {
+    let rect =
+        |(x0, x1): (f64, f64), (y0, y1): (f64, f64)| [(x0, y0), (x1, y0), (x1, y1), (x0, y1)];
+    for s in SCALES {
+        let (a, b) = (1000.0 * s, s);
+        let (ellipse, cylinder) = tilted_section(a, b, 0.0);
+        let poke = 1e-5 * s;
+        // The ellipse at |x| = 10 s reaches |y| = b √(1 − 1e-4) < b − 1e-5 s.
+        let holes = [
+            rect((a - poke, a + 3.0 * s), (10.0 * s, 11.0 * s)),
+            rect((a - poke, a + 3.0 * s), (-11.0 * s, -10.0 * s)),
+            rect((-a - 3.0 * s, -a + poke), (10.0 * s, 11.0 * s)),
+            rect((10.0 * s, 11.0 * s), (b - poke, 2.0 * s)),
+            rect((-11.0 * s, -10.0 * s), (-2.0 * s, -b + poke)),
+        ];
+        for corners in holes {
+            let mut topo = Topology::new();
+            let hole = polygon_wire(&mut topo, &corners, 0.0);
+            let found = hole_hits(&topo, hole, &EdgeCurve::Ellipse(ellipse.clone()), &cylinder)
+                .unwrap_or_else(|e| panic!("scale {s} {corners:?}: {e}"))
+                .unwrap();
+            assert!(
+                found.crossings.is_empty() && found.touches.is_empty(),
+                "scale {s} {corners:?}: {:?} {:?}",
+                found.crossings,
+                found.touches
+            );
+        }
+        // A circle of radius 5 s and a square off its diagonal: every side
+        // line crosses the circle, the nearest corner is 5.3 s from it.
+        let (section, surface) = upright(0.0, 0.0, 5.0 * s);
+        for (sx, sy) in [(1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0), (1.0, -1.0)] {
+            let (x0, x1) = if sx > 0.0 {
+                (3.75 * s, 4.75 * s)
+            } else {
+                (-4.75 * s, -3.75 * s)
+            };
+            let (y0, y1) = if sy > 0.0 {
+                (3.75 * s, 4.75 * s)
+            } else {
+                (-4.75 * s, -3.75 * s)
+            };
+            let mut topo = Topology::new();
+            let hole = polygon_wire(&mut topo, &rect((x0, x1), (y0, y1)), 0.0);
+            let found = hole_hits(&topo, hole, &section, &surface).unwrap().unwrap();
+            assert!(
+                found.crossings.is_empty() && found.touches.is_empty(),
+                "scale {s} quadrant ({sx}, {sy})"
+            );
+        }
+    }
+}
+
+/// The closed-circle collector meets the same disjoint hole the same way: a
+/// rectangle beside a circle cut from a nearly flat cone, whose near side's
+/// LINE passes 1e-5 inside the circle (where the plane grazes the cone),
+/// the side itself well clear of it. The circle also leaves the face across
+/// its outline (x = −4), so the face's boundary is read at all. It used to
+/// refuse the pair.
+#[test]
+fn the_closed_circle_collector_ignores_a_hole_whose_edge_line_only_grazes() {
+    use remus_math::surfaces::ConicalSurface;
+
+    let tol = Tolerance::new();
+    for s in SCALES {
+        let radius = 5.0 * s;
+        let near = radius - 1e-5 * s;
+        let mut topo = Topology::new();
+        let outer = polygon_wire(
+            &mut topo,
+            &[
+                (-4.0 * s, -12.0 * s),
+                (12.0 * s, -12.0 * s),
+                (12.0 * s, 12.0 * s),
+                (-4.0 * s, 12.0 * s),
+            ],
+            0.0,
+        );
+        let hole = polygon_wire(
+            &mut topo,
+            &[
+                (near, 8.0 * s),
+                (near + 2.0 * s, 8.0 * s),
+                (near + 2.0 * s, 9.0 * s),
+                (near, 9.0 * s),
+            ],
+            0.0,
+        );
+        let plane = topo.add_face(Face::new(outer, vec![hole], plane_at(0.0)));
+        let slope: f64 = 1e-3;
+        let apex = Point3::new(0.0, 0.0, -radius * slope.tan());
+        let cone = FaceSurface::Cone(ConicalSurface::new(apex, Z, slope).unwrap());
+        let (wall, _) = cylinder_wall(&mut topo, (0.0, 0.0), radius, (-s, s));
+        topo.face_mut(wall).unwrap().set_surface(cone);
+        let circle = circle_at((0.0, 0.0), 0.0, radius);
+        let (found, contacts) = closed_circle_boundary_crossings(&topo, plane, wall, &circle, tol)
+            .unwrap_or_else(|e| panic!("scale {s}: {e}"));
+        assert!(contacts.hole_crossings.is_empty(), "scale {s}");
+        assert!(contacts.touches.is_empty(), "scale {s}");
+        // The outline's two crossings at x = −4, y = ±3.
+        let on_outline = found
+            .iter()
+            .filter(|(_, p)| {
+                (p.x() + 4.0 * s).abs() <= 1e-9 * s && (p.y().abs() - 3.0 * s).abs() <= 1e-9 * s
+            })
+            .count();
+        assert_eq!(on_outline, 2, "scale {s}: {found:?}");
+    }
+}
+
+/// The reviewer's corner case: axes (1, 5e-5), a hole whose side x = 0.996
+/// runs from its corner at y = −4.46766158e-6 — exactly where the section
+/// crosses that line — to y = 1e-4. The two crossings of the side are
+/// 8.9e-6 apart, under the 1e-5 at which the trim takes them for one, and
+/// the section between them runs 4.5e-6 inside the hole: they are neither
+/// one crossing nor a touch. The end at the corner used to exempt the side
+/// from the separation check, and the trim then dropped one of the two.
+#[test]
+fn crossings_at_a_hole_corner_closer_than_the_merge_distance_are_refused() {
+    let (ellipse, cylinder) = tilted_section(1.0, 5e-5, 0.0);
+    let corner_y = -4.467_661_58e-6;
+    let mut topo = Topology::new();
+    let hole = polygon_wire(
+        &mut topo,
+        &[
+            (0.996, corner_y),
+            (1.1, corner_y),
+            (1.1, 1e-4),
+            (0.996, 1e-4),
+        ],
+        0.0,
+    );
+    let error = hole_hits(&topo, hole, &EdgeCurve::Ellipse(ellipse), &cylinder)
+        .map(|_| ())
+        .expect_err("two crossings closer than the merge distance");
+    assert!(
+        error
+            .to_string()
+            .contains("the distance at which two crossings are one"),
+        "{error}"
+    );
+    assert!(error.to_string().contains("across the hole"), "{error}");
+}
+
+/// A circle through the corner shared by two hole edges, entering the hole
+/// there: one crossing at the corner, whichever edges find it, and the
+/// other where it leaves; at scales 1e-3, 1 and 1e6.
+///
+/// The circle of radius 5 about (−3, 4) passes through the hole's corner at
+/// the origin heading (0.8, 0.6), into the square [0, 10]², and leaves it
+/// across the side x = 0 at y = 8.
+#[test]
+fn a_section_through_a_hole_corner_crosses_it_once() {
+    for s in [1e-3, 1.0, 1e6] {
+        let (section, surface) = upright(-3.0 * s, 4.0 * s, 5.0 * s);
+        for reversed in [false, true] {
+            let mut corners = square(5.0 * s, (5.0 * s, 5.0 * s)).to_vec();
+            if reversed {
+                corners.reverse();
+            }
+            let mut topo = Topology::new();
+            let hole = polygon_wire(&mut topo, &corners, 0.0);
+            let found = hole_hits(&topo, hole, &section, &surface)
+                .unwrap_or_else(|e| panic!("scale {s}: {e}"))
+                .unwrap();
+            let what = format!("scale {s} reversed {reversed}: {:?}", found.crossings);
+            assert!(found.touches.is_empty(), "{what}");
+            assert_eq!(found.crossings.len(), 2, "{what}");
+            let at_corner = found
+                .crossings
+                .iter()
+                .filter(|p| (p.x().hypot(p.y())) <= 1e-12 * s.max(1.0))
+                .count();
+            assert_eq!(at_corner, 1, "{what}");
+            assert!(
+                found
+                    .crossings
+                    .iter()
+                    .any(|p| p.x().abs() <= 1e-12 * s.max(1.0)
+                        && (p.y() - 8.0 * s).abs() <= 1e-12 * s.max(1.0)),
+                "{what}"
+            );
+        }
+    }
+}
+
+/// A circle through a hole's corner that stays outside the hole on both
+/// sides of it (its tangent there points out of the corner) touches the
+/// hole: no crossing at the corner, one touch, and its two real crossings.
+#[test]
+fn a_section_touching_a_hole_corner_from_outside_is_a_touch() {
+    for s in [1e-3, 1.0, 1e6] {
+        // Centre (3, 4), radius 5: through the origin with tangent
+        // (0.8, −0.6); it meets y = 0 again at x = 6 and x = 0 at y = 8.
+        let (section, surface) = upright(3.0 * s, 4.0 * s, 5.0 * s);
+        let mut topo = Topology::new();
+        let hole = polygon_wire(&mut topo, &square(5.0 * s, (5.0 * s, 5.0 * s)), 0.0);
+        let found = hole_hits(&topo, hole, &section, &surface)
+            .unwrap_or_else(|e| panic!("scale {s}: {e}"))
+            .unwrap();
+        let what = format!("scale {s}: {:?} {:?}", found.crossings, found.touches);
+        assert_eq!(found.crossings.len(), 2, "{what}");
+        assert!(
+            found.crossings.iter().all(|p| p.x().hypot(p.y()) > 5.0 * s),
+            "{what}"
+        );
+        assert_eq!(found.touches.len(), 1, "{what}");
+        assert!(found.touches[0].x().hypot(found.touches[0].y()) <= 1e-12 * s.max(1.0));
+    }
+}
+
+/// Hole corners exactly on, just short of, and just past a circle, with
+/// both edges at the corner heading away from it. On: a touch at the
+/// corner, no crossing. Short by ten tolerances: nothing. Past by a hundred
+/// tolerances: two crossings, one on each edge. Past by half the
+/// tolerance: a touch.
+#[test]
+fn hole_corners_on_short_of_and_past_a_section() {
+    let tol = Tolerance::new().linear;
+    for s in [1e-3, 1.0, 1e6] {
+        let r = 5.0 * s;
+        let (section, surface) = upright(0.0, 0.0, r);
+        // The corner on the ray through (3, 4), `shift` outside the circle,
+        // and the hole running away from the centre.
+        let hole_at = |shift: f64| {
+            let k = 1.0 + shift / r;
+            let (x, y) = (3.0 * s * k, 4.0 * s * k);
+            let mut topo = Topology::new();
+            let hole = polygon_wire(
+                &mut topo,
+                &[
+                    (x, y),
+                    (x + 3.0 * s, y),
+                    (x + 3.0 * s, y + 2.0 * s),
+                    (x, y + 2.0 * s),
+                ],
+                0.0,
+            );
+            let found = hole_hits(&topo, hole, &section, &surface)
+                .unwrap_or_else(|e| panic!("scale {s} shift {shift:e}: {e}"))
+                .unwrap();
+            (found, Point3::new(x, y, 0.0))
+        };
+        let (on, corner) = hole_at(0.0);
+        assert!(on.crossings.is_empty(), "on, scale {s}: {:?}", on.crossings);
+        assert_eq!(on.touches.len(), 1, "on, scale {s}");
+        assert!(
+            (on.touches[0] - corner).length() <= 2.0 * tol,
+            "on, scale {s}"
+        );
+
+        let (short, _) = hole_at(10.0 * tol);
+        assert!(
+            short.crossings.is_empty() && short.touches.is_empty(),
+            "short, scale {s}: {:?} {:?}",
+            short.crossings,
+            short.touches
+        );
+
+        let (past, corner) = hole_at(-100.0 * tol);
+        assert!(past.touches.is_empty(), "past, scale {s}");
+        assert_eq!(
+            past.crossings.len(),
+            2,
+            "past, scale {s}: {:?}",
+            past.crossings
+        );
+        for p in &past.crossings {
+            assert!(
+                ((p.x().hypot(p.y())) - r).abs() <= 1e-9 * r.max(1.0),
+                "past, scale {s}: {p:?} off the circle"
+            );
+            let on_bottom = (p.y() - corner.y()).abs() <= 1e-12 * s.max(1.0);
+            let on_left = (p.x() - corner.x()).abs() <= 1e-12 * s.max(1.0);
+            assert!(on_bottom != on_left, "past, scale {s}: {p:?}");
+        }
+
+        let (graze, _) = hole_at(-0.5 * tol);
+        assert!(
+            graze.crossings.is_empty(),
+            "graze, scale {s}: {:?}",
+            graze.crossings
+        );
+        assert_eq!(graze.touches.len(), 1, "graze, scale {s}");
+    }
+}
+
+/// Two crossings of a hole's corner a few tolerances apart: the circle cuts
+/// the corner at origin of the square [0, 20]² with the corner `depth`
+/// inside it, so it crosses the two sides √2 · depth from the corner and
+/// 2 · depth apart. At scale 1e-3 the merge distance is ten tolerances, and
+/// 3e-6 apart they stay two crossings: the ellipse trim keeps both as span
+/// ends and drops the span inside the hole (the historic absolute 1e-5
+/// merged them and kept a span across the hole). At scales 1 and 1e6 the
+/// merge distance is 1e-5, they are one contact, and the section between
+/// them runs 1e-6 inside the hole: refused by name.
+#[test]
+fn crossings_a_few_tolerances_apart_are_kept_apart_at_small_scale() {
+    let depth = 1.5e-6;
+    for s in [1e-3, 1.0, 1e6] {
+        let r = 5.0;
+        // The centre on the diagonal, `r · s − depth` from the corner.
+        let k = (r * s - depth) / std::f64::consts::SQRT_2 / s;
+        let pair = Pair::new(
+            &square(50.0, (0.0, 0.0)),
+            |topo| {
+                let mut hole = square(10.0 * s, (10.0 * s, 10.0 * s)).to_vec();
+                hole.reverse();
+                vec![polygon_wire(topo, &hole, 50.0 * s)]
+            },
+            (-k, -k),
+            r,
+            s,
+        );
+        let trimmed = pair.trim();
+        if s > 1e-2 {
+            let Err(error) = trimmed else {
+                panic!("scale {s}: crossings within the merge distance were not refused");
+            };
+            assert!(
+                error.to_string().contains("across the hole"),
+                "scale {s}: {error}"
+            );
+            continue;
+        }
+        let arcs = trimmed.unwrap().expect("exact arcs");
+        let ends: Vec<Point3> = arcs.iter().flat_map(|a| [a.p_start, a.p_end]).collect();
+        for wanted in [
+            Point3::new(std::f64::consts::SQRT_2 * depth, 0.0, 50.0 * s),
+            Point3::new(0.0, std::f64::consts::SQRT_2 * depth, 50.0 * s),
+        ] {
+            assert!(
+                ends.iter().any(|p| (*p - wanted).length() <= 1e-9),
+                "scale {s}: no span ends at {wanted:?}: {ends:?}"
+            );
+        }
+        for arc in &arcs {
+            let mid = arc_midpoint(arc);
+            assert!(
+                !(mid.x() > 0.0 && mid.y() > 0.0),
+                "scale {s}: a span through {mid:?} is inside the hole"
+            );
+        }
+    }
+}

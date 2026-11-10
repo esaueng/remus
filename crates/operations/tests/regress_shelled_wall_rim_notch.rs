@@ -400,8 +400,9 @@ fn cutters_crossing_the_opening_elsewhere_are_exact() {
 /// of its curved faces, and it is air or material where it should be. Two
 /// known defects are named rather than skipped:
 ///
-/// - the cuts mesh with one non-manifold edge along the line where the
-///   cutter touches the wall (the acceptance gate does not read the mesh);
+/// - a cut may mesh with one non-manifold edge, which must lie on a line
+///   where the cutter touches the wall (x = 98 or 100, y = 50); no open
+///   mesh edge is allowed (the acceptance gate does not read the mesh);
 /// - at scale 0.1, `solid_volume` at the usual deflection (0.01 · s) fails
 ///   to converge on the through cut and fuse; at 0.002 · s it measures the
 ///   closed form. Follow-up: make the volume path converge there.
@@ -426,10 +427,15 @@ fn a_cutter_tangent_to_both_wall_faces_is_exact_or_refused() {
                     in_shell(1.0, 99.0, 50.0, span.0, span.1),
                 ) * s.powi(3);
 
-                // Known defect: one non-manifold mesh edge on the tangent
-                // line of a cut.
-                let known_mesh_defects = usize::from(op == BooleanOp::Cut);
-                assert_mesh_geometry(&topo, result, volume, s, known_mesh_defects, &what);
+                // Known defect: at most one non-manifold mesh edge, on a
+                // line where the cutter touches the wall, and only on a
+                // cut. Never an open one.
+                let tangent_lines: &[(f64, f64)] = if op == BooleanOp::Cut {
+                    &[(98.0, 50.0), (100.0, 50.0)]
+                } else {
+                    &[]
+                };
+                assert_mesh_geometry(&topo, result, volume, s, tangent_lines, &what);
 
                 let in_cutter = classify(&topo, result, s, (99.0, 50.0, 45.0));
                 let wanted = if op == BooleanOp::Cut {
@@ -457,7 +463,12 @@ fn a_cutter_tangent_to_both_wall_faces_is_exact_or_refused() {
                     // error, and the finer deflection must still measure it.
                     Err(error) if s < 1.0 && span == THROUGH => {
                         assert!(
-                            format!("{error:?}").contains("ConvergenceFailure"),
+                            matches!(
+                                error,
+                                OperationsError::Math(
+                                    remus_math::MathError::ConvergenceFailure { .. }
+                                )
+                            ),
                             "{what}: {error:?}"
                         );
                         solid_volume(&topo, result, 0.002 * s)
@@ -691,6 +702,21 @@ fn mesh_volume(mesh: &remus_operations::tessellate::TriangleMesh) -> f64 {
         .sum()
 }
 
+/// The mesh edges three or more triangles share, as their end positions
+/// (keyed by vertex index, as `non_manifold_edge_count` keys them).
+fn non_manifold_edges(mesh: &remus_operations::tessellate::TriangleMesh) -> Vec<(Point3, Point3)> {
+    let mut uses: std::collections::BTreeMap<(u32, u32), usize> = std::collections::BTreeMap::new();
+    for t in mesh.indices.chunks_exact(3) {
+        for (p, q) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+            *uses.entry((p.min(q), p.max(q))).or_default() += 1;
+        }
+    }
+    uses.into_iter()
+        .filter(|&(_, n)| n > 2)
+        .map(|((p, q), _)| (mesh.positions[p as usize], mesh.positions[q as usize]))
+        .collect()
+}
+
 fn mesh_area(mesh: &remus_operations::tessellate::TriangleMesh) -> f64 {
     mesh.indices
         .chunks_exact(3)
@@ -718,26 +744,64 @@ fn curved_area(topo: &Topology, solid: SolidId, deflection: f64) -> f64 {
 /// within the volume between the curved faces and their mesh (at most the
 /// deflection times their area).
 ///
-/// `known_defects` is the number of open or non-manifold mesh edges a named
-/// defect leaves (zero for an exact result).
+/// No mesh edge may be open. `tangent_lines` are the vertical lines `(x, y)`
+/// (unit scale) of a named defect: when it is not empty, at most one
+/// non-manifold mesh edge is allowed, and both its ends must lie on one of
+/// those lines; when it is empty (an exact result), none is.
 fn assert_mesh_geometry(
     topo: &Topology,
     solid: SolidId,
     volume: f64,
     s: f64,
-    known_defects: usize,
+    tangent_lines: &[(f64, f64)],
+    what: &str,
+) {
+    assert_mesh_geometry_at(
+        topo,
+        solid,
+        volume,
+        (s, &[0.01 * s, 0.002 * s]),
+        tangent_lines,
+        what,
+    );
+}
+
+/// [`assert_mesh_geometry`] at the given deflections.
+fn assert_mesh_geometry_at(
+    topo: &Topology,
+    solid: SolidId,
+    volume: f64,
+    (s, deflections): (f64, &[f64]),
+    tangent_lines: &[(f64, f64)],
     what: &str,
 ) {
     let report = validate_solid(topo, solid).unwrap();
     assert!(report.is_valid(), "{what}: {:?}", report.issues);
-    for deflection in [0.01 * s, 0.002 * s] {
+    for &deflection in deflections {
         let mesh = tessellate_solid(topo, solid, deflection).unwrap();
-        let (open, non_manifold) = (boundary_edge_count(&mesh), non_manifold_edge_count(&mesh));
-        assert!(
-            open + non_manifold <= known_defects,
-            "{what}: {open} open and {non_manifold} non-manifold mesh edges at deflection \
-             {deflection}"
+        assert_eq!(
+            boundary_edge_count(&mesh),
+            0,
+            "{what}: open mesh edges at deflection {deflection}"
         );
+        let branching = non_manifold_edges(&mesh);
+        assert_eq!(branching.len(), non_manifold_edge_count(&mesh), "{what}");
+        assert!(
+            branching.len() <= usize::from(!tangent_lines.is_empty()),
+            "{what}: non-manifold mesh edges {branching:?} at deflection {deflection}"
+        );
+        for (a, b) in &branching {
+            let on_line = |&(x, y): &(f64, f64)| {
+                [a, b]
+                    .iter()
+                    .all(|p| (p.x() - x * s).abs() <= 1e-9 * s && (p.y() - y * s).abs() <= 1e-9 * s)
+            };
+            assert!(
+                tangent_lines.iter().any(on_line),
+                "{what}: non-manifold mesh edge {a:?} – {b:?} is off the tangent lines \
+                 {tangent_lines:?} at deflection {deflection}"
+            );
+        }
         let measured = mesh_volume(&mesh).abs();
         let bound = 1.5 * deflection * curved_area(topo, solid, deflection) + VOLUME_TOL * volume;
         assert!(
@@ -765,24 +829,39 @@ const SLOT_HALF: f64 = 0.25;
 /// slot (by `tan θ` per unit height), so the cylinder also cuts the slot's
 /// walls. Returns the plate, the cylinder and the cylinder's length.
 fn eccentric_case(topo: &mut Topology, s: f64, a: f64, poke: f64) -> (SolidId, SolidId, f64) {
+    eccentric_case_with_slot(topo, s, a, poke, (-SLOT_HALF, SLOT_HALF), -a - 1.0)
+}
+
+/// The plate's extent across the slot: y from −3 to 3, or to 2 past the
+/// slot's far side.
+fn plate_width((_, y1): (f64, f64)) -> (f64, f64) {
+    (-3.0, (y1 + 2.0).max(3.0))
+}
+
+/// [`eccentric_case`] with the slot across `(y0, y1)` and the plate's near
+/// end at `x_min` (`−a − 1` clears the section; past `−a` the section runs
+/// off the plate there).
+fn eccentric_case_with_slot(
+    topo: &mut Topology,
+    s: f64,
+    a: f64,
+    poke: f64,
+    (y0, y1): (f64, f64),
+    x_min: f64,
+) -> (SolidId, SolidId, f64) {
     let tan = (a * a - 1.0).sqrt();
-    let x_min = -a - 1.0;
     let x_max = a + SLOT_LENGTH + SLAB * tan + 2.0;
-    let plate = make_box(topo, (x_max - x_min) * s, 6.0 * s, SLAB * s).unwrap();
-    transform_solid(topo, plate, &Mat4::translation(x_min * s, -3.0 * s, 0.0)).unwrap();
+    let (w0, w1) = plate_width((y0, y1));
+    let plate = make_box(topo, (x_max - x_min) * s, (w1 - w0) * s, SLAB * s).unwrap();
+    transform_solid(topo, plate, &Mat4::translation(x_min * s, w0 * s, 0.0)).unwrap();
     let slot = make_box(
         topo,
         (SLOT_LENGTH + poke) * s,
-        2.0 * SLOT_HALF * s,
+        (y1 - y0) * s,
         (SLAB + 2.0) * s,
     )
     .unwrap();
-    transform_solid(
-        topo,
-        slot,
-        &Mat4::translation((a - poke) * s, -SLOT_HALF * s, -s),
-    )
-    .unwrap();
+    transform_solid(topo, slot, &Mat4::translation((a - poke) * s, y0 * s, -s)).unwrap();
     let plate = boolean(topo, BooleanOp::Cut, plate, slot).unwrap();
 
     // Axis direction (−sin θ, 0, cos θ) with cos θ = 1/a, through
@@ -871,9 +950,14 @@ fn eccentric_common(a: f64, poke: f64) -> f64 {
 }
 
 fn eccentric_plate_volume(a: f64, poke: f64) -> f64 {
+    eccentric_plate_volume_with_slot(a, poke, (-SLOT_HALF, SLOT_HALF), -a - 1.0)
+}
+
+fn eccentric_plate_volume_with_slot(a: f64, poke: f64, (y0, y1): (f64, f64), x_min: f64) -> f64 {
     let tan = (a * a - 1.0).sqrt();
-    let length = 2.0 * a + SLOT_LENGTH + SLAB * tan + 3.0;
-    (length * 6.0 - (SLOT_LENGTH + poke) * 2.0 * SLOT_HALF) * SLAB
+    let length = a + SLOT_LENGTH + SLAB * tan + 2.0 - x_min;
+    let (w0, w1) = plate_width((y0, y1));
+    (length * (w1 - w0) - (SLOT_LENGTH + poke) * (y1 - y0)) * SLAB
 }
 
 /// One eccentric boolean: the operation's result, and the closed-form
@@ -907,12 +991,31 @@ fn assert_eccentric_exact(
     (a, op): (f64, BooleanOp),
     what: &str,
 ) {
+    assert_eccentric_exact_at(
+        topo,
+        result,
+        volume,
+        (s, &[0.01 * s, 0.002 * s]),
+        (a, op),
+        what,
+    );
+}
+
+/// [`assert_eccentric_exact`] with the mesh checked at `deflections`.
+fn assert_eccentric_exact_at(
+    topo: &Topology,
+    result: SolidId,
+    volume: f64,
+    (s, deflections): (f64, &[f64]),
+    (a, op): (f64, BooleanOp),
+    what: &str,
+) {
     let measured = solid_volume(topo, result, 0.002 * s).unwrap();
     assert!(
         (measured - volume).abs() <= 1e-9 * volume,
         "{what}: volume {measured} vs slicing integral {volume}"
     );
-    assert_mesh_geometry(topo, result, volume, s, 0, what);
+    assert_mesh_geometry_at(topo, result, volume, (s, deflections), &[], what);
     // On the cylinder's axis half-way through the plate, and in the plate
     // beside the tunnel.
     let tan = (a * a - 1.0).sqrt();
@@ -1020,5 +1123,198 @@ fn a_tilted_cylinder_entering_a_slot_below_the_top_face_is_exact() {
             let result = result.unwrap_or_else(|e| panic!("{what}: {e}"));
             assert_eccentric_exact(&topo, result, volume, s, (10.0, op), &what);
         }
+    }
+}
+
+// ── Contacts of the finite edge and at a hole's corner ─────────────────────
+
+/// The reviewer's disjoint hole through the public boolean: the tilted
+/// cylinder of axes (1000, 1) and a slot whose near side stands 1e-5 inside
+/// the section's major vertex, but across y = 10..11, where the section
+/// (y = −1..1 at every height) never reaches it. The LINE of the slot's
+/// near side grazes the section at y ≈ 0, and its chord there was tested
+/// against the cylinder before the chord was found to miss the side: the
+/// whole cut came back `ExactOnlyUnattainable`. With the chord held to the
+/// side, the slot plays no part and the result is exact: the slicing
+/// integral (each section the ellipse of axes (a, 1) cut off at the plate's
+/// near end, the slot clear of all of them) with validation, a watertight
+/// mesh and the material probes.
+///
+/// The plate ends at x = −a/2, so the top section also crosses the plate's
+/// outline and is trimmed there. A section lying whole inside a plate face
+/// (the plate running past −a) is refused by the acceptance gate with or
+/// without the slot, on `main` as here: a separate defect of the closed
+/// tilted section, not of the holes.
+#[test]
+fn an_eccentric_section_beside_a_remote_slot_is_exact() {
+    let slot = (10.0, 11.0);
+    // The (1000, 1) cylinder is 4050 long: its mesh at 0.002 · s passes the
+    // tessellator's work limit, so it is meshed coarser (the volume is still
+    // measured at 0.002 · s), and only at the reviewer's scale, 1, to keep
+    // the test's run time down. At (100, 1) the slot's line enters the
+    // cylinder by 1e-7 · s, which refused scales 0.1 and 1.
+    for (a, mesh, scales) in [
+        (100.0_f64, [0.01, 0.002], &SCALES[..]),
+        (1000.0, [0.05, 0.02], &[1.0][..]),
+    ] {
+        let x_min = -0.5 * a;
+        let tan = (a * a - 1.0).sqrt();
+        // Each section is the ellipse of axes (a, 1) about
+        // x = (SLAB − z) tan θ, of which the plate keeps x ≥ x_min.
+        let on_plate = |z: f64| {
+            let c = (SLAB - z) * tan;
+            a * disc_in_rect(1.0, (x_min - c) / a, 2.0, -2.0, 2.0)
+        };
+        let common = integrate(&on_plate, &[0.0, SLAB], 1e-15 * a);
+        for &s in scales {
+            for op in [BooleanOp::Cut, BooleanOp::Fuse] {
+                let what = format!("remote slot {op:?} axes ({a}, 1) scale {s}");
+                let mut topo = Topology::new();
+                let (plate, cylinder, length) =
+                    eccentric_case_with_slot(&mut topo, s, a, POKE, slot, x_min);
+                let volume = expected(
+                    op,
+                    eccentric_plate_volume_with_slot(a, POKE, slot, x_min),
+                    PI * length,
+                    common,
+                ) * s.powi(3);
+                let result = boolean(&mut topo, op, plate, cylinder)
+                    .unwrap_or_else(|e| panic!("{what}: {e}"));
+                let deflections = mesh.map(|d| d * s);
+                assert_eccentric_exact_at(&topo, result, volume, (s, &deflections), (a, op), &what);
+            }
+        }
+    }
+}
+
+/// Thickness of the needle plate.
+const NEEDLE_SLAB: f64 = 1e-4;
+/// The needle plate's extent: x from −0.5 to 3.5 (the top section runs off
+/// its near end), y within ±1e-3.
+const NEEDLE_PLATE: [f64; 3] = [-0.5, 3.5, 1e-3];
+/// The needle's radius: the section's minor semi-axis.
+const NEEDLE_R: f64 = 5e-5;
+/// The slot of the needle plate: x from 0.996 to 1.1, y from the corner
+/// where the top section crosses x = 0.996 up to 1e-4.
+const NEEDLE_SLOT: [f64; 4] = [0.996, 1.1, -4.467_661_58e-6, 1e-4];
+
+/// The reviewer's corner case through the public boolean: a plate
+/// `NEEDLE_SLAB` thick with a through slot, and a cylinder of radius
+/// `NEEDLE_R` laid nearly flat (its axis `cos θ = NEEDLE_R` from vertical,
+/// through the origin of the top face), whose section with the top face is
+/// the ellipse of axes (1, 5e-5) about the origin. The slot's corner is
+/// where that ellipse crosses the slot's near side; the side's other
+/// crossing is 8.9e-6 above it. Returns the plate, the cylinder and the
+/// cylinder's length.
+fn needle_case(topo: &mut Topology) -> (SolidId, SolidId, f64) {
+    let [p0, p1, half] = NEEDLE_PLATE;
+    let plate = make_box(topo, p1 - p0, 2.0 * half, NEEDLE_SLAB).unwrap();
+    transform_solid(topo, plate, &Mat4::translation(p0, -half, 0.0)).unwrap();
+    let [x0, x1, y0, y1] = NEEDLE_SLOT;
+    let slot = make_box(topo, x1 - x0, y1 - y0, NEEDLE_SLAB + 2e-3).unwrap();
+    transform_solid(topo, slot, &Mat4::translation(x0, y0, -1e-3)).unwrap();
+    let plate = boolean(topo, BooleanOp::Cut, plate, slot).unwrap();
+
+    // Caps 2e-4 above and below the plate, clear of it by more than the
+    // needle's radius.
+    let theta = NEEDLE_R.acos();
+    let below = (NEEDLE_SLAB + 2e-4) / NEEDLE_R;
+    let length = (NEEDLE_SLAB + 4e-4) / NEEDLE_R;
+    let cylinder = make_cylinder(topo, NEEDLE_R, length).unwrap();
+    let placement = Mat4::translation(0.0, 0.0, NEEDLE_SLAB)
+        * Mat4::rotation_y(-theta)
+        * Mat4::translation(0.0, 0.0, -below)
+        * Mat4::rotation_z(PI / 2.0);
+    transform_solid(topo, cylinder, &placement).unwrap();
+    (plate, cylinder, length)
+}
+
+/// Volume the needle shares with the slotted plate: each horizontal
+/// section is an ellipse of axes (a, b) = (1 / sin θ, b) (θ the axis's
+/// angle from vertical), less what of it lies off the plate's ends or over
+/// the slot (the unit disc in the ellipse's chart, times a · b).
+fn needle_common() -> f64 {
+    let b = NEEDLE_R;
+    let a = 1.0 / (1.0 - b * b).sqrt();
+    let tan = (1.0 - b * b).sqrt() / b;
+    let [x0, x1, y0, y1] = NEEDLE_SLOT;
+    let [p0, p1, half] = NEEDLE_PLATE;
+    let section = |z: f64| {
+        let c = (NEEDLE_SLAB - z) * tan;
+        let chart = |u: f64| (u - c) / a;
+        a * b
+            * (disc_in_rect(1.0, chart(p0), chart(p1), -half / b, half / b)
+                - disc_in_rect(1.0, chart(x0), chart(x1), y0 / b, y1 / b))
+    };
+    let mut breaks = vec![0.0, NEEDLE_SLAB];
+    let corner = a * (1.0 - (y0 / b).powi(2)).sqrt();
+    for x in [x0, x1, p0, p1] {
+        for reach in [-a, a, -corner, corner] {
+            let z = NEEDLE_SLAB - (x - reach) / tan;
+            if z > 0.0 && z < NEEDLE_SLAB {
+                breaks.push(z);
+            }
+        }
+    }
+    breaks.sort_by(f64::total_cmp);
+    integrate(&section, &breaks, 1e-15 * PI * a * b * NEEDLE_SLAB)
+}
+
+/// The needle through the slot's corner: the two crossings of the slot's
+/// near side are closer than the distance at which the trim takes two
+/// crossings for one, and the section between them runs 4.5e-6 inside the
+/// slot, so they are neither one crossing nor a touch. The engine refuses
+/// the pair by name and the boolean is `ExactOnlyUnattainable`; it used to
+/// exempt the side (its crossing at the corner deferred the count to the
+/// neighbouring side) and keep both crossings, one of which the trim then
+/// dropped. An accepted result would have to be exact by the slicing
+/// integral; none is.
+///
+/// (The plate is 1e-4 thick: at 1e-5 the slot cut itself is refused by the
+/// acceptance gate, so the needle never meets the slot.)
+#[test]
+fn a_needle_through_a_slot_corner_is_refused_by_name() {
+    for op in [BooleanOp::Cut, BooleanOp::Fuse] {
+        let what = format!("needle {op:?}");
+        let mut topo = Topology::new();
+        let (plate, cylinder, length) = needle_case(&mut topo);
+        match boolean(&mut topo, op, plate, cylinder) {
+            // Not reached today; an accepted result would have to be the
+            // slicing integral, validated and watertight.
+            Ok(result) => {
+                let [x0, x1, y0, y1] = NEEDLE_SLOT;
+                let [p0, p1, half] = NEEDLE_PLATE;
+                let plate_volume = ((p1 - p0) * 2.0 * half - (x1 - x0) * (y1 - y0)) * NEEDLE_SLAB;
+                let volume = expected(
+                    op,
+                    plate_volume,
+                    PI * NEEDLE_R * NEEDLE_R * length,
+                    needle_common(),
+                );
+                let measured = solid_volume(&topo, result, 1e-6).unwrap();
+                assert!(
+                    (measured - volume).abs() <= 1e-9 * volume,
+                    "{what}: accepted with volume {measured} vs slicing integral {volume}"
+                );
+                assert_mesh_geometry(&topo, result, volume, 1e-4, &[], &what);
+            }
+            Err(OperationsError::ExactOnlyUnattainable) => {}
+            Err(other) => panic!("{what}: untyped refusal {other}"),
+        }
+        let mut topo = Topology::new();
+        let (plate, cylinder, _) = needle_case(&mut topo);
+        let algo_op = if op == BooleanOp::Cut {
+            remus_algo::bop::BooleanOp::Cut
+        } else {
+            remus_algo::bop::BooleanOp::Fuse
+        };
+        let error = remus_algo::gfa::boolean(&mut topo, algo_op, plate, cylinder)
+            .expect_err("crossings closer than the merge distance");
+        assert!(
+            error
+                .to_string()
+                .contains("the distance at which two crossings are one"),
+            "{what}: {error}"
+        );
     }
 }
