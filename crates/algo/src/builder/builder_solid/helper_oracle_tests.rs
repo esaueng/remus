@@ -19,8 +19,9 @@ use remus_topology::wire::Wire;
 use super::{
     CapPlane, EdgeCurve, EdgeId, Face, FaceId, FaceSurface, OrientedEdge, Point3, SelectedFace,
     Topology, Vec3, WireId, analytic_cap_loop_area, cap_partial_overlap_free_loops,
-    closed_pair_traversal_flipped, conics_share_support, measure_revolved_wire_uv_area,
-    orient_revolved_face_wires, revolved_wire_uv_area,
+    closed_pair_traversal_flipped, conics_share_support, cylinder_wire_winding,
+    measure_revolved_wire_uv_area, orient_revolved_face_wires, reject_endless_cylinder_faces,
+    revolved_wire_uv_area,
 };
 
 const Z: Vec3 = Vec3::new(0.0, 0.0, 1.0);
@@ -948,4 +949,101 @@ fn spur_excision_keeps_only_the_actual_apex_turn() {
         assert_eq!(uses.iter().filter(|use_| use_.edge() == seam).count(), 2);
         assert!(uses.iter().all(|use_| use_.edge() != spur));
     }
+}
+
+// ── reject_endless_cylinder_faces ───────────────────────────────────────
+
+/// A cylinder face is bounded along its axis when its loops that wind
+/// round the axis come in pairs. By construction: a rim winds once (either
+/// way), a patch loop and a rim-seam-rim-seam loop not at all; a wall with
+/// two rims (as one loop or as two) and a wall with a hole are faces, a
+/// wall with one rim alone is not, and neither is one with three.
+#[test]
+fn a_cylinder_face_with_an_odd_number_of_rims_is_refused() {
+    let wall = Revolved::cylinder();
+    let mut topo = Topology::new();
+    let rim = |topo: &mut Topology, z: f64, forward: bool| {
+        let seam = wall.at(0.0, z);
+        let vertex = topo.add_vertex(Vertex::new(seam, 1e-7));
+        let edge = ring(topo, vertex, seam, wall.apex + Vec3::new(0.0, 0.0, z), Z);
+        topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, forward)], true).unwrap())
+    };
+    let (low, high, higher) = (
+        rim(&mut topo, 0.0, true),
+        rim(&mut topo, 3.0, false),
+        rim(&mut topo, 5.0, true),
+    );
+    let patch = wall.patch_loop(&mut topo, (0.4, 1.1), (1.0, 2.0), false);
+    // Both rims and the seam between them, as one loop.
+    let banded = {
+        let (vb, vt) = (
+            topo.add_vertex(Vertex::new(wall.at(0.0, 0.0), 1e-7)),
+            topo.add_vertex(Vertex::new(wall.at(0.0, 3.0), 1e-7)),
+        );
+        let bottom = ring(&mut topo, vb, wall.at(0.0, 0.0), wall.apex, Z);
+        let top = ring(
+            &mut topo,
+            vt,
+            wall.at(0.0, 3.0),
+            wall.apex + Vec3::new(0.0, 0.0, 3.0),
+            Z,
+        );
+        let seam = topo.add_edge(Edge::new(vb, vt, EdgeCurve::Line));
+        topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(bottom, true),
+                    OrientedEdge::new(seam, true),
+                    OrientedEdge::new(top, false),
+                    OrientedEdge::new(seam, false),
+                ],
+                true,
+            )
+            .unwrap(),
+        )
+    };
+    for (wire, winding) in [(low, 1), (high, -1), (higher, 1), (patch, 0), (banded, 0)] {
+        assert_eq!(
+            cylinder_wire_winding(&topo, wire, &wall.surface),
+            Some(winding),
+            "{wire:?}"
+        );
+    }
+    let mut face = |outer: WireId, inner: Vec<WireId>| {
+        topo.add_face(Face::new(outer, inner, wall.surface.clone()))
+    };
+    let faces = [
+        (face(banded, vec![]), true),
+        (face(banded, vec![patch]), true),
+        (face(low, vec![high]), true),
+        (face(low, vec![high, patch]), true),
+        (face(low, vec![]), false),
+        (face(low, vec![patch]), false),
+        (face(low, vec![high, higher]), false),
+    ];
+    for (face, bounded) in faces {
+        let outcome = reject_endless_cylinder_faces(&topo, &[face]);
+        assert_eq!(outcome.is_ok(), bounded, "{face:?}: {outcome:?}");
+        if let Err(error) = outcome {
+            assert!(
+                error.to_string().contains("not bounded along the axis"),
+                "{error}"
+            );
+        }
+    }
+    // The same loops on a cone are not this check's to judge: a cone face
+    // can end at its apex.
+    let cone = Revolved::cone();
+    let seam = cone.at(0.0, 2.0);
+    let vertex = topo.add_vertex(Vertex::new(seam, 1e-7));
+    let edge = ring(
+        &mut topo,
+        vertex,
+        seam,
+        cone.apex + Vec3::new(0.0, 0.0, 2.0),
+        Z,
+    );
+    let rim = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap());
+    let cap = topo.add_face(Face::new(rim, vec![], cone.surface));
+    assert!(reject_endless_cylinder_faces(&topo, &[cap]).is_ok());
 }

@@ -1318,3 +1318,474 @@ fn a_needle_through_a_slot_corner_is_refused_by_name() {
         );
     }
 }
+
+// ── A cutter in the plane of the inner wall ─────────────────────────────
+
+/// A cutter whose axis lies in the plane of the shelled box's inner wall
+/// (y = 98), half in the wall and half in the cavity.
+///
+/// Above the floor it leaves a half-round groove in the wall, which is
+/// exact. Through the floor as well, the cutter's wall is one face made of
+/// the ring through the floor and the half band above it, with the
+/// cutter's seam lying on the inner wall's plane: the engine splits that
+/// face wrongly, into a ring with one rim and nothing above it and a half
+/// band that does not close. The body validated and was accepted (96 open
+/// mesh edges, the volume off by more than the whole cut) for the radii
+/// that leave the cavity floor by more than its extent margin, on `main`
+/// too; for r = 0.5, which leaves it by less, `main` refused and this
+/// change's exact floor trim then built the same wrong body. A cylinder
+/// face with one rim has no end along its axis, and assembly now refuses
+/// it by name: every one of these is exact or refused.
+#[test]
+fn a_cutter_in_the_plane_of_the_inner_wall_is_exact_or_refused() {
+    for s in SCALES {
+        for r in [0.5, 1.0, 1.5] {
+            for (span, through_the_floor) in [((10.0, 30.0), false), ((-10.0, 30.0), true)] {
+                let what = format!("wall-plane cutter r={r} span={span:?} scale {s}");
+                let at = (96.0, 98.0);
+                let mut topo = Topology::new();
+                let body = shelled_box(&mut topo, s);
+                let tool = cylinder_at(&mut topo, s, r, at, span.0, span.1);
+                let volume = SHELL_VOLUME - in_shell(r, at.0, at.1, span.0, span.1);
+                match boolean(&mut topo, BooleanOp::Cut, body, tool) {
+                    Ok(result) => {
+                        assert!(!through_the_floor, "{what}: accepted");
+                        assert_exact(&topo, result, volume * s.powi(3), s, 1, &what);
+                    }
+                    Err(OperationsError::ExactOnlyUnattainable) => {
+                        assert!(through_the_floor, "{what}: refused");
+                    }
+                    Err(other) => panic!("{what}: untyped refusal {other}"),
+                }
+                if through_the_floor && s >= 1.0 {
+                    let mut topo = Topology::new();
+                    let body = shelled_box(&mut topo, s);
+                    let tool = cylinder_at(&mut topo, s, r, at, span.0, span.1);
+                    let error = remus_algo::gfa::boolean(
+                        &mut topo,
+                        remus_algo::bop::BooleanOp::Cut,
+                        body,
+                        tool,
+                    )
+                    .expect_err("a cylinder face with one rim");
+                    assert!(
+                        error.to_string().contains("not bounded along the axis"),
+                        "{what}: {error}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+// ── Certify or refuse: the third review round's reproducers ─────────────
+
+/// Signed area of the triangle (origin, `a`, `b`) inside the disc of radius
+/// `r` about the origin: triangles where the edge runs inside the disc,
+/// sectors where it runs outside.
+fn disc_in_triangle(r: f64, a: (f64, f64), b: (f64, f64)) -> f64 {
+    let cross = |u: (f64, f64), v: (f64, f64)| u.0 * v.1 - u.1 * v.0;
+    let dot = |u: (f64, f64), v: (f64, f64)| u.0 * v.0 + u.1 * v.1;
+    let triangle = |u, v| 0.5 * cross(u, v);
+    let sector = |u, v| 0.5 * r * r * cross(u, v).atan2(dot(u, v));
+    let (inside_a, inside_b) = (dot(a, a) <= r * r, dot(b, b) <= r * r);
+    if inside_a && inside_b {
+        return triangle(a, b);
+    }
+    // Where the edge a + t (b − a) meets the circle.
+    let d = (b.0 - a.0, b.1 - a.1);
+    let (qa, qb, qc) = (dot(d, d), 2.0 * dot(a, d), dot(a, a) - r * r);
+    let disc = qb * qb - 4.0 * qa * qc;
+    if disc <= 0.0 {
+        return sector(a, b);
+    }
+    let root = disc.sqrt();
+    let (t1, t2) = ((-qb - root) / (2.0 * qa), (-qb + root) / (2.0 * qa));
+    let at = |t: f64| (a.0 + t * d.0, a.1 + t * d.1);
+    if inside_a {
+        let p = at(t2);
+        triangle(a, p) + sector(p, b)
+    } else if inside_b {
+        let p = at(t1);
+        sector(a, p) + triangle(p, b)
+    } else if t1 >= 1.0 || t2 <= 0.0 {
+        sector(a, b)
+    } else {
+        let (p, q) = (at(t1), at(t2));
+        sector(a, p) + triangle(p, q) + sector(q, b)
+    }
+}
+
+/// Area of the disc of radius `r` about `centre` inside the simple polygon
+/// `corners`.
+fn disc_in_polygon(r: f64, centre: (f64, f64), corners: &[(f64, f64)]) -> f64 {
+    let about = |p: (f64, f64)| (p.0 - centre.0, p.1 - centre.1);
+    (0..corners.len())
+        .map(|i| {
+            disc_in_triangle(
+                r,
+                about(corners[i]),
+                about(corners[(i + 1) % corners.len()]),
+            )
+        })
+        .sum::<f64>()
+        .abs()
+}
+
+fn polygon_area(corners: &[(f64, f64)]) -> f64 {
+    (0..corners.len())
+        .map(|i| {
+            let (a, b) = (corners[i], corners[(i + 1) % corners.len()]);
+            0.5 * (a.0 * b.1 - a.1 * b.0)
+        })
+        .sum()
+}
+
+/// A plate over the rectangle `(x0, y0) .. (x1, y1)` from `z0` up
+/// `thickness`, with a through hole of plan `hole`: one planar face with an
+/// inner wire, extruded. Its own volume is checked against the polygons.
+fn holed_plate(
+    topo: &mut Topology,
+    ((x0, y0), (x1, y1)): ((f64, f64), (f64, f64)),
+    hole: &[(f64, f64)],
+    (z0, thickness): (f64, f64),
+) -> (SolidId, f64) {
+    use remus_math::vec::Vec3;
+    use remus_topology::builder::make_polygon_wire;
+    use remus_topology::face::Face;
+
+    let at = |&(x, y): &(f64, f64)| Point3::new(x, y, z0);
+    let outline = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)];
+    let outer: Vec<Point3> = outline.iter().map(at).collect();
+    let mut inner: Vec<Point3> = hole.iter().map(at).collect();
+    // A hole runs clockwise about the face's normal.
+    if polygon_area(hole) > 0.0 {
+        inner.reverse();
+    }
+    let outer = make_polygon_wire(topo, &outer, 1e-7).unwrap();
+    let inner = make_polygon_wire(topo, &inner, 1e-7).unwrap();
+    let normal = Vec3::new(0.0, 0.0, 1.0);
+    let face = topo.add_face(Face::new(
+        outer,
+        vec![inner],
+        FaceSurface::Plane { normal, d: z0 },
+    ));
+    let plate = remus_operations::extrude::extrude(topo, face, normal, thickness).unwrap();
+    let volume = ((x1 - x0) * (y1 - y0) - polygon_area(hole).abs()) * thickness;
+    let report = validate_solid(topo, plate).unwrap();
+    assert!(report.is_valid(), "holed plate: {:?}", report.issues);
+    (plate, volume)
+}
+
+/// What a boolean of a holed plate came to.
+#[derive(Debug, PartialEq, Eq)]
+enum Certified {
+    /// Accepted, and exact: the closed-form volume, valid, a watertight
+    /// mesh at both deflections, air and material where asked.
+    Exact,
+    /// `ExactOnlyUnattainable`, with the engine's own refusal (empty when
+    /// the engine built a body and the acceptance gate refused it).
+    Refused(String),
+}
+
+/// One boolean of a plate and a tool built by `bodies`, held to exact or a
+/// typed refusal: an accepted result has the volume `volume` (to the
+/// relative `volume_tol` by `solid_volume`, and within the deflection times
+/// the curved area by its mesh), validates, meshes watertight at
+/// `deflections`, and classifies each of `probes` as stated (`true` is
+/// material).
+fn certify(
+    bodies: &dyn Fn(&mut Topology) -> (SolidId, SolidId),
+    op: BooleanOp,
+    (volume, volume_tol): (f64, f64),
+    (size, deflections): (f64, &[f64]),
+    probes: &[((f64, f64, f64), bool)],
+    what: &str,
+) -> Certified {
+    let mut topo = Topology::new();
+    let (plate, tool) = bodies(&mut topo);
+    match boolean(&mut topo, op, plate, tool) {
+        Ok(result) => {
+            let measured = solid_volume(&topo, result, deflections[0]).unwrap();
+            assert!(
+                (measured - volume).abs() <= volume_tol * volume,
+                "{what}: accepted with volume {measured} vs closed form {volume}"
+            );
+            assert_mesh_geometry_at(&topo, result, volume, (size, deflections), &[], what);
+            for &(at, material) in probes {
+                let wanted = if material {
+                    PointClassification::Inside
+                } else {
+                    PointClassification::Outside
+                };
+                assert_eq!(
+                    classify(&topo, result, 1.0, at),
+                    wanted,
+                    "{what}: at {at:?}"
+                );
+            }
+            Certified::Exact
+        }
+        Err(OperationsError::ExactOnlyUnattainable) => {
+            let mut topo = Topology::new();
+            let (plate, tool) = bodies(&mut topo);
+            let algo_op = match op {
+                BooleanOp::Cut => remus_algo::bop::BooleanOp::Cut,
+                BooleanOp::Fuse => remus_algo::bop::BooleanOp::Fuse,
+                BooleanOp::Intersect => remus_algo::bop::BooleanOp::Intersect,
+            };
+            Certified::Refused(
+                remus_algo::gfa::boolean(&mut topo, algo_op, plate, tool)
+                    .err()
+                    .map(|error| error.to_string())
+                    .unwrap_or_default(),
+            )
+        }
+        Err(other) => panic!("{what}: untyped refusal {other}"),
+    }
+}
+
+/// The slot of the first finding (see `notched_slot` in the algo crate's
+/// `plane_hole_tests`): across the unit circle at (1, 0), spanning
+/// y = 0 .. 8e-6 · stretch, its left side (3e-6 · stretch² from the circle)
+/// notched inward to a tip 5e-8 short of the circle half-way up.
+fn notched_slot(stretch: f64) -> Vec<(f64, f64)> {
+    let y = |k: f64| k * 1e-6 * stretch;
+    let left = 1.0 - 3e-6 * stretch * stretch;
+    vec![
+        (left, 0.0),
+        (1.001, 0.0),
+        (1.001, y(8.0)),
+        (left, y(8.0)),
+        (left, y(6.0)),
+        (0.999_999_95, y(4.0)),
+        (left, y(2.0)),
+    ]
+}
+
+/// A unit cylinder through a plate 0.05 thick over `(−0.5, −2) .. (2, 2)`
+/// with the through hole `hole`: the bodies, and the closed-form volume of
+/// `op`'s result.
+fn unit_cylinder_through(
+    hole: &[(f64, f64)],
+    op: BooleanOp,
+) -> (impl Fn(&mut Topology) -> (SolidId, SolidId) + '_, f64) {
+    let rect = ((-0.5, -2.0), (2.0, 2.0));
+    let thickness = 0.05;
+    let plate_volume = (2.5 * 4.0 - polygon_area(hole).abs()) * thickness;
+    let common = thickness
+        * (disc_in_rect(1.0, -0.5, 2.0, -2.0, 2.0) - disc_in_polygon(1.0, (0.0, 0.0), hole));
+    let volume = expected(op, plate_volume, PI * 2.05, common);
+    let bodies = move |topo: &mut Topology| {
+        let (plate, built) = holed_plate(topo, rect, hole, (0.0, thickness));
+        assert!((built - plate_volume).abs() <= 1e-12 * plate_volume);
+        // The cylinder's seam is turned to (−1, 0), off the plate: a hole
+        // side through the seam is a different degeneracy (the side's
+        // plane then holds the seam edge).
+        let tool = make_cylinder(topo, 1.0, 2.05).unwrap();
+        let placement = Mat4::translation(0.0, 0.0, -1.0) * Mat4::rotation_z(PI);
+        transform_solid(topo, tool, &placement).unwrap();
+        (plate, tool)
+    };
+    (bodies, volume)
+}
+
+/// Finding 1 through the public boolean. The unit cylinder runs up through
+/// a slot whose notch tip stands 5e-8 off it, half-way between the two
+/// points where it crosses the slot.
+///
+/// With the crossings 8e-6 apart the pair is refused by name: they are two
+/// vertices closer than any later stage keeps apart. (It used to be read as
+/// a touch, and the section kept whole across the slot.) With them 8e-5
+/// apart the result is exact, the tip a touch inside the slot.
+#[test]
+fn a_cylinder_through_a_notched_slot_is_exact_or_refused() {
+    for op in [BooleanOp::Cut, BooleanOp::Fuse] {
+        for stretch in [1.0, 10.0] {
+            let what = format!("notched slot {op:?} stretch {stretch}");
+            let hole = notched_slot(stretch);
+            let (bodies, volume) = unit_cylinder_through(&hole, op);
+            let top = 8e-6 * stretch;
+            // In the slot beside the cylinder: air. In the plate beside
+            // the slot: material.
+            let probes = [
+                ((1.0005, 0.5 * top, 0.025), false),
+                ((1.0005, -1e-3, 0.025), true),
+            ];
+            let outcome = certify(
+                &bodies,
+                op,
+                (volume, 1e-9),
+                (1.0, &[1e-3, 2e-4]),
+                &probes,
+                &what,
+            );
+            match outcome {
+                Certified::Exact => assert!(stretch > 1.0, "{what}: accepted"),
+                Certified::Refused(why) => {
+                    assert!(stretch <= 1.0, "{what}: refused: {why}");
+                    assert!(
+                        why.contains("the distance at which two crossings are one"),
+                        "{what}: {why}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Finding 2 through the public boolean: the quadrilateral whose side runs
+/// 5e-8 under the top of the unit cylinder and ends 5e-9 inside it. The
+/// section crosses the hole twice, the first time at a shallow angle on
+/// that side; one of the two used to be dropped, leaving a closed hole
+/// crossed once. Exact, cut and fused.
+#[test]
+fn a_cylinder_grazing_a_hole_side_is_exact_or_refused() {
+    let hole = [
+        (-0.1, 0.999_999_95),
+        (-0.0003, 0.999_999_95),
+        (0.0997, 0.899_999_95),
+        (-0.1, 1.1),
+    ];
+    for op in [BooleanOp::Cut, BooleanOp::Fuse] {
+        let what = format!("grazed side {op:?}");
+        let (bodies, volume) = unit_cylinder_through(&hole, op);
+        // In the hole clear of the cylinder, and in the plate beside both.
+        let probes = [((-0.05, 1.02, 0.025), false), ((0.3, 1.2, 0.025), true)];
+        let outcome = certify(
+            &bodies,
+            op,
+            (volume, 1e-9),
+            (1.0, &[1e-3, 2e-4]),
+            &probes,
+            &what,
+        );
+        assert_eq!(outcome, Certified::Exact, "{what}");
+    }
+}
+
+/// Finding 3 through the public boolean: a needle of radius `b` laid
+/// nearly flat pokes through one side of a square hole 0.004 wide, crossing
+/// it at y = ±`y`. At (5e-6, 1.5e-6) the two crossings are 3e-6 apart,
+/// closer than the face splitter keeps two vertices apart on that side, and
+/// the pair is refused by name. Fifty tolerances wider it is exact or
+/// refused, never accepted wrong.
+#[test]
+fn a_needle_through_a_hole_side_is_exact_or_refused() {
+    const SLAB: f64 = 1e-4;
+    let a = 0.005_f64;
+    let hole = [
+        (-0.002, -0.002),
+        (0.002, -0.002),
+        (0.002, 0.002),
+        (-0.002, 0.002),
+    ];
+    for (b, y, named) in [(5e-6_f64, 1.5e-6_f64, true), (5e-5, 1.8e-5, false)] {
+        // The top section: semi-axes (a, b) about (cx, 0), crossing the
+        // side x = 0.002 at ±y.
+        let cx = 0.002 - a * (1.0 - (y / b).powi(2)).sqrt();
+        let rect = ((cx - a - 1e-3, -0.004), (0.006, 0.004));
+        let cos = b / a;
+        let tan = (1.0 - cos * cos).sqrt() / cos;
+        let below = (SLAB + 4.0 * b) / cos;
+        let length = (SLAB + 8.0 * b) / cos;
+        for op in [BooleanOp::Cut, BooleanOp::Fuse] {
+            let what = format!("needle through a side {op:?} b = {b:e}");
+            let bodies = |topo: &mut Topology| {
+                let (plate, _) = holed_plate(topo, rect, &hole, (0.0, SLAB));
+                let needle = make_cylinder(topo, b, length).unwrap();
+                let placement = Mat4::translation(cx, 0.0, SLAB)
+                    * Mat4::rotation_y(-cos.acos())
+                    * Mat4::translation(0.0, 0.0, -below);
+                transform_solid(topo, needle, &placement).unwrap();
+                (plate, needle)
+            };
+            // Each horizontal section of the needle is the ellipse of
+            // semi-axes (a, b), sliding by tan θ per unit height; what of
+            // it lies on the plate is the unit disc in its chart inside
+            // the plate's rectangle less the hole.
+            let section = |z: f64| {
+                let c = cx + (SLAB - z) * tan;
+                let chart = |&(x, y): &(f64, f64)| ((x - c) / a, y / b);
+                let (lo, hi) = (chart(&rect.0), chart(&rect.1));
+                let mapped: Vec<(f64, f64)> = hole.iter().map(chart).collect();
+                a * b
+                    * (disc_in_rect(1.0, lo.0, hi.0, lo.1, hi.1)
+                        - disc_in_polygon(1.0, (0.0, 0.0), &mapped))
+            };
+            let breaks: Vec<f64> = (0..=64).map(|k| SLAB * f64::from(k) / 64.0).collect();
+            let common = integrate(&section, &breaks, 1e-15 * PI * a * b * SLAB);
+            let plate_volume = ((rect.1.0 - rect.0.0) * 0.008 - 1.6e-5) * SLAB;
+            let volume = expected(op, plate_volume, PI * b * b * length, common);
+            let outcome = certify(
+                &bodies,
+                op,
+                (volume, 1e-9),
+                (SLAB, &[1e-6, 2e-7]),
+                &[],
+                &what,
+            );
+            match outcome {
+                Certified::Exact => assert!(!named, "{what}: accepted"),
+                Certified::Refused(why) => {
+                    if named {
+                        assert!(
+                            why.contains("cannot be told from a tangency"),
+                            "{what}: {why}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Finding 4 through the public boolean: a cylinder of radius 5e6, fifty
+/// million units up, through a plate with a slot 1e-3 wide at (3e6, 4e6).
+/// Its section crosses the slot at two points 1.25e-3 apart, which are
+/// 2.5e-10 rad apart on the circle; the trim compared parameters at
+/// 1e-9 rad, dropped one, and kept a span across the slot. Exact, cut and
+/// fused: the slot stays air and the plate beside it material (the slot is
+/// far below the volume's resolution, so the probes are what see it).
+#[test]
+fn a_large_cylinder_across_a_narrow_slot_is_exact_or_refused() {
+    let (r, z0, thickness) = (5e6_f64, 49e6_f64, 1e6_f64);
+    let slot = [
+        (3e6 - 0.0005, 4e6 - 10.0),
+        (3e6 + 0.0005, 4e6 - 10.0),
+        (3e6 + 0.0005, 4e6 + 10.0),
+        (3e6 - 0.0005, 4e6 + 10.0),
+    ];
+    let rect = ((-1e7, -1e7), (1e7, 1e7));
+    for op in [BooleanOp::Cut, BooleanOp::Fuse] {
+        let what = format!("large cylinder {op:?}");
+        let bodies = |topo: &mut Topology| {
+            let (plate, _) = holed_plate(topo, rect, &slot, (z0, thickness));
+            let tool = make_cylinder(topo, r, 4e6).unwrap();
+            transform_solid(topo, tool, &Mat4::translation(0.0, 0.0, 48e6)).unwrap();
+            (plate, tool)
+        };
+        let plate_volume = (4e14 - polygon_area(&slot).abs()) * thickness;
+        let common = thickness * (PI * r * r - disc_in_polygon(r, (0.0, 0.0), &slot));
+        let volume = expected(op, plate_volume, PI * r * r * 4e6, common);
+        // Outside the cylinder, in the slot and beside it.
+        let probes = [
+            ((3e6, 4e6 + 5.0, 49.5e6), false),
+            ((3e6 + 1.0, 4e6 + 5.0, 49.5e6), true),
+        ];
+        // `solid_volume` is not exact on this body: the cylinder's wall is
+        // one face with a gap 2.5e-10 rad wide where the slot opens, which
+        // it integrates by sampled quadrature (2.2e-5 off at deflection
+        // 1e4, 2.2e-7 at 100). The mesh's volume, the validator, the
+        // watertight mesh and the probes carry the exactness here.
+        let outcome = certify(
+            &bodies,
+            op,
+            (volume, 1e-4),
+            (1e6, &[1e4, 2e3]),
+            &probes,
+            &what,
+        );
+        assert_eq!(outcome, Certified::Exact, "{what}");
+    }
+}

@@ -16,10 +16,12 @@ use remus_math::surfaces::CylindricalSurface;
 use remus_topology::face::Face;
 use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
+use super::plane_section_certificate::certify_hole;
 use super::{
-    Aabb3, Edge, EdgeCurve, FaceExtent, FaceId, FaceSurface, LineContact, Point3, RawCurve,
-    SectionConic, Tolerance, Topology, Vec3, Vertex, closed_circle_boundary_crossings,
-    plane_hole_crossings, trim_ellipse_to_boundary_crossings,
+    Aabb3, AlgoError, Edge, EdgeCurve, FaceExtent, FaceId, FaceSurface, GfaArena, LineContact,
+    Point3, RawCurve, SectionConic, Tolerance, Topology, Vec3, Vertex,
+    closed_circle_boundary_crossings, emit_split_circle_arcs, plane_hole_crossings,
+    trim_ellipse_to_boundary_crossings,
 };
 
 const Z: Vec3 = Vec3::new(0.0, 0.0, 1.0);
@@ -27,12 +29,12 @@ const SCALES: [f64; 3] = [0.1, 1.0, 10.0];
 
 // ── Fixtures ────────────────────────────────────────────────────────────
 
-fn vertex(topo: &mut Topology, p: Point3) -> remus_topology::vertex::VertexId {
+pub(super) fn vertex(topo: &mut Topology, p: Point3) -> remus_topology::vertex::VertexId {
     topo.add_vertex(Vertex::new(p, 1e-7))
 }
 
 /// A closed loop of straight edges through `corners`, in that order.
-fn polygon_wire(topo: &mut Topology, corners: &[(f64, f64)], z: f64) -> WireId {
+pub(super) fn polygon_wire(topo: &mut Topology, corners: &[(f64, f64)], z: f64) -> WireId {
     let verts: Vec<_> = corners
         .iter()
         .map(|&(x, y)| vertex(topo, Point3::new(x, y, z)))
@@ -57,7 +59,7 @@ fn square(half: f64, (cx, cy): (f64, f64)) -> [(f64, f64); 4] {
 
 /// A full circle as one closed edge, traversed with or against its
 /// parameter.
-fn circle_wire(topo: &mut Topology, circle: &Circle3D, forward: bool) -> WireId {
+pub(super) fn circle_wire(topo: &mut Topology, circle: &Circle3D, forward: bool) -> WireId {
     let seam = vertex(topo, circle.evaluate(0.0));
     let mut edge = Edge::with_tolerance(seam, seam, EdgeCurve::Circle(circle.clone()), Some(1e-7));
     edge.set_trim(Some((0.0, TAU)));
@@ -65,7 +67,7 @@ fn circle_wire(topo: &mut Topology, circle: &Circle3D, forward: bool) -> WireId 
     topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, forward)], true).unwrap())
 }
 
-fn plane_at(z: f64) -> FaceSurface {
+pub(super) fn plane_at(z: f64) -> FaceSurface {
     FaceSurface::Plane { normal: Z, d: z }
 }
 
@@ -436,13 +438,11 @@ fn eccentric_slot(
     let (ellipse, cylinder) = tilted_section(a, b, 0.0);
     let mut topo = Topology::new();
     let hole = slot_hole(&mut topo, a - depth, w);
-    let frame = crate::builder::plane_frame::PlaneFrame::from_normal_and_point(Z, ellipse.center());
     plane_hole_crossings(
         &topo,
         hole,
         &EdgeCurve::Ellipse(ellipse),
         &cylinder,
-        &frame,
         Tolerance::new(),
     )
 }
@@ -563,18 +563,9 @@ fn a_square_hole_is_crossed_where_the_circle_meets_its_edges() {
         // that side at y = 50 ± √(9 − 1) and no other.
         let pair = rim_pair((99.0, 50.0), 3.0, s);
         let hole = pair.topo.face(pair.plane).unwrap().inner_wires()[0];
-        let frame =
-            crate::builder::plane_frame::PlaneFrame::from_normal_and_point(Z, pair.raw.p_start);
-        let found = plane_hole_crossings(
-            &pair.topo,
-            hole,
-            &pair.raw.curve,
-            &pair.surfaces.1,
-            &frame,
-            tol,
-        )
-        .unwrap()
-        .unwrap();
+        let found = plane_hole_crossings(&pair.topo, hole, &pair.raw.curve, &pair.surfaces.1, tol)
+            .unwrap()
+            .unwrap();
         assert!(found.touches.is_empty());
         assert_eq!(found.outline.len(), 4);
         let mut ys: Vec<f64> = found.crossings.iter().map(|p| p.y() / s).collect();
@@ -592,16 +583,9 @@ fn a_square_hole_is_crossed_where_the_circle_meets_its_edges() {
         // reported.
         let pair = rim_pair((99.0, 50.0), 1.0, s);
         let hole = pair.topo.face(pair.plane).unwrap().inner_wires()[0];
-        let found = plane_hole_crossings(
-            &pair.topo,
-            hole,
-            &pair.raw.curve,
-            &pair.surfaces.1,
-            &frame,
-            tol,
-        )
-        .unwrap()
-        .unwrap();
+        let found = plane_hole_crossings(&pair.topo, hole, &pair.raw.curve, &pair.surfaces.1, tol)
+            .unwrap()
+            .unwrap();
         assert!(found.crossings.is_empty(), "scale {s}");
         assert_eq!(found.touches.len(), 1, "scale {s}");
     }
@@ -626,18 +610,10 @@ fn a_round_hole_is_crossed_at_the_two_circle_circle_points() {
             };
             let pair = build((28.0, 20.0), 3.0);
             let hole = pair.topo.face(pair.plane).unwrap().inner_wires()[0];
-            let frame =
-                crate::builder::plane_frame::PlaneFrame::from_normal_and_point(Z, pair.raw.p_start);
-            let found = plane_hole_crossings(
-                &pair.topo,
-                hole,
-                &pair.raw.curve,
-                &pair.surfaces.1,
-                &frame,
-                tol,
-            )
-            .unwrap()
-            .unwrap();
+            let found =
+                plane_hole_crossings(&pair.topo, hole, &pair.raw.curve, &pair.surfaces.1, tol)
+                    .unwrap()
+                    .unwrap();
             assert!(found.touches.is_empty());
             assert_eq!(found.crossings.len(), 2, "scale {s}");
             let along = (64.0 + 64.0 - 9.0) / 16.0;
@@ -656,16 +632,10 @@ fn a_round_hole_is_crossed_at_the_two_circle_circle_points() {
             for at in [(31.0, 20.0), (25.0, 20.0)] {
                 let pair = build(at, 3.0);
                 let hole = pair.topo.face(pair.plane).unwrap().inner_wires()[0];
-                let found = plane_hole_crossings(
-                    &pair.topo,
-                    hole,
-                    &pair.raw.curve,
-                    &pair.surfaces.1,
-                    &frame,
-                    tol,
-                )
-                .unwrap()
-                .unwrap();
+                let found =
+                    plane_hole_crossings(&pair.topo, hole, &pair.raw.curve, &pair.surfaces.1, tol)
+                        .unwrap()
+                        .unwrap();
                 assert!(found.crossings.is_empty(), "tangent at {at:?}, scale {s}");
                 assert_eq!(found.touches.len(), 1, "tangent at {at:?}, scale {s}");
             }
@@ -687,7 +657,6 @@ fn a_round_hole_is_crossed_at_the_two_circle_circle_points() {
                     hole,
                     &EdgeCurve::Ellipse(ellipse),
                     &pair.surfaces.1,
-                    &frame,
                     tol,
                 )
                 .unwrap()
@@ -902,7 +871,9 @@ fn the_closed_circle_collector_reads_a_plane_faces_holes() {
 /// circular section (100 tolerances in the plane), the section cut from a
 /// cone. A cone standing steeply on the plane is entered by the edge and
 /// crossed twice; a nearly flat one (generator 1e-3 off the plane) is
-/// entered by only 1e-8 along the whole chord, and the pair is refused.
+/// entered by only 1e-8 along the whole chord, and the pair is refused:
+/// the collector hands the crossings over with the refusal attached, and
+/// the emitter raises it for the spans it would keep beside them.
 #[test]
 fn the_closed_circle_collector_refuses_a_hole_edge_grazing_a_flat_cone() {
     use remus_math::surfaces::ConicalSurface;
@@ -910,7 +881,7 @@ fn the_closed_circle_collector_refuses_a_hole_edge_grazing_a_flat_cone() {
     let tol = Tolerance::new();
     for s in SCALES {
         let (radius, depth) = (5.0 * s, 1e-5 * s);
-        let hits = |slope: f64| {
+        let build = |slope: f64| {
             let mut topo = Topology::new();
             let outer = polygon_wire(&mut topo, &square(10.0 * s, (0.0, 0.0)), 0.0);
             let near = radius - depth;
@@ -932,6 +903,10 @@ fn the_closed_circle_collector_refuses_a_hole_edge_grazing_a_flat_cone() {
             let (wall, _) = cylinder_wall(&mut topo, (0.0, 0.0), radius, (-s, s));
             topo.face_mut(wall).unwrap().set_surface(cone);
             let circle = circle_at((0.0, 0.0), 0.0, radius);
+            (topo, plane, wall, circle)
+        };
+        let hits = |slope: f64| {
+            let (topo, plane, wall, circle) = build(slope);
             closed_circle_boundary_crossings(&topo, plane, wall, &circle, tol)
         };
 
@@ -941,8 +916,32 @@ fn the_closed_circle_collector_refuses_a_hole_edge_grazing_a_flat_cone() {
         for p in &contacts.hole_crossings {
             assert!((p.y().abs() - y).abs() <= 1e-6 * y, "scale {s}: {p:?}");
         }
+        // The steep cone's spans pass the gate: the arc over the hole is
+        // dropped, the rest kept.
+        let (mut topo, plane, wall, circle) = build(0.5);
+        let kept = emit(&mut topo, plane, wall, &circle).unwrap();
+        assert!(!kept.is_empty(), "scale {s}");
+        assert!(
+            !kept.iter().any(|&(t0, t1)| t0 < TAU && t1 > TAU),
+            "scale {s}: an arc through the hole at t = 0: {kept:?}"
+        );
 
-        let error = hits(1e-3).map(|_| ()).expect_err("a grazing hole edge");
+        let (found, contacts) = hits(1e-3).unwrap();
+        let error = contacts
+            .certificate
+            .as_ref()
+            .unwrap()
+            .plan(&found)
+            .first_refusal()
+            .expect("a grazing hole edge");
+        assert!(
+            error
+                .to_string()
+                .contains("within tolerance of the cut surface"),
+            "scale {s}: {error}"
+        );
+        let (mut topo, plane, wall, circle) = build(1e-3);
+        let error = emit(&mut topo, plane, wall, &circle).expect_err("a grazing hole edge");
         assert!(
             error
                 .to_string()
@@ -962,16 +961,7 @@ fn hole_hits(
     section: &EdgeCurve,
     surface: &FaceSurface,
 ) -> Result<Option<super::PlaneHoleCrossings>, super::AlgoError> {
-    let centre = match section {
-        EdgeCurve::Circle(c) => c.center(),
-        EdgeCurve::Ellipse(e) => e.center(),
-        EdgeCurve::Line
-        | EdgeCurve::NurbsCurve(_)
-        | EdgeCurve::Hyperbola(_)
-        | EdgeCurve::Parabola(_) => panic!("a closed section"),
-    };
-    let frame = crate::builder::plane_frame::PlaneFrame::from_normal_and_point(Z, centre);
-    plane_hole_crossings(topo, hole, section, surface, &frame, Tolerance::new())
+    plane_hole_crossings(topo, hole, section, surface, Tolerance::new())
 }
 
 /// The vertical cylinder of radius `r` about `(cx, cy)` and its section with
@@ -1307,14 +1297,17 @@ fn hole_corners_on_short_of_and_past_a_section() {
 /// Two crossings of a hole's corner a few tolerances apart: the circle cuts
 /// the corner at origin of the square [0, 20]² with the corner `depth`
 /// inside it, so it crosses the two sides √2 · depth from the corner and
-/// 2 · depth apart. At scale 1e-3 the merge distance is ten tolerances, and
-/// 3e-6 apart they stay two crossings: the ellipse trim keeps both as span
-/// ends and drops the span inside the hole (the historic absolute 1e-5
-/// merged them and kept a span across the hole). At scales 1 and 1e6 the
-/// merge distance is 1e-5, they are one contact, and the section between
-/// them runs 1e-6 inside the hole: refused by name.
+/// 2 · depth apart, and runs 1e-6 inside the hole between them. They are
+/// two crossings, 3e-6 apart: closer than the separation distance at every
+/// scale, so the trim refuses by name rather than keep a span that ends on
+/// them.
+///
+/// At scale 1e-3 this trim used to be accepted, with both crossings as span
+/// ends. The face splitter then welds the two (its boundary weld is 1e-5
+/// on these 0.02-long edges), so the hole's vertex set and the section's
+/// disagreed: the separation distance is that weld, at every scale.
 #[test]
-fn crossings_a_few_tolerances_apart_are_kept_apart_at_small_scale() {
+fn crossings_a_few_tolerances_apart_are_refused_at_every_scale() {
     let depth = 1.5e-6;
     for s in [1e-3, 1.0, 1e6] {
         let r = 5.0;
@@ -1331,34 +1324,478 @@ fn crossings_a_few_tolerances_apart_are_kept_apart_at_small_scale() {
             r,
             s,
         );
-        let trimmed = pair.trim();
-        if s > 1e-2 {
-            let Err(error) = trimmed else {
-                panic!("scale {s}: crossings within the merge distance were not refused");
-            };
-            assert!(
-                error.to_string().contains("across the hole"),
-                "scale {s}: {error}"
-            );
-            continue;
-        }
-        let arcs = trimmed.unwrap().expect("exact arcs");
-        let ends: Vec<Point3> = arcs.iter().flat_map(|a| [a.p_start, a.p_end]).collect();
+        // The certificate places both crossings where they are.
+        let hole = pair.topo.face(pair.plane).unwrap().inner_wires()[0];
+        let certified = certify_hole(
+            &pair.topo,
+            hole,
+            &pair.raw.curve,
+            Some(&pair.surfaces.1),
+            Tolerance::new(),
+        )
+        .unwrap();
+        let crossings: Vec<Point3> = certified.crossings().map(|c| c.at).collect();
+        assert_eq!(crossings.len(), 2, "scale {s}: {crossings:?}");
         for wanted in [
             Point3::new(std::f64::consts::SQRT_2 * depth, 0.0, 50.0 * s),
             Point3::new(0.0, std::f64::consts::SQRT_2 * depth, 50.0 * s),
         ] {
             assert!(
-                ends.iter().any(|p| (*p - wanted).length() <= 1e-9),
-                "scale {s}: no span ends at {wanted:?}: {ends:?}"
+                crossings
+                    .iter()
+                    .any(|p| (*p - wanted).length() <= 1e-9 * s.max(1.0)),
+                "scale {s}: no crossing at {wanted:?}: {crossings:?}"
             );
         }
-        for arc in &arcs {
-            let mid = arc_midpoint(arc);
+        let Err(error) = pair.trim() else {
+            panic!("scale {s}: crossings within the separation distance were not refused");
+        };
+        assert!(
+            error.to_string().contains("across the hole"),
+            "scale {s}: {error}"
+        );
+    }
+}
+
+// ── Certify or refuse (the third review round's reproducers) ────────────
+
+/// The closed-circle path end to end: the collector's hits through the
+/// emitter's gate. The parameter ranges of the arcs it keeps.
+fn emit(
+    topo: &mut Topology,
+    plane: FaceId,
+    wall: FaceId,
+    circle: &Circle3D,
+) -> Result<Vec<(f64, f64)>, AlgoError> {
+    let tol = Tolerance::new();
+    let (crossings, contacts) = closed_circle_boundary_crossings(topo, plane, wall, circle, tol)?;
+    let (c, r) = (circle.center(), circle.radius());
+    let start = circle.evaluate(0.0);
+    let raw = RawCurve {
+        bbox: Aabb3::from_points([c + Vec3::new(-r, -r, -r), c + Vec3::new(r, r, r)]),
+        curve: EdgeCurve::Circle(circle.clone()),
+        t_range: (0.0, TAU),
+        p_start: start,
+        p_end: start,
+    };
+    let mut arena = GfaArena::new();
+    emit_split_circle_arcs(
+        topo, &mut arena, plane, wall, &raw, circle, &crossings, &contacts, tol,
+    )?;
+    Ok(arena.curves.iter().map(|curve| curve.t_range).collect())
+}
+
+/// Whether one of `arcs` runs through the point `p` of their circle.
+fn covers(arcs: &[RawCurve], p: Point3) -> bool {
+    arcs.iter().any(|arc| {
+        let EdgeCurve::Circle(circle) = &arc.curve else {
+            panic!("arc of a circle")
+        };
+        let (t0, t1) = arc.t_range;
+        (circle.project(p) - t0).rem_euclid(TAU) <= t1 - t0
+    })
+}
+
+/// The slot of the first finding, `stretch` times as tall and `stretch²`
+/// times as far to the left of the circle: a hole across the unit circle at
+/// (1, 0) spanning y = 0 .. 8e-6 · stretch, whose left side (3e-6 ·
+/// stretch² from the circle) is notched inward to a tip 5e-8 short of the
+/// circle half-way up.
+fn notched_slot(stretch: f64) -> Vec<(f64, f64)> {
+    let y = |k: f64| k * 1e-6 * stretch;
+    let left = 1.0 - 3e-6 * stretch * stretch;
+    vec![
+        (left, 0.0),
+        (1.001, 0.0),
+        (1.001, y(8.0)),
+        (left, y(8.0)),
+        (left, y(6.0)),
+        (0.999_999_95, y(4.0)),
+        (left, y(2.0)),
+    ]
+}
+
+/// Finding 1: an undecided probe is not a proof of a touch.
+///
+/// The unit circle runs up through the slot, 3e-6 inside the hole, and
+/// passes the notch's tip by 5e-8: within the band, so the point of the
+/// section half-way between its two crossings cannot be put on either
+/// side. That used to read as "the section does not dip into the hole",
+/// the two crossings as one touch, and the whole circle was kept. The
+/// crossings are found where they are, at (1, 0) and (1, 8e-6); the tip is
+/// a touch between them, inside the hole.
+#[test]
+fn an_undecided_probe_is_not_a_proof_of_a_touch() {
+    let (section, surface) = upright(0.0, 0.0, 1.0);
+    for stretch in [1.0, 10.0] {
+        let top = 8e-6 * stretch;
+        let mut topo = Topology::new();
+        let hole = polygon_wire(&mut topo, &notched_slot(stretch), 0.0);
+        let certified =
+            certify_hole(&topo, hole, &section, Some(&surface), Tolerance::new()).unwrap();
+        let crossings: Vec<Point3> = certified.crossings().map(|c| c.at).collect();
+        let what = format!("stretch {stretch}: {crossings:?}");
+        assert_eq!(crossings.len(), 2, "{what}");
+        for wanted in [
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new((1.0 - top * top).sqrt(), top, 0.0),
+        ] {
             assert!(
-                !(mid.x() > 0.0 && mid.y() > 0.0),
-                "scale {s}: a span through {mid:?} is inside the hole"
+                crossings.iter().any(|p| (*p - wanted).length() <= 1e-12),
+                "{what}: no crossing at {wanted:?}"
             );
         }
+        let touches: Vec<Point3> = certified.touches().collect();
+        assert_eq!(touches.len(), 1, "{what}: {touches:?}");
+        assert!((touches[0].y() - 0.5 * top).abs() <= 1e-9, "{touches:?}");
+
+        let found = hole_hits(&topo, hole, &section, &surface);
+        if stretch > 1.0 {
+            // 8e-5 apart: two crossings, kept.
+            let found = found.unwrap().unwrap();
+            assert_eq!(found.crossings.len(), 2, "{what}");
+        } else {
+            // 8e-6 apart: closer than the separation distance, refused by
+            // name. Never no crossing and a touch.
+            let error = found.map(|_| ()).expect_err("crossings 8e-6 apart");
+            assert!(
+                error
+                    .to_string()
+                    .contains("the distance at which two crossings are one"),
+                "{error}"
+            );
+        }
+    }
+}
+
+/// Finding 1, through the trim: no kept span runs through the hole.
+#[test]
+fn a_span_through_a_hole_is_never_kept() {
+    for stretch in [1.0, 10.0] {
+        let pair = Pair::new(
+            &[(-0.5, -2.0), (2.0, -2.0), (2.0, 2.0), (-0.5, 2.0)],
+            |topo| vec![polygon_wire(topo, &notched_slot(stretch), 50.0)],
+            (0.0, 0.0),
+            1.0,
+            1.0,
+        );
+        let on_circle = |y: f64| Point3::new((1.0 - y * y).sqrt(), y, 50.0);
+        match pair.trim() {
+            Ok(arcs) => {
+                assert!(stretch > 1.0, "crossings 8e-6 apart were accepted");
+                let arcs = arcs.expect("exact arcs");
+                // Inside the hole either side of the notch's tip, and at
+                // the tip itself: not kept.
+                for k in [1.0, 2.0, 4.0, 6.0, 7.0] {
+                    let p = on_circle(k * 1e-6 * stretch);
+                    assert!(!covers(&arcs, p), "stretch {stretch}: kept through {p:?}");
+                }
+                // On the face below and above the slot: kept.
+                for y in [-1e-3, 1e-3] {
+                    assert!(
+                        covers(&arcs, on_circle(y)),
+                        "stretch {stretch}: dropped at {y}"
+                    );
+                }
+            }
+            Err(error) => {
+                assert!(stretch <= 1.0, "stretch {stretch}: {error}");
+                assert!(
+                    error
+                        .to_string()
+                        .contains("the distance at which two crossings are one"),
+                    "{error}"
+                );
+            }
+        }
+    }
+}
+
+/// Finding 2: a closed hole is never crossed an odd number of times.
+///
+/// The reviewer's quadrilateral: its side AB runs at y = 1 − 5e-8, within
+/// the band under the top of the unit circle, and ends at B, 5e-9 inside
+/// the circle, where the boundary turns away along BC. The circle enters
+/// the hole across AB at x = −√(1 − (1 − 5e-8)²) ≈ −3.16e-4, a shallow
+/// crossing whose partner on AB's line lies past B, and leaves it across
+/// the diagonal CD. The first crossing used to be dropped as a tangency of
+/// AB's line, leaving one crossing of a closed loop.
+#[test]
+fn a_closed_hole_is_never_crossed_an_odd_number_of_times() {
+    let (section, surface) = upright(0.0, 0.0, 1.0);
+    let corners = [
+        (-0.1, 0.999_999_95),
+        (-0.0003, 0.999_999_95),
+        (0.0997, 0.899_999_95),
+        (-0.1, 1.1),
+    ];
+    let mut topo = Topology::new();
+    let hole = polygon_wire(&mut topo, &corners, 0.0);
+    let found = hole_hits(&topo, hole, &section, &surface).unwrap().unwrap();
+    assert_eq!(found.crossings.len(), 2, "{:?}", found.crossings);
+    let y = 0.999_999_95_f64;
+    let shallow = Point3::new(-(1.0 - y * y).sqrt(), y, 0.0);
+    assert!(
+        found
+            .crossings
+            .iter()
+            .any(|p| (*p - shallow).length() <= 1e-10),
+        "no crossing on AB at {shallow:?}: {:?}",
+        found.crossings
+    );
+    // The other on CD, the line through C and D: x(t), y(t) on the circle.
+    let on_cd = |p: &Point3| {
+        let (c, d) = (corners[2], corners[3]);
+        ((p.x() - c.0) * (d.1 - c.1) - (p.y() - c.1) * (d.0 - c.0)).abs() <= 1e-12
+            && (p.x().hypot(p.y()) - 1.0).abs() <= 1e-12
+    };
+    assert!(found.crossings.iter().any(on_cd), "{:?}", found.crossings);
+
+    // The family it came from: the side's height, the corner's position and
+    // the next side's slope swept through the band. Every accepted answer
+    // is even.
+    let (mut accepted, mut refused) = (0, 0);
+    for tilt in [-1.0, -0.1, -0.01, -0.001, 0.001, 0.01, 0.1, 1.0] {
+        for d in [0.05e-7, 0.5e-7, 0.99e-7, 1.01e-7, 2e-7, 10e-7] {
+            for vx in [-1e-3, -3e-4, -1e-4, 0.0, 1e-4, 3e-4, 1e-3] {
+                let corners = [
+                    (-0.1, 1.0 - d),
+                    (vx, 1.0 - d),
+                    (vx + 0.1, 1.0 - d + 0.1 * tilt),
+                    (-0.1, 1.1),
+                ];
+                let mut topo = Topology::new();
+                let hole = polygon_wire(&mut topo, &corners, 0.0);
+                match hole_hits(&topo, hole, &section, &surface) {
+                    Ok(found) => {
+                        accepted += 1;
+                        let found = found.unwrap();
+                        assert_eq!(
+                            found.crossings.len() % 2,
+                            0,
+                            "{corners:?}: {:?}",
+                            found.crossings
+                        );
+                    }
+                    Err(error) => {
+                        refused += 1;
+                        assert!(
+                            error.to_string().contains("cannot be told from a tangency"),
+                            "{corners:?}: {error}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(accepted + refused, 336);
+    assert!(accepted > refused, "{accepted} accepted, {refused} refused");
+}
+
+/// Finding 3, on phase FF's side: two crossings of one hole edge 3e-6
+/// apart are not handed to the face splitter, which welds what lies within
+/// 1e-5 on that edge. A needle of semi-axes (0.005, 5e-6) pokes through the
+/// side x = 0.002 of the square hole [−0.002, 0.002]² at y = ±1.5e-6.
+/// Fifty tolerances wider (crossings 3.6e-5 apart), both are kept.
+#[test]
+fn crossings_the_face_splitter_would_weld_are_refused() {
+    for (b, y, kept) in [(5e-6_f64, 1.5e-6_f64, false), (5e-5, 1.8e-5, true)] {
+        let a = 0.005_f64;
+        let cx = 0.002 - a * (1.0 - (y / b).powi(2)).sqrt();
+        let cos = b / a;
+        let axis = Vec3::new(-(1.0 - cos * cos).sqrt(), 0.0, cos);
+        let centre = Point3::new(cx, 0.0, 0.0);
+        let section = EdgeCurve::Ellipse(
+            Ellipse3D::new_with_ref(centre, Z, a, b, Vec3::new(1.0, 0.0, 0.0)).unwrap(),
+        );
+        let surface = FaceSurface::Cylinder(CylindricalSurface::new(centre, axis, b).unwrap());
+        let mut topo = Topology::new();
+        let hole = polygon_wire(&mut topo, &square(0.002, (0.0, 0.0)), 0.0);
+        // The certificate places both, 2 y apart on the side x = 0.002.
+        let certified =
+            certify_hole(&topo, hole, &section, Some(&surface), Tolerance::new()).unwrap();
+        let right: Vec<Point3> = certified
+            .crossings()
+            .map(|c| c.at)
+            .filter(|p| (p.x() - 0.002).abs() < 1e-12)
+            .collect();
+        assert_eq!(right.len(), 2, "b = {b}");
+        for p in &right {
+            assert!((p.y().abs() - y).abs() < 1e-12, "b = {b}: {p:?}");
+        }
+        let found = hole_hits(&topo, hole, &section, &surface);
+        if kept {
+            assert!(found.unwrap().unwrap().crossings.len() >= 2, "b = {b}");
+        } else {
+            let error = found.map(|_| ()).expect_err("crossings 3e-6 apart");
+            assert!(
+                error.to_string().contains("cannot be told from a tangency"),
+                "{error}"
+            );
+        }
+    }
+}
+
+/// Finding 4: a length, not an angle, decides whether two crossings are
+/// one. A circle of radius 5e6 crosses a slot 1e-3 wide at (3e6, 4e6): the
+/// two crossings are 1.25e-3 apart and 2.5e-10 rad apart. The trim
+/// deduplicated parameters at 1e-9 rad, dropped one, and kept a span across
+/// the slot.
+#[test]
+fn crossings_a_millimetre_apart_on_a_large_circle_stay_apart() {
+    let (x0, x1) = (3e6 - 0.0005, 3e6 + 0.0005);
+    let pair = Pair::new(
+        &square(10.0, (0.0, 0.0)),
+        |topo| {
+            vec![polygon_wire(
+                topo,
+                &[
+                    (x0, 4e6 - 10.0),
+                    (x1, 4e6 - 10.0),
+                    (x1, 4e6 + 10.0),
+                    (x0, 4e6 + 10.0),
+                ],
+                50e6,
+            )]
+        },
+        (0.0, 0.0),
+        5.0,
+        1e6,
+    );
+    let hole = pair.topo.face(pair.plane).unwrap().inner_wires()[0];
+    let found = hole_hits(&pair.topo, hole, &pair.raw.curve, &pair.surfaces.1)
+        .unwrap()
+        .unwrap();
+    // x = x0, x1 on the circle x² + y² = (5e6)².
+    let on_circle = |x: f64| Point3::new(x, (25e12 - x * x).sqrt(), 50e6);
+    assert_eq!(found.crossings.len(), 2, "{:?}", found.crossings);
+    for wanted in [on_circle(x0), on_circle(x1)] {
+        assert!(
+            found
+                .crossings
+                .iter()
+                .any(|p| (*p - wanted).length() <= 1e-8),
+            "no crossing at {wanted:?}: {:?}",
+            found.crossings
+        );
+    }
+    let arcs = pair.trim().unwrap().expect("exact arcs");
+    for p in &found.crossings {
+        assert!(
+            arcs.iter()
+                .any(|a| (a.p_start - *p).length() < 1e-8 || (a.p_end - *p).length() < 1e-8),
+            "no span ends at {p:?}"
+        );
+    }
+    // Nothing kept across the slot, and the circle kept either side of it.
+    assert!(!covers(&arcs, on_circle(3e6)));
+    for x in [3e6 - 1.0, 3e6 + 1.0] {
+        assert!(covers(&arcs, on_circle(x)), "dropped at x = {x}");
+    }
+}
+
+/// The same four lengths on an eccentric section: an ellipse of semi-axes
+/// (1000, 1) crossed twice 1e-3 apart on its flat side, where one radian of
+/// its parameter is a thousand units long, and twice 1e-3 apart round its
+/// end, where it is one. Both pairs stay apart; a parameter tolerance
+/// would treat them a thousandfold differently.
+#[test]
+fn crossings_on_an_eccentric_section_are_told_apart_by_length() {
+    let (a, b) = (1000.0, 1.0);
+    let (ellipse, cylinder) = tilted_section(a, b, 0.0);
+    let section = EdgeCurve::Ellipse(ellipse);
+    // A slot 1e-3 wide across the flat side at x = 0, and one across the
+    // end at y = 0.
+    for corners in [
+        [(-5e-4, 0.5), (5e-4, 0.5), (5e-4, 1.5), (-5e-4, 1.5)],
+        [
+            (999.0, -5e-4),
+            (1001.0, -5e-4),
+            (1001.0, 5e-4),
+            (999.0, 5e-4),
+        ],
+    ] {
+        let mut topo = Topology::new();
+        let hole = polygon_wire(&mut topo, &corners, 0.0);
+        let found = hole_hits(&topo, hole, &section, &cylinder)
+            .unwrap_or_else(|e| panic!("{corners:?}: {e}"))
+            .unwrap();
+        assert_eq!(
+            found.crossings.len(),
+            2,
+            "{corners:?}: {:?}",
+            found.crossings
+        );
+        let apart = (found.crossings[0] - found.crossings[1]).length();
+        assert!((apart - 1e-3).abs() < 1e-6, "{corners:?}: {apart}");
+    }
+}
+
+/// A corner of a hole cut by a short chamfer the section crosses, and holes
+/// the section does not cross at all.
+///
+/// The unit circle enters the hole `[0.8, 2] × [−1, 0.6]` at (0.8, −0.6)
+/// and leaves it across the chamfer that cuts its corner at (0.8, 0.6),
+/// where the chamfer's line `x − y = 0.2 + c` meets the circle. Both
+/// crossings are found where they are, however short the chamfer. With the
+/// chamfer 4.2e-6 long the second lies 2.1e-6 from the chamfer's ends:
+/// closer to two vertices of the face than the face's arrangement keeps a
+/// section end apart from a vertex, so a span kept beside it is refused by
+/// name. Ten times longer, both are kept.
+///
+/// A hole wholly inside the section and one that holds it whole are crossed
+/// nowhere: no crossing, no touch, and nothing to refuse.
+#[test]
+fn a_short_chamfer_is_crossed_where_it_is_and_whole_holes_are_left_alone() {
+    let (section, surface) = upright(0.0, 0.0, 1.0);
+    for (c, kept) in [(3e-6_f64, false), (3e-5, true)] {
+        let mut topo = Topology::new();
+        let hole = polygon_wire(
+            &mut topo,
+            &[
+                (0.8, 0.6 - c),
+                (0.8 + c, 0.6),
+                (2.0, 0.6),
+                (2.0, -1.0),
+                (0.8, -1.0),
+            ],
+            0.0,
+        );
+        let certified =
+            certify_hole(&topo, hole, &section, Some(&surface), Tolerance::new()).unwrap();
+        let crossings: Vec<Point3> = certified.crossings().map(|x| x.at).collect();
+        assert_eq!(crossings.len(), 2, "c = {c}: {crossings:?}");
+        // On the chamfer: x − y = 0.2 + c and x² + y² = 1.
+        let k = 0.2 + c;
+        let y = 0.5 * (-k + (2.0 - k * k).sqrt());
+        for wanted in [Point3::new(0.8, -0.6, 0.0), Point3::new(y + k, y, 0.0)] {
+            assert!(
+                crossings.iter().any(|p| (*p - wanted).length() <= 1e-12),
+                "c = {c}: no crossing at {wanted:?}: {crossings:?}"
+            );
+        }
+        let found = hole_hits(&topo, hole, &section, &surface);
+        if kept {
+            assert_eq!(found.unwrap().unwrap().crossings.len(), 2, "c = {c}");
+        } else {
+            let error = found
+                .map(|_| ())
+                .expect_err("a crossing 2e-6 from two vertices");
+            assert!(
+                error.to_string().contains("is a vertex of the face"),
+                "{error}"
+            );
+        }
+    }
+    for corners in [square(0.1, (0.0, 0.0)), square(2.0, (0.0, 0.0))] {
+        let mut topo = Topology::new();
+        let hole = polygon_wire(&mut topo, &corners, 0.0);
+        let found = hole_hits(&topo, hole, &section, &surface).unwrap().unwrap();
+        assert!(
+            found.crossings.is_empty() && found.touches.is_empty(),
+            "{corners:?}: {:?} {:?}",
+            found.crossings,
+            found.touches
+        );
     }
 }

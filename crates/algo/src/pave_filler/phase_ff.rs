@@ -30,6 +30,7 @@ mod circular_cap_clip;
 mod cone_plane;
 mod cylinder_section_fit;
 mod torus_extent;
+mod plane_section_certificate;
 
 /// Default number of samples for NURBS intersection.
 const NURBS_SAMPLES: usize = 32;
@@ -5557,23 +5558,26 @@ fn trim_closed_curve_interval(raw: &RawCurve, t0: f64, t1: f64) -> Vec<RawCurve>
 ///
 /// The planar face's HOLES bound the section as its outline does. A hole
 /// made of lines, and of circle arcs when the section is itself a circle,
-/// contributes its transversal crossings (see [`plane_hole_crossings`]).
-/// Without them a section that leaves the face through a hole (a cutter
-/// standing on the wall of a shelled box: the rim is an outline with the
-/// cavity opening as its hole) kept running across the opening. A hole with
-/// any other edge is not consulted, as no hole was before.
+/// contributes its transversal crossings (see
+/// [`plane_section_certificate`]). Without them a section that leaves the
+/// face through a hole (a cutter standing on the wall of a shelled box: the
+/// rim is an outline with the cavity opening as its hole) kept running
+/// across the opening. A hole with any other edge is not read, as no hole
+/// was before.
 ///
-/// A span between consecutive crossings is kept when it lies on the planar
-/// face — inside the outline and outside those holes, decided on the loops
-/// themselves — and inside both faces' extents.
+/// A span between consecutive crossings that ends on no hole is kept when
+/// its midpoint is not off the planar face — outside the outline or inside
+/// one of those holes, decided on the loops themselves — and lies inside
+/// both faces' extents. A span that ends on a hole is kept only when the
+/// certificate puts it on the face
+/// ([`plane_section_certificate::SpanPlan::keep`]).
 ///
 /// # Errors
 ///
 /// [`AlgoError::IntersectionFailed`] when the kept spans both end on a hole
 /// and touch a loop of the planar face (see [`PlaneFaceContacts::pinch`]),
-/// or when the section passes a straight hole edge by more than the
-/// tolerance along a stretch its crossings do not resolve (see
-/// [`plane_hole_crossings`]).
+/// or when a span that ends on a hole would be kept but cannot be certified
+/// on the face or off it.
 #[allow(clippy::too_many_arguments)]
 fn trim_ellipse_to_boundary_crossings(
     topo: &Topology,
@@ -5705,10 +5709,9 @@ fn trim_ellipse_to_boundary_crossings_impl(
     // the section ellipse.
     let face = topo.face(plane_face).ok()?;
     let mut crossings: Vec<Point3> = Vec::new();
-    // `merge` is the dedup distance: `CROSSING_DEDUP` for the seam, rim and
-    // outline crossings, and the hole collector's own merge distance (no
-    // larger) for a hole's, so that the crossings it resolved as distinct
-    // stay distinct here.
+    // `merge` is the dedup distance for the seam, rim and outline crossings
+    // (`CROSSING_DEDUP`). A hole's crossings do not come through here: the
+    // certificate hands them over as it placed them.
     let push_crossing = |p: Point3, crossings: &mut Vec<Point3>, merge: f64| {
         // Keep only points actually on the section curve (rejects a cone's
         // far-nappe root or a seam-line crossing that misses the ellipse).
@@ -5759,16 +5762,20 @@ fn trim_ellipse_to_boundary_crossings_impl(
             };
             match edge.curve() {
                 EdgeCurve::Line => {
-                    if let Some(p) =
-                        line_segment_plane_crossing(sv.point(), ev.point(), *plane_n, *plane_d)
-                    {
+                    if let Some(p) = line_segment_plane_crossing(
+                        sv.point(),
+                        ev.point(),
+                        *plane_n,
+                        *plane_d,
+                        tol.linear,
+                    ) {
                         push_crossing(p, &mut crossings, CROSSING_DEDUP);
                     }
                 }
                 EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) => {
                     // An open rim arc without parameter authority cannot be
                     // clipped exactly; defer the whole pair to the generic path.
-                    for p in conic_edge_plane_crossings(edge, *plane_n, *plane_d)? {
+                    for p in conic_edge_plane_crossings(edge, *plane_n, *plane_d, tol.linear)? {
                         push_crossing(p, &mut crossings, CROSSING_DEDUP);
                     }
                 }
@@ -5785,6 +5792,7 @@ fn trim_ellipse_to_boundary_crossings_impl(
     let loop_frame =
         crate::builder::plane_frame::PlaneFrame::from_normal_and_point(*plane_n, raw.p_start);
     let conic = SectionConic::of_curve(&raw.curve)?;
+    let model = conic.tolerance(tol);
     let mut contacts = PlaneFaceContacts {
         face: Some(plane_face),
         ..PlaneFaceContacts::default()
@@ -5807,55 +5815,49 @@ fn trim_ellipse_to_boundary_crossings_impl(
         if let LineContact::Touch(foot) = conic.line_contact(sp, ep, tol) {
             contacts.touches.push(foot);
         }
-        for p in line_segment_surface_crossings(sp, ep, analytic_surf) {
+        for p in line_segment_surface_crossings(sp, ep, analytic_surf, tol.linear) {
             push_crossing(p, &mut crossings, CROSSING_DEDUP);
         }
     }
 
-    let mut hole_outlines: Vec<Vec<crate::builder::classify_2d::PlanarLoopEdge>> = Vec::new();
-    let hole_merge = CrossingTolerance::new(&conic, tol, CROSSING_DEDUP).merge;
-    for &wire_id in face.inner_wires() {
-        let hole = match plane_hole_crossings(
-            topo,
-            wire_id,
-            &raw.curve,
-            analytic_surf,
-            &loop_frame,
-            tol,
-        ) {
-            Ok(Some(hole)) => hole,
-            Ok(None) => continue,
-            Err(error) => {
-                *refusal = Some(error);
-                return None;
-            }
-        };
-        contacts.touches.extend(hole.touches);
-        for p in hole.crossings {
-            contacts.hole_crossings.push(p);
-            push_crossing(p, &mut crossings, hole_merge);
+    // The holes, through the certificate: a hole's crossings are split
+    // points exactly as it placed them. One within the band of a split point
+    // already collected is that point; anything farther is its own, and the
+    // gate refuses a span kept beside two it cannot keep apart.
+    let certificate = plane_section_certificate::PlaneSectionCertificate::of_face(
+        topo,
+        plane_face,
+        &raw.curve,
+        Some(analytic_surf),
+        tol,
+    )?;
+    contacts.touches.extend(certificate.hole_touches());
+    for (_, crossing) in certificate.hole_crossings() {
+        contacts.hole_crossings.push(crossing.at);
+        if !crossings
+            .iter()
+            .any(|q| (*q - crossing.at).length() <= model.band)
+        {
+            crossings.push(crossing.at);
         }
-        hole_outlines.push(hole.outline);
     }
-    // Every crossing with the outline and with these holes is a split point,
-    // so a span between consecutive crossings lies wholly on the face or
-    // wholly off it, and one point of the span decides which: off the face
-    // is outside the outline or inside a hole. The extent's own test cannot
-    // decide it, because its margin (1 % of the face's smaller side, there
-    // for sections running along a boundary) also admits a span that left
-    // the face by less than that. Such a span over air was harmless; over
-    // material (a cutter overlapping the inner wall of a shelled box leaves
-    // the cavity floor into the wall) it stayed a section of the partner
-    // cylinder, whose band between the floor and the rim then never closed.
-    // Undecided — the point within tolerance of a loop, a span touching it
-    // there — leaves the span to the extent test, as before.
+    // Every crossing with the outline and with the holes read is a split
+    // point, so a span between consecutive crossings lies wholly on the face
+    // or wholly off it, and one point of the span decides which: off the
+    // face is outside the outline or inside a hole. The extent's own test
+    // cannot decide it, because its margin (1 % of the face's smaller side,
+    // there for sections running along a boundary) also admits a span that
+    // left the face by less than that. Such a span over air was harmless;
+    // over material (a cutter overlapping the inner wall of a shelled box
+    // leaves the cavity floor into the wall) it stayed a section of the
+    // partner cylinder, whose band between the floor and the rim then never
+    // closed. Undecided — the point within tolerance of a loop, a span
+    // touching it there — leaves a span that ends on no hole to the extent
+    // test, as before; a span that ends on a hole is the certificate's.
     let off_face = |p: Point3| {
-        let uv = loop_frame.project(p);
         let band = tol.linear * 10.0;
-        planar_loop_side(uv, &outer_outline, band) == Some(false)
-            || hole_outlines
-                .iter()
-                .any(|outline| planar_loop_side(uv, outline, band) == Some(true))
+        planar_loop_side(loop_frame.project(p), &outer_outline, band) == Some(false)
+            || certificate.inside_a_hole(p, band)
     };
 
     // Need at least two crossings to bound an arc.
@@ -5869,15 +5871,35 @@ fn trim_ellipse_to_boundary_crossings_impl(
         .map(|p| (sec.project(p).rem_euclid(std::f64::consts::TAU), p))
         .collect();
     t_pts.compact_sort_by(|a, b| a.0.total_cmp(&b.0));
-    // Drop near-duplicate parameters (a crossing hit by two adjacent edges).
-    t_pts.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-9);
+    // Drop a crossing reached twice (by two adjacent edges). Two crossings
+    // are one when they are the same POINT: within the band, or, for two
+    // that are not a hole's, within a billionth of the section's size (the
+    // rounding of two computations of one root, which is what the 1e-9 rad
+    // this compared the parameters with comes to on a circle). A parameter
+    // difference is not a length: 1e-9 rad is 5 mm on a section of radius
+    // 5e6, and far less along an eccentric ellipse's flat side than round
+    // its ends. A hole's crossing is one the certificate placed and told
+    // apart from every other; it is never merged away here.
+    let [(_, a_axis), (_, b_axis)] = conic.axes;
+    let same_root = ROOT_ROUNDING * a_axis.max(b_axis);
+    let on_a_hole = |p: Point3| {
+        certificate
+            .hole_crossings()
+            .any(|(_, crossing)| (crossing.at - p).length() <= model.band)
+    };
+    t_pts.dedup_by(|a, b| {
+        let apart = (a.1 - b.1).length();
+        apart <= model.band || (apart <= same_root && !on_a_hole(a.1) && !on_a_hole(b.1))
+    });
     if t_pts.len() < 2 {
         return None;
     }
 
     // Walk consecutive crossing pairs (including the wrap-around segment).
-    // Emit an arc for each interval whose midpoint lies inside BOTH faces.
+    // Emit an arc for each interval the gate keeps.
+    let plan = certificate.plan(&t_pts);
     let mut arcs = Vec::new();
+    let mut kept_spans = Vec::new();
     let m = t_pts.len();
     for i in 0..m {
         let (t0, p0) = t_pts[i];
@@ -5888,13 +5910,34 @@ fn trim_ellipse_to_boundary_crossings_impl(
         }
         let t_mid = 0.5 * (t0 + t1);
         let mid = sec.evaluate(t_mid);
-        if off_face(mid) || !(ext_a.contains(mid) && ext_b.contains(mid)) {
+        let elsewhere = !off_face(mid) && ext_a.contains(mid) && ext_b.contains(mid);
+        let kept = match plan.keep(i, (t0, t1), elsewhere) {
+            Ok(plane_section_certificate::Kept::No) => continue,
+            Ok(kept) => kept,
+            Err(error) => {
+                *refusal = Some(error);
+                return None;
+            }
+        };
+        // Skip a degenerate sliver: a span between two copies of one
+        // crossing. The same crossing reached two ways (by two boundary
+        // edges that meet on the surface, or by an edge and the seam) can
+        // differ by the conditioning of a near-tangent root, the square
+        // root of the rounding times the section's size, which outgrows
+        // the fixed dedup distance on a large section: a box corner on a
+        // cylinder at scale 1000 leaves two copies 1e-3 apart. So the
+        // sliver is a LENGTH, a millionth of the section's size (what the
+        // 1e-6 rad this compared the parameters with comes to on a circle;
+        // on an ellipse a parameter difference is a different length at
+        // every point). A span that ends on a hole is not skipped: the
+        // gate has certified it, and its ends are farther apart than the
+        // separation distance.
+        if kept == plane_section_certificate::Kept::AsBefore
+            && conic.arc_length(t0, t1) < SLIVER_OF_SIZE * a_axis.max(b_axis)
+        {
             continue;
         }
-        // Skip a degenerate sliver (the two crossings coincide angularly).
-        if (t1 - t0) < 1e-6 {
-            continue;
-        }
+        kept_spans.push(i);
         // Split into sub-arcs each spanning strictly less than π, mirroring
         // the closed-circle window emitter: downstream consumers interpret an
         // open Circle/Ellipse edge as the SHORTER arc between its endpoints,
@@ -5923,9 +5966,13 @@ fn trim_ellipse_to_boundary_crossings_impl(
         }
     }
 
+    if let Err(error) = plan.certify_hole_splits(&kept_spans) {
+        *refusal = Some(error);
+        return None;
+    }
     let spans: Vec<(f64, f64)> = arcs.iter().map(|arc| arc.t_range).collect();
-    let [(_, a), (_, b)] = conic.axes;
-    if let Some(pinch) = contacts.pinch(&spans, |p| sec.project(p), a.max(b), tol) {
+    contacts.certificate = Some(certificate);
+    if let Some(pinch) = contacts.pinch(&spans, |p| sec.project(p), a_axis.max(b_axis), tol) {
         *refusal = Some(pinch);
         return None;
     }
@@ -5963,6 +6010,16 @@ fn planar_loop_side(
     crate::builder::classify_2d::point_in_planar_loop(p, outline, band)
 }
 
+/// A span of a trimmed section shorter than this fraction of the section's
+/// larger semi-axis is a sliver between two copies of one crossing (see
+/// `trim_ellipse_to_boundary_crossings`).
+const SLIVER_OF_SIZE: f64 = 1e-6;
+
+/// The rounding of a root of a boundary edge with a section, as a fraction
+/// of the parameter range it is found in: the floor of every window a root
+/// is accepted in, under the linear tolerance as a length.
+const ROOT_ROUNDING: f64 = 1e-9;
+
 /// How far a crossing found on a boundary edge's line may lie from the
 /// section and still be taken as a point of it (rejects a cone's far-nappe
 /// root or a seam-line crossing that misses the section).
@@ -5973,96 +6030,45 @@ const SECTION_ROOT_TOL: f64 = 1e-6;
 /// `trim_ellipse_to_boundary_crossings`).
 const CROSSING_DEDUP: f64 = 1e-5;
 
-/// The tolerances the crossings of a planar face's HOLES with a closed
-/// section are resolved with.
-///
-/// The model: lengths are absolute, as the kernel's linear tolerance is,
-/// with two scale terms. `size` is the section's larger semi-axis and
-/// `coord` the magnitude of the coordinates its roots are computed in (the
-/// centre's distance from the origin plus `size`).
-///
-/// - `band = max(tol.linear, 32 ε · coord)` either side of tangency: a
-///   contact within it is a touch, not a crossing. The second term is the
-///   rounding of `h − s` in [`SectionConic::line_contact`]; it only takes
-///   over past coordinates of about 1.4e7.
-/// - `weld = band`: two crossings closer than this are the same point (the
-///   same crossing reached from the two edges of a corner).
-/// - `root = clamp(1e-6 · size, band, max(1e-6, band))`: how far a root on
-///   an edge's line may lie from the section (it filters numerical strays,
-///   not near misses). It is the historic 1e-6 for a section of unit size
-///   and larger, and shrinks with a smaller one down to the band.
-/// - `merge = clamp(1e-5 · size, 10 · band, max(cap, 10 · band))`: two
-///   crossings closer than this are one contact, which is then resolved as
-///   a crossing, a touch or a refusal (see [`resolve_hole_hits`]); `cap` is
-///   the merge distance the collector's own boundary crossings are deduped
-///   at ([`CROSSING_DEDUP`] for the ellipse trim, `10 · tol.linear` for the
-///   closed-circle collector). So it is 1e-5 of the section's size, but
-///   never more than the collector's own dedup (a larger section does not
-///   round worse: its roots are as accurate as its coordinates, ~ε · coord,
-///   far below the cap up to coordinates of 1e9) and never less than ten
-///   bands, the weld below which the kernel cannot tell two vertices apart.
-///   Below a section size of 0.1 the floor rules, so at scale 1e-3 two
-///   crossings 1e-6 apart are still told apart, not 1e-5.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct CrossingTolerance {
-    band: f64,
-    weld: f64,
-    root: f64,
-    merge: f64,
-}
-
-impl CrossingTolerance {
-    fn new(conic: &SectionConic, tol: Tolerance, cap: f64) -> Self {
-        let [(_, a), (_, b)] = conic.axes;
-        let size = a.max(b);
-        let coord = (conic.center - Point3::new(0.0, 0.0, 0.0)).length() + size;
-        let band = tol.linear.max(32.0 * f64::EPSILON * coord);
-        Self {
-            band,
-            weld: band,
-            root: (SECTION_ROOT_TOL * size).clamp(band, SECTION_ROOT_TOL.max(band)),
-            merge: (CROSSING_DEDUP * size).clamp(10.0 * band, cap.max(10.0 * band)),
-        }
-    }
-}
-
 /// The refusal for a straight hole edge whose chord with the section cannot
 /// be resolved: the edge stays within tolerance of the cut surface along it
 /// (`roots` is `None`), or the crossings found (`roots`) do not bound it
 /// (see [`Chord::enters`] and [`Chord::resolved_by`]).
-fn unresolved_chord(
+fn unresolved_chord_message(
     edge: remus_topology::edge::EdgeId,
     roots: Option<&[Point3]>,
     chord: Chord,
-) -> AlgoError {
+) -> String {
     let why = roots.map_or_else(
         || "the edge stays within tolerance of the cut surface along it".to_owned(),
         |roots| format!("{} crossing(s) of the edge bound it", roots.len()),
     );
-    AlgoError::IntersectionFailed(format!(
+    format!(
         "a section passes hole edge {edge:?} of a planar face by more than the tolerance \
          along a chord of length {:e}, but {why}; the contact cannot be told from a tangency",
         2.0 * chord.half,
-    ))
+    )
 }
 
-/// The refusal for crossings of one hole closer together than the merge
-/// distance that do not resolve to one crossing or a touch (see
-/// [`resolve_hole_hits`]).
-fn unresolved_hole_contact(
+/// The refusal for a crossing of a hole that lies closer than `separate`,
+/// the least distance between two distinct section vertices on a planar
+/// face ([`crate::section_tolerance::SectionTolerance::separate`]), to
+/// another vertex the face carries there.
+fn close_crossings_message(
     hole: remus_topology::wire::WireId,
     at: Point3,
-    merge: f64,
+    separate: f64,
     why: &str,
-) -> AlgoError {
-    AlgoError::IntersectionFailed(format!(
+) -> String {
+    format!(
         "a section meets hole {hole:?} of a planar face at {at:?} in crossings closer than \
-         {merge:e}, the distance at which two crossings are one, and {why}; the contact \
+         {separate:e}, the distance at which two crossings are one, and {why}; the contact \
          cannot be told from a tangency"
-    ))
+    )
 }
 
 /// A closed circle or ellipse section as its centre and its two axes.
+#[derive(Clone, Copy)]
 struct SectionConic {
     center: Point3,
     /// Unit axis and semi-axis length, twice (equal lengths for a circle).
@@ -6145,9 +6151,9 @@ impl Chord {
     /// section.
     ///
     /// Only asked of an edge that runs inside the section for longer than
-    /// the merge distance (see [`Chord::on_edge`]): a shorter stretch ends
-    /// within that distance of a vertex, and its crossing is resolved with
-    /// the neighbouring edge's (see [`resolve_hole_hits`]).
+    /// the separation distance (see [`Chord::on_edge`]): a shorter stretch
+    /// ends within that distance of a vertex, and its crossing is decided
+    /// with the neighbouring edge's (see [`plane_section_certificate`]).
     ///
     /// The reach past the line is measured in the section's plane. Where
     /// that plane meets the surface at a grazing angle (a cylinder tilted
@@ -6251,6 +6257,79 @@ impl SectionConic {
         self.center + u * (a * cos) + v * (b * sin)
     }
 
+    /// The section's speed at chart angle `t`: the length it covers per
+    /// unit of its parameter there. It runs from the smaller semi-axis (at
+    /// the major vertices) to the larger (at the minor ones), so a
+    /// parameter difference is a length only through it.
+    fn speed(&self, t: f64) -> f64 {
+        let [(_, a), (_, b)] = self.axes;
+        let (sin, cos) = t.sin_cos();
+        (a * sin).hypot(b * cos)
+    }
+
+    /// The length of the section from chart angle `t0` to `t1`, by its
+    /// inscribed polygon (a lower bound, within a percent below a quarter
+    /// turn of a circle; exact in the limit of a short span).
+    fn arc_length(&self, t0: f64, t1: f64) -> f64 {
+        const STEPS: u32 = 16;
+        let mut length = 0.0;
+        let mut previous = self.point(t0);
+        for step in 1..=STEPS {
+            let next = self.point((t1 - t0).mul_add(f64::from(step) / f64::from(STEPS), t0));
+            length += (next - previous).length();
+            previous = next;
+        }
+        length
+    }
+
+    /// The tolerance model for this section: see
+    /// [`crate::section_tolerance`]. The coordinate scale is the centre's
+    /// distance from the origin plus the larger semi-axis, the magnitude of
+    /// every coordinate a crossing with it is computed from.
+    fn tolerance(&self, tol: Tolerance) -> crate::section_tolerance::SectionTolerance {
+        let [(_, a), (_, b)] = self.axes;
+        let coord = (self.center - Point3::new(0.0, 0.0, 0.0)).length() + a.max(b);
+        crate::section_tolerance::SectionTolerance::at(tol.linear, coord)
+    }
+
+    /// The distance from `p`, a point of the section's plane, to the
+    /// section, and the chart angle of its foot; first order in the
+    /// distance (exact for a circle). `F / |∇F|` for the implicit form
+    /// `F = (x/a)² + (y/b)² − 1`: the chart's own radial projection moves a
+    /// point of an eccentric ellipse along the curve by up to the ratio of
+    /// the semi-axes times its distance, and is not a distance at all.
+    fn nearest(&self, p: Point3) -> (f64, f64) {
+        let [(u, a), (v, b)] = self.axes;
+        let w = p - self.center;
+        let (x, y) = (w.dot(u), w.dot(v));
+        let implicit = (x / a).mul_add(x / a, (y / b) * (y / b)) - 1.0;
+        let (gx, gy) = (2.0 * x / (a * a), 2.0 * y / (b * b));
+        let slope_squared = gx.mul_add(gx, gy * gy);
+        if slope_squared.is_nan() || slope_squared <= 0.0 {
+            return (f64::INFINITY, 0.0);
+        }
+        let step = implicit / slope_squared;
+        let (fx, fy) = (gx.mul_add(-step, x), gy.mul_add(-step, y));
+        (
+            implicit.abs() / slope_squared.sqrt(),
+            (fy / b).atan2(fx / a),
+        )
+    }
+
+    /// The section's bounding box.
+    fn bounds(&self) -> Aabb3 {
+        let [(u, a), (v, b)] = self.axes;
+        let reach = Vec3::new(
+            (a * u.x()).hypot(b * v.x()),
+            (a * u.y()).hypot(b * v.y()),
+            (a * u.z()).hypot(b * v.z()),
+        );
+        Aabb3 {
+            min: self.center + (-reach),
+            max: self.center + reach,
+        }
+    }
+
     /// Classify the contact with the segment `sp → ep`, which lies in the
     /// section's plane.
     ///
@@ -6266,9 +6345,10 @@ impl SectionConic {
     /// eccentricity; a chart that maps the section to the unit circle
     /// distorts it, by up to the ratio of the semi-axes.
     ///
-    /// The band either side of tangency is the linear tolerance, widened to
-    /// the rounding of `h − s` where the coordinates are large enough for
-    /// that to exceed it.
+    /// The band either side of tangency is the tolerance model's
+    /// ([`crate::section_tolerance::SectionTolerance::band`]): the linear
+    /// tolerance, widened to the rounding of `h − s` where the coordinates
+    /// are large enough for that to exceed it.
     ///
     /// A touch is not a crossing. The section stays on one side of the edge
     /// there to within the band, so a split point would cut off a span that
@@ -6301,8 +6381,7 @@ impl SectionConic {
         if !reach.is_finite() || support <= 0.0 {
             return LineContact::Miss;
         }
-        let scale = w.length().max((ep - self.center).length()) + a.max(b);
-        let band = tol.linear.max(32.0 * f64::EPSILON * scale);
+        let band = self.tolerance(tol).band;
         // The line in the chart where the section is the unit circle: it
         // runs at `chart_speed` per unit length, and its point nearest the
         // centre (the chord's midpoint) is `mid` along the edge.
@@ -6389,6 +6468,9 @@ struct PlaneFaceContacts {
     hole_crossings: Vec<Point3>,
     /// Touches of the outline or of a hole, strictly inside an edge.
     touches: Vec<Point3>,
+    /// The certificate of the section against the face's loops, once its
+    /// holes have been read: the gate for every span that ends on a hole.
+    certificate: Option<plane_section_certificate::PlaneSectionCertificate>,
 }
 
 impl PlaneFaceContacts {
@@ -6406,8 +6488,12 @@ impl PlaneFaceContacts {
     /// volume 1e-6 off, accepted). Until a pinched face is carried through
     /// meshing and measurement, the pair is refused by name.
     ///
-    /// Only contacts on a KEPT span count. The section is the whole circle
-    /// of its surface, and the partner face may be a small patch of that
+    /// Only contacts on a KEPT span count: a crossing at one of its ends, a
+    /// touch along it. A touch of a hole is the stretch of the section
+    /// within the tolerance of the hole, and counts when that stretch
+    /// reaches into a kept span; one on the far side of a crossing, where
+    /// the section runs inside the hole, does not. The section is the whole
+    /// circle of its surface, and the partner face may be a small patch of that
     /// surface (a rounded corner): the circle of such a corner touches the
     /// straight sides it runs into and crosses openings far from the patch,
     /// none of which the patch's own arc comes near. A touch alone, or with
@@ -6431,413 +6517,72 @@ impl PlaneFaceContacts {
                 TAU.mul_add(turns, t) <= t1 + slack
             })
         };
-        (self.hole_crossings.iter().any(on_kept_span) && self.touches.iter().any(on_kept_span))
-            .then(|| {
-                AlgoError::IntersectionFailed(format!(
-                    "a section crosses a hole of planar face {face:?} and touches one of its \
+        // A touch of a hole is a stretch the certificate knows the ends of;
+        // any other is placed by its foot and the slack.
+        let touch_on_kept_span = |p: &Point3| {
+            self.certificate
+                .as_ref()
+                .and_then(|certificate| certificate.hole_touch_on(*p, spans))
+                .unwrap_or_else(|| on_kept_span(p))
+        };
+        (self.hole_crossings.iter().any(on_kept_span)
+            && self.touches.iter().any(touch_on_kept_span))
+        .then(|| {
+            AlgoError::IntersectionFailed(format!(
+                "a section crosses a hole of planar face {face:?} and touches one of its \
                      loops; the face it leaves narrows to a point there"
-                ))
-            })
+            ))
+        })
     }
 }
 
-/// One hole of a planar face against a closed plane × cylinder/cone section.
+/// One hole of a planar face against a closed section, as the certificate
+/// reads it (see [`plane_section_certificate`]).
+#[cfg(test)]
 struct PlaneHoleCrossings {
     /// The hole's edges in its frame, in traversal order.
     outline: Vec<crate::builder::classify_2d::PlanarLoopEdge>,
-    /// Where the section crosses the hole TRANSVERSALLY, one point per
-    /// contact (see [`resolve_hole_hits`]).
+    /// Where the section crosses the hole, one point per crossing.
     crossings: Vec<Point3>,
-    /// For each of `crossings`, the circular hole edge it lies on, or `None`
-    /// for a straight one.
-    arcs: Vec<Option<remus_topology::edge::EdgeId>>,
     /// Where the section touches the hole without crossing it.
     touches: Vec<Point3>,
 }
 
-/// The outline of one hole of a planar face, the points where a closed plane
-/// × cylinder/cone `section` crosses it transversally, and whether the
-/// section touches it.
-///
-/// A straight hole edge is met through the same exact segment × surface
-/// roots as the outer outline, kept when [`SectionConic::line_contact`]
-/// reads a crossing. A circular hole edge is met only by a circular section,
-/// the two being coplanar circles: both roots of
-/// [`remus_math::curves::Circle3D::intersect_circle`] are crossings, and its
-/// single root is the foot of a touch. An elliptical section against a
-/// circular edge is a quartic this function does not solve. `Ok(None)`
-/// reports a hole with an edge it cannot meet exactly (or an arc with no
-/// stored parameter range): the caller then leaves the whole hole out,
-/// rather than split the section at some of its crossings and not others.
-///
-/// Only crossings on the section itself are kept (a cone's other nappe also
-/// meets an edge's line). Crossings closer together than the merge distance
-/// of [`CrossingTolerance`] are one contact (see [`resolve_hole_hits`]).
+/// One hole of a planar face against a closed plane × cylinder/cone
+/// `section`: its outline, the points where the section crosses it, and
+/// where the section touches it. `Ok(None)` reports a hole the certificate
+/// cannot read (an edge with no exact contact with the section, or an arc
+/// with no stored parameter range) or one the section runs along all the
+/// way round.
 ///
 /// # Errors
 ///
-/// [`AlgoError::IntersectionFailed`] when the section reaches more than the
-/// tolerance past a straight hole edge in the plane, but the edge stays
-/// within the tolerance of the cut surface along the chord (see
-/// [`Chord::enters`]), or its crossings with that edge do not resolve the
-/// chord (see [`Chord::resolved_by`]), or crossings closer than the merge
-/// distance are neither one crossing nor a touch: either way the spans
-/// between the crossings would not be known to lie wholly on or off the
-/// face.
+/// The refusal the gate raises as soon as a span ending at one of the
+/// hole's crossings is kept ([`plane_section_certificate::SpanPlan::keep`]):
+/// a crossing that cannot be placed, two closer than the separation
+/// distance, one that close to a vertex it is not at, or a straight edge
+/// whose chord with the section is not resolved.
+#[cfg(test)]
 fn plane_hole_crossings(
     topo: &Topology,
     wire_id: remus_topology::wire::WireId,
     section: &EdgeCurve,
     analytic_surf: &FaceSurface,
-    frame: &crate::builder::plane_frame::PlaneFrame,
     tol: Tolerance,
 ) -> Result<Option<PlaneHoleCrossings>, AlgoError> {
-    collect_plane_hole(
-        topo,
-        wire_id,
-        section,
-        Some(analytic_surf),
-        frame,
-        tol,
-        CROSSING_DEDUP,
-        &|sp, ep| line_segment_surface_crossings(sp, ep, analytic_surf),
-    )
-}
-
-/// [`plane_hole_crossings`] for any collector: `partner` is the surface the
-/// section was cut from (`None` skips [`Chord::enters`]), `cap` the distance
-/// the collector dedups its own boundary crossings at (see
-/// [`CrossingTolerance`]), and `line_roots` the collector's crossings of a
-/// straight edge with the section.
-#[allow(clippy::too_many_arguments)]
-fn collect_plane_hole(
-    topo: &Topology,
-    wire_id: remus_topology::wire::WireId,
-    section: &EdgeCurve,
-    partner: Option<&FaceSurface>,
-    frame: &crate::builder::plane_frame::PlaneFrame,
-    tol: Tolerance,
-    cap: f64,
-    line_roots: &dyn Fn(Point3, Point3) -> Vec<Point3>,
-) -> Result<Option<PlaneHoleCrossings>, AlgoError> {
-    let Some(conic) = SectionConic::of_curve(section) else {
-        return Ok(None);
-    };
-    let model = CrossingTolerance::new(&conic, tol, cap);
-    let mut refusal = None;
-    let raw = plane_hole_hits(
-        topo,
-        wire_id,
-        section,
-        &conic,
-        partner,
-        frame,
-        tol,
-        model,
-        line_roots,
-        &mut refusal,
-    );
-    if let Some(error) = refusal {
-        return Err(error);
-    }
-    let Some(RawHoleHits {
-        outline,
-        hits,
-        vertices,
-        mut touches,
-    }) = raw
+    let Some(hole) =
+        plane_section_certificate::certify_hole(topo, wire_id, section, Some(analytic_surf), tol)
     else {
         return Ok(None);
     };
-    let (kept, touched) =
-        resolve_hole_hits(wire_id, hits, &vertices, &conic, &outline, frame, model)?;
-    touches.extend(touched);
+    if let Some(why) = hole.crossings().find_map(|crossing| crossing.taint.clone()) {
+        return Err(AlgoError::IntersectionFailed(why));
+    }
     Ok(Some(PlaneHoleCrossings {
-        outline,
-        crossings: kept.iter().map(|&(p, _)| p).collect(),
-        arcs: kept.iter().map(|&(_, arc)| arc).collect(),
-        touches,
+        crossings: hole.crossings().map(|crossing| crossing.at).collect(),
+        touches: hole.touches().collect(),
+        outline: hole.outline,
     }))
-}
-
-/// A crossing of a hole edge with a section, and the circular hole edge it
-/// lies on (`None` for a straight one).
-type HoleHit = (Point3, Option<remus_topology::edge::EdgeId>);
-
-/// What one hole's edges give before [`resolve_hole_hits`]: its outline,
-/// every crossing found (with the circular edge it came from), its vertices
-/// and its touches.
-struct RawHoleHits {
-    outline: Vec<crate::builder::classify_2d::PlanarLoopEdge>,
-    hits: Vec<HoleHit>,
-    vertices: Vec<Point3>,
-    touches: Vec<Point3>,
-}
-
-/// The edge-by-edge part of [`collect_plane_hole`]. `refusal` receives the
-/// error when a straight edge's chord is not resolved; the result is then
-/// not to be used.
-#[allow(clippy::too_many_arguments)]
-fn plane_hole_hits(
-    topo: &Topology,
-    wire_id: remus_topology::wire::WireId,
-    section: &EdgeCurve,
-    conic: &SectionConic,
-    partner: Option<&FaceSurface>,
-    frame: &crate::builder::plane_frame::PlaneFrame,
-    tol: Tolerance,
-    model: CrossingTolerance,
-    line_roots: &dyn Fn(Point3, Point3) -> Vec<Point3>,
-    refusal: &mut Option<AlgoError>,
-) -> Option<RawHoleHits> {
-    use crate::builder::classify_2d::PlanarLoopEdge;
-
-    let on_section = |p: &Point3| match section {
-        EdgeCurve::Circle(c) => (c.evaluate(c.project(*p)) - *p).length() <= model.root,
-        EdgeCurve::Ellipse(e) => (e.evaluate(e.project(*p)) - *p).length() <= model.root,
-        // B24: exhaustive over `EdgeCurve` — `SectionConic::of_curve`
-        // has already declined every other curve.
-        EdgeCurve::Line
-        | EdgeCurve::NurbsCurve(_)
-        | EdgeCurve::Hyperbola(_)
-        | EdgeCurve::Parabola(_) => false,
-    };
-    let wire = topo.wire(wire_id).ok()?;
-    let mut hole = RawHoleHits {
-        outline: Vec::with_capacity(wire.edges().len()),
-        hits: Vec::new(),
-        vertices: Vec::with_capacity(wire.edges().len()),
-        touches: Vec::new(),
-    };
-    for oe in wire.edges() {
-        let edge = topo.edge(oe.edge()).ok()?;
-        let sp = topo.vertex(edge.start()).ok()?.point();
-        let ep = topo.vertex(edge.end()).ok()?.point();
-        hole.vertices.push(sp);
-        match (edge.curve(), section) {
-            (EdgeCurve::Line, _) => {
-                let (from, to) = if oe.is_forward() { (sp, ep) } else { (ep, sp) };
-                hole.outline.push(PlanarLoopEdge::Segment(
-                    frame.project(from),
-                    frame.project(to),
-                ));
-                match conic.line_contact(sp, ep, tol) {
-                    LineContact::Cross(chord) => {
-                        let mut roots = line_roots(sp, ep);
-                        roots.retain(on_section);
-                        // An edge inside the section for less than the merge
-                        // distance ends within it of a vertex: its contact
-                        // is resolved with the neighbouring edge's.
-                        if chord.on_edge() > model.merge
-                            && partner.is_some_and(|surface| !chord.enters(surface))
-                        {
-                            *refusal = Some(unresolved_chord(oe.edge(), None, chord));
-                            return None;
-                        }
-                        if !chord.resolved_by(&roots, model.merge) {
-                            *refusal = Some(unresolved_chord(oe.edge(), Some(&roots), chord));
-                            return None;
-                        }
-                        hole.hits.extend(roots.into_iter().map(|p| (p, None)));
-                    }
-                    LineContact::Touch(foot) => hole.touches.push(foot),
-                    LineContact::Miss => {}
-                }
-            }
-            (EdgeCurve::Circle(rim), EdgeCurve::Circle(circle)) => {
-                let (t0, t1) = super::helpers::authoritative_edge_domain(
-                    edge,
-                    oe.edge(),
-                    "plane hole crossing",
-                )
-                .ok()?;
-                let (a, b) = if oe.is_forward() { (t0, t1) } else { (t1, t0) };
-                let at = |t: f64| {
-                    edge.curve()
-                        .evaluate_with_endpoints((b - a).mul_add(t, a), sp, ep)
-                };
-                hole.outline.push(PlanarLoopEdge::project(
-                    edge.curve(),
-                    at,
-                    edge.is_closed(),
-                    frame,
-                    tol.angular,
-                )?);
-                if circle.intersect_circle(rim, tol.linear).len() == 2 {
-                    hole.hits.extend(
-                        circle_arc_crossings(edge, oe.edge(), sp, ep, rim, circle, tol)
-                            .ok()?
-                            .into_iter()
-                            .map(|(p, _)| (p, Some(oe.edge()))),
-                    );
-                } else {
-                    hole.touches.extend(
-                        circle_touch_on_arc_edge(edge, oe.edge(), (sp, ep), rim, circle, tol)
-                            .ok()?,
-                    );
-                }
-            }
-            // B24: exhaustive over the hole edge × section pair — a
-            // circular edge under an elliptical section, and every
-            // ellipse, NURBS or open-conic edge, has no exact crossing
-            // here, so the hole is not consulted. The section is a closed
-            // circle or ellipse (the caller's own gate).
-            (
-                EdgeCurve::Circle(_),
-                EdgeCurve::Line
-                | EdgeCurve::Ellipse(_)
-                | EdgeCurve::NurbsCurve(_)
-                | EdgeCurve::Hyperbola(_)
-                | EdgeCurve::Parabola(_),
-            )
-            | (
-                EdgeCurve::Ellipse(_)
-                | EdgeCurve::NurbsCurve(_)
-                | EdgeCurve::Hyperbola(_)
-                | EdgeCurve::Parabola(_),
-                _,
-            ) => return None,
-        }
-    }
-    Some(hole)
-}
-
-/// One hole's crossings, `hits`, resolved into contacts: what is kept as a
-/// crossing, and where the section only touches the hole.
-///
-/// Crossings closer than `model.weld` are one point (the crossing at a
-/// corner, reached from both its edges). Points closer than `model.merge`
-/// (transitively) form one contact, since the caller takes two crossings
-/// that close for one. A contact of one point that is not a vertex of the
-/// hole is a plain crossing, as found. Any other contact — two or more
-/// points, or a point at a vertex — is decided by which side of the hole
-/// the section lies on either side of it, sampled half-way to the
-/// neighbouring contacts (the side cannot change between them):
-///
-/// - the side changes and the contact is one point: it is a crossing (the
-///   section passes through a corner), kept once;
-/// - the side does not change and the section between the contact's points
-///   never lies more than the band on the other side: it is a touch;
-/// - otherwise the section changes sides more than once within the merge
-///   distance, and the hole is refused by name.
-///
-/// So a kept crossing is never within the merge distance of another of the
-/// same hole, and a corner crossing counts once, whichever edges found it.
-fn resolve_hole_hits(
-    hole: remus_topology::wire::WireId,
-    hits: Vec<HoleHit>,
-    vertices: &[Point3],
-    conic: &SectionConic,
-    outline: &[crate::builder::classify_2d::PlanarLoopEdge],
-    frame: &crate::builder::plane_frame::PlaneFrame,
-    model: CrossingTolerance,
-) -> Result<(Vec<HoleHit>, Vec<Point3>), AlgoError> {
-    use std::f64::consts::{PI, TAU};
-
-    let mut points: Vec<HoleHit> = Vec::new();
-    for hit in hits {
-        if !points.iter().any(|q| (q.0 - hit.0).length() <= model.weld) {
-            points.push(hit);
-        }
-    }
-    // Single-linkage groups at the merge distance, each listed in the order
-    // its points were found.
-    let n = points.len();
-    let mut group: Vec<usize> = (0..n).collect();
-    for i in 0..n {
-        for j in 0..i {
-            if (points[i].0 - points[j].0).length() <= model.merge {
-                let (from, to) = (group[i].max(group[j]), group[i].min(group[j]));
-                for g in &mut group {
-                    if *g == from {
-                        *g = to;
-                    }
-                }
-            }
-        }
-    }
-    // Each contact: the chart angle of its first point, and its points'
-    // angles relative to that, ascending.
-    let wrap = |t: f64| (t + PI).rem_euclid(TAU) - PI;
-    let mut contacts: Vec<(f64, Vec<(f64, usize)>)> = Vec::new();
-    for root in 0..n {
-        let members: Vec<usize> = (0..n).filter(|&i| group[i] == root).collect();
-        let Some(&first) = members.first() else {
-            continue;
-        };
-        let base = conic.angle(points[first].0);
-        let mut offsets: Vec<(f64, usize)> = members
-            .iter()
-            .map(|&i| (wrap(conic.angle(points[i].0) - base), i))
-            .collect();
-        offsets.compact_sort_by(|a, b| a.0.total_cmp(&b.0));
-        contacts.push((base, offsets));
-    }
-    contacts.compact_sort_by(|a, b| a.0.rem_euclid(TAU).total_cmp(&b.0.rem_euclid(TAU)));
-
-    let side = |t: f64| planar_loop_side(frame.project(conic.point(t)), outline, model.band);
-    let at_vertex = |p: Point3| vertices.iter().any(|v| (*v - p).length() <= model.weld);
-    let m = contacts.len();
-    let mut kept = Vec::new();
-    let mut touches = Vec::new();
-    for (k, (base, offsets)) in contacts.iter().enumerate() {
-        let (lo, hi) = (
-            base + offsets.first().map_or(0.0, |o| o.0),
-            base + offsets.last().map_or(0.0, |o| o.0),
-        );
-        let first = points[offsets[0].1];
-        if offsets.len() == 1 && !at_vertex(first.0) {
-            kept.push(first);
-            continue;
-        }
-        let (before, after) = if m == 1 {
-            (lo + PI, lo + PI)
-        } else {
-            let (prev_base, prev) = &contacts[(k + m - 1) % m];
-            let (next_base, next) = &contacts[(k + 1) % m];
-            let prev_hi = prev_base + prev.last().map_or(0.0, |o| o.0);
-            let next_lo = next_base + next.first().map_or(0.0, |o| o.0);
-            (
-                lo - 0.5 * (lo - prev_hi).rem_euclid(TAU),
-                hi + 0.5 * (next_lo - hi).rem_euclid(TAU),
-            )
-        };
-        let (Some(side_before), Some(side_after)) = (side(before), side(after)) else {
-            return Err(unresolved_hole_contact(
-                hole,
-                first.0,
-                model.merge,
-                "the section runs along the hole beside it",
-            ));
-        };
-        if side_before != side_after {
-            if offsets.len() == 1 {
-                kept.push(first);
-                continue;
-            }
-            return Err(unresolved_hole_contact(
-                hole,
-                first.0,
-                model.merge,
-                "they cross the hole more than once",
-            ));
-        }
-        // No change of side: a touch, unless the section dips across the
-        // hole's boundary between the points by more than the band.
-        let dips = offsets
-            .windows(2)
-            .any(|w| side(base + 0.5 * (w[0].0 + w[1].0)) == Some(!side_before));
-        if dips {
-            return Err(unresolved_hole_contact(
-                hole,
-                first.0,
-                model.merge,
-                "the section passes more than the tolerance across the hole between them",
-            ));
-        }
-        touches.push(first.0);
-    }
-    Ok((kept, touches))
 }
 
 /// Exact crossings of a circular or elliptical EDGE with the plane
@@ -6853,10 +6598,19 @@ fn resolve_hole_hits(
 /// that authority. A conic lying in the plane (or parallel to it) contributes
 /// nothing: the section is then along the rim itself and belongs to the
 /// edge-face phases.
+///
+/// Two roots are one when they are one POINT, within `linear`: a parameter
+/// difference is a different length on every conic and at every point of an
+/// ellipse, and the fixed 1e-9 rad this compared took two crossings 1e-2
+/// apart on a rim of radius 5e6 for one. The windows a root is accepted in
+/// (the plane touching the conic, a root at an end of the arc) are `linear`
+/// as a length, or the root's own rounding, a billionth of the parameter
+/// range, where that is larger.
 fn conic_edge_plane_crossings(
     edge: &remus_topology::edge::Edge,
     normal: Vec3,
     d: f64,
+    linear: f64,
 ) -> Option<Vec<Point3>> {
     let (center, u_scaled, v_scaled) = match edge.curve() {
         EdgeCurve::Circle(c) => (c.center(), c.u_axis() * c.radius(), c.v_axis() * c.radius()),
@@ -6892,14 +6646,24 @@ fn conic_edge_plane_crossings(
     if r <= 1e-9 * (u_scaled.length() + v_scaled.length()) {
         return Some(Vec::new());
     }
-    let ratio = c / r;
-    if ratio.abs() > 1.0 + 1e-9 {
+    // The plane may miss the conic by the linear tolerance, or by the
+    // rounding of `c` against `r` where that is larger, and still touch it.
+    if c.abs() > r.mul_add(1.0 + 1e-9, linear) {
         return Some(Vec::new());
     }
     let phi = b.atan2(a);
-    let delta = ratio.clamp(-1.0, 1.0).acos();
+    let delta = (c / r).clamp(-1.0, 1.0).acos();
+    let at = |t: f64| {
+        let (s, co) = t.sin_cos();
+        center + u_scaled * co + v_scaled * s
+    };
+    // The conic's speed: the length it covers per unit of its parameter.
+    let speed = |t: f64| {
+        let (s, co) = t.sin_cos();
+        (v_scaled * co - u_scaled * s).length()
+    };
     let mut roots = vec![phi + delta];
-    if delta > 1e-9 {
+    if (at(phi + delta) - at(phi - delta)).length() > linear {
         roots.push(phi - delta);
     }
 
@@ -6911,21 +6675,26 @@ fn conic_edge_plane_crossings(
                 // Unwrap `t` into `[t0, t0 + τ)` before testing the arc; a
                 // root at the arc's start can round to just under `t0 + τ`.
                 let tt = t0 + (t - t0).rem_euclid(tau);
-                tt <= t1 + 1e-9 || tt >= t0 + tau - 1e-9
+                tt <= t1 + ROOT_ROUNDING.max(linear / speed(t1))
+                    || tt >= t0 + tau - ROOT_ROUNDING.max(linear / speed(t0))
             })
         })
-        .map(|t| {
-            let (s, co) = t.sin_cos();
-            center + u_scaled * co + v_scaled * s
-        })
+        .map(at)
         .collect();
     Some(hits)
 }
 
 /// Crossing of a line SEGMENT `[sp, ep]` with the plane `normal·p = d`.
 /// Returns the point for the root parameter `s ∈ [0, 1]`, or `None` if the
-/// segment is parallel to the plane or crosses outside `[0, 1]`.
-fn line_segment_plane_crossing(sp: Point3, ep: Point3, normal: Vec3, d: f64) -> Option<Point3> {
+/// segment is parallel to the plane or crosses it more than `linear` (a
+/// length) past one of its ends.
+fn line_segment_plane_crossing(
+    sp: Point3,
+    ep: Point3,
+    normal: Vec3,
+    d: f64,
+    linear: f64,
+) -> Option<Point3> {
     let dir = ep - sp;
     let denom = dir.dot(normal);
     if denom.abs() < 1e-15 {
@@ -6933,20 +6702,49 @@ fn line_segment_plane_crossing(sp: Point3, ep: Point3, normal: Vec3, d: f64) -> 
     }
     let sp_dot = sp.x() * normal.x() + sp.y() * normal.y() + sp.z() * normal.z();
     let s = (d - sp_dot) / denom;
-    if !(-1e-9..=1.0 + 1e-9).contains(&s) {
+    let slack = segment_parameter_slack(dir, linear);
+    if !(-slack..=1.0 + slack).contains(&s) {
         return None;
     }
     Some(sp + dir * s.clamp(0.0, 1.0))
 }
 
+/// How far past an end of a segment with direction vector `dir` (whose
+/// parameter runs over `[0, 1]`) a root may lie and still be that end, as a
+/// parameter difference: the linear tolerance, a length, or the root's own
+/// rounding where that is larger.
+///
+/// The rounding term is relative, a billionth of the segment: a root of
+/// the quadratic at an end of a segment thousands of units long comes out a
+/// few 1e-10 of the parameter past it (a box corner on the cylinder at
+/// scale 1000 is 3e-6 past, in length), and a length-only window would
+/// lose it. The tolerance term is what the fixed 1e-9 lacked: on a segment
+/// shorter than a hundred units that is less than the linear tolerance,
+/// down to a nanometre on a unit edge, so a crossing at a corner could miss
+/// both edges that meet there.
+fn segment_parameter_slack(dir: Vec3, linear: f64) -> f64 {
+    let length = dir.length();
+    if length > 0.0 {
+        ROOT_ROUNDING.max(linear / length)
+    } else {
+        0.0
+    }
+}
+
 /// Exact crossings of a line SEGMENT `[sp, ep]` with an analytic surface
 /// (cylinder or cone lateral). Returns the 3D crossing points whose parameter
-/// lies within the segment. Other surface types return an empty vec (the
-/// caller treats "no crossings" as "fall back to uniform-t").
-fn line_segment_surface_crossings(sp: Point3, ep: Point3, surface: &FaceSurface) -> Vec<Point3> {
+/// lies within the segment, to within `linear` (a length) past its ends.
+/// Other surface types return an empty vec (the caller treats "no
+/// crossings" as "fall back to uniform-t").
+fn line_segment_surface_crossings(
+    sp: Point3,
+    ep: Point3,
+    surface: &FaceSurface,
+    linear: f64,
+) -> Vec<Point3> {
     match surface {
-        FaceSurface::Cylinder(cyl) => line_segment_cylinder_crossings(sp, ep, cyl),
-        FaceSurface::Cone(cone) => line_segment_cone_crossings(sp, ep, cone),
+        FaceSurface::Cylinder(cyl) => line_segment_cylinder_crossings(sp, ep, cyl, linear),
+        FaceSurface::Cone(cone) => line_segment_cone_crossings(sp, ep, cone, linear),
         // B24: exhaustive over `FaceSurface` — only cylinder/cone
         // laterals admit exact segment crossings; planes, spheres,
         // tori, and NURBS report none (uniform-t fallback).
@@ -6964,6 +6762,7 @@ fn line_segment_cylinder_crossings(
     sp: Point3,
     ep: Point3,
     cyl: &remus_math::surfaces::CylindricalSurface,
+    linear: f64,
 ) -> Vec<Point3> {
     let axis = cyl.axis();
     let o = cyl.origin();
@@ -6977,7 +6776,7 @@ fn line_segment_cylinder_crossings(
     let a = dp.dot(dp);
     let b = 2.0 * wp.dot(dp);
     let c = wp.dot(wp) - r * r;
-    solve_segment_quadratic(a, b, c, sp, d)
+    solve_segment_quadratic(a, b, c, sp, d, linear)
 }
 
 /// Crossings of the segment `[sp, ep]` with an infinite cone. With the
@@ -6989,6 +6788,7 @@ fn line_segment_cone_crossings(
     sp: Point3,
     ep: Point3,
     cone: &remus_math::surfaces::ConicalSurface,
+    linear: f64,
 ) -> Vec<Point3> {
     let apex = cone.apex();
     let axis = cone.axis();
@@ -7005,15 +6805,24 @@ fn line_segment_cone_crossings(
     let a = k * dp.dot(dp) - da * da;
     let b = 2.0 * (k * wp.dot(dp) - da * wa);
     let c = k * wp.dot(wp) - wa * wa;
-    solve_segment_quadratic(a, b, c, sp, d)
+    solve_segment_quadratic(a, b, c, sp, d, linear)
 }
 
 /// Solve `a s^2 + b s + c = 0` for `s ∈ [0, 1]` and return the 3D points
-/// `sp + s·d`. Handles the near-linear (`a ≈ 0`) and no-real-root cases.
-fn solve_segment_quadratic(a: f64, b: f64, c: f64, sp: Point3, d: Vec3) -> Vec<Point3> {
+/// `sp + s·d`; a root within `linear` (a length) past an end of the segment
+/// is that end. Handles the near-linear (`a ≈ 0`) and no-real-root cases.
+fn solve_segment_quadratic(
+    a: f64,
+    b: f64,
+    c: f64,
+    sp: Point3,
+    d: Vec3,
+    linear: f64,
+) -> Vec<Point3> {
     let mut pts = Vec::new();
+    let slack = segment_parameter_slack(d, linear);
     let mut push_s = |s: f64| {
-        if (-1e-9..=1.0 + 1e-9).contains(&s) {
+        if (-slack..=1.0 + slack).contains(&s) {
             let sc = s.clamp(0.0, 1.0);
             pts.push(sp + d * sc);
         }
@@ -10571,152 +10380,127 @@ fn closed_circle_boundary_crossings(
     // A plane face's HOLES bound the section as its outline does (the reading
     // `circle_exits_plane_boundary` already takes when it decides whether
     // the face's hits count at all). Only transversal crossings of a hole
-    // are hits: a touch is not a change of side. A plane face's touches and
-    // hole crossings are recorded for the caller (see
-    // `PlaneFaceContacts::pinch`); a section circle lies in at most one
-    // plane face of its pair.
+    // are hits: a touch is not a change of side. They come from the
+    // certificate of the section against the face's loops, which travels
+    // with the plane face's touches and hole crossings to the caller (see
+    // `PlaneFaceContacts::pinch` and
+    // `plane_section_certificate::SpanPlan::keep`); a section circle lies in
+    // at most one plane face of its pair.
     type Hit = (f64, Point3, Option<remus_topology::edge::EdgeId>);
     let conic = SectionConic::of_circle(circle);
-    let face_hits = |fid: FaceId,
-                     contacts: &mut PlaneFaceContacts|
-     -> Result<Vec<Hit>, AlgoError> {
-        let mut hits: Vec<Hit> = Vec::new();
-        let Ok(face) = topo.face(fid) else {
-            return Ok(hits);
-        };
-        let Ok(wire) = topo.wire(face.outer_wire()) else {
-            return Ok(hits);
-        };
-        let is_plane = matches!(face.surface(), FaceSurface::Plane { .. });
-        if is_plane {
-            contacts.face = Some(fid);
-        }
-        // The surface the section was cut from: the pair's other face.
-        let partner = topo
-            .face(if fid == face_a { face_b } else { face_a })
-            .ok()
-            .map(|f| f.surface().clone());
-        for &oe in wire.edges() {
-            let Ok(edge) = topo.edge(oe.edge()) else {
-                continue;
+    let model = conic.tolerance(tol);
+    let face_hits =
+        |fid: FaceId, contacts: &mut PlaneFaceContacts| -> Result<Vec<Hit>, AlgoError> {
+            let mut hits: Vec<Hit> = Vec::new();
+            let Ok(face) = topo.face(fid) else {
+                return Ok(hits);
             };
-            let Ok(sv) = topo.vertex(edge.start()) else {
-                continue;
+            let Ok(wire) = topo.wire(face.outer_wire()) else {
+                return Ok(hits);
             };
-            let Ok(ev) = topo.vertex(edge.end()) else {
-                continue;
-            };
-            let mut edge_hits: Vec<Hit> = Vec::new();
-            match edge.curve() {
-                EdgeCurve::Line => {
-                    if is_plane
-                        && let LineContact::Touch(foot) =
-                            conic.line_contact(sv.point(), ev.point(), tol)
-                    {
-                        contacts.touches.push(foot);
+            let is_plane = matches!(face.surface(), FaceSurface::Plane { .. });
+            if is_plane {
+                contacts.face = Some(fid);
+            }
+            for &oe in wire.edges() {
+                let Ok(edge) = topo.edge(oe.edge()) else {
+                    continue;
+                };
+                let Ok(sv) = topo.vertex(edge.start()) else {
+                    continue;
+                };
+                let Ok(ev) = topo.vertex(edge.end()) else {
+                    continue;
+                };
+                let mut edge_hits: Vec<Hit> = Vec::new();
+                match edge.curve() {
+                    EdgeCurve::Line => {
+                        if is_plane
+                            && let LineContact::Touch(foot) =
+                                conic.line_contact(sv.point(), ev.point(), tol)
+                        {
+                            contacts.touches.push(foot);
+                        }
+                        for (p, t) in circle.intersect_segment(sv.point(), ev.point(), tol.linear) {
+                            edge_hits.push((t, p, None));
+                        }
                     }
-                    for (p, t) in circle.intersect_segment(sv.point(), ev.point(), tol.linear) {
-                        edge_hits.push((t, p, None));
-                    }
-                }
-                // Arc boundary edges (a plane face rimmed by a cone/cylinder
-                // corner): a section circle crossing them was invisible to the
-                // Line-only scan, leaving an ODD crossing set — the arcs then
-                // desynchronize `emit_split_circle_arcs`' cyclic pairing and
-                // whole in-face spans vanish (the lite magnet-pad fuse).
-                EdgeCurve::Circle(bc) => {
-                    let on_arc = circle_arc_crossings(
-                        edge,
-                        oe.edge(),
-                        sv.point(),
-                        ev.point(),
-                        bc,
-                        circle,
-                        tol,
-                    )?;
-                    if is_plane {
-                        contacts.touches.extend(circle_touch_on_arc_edge(
+                    // Arc boundary edges (a plane face rimmed by a cone/cylinder
+                    // corner): a section circle crossing them was invisible to the
+                    // Line-only scan, leaving an ODD crossing set — the arcs then
+                    // desynchronize `emit_split_circle_arcs`' cyclic pairing and
+                    // whole in-face spans vanish (the lite magnet-pad fuse).
+                    EdgeCurve::Circle(bc) => {
+                        let on_arc = circle_arc_crossings(
                             edge,
                             oe.edge(),
-                            (sv.point(), ev.point()),
+                            sv.point(),
+                            ev.point(),
                             bc,
                             circle,
                             tol,
-                        )?);
+                        )?;
+                        if is_plane {
+                            contacts.touches.extend(circle_touch_on_arc_edge(
+                                edge,
+                                oe.edge(),
+                                (sv.point(), ev.point()),
+                                bc,
+                                circle,
+                                tol,
+                            )?);
+                        }
+                        for (p, t) in on_arc {
+                            edge_hits.push((t, p, Some(oe.edge())));
+                        }
                     }
-                    for (p, t) in on_arc {
-                        edge_hits.push((t, p, Some(oe.edge())));
-                    }
+                    // B24: exhaustive over `EdgeCurve` — lines and circle
+                    // arcs contribute crossings above; ellipse, NURBS,
+                    // and open-conic boundary edges contribute none.
+                    EdgeCurve::NurbsCurve(_)
+                    | EdgeCurve::Ellipse(_)
+                    | EdgeCurve::Hyperbola(_)
+                    | EdgeCurve::Parabola(_) => continue,
                 }
-                // B24: exhaustive over `EdgeCurve` — lines and circle
-                // arcs contribute crossings above; ellipse, NURBS,
-                // and open-conic boundary edges contribute none.
-                EdgeCurve::NurbsCurve(_)
-                | EdgeCurve::Ellipse(_)
-                | EdgeCurve::Hyperbola(_)
-                | EdgeCurve::Parabola(_) => continue,
-            }
-            for (t, p, src) in edge_hits {
-                let dup = hits
-                    .iter()
-                    .any(|(_, q, _)| (*q - p).length() < tol.linear * 10.0);
-                if !dup {
-                    hits.push((t, p, src));
-                }
-            }
-        }
-        // The holes, through the same collector as the ellipse trim's: only
-        // transversal crossings, one per contact, resolved at this
-        // collector's own merge distance. A hole with an edge the collector
-        // cannot meet exactly is left out whole.
-        if is_plane {
-            let frame = crate::builder::plane_frame::PlaneFrame::from_normal_and_point(
-                circle.normal(),
-                circle.center(),
-            );
-            let section = EdgeCurve::Circle(circle.clone());
-            for &inner in face.inner_wires() {
-                let Some(hole) = collect_plane_hole(
-                    topo,
-                    inner,
-                    &section,
-                    partner.as_ref(),
-                    &frame,
-                    tol,
-                    tol.linear * 10.0,
-                    &|sp, ep| {
-                        circle
-                            .intersect_segment(sp, ep, tol.linear)
-                            .into_iter()
-                            .map(|(p, _)| p)
-                            .collect()
-                    },
-                )?
-                else {
-                    continue;
-                };
-                contacts.touches.extend(hole.touches);
-                contacts
-                    .hole_crossings
-                    .extend(hole.crossings.iter().copied());
-                for (p, src) in hole.crossings.into_iter().zip(hole.arcs) {
+                for (t, p, src) in edge_hits {
                     let dup = hits
                         .iter()
                         .any(|(_, q, _)| (*q - p).length() < tol.linear * 10.0);
                     if !dup {
-                        hits.push((circle.project(p).rem_euclid(std::f64::consts::TAU), p, src));
+                        hits.push((t, p, src));
                     }
                 }
             }
-        }
-        Ok(hits)
-    };
+            Ok(hits)
+        };
 
     let surface_of = |fid: FaceId| topo.face(fid).ok().map(|f| f.surface().clone());
     let surf_a = surface_of(face_a);
     let surf_b = surface_of(face_b);
     let is_plane = |s: &Option<FaceSurface>| matches!(s, Some(FaceSurface::Plane { .. }));
     let is_sphere = |s: &Option<FaceSurface>| matches!(s, Some(FaceSurface::Sphere(_)));
+
+    // The certificate of the section against the pair's plane face, with
+    // the other face's surface as the one the section was cut from. A
+    // section that crosses a hole leaves the plane face there, whether or
+    // not the crossing lies strictly inside a hole edge.
+    let certificate = match (is_plane(&surf_a), is_plane(&surf_b)) {
+        (true, false) => Some((face_a, surf_b.as_ref())),
+        (false, true) => Some((face_b, surf_a.as_ref())),
+        _ => None,
+    }
+    .and_then(|(plane_face, partner)| {
+        plane_section_certificate::PlaneSectionCertificate::of_face(
+            topo,
+            plane_face,
+            &EdgeCurve::Circle(circle.clone()),
+            partner,
+            tol,
+        )
+    });
+    let crosses_a_hole = certificate
+        .as_ref()
+        .is_some_and(|certificate| certificate.hole_crossings().next().is_some());
 
     let pair_has_sphere = is_sphere(&surf_a) || is_sphere(&surf_b);
     let faces_to_check: Vec<FaceId> = if pair_has_sphere {
@@ -10737,14 +10521,14 @@ fn closed_circle_boundary_crossings(
             // plane boundary, so the in-plane band case is unaffected (it
             // yields no plane-boundary hits).
             (true, false) => {
-                if circle_exits_plane_boundary(topo, face_a, circle, tol)? {
+                if crosses_a_hole || circle_exits_plane_boundary(topo, face_a, circle, tol)? {
                     vec![face_a, face_b]
                 } else {
                     vec![face_b]
                 }
             }
             (false, true) => {
-                if circle_exits_plane_boundary(topo, face_b, circle, tol)? {
+                if crosses_a_hole || circle_exits_plane_boundary(topo, face_b, circle, tol)? {
                     vec![face_a, face_b]
                 } else {
                     vec![face_a]
@@ -10808,6 +10592,23 @@ fn closed_circle_boundary_crossings(
                 hits.push((t, p, src));
             }
         }
+    }
+
+    // The holes' crossings, as the certificate placed them. One within the
+    // band of a hit already collected is that hit; anything farther is its
+    // own, and the gate refuses a span kept beside two it cannot keep apart.
+    if let Some(certificate) = certificate {
+        contacts.touches.extend(certificate.hole_touches());
+        for (_, crossing) in certificate.hole_crossings() {
+            contacts.hole_crossings.push(crossing.at);
+            if !hits
+                .iter()
+                .any(|(_, q, _)| (*q - crossing.at).length() <= model.band)
+            {
+                hits.push((crossing.t, crossing.at, crossing.arc));
+            }
+        }
+        contacts.certificate = Some(certificate);
     }
 
     hits.compact_sort_by(|a, b| a.0.total_cmp(&b.0));
@@ -11011,7 +10812,10 @@ fn hits_are_inscribed_polygon(hits: &[(f64, Point3)]) -> bool {
 /// `contacts` are the section's known contacts with the pair's plane face
 /// (empty when there is none): the call refuses, before any vertex is made,
 /// when the arcs it would keep pinch that face (see
-/// [`PlaneFaceContacts::pinch`]).
+/// [`PlaneFaceContacts::pinch`]), or when an arc it would keep ends on a
+/// hole of that face and cannot be certified on the face (see
+/// [`plane_section_certificate::SpanPlan::keep`]). An arc that ends on a
+/// hole and is certified off the face is dropped.
 #[allow(clippy::too_many_arguments)]
 fn emit_split_circle_arcs(
     topo: &mut Topology,
@@ -11156,7 +10960,13 @@ fn emit_split_circle_arcs(
     // (inserted to keep span ≤ π) carry `None` and always get a fresh
     // vertex allocation.
     let n = crossings.len();
+    // The gate for spans that end on a hole of the pair's plane face.
+    let plan = contacts
+        .certificate
+        .as_ref()
+        .map(|certificate| certificate.plan(crossings));
     let mut survivors: Vec<Vec<(f64, Point3, Option<usize>)>> = Vec::new();
+    let mut kept_spans = Vec::new();
     for i in 0..n {
         let (t0, _p0) = crossings[i];
         // Wrap to next crossing; for the last arc that means going back to
@@ -11173,9 +10983,15 @@ fn emit_split_circle_arcs(
 
         let t_mid = (t0 + t1) * 0.5;
         let mid_3d = circle.evaluate(t_mid);
-        if !in_both(mid_3d) {
+        let on_pair = in_both(mid_3d);
+        let kept = match &plan {
+            Some(plan) => plan.keep(i, (t0, t1), on_pair)? != plane_section_certificate::Kept::No,
+            None => on_pair,
+        };
+        if !kept {
             log::debug!(
-                "FF: drop closed-circle arc {i}/{n} (midpoint {mid_3d:?} outside face pair)"
+                "FF: drop closed-circle arc {i}/{n} (midpoint {mid_3d:?} outside face pair, \
+                 or the span off the plane face)"
             );
             continue;
         }
@@ -11201,6 +11017,10 @@ fn emit_split_circle_arcs(
         points.push((t1, crossings[next_i].1, Some(next_i)));
 
         survivors.push(points);
+        kept_spans.push(i);
+    }
+    if let Some(plan) = &plan {
+        plan.certify_hole_splits(&kept_spans)?;
     }
 
     let spans: Vec<(f64, f64)> = survivors
@@ -13702,7 +13522,7 @@ mod conic_crossing_tests {
         let y = d / c30;
         let x = (36.0 - y * y).sqrt();
 
-        let mut hits = conic_edge_plane_crossings(&edge, normal, d).unwrap();
+        let mut hits = conic_edge_plane_crossings(&edge, normal, d, 1e-7).unwrap();
         hits.sort_by(|a, b| a.x().total_cmp(&b.x()));
         assert_eq!(hits.len(), 2);
         for h in &hits {
@@ -13736,7 +13556,8 @@ mod conic_crossing_tests {
 
         // Plane y = -5.155 crosses the full circle at x = ±3.071; only the
         // x < 0 root lies on this arc.
-        let hits = conic_edge_plane_crossings(&edge, Vec3::new(0.0, 1.0, 0.0), -5.155).unwrap();
+        let hits =
+            conic_edge_plane_crossings(&edge, Vec3::new(0.0, 1.0, 0.0), -5.155, 1e-7).unwrap();
         assert_eq!(hits.len(), 1);
         assert!(hits[0].x() < 0.0);
     }
@@ -13759,7 +13580,9 @@ mod conic_crossing_tests {
             1e-7,
         ));
         let edge = Edge::new(vs, ve, EdgeCurve::Circle(circle));
-        assert!(conic_edge_plane_crossings(&edge, Vec3::new(0.0, 1.0, 0.0), -5.155).is_none());
+        assert!(
+            conic_edge_plane_crossings(&edge, Vec3::new(0.0, 1.0, 0.0), -5.155, 1e-7).is_none()
+        );
     }
 
     /// A rim lying in the tread plane (a bore drilled square through a block)
@@ -13773,7 +13596,7 @@ mod conic_crossing_tests {
             Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 5.0).unwrap();
         let edge = closed_circle_edge(&mut topo, circle);
         let normal = Vec3::new(3.0e-16, -2.0e-16, -1.0);
-        let hits = conic_edge_plane_crossings(&edge, normal, 4.0e-16).unwrap();
+        let hits = conic_edge_plane_crossings(&edge, normal, 4.0e-16, 1e-7).unwrap();
         assert!(hits.is_empty(), "coplanar rim must not cross: {hits:?}");
     }
 
@@ -13790,7 +13613,7 @@ mod conic_crossing_tests {
         let p = ellipse.evaluate(0.0);
         let v = topo.add_vertex(Vertex::new(p, 1e-7));
         let edge = Edge::new(v, v, EdgeCurve::Ellipse(ellipse.clone()));
-        let hits = conic_edge_plane_crossings(&edge, Vec3::new(1.0, 0.0, 0.0), 1.0).unwrap();
+        let hits = conic_edge_plane_crossings(&edge, Vec3::new(1.0, 0.0, 0.0), 1.0, 1e-7).unwrap();
         assert_eq!(hits.len(), 2);
         for h in hits {
             assert!((h.x() - 1.0).abs() < 1e-9);
@@ -13816,7 +13639,7 @@ mod conic_crossing_tests {
         let vs = topo.add_vertex(Vertex::new(Point3::new(-6.0, 0.0, 0.0), 1e-7));
         let ve = topo.add_vertex(Vertex::new(Point3::new(6.0, 0.0, 0.0), 1e-7));
         let line = Edge::new(vs, ve, EdgeCurve::Line);
-        let hits = conic_edge_plane_crossings(&line, normal, -5.155).unwrap();
+        let hits = conic_edge_plane_crossings(&line, normal, -5.155, 1e-7).unwrap();
         assert!(hits.is_empty());
         // Circle rim keeps its two exact crossings (the #190 slab cut).
         let circle = Circle3D::new_with_ref(
@@ -13827,7 +13650,7 @@ mod conic_crossing_tests {
         )
         .unwrap();
         let rim = closed_circle_edge(&mut topo, circle);
-        let hits = conic_edge_plane_crossings(&rim, normal, -5.155).unwrap();
+        let hits = conic_edge_plane_crossings(&rim, normal, -5.155, 1e-7).unwrap();
         assert_eq!(hits.len(), 2);
         // Ellipse rim keeps its crossings.
         let ellipse = Ellipse3D::new(
@@ -13840,7 +13663,7 @@ mod conic_crossing_tests {
         let p = ellipse.evaluate(0.0);
         let v = topo.add_vertex(Vertex::new(p, 1e-7));
         let erim = Edge::new(v, v, EdgeCurve::Ellipse(ellipse));
-        let hits = conic_edge_plane_crossings(&erim, Vec3::new(1.0, 0.0, 0.0), 1.0).unwrap();
+        let hits = conic_edge_plane_crossings(&erim, Vec3::new(1.0, 0.0, 0.0), 1.0, 1e-7).unwrap();
         assert_eq!(hits.len(), 2);
         // Open hyperbola/parabola arcs decline without parameter authority.
         let hyperbola = Hyperbola3D::new(
@@ -13853,14 +13676,14 @@ mod conic_crossing_tests {
         let hs = topo.add_vertex(Vertex::new(hyperbola.evaluate(-1.0), 1e-7));
         let he = topo.add_vertex(Vertex::new(hyperbola.evaluate(1.0), 1e-7));
         let hedge = Edge::new(hs, he, EdgeCurve::Hyperbola(hyperbola));
-        let hits = conic_edge_plane_crossings(&hedge, normal, 0.5).unwrap();
+        let hits = conic_edge_plane_crossings(&hedge, normal, 0.5, 1e-7).unwrap();
         assert!(hits.is_empty());
         let parabola =
             Parabola3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0), 1.0).unwrap();
         let ps = topo.add_vertex(Vertex::new(parabola.evaluate(-1.0), 1e-7));
         let pe = topo.add_vertex(Vertex::new(parabola.evaluate(1.0), 1e-7));
         let pedge = Edge::new(ps, pe, EdgeCurve::Parabola(parabola));
-        let hits = conic_edge_plane_crossings(&pedge, normal, 0.5).unwrap();
+        let hits = conic_edge_plane_crossings(&pedge, normal, 0.5, 1e-7).unwrap();
         assert!(hits.is_empty());
     }
 }
@@ -14129,3 +13952,6 @@ mod closed_window_partner_tests;
 
 #[cfg(test)]
 mod plane_hole_tests;
+
+#[cfg(test)]
+mod plane_section_oracle_tests;

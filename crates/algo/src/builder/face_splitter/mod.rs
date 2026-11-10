@@ -68,7 +68,7 @@ use conversion::{
 };
 use edge_splitting::{
     find_splits_on_line, find_splits_on_nurbs_section, find_splits_on_section_arc,
-    find_splits_on_section_ellipse, split_boundary_edges_at_3d_points,
+    find_splits_on_section_ellipse, split_boundary_edges_at_3d_points, split_hole_edges_at_anchors,
 };
 use sampling::{sample_wire_loop_uv, sample_wire_loop_uv_periodic, sample_wire_loop_uv_via_frame};
 use special_cases::{
@@ -86,8 +86,12 @@ const HOLE_PROBE_SAMPLES: usize = 8;
 const ARR_ARC_SAMPLES: usize = 32;
 
 /// Preserve the historical fit allowance until it can consume a local feature.
+///
+/// The one definition is [`crate::section_tolerance::split_weld`], which
+/// phase FF reads too: it puts no two section vertices on a planar face
+/// closer than the largest value this can take.
 fn local_weld_band(linear: f64, extent: f64) -> f64 {
-    (linear * 100.0).min(extent * 0.01).max(linear)
+    crate::section_tolerance::split_weld(linear, extent)
 }
 
 fn boundary_weld_band(edges: &[OrientedPCurveEdge], linear: f64) -> f64 {
@@ -969,12 +973,23 @@ fn integrate_holes_plane(
 /// inside them, or `None` when no section ends on the hole that way.
 ///
 /// The hole-side counterpart of splitting the outer boundary at every
-/// section end ([`split_boundary_edges_at_3d_points`], which also does the
-/// work here): a section that leaves the face through a hole ends on one of
-/// its edges, and the arrangement needs a vertex there to close the regions
-/// either side of it. Only section ends inside the hole's own bounding box
-/// are offered, so a face carrying many openings pays for the ones a section
-/// reaches and leaves the others whole.
+/// section end ([`split_boundary_edges_at_3d_points`]): a section that
+/// leaves the face through a hole ends on one of its edges, and the
+/// arrangement needs a vertex there to close the regions either side of it.
+/// Only section ends inside the hole's own bounding box are offered, so a
+/// face carrying many openings pays for the ones a section reaches and
+/// leaves the others whole.
+///
+/// The hole is split exactly at the section ends that lie on it
+/// ([`split_hole_edges_at_anchors`]): those are the vertices phase FF
+/// certified there, and the partner face of each section carries the same
+/// ones.
+///
+/// # Errors
+///
+/// [`AlgoError::FaceSplitFailed`] when two of those vertices are closer
+/// than the weld the arrangement applies next: see
+/// [`split_hole_edges_at_anchors`].
 fn split_hole_at_section_ends(
     hole: &[OrientedPCurveEdge],
     sections: &[SectionEdge],
@@ -1024,8 +1039,7 @@ fn split_hole_at_section_ends(
     if ends.is_empty() {
         return Ok(None);
     }
-    let split =
-        split_boundary_edges_at_3d_points(hole.to_vec(), &ends, Some(frame), surface, linear)?;
+    let split = split_hole_edges_at_anchors(hole.to_vec(), &ends, frame, surface, linear)?;
     Ok((split.len() > hole.len()).then_some(split))
 }
 

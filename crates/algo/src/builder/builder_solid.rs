@@ -280,6 +280,7 @@ pub fn build_solids_with_origins(
     lineage: &mut super::split_types::EdgeLineageLog,
 ) -> Result<(Vec<SolidId>, FaceProvenance), AlgoError> {
     let (face_ids, sources) = clean_selected_faces(topo, selected, cap_planes, lineage)?;
+    reject_endless_cylinder_faces(topo, &face_ids)?;
 
     // Snapshot provenance now that face_ids / sources are final and parallel:
     // map each result-bound face to the input face it derives from (None for a
@@ -670,6 +671,82 @@ fn reverse_wire(topo: &mut Topology, wire_id: WireId) -> Result<WireId, AlgoErro
     }
     let wire = remus_topology::wire::Wire::new(edges, closed)?;
     Ok(topo.add_wire(wire))
+}
+
+/// How many times `wire_id` winds round the axis of the cylinder `surface`:
+/// ±1 for a rim, 0 for a loop that closes on the wall (a hole, or a rim, a
+/// seam, the other rim and the seam again). `None` when an edge cannot be
+/// sampled or a point has no chart.
+fn cylinder_wire_winding(topo: &Topology, wire_id: WireId, surface: &FaceSurface) -> Option<i64> {
+    let mut angles = Vec::new();
+    for oriented in topo.wire(wire_id).ok()?.edges() {
+        let edge = topo.edge(oriented.edge()).ok()?;
+        let mut points = Vec::new();
+        super::pcurve_compute::sample_edge_uniform(
+            edge.curve(),
+            topo.vertex(edge.start()).ok()?.point(),
+            topo.vertex(edge.end()).ok()?.point(),
+            edge.strict_domain().ok()?,
+            32,
+            oriented.is_forward(),
+            &mut points,
+        );
+        for point in points {
+            angles.push(surface.project_point(point)?.0);
+        }
+    }
+    let first = *angles.first()?;
+    angles.push(first);
+    let winding: f64 = angles
+        .windows(2)
+        .map(|pair| {
+            (pair[1] - pair[0] + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU)
+                - std::f64::consts::PI
+        })
+        .sum();
+    #[allow(clippy::cast_possible_truncation)]
+    Some((winding / std::f64::consts::TAU).round() as i64)
+}
+
+/// Refuse a cylinder face that has no end.
+///
+/// A face of a cylinder is bounded along the axis only when its loops that
+/// wind round the axis come in pairs: two rims, or none (a loop that goes
+/// up a seam and back winds zero times, and so does a hole in the wall). A
+/// face with one winding loop runs on along the axis for ever. It is not a
+/// face of any solid, yet it passes every check downstream of assembly
+/// that looks at edges and vertices alone: a cutter standing in the plane
+/// of a shelled box's inner wall, through its floor, came back with the
+/// floor's ring as such a face (one rim, nothing above it), validator-clean
+/// and accepted, 96 mesh edges open.
+///
+/// # Errors
+///
+/// [`AlgoError::AssemblyFailed`] naming the face.
+fn reject_endless_cylinder_faces(topo: &Topology, faces: &[FaceId]) -> Result<(), AlgoError> {
+    for &face_id in faces {
+        let face = topo.face(face_id)?;
+        let surface = face.surface();
+        if !matches!(surface, FaceSurface::Cylinder(_)) {
+            continue;
+        }
+        let mut rims = 0_usize;
+        let mut readable = true;
+        for wire in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            match cylinder_wire_winding(topo, wire, surface) {
+                Some(0) => {}
+                Some(_) => rims += 1,
+                None => readable = false,
+            }
+        }
+        if readable && !rims.is_multiple_of(2) {
+            return Err(AlgoError::AssemblyFailed(format!(
+                "cylinder face {face_id:?} has {rims} boundary loop(s) winding round its axis: \
+                 it is not bounded along the axis"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// A tube-wrapping rim bounds an annulus, so it is not a contractible hole.
@@ -3116,7 +3193,7 @@ fn weld_coincident_vertices(
     // Keep the historical assembly allowance at NURBS surface/curve vertices.
     // Analytic-only contacts use the actual merge tolerance so a resolved
     // rim-to-wall gap cannot collapse onto a different carrier.
-    let snap = MERGE_TOL * 10.0;
+    let snap = MERGE_TOL * crate::section_tolerance::VERTEX_WELD_FACTOR;
 
     // Collect distinct vertices (id + position) referenced by the faces.
     let mut seen: DetHashSet<VertexId> = DetHashSet::default();
@@ -5381,7 +5458,9 @@ fn build_adjacency_edge_face_map(
 }
 
 /// Tolerance for position quantization (matches system linear tolerance).
-const MERGE_TOL: f64 = 1e-7;
+/// Stated once, with the welds of the other stages that decide whether two
+/// points are one vertex, in [`crate::section_tolerance`].
+const MERGE_TOL: f64 = crate::section_tolerance::VERTEX_TOL;
 
 /// Samples per arc when building its broad-phase AABB for the collinear-split
 /// query (its bulge is covered by inflating the query band with the per-step

@@ -226,3 +226,88 @@ fn only_the_hole_a_section_reaches_is_split() {
         assert_eq!(split[1].as_ref().map(Vec::len), Some(6), "scale {s}");
     }
 }
+
+/// A needle section through one side of a square hole: the arc of an
+/// ellipse of semi-axes `(a, b)` that pokes through the side `x = h` of the
+/// hole `[−h, h]²`, ending on it at `y = ±y`.
+fn needle_through(h: f64, (a, b): (f64, f64), y: f64) -> SectionEdge {
+    use remus_math::curves::Ellipse3D;
+    let cx = h - a * (1.0 - (y / b).powi(2)).sqrt();
+    let ellipse = Ellipse3D::new_with_ref(
+        point(cx, 0.0),
+        Vec3::new(0.0, 0.0, 1.0),
+        a,
+        b,
+        Vec3::new(1.0, 0.0, 0.0),
+    )
+    .unwrap();
+    let (p, q) = (point(h, -y), point(h, y));
+    let (t0, t1) = (ellipse.project(p), ellipse.project(q));
+    section(EdgeCurve::Ellipse(ellipse), Some((t0, t1)), p, q)
+}
+
+/// The third review round's reproducer, on the splitter's side. Two section
+/// ends 3e-6 apart on one edge of a 0.004-wide hole are two vertices of
+/// every face that carries the section. The hole's split used to weld them
+/// (anything within 1e-5 on that edge) and return five pieces, one vertex
+/// short of the section's. Phase FF does not emit such a pair; offered one
+/// all the same, the split refuses by name rather than disagree.
+#[test]
+fn section_ends_closer_than_the_weld_are_refused_not_merged() {
+    let hole = square_hole(0.002, (0.0, 0.0));
+    let needle = needle_through(0.002, (0.005, 5e-6), 1.5e-6);
+    let Err(error) = split_hole_at_section_ends(&hole, &[needle], &frame(), &plane(), TOL) else {
+        panic!("two section ends 3e-6 apart were merged or split without a word");
+    };
+    assert!(matches!(error, AlgoError::FaceSplitFailed(_)), "{error}");
+    assert!(error.to_string().contains("closer than"), "{error}");
+
+    // Fifty tolerances wider, 3.6e-5 apart: two vertices, six pieces.
+    let needle = needle_through(0.002, (0.005, 5e-5), 1.8e-5);
+    let pieces = split(&hole, std::slice::from_ref(&needle)).expect("split hole");
+    assert_eq!(pieces.len(), 6);
+    assert_closed_loop(&pieces);
+    for end in [needle.start, needle.end] {
+        assert!(
+            pieces.iter().any(|p| (p.end_3d - end).length() < 1e-15),
+            "no vertex at section end {end:?}"
+        );
+    }
+
+    // A section end within the weld of a hole CORNER but not at it is the
+    // same disagreement, one vertex of the pair being the corner.
+    let beside_corner = section(
+        EdgeCurve::Line,
+        None,
+        point(0.002, 0.002 - 3e-6),
+        point(0.009, 0.002 - 3e-6),
+    );
+    assert!(split_hole_at_section_ends(&hole, &[beside_corner], &frame(), &plane(), TOL).is_err());
+}
+
+/// The hole takes a vertex only where a section ends ON it. A section end
+/// within the fit weld of an edge but not a point of it (5e-7 off, five
+/// tolerances) used to split the edge at its foot, a vertex no section
+/// has; the hole now stays whole, as it does for any section that does not
+/// end on it. The same end offered twice (two sections meeting there) is
+/// one vertex.
+#[test]
+fn a_hole_is_split_only_at_points_of_its_edges() {
+    for s in SCALES {
+        let hole = square_hole(2.0 * s, (0.0, 0.0));
+        let near = section(
+            EdgeCurve::Line,
+            None,
+            point(2.0 * s + 5e-7, 0.5 * s),
+            point(9.0 * s, 0.5 * s),
+        );
+        assert!(split(&hole, &[near]).is_none(), "scale {s}");
+
+        let on = point(2.0 * s, 0.5 * s);
+        let one = section(EdgeCurve::Line, None, on, point(9.0 * s, 0.5 * s));
+        let other = section(EdgeCurve::Line, None, on, point(9.0 * s, 4.0 * s));
+        let pieces = split(&hole, &[one, other]).expect("split hole");
+        assert_eq!(pieces.len(), 5, "scale {s}");
+        assert_closed_loop(&pieces);
+    }
+}

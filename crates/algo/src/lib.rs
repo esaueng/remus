@@ -36,6 +36,8 @@ pub use memo::MemoStats;
 mod builder;
 pub mod classifier;
 mod conic_bounds;
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) mod section_tolerance;
 
 pub use builder::FaceClass;
 pub use builder::pcurve_compute::{
