@@ -1,7 +1,8 @@
 //! Planar faces with several inner loops for the measurement paths'
 //! nesting oracles (tests): loops that do not nest (lines, circles, split
-//! arcs, ellipses, trimmed NURBS, some in another's box), and a nested
-//! stack of nearly touching circles.
+//! arcs, ellipses, trimmed NURBS, a shallow arc of a far circle, some in
+//! another's box), and a nested stack of nearly touching circles; flat,
+//! tilted and translated far from the origin.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, dead_code)]
 
@@ -37,6 +38,32 @@ impl Placement {
             n: Vec3::new(0.0, 0.0, 1.0),
             scale,
         }
+    }
+
+    /// [`Self::flat`] moved by `shift` along a skew direction: the face is
+    /// unchanged, its coordinates are not.
+    pub fn translated(scale: f64, shift: f64) -> Self {
+        Self {
+            origin: Point3::new(shift, -0.5 * shift, 0.25f64.mul_add(shift, 5.0 * scale)),
+            ..Self::flat(scale)
+        }
+    }
+
+    /// Every placement the oracles run on: flat, tilted, and translated by a
+    /// million and a billion times the scale.
+    pub fn all(scale: f64) -> [Self; 4] {
+        [
+            Self::flat(scale),
+            Self::tilted(scale),
+            Self::translated(scale, 1e6 * scale),
+            Self::translated(scale, 1e9 * scale),
+        ]
+    }
+
+    /// Whether the placement lies a billion times its scale from the origin.
+    pub fn far(&self) -> bool {
+        let o = self.origin;
+        o.x().abs().max(o.y().abs()).max(o.z().abs()) >= 1e8 * self.scale
     }
 
     /// Rotated about x by 0.4, then about z by 0.7, and shifted.
@@ -197,6 +224,35 @@ pub fn flat_faces(topo: &mut Topology, pl: &Placement) -> Vec<(&'static str, Fac
     let triangle = pl.trimmed_nurbs_triangle(topo);
     let rectangle = pl.rect(topo, [-4.0, -2.0, -3.0, -1.0]);
     faces.push(("trimmed NURBS", pl.face(topo, vec![triangle, rectangle])));
+    // A far carrier: a shallow arc of a circle of radius 1e4 centred far
+    // outside the face, closing a hole to its right, with a square in the
+    // hole's box but left of the arc.
+    let big = 1e4;
+    let arc = Circle3D::new_with_ref(pl.at(5.0 - big, 0.0), pl.n, big * pl.scale, pl.u).unwrap();
+    let h = (3.0 / big).asin();
+    let ends = [
+        arc.evaluate(-h),
+        arc.evaluate(h),
+        pl.at(10.0, 3.0),
+        pl.at(10.0, -3.0),
+    ];
+    let vertices: Vec<_> = ends
+        .iter()
+        .map(|&q| topo.add_vertex(Vertex::new(q, 1e-9 * pl.scale)))
+        .collect();
+    let mut rim = Edge::new(vertices[0], vertices[1], EdgeCurve::Circle(arc));
+    rim.set_trim(Some((-h, h)));
+    let mut edges = vec![OrientedEdge::new(topo.add_edge(rim), true)];
+    for i in 1..4 {
+        let line = Edge::new(vertices[i], vertices[(i + 1) % 4], EdgeCurve::Line);
+        edges.push(OrientedEdge::new(topo.add_edge(line), true));
+    }
+    let shallow = topo.add_wire(Wire::new(edges, true).unwrap());
+    let left_of_arc = pl.rect(topo, [4.9996, 4.9997, -0.5, 0.5]);
+    faces.push((
+        "far circle carrier",
+        pl.face(topo, vec![shallow, left_of_arc]),
+    ));
     faces
 }
 

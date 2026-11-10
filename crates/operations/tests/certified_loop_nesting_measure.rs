@@ -467,3 +467,78 @@ fn pocketed_cylinder_volume_properties_and_area_agree() {
         );
     }
 }
+
+/// The pocketed cylinder read warm through the face-integral cache equals
+/// its cold reading bit for bit, and with its nesting left undecided it is
+/// measured on its mesh (to the chord error), never with the island
+/// subtracted; `solid_properties`, which has no mesh route, refuses.
+#[test]
+fn pocketed_cylinder_reads_the_same_warm_and_falls_back_to_the_mesh() {
+    use remus_check::properties::face_cache::{
+        clear_thread_face_cache, enable_thread_face_cache, set_thread_face_cache_limits,
+    };
+    use remus_check::properties::loop_nesting::with_nesting_work_limit;
+    for s in SCALES {
+        let mut topo = Topology::new();
+        let (solid, top) = pocketed_cylinder(&mut topo, s);
+        let options = remus_check::properties::PropertiesOptions::default();
+        let read = |topo: &Topology| {
+            (
+                measure::face_area(topo, top, 0.01 * s).unwrap(),
+                measure::solid_volume(topo, solid, 0.01 * s).unwrap(),
+                remus_check::properties::solid_properties(topo, solid, &options)
+                    .unwrap()
+                    .mass,
+            )
+        };
+        let cold = read(&topo);
+        enable_thread_face_cache();
+        clear_thread_face_cache();
+        let primed = read(&topo);
+        let warm = read(&topo);
+        set_thread_face_cache_limits(0, 0);
+        for reading in [primed, warm] {
+            assert_eq!(
+                reading.0.to_bits(),
+                cold.0.to_bits(),
+                "scale {s}: face_area"
+            );
+            assert_eq!(
+                reading.1.to_bits(),
+                cold.1.to_bits(),
+                "scale {s}: solid_volume"
+            );
+            assert_eq!(
+                reading.2.to_bits(),
+                cold.2.to_bits(),
+                "scale {s}: solid_properties"
+            );
+        }
+
+        let deflection = 1e-3 * s;
+        let (area, volume, props) = with_nesting_work_limit(0, || {
+            (
+                measure::face_area(&topo, top, deflection).unwrap(),
+                measure::solid_volume(&topo, solid, deflection).unwrap(),
+                remus_check::properties::solid_properties(&topo, solid, &options),
+            )
+        });
+        // Chords on the three rims (radii 10, 8, 2), each within the
+        // deflection of its arc.
+        let rims = TAU * 20.0 * s;
+        let top_area = 40.0 * PI * s * s;
+        assert!(
+            (area - top_area).abs() <= deflection * rims,
+            "scale {s}: fallback top area {area} against {top_area}"
+        );
+        let solid_want = 180.0 * PI * s.powi(3);
+        assert!(
+            (volume - solid_want).abs() <= deflection * rims * 3.0 * s * 2.0,
+            "scale {s}: fallback volume {volume} against {solid_want}"
+        );
+        assert!(
+            matches!(props, Err(remus_check::CheckError::UndecidedLoopNesting(_))),
+            "scale {s}: {props:?}"
+        );
+    }
+}

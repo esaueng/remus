@@ -89,7 +89,7 @@ fn fields(exact: &PlanarFaceExact) -> (u64, u64, usize, u64, bool) {
 #[test]
 fn planar_face_signed_volume_is_unchanged_unless_loops_nest() {
     for scale in SCALES {
-        for pl in [Placement::flat(scale), Placement::tilted(scale)] {
+        for pl in Placement::all(scale) {
             let mut topo = Topology::new();
             for (label, face) in flat_faces(&mut topo, &pl) {
                 let main = main_planar_face_signed_volume(&topo, face).unwrap();
@@ -100,10 +100,19 @@ fn planar_face_signed_volume_is_unchanged_unless_loops_nest() {
                     "{label}, scale {scale}"
                 );
             }
+            // The signed area sums products of world coordinates, so away
+            // from the origin it carries `ε |origin|²` per term (as on
+            // `main`); a billion times the scale away that swamps the islands.
+            if pl.far() {
+                continue;
+            }
             let (face, area) = nested_face(&mut topo, &pl);
             let now = planar_face_signed_volume(&topo, face).unwrap().unwrap();
+            let world = pl.at(0.0, 0.0);
+            let reach2 = Vec3::new(world.x(), world.y(), world.z()).length_squared();
+            let tolerance = (1e3 * f64::EPSILON).mul_add(reach2, 1e-9 * area);
             assert!(
-                (now.area - area).abs() <= 1e-9 * area,
+                (now.area - area).abs() <= tolerance,
                 "nested, scale {scale}: {} != {area}",
                 now.area
             );

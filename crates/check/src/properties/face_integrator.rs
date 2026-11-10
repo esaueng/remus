@@ -421,8 +421,9 @@ pub fn integrate_face_area(
 /// Area of a planar face from its Green's-theorem boundary moments, or
 /// `None` where that exact path declines.
 ///
-/// It declines a face that is not planar, a degenerate boundary, or a NURBS
-/// edge whose spans the adaptive rule cannot certify. Unlike
+/// It declines a face that is not planar, a degenerate boundary, a NURBS
+/// edge whose spans the adaptive rule cannot certify, or inner loops whose
+/// nesting cannot be certified (see [`super::loop_nesting`]). Unlike
 /// [`integrate_face_area`] it never substitutes the chord polygon, so a
 /// caller keeps its own fallback.
 ///
@@ -436,10 +437,13 @@ pub fn planar_face_exact_area(topo: &Topology, face_id: FaceId) -> Result<Option
     let Ok(normal) = normal.normalize() else {
         return Ok(None);
     };
-    Ok(
-        integrate_planar_face_exact(topo, face_id, normal, Point3::new(0.0, 0.0, 0.0))?
-            .map(|contribution| contribution.area),
-    )
+    match integrate_planar_face_exact(topo, face_id, normal, Point3::new(0.0, 0.0, 0.0)) {
+        Ok(contribution) => Ok(contribution.map(|contribution| contribution.area)),
+        // Uncertified nesting is a decline here: the caller's fallback
+        // measures the face on its mesh.
+        Err(CheckError::UndecidedLoopNesting(_)) => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 /// Area of a cylinder, cone, sphere or torus face by exact boundary
@@ -2768,17 +2772,12 @@ fn integrate_planar_face_fan(
         })
         .collect::<Result<Vec<_>, CheckError>>()?;
     // Nested inner wires alternate void and material: an island inside a
-    // hole is added back, a hole inside that island subtracted again. Only a
-    // certified nesting changes a sign; otherwise every inner wire is a hole,
-    // subtracted in order.
-    let nesting = if holes.len() < 2 {
-        InnerLoopNesting::Flat
-    } else {
-        inner_loop_nesting(topo, face_id, normal)
-    };
-    match nesting.nested_depths() {
-        Some(depths) => {
-            for (h, &depth) in holes.iter().zip(depths) {
+    // hole is added back, a hole inside that island subtracted again. A
+    // certified flat or invalid face subtracts every inner wire in order; an
+    // undecided one is refused, never guessed.
+    match planar_inner_nesting(topo, face_id, holes.len()) {
+        InnerLoopNesting::Nested(depths) => {
+            for (h, &depth) in holes.iter().zip(&depths) {
                 if depth % 2 == 0 {
                     subtract_contribution(&mut contrib, h);
                 } else {
@@ -2786,14 +2785,26 @@ fn integrate_planar_face_fan(
                 }
             }
         }
-        None => {
+        InnerLoopNesting::Flat | InnerLoopNesting::Invalid => {
             for h in &holes {
                 subtract_contribution(&mut contrib, h);
             }
         }
+        InnerLoopNesting::Undecided(reason) => {
+            return Err(CheckError::UndecidedLoopNesting(reason));
+        }
     }
 
     Ok(contrib)
+}
+
+/// The nesting of a planar face's inner loops, read only when it has at
+/// least two (one loop cannot nest).
+fn planar_inner_nesting(topo: &Topology, face_id: FaceId, inner: usize) -> InnerLoopNesting {
+    if inner < 2 {
+        return InnerLoopNesting::Flat;
+    }
+    inner_loop_nesting(topo, face_id)
 }
 
 /// Remove a hole's positive-area contribution from `contrib`.
@@ -4162,7 +4173,9 @@ fn wire_newell_normal(
 /// Returns `Ok(None)` when any wire contains an edge type the exact path
 /// does not handle, or when the boundary is too
 /// degenerate to determine its plane; the caller then falls back to the
-/// chord-polygon fan path for the whole face.
+/// chord-polygon fan path for the whole face. Returns
+/// [`CheckError::UndecidedLoopNesting`] when the inner loops' nesting cannot
+/// be certified: the fan path would read the same nesting.
 fn integrate_planar_face_exact(
     topo: &Topology,
     face_id: FaceId,
@@ -4204,18 +4217,13 @@ fn integrate_planar_face_exact(
         holes.push(hole);
     }
     // Nested inner wires alternate void and material: an island inside a
-    // hole is added back, a hole inside that island subtracted again. Only a
-    // certified nesting, read off the same edge trims these moments
-    // integrate, changes a sign; otherwise every inner wire is a hole,
-    // subtracted in order.
-    let nesting = if holes.len() < 2 {
-        InnerLoopNesting::Flat
-    } else {
-        inner_loop_nesting(topo, face_id, boundary_normal)
-    };
-    match nesting.nested_depths() {
-        Some(depths) => {
-            for (hole, &depth) in holes.iter().zip(depths) {
+    // hole is added back, a hole inside that island subtracted again. The
+    // nesting is read off the same edge trims these moments integrate. A
+    // certified flat or invalid face subtracts every inner wire in order; an
+    // undecided one is refused, never guessed.
+    match planar_inner_nesting(topo, face_id, holes.len()) {
+        InnerLoopNesting::Nested(depths) => {
+            for (hole, &depth) in holes.iter().zip(&depths) {
                 if depth % 2 == 0 {
                     for k in 0..10 {
                         moments[k] -= hole[k];
@@ -4227,12 +4235,15 @@ fn integrate_planar_face_exact(
                 }
             }
         }
-        None => {
+        InnerLoopNesting::Flat | InnerLoopNesting::Invalid => {
             for hole in &holes {
                 for k in 0..10 {
                     moments[k] -= hole[k];
                 }
             }
+        }
+        InnerLoopNesting::Undecided(reason) => {
+            return Err(CheckError::UndecidedLoopNesting(reason));
         }
     }
 

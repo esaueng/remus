@@ -30,17 +30,22 @@ fn main_planar_face_area(topo: &Topology, face_id: FaceId) -> Result<f64, crate:
 #[test]
 fn sampled_planar_area_is_unchanged_unless_loops_nest() {
     for scale in SCALES {
-        for pl in [Placement::flat(scale), Placement::tilted(scale)] {
+        for pl in Placement::all(scale) {
             let mut topo = Topology::new();
             for (label, face) in flat_faces(&mut topo, &pl) {
                 let main = main_planar_face_area(&topo, face).unwrap();
-                let now = planar_face_area(&topo, face).unwrap();
+                let now = planar_face_area(&topo, face, 1e-3 * scale).unwrap();
                 assert_eq!(main.to_bits(), now.to_bits(), "{label}, scale {scale}");
             }
             // The samples chord the circles, so the nested area is only as
             // close as the sampling; the islands' signs are what is checked.
+            // A billion times the scale from the origin, the sampled Newell
+            // sum of absolute coordinates loses those digits (as on `main`).
+            if pl.far() {
+                continue;
+            }
             let (face, area) = nested_face(&mut topo, &pl);
-            let now = planar_face_area(&topo, face).unwrap();
+            let now = planar_face_area(&topo, face, 1e-3 * scale).unwrap();
             let main = main_planar_face_area(&topo, face).unwrap();
             assert!((now - area).abs() <= 1e-3 * area, "nested: {now} != {area}");
             assert!((main - area).abs() > 1.0 * scale * scale, "subtract-all");

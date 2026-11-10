@@ -70,6 +70,14 @@
 //! far below the trim chording every fixed-order reading already carries.
 //! Such a reading is never returned where bit identity is promised.
 //!
+//! A planar face with two or more inner wires is integrated with the nesting
+//! [`super::loop_nesting`] certifies for it, a decision that rounding of the
+//! translated input can in principle tip. Each such entry therefore records
+//! that nesting, and a translated face reuses the entry only when its own
+//! nesting reads the same; otherwise it is integrated afresh. A face whose
+//! nesting is undecided is refused by the integrator, and refusals are never
+//! cached.
+//!
 //! # Key
 //!
 //! The key holds:
@@ -127,6 +135,7 @@ use remus_topology::face::{FaceId, FaceSurface};
 use smallvec::SmallVec;
 
 use super::face_integrator::{self, FaceContribution};
+use super::loop_nesting::{InnerLoopNesting, inner_loop_nesting};
 use crate::CheckError;
 
 /// Default bound on retained entries (faces) once a cache is enabled.
@@ -208,6 +217,9 @@ struct Value {
     reference: Point3,
     /// `∫ n dA` from the same samples, when the integration reported it.
     flux: Option<Vec3>,
+    /// The inner-loop nesting the integration used, for a planar face with
+    /// at least two inner wires (see [`nesting_stamp`]).
+    nesting: Option<InnerLoopNesting>,
 }
 
 #[derive(Debug, Clone)]
@@ -267,7 +279,17 @@ impl Request {
         }
     }
 
+    /// The value of this request, with the nesting it was integrated with
+    /// wherever a translated face may later reuse it.
     fn compute(self, topo: &Topology, face: FaceId) -> Result<Value, CheckError> {
+        let mut value = self.integrate(topo, face)?;
+        if matches!(self, Self::FixedAbout { .. } | Self::Volume { .. }) {
+            value.nesting = nesting_stamp(topo, face);
+        }
+        Ok(value)
+    }
+
+    fn integrate(self, topo: &Topology, face: FaceId) -> Result<Value, CheckError> {
         match self {
             Self::FixedAbout { order, reference } => {
                 let (contribution, flux) =
@@ -277,6 +299,7 @@ impl Request {
                     full_contribution: true,
                     reference,
                     flux,
+                    nesting: None,
                 })
             }
             Self::Volume { order, reference } => {
@@ -288,6 +311,7 @@ impl Request {
                     full_contribution: false,
                     reference,
                     flux,
+                    nesting: None,
                 })
             }
             Self::Area { order } => {
@@ -297,6 +321,7 @@ impl Request {
                     full_contribution: false,
                     reference: Point3::new(0.0, 0.0, 0.0),
                     flux: None,
+                    nesting: None,
                 })
             }
             Self::AnalyticArea { order } => {
@@ -306,6 +331,7 @@ impl Request {
                     full_contribution: false,
                     reference: Point3::new(0.0, 0.0, 0.0),
                     flux: None,
+                    nesting: None,
                 })
             }
         }
@@ -605,13 +631,13 @@ impl FaceIntegralCache {
     ) -> Result<Answer, CheckError> {
         request.validate_reference()?;
         if !self.is_enabled() {
-            return Ok(request.answer_fresh(&request.compute(topo, face)?));
+            return Ok(request.answer_fresh(&request.integrate(topo, face)?));
         }
         let Ok((hash, key)) = face_key(topo, face, request) else {
             // The integrator meets the same missing entity and reports it.
-            return Ok(request.answer_fresh(&request.compute(topo, face)?));
+            return Ok(request.answer_fresh(&request.integrate(topo, face)?));
         };
-        if let Some(answer) = self.lookup(hash, &key, request) {
+        if let Some(answer) = self.lookup(hash, &key, request, topo, face) {
             return Ok(answer);
         }
         let value = request.compute(topo, face)?;
@@ -620,8 +646,18 @@ impl FaceIntegralCache {
         Ok(answer)
     }
 
-    fn lookup(&mut self, hash: u64, key: &Key, request: Request) -> Option<Answer> {
+    fn lookup(
+        &mut self,
+        hash: u64,
+        key: &Key,
+        request: Request,
+        topo: &Topology,
+        face: FaceId,
+    ) -> Option<Answer> {
         let mut best: Option<(Rank, Answer)> = None;
+        // The face's own nesting, read at most once, and only to vet a
+        // translated reading.
+        let mut stamp: Option<Option<InnerLoopNesting>> = None;
         if let Some(seqs) = self.index.get(&hash) {
             for &seq in seqs {
                 let Some(entry) = seq
@@ -634,6 +670,16 @@ impl FaceIntegralCache {
                 let Some((rank, answer)) = request.answer_from(key, entry) else {
                     continue;
                 };
+                // A translated face matches its source only to rounding, and
+                // a nesting decision can turn on rounding: reuse the reading
+                // only when this face's nesting is the one integrated.
+                if rank == Rank::Translated
+                    && entry.value.nesting.is_some()
+                    && *stamp.get_or_insert_with(|| nesting_stamp(topo, face))
+                        != entry.value.nesting
+                {
+                    continue;
+                }
                 if best.as_ref().is_none_or(|(held, _)| rank < *held) {
                     let identical = rank == Rank::Identical;
                     best = Some((rank, answer));
@@ -699,6 +745,22 @@ impl FaceIntegralCache {
         self.front_seq = entry.seq + 1;
         self.evictions += 1;
     }
+}
+
+/// The inner-loop nesting a planar face with at least two inner wires is
+/// integrated with, `None` for any other face.
+///
+/// Every value cached for such a face came from an integration that read this
+/// nesting (an undecided one is an error, and errors are never cached). A
+/// translated face is matched to rounding, and the decision is made in a
+/// frame local to the face, so the two faces almost always read the same
+/// nesting; where rounding of the translated input does tip a decision, the
+/// stamps differ and the entry is passed over, so a hit never returns a value
+/// the uncached integration would not.
+fn nesting_stamp(topo: &Topology, face: FaceId) -> Option<InnerLoopNesting> {
+    let face_data = topo.face(face).ok()?;
+    (matches!(face_data.surface(), FaceSurface::Plane { .. }) && face_data.inner_wires().len() >= 2)
+        .then(|| inner_loop_nesting(topo, face))
 }
 
 /// Each request kind is answered in its own kind; reaching this is a bug,
@@ -847,16 +909,16 @@ fn memoized(topo: &Topology, face: FaceId, request: Request) -> Result<Answer, C
     let enabled =
         THREAD_CACHE.with(|cache| cache.try_borrow().is_ok_and(|cache| cache.is_enabled()));
     if !enabled {
-        return Ok(request.answer_fresh(&request.compute(topo, face)?));
+        return Ok(request.answer_fresh(&request.integrate(topo, face)?));
     }
     let Ok((hash, key)) = face_key(topo, face, request) else {
-        return Ok(request.answer_fresh(&request.compute(topo, face)?));
+        return Ok(request.answer_fresh(&request.integrate(topo, face)?));
     };
     let hit = THREAD_CACHE.with(|cache| {
         cache
             .try_borrow_mut()
             .ok()
-            .and_then(|mut cache| cache.lookup(hash, &key, request))
+            .and_then(|mut cache| cache.lookup(hash, &key, request, topo, face))
     });
     if let Some(answer) = hit {
         return Ok(answer);

@@ -3697,19 +3697,24 @@ fn planar_face_signed_volume(
         holes.push(hole);
     }
     // An island certified to lie inside a hole (odd nesting depth) restores
-    // its area, a hole inside that island removes it again. Without a
-    // certified nesting every inner wire is a hole, subtracted in order.
+    // its area, a hole inside that island removes it again. A certified flat
+    // or invalid face subtracts every inner wire in order. An undecided one
+    // declines, so the solid takes its mesh route rather than a guessed sign.
     let nesting = if holes.len() < 2 {
         InnerLoopNesting::Flat
     } else {
-        inner_loop_nesting(topo, face_id, normal)
+        inner_loop_nesting(topo, face_id)
     };
-    let depths = nesting.nested_depths();
+    let depths = match nesting {
+        InnerLoopNesting::Nested(depths) => Some(depths),
+        InnerLoopNesting::Flat | InnerLoopNesting::Invalid => None,
+        InnerLoopNesting::Undecided(_) => return Ok(None),
+    };
     for (k, hole) in holes.iter().enumerate() {
         arc_edges += hole.arc_edges;
         arc_length += hole.arc_length;
         exact_boundary &= hole.exact_boundary;
-        if depths.is_some_and(|depths| depths[k] % 2 == 1) {
+        if depths.as_ref().is_some_and(|depths| depths[k] % 2 == 1) {
             area_mag2 += hole.area2.abs();
         } else {
             area_mag2 -= hole.area2.abs();

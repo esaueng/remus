@@ -105,3 +105,99 @@ fn nested_hole_solid_volume_and_centroid_match_closed_form() {
         "centre of mass {com:?} != closed form {want_com:?}"
     );
 }
+
+/// `face_area`, `solid_volume` and `mass_properties` agree with each other
+/// and with the closed forms, and the face-integral cache reads them warm
+/// exactly as cold.
+#[test]
+fn nested_hole_measures_agree_and_read_the_same_warm() {
+    use remus_check::properties::face_cache::{
+        clear_thread_face_cache, enable_thread_face_cache, set_thread_face_cache_limits,
+    };
+    let (topo, solid) = load();
+    let top = nested_top(&topo, solid);
+    let block = 21.0 * (rounded_square(62.75, 3.75) - rounded_square(21.25, 3.75));
+    let pocket = 19.8 * (rounded_square(61.55, 2.55) - rounded_square(22.45, 3.75));
+    let volume = block - pocket;
+    let top_area = rounded_square(62.75, 3.75) - rounded_square(61.55, 2.55)
+        + rounded_square(22.45, 3.75)
+        - rounded_square(21.25, 3.75);
+    let read = || {
+        (
+            measure::face_area(&topo, top, 0.01).unwrap(),
+            measure::solid_volume(&topo, solid, 0.01).unwrap(),
+            measure::mass_properties(&topo, solid).unwrap().mass,
+        )
+    };
+    let cold = read();
+    assert!((cold.0 - top_area).abs() <= 1e-9 * top_area, "{cold:?}");
+    assert!((cold.1 - volume).abs() <= 1e-9 * volume, "{cold:?}");
+    assert!((cold.2 - volume).abs() <= 1e-9 * volume, "{cold:?}");
+    enable_thread_face_cache();
+    clear_thread_face_cache();
+    let primed = read();
+    let warm = read();
+    set_thread_face_cache_limits(0, 0);
+    for (label, reading) in [("primed", primed), ("warm", warm)] {
+        assert_eq!(reading.0.to_bits(), cold.0.to_bits(), "{label} face_area");
+        assert_eq!(
+            reading.1.to_bits(),
+            cold.1.to_bits(),
+            "{label} solid_volume"
+        );
+        assert_eq!(
+            reading.2.to_bits(),
+            cold.2.to_bits(),
+            "{label} mass_properties"
+        );
+    }
+}
+
+/// With the nesting left undecided (no work allowed), the top face and the
+/// solid are measured on their meshes, whose parity the tessellator decides:
+/// still the closed forms, to the chord error; `mass_properties`, which has
+/// no mesh route, refuses rather than guessing.
+#[test]
+fn an_undecided_nesting_falls_back_to_the_mesh() {
+    use remus_check::properties::loop_nesting::with_nesting_work_limit;
+    let (topo, solid) = load();
+    let top = nested_top(&topo, solid);
+    let top_area = rounded_square(62.75, 3.75) - rounded_square(61.55, 2.55)
+        + rounded_square(22.45, 3.75)
+        - rounded_square(21.25, 3.75);
+    let block = 21.0 * (rounded_square(62.75, 3.75) - rounded_square(21.25, 3.75));
+    let pocket = 19.8 * (rounded_square(61.55, 2.55) - rounded_square(22.45, 3.75));
+    let volume = block - pocket;
+    let arc_length = std::f64::consts::TAU * (3.0 * 3.75 + 2.55);
+    let deflection = 0.001;
+    let (area, solid_volume, mass) = with_nesting_work_limit(0, || {
+        (
+            measure::face_area(&topo, top, deflection).unwrap(),
+            measure::solid_volume(&topo, solid, deflection).unwrap(),
+            measure::mass_properties(&topo, solid),
+        )
+    });
+    assert!(
+        (area - top_area).abs() <= deflection * arc_length,
+        "fallback area {area} against {top_area}"
+    );
+    let mesh = mesh_area(&topo, top, deflection);
+    assert!(
+        (area - mesh).abs() <= deflection * arc_length,
+        "fallback area {area} against the tessellator's {mesh}"
+    );
+    // Every face's chord error, over the solid's height.
+    assert!(
+        (solid_volume - volume).abs() <= deflection * arc_length * 2.0 * 21.0,
+        "fallback volume {solid_volume} against {volume}"
+    );
+    assert!(
+        matches!(
+            mass,
+            Err(remus_operations::OperationsError::Check(
+                remus_check::CheckError::UndecidedLoopNesting(_)
+            ))
+        ),
+        "{mass:?}"
+    );
+}

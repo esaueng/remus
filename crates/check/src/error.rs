@@ -32,6 +32,14 @@ pub enum CheckError {
     /// evaluated.
     #[error("curvature analysis failed: {0}")]
     CurvatureFailed(String),
+
+    /// A planar face's inner loops could neither be certified as nested,
+    /// as not nested, nor as touching (see
+    /// [`crate::properties::loop_nesting`]). The face is refused rather than
+    /// measured with every inner wire guessed to be a hole; the operations
+    /// layer measures such a face on its mesh instead.
+    #[error("inner-loop nesting of a planar face could not be certified: {0}")]
+    UndecidedLoopNesting(crate::properties::loop_nesting::NestingUndecided),
 }
 
 pub(crate) fn edge_domain_validation(error: remus_topology::edge::EdgeDomainError) -> CheckError {

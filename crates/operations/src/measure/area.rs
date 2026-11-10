@@ -64,25 +64,31 @@ fn face_area_uncached(
     match face.surface() {
         FaceSurface::Plane { .. } => match planar_boundary(topo, face_id)? {
             // `integrate_face` is the fixed rule about the origin.
-            PlanarBoundary::Exact => Ok(
-                remus_check::properties::face_cache::integrate_face_fixed_about_memoized(
+            PlanarBoundary::Exact => {
+                match remus_check::properties::face_cache::integrate_face_fixed_about_memoized(
                     topo,
                     face_id,
                     5,
                     Point3::new(0.0, 0.0, 0.0),
-                )?
-                .area
-                .abs(),
-            ),
+                ) {
+                    Ok(contribution) => Ok(contribution.area.abs()),
+                    // Inner loops whose nesting cannot be certified: measure
+                    // the face on its mesh rather than guess their signs.
+                    Err(remus_check::CheckError::UndecidedLoopNesting(_)) => {
+                        planar_face_mesh_area(topo, face_id, deflection)
+                    }
+                    Err(error) => Err(error.into()),
+                }
+            }
             PlanarBoundary::Adaptive => {
                 match remus_check::properties::face_integrator::planar_face_exact_area(
                     topo, face_id,
                 )? {
                     Some(area) => Ok(area.abs()),
-                    None => planar_face_area(topo, face_id),
+                    None => planar_face_area(topo, face_id, deflection),
                 }
             }
-            PlanarBoundary::Lines => planar_face_area(topo, face_id),
+            PlanarBoundary::Lines => planar_face_area(topo, face_id, deflection),
         },
         // Analytic curved faces reduce their area to exact boundary
         // integrals (Green's theorem), falling back to Gauss quadrature of
@@ -204,8 +210,14 @@ fn nurbs_boundary_is_recognized(
 /// Sampled fallback for a planar boundary the exact moment integrator does
 /// not support. Computes the Newell area of a 256-sample polygon and
 /// subtracts sampled inner-wire areas, adding back an island certified to
-/// lie inside a hole (odd nesting depth).
-fn planar_face_area(topo: &Topology, face_id: FaceId) -> Result<f64, crate::OperationsError> {
+/// lie inside a hole (odd nesting depth). Where the inner loops' nesting
+/// cannot be certified the face is measured on its mesh instead
+/// ([`planar_face_mesh_area`]).
+fn planar_face_area(
+    topo: &Topology,
+    face_id: FaceId,
+    deflection: f64,
+) -> Result<f64, crate::OperationsError> {
     use remus_check::properties::loop_nesting::{InnerLoopNesting, inner_loop_nesting};
 
     let face = topo.face(face_id)?;
@@ -221,21 +233,17 @@ fn planar_face_area(topo: &Topology, face_id: FaceId) -> Result<f64, crate::Oper
         .collect::<Result<Vec<_>, crate::OperationsError>>()?;
     // Nested inner wires alternate void and material: an island inside a
     // hole restores area, a hole inside that island removes it again. The
-    // nesting is decided on the edges themselves, never on these samples;
-    // without a certified nesting every inner wire is a hole.
+    // nesting is decided on the edges themselves, never on these samples. A
+    // certified flat or invalid face subtracts every inner wire.
     let nesting = if inner.len() < 2 {
         InnerLoopNesting::Flat
     } else {
-        inner_loop_nesting(
-            topo,
-            face_id,
-            remus_check::util::polygon_normal(&outer_positions),
-        )
+        inner_loop_nesting(topo, face_id)
     };
     let mut hole_area = 0.0;
-    match nesting.nested_depths() {
-        Some(depths) => {
-            for (positions, &depth) in inner.iter().zip(depths) {
+    match nesting {
+        InnerLoopNesting::Nested(depths) => {
+            for (positions, &depth) in inner.iter().zip(&depths) {
                 if depth % 2 == 0 {
                     hole_area += newell_area(positions);
                 } else {
@@ -243,14 +251,31 @@ fn planar_face_area(topo: &Topology, face_id: FaceId) -> Result<f64, crate::Oper
                 }
             }
         }
-        None => {
+        InnerLoopNesting::Flat | InnerLoopNesting::Invalid => {
             for positions in &inner {
                 hole_area += newell_area(positions);
             }
         }
+        InnerLoopNesting::Undecided(_) => {
+            return planar_face_mesh_area(topo, face_id, deflection);
+        }
     }
 
     Ok((outer_area - hole_area).abs())
+}
+
+/// The area of a planar face's measurement mesh: the fallback for inner
+/// loops whose nesting cannot be certified. The planar tessellator
+/// constrains every wire and keeps the triangles an odd number of wires
+/// enclose, so the mesh decides the parity itself, on the same boundary
+/// samples the face is displayed and its solid's mesh volume is read with.
+fn planar_face_mesh_area(
+    topo: &Topology,
+    face_id: FaceId,
+    deflection: f64,
+) -> Result<f64, crate::OperationsError> {
+    let mesh = tessellate::tessellate_face_for_measurement(topo, face_id, deflection)?;
+    Ok(triangle_mesh_area(&mesh))
 }
 
 /// Compute the area of a polygon using Newell's method.

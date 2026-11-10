@@ -6,7 +6,9 @@
 //! line, circle, split-arc, ellipse and trimmed NURBS holes, including holes
 //! whose boxes overlap (an L-shaped slot around a square, a thin ellipse
 //! with a circle in its box corner) and a trimmed NURBS whose unused
-//! carrier spans surround a neighbouring hole. Three scales, flat and tilted.
+//! carrier spans surround a neighbouring hole, and a shallow arc of a circle
+//! whose centre lies far outside the face. Three scales, flat, tilted, and
+//! translated by a million and a billion times the face's scale.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
@@ -156,6 +158,25 @@ impl Placement {
             n: Vec3::new(0.0, 0.0, 1.0),
             scale,
         }
+    }
+
+    /// [`Self::flat`] moved by `shift` along a skew direction: the face is
+    /// unchanged, its coordinates are not.
+    fn translated(scale: f64, shift: f64) -> Self {
+        Self {
+            origin: Point3::new(shift, -0.5 * shift, 0.25f64.mul_add(shift, 5.0 * scale)),
+            ..Self::flat(scale)
+        }
+    }
+
+    /// Every placement the oracles run on.
+    fn all(scale: f64) -> [Self; 4] {
+        [
+            Self::flat(scale),
+            Self::tilted(scale),
+            Self::translated(scale, 1e6 * scale),
+            Self::translated(scale, 1e9 * scale),
+        ]
     }
 
     /// Rotated about x by 0.4, then about z by 0.7, and shifted.
@@ -329,6 +350,36 @@ fn flat_faces(topo: &mut Topology, pl: &Placement) -> Vec<(&'static str, FaceId)
         "rational NURBS circle",
         pl.face(topo, vec![rational, in_corner]),
     ));
+
+    // A far carrier: a shallow arc of a circle of radius 1e4 centred far
+    // outside the face, closing a hole to its right, with a square in the
+    // hole's box but left of the arc.
+    let big = 1e4;
+    let arc = Circle3D::new_with_ref(pl.at(5.0 - big, 0.0), pl.n, big * pl.scale, pl.u).unwrap();
+    let h = (3.0 / big).asin();
+    let ends = [
+        arc.evaluate(-h),
+        arc.evaluate(h),
+        pl.at(10.0, 3.0),
+        pl.at(10.0, -3.0),
+    ];
+    let vertices: Vec<_> = ends
+        .iter()
+        .map(|&q| topo.add_vertex(Vertex::new(q, 1e-9 * pl.scale)))
+        .collect();
+    let mut rim = Edge::new(vertices[0], vertices[1], EdgeCurve::Circle(arc));
+    rim.set_trim(Some((-h, h)));
+    let mut edges = vec![OrientedEdge::new(topo.add_edge(rim), true)];
+    for i in 1..4 {
+        let line = Edge::new(vertices[i], vertices[(i + 1) % 4], EdgeCurve::Line);
+        edges.push(OrientedEdge::new(topo.add_edge(line), true));
+    }
+    let shallow = topo.add_wire(Wire::new(edges, true).unwrap());
+    let left_of_arc = pl.rect(topo, [4.9996, 4.9997, -0.5, 0.5]);
+    faces.push((
+        "far circle carrier",
+        pl.face(topo, vec![shallow, left_of_arc]),
+    ));
     faces
 }
 
@@ -355,7 +406,7 @@ fn bits(c: &FaceContribution) -> [u64; 14] {
 #[test]
 fn unnested_inner_loops_integrate_bit_for_bit_as_before() {
     for scale in [1e-3, 1.0, 1e6] {
-        for pl in [Placement::flat(scale), Placement::tilted(scale)] {
+        for pl in Placement::all(scale) {
             let mut topo = Topology::new();
             let reference = pl.at(0.5, -1.0) + pl.n * (2.0 * scale);
             for (label, face) in flat_faces(&mut topo, &pl) {
@@ -384,11 +435,11 @@ fn unnested_inner_loops_integrate_bit_for_bit_as_before() {
 fn the_oracle_faces_are_certified_flat() {
     use crate::properties::loop_nesting::{InnerLoopNesting, inner_loop_nesting};
     for scale in [1e-3, 1.0, 1e6] {
-        for pl in [Placement::flat(scale), Placement::tilted(scale)] {
+        for pl in Placement::all(scale) {
             let mut topo = Topology::new();
             for (label, face) in flat_faces(&mut topo, &pl) {
                 assert_eq!(
-                    inner_loop_nesting(&topo, face, pl.n),
+                    inner_loop_nesting(&topo, face),
                     InnerLoopNesting::Flat,
                     "{label}, scale {scale}"
                 );
