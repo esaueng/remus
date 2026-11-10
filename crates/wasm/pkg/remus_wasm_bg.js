@@ -7422,7 +7422,9 @@ export class RemusKernel {
         return takeFromExternrefTable0(ret[0]);
     }
     /**
-     * Project a 3D point onto a face surface using Newton iteration.
+     * Project a 3D point onto a face's untrimmed surface: in closed form on
+     * planes, cylinders, cones, spheres and tori, by Newton iteration from a
+     * grid seed on NURBS.
      *
      * Returns `[u, v, px, py, pz, distance]`.
      * @param {number} face
