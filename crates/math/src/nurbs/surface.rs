@@ -2354,6 +2354,9 @@ mod tests {
         use crate::nurbs::projection::project_point_to_surface_with_grid;
 
         let surface = bicubic_surface();
+        // Scalar projection also fills the existing weight cache. Warm it
+        // before the snapshot so this test isolates the new seed-grid cache.
+        assert!(surface.has_uniform_weights());
         let untouched = surface.clone();
         let before = format!("{surface:?}");
         #[cfg(feature = "serde")]
