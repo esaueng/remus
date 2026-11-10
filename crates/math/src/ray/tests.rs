@@ -501,22 +501,16 @@ fn torus_tangent_lines_never_read_as_one_crossing() {
     );
 }
 
-/// Merged double roots carry an even multiplicity.
+/// A tangency over the tube top is one even contact: tangential, adding no
+/// parity.
 #[test]
 fn torus_tangent_through_tube_top_reports_an_even_multiplicity() {
     // Horizontal line along +y over the tube top at x = R: tangent at (R, 0, r).
     let tor = ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), 3.0, 1.0).unwrap();
-    let counted = crate::analytic_intersection::intersect_line_torus_counted(
-        &tor,
-        Point3::new(3.0, -2.0, 1.0),
-        Vec3::new(0.0, 1.0, 0.0),
-    );
-    let local: Vec<_> = counted
-        .iter()
-        .filter(|(t, _)| (t - 2.0).abs() < 1e-3)
-        .collect();
-    let total: usize = local.iter().map(|(_, m)| m).sum();
-    assert!(total.is_multiple_of(2), "{counted:?}");
+    let hits = ray_torus(Point3::new(3.0, -2.0, 1.0), Vec3::new(0.0, 1.0, 0.0), &tor);
+    let local = near_torus(&hits, 2.0, 1e-3);
+    assert_eq!(local.len(), 1, "{hits:?}");
+    assert_eq!(local[0].kind, ContactKind::Tangential, "{hits:?}");
 }
 
 proptest! {

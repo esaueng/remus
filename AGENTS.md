@@ -182,7 +182,9 @@ Quick reference — find the right file for any task:
 | Closed-form oracles for the SSI marcher's private branch geometry (tests) | `nurbs/intersection/surface_marching/oracle_tests.rs` |
 | Analytic-analytic intersection | `analytic_intersection.rs` |
 | Bit-exact oracle for the ray-torus quartic solver's Durand–Kerner cycle jump (tests) | `analytic_intersection/quartic_cycle_tests.rs` |
-| Line–torus roots from origins up to 10 000 tube sizes away and raw directions 1e-5 to 1e4 long, against a bisection reference; tangent `spread` measured from the line's closest point to the centre (tests) | `math/tests/regress_line_torus_far_origin.rs` |
+| Certified real-root structure of a monic quartic by sign: critical points and inflections in closed form or by safeguarded Newton, a scale-relative error bound, simple roots, even (touch) and odd (triple) contacts each reported once (the line–torus solve) | `analytic_intersection/certified_quartic.rs` |
+| Line–torus roots from origins up to 10 000 tube sizes away and raw directions 1e-5 to 1e4 long, against a bisection reference; tangent `spread` holding the contact, set by the torus not the origin's distance (tests) | `math/tests/regress_line_torus_far_origin.rs` |
+| Line–torus contacts of every multiplicity against the exact tube distance: the reviewed triple-root ray, seeded asymptotic (triple), exterior, interior and quadruple tangents at three scales from 0.1 to 1e4 torus sizes away, lines either side of tangency (tests) | `math/tests/regress_line_torus_contacts.rs` |
 | Bit-exact oracles for the plane × torus section: the pre-change grid scan, greedy chaining and pipeline, grid line sign certificates (tests) | `analytic_intersection/plane_torus_oracle_tests.rs` |
 | AABB / bounding boxes | `aabb.rs` |
 | BVH (bounding volume hierarchy) | `bvh.rs` |
@@ -428,6 +430,7 @@ Quick reference — find the right file for any task:
 | Conservative NURBS span hulls for boundary-distance and ray pruning, with bounded quadratic-strip subdivision for long narrow bands; the original surface and solver remain authoritative | `classify/prepared/ray_prefilter.rs` |
 | Persistent whole-topology classification cache (`ClassificationCache`, PERF-Q02) | `classify/cache.rs` |
 | Narrow-bump far-flank crossing through the classifier's NURBS ray path (tests) | `classify/boundary/nurbs_bump_ray_tests.rs` |
+| Torus crossings over exterior, interior, triple and quadruple line contacts: touches resolve with no crossing, triples abstain, never miscount (tests) | `classify/boundary/torus_contact_tests.rs` |
 | Exact trim of sphere faces bounded by circle arcs on the sphere, any number of supports, non-convex or reversed (first crossing along a great-circle walk) | `classify/boundary/sphere_arcs.rs` |
 | Boundary skeleton that makes a ray through an edge or vertex abstain from the classification vote | `classify/graze.rs` |
 | CheckId enum, ValidationReport, severity | `validate/checks.rs` |

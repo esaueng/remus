@@ -267,11 +267,18 @@ fn degenerate_directions_find_no_roots() {
     assert!(ray_torus(origin, Vec3::new(0.0, 0.0, 0.0), &torus).is_empty());
 }
 
-/// A tangent line from near and far: the double root is reported as one
+/// A tangent line from near and far: the contact is reported as one
 /// tangential contact (the origin-based solve dropped it), its root agrees with
-/// `intersect_line_torus` bit for bit, and `spread` is the solver's merge
-/// radius measured from the line's closest point to the torus centre, not
-/// from the far origin.
+/// `intersect_line_torus` bit for bit, and `spread` is the honest window of
+/// the contact, measured on the line's chart next to the torus and so the
+/// same in the torus's units whatever the direction's length.
+///
+/// Along the tube top's circle the circumferential direction is asymptotic
+/// (the top circle is parabolic), so this contact is a quadruple root: its
+/// roots are fixed only to about the fourth root of the quartic's rounding
+/// bound, a thousandth of the torus here, growing to a few thousandths as the
+/// origin's own rounding grows with its distance. The solver used to report a
+/// `1e-9` merge radius, which did not hold its roots.
 #[test]
 fn far_tangent_spread_is_the_local_merge_radius() {
     let torus = ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), 1.5, 0.5).unwrap();
@@ -295,10 +302,11 @@ fn far_tangent_spread_is_the_local_merge_radius() {
             // One merged tangential contact at the closest point.
             assert_eq!(local.len(), 1, "{context}");
             assert_eq!(local[0].kind, ContactKind::Tangential, "{context}");
-            // The closest point to the centre is the contact, so `|s| < 1e-3`
-            // there: the spread is `1e-9 / length`, not `1e-9 (1 + t)`.
+            // The exact contact is inside the window, and the window is set
+            // by the torus, not by the origin's distance in units of `t`.
+            assert!((local[0].t - contact).abs() <= local[0].spread, "{context}");
             assert!(
-                local[0].spread > 0.0 && local[0].spread <= 1e-9 * (1.0 + 1e-3) / length,
+                local[0].spread > 0.0 && local[0].spread * length <= 1e-2,
                 "{context}"
             );
         }

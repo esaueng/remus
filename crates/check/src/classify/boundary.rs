@@ -2728,6 +2728,9 @@ pub fn surface_point_in_face(
 mod nurbs_bump_ray_tests;
 
 #[cfg(test)]
+mod torus_contact_tests;
+
+#[cfg(test)]
 mod spherical_triangle_tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 

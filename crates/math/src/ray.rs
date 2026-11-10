@@ -438,67 +438,44 @@ pub fn ray_cone(origin: Point3, direction: Vec3, cone: &ConicalSurface) -> RayHi
     hits
 }
 
-/// Below this angle (radians) between a ray and the torus at a lone root,
-/// the root's partner may have been lost to the quartic solver's filters, so
-/// the root's parity is not certified. A double root resolves to about
-/// `sqrt(ε)` relative, i.e. a slope of order `1e-8`; this keeps two decades
-/// of margin while leaving any usefully transversal crossing alone.
-const TORUS_GRAZE_SLOPE: f64 = 1e-6;
-
-/// Intersect a ray with a torus: every real root of the quartic, qualified.
+/// Intersect a ray with a torus: every real contact of the line, qualified.
 ///
-/// Wraps [`crate::analytic_intersection::intersect_line_torus`], whose
-/// de-dup merges a tangent line's double root into one root that a parity
-/// count would read as one crossing. Here a root that absorbed an even number
-/// of candidates is [`ContactKind::Tangential`], an odd number above one is
-/// [`ContactKind::Unclassified`] (an inflectional contact may cross), and a
-/// lone root meeting the surface within `1e-6` rad of tangency is
-/// [`ContactKind::Unclassified`] too. `spread` is the solver's merge radius
-/// for every non-transversal hit, in units of `t`: the solver works in arc
-/// length `s` from the line's closest point to the torus centre and merges
-/// candidates within `1e-9 (1 + |s|)`, so the spread is that over
-/// `|direction|`. Measured from the closest point rather than from `origin`,
-/// it is set by the torus's size, not by how far away the ray starts. A
-/// direction the solver cannot re-parameterise (zero or non-finite) keeps
-/// `1e-9 (1 + |t|)`. The roots are the same values, in the same order, as
-/// `intersect_line_torus` returns.
+/// The line–torus quartic's real-root structure is certified by sign (see
+/// [`crate::analytic_intersection::intersect_line_torus`]), never by a
+/// threshold on an iterative solver's imaginary parts, so no real contact is
+/// dropped however multiple it is. Each comes back once:
+///
+/// - [`ContactKind::Transversal`]: a simple root, the quartic certified to
+///   change sign across it, crossing at least `1e-6` rad from tangency.
+///   `spread` is zero.
+/// - [`ContactKind::Tangential`]: an even contact. The quartic comes within
+///   its rounding bound of zero but has the same certified sign on both sides:
+///   an exterior or interior touch (double or quadruple root), two crossings
+///   too close to separate, or a near miss. It adds no parity.
+/// - [`ContactKind::Unclassified`]: an odd contact, one crossing whose
+///   position is uncertain. The certified signs on its two sides differ (an
+///   inflectional, triple contact along an asymptotic direction of the inner
+///   tube, or a crossing too close to a pair to separate), or it is a simple
+///   root within `1e-6` rad of tangency. It adds one crossing to a parity
+///   count; a classifier may also distrust the ray.
+///
+/// For the last two, `spread` is the half-width, in units of `t`, of the
+/// window where the quartic's sign is not certified, so it holds every root
+/// of the contact. The window comes from a rounding bound relative to the
+/// quartic's own magnitudes and the distances the line was formed from, so
+/// it scales with the problem. A line the certified solve cannot take (a zero
+/// or non-finite direction or origin, a quartic that overflows) gets the
+/// iterative solver's roots, every one unclassified with an infinite spread.
+/// The parameters are the ones `intersect_line_torus` returns, in the same
+/// order.
 #[must_use]
 pub fn ray_torus(origin: Point3, direction: Vec3, torus: &ToroidalSurface) -> Vec<RayHit> {
-    let c = torus.center();
-    let (xa, ya, za) = (torus.x_axis(), torus.y_axis(), torus.z_axis());
-    let big_r = torus.major_radius();
-    let d = Vec3::new(xa.dot(direction), ya.dot(direction), za.dot(direction));
-    let d_len = d.length();
-    let chart = crate::analytic_intersection::LineTorusChart::new(torus, origin, direction);
-    crate::analytic_intersection::intersect_line_torus_counted(torus, origin, direction)
+    crate::analytic_intersection::intersect_line_torus_qualified(torus, origin, direction)
         .into_iter()
-        .map(|(t, count)| {
-            let kind = if count % 2 == 0 {
-                ContactKind::Tangential
-            } else if count > 1 {
-                ContactKind::Unclassified
-            } else {
-                // Gradient of (ρ − R)² + z² in the torus frame.
-                let q = origin + direction * t - c;
-                let (a, b, z) = (xa.dot(q), ya.dot(q), za.dot(q));
-                let rho = a.hypot(b);
-                let k = if rho > 0.0 { (rho - big_r) / rho } else { 0.0 };
-                let grad = Vec3::new(k * a, k * b, z);
-                let norm = grad.length() * d_len;
-                if norm > 0.0 && grad.dot(d).abs() >= TORUS_GRAZE_SLOPE * norm {
-                    ContactKind::Transversal
-                } else {
-                    ContactKind::Unclassified
-                }
-            };
-            let spread = if kind == ContactKind::Transversal {
-                0.0
-            } else if let Some(chart) = &chart {
-                1e-9 * (1.0 + chart.to_chart(t).abs()) / chart.len()
-            } else {
-                1e-9 * (1.0 + t.abs())
-            };
-            RayHit { t, kind, spread }
+        .map(|root| RayHit {
+            t: root.t,
+            kind: root.kind,
+            spread: root.spread,
         })
         .collect()
 }

@@ -11,11 +11,15 @@ use crate::MathError;
 use crate::curves::{Circle3D, Ellipse3D, Hyperbola3D};
 use crate::fma::FusedMulAdd;
 use crate::frame::Frame3;
+use crate::intersect::ContactKind;
 use crate::nurbs::fitting::interpolate;
 use crate::nurbs::intersection::{IntersectionCurve, IntersectionPoint};
 use crate::surfaces::{ConicalSurface, CylindricalSurface, SphericalSurface, ToroidalSurface};
 use crate::tolerance::Tolerance;
 use crate::vec::{Point3, Vec3};
+
+mod certified_quartic;
+use certified_quartic::{BoundedQuartic, QuarticContact};
 
 /// Tight arithmetic envelope for identities assembled from normalized carrier
 /// axes. A wider band is left unresolved by qualified callers; it is never
@@ -1704,56 +1708,199 @@ fn newton_refine_torus(
 /// A line meets a torus in up to four points (degree-4). Substituting the line
 /// into the torus implicit `(a² + b² + c² + R² − r²)² = 4R²(a² + b²)` — where
 /// `(a, b, c)` are the line point's coordinates in the torus frame — gives a
-/// quartic in `t`, solved here for its real roots, each refined by one Newton
-/// step on the torus's signed distance that is kept only when it reduces the
-/// distance. `dir` need not be unit length; `t` is in units of `dir`. Returns
-/// the roots sorted ascending (0–4 of them).
+/// quartic in `t`. `dir` need not be unit length; `t` is in units of `dir`.
+/// Returns one parameter per contact, sorted ascending (0–4 of them): every
+/// simple root, and every contact the arithmetic cannot resolve (a tangency,
+/// an inflectional crossing, two crossings too close to separate) once. See
+/// [`crate::ray::ray_torus`] for what each one is.
 ///
 /// Used by the boolean section trimmer to find where a plane×torus oval exits a
 /// box face's straight boundary edge — the exact crossing shared by the two
 /// adjacent faces, which is what makes the notch watertight.
 #[must_use]
 pub fn intersect_line_torus(torus: &ToroidalSurface, origin: Point3, dir: Vec3) -> Vec<f64> {
-    intersect_line_torus_counted(torus, origin, dir)
+    intersect_line_torus_qualified(torus, origin, dir)
         .into_iter()
-        .map(|(t, _)| t)
+        .map(|root| root.t)
         .collect()
 }
 
-/// [`intersect_line_torus`] with each root's multiplicity: how many of the
-/// quartic solver's real candidates it absorbed (see
-/// [`real_roots_quartic`]). A tangent line's double root often comes
-/// back as two candidates merged into one root, so an even count marks a
-/// contact without a parity change. The roots are bit-identical to
-/// [`intersect_line_torus`]'s, in the same order.
+/// One real contact of a line with a torus: its parameter in units of the
+/// caller's direction, what it certifies about crossing parity, and the
+/// half-width (in the same units) of the window the contact's roots occupy,
+/// zero for a transversal root.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct LineTorusRoot {
+    pub(crate) t: f64,
+    pub(crate) kind: ContactKind,
+    pub(crate) spread: f64,
+}
+
+/// Below this angle (radians) between the line and the torus at a simple
+/// root, the root's position is reported uncertain: the root is certified
+/// (the quartic changes sign once across it), but a crossing that shallow
+/// sits next to a contact that rounding could have turned into one.
+const TORUS_GRAZE_SLOPE: f64 = 1e-6;
+
+/// Bound, relative to the magnitudes summed into the line–torus quartic, on
+/// the rounding of its coefficients and of its Horner evaluation: each
+/// coefficient takes a handful of roundings, the monic division one, Horner
+/// eight. Fourfold margin over the sixteen `ε` they total.
+const LINE_TORUS_ROUNDING: f64 = 64.0 * f64::EPSILON;
+
+/// Bound, relative to the distances involved, on how far forming the chart
+/// (and the torus frame's coordinates) moves the line.
+const LINE_TORUS_CHART_SHIFT: f64 = 8.0 * f64::EPSILON;
+
+/// [`intersect_line_torus`] with each contact qualified (see
+/// [`crate::ray::ray_torus`]).
 ///
 /// The quartic is solved on the line's own chart next to the torus (see
 /// [`LineTorusChart`]), not about the caller's origin and in units of the
 /// caller's direction. About a far origin the four roots cluster near
-/// `t = distance`, where the quartic's coefficients cancel and the solver's
-/// absolute filters dropped or merged real crossings (one chord in a
-/// hundred through the tube lost a root 1500 tube sizes away, nearly all at
-/// 5000); a direction shorter than about `3.2e-4` made the leading
-/// coefficient `|dir|⁴` fall under the solver's degree-drop threshold.
-/// A zero or non-finite direction, or a non-finite origin, has no chart and
-/// is solved as given, as it always was.
-pub(crate) fn intersect_line_torus_counted(
+/// `t = distance`, where the quartic's coefficients cancel; a direction
+/// shorter than about `3.2e-4` made the leading coefficient `|dir|⁴` fall
+/// under the old solver's degree-drop threshold.
+///
+/// On the chart the real-root structure is certified by sign (see
+/// [`certified_quartic`]): no real root is accepted or rejected by a
+/// threshold on an iterate's imaginary part, which lost multiple roots
+/// (a triple, inflectional contact resolves only to `ε^(1/3)`), and every
+/// threshold is relative to the quartic's own magnitudes. A zero or
+/// non-finite direction, or a non-finite origin, has no chart; such a line,
+/// or one whose quartic overflows, is solved by the iterative solver as it
+/// always was, every root unclassified.
+pub(crate) fn intersect_line_torus_qualified(
     torus: &ToroidalSurface,
     origin: Point3,
     dir: Vec3,
-) -> Vec<(f64, usize)> {
-    let Some(chart) = LineTorusChart::new(torus, origin, dir) else {
-        return solve_line_torus(torus, origin, dir);
-    };
-    let mut roots = solve_line_torus(torus, chart.foot, chart.unit);
-    for (t, _) in &mut roots {
-        *t = chart.to_caller(*t);
+) -> Vec<LineTorusRoot> {
+    let chart = LineTorusChart::new(torus, origin, dir);
+    if let Some(roots) = chart
+        .as_ref()
+        .and_then(|chart| certified_line_torus(torus, origin, chart))
+    {
+        return roots;
     }
+    let roots = match &chart {
+        Some(chart) => {
+            let mut roots = solve_line_torus(torus, chart.foot, chart.unit);
+            for (t, _) in &mut roots {
+                *t = chart.to_caller(*t);
+            }
+            roots
+        }
+        None => solve_line_torus(torus, origin, dir),
+    };
     roots
+        .into_iter()
+        .map(|(t, _)| LineTorusRoot {
+            t,
+            kind: ContactKind::Unclassified,
+            spread: f64::INFINITY,
+        })
+        .collect()
+}
+
+/// The certified contacts of a line with a torus on the line's chart, or
+/// `None` when its quartic is not finite.
+fn certified_line_torus(
+    torus: &ToroidalSurface,
+    origin: Point3,
+    chart: &LineTorusChart,
+) -> Option<Vec<LineTorusRoot>> {
+    let (frame, [e4, e3, e2, e1, e0]) = line_torus_quartic(torus, chart.foot, chart.unit);
+    if !(e4 > 0.0 && e4.is_finite()) {
+        return None;
+    }
+    let quartic = BoundedQuartic {
+        c: [e0 / e4, e1 / e4, e2 / e4, e3 / e4],
+        n: line_torus_noise(torus, origin, chart, &frame, e4),
+    };
+    let mut out: Vec<LineTorusRoot> = quartic
+        .roots()?
+        .iter()
+        .map(|root| {
+            let (s, kind) = match root.contact {
+                QuarticContact::Simple => {
+                    let (s, slope) = polish_line_torus_root_with_slope(&frame, root.x);
+                    let steep = slope.is_some_and(|slope| slope.abs() >= TORUS_GRAZE_SLOPE);
+                    if steep {
+                        return LineTorusRoot {
+                            t: chart.to_caller(s),
+                            kind: ContactKind::Transversal,
+                            spread: 0.0,
+                        };
+                    }
+                    (s, ContactKind::Unclassified)
+                }
+                QuarticContact::Touch => (root.x, ContactKind::Tangential),
+                QuarticContact::MultipleCrossing => (root.x, ContactKind::Unclassified),
+            };
+            let (lo, hi) = quartic.uncertain_window(root);
+            // The window, plus the rounding of the map back to `t`.
+            let width =
+                (s - lo).max(hi - s).max(0.0) + 4.0 * f64::EPSILON * (s.abs() + chart.s0.abs());
+            LineTorusRoot {
+                t: chart.to_caller(s),
+                kind,
+                spread: width / chart.len(),
+            }
+        })
+        .collect();
+    out.compact_sort_by(|a, b| a.t.total_cmp(&b.t));
+    Some(out)
+}
+
+/// The error bound of the chart's monic line–torus quartic, as polynomial
+/// coefficients in `|s|` (constant first): the rounding of its coefficients
+/// and of their evaluation, relative to the magnitudes summed into each, plus
+/// what the chart's own rounding (moving the line by up to
+/// [`LINE_TORUS_CHART_SHIFT`] times the distances involved) changes it by.
+/// Every term is a product of lengths of total degree four, so the bound
+/// scales with the problem and no threshold is absolute.
+fn line_torus_noise(
+    torus: &ToroidalSurface,
+    origin: Point3,
+    chart: &LineTorusChart,
+    frame: &LineInTorusFrame,
+    e4: f64,
+) -> [f64; 5] {
+    let ([a0, b0, c0], [a1, b1, c1]) = (frame.p0, frame.p1);
+    let (big_r, small_r) = (frame.big_r, frame.small_r);
+    let four_rr = 4.0 * big_r * big_r;
+    // Magnitudes of G = g2 s² + g1 s + g0 and H = h2 s² + h1 s + h0.
+    let g2 = a1.fma(a1, b1.fma(b1, c1 * c1));
+    let g1 = 2.0 * (a1 * a0).abs() + 2.0 * (b1 * b0).abs() + 2.0 * (c1 * c0).abs();
+    let g0 = a0.fma(
+        a0,
+        b0.fma(b0, c0.fma(c0, big_r.fma(big_r, small_r * small_r))),
+    );
+    let h2 = four_rr * a1.fma(a1, b1 * b1);
+    let h1 = four_rr * 2.0 * ((a1 * a0).abs() + (b1 * b0).abs());
+    let h0 = four_rr * a0.fma(a0, b0 * b0);
+    let magnitude = [
+        g0.fma(g0, h0),
+        2.0f64.fma(g1 * g0, h1),
+        g1.fma(g1, 2.0f64.fma(g2 * g0, h2)),
+        2.0 * g2 * g1,
+        g2 * g2,
+    ];
+    // Moving the line point q = p0 + s p1 by δ changes G² − H by at most
+    // (4 |G| + 8 R²) |q| δ.
+    let q0 = a0.hypot(b0).hypot(c0);
+    let c = torus.center();
+    let o = Vec3::new(origin.x() - c.x(), origin.y() - c.y(), origin.z() - c.z());
+    let shift = LINE_TORUS_CHART_SHIFT * (o.length() + chart.s0.abs() + q0);
+    let (k2, k1, k0) = (4.0 * g2, 4.0 * g1, 4.0f64.fma(g0, 2.0 * four_rr));
+    let moved = [k0 * q0, k1.fma(q0, k0), k2.fma(q0, k1), k2, 0.0];
+    std::array::from_fn(|k| LINE_TORUS_ROUNDING.fma(magnitude[k], shift * moved[k]) / e4)
 }
 
 /// The real roots of the line–torus quartic about `origin` in units of
-/// `dir`, each polished, sorted ascending, with their multiplicities.
+/// `dir`, each polished, sorted ascending, with the number of the iterative
+/// solver's candidates each absorbed. Only lines the certified solve cannot
+/// take come here.
 fn solve_line_torus(torus: &ToroidalSurface, origin: Point3, dir: Vec3) -> Vec<(f64, usize)> {
     let (frame, mut roots) = line_torus_quartic_roots(torus, origin, dir);
     for (t, _) in &mut roots {
@@ -1812,11 +1959,6 @@ impl LineTorusChart {
         (s + self.s0) / self.len
     }
 
-    /// The chart parameter `s` of the caller's `t`.
-    pub(crate) fn to_chart(&self, t: f64) -> f64 {
-        t.fma(self.len, -self.s0)
-    }
-
     /// `|dir|`, the chart's arc length per unit of the caller's `t`.
     pub(crate) const fn len(&self) -> f64 {
         self.len
@@ -1858,16 +2000,24 @@ impl LineInTorusFrame {
 /// worse at small scale). The distance is exact along the line and needs no
 /// step size.
 fn polish_line_torus_root(frame: &LineInTorusFrame, t: f64) -> f64 {
+    polish_line_torus_root_with_slope(frame, t).0
+}
+
+/// [`polish_line_torus_root`], with the distance's slope at the root it
+/// returns (`None` on the axis or the core circle).
+fn polish_line_torus_root_with_slope(frame: &LineInTorusFrame, t: f64) -> (f64, Option<f64>) {
     let Some((f, slope)) = frame.distance_and_slope(t) else {
-        return t;
+        return (t, None);
     };
     if f == 0.0 || slope == 0.0 {
-        return t;
+        return (t, Some(slope));
     }
     let next = t - f / slope;
     match frame.distance_and_slope(next) {
-        Some((f_next, _)) if next.is_finite() && f_next.abs() < f.abs() => next,
-        _ => t,
+        Some((f_next, slope_next)) if next.is_finite() && f_next.abs() < f.abs() => {
+            (next, Some(slope_next))
+        }
+        _ => (t, Some(slope)),
     }
 }
 
@@ -1878,6 +2028,18 @@ fn line_torus_quartic_roots(
     origin: Point3,
     dir: Vec3,
 ) -> (LineInTorusFrame, Vec<(f64, usize)>) {
+    let (frame, [e4, e3, e2, e1, e0]) = line_torus_quartic(torus, origin, dir);
+    (frame, real_roots_quartic(e4, e3, e2, e1, e0))
+}
+
+/// The line–torus quartic `e4 t⁴ + e3 t³ + e2 t² + e1 t + e0` (coefficients
+/// leading first) of `origin + t·dir`, together with the line in the torus
+/// frame.
+fn line_torus_quartic(
+    torus: &ToroidalSurface,
+    origin: Point3,
+    dir: Vec3,
+) -> (LineInTorusFrame, [f64; 5]) {
     let c = torus.center();
     let (xa, ya, za) = (torus.x_axis(), torus.y_axis(), torus.z_axis());
     let big_r = torus.major_radius();
@@ -1916,7 +2078,7 @@ fn line_torus_quartic_roots(
         big_r,
         small_r,
     };
-    (frame, real_roots_quartic(e4, e3, e2, e1, e0))
+    (frame, [e4, e3, e2, e1, e0])
 }
 
 /// Durand–Kerner sweep budget of [`real_roots_quartic`].
@@ -5310,7 +5472,8 @@ mod tests {
     /// the solve moved to the line's closest point.
     #[test]
     fn line_torus_without_a_chart_is_solved_as_given() {
-        use super::{LineTorusChart, intersect_line_torus_counted, solve_line_torus};
+        use super::{LineTorusChart, intersect_line_torus_qualified, solve_line_torus};
+        use crate::intersect::ContactKind;
         let torus = ToroidalSurface::new(Point3::new(1.0, -2.0, 0.5), 1.5, 0.5).unwrap();
         let finite = Point3::new(-5.0, 0.2, 0.1);
         let cases = [
@@ -5324,18 +5487,25 @@ mod tests {
                 Vec3::new(1.0, 0.0, 0.0),
             ),
         ];
-        let bits = |roots: &[(f64, usize)]| -> Vec<(u64, usize)> {
-            roots.iter().map(|&(t, m)| (t.to_bits(), m)).collect()
-        };
         for (origin, dir) in cases {
             assert!(LineTorusChart::new(&torus, origin, dir).is_none());
-            assert_eq!(
-                bits(&intersect_line_torus_counted(&torus, origin, dir)),
-                bits(&solve_line_torus(&torus, origin, dir)),
-                "{origin:?} {dir:?}"
+            let got = intersect_line_torus_qualified(&torus, origin, dir);
+            let want: Vec<u64> = solve_line_torus(&torus, origin, dir)
+                .iter()
+                .map(|&(t, _)| t.to_bits())
+                .collect();
+            let bits: Vec<u64> = got.iter().map(|root| root.t.to_bits()).collect();
+            assert_eq!(bits, want, "{origin:?} {dir:?}");
+            // Nothing about these roots is certified.
+            assert!(
+                got.iter()
+                    .all(|root| root.kind == ContactKind::Unclassified
+                        && root.spread == f64::INFINITY)
             );
         }
-        assert!(intersect_line_torus_counted(&torus, finite, Vec3::new(0.0, 0.0, 0.0)).is_empty());
+        assert!(
+            intersect_line_torus_qualified(&torus, finite, Vec3::new(0.0, 0.0, 0.0)).is_empty()
+        );
     }
 
     #[test]

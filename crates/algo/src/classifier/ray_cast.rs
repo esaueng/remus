@@ -1052,21 +1052,24 @@ const TORUS_CULL_MAX_REACH: f64 = 1e10;
 /// normalize it. With no root a torus face reports no crossing and no
 /// suspicion, whatever its trim or bands.
 ///
-/// In the torus frame, with `p0` and `v` the line's origin and direction
-/// computed as the solver computes them, the solver's quartic along the line
-/// is `P(t) = (d² - r²)(d'² - r²)`, where `d` is the distance from the line
-/// point to the core circle and `d' >= d` the distance to the core-circle
-/// point opposite it across the axis. A root survives the solver's residual
-/// filter only if `|P(x) / e4| <= 1e-6 (1 + |c3| + |c2| + |c1| + |c0| + x⁴)`,
-/// the `c_k` being the monic coefficients. With `|v|` within 1e-3 of one and
-/// `Λ = 1 + |p0| + R + r`, that sum is at most `33 Λ⁴`. When the line misses
-/// the box `[-(R + r), R + r]² x [-r, r]` grown by `D`, where
+/// In the torus frame, with `p0` and `v` the line's origin and direction, the
+/// solver's quartic along the line is `P(s) = (d² - r²)(d'² - r²)`, where `d`
+/// is the distance from the line point to the core circle and `d' >= d` the
+/// distance to the core-circle point opposite it across the axis. The solver
+/// certifies its roots by the quartic's sign: it reports a contact only where
+/// the computed `P` changes sign or comes within its rounding bound of zero
+/// at a critical point. That bound is `64 ε` times the magnitudes summed into
+/// each coefficient (at most about `1e3 Λ⁴` for `|s| <= 3 Λ`, with
+/// `Λ = 1 + |p0| + R + r` and `|v|` within 1e-3 of one), plus the change in
+/// `P` from moving the line by `8 ε` times its distances, again a small
+/// multiple of `ε Λ⁴`: below `1e-10 Λ⁴` in all. When the line misses the box
+/// `[-(R + r), R + r]² x [-r, r]` grown by `D`, where
 /// `2 r D + D² = 0.0125 Λ²`, every line point has `d >= r + D`, so for
-/// `|x| <= 3 Λ` the left side is at least `1.55e-4 Λ⁴` against a bound of at
-/// most `1.15e-4 Λ⁴`; for `|x| > 3 Λ`, `d - r > 0.33 |x|` makes it at least
-/// `0.012 x⁴` against at most `1.5e-6 x⁴`. The gaps dwarf the rounding of the
-/// coefficients and of their evaluation, and the box is grown by a further
-/// `1e-9 Λ`, far above the rounding of this test.
+/// `|s| <= 3 Λ` the quartic is at least `1.55e-4 Λ⁴`, and for `|s| > 3 Λ`,
+/// `d - r > 0.33 |s|` makes it at least `0.012 s⁴` against a bound of a few
+/// `ε s⁴`. It never changes sign and never comes near its bound, so the
+/// solver returns nothing. The box is grown by a further `1e-9 Λ`, far above
+/// the rounding of this test.
 ///
 /// The solver forms its quartic about the line's closest point to the torus
 /// centre rather than about `origin`, along the direction re-normalised. That
@@ -1075,15 +1078,10 @@ const TORUS_CULL_MAX_REACH: f64 = 1e10;
 /// this `Λ` misses the one grown for the solver's, and the argument holds
 /// there.
 ///
-/// That covers every iterate whose fourth power is finite. An iterate that
-/// overflowed passes the filter's comparisons, so no line with `Λ` above
-/// [`TORUS_CULL_MAX_REACH`] is cleared: from about `Λ = 1.4e11` the solver
-/// overflows on the lines the box test would clear. Its first sweep moves the
-/// iterate seeded at 1 out to about `Λ⁴ / 4`, the second sweep's complex
-/// division multiplies about seven such factors, past `f64` range, and all
-/// four roots come back NaN, which can still flag a trimmed face's ray
-/// suspicious. At the cap that product is about `1e276`, and on every cleared
-/// line up to it the oracles get no root at all, finite or not.
+/// No line with `Λ` above [`TORUS_CULL_MAX_REACH`] is cleared. The certified
+/// solver evaluates the quartic only at its critical points and at a root
+/// bound, all finite well past the cap (`Λ⁴` stays near `1e40`), but the cap
+/// keeps the cull to the range its oracles cover.
 ///
 /// Out of line: only torus faces call it, and the vote loop stays small.
 #[inline(never)]
@@ -2289,18 +2287,19 @@ fn ray_torus_crossings(
     (crossings, suspicious)
 }
 
-/// What one torus root inside a face's trim adds to a ray's crossing count,
-/// and whether it makes the ray's parity unreliable.
+/// What one torus contact inside a face's trim adds to a ray's crossing
+/// count, and whether it makes the ray's parity unreliable.
 ///
-/// The quartic solver merges a tangent line's double root into one root, so
-/// a bare root count reads a tangency as one crossing and flips parity.
-/// [`remus_math::ray::ray_torus`] qualifies each root: a transversal one is
-/// one clean crossing; a tangential one (an even number of merged candidates)
-/// leaves parity unchanged and flags the ray, as the close root pair the
-/// solver used to return for it did; an unclassified one (an odd merge above
-/// one, or a lone root within `1e-6` rad of tangency, whose partner may have
-/// been lost) keeps its one crossing but flags the ray too. A torus holds no
-/// line, so no root is coincident; one would be uncertified like the last.
+/// [`remus_math::ray::ray_torus`] certifies each contact of the line by the
+/// quartic's sign on both sides of it and reports it once. A transversal one
+/// is one clean crossing. A tangential one is an even contact (an exterior or
+/// interior touch, a quadruple contact, two crossings too close to separate):
+/// it leaves parity unchanged and flags the ray, as the close root pair the
+/// solver used to return for it did. An unclassified one is an odd contact
+/// whose position is uncertain (an inflectional triple contact, a crossing
+/// within `1e-6` rad of tangency): it keeps its one crossing and flags the
+/// ray. A torus holds no line, so no contact is coincident; one would be
+/// uncertified like the last.
 fn torus_contact_parity(kind: remus_math::intersect::ContactKind) -> (i32, bool) {
     use remus_math::intersect::ContactKind;
     match kind {
@@ -2812,6 +2811,118 @@ mod tests {
             }
         }
         assert!(contacts > 0);
+    }
+
+    /// Lines through the five kinds of line–torus contact, built on the
+    /// surface: an exterior touch (convex outer half), an interior touch
+    /// (entering the saddle-shaped inner half), a triple contact along an
+    /// asymptotic direction of the inner half (the line crosses), a
+    /// quadruple contact along an asymptotic direction at the inner equator
+    /// (it does not), and two crossings far closer than any merge radius (a
+    /// hair-thin tube's top grazed from just inside). From origins along
+    /// each line, inside and outside the tube, a whole-torus face's count
+    /// must have the parity of the origin's side.
+    #[test]
+    fn torus_contacts_of_every_multiplicity_keep_parity() {
+        use remus_math::surfaces::ToroidalSurface;
+        use std::f64::consts::{PI, TAU};
+        let tol = Tolerance::default();
+        let distance = |t: &ToroidalSurface, p: Point3| {
+            let q = p - t.center();
+            let (a, b, c) = (t.x_axis().dot(q), t.y_axis().dot(q), t.z_axis().dot(q));
+            (a.hypot(b) - t.major_radius()).hypot(c) - t.minor_radius()
+        };
+        let mut checked = [0_usize; 5];
+        let mut odd = [0_usize; 5];
+        let mut check = |kind: usize, surface: &ToroidalSurface, point: Point3, dir: Vec3| {
+            let size = surface.major_radius() + surface.minor_radius();
+            let whole = FaceGeom::Torus {
+                surface: surface.clone(),
+                u_band: None,
+                v_band: None,
+            };
+            for back in [0.05, 0.3, 0.9, 1.7, 3.0, 40.0] {
+                let origin = point - dir * (back * size);
+                let side = distance(surface, origin);
+                if side.abs() <= 1e-6 * surface.minor_radius() {
+                    continue;
+                }
+                let (count, _) = ray_geom_crossings(origin, dir, &whole, tol);
+                assert_eq!(
+                    count % 2 == 1,
+                    side < 0.0,
+                    "kind {kind} back {back} at {point:?} along {dir:?}: {:?}",
+                    remus_math::ray::ray_torus(origin, dir, surface)
+                );
+                checked[kind] += 1;
+                odd[kind] += usize::from(side < 0.0);
+            }
+        };
+        for scale in [1e-3, 1.0, 1e6] {
+            let surface = ToroidalSurface::with_axis(
+                Point3::new(2.0 * scale, -3.0 * scale, 4.0 * scale),
+                1.5 * scale,
+                0.5 * scale,
+                Vec3::new(1.0, 2.0, 3.0),
+            )
+            .unwrap();
+            let (big_r, small_r) = (surface.major_radius(), surface.minor_radius());
+            let frame = |u: f64, v: f64| {
+                let radial = surface.x_axis() * u.cos() + surface.y_axis() * u.sin();
+                let e_u = surface.y_axis() * u.cos() - surface.x_axis() * u.sin();
+                let e_v = surface.z_axis() * v.cos() - radial * v.sin();
+                (surface.evaluate(u, v), e_u, e_v)
+            };
+            // The tangent direction whose normal curvature is `ratio` times
+            // the asymptotic one's, on the inner half (`cos v < 0`).
+            let inner = |u: f64, v: f64, ratio: f64, sign: f64| {
+                let (_, e_u, e_v) = frame(u, v);
+                let slope = ratio * (-small_r * v.cos() / small_r.mul_add(v.cos(), big_r)).sqrt();
+                (e_u + e_v * (sign * slope)).normalize().unwrap()
+            };
+            for iu in 0..12 {
+                let u = f64::from(iu).mul_add(TAU / 12.0, 0.3);
+                for (v, theta) in [(0.4, 0.0_f64), (-0.7, 1.2), (0.0, 0.5)] {
+                    let (p, e_u, e_v) = frame(u, v);
+                    check(0, &surface, p, e_u * theta.cos() + e_v * theta.sin());
+                }
+                for (v, ratio) in [(2.5, 0.0), (3.6, 0.5)] {
+                    check(1, &surface, frame(u, v).0, inner(u, v, ratio, 1.0));
+                }
+                for v in [2.2, 4.0] {
+                    for sign in [-1.0, 1.0] {
+                        check(2, &surface, frame(u, v).0, inner(u, v, 1.0, sign));
+                    }
+                }
+                for sign in [-1.0, 1.0] {
+                    check(3, &surface, frame(u, PI).0, inner(u, PI, 1.0, sign));
+                }
+            }
+        }
+        // A hair-thin tube's top, grazed along its meridian from `1e-20`
+        // inside: two crossings `3e-13` apart at each of `y = ±R`.
+        let thin = ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), 1.0, 1e-6).unwrap();
+        for y0 in [-3.0, -0.5, 0.5, 3.0] {
+            let z = 1e-6 - 1e-20;
+            let origin = Point3::new(0.0, y0, z);
+            for dir in [Vec3::new(0.0, 1.0, 0.0), Vec3::new(0.0, -1.0, 0.0)] {
+                let (count, _) = ray_geom_crossings(
+                    origin,
+                    dir,
+                    &FaceGeom::Torus {
+                        surface: thin.clone(),
+                        u_band: None,
+                        v_band: None,
+                    },
+                    tol,
+                );
+                assert_eq!(count % 2, 0, "thin graze from {origin:?} along {dir:?}");
+                checked[4] += 1;
+            }
+        }
+        assert!(checked.iter().all(|&n| n >= 8), "{checked:?}");
+        // Origins on both sides of the tube for the crossing kinds.
+        assert!(odd[1] > 0 && odd[2] > 0, "{odd:?}");
     }
 
     #[test]
