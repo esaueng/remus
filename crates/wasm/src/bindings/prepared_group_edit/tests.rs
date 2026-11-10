@@ -95,6 +95,82 @@ fn batch(k: &mut RemusKernel, op: &str, args: Value) -> Value {
     out[0].clone()
 }
 
+/// Exercise the direct bindings' shared implementations: the batch adapter
+/// adds its own transaction and would hide an operations-level leak.
+#[test]
+fn prepared_full_turn_sleeve_refusals_preserve_the_live_arena() {
+    use remus_math::mat::Mat4;
+    use remus_operations::blend_ops::fillet_v2;
+    use remus_operations::boolean::{BooleanOp, boolean};
+    use remus_operations::primitives::{make_box, make_cylinder};
+    use remus_operations::transform::transform_solid;
+    use remus_topology::edge::EdgeCurve;
+    use remus_topology::explorer::solid_edges;
+
+    let mut k = RemusKernel::new();
+    let topo = k.topo_mut();
+    let block = make_box(topo, 40.0, 40.0, 10.0).unwrap();
+    let neighbor = make_box(topo, 10.0, 40.0, 20.0).unwrap();
+    transform_solid(topo, neighbor, &Mat4::translation(30.0, 0.0, 0.0)).unwrap();
+    let block = boolean(topo, BooleanOp::Fuse, block, neighbor).unwrap();
+    let boss = make_cylinder(topo, 5.0, 10.0).unwrap();
+    transform_solid(topo, boss, &Mat4::translation(20.0, 20.0, 10.0)).unwrap();
+    let solid = boolean(topo, BooleanOp::Fuse, block, boss).unwrap();
+    let shoulder = solid_edges(topo, solid)
+        .unwrap()
+        .into_iter()
+        .find(|&e| {
+            matches!(topo.edge(e).unwrap().curve(), EdgeCurve::Circle(c)
+            if (c.radius() - 5.0).abs() < 1e-7 && (c.center().z() - 10.0).abs() < 1e-7)
+        })
+        .unwrap();
+    let blended = fillet_v2(topo, solid, &[shoulder], 1.0).unwrap();
+    assert!(!blended.is_partial);
+    let solid = blended.solid;
+    let face = solid_faces(topo, solid)
+        .unwrap()
+        .into_iter()
+        .find(|&f| {
+            matches!(topo.face(f).unwrap().surface(), FaceSurface::Cylinder(c)
+            if (c.radius() - 5.0).abs() < 1e-7)
+        })
+        .unwrap();
+    let prepared = k
+        .prepare_group_edit_impl(solid_id_to_u32(solid), face_id_to_u32(face), None)
+        .unwrap();
+    let before = crate::bindings::transaction_tests::live_state(k.topo());
+    let bytes = k.serialize_solids(&[solid_id_to_u32(solid)]).unwrap();
+    for radius in [12.0, 25.0, 40.0] {
+        for commit in [false, true] {
+            let error = if commit {
+                k.commit_prepared_group_edit_impl(prepared, radius)
+            } else {
+                k.preview_prepared_group_edit_impl(prepared, radius)
+            }
+            .unwrap_err();
+            assert!(
+                error.contains(if radius.to_bits() == 25.0_f64.to_bits() {
+                    "exact-only"
+                } else {
+                    "cylindrical resize produced volume"
+                }),
+                "{error}"
+            );
+            assert_eq!(
+                crate::bindings::transaction_tests::live_state(k.topo()),
+                before,
+                "R{radius}, commit={commit}"
+            );
+            assert_eq!(
+                k.serialize_solids(&[solid_id_to_u32(solid)]).unwrap(),
+                bytes
+            );
+        }
+    }
+    assert!(k.commit_prepared_group_edit_impl(prepared, 8.0).is_ok());
+    assert!(k.release_prepared_group_edit(prepared));
+}
+
 /// A boss-diameter drag the way OpenZCAD runs it: prepare at drag start,
 /// restore the checkpoint and preview each frame, commit journaled at the
 /// end. Each frame equals `resizeCylindricalFace` in a second kernel at the
