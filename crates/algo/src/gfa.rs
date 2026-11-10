@@ -24,6 +24,129 @@ use crate::pave_filler;
 /// `(result face index, Some(input face index) | None)`.
 pub type FaceOriginIndices = Vec<(usize, Option<usize>)>;
 
+thread_local! {
+    /// One counter per open [`SectionDropScope`] on this thread, innermost
+    /// last.
+    static SECTION_DROP_SCOPES: std::cell::RefCell<Vec<ScopeCounts>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Counts of one open [`SectionDropScope`].
+#[derive(Clone, Copy, Debug, Default)]
+struct ScopeCounts {
+    dropped: u64,
+    uncertified_charts: u64,
+    uncertified_rescues: u64,
+}
+
+/// Records the open section chains the face splitter drops while it is open.
+///
+/// The internal-loops splitter keeps only closed section chains. A chain
+/// whose loose ends lie inside the face means the face's section set is
+/// incomplete there, and the face is kept or discarded whole. That is often
+/// harmless (the hammer holder's replays drop dozens and match their
+/// references), but it is also how an exact boolean returned a swept tube
+/// untouched by its cutter (OpenZCAD issue 1242). Nothing samples a dropped
+/// chain into correctness: the count is a diagnostic its operation consults.
+///
+/// A scope belongs to one operation: open it before the operation's first
+/// GFA call and read it where the operation accepts a result. Scopes nest,
+/// and a drop counts in every open scope, so an outer operation sees the
+/// drops of the inner booleans it runs (a compound fold, a region split),
+/// and no reader can consume or clear another operation's count. The GFA
+/// runs on the calling thread, which is where the scope must be opened.
+#[derive(Debug)]
+pub struct SectionDropScope {
+    depth: usize,
+}
+
+impl SectionDropScope {
+    /// Open a scope on this thread.
+    #[must_use]
+    pub fn enter() -> Self {
+        SECTION_DROP_SCOPES.with(|scopes| {
+            let mut scopes = scopes.borrow_mut();
+            scopes.push(ScopeCounts::default());
+            Self {
+                depth: scopes.len(),
+            }
+        })
+    }
+
+    /// Open section chains dropped since this scope opened.
+    #[must_use]
+    pub fn dropped(&self) -> u64 {
+        self.counts().dropped
+    }
+
+    /// Faces admitted to the exact chart partition (a torus face whose
+    /// boundary lifts to a chart rectangle and whose sections are all
+    /// supported exact curves) whose certificate failed since this scope
+    /// opened. Such a face was handed to the established torus emitters,
+    /// whose result nothing certifies: an operation that reports an exact
+    /// result must refuse when this is non-zero. Faces outside the family
+    /// are not counted.
+    #[must_use]
+    pub fn uncertified_charts(&self) -> u64 {
+        self.counts().uncertified_charts
+    }
+
+    /// Planar faces and cylinder laterals whose established partition
+    /// failed its consistency checks, whose certified re-partition admitted
+    /// them, and whose certificate then failed, since this scope opened. The
+    /// established result was kept. The consistency checks are estimates
+    /// (see `partition_tiles_face`), so the established result may still be
+    /// right; nothing certifies it. Faces outside the chart family are not
+    /// counted.
+    #[must_use]
+    pub fn uncertified_rescues(&self) -> u64 {
+        self.counts().uncertified_rescues
+    }
+
+    fn counts(&self) -> ScopeCounts {
+        SECTION_DROP_SCOPES.with(|scopes| {
+            scopes
+                .borrow()
+                .get(self.depth - 1)
+                .copied()
+                .unwrap_or_default()
+        })
+    }
+}
+
+impl Drop for SectionDropScope {
+    fn drop(&mut self) {
+        SECTION_DROP_SCOPES.with(|scopes| scopes.borrow_mut().truncate(self.depth - 1));
+    }
+}
+
+/// Count one open section chain the face splitter dropped, in every open
+/// [`SectionDropScope`] on this thread.
+pub(crate) fn note_dropped_open_section_chain() {
+    note(|c| c.dropped = c.dropped.saturating_add(1));
+}
+
+/// Count one admitted chart face whose certificate failed (see
+/// [`SectionDropScope::uncertified_charts`]).
+pub(crate) fn note_uncertified_chart() {
+    note(|c| c.uncertified_charts = c.uncertified_charts.saturating_add(1));
+}
+
+/// Count one failed established partition whose admitted certified
+/// re-partition failed its certificate (see
+/// [`SectionDropScope::uncertified_rescues`]).
+pub(crate) fn note_uncertified_rescue() {
+    note(|c| c.uncertified_rescues = c.uncertified_rescues.saturating_add(1));
+}
+
+fn note(f: impl Fn(&mut ScopeCounts)) {
+    SECTION_DROP_SCOPES.with(|scopes| {
+        for count in scopes.borrow_mut().iter_mut() {
+            f(count);
+        }
+    });
+}
+
 /// Run the complete GFA boolean operation with default tolerance.
 ///
 /// This is the single entry point for boolean operations via the GFA.
@@ -1540,5 +1663,30 @@ mod entity_evolution_tests {
             after_delete,
             "refused evolution boolean must not allocate"
         );
+    }
+}
+
+#[cfg(test)]
+mod drop_scope_tests {
+    use super::*;
+
+    #[test]
+    fn chart_diagnostics_count_in_every_open_scope_separately_from_drops() {
+        let outer = SectionDropScope::enter();
+        note_uncertified_chart();
+        {
+            let inner = SectionDropScope::enter();
+            note_uncertified_chart();
+            note_uncertified_rescue();
+            assert_eq!(inner.uncertified_charts(), 1);
+            assert_eq!(inner.uncertified_rescues(), 1);
+            assert_eq!(inner.dropped(), 0);
+        }
+        assert_eq!(outer.uncertified_charts(), 2);
+        assert_eq!(outer.uncertified_rescues(), 1);
+        assert_eq!(outer.dropped(), 0);
+        note_dropped_open_section_chain();
+        assert_eq!(outer.dropped(), 1);
+        assert_eq!(outer.uncertified_charts(), 2);
     }
 }

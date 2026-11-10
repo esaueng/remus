@@ -29,6 +29,7 @@ use crate::error::AlgoError;
 mod circular_cap_clip;
 mod cone_plane;
 mod cylinder_section_fit;
+mod torus_extent;
 
 /// Default number of samples for NURBS intersection.
 const NURBS_SAMPLES: usize = 32;
@@ -662,16 +663,17 @@ fn perform_seeded(
         .map(|&fb| topo.face(fb).map(|f| f.surface().clone()))
         .collect::<Result<_, _>>()?;
 
-    // Pre-compute v-parameter ranges for analytic surfaces (used by AA intersection)
-    let v_ranges_a: Vec<Option<(f64, f64)>> = faces_a
+    // Pre-compute v-parameter bands for analytic surfaces (used by AA
+    // intersection and the face extents), with what each band proves.
+    let bands_a: Vec<FaceBand> = faces_a
         .iter()
         .zip(surfs_a.iter())
-        .map(|(&fid, surf)| face_v_range(topo, fid, surf))
+        .map(|(&fid, surf)| face_v_band(topo, fid, surf, tol))
         .collect::<Result<_, _>>()?;
-    let v_ranges_b: Vec<Option<(f64, f64)>> = faces_b
+    let bands_b: Vec<FaceBand> = faces_b
         .iter()
         .zip(surfs_b.iter())
-        .map(|(&fid, surf)| face_v_range(topo, fid, surf))
+        .map(|(&fid, surf)| face_v_band(topo, fid, surf, tol))
         .collect::<Result<_, _>>()?;
 
     // Registry of endpoint vertices created for the EXACT faceted-ramp arcs
@@ -755,8 +757,10 @@ fn perform_seeded(
             crate::perf::bump_ff_pair_surviving();
             let surf_b = &surfs_b[idx_b];
 
-            let v_range_a = v_ranges_a[idx_a];
-            let v_range_b = v_ranges_b[idx_b];
+            let band_a = &bands_a[idx_a];
+            let band_b = &bands_b[idx_b];
+            let v_range_a = band_a.range;
+            let v_range_b = band_b.range;
             if torus_cylinder_faces_have_only_point_contact(topo, fa, fb, tol)? {
                 continue;
             }
@@ -785,13 +789,13 @@ fn perform_seeded(
             )? {
                 circles
             } else {
-                compute_raw_curves(
+                compute_raw_curves_banded(
                     plane_a.as_ref().unwrap_or(surf_a),
                     plane_b.as_ref().unwrap_or(surf_b),
                     bbox_a,
                     bbox_b,
-                    v_range_a,
-                    v_range_b,
+                    band_a,
+                    band_b,
                     context,
                 )?
             };
@@ -1063,8 +1067,8 @@ fn perform_seeded(
             // These exact arcs bypass the generic filters below.
             let mut certified_cap_arc_indices = Vec::new();
             let (exact_arcs, raw_curves): (Vec<RawCurve>, Vec<RawCurve>) = {
-                face_extents.ensure(topo, fa, surf_a, v_range_a, tol)?;
-                face_extents.ensure(topo, fb, surf_b, v_range_b, tol)?;
+                face_extents.ensure(topo, fa, surf_a, band_a, tol)?;
+                face_extents.ensure(topo, fb, surf_b, band_b, tol)?;
                 let mut exact = Vec::new();
                 let mut rest = Vec::new();
                 for raw in raw_curves {
@@ -1267,8 +1271,8 @@ fn perform_seeded(
                 fb,
                 surf_a,
                 surf_b,
-                v_range_a,
-                v_range_b,
+                band_a,
+                band_b,
                 raw_curves,
                 tol,
                 junction_registry,
@@ -1498,7 +1502,7 @@ fn perform_seeded(
                         if let [(t_hit, _)] = crossings.as_slice()
                             && single_hit_circle_is_graze(
                                 topo,
-                                [(fa, surf_a, v_range_a), (fb, surf_b, v_range_b)],
+                                [(fa, surf_a, band_a), (fb, surf_b, band_b)],
                                 circle,
                                 *t_hit,
                                 tol,
@@ -2356,6 +2360,10 @@ enum FaceExtent {
         v1: f64,
         margin: f64,
         u_gap: Option<(f64, f64)>,
+        /// What `[v0, v1]` proves (see [`BandProof`]). A torus band is read
+        /// periodically and may straddle the wrap; only
+        /// [`BandProof::WholeTube`] skips the `v` test.
+        proof: BandProof,
     },
     /// NURBS face whose carrier is a plane in disguise (a coplanar control
     /// net — what `convert_to_bspline` makes of a planar face): its outer-wire
@@ -2384,6 +2392,55 @@ enum FaceExtent {
         /// Largest chord error of the sampled outline, in model units.
         sagitta: f64,
     },
+}
+
+/// Whether this full-revolution cylinder/cone has a non-degenerate rim in
+/// the other carrier's plane. The carrier intersection then rides that rim:
+/// fitted-curve noise across its v bound must not choose the window end.
+/// A partial-u lateral keeps its angular constraint and never qualifies.
+fn full_rim_in_plane(extent: &FaceExtent, partner: &FaceExtent, tolerance: f64) -> bool {
+    let (
+        FaceExtent::Analytic {
+            surface,
+            v0,
+            v1,
+            u_gap: None,
+            ..
+        },
+        FaceExtent::Plane { frame, .. },
+    ) = (extent, partner)
+    else {
+        return false;
+    };
+    if !matches!(surface, FaceSurface::Cylinder(_) | FaceSurface::Cone(_)) {
+        return false;
+    }
+    let normal = frame.u_axis().cross(frame.v_axis());
+    [*v0, *v1].into_iter().any(|v| {
+        let (Some(a), Some(b), Some(c)) = (
+            surface.evaluate(0.0, v),
+            surface.evaluate(std::f64::consts::FRAC_PI_2, v),
+            surface.evaluate(std::f64::consts::PI, v),
+        ) else {
+            return false;
+        };
+        // An analytic iso-v curve is a circle. These three evaluations
+        // reconstruct its centre and two radial basis vectors, so the
+        // expression below bounds the plane residual over the WHOLE rim.
+        let center = Point3::new(
+            0.5 * a.x() + 0.5 * c.x(),
+            0.5 * a.y() + 0.5 * c.y(),
+            0.5 * a.z() + 0.5 * c.z(),
+        );
+        let (u, w) = (a - center, b - center);
+        let (ru, rw) = (u.length(), w.length());
+        if !(ru.is_finite() && rw.is_finite() && ru > tolerance && rw > tolerance) {
+            return false;
+        }
+        let residual =
+            (center - frame.origin()).dot(normal).abs() + u.dot(normal).hypot(w.dot(normal));
+        residual.is_finite() && residual <= tolerance
+    })
 }
 
 /// Seventeen samples along a curved boundary edge in traversal order — the
@@ -2553,12 +2610,12 @@ impl FaceExtents {
         topo: &Topology,
         face_id: FaceId,
         surface: &FaceSurface,
-        v_range: Option<(f64, f64)>,
+        band: &FaceBand,
         tol: Tolerance,
     ) -> Result<(), AlgoError> {
         if let std::collections::hash_map::Entry::Vacant(slot) = self.built.entry(face_id) {
             crate::perf::bump_face_extent_build();
-            slot.insert(FaceExtent::new(topo, face_id, surface, v_range, tol)?);
+            slot.insert(FaceExtent::from_band(topo, face_id, surface, band, tol)?);
         }
         Ok(())
     }
@@ -2570,11 +2627,41 @@ impl FaceExtents {
 }
 
 impl FaceExtent {
+    /// [`Self::from_band`] for a face known only by its marcher `v` range,
+    /// as [`face_v_range`] returns it. A torus face's provenance and lifted
+    /// extent band are re-derived from the face; a range that is not the
+    /// face's own is a bound, never a proof.
+    #[cfg(test)]
     fn new(
         topo: &Topology,
         face_id: FaceId,
         surface: &FaceSurface,
         v_range: Option<(f64, f64)>,
+        tol: Tolerance,
+    ) -> Result<Option<Self>, AlgoError> {
+        let band = match surface {
+            FaceSurface::Torus(_) => {
+                let own = face_v_band(topo, face_id, surface, tol)?;
+                if own.range == v_range {
+                    own
+                } else {
+                    FaceBand::bounded(v_range)
+                }
+            }
+            FaceSurface::Plane { .. }
+            | FaceSurface::Nurbs(_)
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_) => FaceBand::bounded(v_range),
+        };
+        Self::from_band(topo, face_id, surface, &band, tol)
+    }
+
+    fn from_band(
+        topo: &Topology,
+        face_id: FaceId,
+        surface: &FaceSurface,
+        band: &FaceBand,
         tol: Tolerance,
     ) -> Result<Option<Self>, AlgoError> {
         if let FaceSurface::Sphere(sphere) = surface {
@@ -2687,24 +2774,16 @@ impl FaceExtent {
                 sagitta,
             }))
         } else {
-            // A whole, untrimmed torus has no `v_range` (its boundary is the
-            // degenerate fundamental-polygon seam), yet it IS a real extent: the
-            // full tube v ∈ [0, 2π], full revolution u (no gap). Treating it as
+            // A whole, untrimmed torus has no marcher `v` range (its boundary
+            // is the degenerate fundamental-polygon seam), yet it IS a real
+            // extent: the full tube v ∈ [0, 2π], full revolution u (no gap);
+            // its band carries that extent (see `face_v_band`). Treating it as
             // full extent lets `restrict_curves_to_faces` run the in-both clip,
             // so a plane×torus oval is trimmed to the partner box face's region
             // instead of bailing unclipped. Mirrors the whole-torus AABB gate
             // (`face_boundary_all_degenerate` → `t.aabb()`).
-            let (v0, v1) = match v_range {
-                Some(r) => r,
-                None => {
-                    if matches!(surface, FaceSurface::Torus(_))
-                        && face_boundary_all_degenerate(topo, face_id, tol)?
-                    {
-                        (0.0, std::f64::consts::TAU)
-                    } else {
-                        return Ok(None);
-                    }
-                }
+            let Some((v0, v1)) = band.extent else {
+                return Ok(None);
             };
             let margin = (v1 - v0).abs() * 0.01 + tol.linear;
             // For a partial-arc lateral face (rounded-rect corner = a 90°
@@ -2721,6 +2800,7 @@ impl FaceExtent {
                 v1,
                 margin,
                 u_gap,
+                proof: band.proof,
             }))
         }
     }
@@ -2891,41 +2971,97 @@ impl FaceExtent {
     /// window by at least `depth` (no boundary margin credit). Distinguishes a
     /// section that genuinely crosses the window interior from one that only
     /// rides the margin band along a boundary (a tangency graze).
+    ///
+    /// Fails closed: a point this extent cannot place (see
+    /// [`Self::strict_membership`]) is not certified inside. Production
+    /// readers go through [`Self::strict_or_deferred`], which keeps an
+    /// unplaceable point apart instead.
+    #[cfg(test)]
     fn contains_strict(&self, p: Point3, depth: f64) -> bool {
+        self.strict_membership(p, depth) == Strict::Inside
+    }
+
+    /// The strict test as section windows and the corner rescue read it: a
+    /// point this extent cannot place ([`Strict::Unknown`]) falls back to
+    /// the extent's own lenient [`Self::contains`] rather than being
+    /// certified inside or rejected. Such an extent then neither widens a
+    /// window past its lenient run nor cuts one short: the partner's
+    /// certified window bounds it.
+    fn strict_or_deferred(&self, p: Point3, depth: f64) -> bool {
+        match self.strict_membership(p, depth) {
+            Strict::Inside => true,
+            Strict::Outside => false,
+            Strict::Unknown => self.contains(p),
+        }
+    }
+
+    /// [`Self::contains_strict`], with the case it cannot decide kept apart:
+    /// a point of an [`BandProof::Uncertain`] torus face that no `u` window
+    /// excludes. Nothing places it inside or outside the face, so it is
+    /// [`Strict::Unknown`]: never an inside certificate, never a rejection.
+    fn strict_membership(&self, p: Point3, depth: f64) -> Strict {
+        let decided = |inside: bool| {
+            if inside {
+                Strict::Inside
+            } else {
+                Strict::Outside
+            }
+        };
         match self {
-            Self::Hemisphere { center, axis, .. } => (p - *center).dot(*axis) > depth,
+            Self::Hemisphere { center, axis, .. } => decided((p - *center).dot(*axis) > depth),
             Self::Plane {
                 frame, poly, holes, ..
             } => {
                 let uv = frame.project(p);
-                crate::builder::classify_2d::point_in_polygon_2d(uv, poly)
-                    && point_to_polygon_dist(uv, poly) > depth
-                    && !holes.iter().any(|h| {
-                        crate::builder::classify_2d::point_in_polygon_2d(uv, h)
-                            || point_to_polygon_dist(uv, h) <= depth
-                    })
+                decided(
+                    crate::builder::classify_2d::point_in_polygon_2d(uv, poly)
+                        && point_to_polygon_dist(uv, poly) > depth
+                        && !holes.iter().any(|h| {
+                            crate::builder::classify_2d::point_in_polygon_2d(uv, h)
+                                || point_to_polygon_dist(uv, h) <= depth
+                        }),
+                )
             }
             Self::Analytic {
                 surface,
                 v0,
                 v1,
                 u_gap,
+                proof,
                 ..
-            } => surface.project_point(p).is_some_and(|(u, v)| {
+            } => {
                 // Unlike `contains` (conservative keep on projection failure),
                 // the STRICT gate fails closed: an unprojectable point cannot
                 // certify a genuine interior crossing.
-                let in_v = v >= *v0 + depth && v <= *v1 - depth;
-                let in_u = u_gap.is_none_or(|gap| !crate::classifier::u_in_gap(u, gap));
-                in_v && in_u
-            }),
+                let Some((u, v)) = surface.project_point(p) else {
+                    return Strict::Outside;
+                };
+                if u_gap.is_some_and(|gap| crate::classifier::u_in_gap(u, gap)) {
+                    return Strict::Outside;
+                }
+                if !matches!(surface, FaceSurface::Torus(_)) {
+                    return decided(v >= *v0 + depth && v <= *v1 - depth);
+                }
+                match proof {
+                    // A PROVED whole tube has no `v` boundary to keep clear
+                    // of: its `[0, 2π]` ends are one parallel, and a depth
+                    // margin there stopped section windows short of the rim
+                    // they cross wherever that parallel ran (#1242, a
+                    // Remus-native swept tube).
+                    BandProof::WholeTube => Strict::Inside,
+                    // A bound (a certified lifted hull, possibly straddling
+                    // the wrap) keeps its depth margin, read periodically.
+                    BandProof::Bounded => decided(torus_v_in_band(v, (*v0 + depth, *v1 - depth))),
+                    BandProof::Uncertain => Strict::Unknown,
+                }
+            }
             Self::Nurbs {
                 surface,
                 grid,
                 poly,
                 holes,
                 ..
-            } => nurbs_extent_uv(surface, grid, p).is_some_and(|uv| {
+            } => decided(nurbs_extent_uv(surface, grid, p).is_some_and(|uv| {
                 // Fails closed like the analytic strict gate.
                 let depth = depth / nurbs_uv_scale(surface, uv.x(), uv.y());
                 crate::builder::classify_2d::point_in_polygon_2d(uv, poly)
@@ -2934,7 +3070,7 @@ impl FaceExtent {
                         crate::builder::classify_2d::point_in_polygon_2d(uv, h)
                             || point_to_polygon_dist(uv, h) <= depth
                     })
-            }),
+            })),
         }
     }
 
@@ -3012,8 +3148,15 @@ impl FaceExtent {
                 v1,
                 margin,
                 u_gap,
+                ..
             } => surface.project_point(p).is_none_or(|(u, v)| {
-                let in_v = v >= *v0 - *margin && v <= *v1 + *margin;
+                // A whole-tube or uncertain torus band is `(0, 2π)`, which
+                // admits every `v` here: a superset either way.
+                let in_v = if matches!(surface, FaceSurface::Torus(_)) {
+                    torus_v_in_band(v, (*v0 - *margin, *v1 + *margin))
+                } else {
+                    v >= *v0 - *margin && v <= *v1 + *margin
+                };
                 let in_u = u_gap.is_none_or(|gap| !crate::classifier::u_in_gap(u, gap));
                 in_v && in_u
             }),
@@ -3038,6 +3181,33 @@ impl FaceExtent {
     }
 }
 
+/// A [`FaceExtent`]'s strict-interior verdict on a point.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Strict {
+    /// Inside the true face window by at least the requested depth.
+    Inside,
+    /// Not certified inside (outside, within the depth of the boundary, or
+    /// unprojectable).
+    Outside,
+    /// The extent cannot place the point: an uncertified torus face's `v`
+    /// extent is unknown.
+    Unknown,
+}
+
+/// Whether the torus minor angle `v` (as `project_point` returns it, in
+/// `[0, 2π)`) lies in the band `[lo, hi]`, read periodically. A band ending
+/// on `2π` holds the points of its rim that project to just above `0` (and
+/// a band starting at `0` those just below `2π`); a plain comparison
+/// dropped them, and only a band misread as `(0, 5.89)` for a
+/// `[3π/2, 2π]` fillet patch had hidden that.
+fn torus_v_in_band(v: f64, (lo, hi): (f64, f64)) -> bool {
+    let span = hi - lo;
+    if span >= std::f64::consts::TAU {
+        return true;
+    }
+    span >= 0.0 && (v - lo).rem_euclid(std::f64::consts::TAU) <= span
+}
+
 /// Compute the excluded angular `u` gap of a cylinder/cone lateral face from
 /// its outer-wire boundary samples. Returns `None` for a full revolution (no
 /// gap) or non-cylindrical/conical surfaces.
@@ -3057,6 +3227,12 @@ fn face_circumferential_u_gap(
     // on-surface points near that u. A real partial-arc face (a rounded-rect
     // corner) still shows its large angular gap.
     const N_GAP: usize = 64;
+    // A torus face gets the certified `u` hull of the disc its outer loop
+    // bounds: without it a section circle's in-both window ran round the
+    // whole carrier wherever its `v` band admitted it.
+    if let FaceSurface::Torus(torus) = surface {
+        return torus_extent::torus_u_gap(topo, face_id, torus);
+    }
     if !matches!(surface, FaceSurface::Cylinder(_) | FaceSurface::Cone(_)) {
         return Ok(None);
     }
@@ -3197,8 +3373,8 @@ fn restrict_curves_to_faces(
     fb: FaceId,
     surf_a: &FaceSurface,
     surf_b: &FaceSurface,
-    v_range_a: Option<(f64, f64)>,
-    v_range_b: Option<(f64, f64)>,
+    band_a: &FaceBand,
+    band_b: &FaceBand,
     raw_curves: Vec<RawCurve>,
     tol: Tolerance,
     junctions: &mut JunctionRegistry,
@@ -3236,8 +3412,8 @@ fn restrict_curves_to_faces(
             })
         })
         .collect();
-    face_extents.ensure(topo, fa, surf_a, v_range_a, tol)?;
-    face_extents.ensure(topo, fb, surf_b, v_range_b, tol)?;
+    face_extents.ensure(topo, fa, surf_a, band_a, tol)?;
+    face_extents.ensure(topo, fb, surf_b, band_b, tol)?;
     let face_extents: &FaceExtents = face_extents;
     let (Some(ext_a), Some(ext_b)) = (face_extents.get(fa), face_extents.get(fb)) else {
         // Conservative: if either face's extent can't be built, don't restrict.
@@ -3843,7 +4019,7 @@ fn emit_open_curve_windows(
     // margin-free window when a sample certifies it, else keep the margin.
     let strict_inside = |t: f64| {
         let p = point_at(t);
-        ext_a.contains_strict(p, 0.0) && ext_b.contains_strict(p, 0.0)
+        ext_a.strict_or_deferred(p, 0.0) && ext_b.strict_or_deferred(p, 0.0)
     };
     let lenient_inside = |t: f64| {
         let p = point_at(t);
@@ -4599,7 +4775,10 @@ fn rescue_corner_crossing(
     }
     let depth = tol.linear * 100.0;
     let mid = point_at(0.5 * (t_lo + t_hi));
-    if !(ext_a.contains_strict(mid, depth) && ext_b.contains_strict(mid, depth)) {
+    // An extent that cannot place the midpoint (an uncertified torus face)
+    // has no window margin for a graze to ride: the partner's certified
+    // window decides, so an unknown is neither a certificate nor a veto.
+    if !(ext_a.strict_or_deferred(mid, depth) && ext_b.strict_or_deferred(mid, depth)) {
         return None;
     }
     let mut len = 0.0;
@@ -4627,6 +4806,117 @@ fn rescue_corner_crossing(
         p_start,
         p_end,
     })
+}
+
+/// Move a section window end from a planar face's chord polygon onto the
+/// exact circular rim it crosses.
+///
+/// [`FaceExtent::Plane`] approximates curved boundary edges by chords, so a
+/// window end bisected against it can sit up to the outline sagitta off the
+/// rim. When the end lies within that band of a circle (or arc) boundary
+/// edge of a planar face, the section's crossing with the rim is solved on
+/// the exact curves: the signed in-plane radial distance to the circle is
+/// bracketed outward from the end, at most two sample steps, and bisected.
+/// The crossing must lie on the edge's own arc. Ends already on a rim, ends
+/// near straight edges (which the polygon represents exactly) and ends with
+/// no bracketed crossing keep their parameter.
+fn refine_window_end_onto_plane_rim(
+    topo: &Topology,
+    faces: [(FaceId, &FaceExtent); 2],
+    point_at: &dyn Fn(f64) -> Point3,
+    t: f64,
+    step: f64,
+) -> f64 {
+    let q = point_at(t);
+    let mut best: Option<(f64, f64)> = None;
+    for (fid, ext) in faces {
+        let sagitta = ext.outline_sagitta();
+        if sagitta <= 0.0 {
+            continue;
+        }
+        let Ok(face) = topo.face(fid) else {
+            continue;
+        };
+        if !matches!(face.surface(), FaceSurface::Plane { .. }) {
+            continue;
+        }
+        let band = sagitta * 1.5;
+        let wires: Vec<_> = std::iter::once(face.outer_wire())
+            .chain(face.inner_wires().iter().copied())
+            .collect();
+        for wid in wires {
+            let Ok(wire) = topo.wire(wid) else {
+                continue;
+            };
+            for oe in wire.edges() {
+                let Ok(edge) = topo.edge(oe.edge()) else {
+                    continue;
+                };
+                let EdgeCurve::Circle(circle) = edge.curve() else {
+                    continue;
+                };
+                let Ok((d0, d1)) = super::helpers::authoritative_edge_domain(
+                    edge,
+                    oe.edge(),
+                    "plane rim window end",
+                ) else {
+                    continue;
+                };
+                let normal = circle.normal();
+                let radial = |p: Point3| {
+                    let w = p - circle.center();
+                    (w - normal * w.dot(normal)).length() - circle.radius()
+                };
+                let f0 = radial(q);
+                if f0.abs() > band || f0.abs() < f64::MIN_POSITIVE {
+                    continue;
+                }
+                let mut other = None;
+                let mut h = step / 16.0;
+                while h <= 2.0 * step && other.is_none() {
+                    for s in [t - h, t + h] {
+                        if radial(point_at(s)).signum() != f0.signum() {
+                            other = Some(s);
+                            break;
+                        }
+                    }
+                    h *= 2.0;
+                }
+                let Some(mut far) = other else {
+                    continue;
+                };
+                let mut near = t;
+                for _ in 0..80 {
+                    let mid = 0.5 * (near + far);
+                    if radial(point_at(mid)).signum() == f0.signum() {
+                        near = mid;
+                    } else {
+                        far = mid;
+                    }
+                }
+                let root = 0.5 * (near + far);
+                let p = point_at(root);
+                if (p - q).length() > 2.0 * band {
+                    continue;
+                }
+                // On this edge's arc, not elsewhere on its carrier circle.
+                let (lo, hi) = (d0.min(d1), d0.max(d1));
+                if hi - lo < std::f64::consts::TAU - 1e-9 {
+                    let a = circle.project(p);
+                    let a = a + std::f64::consts::TAU
+                        * ((0.5 * (lo + hi) - a) / std::f64::consts::TAU).round();
+                    if a < lo - 1e-9 || a > hi + 1e-9 {
+                        continue;
+                    }
+                }
+                let dt = (root - t).abs();
+                if best.is_none_or(|(b, _)| dt < b) {
+                    best = Some((dt, root));
+                }
+            }
+        }
+    }
+    best.map_or(t, |(_, root)| root)
 }
 
 /// Emit every maximal in-both window with refined boundary junctions.
@@ -4667,11 +4957,39 @@ fn emit_closed_curve_windows(
     // diagonal pad's east-slope windows).
     let strict_inside = |t: f64| {
         let p = point_at(t);
-        ext_a.contains_strict(p, 0.0) && ext_b.contains_strict(p, 0.0)
+        ext_a.strict_or_deferred(p, 0.0) && ext_b.strict_or_deferred(p, 0.0)
     };
     let lenient_inside = |t: f64| {
         let p = point_at(t);
         ext_a.contains(p) && ext_b.contains(p)
+    };
+    let (rim_a, rim_b) = (
+        full_rim_in_plane(ext_a, ext_b, tol.linear),
+        full_rim_in_plane(ext_b, ext_a, tol.linear),
+    );
+    // A torus band proves angular coverage, not arbitrary trim membership.
+    // Keep torus windows on the established path; in particular a deferred
+    // Unknown must never justify this new endpoint refinement.
+    let refine_window = ![ext_a, ext_b].into_iter().any(|extent| {
+        matches!(
+            extent,
+            FaceExtent::Analytic {
+                surface: FaceSurface::Torus(_),
+                ..
+            }
+        )
+    });
+    let clipping_inside = |t: f64| {
+        let p = point_at(t);
+        (if rim_a {
+            ext_a.contains(p)
+        } else {
+            ext_a.strict_membership(p, 0.0) == Strict::Inside
+        }) && (if rim_b {
+            ext_b.contains(p)
+        } else {
+            ext_b.strict_membership(p, 0.0) == Strict::Inside
+        })
     };
     for (r0, r1) in all_inboth_runs(inb, true) {
         if r1 - r0 < 2 {
@@ -4690,26 +5008,14 @@ fn emit_closed_curve_windows(
         } else {
             &lenient_inside
         };
-        let mut t_lo = t_at(r0);
-        if r0 > 0 {
-            let (mut out_t, mut in_t) = (t_at(r0 - 1), t_lo);
-            for _ in 0..48 {
-                let mid = 0.5 * (out_t + in_t);
-                if inside(mid) {
-                    in_t = mid;
-                } else {
-                    out_t = mid;
-                }
-            }
-            t_lo = in_t;
-        }
-        let mut t_hi = t_at(r1);
-        // `r1 == n` ends exactly at the seam duplicate (no out-sample to
-        // bisect against in-domain); `r1 > n` is the wrapped-Ellipse
-        // fall-through, whose periodic evaluation makes the out-of-domain
-        // bisection valid.
-        if r1 != n {
-            let (mut in_t, mut out_t) = (t_hi, t_at(r1 + 1));
+        // Walk inward from each margin-inclusive end to a true anchor.
+        // BOTH face constraints remain active: a partner can have a real
+        // crossing inside its margin even when the next sample only leaves
+        // the other extent. Only an analytically recognized complete rim
+        // uses lenient membership for fit wobble on its own band boundary.
+        // Margin-only runs retain their established bracket/predicate.
+        let bisect = |inner: f64, outer: f64, inside: &dyn Fn(f64) -> bool| {
+            let (mut in_t, mut out_t) = (inner, outer);
             for _ in 0..48 {
                 let mid = 0.5 * (in_t + out_t);
                 if inside(mid) {
@@ -4718,7 +5024,54 @@ fn emit_closed_curve_windows(
                     out_t = mid;
                 }
             }
-            t_hi = in_t;
+            in_t
+        };
+        let mut t_lo = t_at(r0);
+        if r0 > 0 {
+            t_lo = match anchor
+                .filter(|_| refine_window)
+                .and_then(|_| (r0..=r1).find(|&i| clipping_inside(t_at(i))))
+            {
+                Some(first) => bisect(t_at(first), t_at(first - 1), &clipping_inside),
+                None => bisect(t_lo, t_at(r0 - 1), inside),
+            };
+        }
+        let mut t_hi = t_at(r1);
+        // `r1 == n` ends exactly at the seam duplicate (no out-sample to
+        // bisect against in-domain); `r1 > n` is the wrapped-Ellipse
+        // fall-through, whose periodic evaluation makes the out-of-domain
+        // bisection valid.
+        if r1 != n {
+            t_hi = match anchor
+                .filter(|_| refine_window)
+                .and_then(|_| (r0..=r1).rev().find(|&i| clipping_inside(t_at(i))))
+            {
+                Some(last) => bisect(t_at(last), t_at(last + 1), &clipping_inside),
+                None => bisect(t_hi, t_at(r1 + 1), inside),
+            };
+        }
+        // A plane extent chords its circular rims, so the bisected ends sit
+        // on a chord, up to its sagitta off the rim the section really
+        // crosses (0.04 on a 10 mm annulus rim): the partner sections meeting
+        // there end on the rim itself and never chain with them (#1242).
+        let step = span / (n as f64);
+        if r0 > 0 {
+            t_lo = refine_window_end_onto_plane_rim(
+                topo,
+                [(fa, ext_a), (fb, ext_b)],
+                &point_at,
+                t_lo,
+                step,
+            );
+        }
+        if r1 != n {
+            t_hi = refine_window_end_onto_plane_rim(
+                topo,
+                [(fa, ext_a), (fb, ext_b)],
+                &point_at,
+                t_hi,
+                step,
+            );
         }
         if t_hi <= t_lo {
             continue;
@@ -6164,13 +6517,17 @@ fn compute_face_bbox(topo: &Topology, face_id: FaceId, tol: Tolerance) -> Result
             Some(axis) => s.aabb_region(axis),
             None => s.aabb(),
         }),
-        // Only a full, untrimmed torus needs the surface box — its boundary is
-        // the degenerate fundamental-polygon seam, which collapses to a point. A
-        // trimmed torus patch is bounded by its real edges; widening it to the
-        // whole torus would admit geometry on omitted angular bands.
+        // A full, untrimmed torus takes the surface box — its boundary is the
+        // degenerate fundamental-polygon seam, which collapses to a point.
         FaceSurface::Torus(t) if face_boundary_all_degenerate(topo, face_id, tol)? => {
             Some(t.aabb())
         }
+        // A trimmed torus patch is NOT bounded by its edges: a tube swept
+        // round an arc is bounded by its end circles and one equator seam,
+        // and bulges a whole tube diameter past them (#1242). Add the interior
+        // points where a coordinate is extreme and the face holds them, rather
+        // than the whole torus, which would admit omitted angular bands.
+        FaceSurface::Torus(t) => torus_extent::torus_face_interior_extent(topo, face_id, t, tol),
         // A NURBS face spanning its whole carrier bulges past its boundary
         // as a sphere does: a tube half swept round a helix is bounded by
         // rails on its middle radius while the tube reaches a wire radius
@@ -6180,14 +6537,11 @@ fn compute_face_bbox(topo: &Topology, face_id: FaceId, tol: Tolerance) -> Result
             Some(boundary) => whole_carrier_nurbs_hull(topo, face_id, tol, &boundary)?,
             None => None,
         },
-        // B24: exhaustive over `FaceSurface` — spheres, full tori and
+        // B24: exhaustive over `FaceSurface` — spheres, tori and
         // whole-carrier NURBS widen the AABB above; planes, cylinders,
-        // cones, trimmed NURBS and trimmed tori are bounded by their
-        // boundary samples alone.
-        FaceSurface::Plane { .. }
-        | FaceSurface::Cylinder(_)
-        | FaceSurface::Cone(_)
-        | FaceSurface::Torus(_) => None,
+        // cones and trimmed NURBS are bounded by their boundary samples
+        // alone.
+        FaceSurface::Plane { .. } | FaceSurface::Cylinder(_) | FaceSurface::Cone(_) => None,
     };
 
     Ok(match (points.is_empty(), surface_bbox) {
@@ -6628,7 +6982,7 @@ fn torus_cylinder_faces_have_only_point_contact(
             | EdgeCurve::Parabola(_) => return Ok(false),
         }
     }
-    let Some(range) = face_v_range(topo, cf, face.surface())? else {
+    let Some(range) = face_v_range(topo, cf, face.surface(), tol)? else {
         return Ok(false);
     };
     Ok(torus_cylinder_opposed_end_planes(
@@ -6691,9 +7045,117 @@ fn torus_cylinder_opposed_end_planes(
     false
 }
 
+/// What a face's `v` band proves about the face.
+///
+/// A torus band's width cannot carry this: a proved whole tube, a certified
+/// partial band straddling the projection's `0 = 2π` wrap, and an
+/// uncertified face all march over `(0, 2π)`. Only a proof may skip `v`
+/// tests or land marched exits on a partner wall's rim.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BandProof {
+    /// The face's `v` lies in the band (every non-torus band, and a certified
+    /// torus disc's lifted hull, which may straddle the wrap).
+    Bounded,
+    /// Torus only: the face provably meets every minor angle.
+    WholeTube,
+    /// Torus only: nothing about the face's `v` extent is certified. Its
+    /// band is the whole tube as a bound, never as a proof of coverage, and
+    /// it certifies no point as strictly inside either.
+    Uncertain,
+}
+
+/// A face's `v` band as phase FF reads it, with its provenance.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct FaceBand {
+    /// The band in `project_point`'s range the marcher bounds traces by:
+    /// what [`face_v_range`] returns.
+    range: Option<(f64, f64)>,
+    /// The band a [`FaceExtent::Analytic`] tests membership against. For a
+    /// torus it is read periodically (see [`torus_v_in_band`]) and is the
+    /// certified lifted hull as lifted, so a band straddling the wrap keeps
+    /// its true extent; otherwise it is `range`.
+    extent: Option<(f64, f64)>,
+    proof: BandProof,
+}
+
+impl FaceBand {
+    /// No band (a plane, a sphere, or a face whose band is unrecoverable).
+    #[cfg(test)]
+    const NONE: Self = Self {
+        range: None,
+        extent: None,
+        proof: BandProof::Bounded,
+    };
+
+    /// A band known only as a range: a bound, never a proof of coverage.
+    const fn bounded(range: Option<(f64, f64)>) -> Self {
+        Self {
+            range,
+            extent: range,
+            proof: BandProof::Bounded,
+        }
+    }
+
+    /// The marcher's hint: whole-tube coverage only from a proof.
+    const fn march_hint(&self) -> analytic_intersection::VRangeHint {
+        analytic_intersection::VRangeHint::new(
+            self.range,
+            if matches!(self.proof, BandProof::WholeTube) {
+                analytic_intersection::BandCoverage::WholeTube
+            } else {
+                analytic_intersection::BandCoverage::Bounded
+            },
+        )
+    }
+}
+
 /// Compute the v-parameter range of a face by projecting boundary vertices.
 /// Returns `None` for planes (which have no UV parameterization) or if projection fails.
 fn face_v_range(
+    topo: &Topology,
+    face_id: FaceId,
+    surface: &FaceSurface,
+    tol: Tolerance,
+) -> Result<Option<(f64, f64)>, AlgoError> {
+    Ok(face_v_band(topo, face_id, surface, tol)?.range)
+}
+
+/// [`face_v_range`] with the extent band and provenance phase FF needs (see
+/// [`FaceBand`]).
+fn face_v_band(
+    topo: &Topology,
+    face_id: FaceId,
+    surface: &FaceSurface,
+    tol: Tolerance,
+) -> Result<FaceBand, AlgoError> {
+    // A torus band comes from the certified boundary lift: a whole-tube
+    // proof, a certified disc's hull, or the whole tube when uncertain.
+    if let FaceSurface::Torus(torus) = surface {
+        let Some(band) = torus_extent::torus_minor_band(topo, face_id, torus, tol)? else {
+            // An untrimmed torus (its boundary is the degenerate
+            // fundamental-polygon seam) IS the whole tube; it marches the
+            // carrier's default range, as before.
+            return Ok(FaceBand {
+                range: None,
+                extent: Some((0.0, std::f64::consts::TAU)),
+                proof: BandProof::WholeTube,
+            });
+        };
+        return Ok(FaceBand {
+            range: Some(band.marcher),
+            extent: Some(band.extent),
+            proof: match band.kind {
+                torus_extent::TorusBandKind::WholeTube => BandProof::WholeTube,
+                torus_extent::TorusBandKind::Certified => BandProof::Bounded,
+                torus_extent::TorusBandKind::Uncertain => BandProof::Uncertain,
+            },
+        });
+    }
+    Ok(FaceBand::bounded(sampled_v_range(topo, face_id, surface)?))
+}
+
+/// The sampled `v` range of a non-torus face's outer wire.
+fn sampled_v_range(
     topo: &Topology,
     face_id: FaceId,
     surface: &FaceSurface,
@@ -7002,7 +7464,9 @@ fn is_sampled_trace_of_rim(raw: &RawCurve, rims: &[RawCurve], tol: Tolerance) ->
 ///
 /// Dispatches by surface type pair. Raw curves are returned without
 /// trimming to face boundaries.
-#[allow(clippy::too_many_lines)]
+///
+/// The `v` ranges are bounds only: a torus among them never counts as a
+/// proved whole tube (see [`compute_raw_curves_banded`]).
 fn compute_raw_curves(
     surf_a: &FaceSurface,
     surf_b: &FaceSurface,
@@ -7012,7 +7476,33 @@ fn compute_raw_curves(
     v_range_b: Option<(f64, f64)>,
     context: &OperationContext,
 ) -> Result<Vec<RawCurve>, AlgoError> {
+    compute_raw_curves_banded(
+        surf_a,
+        surf_b,
+        bbox_a,
+        bbox_b,
+        &FaceBand::bounded(v_range_a),
+        &FaceBand::bounded(v_range_b),
+        context,
+    )
+}
+
+/// [`compute_raw_curves`] with each face's band provenance, which the
+/// marcher needs: only a proved whole-tube torus lands its exits on a
+/// partner wall's rim.
+#[allow(clippy::too_many_lines)]
+fn compute_raw_curves_banded(
+    surf_a: &FaceSurface,
+    surf_b: &FaceSurface,
+    bbox_a: &Aabb3,
+    bbox_b: &Aabb3,
+    band_a: &FaceBand,
+    band_b: &FaceBand,
+    context: &OperationContext,
+) -> Result<Vec<RawCurve>, AlgoError> {
     context.check_cancelled()?;
+    let (v_range_a, v_range_b) = (band_a.range, band_b.range);
+    let (hint_a, hint_b) = (band_a.march_hint(), band_b.march_hint());
     match (surf_a, surf_b) {
         (FaceSurface::Plane { normal: na, d: da }, FaceSurface::Plane { normal: nb, d: db }) => {
             plane_plane_intersection(*na, *da, *nb, *db, bbox_a, bbox_b)
@@ -7097,7 +7587,7 @@ fn compute_raw_curves(
                 }
                 None => {
                     if let (Some(aa), Some(ab)) = (surf_a.as_analytic(), surf_b.as_analytic()) {
-                        analytic_analytic_intersection(&aa, &ab, v_range_a, v_range_b)
+                        analytic_analytic_intersection(&aa, &ab, hint_a, hint_b)
                     } else {
                         Ok(Vec::new())
                     }
@@ -7138,7 +7628,7 @@ fn compute_raw_curves(
                 }
                 None => {
                     if let (Some(aa), Some(ab)) = (surf_a.as_analytic(), surf_b.as_analytic()) {
-                        analytic_analytic_intersection(&aa, &ab, v_range_a, v_range_b)
+                        analytic_analytic_intersection(&aa, &ab, hint_a, hint_b)
                     } else {
                         Ok(Vec::new())
                     }
@@ -7177,7 +7667,7 @@ fn compute_raw_curves(
                 }
                 None => {
                     if let (Some(aa), Some(ab)) = (surf_a.as_analytic(), surf_b.as_analytic()) {
-                        analytic_analytic_intersection(&aa, &ab, v_range_a, v_range_b)
+                        analytic_analytic_intersection(&aa, &ab, hint_a, hint_b)
                     } else {
                         Ok(Vec::new())
                     }
@@ -7213,7 +7703,7 @@ fn compute_raw_curves(
                 }
                 None => {
                     if let (Some(aa), Some(ab)) = (surf_a.as_analytic(), surf_b.as_analytic()) {
-                        analytic_analytic_intersection(&aa, &ab, v_range_a, v_range_b)
+                        analytic_analytic_intersection(&aa, &ab, hint_a, hint_b)
                     } else {
                         Ok(Vec::new())
                     }
@@ -7250,7 +7740,7 @@ fn compute_raw_curves(
                 }
                 None => {
                     if let (Some(aa), Some(ab)) = (surf_a.as_analytic(), surf_b.as_analytic()) {
-                        analytic_analytic_intersection(&aa, &ab, v_range_a, v_range_b)
+                        analytic_analytic_intersection(&aa, &ab, hint_a, hint_b)
                     } else {
                         Ok(Vec::new())
                     }
@@ -7289,7 +7779,7 @@ fn compute_raw_curves(
                 }
                 None => {
                     if let (Some(aa), Some(ab)) = (surf_a.as_analytic(), surf_b.as_analytic()) {
-                        analytic_analytic_intersection(&aa, &ab, v_range_a, v_range_b)
+                        analytic_analytic_intersection(&aa, &ab, hint_a, hint_b)
                     } else {
                         Ok(Vec::new())
                     }
@@ -7349,7 +7839,7 @@ fn compute_raw_curves(
                 }
                 None => {
                     if let (Some(aa), Some(ab)) = (surf_a.as_analytic(), surf_b.as_analytic()) {
-                        analytic_analytic_intersection(&aa, &ab, v_range_a, v_range_b)
+                        analytic_analytic_intersection(&aa, &ab, hint_a, hint_b)
                     } else {
                         Ok(Vec::new())
                     }
@@ -7371,7 +7861,7 @@ fn compute_raw_curves(
             cylinder_cylinder_parallel_lines(c1, c2, bbox_a, bbox_b).map_or_else(
                 || {
                     if let (Some(aa), Some(ab)) = (surf_a.as_analytic(), surf_b.as_analytic()) {
-                        analytic_analytic_intersection(&aa, &ab, v_range_a, v_range_b)
+                        analytic_analytic_intersection(&aa, &ab, hint_a, hint_b)
                     } else {
                         Ok(Vec::new())
                     }
@@ -7382,7 +7872,7 @@ fn compute_raw_curves(
 
         (a, b) if a.as_analytic().is_some() && b.as_analytic().is_some() => {
             if let (Some(aa), Some(ab)) = (a.as_analytic(), b.as_analytic()) {
-                analytic_analytic_intersection(&aa, &ab, v_range_a, v_range_b)
+                analytic_analytic_intersection(&aa, &ab, hint_a, hint_b)
             } else {
                 Ok(Vec::new())
             }
@@ -8106,12 +8596,11 @@ fn equal_cone_frustum_section(
 fn analytic_analytic_intersection(
     a: &analytic_intersection::AnalyticSurface<'_>,
     b: &analytic_intersection::AnalyticSurface<'_>,
-    v_range_a: Option<(f64, f64)>,
-    v_range_b: Option<(f64, f64)>,
+    hint_a: analytic_intersection::VRangeHint,
+    hint_b: analytic_intersection::VRangeHint,
 ) -> Result<Vec<RawCurve>, AlgoError> {
-    let isect_curves = analytic_intersection::intersect_analytic_analytic_bounded(
-        *a, *b, 32, v_range_a, v_range_b,
-    )?;
+    let isect_curves =
+        analytic_intersection::intersect_analytic_analytic_hinted(*a, *b, 32, hint_a, hint_b)?;
 
     let mut results = Vec::new();
     for ic in isect_curves {
@@ -8956,8 +9445,8 @@ fn circle_arc_crossings(
         .collect())
 }
 
-/// One face of a section pair, as [`FaceExtent::new`] consumes it.
-type SectionFace<'a> = (FaceId, &'a FaceSurface, Option<(f64, f64)>);
+/// One face of a section pair, as [`FaceExtent::from_band`] consumes it.
+type SectionFace<'a> = (FaceId, &'a FaceSurface, &'a FaceBand);
 
 /// Is a closed section circle that meets the pair's boundaries at exactly ONE
 /// point a tangency graze lying outside the pair?
@@ -8991,8 +9480,8 @@ fn single_hit_circle_is_graze(
     tol: Tolerance,
 ) -> Result<bool, AlgoError> {
     let antipode = circle.evaluate(t_hit + std::f64::consts::PI);
-    for (face_id, surface, v_range) in faces {
-        let Some(extent) = FaceExtent::new(topo, face_id, surface, v_range, tol)? else {
+    for (face_id, surface, band) in faces {
+        let Some(extent) = FaceExtent::from_band(topo, face_id, surface, band, tol)? else {
             continue;
         };
         let band = extent.outline_sagitta() + tol.linear * 100.0;
@@ -10460,8 +10949,8 @@ mod tests {
                         fid,
                         &surface,
                         &surface,
-                        None,
-                        None,
+                        &FaceBand::NONE,
+                        &FaceBand::NONE,
                         vec![raw],
                         tol,
                         &mut JunctionRegistry::default(),
@@ -12380,3 +12869,9 @@ mod multi_span_section_tests;
 
 #[cfg(test)]
 mod junction_snap_oracle_tests;
+
+#[cfg(test)]
+mod closed_window_end_tests;
+
+#[cfg(test)]
+mod closed_window_partner_tests;

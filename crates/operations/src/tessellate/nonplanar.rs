@@ -29,6 +29,37 @@ fn rim_angles_match(a: &[f64], b: &[f64], tolerance: f64) -> bool {
         })
 }
 
+/// A short, level rim connector may be stored as a line after a boolean.
+/// Its chord is a boundary edge, rather than a generator through the apex.
+/// Admit it only when the entire chord stays within a quarter of the mesh
+/// deflection of the cone: endpoint residual plus the exact circle sagitta.
+fn is_cone_rim_chord(surface: &FaceSurface, start: Point3, end: Point3, deflection: f64) -> bool {
+    let FaceSurface::Cone(cone) = surface else {
+        return false;
+    };
+    let tolerance = remus_math::tolerance::Tolerance::default().linear;
+    let (ua, va) = cone.project_point(start);
+    let (ub, vb) = cone.project_point(end);
+    if ![ua, va, ub, vb, deflection].iter().all(|x| x.is_finite())
+        || deflection <= 0.0
+        || va.min(vb) <= tolerance
+        || (va - vb).abs() > tolerance
+    {
+        return false;
+    }
+    let residual = (start - cone.evaluate(ua, va))
+        .length()
+        .max((end - cone.evaluate(ub, vb)).length());
+    if residual > tolerance {
+        return false;
+    }
+    let angle = ((ub - ua + TAU / 2.0).rem_euclid(TAU) - TAU / 2.0).abs();
+    let radius = va.max(vb) * cone.half_angle().cos();
+    // 2*sin²(angle/4) avoids cancellation for the tiny connector arcs.
+    let sagitta = 2.0 * radius * (angle / 4.0).sin().powi(2);
+    residual + sagitta <= deflection / 4.0
+}
+
 /// Per-face variant of the cycle-rim structured band: rims are sampled
 /// LOCALLY at the requested deflection instead of pulled from the solid
 /// tessellation's shared edge pool, so the `tessellate(topo, face, defl)`
@@ -68,7 +99,7 @@ pub(super) fn tessellate_band_face_local(
         | FaceSurface::Torus(_) => return Ok(None),
     };
 
-    // Curved wire edges → endpoint-connected cycles (the pool version's
+    // Rim wire edges → endpoint-connected cycles (the pool version's
     // structure; a closed single-edge NURBS loop has no by-construction
     // winding, so decline).
     let wire = topo.wire(face_data.outer_wire())?;
@@ -87,7 +118,17 @@ pub(super) fn tessellate_band_face_local(
                     curved.push((oe.edge(), e.start(), e.end()));
                 }
             }
-            EdgeCurve::Line => {}
+            EdgeCurve::Line => {
+                if is_cone_rim_chord(
+                    face_data.surface(),
+                    topo.vertex(e.start())?.point(),
+                    topo.vertex(e.end())?.point(),
+                    deflection,
+                ) && seen.insert(oe.edge().index())
+                {
+                    curved.push((oe.edge(), e.start(), e.end()));
+                }
+            }
             EdgeCurve::Ellipse(_) | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => {
                 return Ok(None);
             }
@@ -158,7 +199,7 @@ pub(super) fn tessellate_band_face_local(
             }
             pool.insert(oriented.edge().index(), ids);
         }
-        if tessellate_cone_apex_fan_shared(topo, face_data, &pool, &mut mesh)? {
+        if tessellate_cone_apex_fan_shared(topo, face_data, &pool, &mut mesh, deflection)? {
             let uvs = mesh
                 .positions
                 .iter()
@@ -725,6 +766,7 @@ pub(super) fn tessellate_cone_apex_fan_shared(
     face_data: &remus_topology::face::Face,
     edge_global_indices: &DetHashMap<usize, Vec<u32>>,
     merged: &mut TriangleMesh,
+    deflection: f64,
 ) -> Result<bool, crate::OperationsError> {
     let FaceSurface::Cone(cone) = face_data.surface() else {
         return Ok(false);
@@ -739,22 +781,28 @@ pub(super) fn tessellate_cone_apex_fan_shared(
     let wire = topo.wire(face_data.outer_wire())?;
     let mut seam_edge_indices = Vec::new();
     let mut rim = Vec::new();
-    let mut has_nurbs = false;
+    let mut needs_winding_check = false;
     let mut seam_uses = Vec::new();
     for oe in wire.edges() {
         let edge = topo.edge(oe.edge())?;
-        if matches!(edge.curve(), EdgeCurve::Line) {
+        let rim_chord = matches!(edge.curve(), EdgeCurve::Line)
+            && is_cone_rim_chord(
+                face_data.surface(),
+                topo.vertex(edge.start())?.point(),
+                topo.vertex(edge.end())?.point(),
+                deflection,
+            );
+        if matches!(edge.curve(), EdgeCurve::Line) && !rim_chord {
             seam_edge_indices.push(oe.edge().index());
             seam_uses.push(*oe);
             continue;
         }
         match edge.curve() {
             EdgeCurve::Circle(_) => {}
-            EdgeCurve::NurbsCurve(_) => has_nurbs = true,
-            EdgeCurve::Line
-            | EdgeCurve::Ellipse(_)
-            | EdgeCurve::Hyperbola(_)
-            | EdgeCurve::Parabola(_) => return Ok(false),
+            EdgeCurve::NurbsCurve(_) | EdgeCurve::Line => needs_winding_check = true,
+            EdgeCurve::Ellipse(_) | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => {
+                return Ok(false);
+            }
         }
         let Some(ids) = edge_global_indices.get(&oe.edge().index()) else {
             return Ok(false);
@@ -784,7 +832,7 @@ pub(super) fn tessellate_cone_apex_fan_shared(
     if rim.iter().any(|&g| (g as usize) >= merged.positions.len()) {
         return Ok(false);
     }
-    if has_nurbs {
+    if needs_winding_check {
         let mut winding = 0.0;
         let mut travel = 0.0;
         for i in 0..rim.len() {

@@ -115,13 +115,16 @@ pub fn boolean_journaled(
         // the boolean consumed without a record (the GFA does not record face
         // deletions) severs instead of resolving to a retired handle.
         let pending = begin_scoped(topo, boolean_kind(op), &[solid_a, solid_b])?;
+        let drops = gfa::SectionDropScope::enter();
         let (solid, evolution) = gfa::boolean_with_entity_evolution(topo, op, solid_a, solid_b)?;
         let gate_op = match op {
             BooleanOp::Fuse => crate::boolean::BooleanOp::Fuse,
             BooleanOp::Cut => crate::boolean::BooleanOp::Cut,
             BooleanOp::Intersect => crate::boolean::BooleanOp::Intersect,
         };
-        crate::boolean::require_exact_boolean_result(topo, gate_op, solid_a, solid_b, solid)?;
+        crate::boolean::require_exact_boolean_result(
+            topo, gate_op, solid_a, solid_b, solid, &drops,
+        )?;
         let draft = draft_from_entity_evolution(&evolution);
         let op = topo.journal_record_evolution(pending, draft)?;
         Ok(JournaledBoolean { solid, op })

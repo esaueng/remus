@@ -166,6 +166,11 @@ fn crossing_side_wall_keeps_exact_cone_and_material() {
                         "{up} {distance} {scale}: {quality:?}"
                     );
                     assert_eq!(quality.euler_characteristic, 2);
+                    assert_eq!(
+                        remus_operations::tessellate::boundary_edge_count(&mesh),
+                        0,
+                        "{up} {distance} {scale}: inconsistent triangle winding"
+                    );
                 }
                 let local_z = |z| if up { z } else { 4.0 - z };
                 for (p, expected) in [
@@ -247,17 +252,129 @@ fn clear_side_wall_still_accepts_exact_cut() {
     }
 }
 
-/// The existing transformed rim subdivision can still report a crossing.
-/// Its native validation error must propagate instead of becoming Exact.
+/// The transformed rim subdivision used to report a crossing here: a section
+/// piece ending at its closed loop's closure point re-projected to the loop's
+/// other end and traced the complementary arc, and the native validation
+/// error refused the cut. With the piece's own parameter kept the cut is
+/// exact and valid, and its tessellated volume extrapolates to the closed
+/// form (the face integrator reads it about 3e-5 high, so the volume is
+/// judged on the mesh).
 #[test]
-fn unresolved_rotated_crossing_fails_closed() {
+fn rotated_crossing_cuts_exactly() {
+    let scale = 0.5_f64;
     let placement = Mat4::translation(13.0, -7.0, 9.0)
         * Mat4::rotation_y(0.31)
         * Mat4::rotation_z(0.27)
-        * Mat4::scale(0.5, 0.5, 0.5);
-    let (mut topo, block, cone) = operands(true, 0.25, 0.0, &placement);
-    assert!(matches!(
-        exact_cut(&mut topo, block, cone),
-        Err(remus_operations::OperationsError::ExactOnlyUnattainable)
-    ));
+        * Mat4::scale(scale, scale, scale);
+    let inverse = placement.inverse().unwrap();
+    for up in [true, false] {
+        for distance in [0.25, 0.4] {
+            let (mut topo, block, cone) = operands(up, distance, 0.0, &placement);
+            let outcome = exact_cut(&mut topo, block, cone)
+                .expect("rotated one-rim crossing has an exact solution");
+            assert_eq!(outcome.quality, BooleanQuality::Exact);
+            let report = validate_solid(&topo, outcome.solid, &ValidateOptions::default()).unwrap();
+            assert!(report.is_valid(), "{up} {distance}: {:?}", report.issues);
+            let faces = remus_topology::explorer::solid_faces(&topo, outcome.solid).unwrap();
+            assert!(faces.len() < 12);
+            assert!(faces.iter().any(|&f| matches!(
+                topo.face(f).unwrap().surface(),
+                remus_topology::face::FaceSurface::Cone(_)
+            )));
+            for &face in &faces {
+                if matches!(
+                    topo.face(face).unwrap().surface(),
+                    remus_topology::face::FaceSurface::Cone(_)
+                ) {
+                    let mesh = remus_operations::tessellate::tessellate(&topo, face, 0.002 * scale)
+                        .unwrap();
+                    assert!(!mesh.indices.is_empty());
+                    for point in &mesh.positions {
+                        let local = inverse.mul_point(*point);
+                        assert!(
+                            local.x() >= -1e-7,
+                            "{up} {distance}: discarded notch skin: {local:?}"
+                        );
+                    }
+                }
+            }
+
+            // Cross-check the independent segment integral against its closed form.
+            let n = 20_000;
+            let removed: f64 = (0..n)
+                .map(|i| {
+                    let z = (f64::from(i) + 0.5) / f64::from(n) * 4.0;
+                    let r = 0.5 * (1.0 - z / 4.0);
+                    let segment = if r > distance {
+                        r * r * (distance / r).acos()
+                            - distance * (r * r - distance * distance).sqrt()
+                    } else {
+                        0.0
+                    };
+                    (PI * r * r - segment) * 4.0 / f64::from(n)
+                })
+                .sum();
+            let expected = retained_volume(distance) * scale.powi(3);
+            assert!(((24.0 - removed) * scale.powi(3) - expected).abs() < 1e-8);
+            let mesh_volume = |deflection: f64| {
+                let mesh = remus_operations::tessellate::tessellate_solid(
+                    &topo,
+                    outcome.solid,
+                    deflection,
+                )
+                .unwrap();
+                let quality = remus_operations::tessellate::welded_mesh_quality(&mesh);
+                assert!(quality.is_watertight(), "{up} {distance}: {quality:?}");
+                assert_eq!(quality.euler_characteristic, 2);
+                assert_eq!(
+                    remus_operations::tessellate::boundary_edge_count(&mesh),
+                    0,
+                    "{up} {distance}: inconsistent triangle winding"
+                );
+                let corner = |i: u32| {
+                    let p = mesh.positions[i as usize];
+                    remus_math::vec::Vec3::new(p.x(), p.y(), p.z())
+                };
+                mesh.indices
+                    .chunks_exact(3)
+                    .map(|t| corner(t[0]).dot(corner(t[1]).cross(corner(t[2]))) / 6.0)
+                    .sum::<f64>()
+            };
+            let (coarse, fine) = (mesh_volume(0.002), mesh_volume(0.001));
+            let extrapolated = fine + (fine - coarse);
+            assert!(
+                (extrapolated - expected).abs() < 1e-5,
+                "{up} {distance}: volume {extrapolated}, expected {expected}"
+            );
+            let local_z = |z| if up { z } else { 4.0 - z };
+            for (point, expected_class) in [
+                (
+                    Point3::new(distance, 1.5, local_z(2.0)),
+                    PointClassification::Outside,
+                ),
+                (
+                    Point3::new(0.05, 1.5, local_z(0.25)),
+                    PointClassification::Outside,
+                ),
+                (
+                    Point3::new(0.05, 1.5, local_z(3.75)),
+                    PointClassification::Inside,
+                ),
+                (Point3::new(1.8, 2.8, 2.0), PointClassification::Inside),
+                (Point3::new(-0.1, 1.5, 2.0), PointClassification::Outside),
+            ] {
+                assert_eq!(
+                    classify_point(
+                        &topo,
+                        outcome.solid,
+                        placement.mul_point(point),
+                        &ClassifyOptions::default(),
+                    )
+                    .unwrap(),
+                    expected_class,
+                    "{up} {distance}: {point:?}"
+                );
+            }
+        }
+    }
 }

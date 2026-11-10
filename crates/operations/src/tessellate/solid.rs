@@ -2587,7 +2587,13 @@ pub(super) fn tessellate_face_with_shared_edges(
         // declines it. The apex fan also qualifies a connected full-turn
         // mixed rim, preserving its shared side-wall section vertices.
         let apex_handled = band_eligible
-            && tessellate_cone_apex_fan_shared(topo, face_data, edge_global_indices, merged)?;
+            && tessellate_cone_apex_fan_shared(
+                topo,
+                face_data,
+                edge_global_indices,
+                merged,
+                deflection,
+            )?;
 
         if band_handled || apex_handled {
             // done — watertight structured band or apex fan emitted

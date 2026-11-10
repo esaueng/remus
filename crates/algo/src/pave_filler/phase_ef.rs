@@ -4,6 +4,7 @@
 //! edge crosses or touches the face surface. Records EF interferences
 //! and adds extra paves to the edge for later splitting.
 
+use remus_math::compact_sort::CompactSort;
 use remus_math::det_hash::{DetHashMap, DetHashSet};
 
 use crate::builder::classify_2d::{distance_to_polygon_boundary, point_in_polygon_2d};
@@ -182,6 +183,14 @@ struct FaceContainment {
     /// cap rim crossing a converted bar wall's carrier 3 mm above the wall
     /// paved a vertex in open space.
     nurbs: Option<NurbsContainment>,
+    /// Exact chart containment for a torus face bounded by iso-parameter
+    /// circles and closed in at least one direction (see
+    /// [`crate::periodic_chart`]); its crossings are found on the
+    /// signed tube distance.
+    torus: Option<(
+        crate::periodic_chart::ChartCarrier,
+        crate::periodic_chart::PeriodicChart,
+    )>,
 }
 
 struct NurbsContainment {
@@ -257,6 +266,9 @@ impl FaceContainment {
         }
         if let Some(nurbs) = &self.nurbs {
             return nurbs.accepts(pt);
+        }
+        if let Some((carrier, chart)) = &self.torus {
+            return chart.contains_carrier_point(carrier, pt, 1e-9);
         }
         let Some(planar) = &self.planar else {
             return true;
@@ -393,6 +405,9 @@ fn build_face_containment(
             bbox: None,
             planar: None,
             nurbs: None,
+            torus: matches!(surface, FaceSurface::Torus(_))
+                .then(|| crate::periodic_chart::face_chart(topo, fid))
+                .flatten(),
         });
     }
 
@@ -417,6 +432,7 @@ fn build_face_containment(
             bbox: None,
             planar: None,
             nurbs: None,
+            torus: None,
         });
     };
     let diag = (bbox.max - bbox.min).length();
@@ -445,12 +461,14 @@ fn build_face_containment(
                     margin,
                 }),
                 nurbs: None,
+                torus: None,
             });
         }
         return Ok(FaceContainment {
             bbox: Some(bbox.expanded((diag * 0.5).max(tol.linear * 10.0))),
             planar: None,
             nurbs: None,
+            torus: None,
         });
     }
 
@@ -508,6 +526,7 @@ fn build_face_containment(
                         holes,
                         margin: max_boundary_error.max(tol.linear * 10.0),
                     }),
+                    torus: None,
                 });
             }
         }
@@ -518,6 +537,7 @@ fn build_face_containment(
         bbox: None,
         planar: None,
         nurbs: None,
+        torus: None,
     })
 }
 
@@ -800,6 +820,14 @@ fn check_edge_face_pairs(
                                 &curve, start_pos, end_pos, t0, t1, surface, tol, grid,
                             )
                         })
+                }
+                // A chart-recognized torus face: sign changes of the signed
+                // tube distance, so a transversal crossing between samples is
+                // found (the unsigned scan below only notices one when a
+                // sample lands within tolerance of the surface, and the tool
+                // rims crossing an imported tube went unpaved, #1242).
+                (FaceSurface::Torus(torus), _) if containments[face_idx].torus.is_some() => {
+                    find_edge_torus_crossings(&curve, start_pos, end_pos, t0, t1, torus, tol)
                 }
                 (FaceSurface::Nurbs(_), None)
                 | (
@@ -1804,6 +1832,97 @@ fn find_edge_surface_crossings(
     }
 
     crossings
+}
+
+/// Signed distance from a point to a ring torus: positive outside the tube.
+fn torus_signed_distance(torus: &remus_math::surfaces::ToroidalSurface, p: Point3) -> f64 {
+    let w = p - torus.center();
+    let axial = torus.z_axis().dot(w);
+    let radial = (w - torus.z_axis() * axial).length() - torus.major_radius();
+    radial.hypot(axial) - torus.minor_radius()
+}
+
+/// Transversal crossings of an edge with a torus carrier.
+///
+/// The signed tube distance is sampled densely; every sign change is
+/// bisected on the exact curve. A sample whose distance dips toward the
+/// surface without changing sign is minimized by golden section, and a
+/// minimum on the other side of the surface yields the two crossings of a
+/// short excursion that falls between samples. Tangential contacts (a minimum
+/// within tolerance) are reported once at the minimum.
+fn find_edge_torus_crossings(
+    curve: &EdgeCurve,
+    start_pos: Point3,
+    end_pos: Point3,
+    t0: f64,
+    t1: f64,
+    torus: &remus_math::surfaces::ToroidalSurface,
+    tol: Tolerance,
+) -> Vec<(f64, Point3)> {
+    const SAMPLES: usize = 1024;
+    let at = |t: f64| curve.evaluate_with_endpoints(t, start_pos, end_pos);
+    let sd = |t: f64| torus_signed_distance(torus, at(t));
+    #[allow(clippy::cast_precision_loss)]
+    let ts: Vec<f64> = (0..=SAMPLES)
+        .map(|i| t0 + (t1 - t0) * (i as f64 / SAMPLES as f64))
+        .collect();
+    let ds: Vec<f64> = ts.iter().map(|&t| sd(t)).collect();
+    let bisect = |mut lo: f64, mut hi: f64| -> f64 {
+        let outside = sd(lo).is_sign_positive();
+        for _ in 0..100 {
+            let mid = 0.5 * (lo + hi);
+            if sd(mid).is_sign_positive() == outside {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        0.5 * (lo + hi)
+    };
+    let mut roots: Vec<f64> = Vec::new();
+    let on_surface = |d: f64| d.abs() < f64::MIN_POSITIVE;
+    for i in 0..SAMPLES {
+        let (a, b) = (ds[i], ds[i + 1]);
+        if on_surface(a) {
+            roots.push(ts[i]);
+        } else if a * b < 0.0 {
+            roots.push(bisect(ts[i], ts[i + 1]));
+        }
+    }
+    if on_surface(ds[SAMPLES]) {
+        roots.push(ts[SAMPLES]);
+    }
+    // Same-sign dips: a local minimum of |d| between two neighbours.
+    for i in 1..SAMPLES {
+        let (p, c, n) = (ds[i - 1], ds[i], ds[i + 1]);
+        if p * c <= 0.0 || c * n <= 0.0 || !(c.abs() <= p.abs() && c.abs() <= n.abs()) {
+            continue;
+        }
+        let sign = c.signum();
+        let phi = 0.5 * (5.0_f64.sqrt() - 1.0);
+        let (mut lo, mut hi) = (ts[i - 1], ts[i + 1]);
+        for _ in 0..80 {
+            let m1 = hi - phi * (hi - lo);
+            let m2 = lo + phi * (hi - lo);
+            if sign * sd(m1) < sign * sd(m2) {
+                hi = m2;
+            } else {
+                lo = m1;
+            }
+        }
+        let tm = 0.5 * (lo + hi);
+        let dm = sd(tm);
+        if dm * sign < 0.0 {
+            roots.push(bisect(ts[i - 1], tm));
+            roots.push(bisect(tm, ts[i + 1]));
+        } else if dm.abs() < tol.linear {
+            roots.push(tm);
+        }
+    }
+    roots.compact_sort_by(f64::total_cmp);
+    let eps = (t1 - t0).abs() * 1e-12;
+    roots.dedup_by(|a, b| (*a - *b).abs() <= eps);
+    roots.into_iter().map(|t| (t, at(t))).collect()
 }
 
 /// Find crossings by sampling a signed distance function and detecting sign changes.

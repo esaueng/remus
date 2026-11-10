@@ -8,6 +8,58 @@ historical predecessor-line records, retained for provenance. The
 
 ### Fixed
 
+* **algo,operations:** qualified swept-tube and torus Boolean sections
+  (OpenZCAD #1242 and #1244) partition exact curves in a lifted chart.
+  Adaptive curve enclosures certify noding and leaving directions; interior
+  witnesses clear those enclosures. Closed section loops also take a single
+  seam cut where a matching curve piece ends, and sub-trims retain their
+  parent's direction at a loop closure. Failed certificates on admitted
+  primary or rescue charts refuse exact results, including empty results,
+  through the operation's transaction. Unsupported families retain their
+  established routes. Decomposition must cover every boundary and trimmed
+  section span with matching joints; knots below the decomposer's resolution
+  and unresolved tiny spans decline instead of leaving geometry unchecked.
+  The overlap scan also has a cumulative pair-check budget, so coincident
+  meridians cannot grow a quadratic scan to the full subdivision limit.
+* **algo:** trimmed-torus boxes include complete boundary knot spans and
+  interior extrema instead of inferring bounds from uniform samples.
+  Positive-weight Bezier hulls, continuous angular lifts and winding checks
+  either bound the face or retain the whole carrier. Stable homogeneous
+  interpolation and direct small blossom coefficients preserve extreme
+  positive-weight and long-span trims; unrepresentable arithmetic declines.
+  Marched band exits require a local corrected bracket on both surfaces and
+  the exiting rim.
+* **algo,math:** torus minor-angle bands carry explicit whole-tube proof,
+  certified lifted hull, or uncertain provenance. Wrap-straddling partial
+  faces retain their periodic membership band; only proved whole tubes skip
+  the depth test or land marched exits on a wall rim. The marcher wrap snap
+  uses declared boundary tolerances. The additive hinted intersection API
+  carries coverage while the existing bounded entry point keeps its contract.
+* **algo:** exact circular sections that retrace a real rim are omitted
+  from the chart as duplicate boundaries, while seams and genuine cuts
+  remain in its noding certificate. Analytic carrier, arc and identity
+  checks restore split-rim cylinder resizing without bypassing the gate.
+* **algo:** positive-weight NURBS sections whose complete control hull is
+  separated from a face, or contained in a whole circular hole, no longer
+  trigger a missing-section rescue. This restores exact cylinder gears;
+  circular-hole trim authority and an in-plane separating direction are
+  required. Crossing sections and failed certificates still refuse.
+* **operations:** section-drop diagnostics are scoped per operation, including
+  nested region and provenance routes. Material probes may reject a clear
+  contradiction in an established result; probe agreement never certifies
+  an incomplete section set.
+* **operations:** a failed chart certificate still rejects and rolls back
+  its exact Boolean candidate, while an explicit `AllowApproximate` context
+  may use its declared mesh fallback and reports the requested deflection.
+  Exact-only and construction-history routes retain their typed refusal.
+* **operations:** cone apex fans retain level rim chords whose exact sagitta
+  fits the display deflection, so rotated pointed-cone cuts tessellate with
+  closed, consistently oriented boundaries.
+* **algo:** closed fitted section windows refine from an interior anchor
+  while retaining both face constraints. Only a full cylinder/cone rim
+  lying in the partner carrier's plane within the existing linear tolerance
+  receives fit-noise credit on its own band boundary. Rotated cone cuts
+  reach the box edge, and nearby genuine partner-rim crossings stay clipped.
 * **operations,check:** a loft between parallel circles whose centres are
   laterally offset (OpenZCAD #1253: r 25 at the origin, r 10 at (12, 0, 60))
   fell to the polygon path in both `loft` and two-section `loft_smooth`: 32

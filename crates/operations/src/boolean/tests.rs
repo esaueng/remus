@@ -21,6 +21,72 @@ use crate::measure::test_support::assert_volume_near;
 
 use super::*;
 
+mod chart_certificate_gate {
+    use super::*;
+
+    fn counts(topo: &Topology) -> [usize; 4] {
+        [
+            topo.num_vertices(),
+            topo.num_edges(),
+            topo.num_faces(),
+            topo.num_solids(),
+        ]
+    }
+
+    #[test]
+    fn either_failed_certificate_refuses_a_valid_candidate_and_rolls_back() {
+        // The algorithm separately tests how real chart failures populate
+        // these counters. This is their operations-layer acceptance contract:
+        // neither structural validity nor agreement at material probes may
+        // excuse either diagnostic, and the enclosing transaction must undo
+        // already constructed candidate topology.
+        for (charts, rescues) in [(1, 0), (0, 1), (1, 1)] {
+            let mut topo = Topology::new();
+            let solid = crate::primitives::make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
+            let before = counts(&topo);
+            let result = remus_topology::transaction::run_transacted(&mut topo, |topo| {
+                let candidate = crate::primitives::make_box(topo, 2.0, 3.0, 4.0)?;
+                assert!(exact_result_is_acceptable(
+                    topo,
+                    BooleanOp::Fuse,
+                    solid,
+                    solid,
+                    candidate,
+                    Tolerance::new(),
+                    false,
+                ));
+                assert!(material_witness::material_witnesses_agree(
+                    topo,
+                    BooleanOp::Fuse,
+                    solid,
+                    solid,
+                    &[candidate],
+                    Tolerance::new(),
+                ));
+                require_chart_certificate_counts(charts, rescues)
+            });
+            assert!(matches!(
+                result,
+                Err(crate::OperationsError::ExactOnlyUnattainable)
+            ));
+            assert_eq!(counts(&topo), before);
+            assert_volume_near(&topo, solid, 24.0, 1e-10);
+        }
+    }
+
+    #[test]
+    fn clean_certificate_diagnostics_do_not_refuse_the_exact_gate() {
+        let mut topo = Topology::new();
+        let solid = crate::primitives::make_box(&mut topo, 2.0, 3.0, 4.0).unwrap();
+        let scope = remus_algo::gfa::SectionDropScope::enter();
+        assert!(require_chart_certificate_counts(0, 0).is_ok());
+        assert!(
+            require_exact_boolean_result(&topo, BooleanOp::Fuse, solid, solid, solid, &scope,)
+                .is_ok()
+        );
+    }
+}
+
 #[test]
 fn sphere_cylinder_support_certificate_requires_finite_positive_clearance() {
     use remus_algo::classifier::AnalyticClassifier;
@@ -11133,7 +11199,14 @@ mod exact_result_gate_tests {
             assert!(is_closed_manifold(&topo, wrong_union).unwrap());
             assert!(validate_boolean_result(&topo, wrong_union).is_ok());
             assert!(matches!(
-                require_exact_boolean_result(&topo, BooleanOp::Fuse, a, b, wrong_union),
+                require_exact_boolean_result(
+                    &topo,
+                    BooleanOp::Fuse,
+                    a,
+                    b,
+                    wrong_union,
+                    &remus_algo::gfa::SectionDropScope::enter()
+                ),
                 Err(crate::OperationsError::ExactOnlyUnattainable)
             ));
         }
@@ -11161,7 +11234,14 @@ mod exact_result_gate_tests {
             Tolerance::new()
         ));
         assert!(matches!(
-            require_exact_boolean_result(&topo, BooleanOp::Intersect, a, b, wrong_common),
+            require_exact_boolean_result(
+                &topo,
+                BooleanOp::Intersect,
+                a,
+                b,
+                wrong_common,
+                &remus_algo::gfa::SectionDropScope::enter()
+            ),
             Err(crate::OperationsError::ExactOnlyUnattainable)
         ));
     }
@@ -11189,7 +11269,14 @@ mod exact_result_gate_tests {
             assert!(is_closed_manifold(&topo, wrong_cut).unwrap());
             assert!(validate_boolean_result(&topo, wrong_cut).is_ok());
             assert!(matches!(
-                require_exact_boolean_result(&topo, BooleanOp::Cut, a, b, wrong_cut),
+                require_exact_boolean_result(
+                    &topo,
+                    BooleanOp::Cut,
+                    a,
+                    b,
+                    wrong_cut,
+                    &remus_algo::gfa::SectionDropScope::enter()
+                ),
                 Err(crate::OperationsError::ExactOnlyUnattainable)
             ));
         }
@@ -11248,7 +11335,14 @@ mod exact_result_gate_tests {
         // The adaptive witness must find the thin wall, then the final tool
         // classifier must reject it: the whole hollow piece is removed by B.
         assert!(matches!(
-            require_exact_boolean_result(&topo, BooleanOp::Cut, blank, tool, wrong_cut),
+            require_exact_boolean_result(
+                &topo,
+                BooleanOp::Cut,
+                blank,
+                tool,
+                wrong_cut,
+                &remus_algo::gfa::SectionDropScope::enter()
+            ),
             Err(crate::OperationsError::ExactOnlyUnattainable)
         ));
     }

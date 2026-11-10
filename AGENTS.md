@@ -282,6 +282,12 @@ Quick reference — find the right file for any task:
 | FaceInfo population | `pave_filler/fill_face_info.rs` |
 | Builder (face splitting + assembly) | `builder/mod.rs`, `builder/assemble.rs` |
 | Face splitting (UV-space); exact line/arc planar loop containment (`point_in_planar_loop`) | `builder/face_splitter/` (mod, containment, conversion, edge_splitting, sampling, special_cases), `builder/classify_2d.rs` |
+| Exact-curve chart arrangement: certified noding and leaving sectors, region tracing and holes, interior witnesses outside the curve enclosures; distinguishes unsupported inputs from failed certificates | `builder/face_splitter/chart_arrangement.rs` |
+| Curve enclosures in plane, cylinder and torus charts: positive-weight Bezier and conic hulls, interval velocity cones, adaptive noding and node-sector proofs (adversarial tests) | `builder/face_splitter/chart_certificate.rs`, `builder/face_splitter/chart_certificate_tests.rs` |
+| Torus and cylinder faces opened along their seams, sections and boundary pieces partitioned by the chart arrangement; primary torus path and cylinder rescue, with separate failed-certificate diagnostics | `builder/face_splitter/periodic_face_chart.rs` |
+| Positive-weight NURBS sections certified outside planar or cylindrical face material before the left-out rescue check; crossing, hole-domain and separating-direction controls | `builder/face_splitter/section_clearance_tests.rs` |
+| Planar line/circle face re-partition when the established split contains spurs, omits sections or fails its area consistency estimate | `builder/face_splitter/plane_chart.rs` |
+| Lifted torus and cylinder parameter rectangles recognized from iso-parameter boundary curves; exact periodic chart membership | `periodic_chart.rs` |
 | Native equator partition and whole-interval circular rim coverage oracles | `builder/face_splitter/special_cases/equator_partition_tests.rs` |
 | Isolated exact-event UV arrangement and cylinder-strip quotient | `builder/face_splitter/arrangement.rs`, `builder/face_splitter/arrangement/` (geometry, regions, periodic) |
 | Production UV arrangement dispatch and guards | `builder/face_splitter/arrangement_prod.rs` |
@@ -319,6 +325,10 @@ Quick reference — find the right file for any task:
 | Deterministic work counters (complexity guards) | `perf.rs` |
 | Exact axis extremes of circle/ellipse arcs (broad-phase boxes) | `conic_bounds.rs` |
 | Independent-oracle tests for phase-FF exact-vs-refuse helpers (disc clip, one-hit graze, torus oval trim, one-rim notch) | `pave_filler/phase_ff/helper_oracle_tests.rs` |
+| Closed-section window endpoints on the face boundary crossed by a fitted rim, with margin-band and partner-rim fit-wobble controls against independent chord crossings | `pave_filler/phase_ff/closed_window_end_tests.rs` |
+| Closed-section clipping retains a tilted cylinder rim crossed near a planar edge, including crossings hidden within the partner margin | `pave_filler/phase_ff/closed_window_partner_tests.rs` |
+| Trimmed-torus broad-phase boxes and minor-angle bands: complete positive-weight Bezier and circle hulls, continuous parameter lifts, winding and area-sign checks, conservative carrier fallback (including adversarial knot/weight and ridge tests) | `pave_filler/phase_ff/torus_extent.rs`, `pave_filler/phase_ff/torus_extent/lift.rs`, `pave_filler/phase_ff/torus_extent/certified_tests.rs`, `pave_filler/phase_ff/torus_extent/tests.rs` |
+| Torus minor-band provenance: wrap-straddling and uncertain extents never imply whole-tube coverage; only an explicit proof enables strict shortcuts and exact marcher rim exits (tests) | `pave_filler/phase_ff/torus_extent/certified_tests/band_proof.rs` |
 | Differential oracle for the phase-FF junction snap's box gate and per-face boundary cache (the ungated search kept verbatim), the box bound against sampled curve distances, and the untouched-face box gate (tests) | `pave_filler/phase_ff/junction_snap_oracle_tests.rs` |
 | Phase-FF regressions on a face of many spans (a helical sweep side over three turns): the broad-phase box holds the bulge past its rails, and plane sections seed every span and come back whole (tests) | `pave_filler/phase_ff/multi_span_section_tests.rs` |
 | Independent-oracle tests for builder-solid helpers (conic support, closed-pair traversal, revolved wire winding) | `builder/builder_solid/helper_oracle_tests.rs` |
@@ -522,6 +532,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Primitives (box, cylinder, cone, sphere, torus) | `primitives.rs` |
 | Independent carrier and manifold oracles for the sphere equator | `primitives/sphere_equator_tests.rs` |
 | Boolean (union/cut/intersect) | `boolean/` (mod, types, classify, assembly, tests, nway_pairs_tests, disjoint_witness_tests) |
+| One-sided material contradiction detector for established Boolean results built after dropped sections; grid agreement is not a certificate | `boolean/material_witness.rs` |
 | Three-box union grouping and order regression: exact volume, solid validation, closed oriented mesh, material probes, source preservation and STEP replay (OpenZCAD 1246) | `tests/regress_issue_1246_box_union_grouping.rs` |
 | Qualified local drilled-hole cut (through and blind holes; stages 1–2 of the local boolean) and its GFA oracle tests | `boolean/local_cut.rs`, `boolean/local_cut_tests.rs` |
 | Opt-in store-local cut, fuse and intersect: the GFA on the faces the tool touches, spliced onto the untouched ones (stage 4 of the local boolean), and its equivalence oracle tests | `boolean/store_local.rs`, `boolean/store_local_tests.rs` |

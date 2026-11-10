@@ -3616,10 +3616,24 @@ pub(super) fn split_face_with_internal_loops(
         }
 
         // Accept only closed chains (single-edge circles or multi-edge
-        // closed loops). Reject open chains from orphaned arcs.
+        // closed loops). An open chain is dropped, but not silently: this
+        // path is taken only when every section end lies inside the face, so
+        // the chain's loose ends sit in the face interior and the section set
+        // there is incomplete. Dropping it is often harmless (a stray arc
+        // whose face classifies the same either side), yet it also kept a
+        // swept tube whole under an annular cutter (#1242) and a holed
+        // block's hole wall in a torus intersection (#1244). Record it in the
+        // operation's `SectionDropScope`.
         let chain_end = chain.last().map_or(loop_start_3d, |e| e.end_3d);
-        if !chain.is_empty() && (chain_end - loop_start_3d).length() < chain_tol {
+        if (chain_end - loop_start_3d).length() < chain_tol {
             loops.push(chain);
+        } else {
+            log::debug!(
+                "split_face_with_internal_loops: face {face_id:?} drops an open section chain \
+                 of {} edge(s) ({loop_start_3d:?} .. {chain_end:?})",
+                chain.len()
+            );
+            crate::gfa::note_dropped_open_section_chain();
         }
     }
 

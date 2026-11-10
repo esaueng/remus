@@ -194,13 +194,14 @@ fn apply_tools(
             })
             .collect();
         let faithful = remus_topology::transaction::run_transacted(topo, |t| {
+            let drops = remus_algo::gfa::SectionDropScope::enter();
             let (result, sources) =
                 remus_algo::gfa::boolean_with_face_origins(t, algo_op, current, tool.solid)?;
             crate::heal::remove_degenerate_edges(t, result, Tolerance::new().linear)?;
             crate::heal::remove_wire_spurs(t, result)?;
             normalize_new_planar_wires(t, current, result)?;
             orient_new_faces(t, current, result, &sources)?;
-            require_exact_boolean_result(t, op, current, tool.solid, result)?;
+            require_exact_boolean_result(t, op, current, tool.solid, result, &drops)?;
             Ok::<_, OperationsError>((result, sources))
         });
         let (result, sources) = match faithful {

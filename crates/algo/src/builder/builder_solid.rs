@@ -3552,6 +3552,23 @@ fn split_edges_at_collinear_vertices(
 /// Whether two analytic conics describe the same untrimmed carrier curve.
 /// Parameter direction and seam phase are irrelevant; only the geometric
 /// support is compared.
+/// Whether two NURBS edge curves are one curve: shared storage, or equal
+/// degree, knots, weights and control points.
+fn nurbs_share_support(a: &EdgeCurve, b: &EdgeCurve) -> bool {
+    let (EdgeCurve::NurbsCurve(a), EdgeCurve::NurbsCurve(b)) = (a, b) else {
+        return false;
+    };
+    let (pa, pb) = (a.control_points(), b.control_points());
+    if pa.len() != pb.len() {
+        return false;
+    }
+    std::ptr::eq(pa.as_ptr(), pb.as_ptr())
+        || (a.degree() == b.degree()
+            && a.knots() == b.knots()
+            && a.weights() == b.weights()
+            && pa.iter().zip(pb).all(|(p, q)| p == q))
+}
+
 fn conics_share_support(a: &EdgeCurve, b: &EdgeCurve, tol: f64) -> bool {
     match (a, b) {
         (EdgeCurve::Circle(a), EdgeCurve::Circle(b)) => {
@@ -3806,7 +3823,7 @@ fn split_arc_edges_at_collinear_vertices(
                     edge.curve(),
                     EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) | EdgeCurve::NurbsCurve(_)
                 );
-                if matches!(edge.curve(), EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_)) {
+                if is_refinable {
                     curve_support_at
                         .entry(quantize_point(sp, tol))
                         .or_default()
@@ -3885,9 +3902,12 @@ fn split_arc_edges_at_collinear_vertices(
         // into free-edge pairs. Sub-spans are endpoint-parameterized like
         // every other NURBS section piece.
         if matches!(&curve, EdgeCurve::NurbsCurve(_)) {
-            if is_closed {
-                continue;
-            }
+            // A closed section loop is refined like a closed conic: at two or
+            // more vertices on it (a loop the torus chart splitter cut at
+            // both crossings of a seam), or at one vertex where another edge
+            // on the same curve ends (a loop crossing the seam once, whose
+            // torus-side copy is one piece from that crossing round to it),
+            // never at one stray vertex.
             let (t0, t1) = trim.ok_or_else(|| {
                 AlgoError::AssemblyFailed(format!(
                     "arc refinement source edge {eid:?} lacks authoritative NURBS parameter range"
@@ -3920,6 +3940,7 @@ fn split_arc_edges_at_collinear_vertices(
             }
             let skip = ArcRefineSkip::new(&curve, (t0, t1));
             let mut cuts: Vec<(f64, f64, VertexId)> = Vec::new();
+            let mut mate_cuts = 0usize;
             for ci in grid.box_candidates(amin, amax, snap * 2.0) {
                 let (vid, p) = verts[ci];
                 if (p - sp).length() < snap || (p - ep).length() < snap {
@@ -3932,20 +3953,28 @@ fn split_arc_edges_at_collinear_vertices(
                     nurbs_cut_at(&curve, (sp, ep), (t0, span), &samples, p, snap)
                 {
                     cuts.push((fraction, parameter, vid));
+                    mate_cuts +=
+                        usize::from(curve_support_at.get(&quantize_point(p, tol)).is_some_and(
+                            |supports| supports.iter().any(|s| nurbs_share_support(&curve, s)),
+                        ));
                 }
-            }
-            if cuts.is_empty() {
-                continue;
             }
             cuts.compact_sort_by(|a, b| {
                 a.0.total_cmp(&b.0)
                     .then_with(|| a.2.index().cmp(&b.2.index()))
             });
             cuts.dedup_by_key(|(_, _, vid)| *vid);
+            if cuts.is_empty() || (is_closed && cuts.len() < 2 && mate_cuts == 0) {
+                continue;
+            }
             let mut chain: Vec<(f64, VertexId)> = Vec::with_capacity(cuts.len() + 2);
             chain.push((t0, sv));
             chain.extend(cuts.iter().map(|&(_, parameter, vid)| (parameter, vid)));
             chain.push((t1, ev));
+            // A closed loop's start and end vertex coincide, so projecting
+            // them cannot narrow a parent span: its pieces take the cut
+            // parameters directly.
+            let trim = if is_closed { None } else { trim };
             let mut subs = Vec::with_capacity(chain.len() - 1);
             for w in chain.windows(2) {
                 let mut sub = Edge::new(w[0].1, w[1].1, curve.clone());

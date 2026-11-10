@@ -523,6 +523,7 @@ pub(super) fn clip(
             })
         })
         .ok_or_else(|| super::unsupported("missing clipping-tool cap"))?;
+    let drops = remus_algo::gfa::SectionDropScope::enter();
     let (result, origins) = remus_algo::gfa::boolean_with_face_origins(
         topo,
         remus_algo::bop::BooleanOp::Cut,
@@ -531,7 +532,7 @@ pub(super) fn clip(
     )?;
     crate::heal::remove_degenerate_edges(topo, result, Tolerance::new().linear)?;
     crate::heal::remove_wire_spurs(topo, result)?;
-    require_exact_boolean_result(topo, BooleanOp::Cut, solid, tool, result)?;
+    require_exact_boolean_result(topo, BooleanOp::Cut, solid, tool, result, &drops)?;
     let input: BTreeSet<_> = solid_faces(topo, solid)?
         .into_iter()
         .map(remus_topology::arena::Id::index)
