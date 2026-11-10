@@ -162,3 +162,51 @@ fn fillet_and_chamfer_detailed_round_each_cap_rim_in_a_batch() {
         }
     }
 }
+
+#[test]
+fn canonical_circle_coil_fillets_keep_input_and_remove_material_for_each_cap() {
+    for normal_y in [-1.0, 1.0] {
+        for pitch in [22.5, -22.5] {
+            for cap in 0..2 {
+                let mut kernel = RemusKernel::new();
+                let edge = kernel
+                    .make_circle_edge(100.0, 0.0, 0.0, 0.0, normal_y, 0.0, 9.0)
+                    .unwrap();
+                let wire = kernel.make_wire_impl(&[edge], true).unwrap();
+                let face = kernel.make_face_from_wire(wire).unwrap();
+                let solid = kernel
+                    .helical_sweep_in_place_impl(face, [0.0; 3], [0.0, 0.0, 1.0], pitch, 3.0)
+                    .unwrap();
+                let (rims, ..) = rims_and_seam(&kernel, solid);
+                let original = kernel.serialize_solid(solid).unwrap();
+                let before = volume(&kernel, solid);
+                // Reversing the profile's normal changes the circle seam,
+                // but not whether this convex cap can be rounded.
+                let out = run(
+                    &mut kernel,
+                    &serde_json::json!([{
+                        "op": "filletDetailed",
+                        "args": {"solid": solid, "edges": [rims[cap]], "radius": 1.0}
+                    }]),
+                );
+                let envelope = &out[0]["ok"];
+                assert_eq!(
+                    envelope["status"],
+                    serde_json::json!("ok"),
+                    "normal {normal_y}, pitch {pitch}, cap {cap}: {}",
+                    out[0]
+                );
+                let result = u32::try_from(envelope["value"].as_u64().unwrap()).unwrap();
+                let after = volume(&kernel, result);
+                assert!(after > 0.0 && after < before - 1.0, "{before} -> {after}");
+                let report = remus_operations::validate::validate_solid(
+                    kernel.topo(),
+                    kernel.resolve_solid(result).unwrap(),
+                )
+                .unwrap();
+                assert!(report.is_valid(), "{report:?}");
+                assert_eq!(kernel.serialize_solid(solid).unwrap(), original);
+            }
+        }
+    }
+}

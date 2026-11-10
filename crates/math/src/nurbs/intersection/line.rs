@@ -18,13 +18,16 @@ mod bump_oracle_tests;
 /// the origin too).
 ///
 /// Newton refines seeds from an `n × n` sample grid first; those roots come
-/// first, in grid order. A completion pass then isolates crossings by
-/// Bézier subdivision of the surface against the line and appends any the
-/// grid missed (a crossing whose Newton basin holds no grid seed, such as
-/// the far flank of a bump narrower than about two grid cells). It accepts
-/// only residuals at the round-off floor of the coordinates involved, so it
-/// adds genuine crossings, never near-misses, whatever the surface's size,
-/// shape or position.
+/// first, in grid order. A seed whose Newton budget runs out within `1e-5`
+/// of the line is kept as found, but counts as the same crossing as any
+/// root it settles onto with a fresh budget from its own `(u, v)`, so one
+/// crossing is never reported twice. A completion pass then isolates
+/// crossings by Bézier subdivision of the surface against the line and
+/// appends any the grid missed (a crossing whose Newton basin holds no grid
+/// seed, such as the far flank of a bump narrower than about two grid
+/// cells). It accepts only residuals at the round-off floor of the
+/// coordinates involved, so it adds genuine crossings, never near-misses,
+/// whatever the surface's size, shape or position.
 ///
 /// # Parameters
 ///
@@ -323,6 +326,8 @@ pub fn intersect_line_nurbs_with_grid(
     let (v_min, v_max) = surface.domain_v();
     let domain = [u_min, u_max, v_min, v_max];
     let mut results: Vec<IntersectionPoint> = Vec::new();
+    // Where each reported grid root settles (see `settle_grid_root`).
+    let mut settled: Vec<Point3> = Vec::new();
     for &(u_guess, v_guess, seed_point) in &candidates {
         if let Some(pt) = refine_line_surface_point(
             surface,
@@ -334,19 +339,29 @@ pub fn intersect_line_nurbs_with_grid(
             GRID_ROOT_TOLERANCE,
             &mut workspace,
         ) {
-            // Deduplicate: skip if close to an existing result.
-            let dominated = results
-                .iter()
-                .any(|existing| (existing.point - pt.point).length() < 1e-6);
+            // Deduplicate: skip if close to an existing result, or if both
+            // settle onto the same root.
+            let anchor = settle_grid_root(surface, line, &pt, domain, &mut workspace);
+            let dominated = results.iter().zip(&settled).any(|(existing, root)| {
+                (existing.point - pt.point).length() < 1e-6 || (*root - anchor).length() < 1e-6
+            });
             if !dominated {
                 results.push(pt);
+                settled.push(anchor);
             }
         }
     }
 
     // Roots whose Newton basin no grid seed reached (a narrow bump's far
     // flank). Appended after the grid roots, which keep their bits and order.
-    subdivision::complete_line_roots(surface, &grid.hull, line, &mut workspace, &mut results);
+    subdivision::complete_line_roots(
+        surface,
+        &grid.hull,
+        line,
+        &mut workspace,
+        &settled,
+        &mut results,
+    );
 
     Ok(results)
 }
@@ -354,6 +369,44 @@ pub fn intersect_line_nurbs_with_grid(
 /// Convergence target and final-check residual of a grid-seeded refinement.
 const GRID_CONVERGENCE: f64 = 1e-10;
 const GRID_ROOT_TOLERANCE: f64 = 1e-5;
+
+/// The root a reported grid hit settles onto, for deduplication only.
+///
+/// A seed far from its root (on a surface of many spans the grid's nodes
+/// can lie a turn of a coil away) can spend Newton's whole budget walking,
+/// and the final check then keeps a point merely within
+/// [`GRID_ROOT_TOLERANCE`] of the line. Such a point can lie farther than
+/// the `1e-6` deduplication radius from the converged root another seed
+/// reports for the same crossing: at a shallow incidence the gap along the
+/// surface is the residual divided by the sine of the incidence angle. The
+/// crossing would then be reported twice, and every caller counting ray
+/// crossings by parity would invert the point's classification.
+///
+/// A hit that converged settles onto itself: its fresh refinement returns
+/// the same bits at the first residual test, so its deduplication is
+/// unchanged. Any other hit continues Newton from its own `(u, v)` with a
+/// fresh budget and settles where that converges to [`GRID_CONVERGENCE`],
+/// or onto itself when it does not. The reported hit keeps its bits; only
+/// which hits are reported changes.
+fn settle_grid_root(
+    surface: &NurbsSurface,
+    line: LineQuery,
+    hit: &IntersectionPoint,
+    domain: [f64; 4],
+    workspace: &mut NewtonWorkspace,
+) -> Point3 {
+    refine_line_surface_point(
+        surface,
+        line,
+        hit.param1,
+        hit.point,
+        domain,
+        GRID_CONVERGENCE,
+        GRID_CONVERGENCE,
+        workspace,
+    )
+    .map_or(hit.point, |root| root.point)
+}
 
 /// Bound on how far from the line a reported hit can lie.
 ///

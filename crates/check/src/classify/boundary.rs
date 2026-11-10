@@ -6,13 +6,16 @@
 //! pole singularities (spheres).
 
 use remus_math::compact_sort::CompactSort;
+use std::cell::OnceCell;
 use std::sync::OnceLock;
 
 use smallvec::SmallVec;
 
 use remus_math::intersect::ContactKind;
 use remus_math::nurbs::intersection::LineSurfaceSeedGrid;
-use remus_math::nurbs::projection::{SurfaceSeedGrid, project_point_to_surface_with_grid};
+use remus_math::nurbs::projection::{
+    SurfaceSeedGrid, project_point_to_surface, project_point_to_surface_with_grid,
+};
 use remus_math::nurbs::surface::NurbsSurface;
 use remus_math::predicates::point_in_polygon;
 use remus_math::ray::RayHit;
@@ -651,18 +654,61 @@ impl FaceCache {
     }
 }
 
+/// Distance from its own face's surface, relative to the sample's largest
+/// coordinate (at least 1), past which a trim sample's coarse projection is
+/// taken to have missed and is solved again from the span seed grid.
+///
+/// A trim sample lies on its face's surface to within the edge tolerance, so
+/// a coarse projection this far off has converged onto another sheet of the
+/// surface (another turn of a coil) or not at all.
+const TRIM_REPROJECT_RELATIVE: f64 = 1e-6;
+
 /// `ParametricSurface::project_point` for a NURBS surface, optionally seeded
-/// from a prebuilt grid: the same Newton start, so the same `(u, v)`, and the
-/// same domain-midpoint fallback when Newton fails.
+/// from a prebuilt grid. Resolved coarse feet retain the same `(u, v)`;
+/// unresolved feet retry with span-aware seeds before the midpoint fallback.
+///
+/// The coarse seed grid has nine nodes per axis whatever the knot vector. On
+/// a face of many spans (such as a helical sweep's side over several turns)
+/// the nearest node can sit on another turn, and Newton then
+/// fails or settles on that turn. Either way the trim polygon gets a vertex
+/// far from the edge it samples and stops bounding the face, so ray hits the
+/// face really has are dropped and the classifier reports interior points as
+/// outside. A sample whose coarse projection fails, or lands farther than
+/// [`TRIM_REPROJECT_RELATIVE`] from it, is solved again from
+/// [`SurfaceSeedGrid::for_surface_spans`] (built once per trim, in `spans`,
+/// and only when needed) and the closer foot is kept. A sample the coarse
+/// projection already resolves keeps its `(u, v)` bit for bit.
 fn nurbs_project_uv(
     surface: &NurbsSurface,
     point: Point3,
     grid: Option<&SurfaceSeedGrid>,
+    spans: &OnceCell<SurfaceSeedGrid>,
 ) -> (f64, f64) {
-    let Some(grid) = grid else {
-        return surface.project_point(point);
-    };
-    if let Ok(proj) = project_point_to_surface_with_grid(surface, point, 1e-7, grid) {
+    // `ParametricSurface::project_point` is exactly the uncached projection
+    // with the midpoint fallback; the cached grid is the same coarse grid.
+    let coarse = match grid {
+        Some(grid) => project_point_to_surface_with_grid(surface, point, 1e-7, grid),
+        None => project_point_to_surface(surface, point, 1e-7),
+    }
+    .ok()
+    .filter(|proj| proj.distance.is_finite() && proj.u.is_finite() && proj.v.is_finite());
+    let scale = point.0.iter().fold(1.0_f64, |m, x| m.max(x.abs()));
+    let reach = TRIM_REPROJECT_RELATIVE * scale;
+    let missed = !coarse.as_ref().is_some_and(|proj| proj.distance <= reach);
+    if missed {
+        let spans = spans.get_or_init(|| SurfaceSeedGrid::for_surface_spans(surface));
+        if let Ok(fine) = project_point_to_surface_with_grid(surface, point, 1e-7, spans)
+            && fine.distance.is_finite()
+            && fine.u.is_finite()
+            && fine.v.is_finite()
+            && coarse
+                .as_ref()
+                .is_none_or(|proj| fine.distance < proj.distance)
+        {
+            return (fine.u, fine.v);
+        }
+    }
+    if let Some(proj) = coarse {
         (proj.u, proj.v)
     } else {
         let (u0, u1) = surface.domain_u();
@@ -691,7 +737,8 @@ struct NurbsUvTrim {
 impl NurbsUvTrim {
     fn build(surface: &NurbsSurface, trim: &FaceTrimData, grid: Option<&SurfaceSeedGrid>) -> Self {
         let verts = &trim.outer;
-        let project = |p: Point3| -> (f64, f64) { nurbs_project_uv(surface, p, grid) };
+        let spans = OnceCell::new();
+        let project = |p: Point3| -> (f64, f64) { nurbs_project_uv(surface, p, grid, &spans) };
         // A full-surface face counts every forward hit that does not land in
         // a hole. `count_analytic_crossings` tests this two ways -- too few
         // boundary points, OR every boundary point coincident -- and only the

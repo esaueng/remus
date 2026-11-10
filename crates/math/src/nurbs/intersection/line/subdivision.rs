@@ -512,6 +512,8 @@ struct BezierBox {
 struct Completion<'a> {
     surface: &'a NurbsSurface,
     hull: &'a SpanHull,
+    /// Where each grid root settles (`complete_line_roots`).
+    settled: &'a [Point3],
     line: LineQuery,
     n1: Vec3,
     n2: Vec3,
@@ -554,12 +556,15 @@ struct Scratch {
 }
 
 /// Append the roots of `line` on `surface` that `results` (the grid pass)
-/// missed. Never removes or reorders an existing result.
+/// missed. Never removes or reorders an existing result. `settled` holds
+/// the root each grid result settles onto: a root within the
+/// deduplication radius of one is the crossing that grid result reports.
 pub(super) fn complete_line_roots(
     surface: &NurbsSurface,
     hull: &SpanHull,
     line: LineQuery,
     workspace: &mut NewtonWorkspace,
+    settled: &[Point3],
     results: &mut Vec<IntersectionPoint>,
 ) {
     if hull.boxes.is_empty() || !hull.fits(surface) {
@@ -611,6 +616,7 @@ pub(super) fn complete_line_roots(
     let mut pass = Completion {
         surface,
         hull,
+        settled,
         line,
         n1,
         n2,
@@ -855,7 +861,7 @@ impl Completion<'_> {
                 && at_most_one_root(fnet, gnet, p, q);
             if unique || at_depth_limit {
                 let (surface, line, tolerance) = (self.surface, self.line, self.tolerance);
-                let perpendicular = &self.perpendicular;
+                let (perpendicular, settled) = (&self.perpendicular, self.settled);
                 if self.refinements >= MAX_LEAF_REFINEMENTS {
                     return false;
                 }
@@ -867,6 +873,7 @@ impl Completion<'_> {
                     node,
                     unique,
                     workspace,
+                    settled,
                     results,
                 ) {
                     self.refinements += 1;
@@ -967,6 +974,7 @@ fn refine_box(
     node: BezierBox,
     unique: bool,
     workspace: &mut NewtonWorkspace,
+    settled: &[Point3],
     results: &mut Vec<IntersectionPoint>,
 ) -> bool {
     let known = unique
@@ -1003,7 +1011,9 @@ fn refine_box(
     {
         let duplicate = results
             .iter()
-            .any(|existing| (existing.point - hit.point).length() < 1e-6);
+            .map(|existing| existing.point)
+            .chain(settled.iter().copied())
+            .any(|existing| (existing - hit.point).length() < 1e-6);
         if !duplicate {
             results.push(hit);
         }
