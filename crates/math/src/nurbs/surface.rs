@@ -39,8 +39,8 @@ pub struct NurbsSurface {
     #[cfg_attr(feature = "serde", serde(skip))]
     #[cfg_attr(feature = "simd", allow(dead_code))]
     uniform_weights: std::sync::OnceLock<bool>,
-    /// Coarse projection seed grid, built on the first projection and shared
-    /// by clones (see [`Self::seed_grid`]).
+    /// Projection seed grids, built individually on first use and shared by
+    /// clones (see [`Self::seed_grid`] and [`Self::span_seed_grid`]).
     #[cfg_attr(feature = "serde", serde(skip))]
     seed_grid: SeedGridCache,
 }
@@ -51,9 +51,16 @@ pub struct NurbsSurface {
 /// stale. Clones share it. It takes no part in equality or serialization, and
 /// `Debug` prints a constant so a read-only projection never changes a
 /// formatted snapshot of the topology. Like the other lazily filled caches
-/// here it is not counted by memory estimates (about 3.3 KB once built).
+/// here it is not counted by memory estimates (about 3.3 KB for the coarse
+/// grid and at most 2.6 MB for the optional span grid).
 #[derive(Default)]
-struct SeedGridCache(std::sync::OnceLock<std::sync::Arc<SurfaceSeedGrid>>);
+struct SeedGridCache(std::sync::OnceLock<std::sync::Arc<ProjectionGrids>>);
+
+#[derive(Default)]
+struct ProjectionGrids {
+    coarse: std::sync::OnceLock<SurfaceSeedGrid>,
+    spans: std::sync::OnceLock<SurfaceSeedGrid>,
+}
 
 impl Clone for SeedGridCache {
     fn clone(&self) -> Self {
@@ -644,7 +651,19 @@ impl NurbsSurface {
     pub(crate) fn seed_grid(&self) -> &SurfaceSeedGrid {
         self.seed_grid
             .0
-            .get_or_init(|| std::sync::Arc::new(SurfaceSeedGrid::build(self)))
+            .get_or_init(|| std::sync::Arc::new(ProjectionGrids::default()))
+            .coarse
+            .get_or_init(|| SurfaceSeedGrid::build(self))
+    }
+
+    /// The span-aware projection grid, evaluated only after a caller needs
+    /// it and then shared by subsequent projections and surface clones.
+    pub(crate) fn span_seed_grid(&self) -> &SurfaceSeedGrid {
+        self.seed_grid
+            .0
+            .get_or_init(|| std::sync::Arc::new(ProjectionGrids::default()))
+            .spans
+            .get_or_init(|| SurfaceSeedGrid::build_spans(self))
     }
 
     /// Polynomial degree in the u direction.
@@ -2328,6 +2347,61 @@ mod tests {
             ws,
         )
         .expect("valid bicubic surface")
+    }
+
+    #[test]
+    fn span_projection_grid_is_lazy_shared_and_geometry_neutral() {
+        use crate::nurbs::projection::project_point_to_surface_with_grid;
+
+        let surface = bicubic_surface();
+        let untouched = surface.clone();
+        let before = format!("{surface:?}");
+        #[cfg(feature = "serde")]
+        let encoded = serde_json::to_string(&surface).expect("surface serializes before caching");
+        assert!(surface.seed_grid.0.get().is_none());
+        let uncached = SurfaceSeedGrid::build_spans(&surface);
+        assert!(surface.seed_grid.0.get().is_none());
+
+        let grid = SurfaceSeedGrid::for_surface_spans(&surface);
+        let shared = surface
+            .seed_grid
+            .0
+            .get()
+            .expect("span grid populated on request");
+        assert!(shared.spans.get().is_some());
+        assert!(shared.coarse.get().is_none());
+        let clone = surface.clone();
+        assert!(std::sync::Arc::ptr_eq(
+            shared,
+            clone.seed_grid.0.get().expect("clone retains span grid")
+        ));
+        for _ in 0..3 {
+            let _ = SurfaceSeedGrid::for_surface_spans(&surface);
+            assert!(std::sync::Arc::ptr_eq(
+                shared,
+                surface.seed_grid.0.get().expect("span grid is retained")
+            ));
+        }
+        for point in [
+            Point3::new(0.2, 0.7, 2.0),
+            Point3::new(2.4, 1.3, -1.0),
+            Point3::new(3.5, -0.2, 0.4),
+        ] {
+            let want = project_point_to_surface_with_grid(&surface, point, 1e-7, &uncached)
+                .expect("uncached span projection converges");
+            let got = project_point_to_surface_with_grid(&surface, point, 1e-7, &grid)
+                .expect("cached span projection converges");
+            assert_eq!(got.u.to_bits(), want.u.to_bits());
+            assert_eq!(got.v.to_bits(), want.v.to_bits());
+            assert_eq!(got.distance.to_bits(), want.distance.to_bits());
+        }
+        assert_eq!(surface, untouched);
+        assert_eq!(format!("{surface:?}"), before);
+        #[cfg(feature = "serde")]
+        assert_eq!(
+            serde_json::to_string(&surface).expect("surface serializes after caching"),
+            encoded
+        );
     }
 
     #[test]

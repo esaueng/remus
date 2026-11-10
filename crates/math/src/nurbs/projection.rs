@@ -398,10 +398,16 @@ impl SurfaceSeedGrid {
     /// 6.7e-3 off. Each axis here takes every distinct knot and four
     /// intervals per span, never fewer nodes than the coarse grid, and at
     /// most 257 nodes (uniform past that).
-    /// It costs one evaluation per node, so build it once per surface and
-    /// only where the coarse seed has been seen to miss.
+    /// It is evaluated on first use and kept with the immutable surface, so
+    /// repeated calls copy the nodes rather than reevaluating them. Request
+    /// it only where the coarse seed has been seen to miss.
     #[must_use]
     pub fn for_surface_spans(surface: &NurbsSurface) -> Self {
+        surface.span_seed_grid().clone()
+    }
+
+    /// Evaluate the span-aware grid for `surface`.
+    pub(crate) fn build_spans(surface: &NurbsSurface) -> Self {
         let (u_min, u_max, v_min, v_max) = surface_domain(surface);
         let us = span_seed_axis(surface.knots_u(), (u_min, u_max));
         let vs = span_seed_axis(surface.knots_v(), (v_min, v_max));
