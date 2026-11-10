@@ -4121,15 +4121,17 @@ fn point_is_inside_surface(surface: &FaceSurface, p: Point3, tol: Tolerance) -> 
 ///   the same edge) shares those vertices and the notch is watertight.
 /// - `Some(vec![raw])` — the oval lies wholly inside the box face (no boundary
 ///   crossing): keep it whole.
-/// - `None` — not this case, or a box edge is tangent to the oval (a
-///   line–torus contact with no certified crossing to split at); the
-///   caller's sample-clip handles it.
+/// - `None` — not this case, or a box edge has an unresolved contact with
+///   the oval (it is tangent to it, or crosses it twice closer together
+///   than the edge's parameter resolves: no certified crossing to split
+///   at); the caller's sample-clip handles it.
 ///
 /// The crossings are the resolved contacts of
 /// `intersect_line_torus_contacts`: each a certified simple root on the
-/// edge, to a few units in its last place. Two crossings of one edge are
-/// separate points however close they are; they share a vertex only within
-/// the dedup distance below.
+/// edge, alone in its window, to a few units in its last place. Two
+/// crossings of one edge are separate points whenever the edge's parameter
+/// holds them in disjoint windows (two `f64` values between them); they
+/// share a vertex only within the dedup distance below.
 ///
 /// The kept arc is the one whose midpoint is inside the box-face polygon (the
 /// outer arc that wraps most of the tube), not the inner fragment a contiguous
@@ -4254,10 +4256,12 @@ fn trim_torus_oval_to_box_face(
             }
             let on_oval = min_d < on_oval_tol;
             if on_oval && !contact.resolved {
-                // The edge is tangent to the oval (or meets it where the
-                // arithmetic cannot separate the roots): `p` is a point of
-                // the contact's window, not a crossing, so it is no exact
-                // split point. Leave the oval to the sample clip.
+                // The edge is tangent to the oval, or meets it where the
+                // arithmetic cannot separate the roots, or crosses it twice
+                // where the edge's own parameter cannot hold the crossings
+                // in separate windows (`contact.roots >= 2`). `p` is a
+                // point of the contact's window, not a crossing, so it is
+                // no exact split point. Leave the oval to the sample clip.
                 return None;
             }
             if on_oval && !crossings.iter().any(|c| (*c - p).length() < dedup_tol) {

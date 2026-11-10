@@ -3,23 +3,38 @@
 //! # Contract
 //!
 //! For a finite line `origin + t·dir` and a torus, [`contacts_of_line`]
-//! returns every real root of the line–torus quartic, each inside a window
-//! `[t_lo, t_hi]`, ascending:
+//! reports every real root of the line–torus quartic inside a window
+//! `[t_lo, t_hi]` of the caller's parameter `t`, ascending. The contract is
+//! stated in that parameter: the windows' ends are `f64` values of `t`,
+//! taken as exact, and at each of them the quartic has a certified sign.
 //!
-//! - a **resolved** contact holds exactly one simple root, and the quartic
-//!   has certified opposite signs at the window's two ends. The window is at
-//!   most 128 units in the last place of the larger of `|t|` and the
-//!   torus's size in units of `t`, and usually a few;
-//! - an **unresolved** contact is a stretch the arithmetic below cannot
-//!   separate: the quartic has a certified sign at both ends of the window
-//!   and comes within its evaluation error of zero inside. Equal end signs
-//!   make it an even contact (a tangency, or nothing), different ones an odd
-//!   one (an inflectional crossing). Every root not reported as resolved lies
-//!   in such a window.
+//! - No root lies outside the windows, and the windows are pairwise
+//!   disjoint: each ends at an `f64` strictly below the one the next
+//!   begins at.
+//! - A **resolved** contact holds exactly one simple root, so the signs at
+//!   its window's two ends differ. The window is the root's chart enclosure
+//!   (at most 128 units in the last place of the torus's size in units of
+//!   `t`, usually a few) moved out to the nearest `f64` values of `t`: less
+//!   than one unit in the last place of `t` further at either end.
+//! - An **unresolved** contact holds what could not be told apart *in `t`*.
+//!   The signs at its ends give the parity of the roots inside: equal for
+//!   an even contact, different for an odd one. `roots` is the number of
+//!   simple roots certified inside. It is zero for a stretch the arithmetic
+//!   below cannot separate (the quartic comes within its evaluation error
+//!   of zero there: a tangency to double-double precision, or nothing). It
+//!   is two or more for roots that are separate points of the line but not
+//!   separate values of `t`: fewer than two `f64` values of `t` lie
+//!   strictly between them, so no two disjoint windows hold one each.
 //!
-//! Between consecutive windows the quartic is certified nonzero. (The
-//! windows are disjoint in the chart below; mapped to `t` their ends are
-//! rounded outward, so neighbours may share an ulp.)
+//! What resolves is therefore bounded by two limits and by nothing else:
+//! the arithmetic's (steps 3 and 4: two roots are separated whenever the
+//! quartic between them clears the double-double error, which leaves only
+//! contacts tangent to a few `1e-14` of the torus's size) and the spacing
+//! of `f64` values at `t`. The second takes over once `|t|` exceeds about
+//! `2^52` times the distance between two roots in units of `dir`: a torus
+//! that far along the line, relative to its features, has crossings the
+//! parameter cannot name one by one. They come back fused, with the right
+//! parity and a window that holds them.
 //!
 //! Roots are those of the line and torus *as represented*: the `f64`
 //! coordinates taken as exact, and the torus frame's three axes taken as the
@@ -65,15 +80,30 @@
 //!    over the sine of the crossing angle. A root they cannot enclose within
 //!    128 ulps (a shallow crossing) is polished and enclosed with
 //!    double-double values, to two ulps.
+//! 6. **Caller's parameter.** Steps 2 to 5 work in the chart parameter `σ`
+//!    and never look at where the caller's origin sits on the line, so the
+//!    isolation is the same from any origin. [`Finisher::settle`] is the one
+//!    place where chart stretches become windows of `t`, and it enforces the
+//!    contract above as a postcondition. An `f64` value of `t` has the chart
+//!    image `σ = t·2^(e − m) − τ0`, which is exact as a double-double, so
+//!    the image is compared exactly with the chart points whose signs are
+//!    certified. A window's ends are the nearest `f64` values of `t` whose
+//!    images lie outside the stretch, in the certified root-free gap next to
+//!    it, where the quartic keeps the gap's sign. Two neighbours whose
+//!    windows would meet are parted at two `f64` values between them where
+//!    the quartic's sign is certified at their exact images, or else fused
+//!    into one unresolved contact.
 //!
 //! A line with no finite chart (a zero or non-finite direction or origin, a
 //! tube thinner than `2^-400` of the torus, an origin beyond `2^400` torus
-//! sizes) is not certified, and neither is one whose double-double solve
-//! runs out of its work budget (none is known); the caller falls back to the
-//! iterative solver and says so.
+//! sizes) is not certified; the caller falls back to the iterative solver
+//! and says so. Neither is a line whose root interval plain balls cannot
+//! bound or whose double-double solve runs out of its work budget (none is
+//! known): the caller reports it uncertified too, and never as a miss.
 
 #![allow(clippy::suboptimal_flops, clippy::many_single_char_names)]
 
+use std::cmp::Ordering;
 use std::ops::{Add, Mul, Sub};
 
 use crate::fma::fma;
@@ -114,7 +144,7 @@ const WIDE_DEPTH: u32 = 96;
 /// Evaluations a plain-ball solve may spend.
 const PLAIN_WORK: u32 = 64;
 /// Evaluations a wide solve may spend; past it the line is not certified.
-const WIDE_WORK: u32 = 4000;
+pub(super) const WIDE_WORK: u32 = 4000;
 /// Steps of a bracketed refinement: past the halvings that shrink any
 /// bracket to adjacent doubles, with room for Newton steps.
 const REFINE_STEPS: usize = 160;
@@ -197,8 +227,6 @@ trait Ball: Copy + Add<Output = Self> + Sub<Output = Self> + Mul<Output = Self> 
     const FINAL: bool;
     /// Subdivision depth the isolation stops at.
     const DEPTH: u32;
-    /// Evaluations the isolation may spend.
-    const WORK: u32;
     /// The ball of radius zero at `x`.
     fn exact(x: f64) -> Self;
     /// The ball holding a wide ball.
@@ -275,7 +303,6 @@ impl Mul for Plain {
 impl Ball for Plain {
     const FINAL: bool = false;
     const DEPTH: u32 = PLAIN_DEPTH;
-    const WORK: u32 = PLAIN_WORK;
 
     #[inline]
     fn exact(x: f64) -> Self {
@@ -384,7 +411,6 @@ impl Mul for Wide {
 impl Ball for Wide {
     const FINAL: bool = true;
     const DEPTH: u32 = WIDE_DEPTH;
-    const WORK: u32 = WIDE_WORK;
 
     #[inline]
     fn exact(x: f64) -> Self {
@@ -454,6 +480,8 @@ struct Chart {
     tau0: f64,
     /// `m − e`.
     t_exp: i32,
+    /// `2^(m − e)`, or zero when that is no normal `f64`.
+    to_t: f64,
 }
 
 impl Chart {
@@ -521,20 +549,147 @@ impl Chart {
             small_r,
             tau0,
             t_exp: m - e,
+            to_t: Self::scale_of(m - e),
         })
     }
 
-    /// The spacing at which signs are probed around chart parameter `x`: two
-    /// ulps of the caller's parameter there (and of `x` itself), no finer
-    /// than [`GRAIN_FLOOR`].
-    fn grain(&self, x: f64) -> f64 {
-        (4.0 * U * (self.tau0 + x).abs().max(x.abs())).max(GRAIN_FLOOR)
+    /// `2^k` for [`Chart::to_t`].
+    fn scale_of(k: i32) -> f64 {
+        if (-1022..=1022).contains(&k) {
+            pow2(k)
+        } else {
+            0.0
+        }
     }
 
-    /// The caller's parameter of chart parameter `x`.
+    /// The caller's parameter of chart parameter `x`, rounded: the nearest
+    /// `f64` to it or that one's neighbour.
     fn to_caller(&self, x: f64) -> f64 {
-        ldexp(self.tau0 + x, self.t_exp)
+        if self.to_t > 0.0 {
+            (self.tau0 + x) * self.to_t
+        } else {
+            ldexp(self.tau0 + x, self.t_exp)
+        }
     }
+
+    /// The chart parameter of the caller's parameter `t`, exactly, as an
+    /// unevaluated sum `hi + lo` with `hi` the nearest `f64` to it.
+    ///
+    /// `t·2^(e − m)` is exact unless it is subnormal, and subtracting `τ0`
+    /// from it is an error-free sum. `None` for a `t` whose scaling is not
+    /// exact (closer to the caller's origin than `2^-1022` chart units) or
+    /// overflows.
+    fn image(&self, t: f64) -> Option<(f64, f64)> {
+        let tau = ldexp(t, -self.t_exp);
+        // Scaling a value back up is exact, so the round trip returns `t`
+        // only if nothing was rounded on the way down.
+        let exact = ldexp(tau, self.t_exp).partial_cmp(&t) == Some(Ordering::Equal);
+        if !(tau.is_finite() && exact) {
+            return None;
+        }
+        let (hi, lo) = two_sum(tau, -self.tau0);
+        hi.is_finite().then_some((hi, lo))
+    }
+
+    /// Where the chart image of the caller's parameter `t` lies against the
+    /// chart point `p` (one inside the root interval), exactly; `None` when
+    /// the image is not exact.
+    fn image_cmp(&self, t: f64, p: f64) -> Option<Ordering> {
+        match self.image(t) {
+            // `hi` is the image rounded to nearest, and rounding is
+            // monotone: the image is on `hi`'s side of any other `f64`.
+            Some((hi, lo)) => match hi.partial_cmp(&p) {
+                Some(Ordering::Equal) => lo.partial_cmp(&0.0),
+                side => side,
+            },
+            // An image past the largest `f64` is past the root interval:
+            // `τ0` and the interval's ends are below `2^410` (the chart
+            // takes origins up to `2^400` torus sizes away).
+            None if ldexp(t, -self.t_exp).is_infinite() => Some(if t > 0.0 {
+                Ordering::Greater
+            } else {
+                Ordering::Less
+            }),
+            None => None,
+        }
+    }
+
+    /// The caller's parameter nearest the image-less stretch about the
+    /// caller's origin on the side `sign`: the first `f64` there whose chart
+    /// image is exact.
+    fn clear_of_origin(&self, sign: f64) -> f64 {
+        sign * ldexp(1.0, self.t_exp - 1022)
+    }
+
+    /// The largest `f64` value of the caller's parameter whose chart image
+    /// is at or below the chart point `p`, certified by exact comparison.
+    fn caller_floor(&self, p: f64) -> f64 {
+        // `τ0 + p` as an error-free sum: the `f64` at or below it, times
+        // `2^(m − e)`, is the answer whenever that product is a normal
+        // number, for then the scaling is exact and maps neighbouring
+        // `f64` values to neighbouring ones.
+        let (tau, err) = two_sum(self.tau0, p);
+        let t = (if err < 0.0 { tau.next_down() } else { tau }) * self.to_t;
+        if t.is_normal() {
+            return t;
+        }
+        self.caller_floor_at_the_limits(p)
+    }
+
+    /// [`Self::caller_floor`] where the parameter is zero, subnormal or
+    /// overflows: by comparison of exact images.
+    #[cold]
+    fn caller_floor_at_the_limits(&self, p: f64) -> f64 {
+        let mut t = self.to_caller(p);
+        // The rounded map lands within one `f64` of the answer; the further
+        // rounds step over a stretch with no exact image.
+        for _ in 0..6 {
+            t = match self.image_cmp(t, p) {
+                Some(Ordering::Less | Ordering::Equal) => return t,
+                Some(Ordering::Greater) => t.next_down(),
+                None if t > 0.0 => 0.0,
+                None => self.clear_of_origin(-1.0),
+            };
+        }
+        f64::NEG_INFINITY
+    }
+
+    /// The smallest `f64` value of the caller's parameter whose chart image
+    /// is at or above the chart point `p`.
+    fn caller_ceil(&self, p: f64) -> f64 {
+        let (tau, err) = two_sum(self.tau0, p);
+        let t = (if err > 0.0 { tau.next_up() } else { tau }) * self.to_t;
+        if t.is_normal() {
+            return t;
+        }
+        self.caller_ceil_at_the_limits(p)
+    }
+
+    /// [`Self::caller_ceil`] at the limits of the parameter.
+    #[cold]
+    fn caller_ceil_at_the_limits(&self, p: f64) -> f64 {
+        let mut t = self.to_caller(p);
+        for _ in 0..6 {
+            t = match self.image_cmp(t, p) {
+                Some(Ordering::Greater | Ordering::Equal) => return t,
+                Some(Ordering::Less) => t.next_up(),
+                None if t < 0.0 => 0.0,
+                None => self.clear_of_origin(1.0),
+            };
+        }
+        f64::INFINITY
+    }
+}
+
+/// The spacing at which signs are probed around chart parameter `x`: two
+/// ulps of `x`, no finer than [`GRAIN_FLOOR`].
+///
+/// It is the chart's own resolution. Where the caller's origin sits on the
+/// line plays no part in it: the caller's `f64` spacing limits what the
+/// windows can say (see [`Finisher::settle`]), never where the isolation
+/// stops.
+fn grain(x: f64) -> f64 {
+    (4.0 * U * x.abs()).max(GRAIN_FLOOR)
 }
 
 /// The line's quadratics in one precision.
@@ -594,14 +749,14 @@ impl<B: Ball> Poly<B> {
         }
     }
 
-    fn quadratic(c: &[B; 3], x: f64) -> B {
-        let x = B::exact(x);
+    fn quadratic(c: &[B; 3], x: B) -> B {
         (c[2] * x + c[1]) * x + c[0]
     }
 
     fn point(&self, x: f64) -> Pt<B> {
-        let g = Self::quadratic(&self.g, x);
-        let n = Self::quadratic(&self.n, x);
+        let at = B::exact(x);
+        let g = Self::quadratic(&self.g, at);
+        let n = Self::quadratic(&self.n, at);
         let q = g * g - self.k * n;
         Pt {
             x,
@@ -610,6 +765,14 @@ impl<B: Ball> Poly<B> {
             q,
             s: q.sign(),
         }
+    }
+
+    /// The quartic's certified sign at a chart parameter that is itself a
+    /// ball (the exact image of a caller's parameter).
+    fn sign_at(&self, x: B) -> i8 {
+        let g = Self::quadratic(&self.g, x);
+        let n = Self::quadratic(&self.n, x);
+        (g * g - self.k * n).sign()
     }
 
     /// The quartic's Bernstein coefficients on `[l.x, r.x]`, the middle one
@@ -640,7 +803,11 @@ impl Poly<Plain> {
     /// `(ρ − R)² + c² − r²` and `(ρ + R)² + c² − r²`, which do not cancel
     /// the way `G² − 4R²N` does next to the surface.
     fn factored_sign(&self, x: f64) -> i8 {
-        let x = Plain::exact(x);
+        self.factored_sign_at(Plain::exact(x))
+    }
+
+    /// [`Self::factored_sign`] at a chart parameter known to a radius.
+    fn factored_sign_at(&self, x: Plain) -> i8 {
         let [a, b, c] = [0, 1, 2].map(|k| self.p1[k] * x + self.p0[k]);
         let Some(rho) = (a * a + b * b).sqrt() else {
             return 0;
@@ -768,12 +935,14 @@ enum Raw {
     /// `lo` when `rising`.
     Root { lo: f64, hi: f64, rising: bool },
     /// An unresolved stretch `[lo, hi]` with certified signs at its ends,
-    /// different ones when `odd`; `at` is where the sign first failed.
+    /// different ones when `odd`, `after` at `hi`; `at` is where the sign
+    /// first failed.
     Window {
         lo: f64,
         hi: f64,
         at: f64,
         odd: bool,
+        after: i8,
     },
 }
 
@@ -920,18 +1089,17 @@ fn cubic_roots_in_unit(d: [f64; 4]) -> ([f64; 3], usize) {
 /// Root isolation of one line in one precision.
 struct Isolator<'a, B> {
     poly: &'a Poly<B>,
-    chart: &'a Chart,
     out: Vec<Raw>,
     work: u32,
 }
 
 impl<'a, B: Ball> Isolator<'a, B> {
-    fn new(poly: &'a Poly<B>, chart: &'a Chart) -> Self {
+    /// An isolation that may spend `work` evaluations.
+    fn new(poly: &'a Poly<B>, work: u32) -> Self {
         Self {
             poly,
-            chart,
             out: Vec::with_capacity(4),
-            work: B::WORK,
+            work,
         }
     }
 
@@ -975,16 +1143,16 @@ impl<'a, B: Ball> Isolator<'a, B> {
         }
         let width = r.x - l.x;
         let mid = f64::midpoint(l.x, r.x);
-        if depth >= B::DEPTH || width <= 6.0 * self.chart.grain(mid) {
+        if depth >= B::DEPTH || width <= 6.0 * grain(mid) {
             return self.window(&l, &r, mid);
         }
         if !B::FINAL && signs.contains(&0) {
             return Err(Stop::Precision);
         }
-        let (splits, count) = self.splits(&l, &r, &b);
+        let (splits, count) = Self::splits(&l, &r, &b);
         let mut left = l;
         for &m in &splits[..count] {
-            if m - left.x <= self.chart.grain(m) {
+            if m - left.x <= grain(m) {
                 continue;
             }
             let at = self.point(m)?;
@@ -1025,6 +1193,7 @@ impl<'a, B: Ball> Isolator<'a, B> {
             hi: r.x,
             at: at.max(l.x).min(r.x),
             odd: l.s != r.s,
+            after: r.s,
         });
         Ok(())
     }
@@ -1035,7 +1204,7 @@ impl<'a, B: Ball> Isolator<'a, B> {
     /// bisections against the last step that did not; `end` itself when
     /// nothing nearer clears.
     fn fence_towards(&mut self, m: f64, end: &Pt<B>, side: f64) -> Result<Pt<B>, Stop> {
-        let grain = self.chart.grain(m);
+        let grain = grain(m);
         let mut step = grain;
         let mut inner = 0.0;
         let mut found = loop {
@@ -1068,7 +1237,7 @@ impl<'a, B: Ball> Isolator<'a, B> {
     /// Where to split `[l.x, r.x]`: the quartic's critical points inside
     /// it, read off the interval's own Bernstein coefficients (so they are
     /// as accurate as the interval is narrow), or its midpoint.
-    fn splits(&self, l: &Pt<B>, r: &Pt<B>, b: &[B; 5]) -> ([f64; 3], usize) {
+    fn splits(l: &Pt<B>, r: &Pt<B>, b: &[B; 5]) -> ([f64; 3], usize) {
         let six = |v: B| v.scale(4.0) + v.scale(2.0);
         let slope = [
             (b[1] - b[0]).mid(),
@@ -1081,7 +1250,7 @@ impl<'a, B: Ball> Isolator<'a, B> {
         let mut out = ([0.0; 3], 0);
         for &s in &roots[..count] {
             let x = l.x + s * width;
-            let margin = 2.0 * self.chart.grain(x);
+            let margin = 2.0 * grain(x);
             let after_last = out.1 == 0 || x - out.0[out.1 - 1] > margin;
             if x - l.x > margin && r.x - x > margin && after_last {
                 out.0[out.1] = x;
@@ -1100,21 +1269,109 @@ impl<'a, B: Ball> Isolator<'a, B> {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LineTorusContact {
     /// The contact's parameter, in units of the caller's direction: the
-    /// root when `resolved`, otherwise a point of the unresolved stretch.
+    /// root, to within the window, when `resolved`; otherwise a point of
+    /// the window, not a root.
     pub t: f64,
-    /// Lower end of the window that holds every root of this contact.
+    /// Lower end of the window that holds every root of this contact. The
+    /// quartic has a certified sign at it, and no root lies between it and
+    /// the upper end of the contact before.
     pub t_lo: f64,
-    /// Upper end of that window.
+    /// Upper end of that window, with a certified sign likewise.
     pub t_hi: f64,
     /// What the contact certifies about crossing parity.
     pub kind: ContactKind,
     /// Whether the window holds exactly one simple root, with certified
-    /// opposite signs of the quartic at its ends.
+    /// opposite signs of the quartic at its two ends.
     pub resolved: bool,
+    /// The simple roots certified inside the window: one when `resolved`;
+    /// two or more when the roots are separate points of the line that the
+    /// caller's parameter cannot tell apart; none for a stretch the
+    /// arithmetic could not resolve, which holds an unknown number of the
+    /// parity `kind` states. A window that takes in such a stretch as well
+    /// counts only the roots certified beside it.
+    pub roots: u8,
 }
 
-/// Turns isolated roots into contacts: refines each simple root and
-/// encloses it.
+/// One stretch of the chart parameter that holds roots: an isolated root's
+/// enclosure, or a stretch the isolation left unresolved.
+#[derive(Debug, Clone, Copy)]
+struct Item {
+    /// The stretch `[lo, hi]`. The quartic's sign is certified at both
+    /// ends, and its roots here are strictly inside.
+    lo: f64,
+    hi: f64,
+    /// A point of it: the root's estimate, or where a sign first failed.
+    at: f64,
+    /// Whether the quartic's sign differs between the two ends.
+    odd: bool,
+    /// The quartic's sign at `hi`.
+    after: i8,
+    /// Whether it is one simple root.
+    root: bool,
+    /// Whether that root crosses at more than [`TORUS_GRAZE_SLOPE`].
+    steep: bool,
+}
+
+/// A contact taking shape in the caller's parameter: one chart item, or
+/// neighbours fused, with the `f64` window that holds them.
+#[derive(Debug, Clone, Copy)]
+struct Span {
+    /// The window's ends, `f64` values of the caller's parameter.
+    t_lo: f64,
+    t_hi: f64,
+    /// The chart stretch from the first item's start to the last one's end.
+    lo: f64,
+    hi: f64,
+    /// Whether the quartic's sign differs across the stretch.
+    odd: bool,
+    /// The quartic's sign at `hi`, and on to the next item.
+    after: i8,
+    /// Simple roots certified inside.
+    roots: u8,
+    /// Set when it is exactly one isolated root: whether that root crosses
+    /// at more than [`TORUS_GRAZE_SLOPE`].
+    lone: Option<bool>,
+    /// Whether its last item is an isolated root, and that item's start:
+    /// the window's upper end can still be drawn in towards such a root.
+    tail_root: bool,
+    tail_lo: f64,
+    /// Chart positions of its items (the first four), and of the last.
+    at: [f64; 4],
+    count: usize,
+    tail_at: f64,
+}
+
+impl Span {
+    /// The two as one contact: neither is resolved any more.
+    fn fuse(&self, right: &Self) -> Self {
+        let mut at = self.at;
+        let mut count = self.count;
+        for &x in &right.at[..right.count] {
+            if count < at.len() {
+                at[count] = x;
+                count += 1;
+            }
+        }
+        Self {
+            t_lo: self.t_lo,
+            t_hi: right.t_hi,
+            lo: self.lo,
+            hi: right.hi,
+            odd: self.odd != right.odd,
+            after: right.after,
+            roots: self.roots.saturating_add(right.roots),
+            lone: None,
+            tail_root: right.tail_root,
+            tail_lo: right.tail_lo,
+            at,
+            count,
+            tail_at: right.tail_at,
+        }
+    }
+}
+
+/// Turns isolated stretches into contacts: refines and encloses each simple
+/// root in the chart, then maps the lot to the caller's parameter.
 struct Finisher<'a> {
     chart: &'a Chart,
     plain: &'a Poly<Plain>,
@@ -1148,7 +1405,7 @@ impl Finisher<'_> {
         tries: usize,
         wide: bool,
     ) -> Option<(f64, f64)> {
-        let mut reach = self.chart.grain(x);
+        let mut reach = grain(x);
         for _ in 0..tries {
             let (lo, hi) = ((x - reach).max(a), (x + reach).min(b));
             let mut sign = |p: f64| {
@@ -1198,7 +1455,7 @@ impl Finisher<'_> {
             } else {
                 b = x;
             }
-            let grain = self.chart.grain(x);
+            let grain = grain(x);
             let next = x - at.q.mid() / self.flat.value_slope(x).1;
             let settled = (next - x).abs() <= 0.5 * grain;
             if next > a && next < b {
@@ -1215,74 +1472,306 @@ impl Finisher<'_> {
         (x, a, b)
     }
 
-    fn contact(&mut self, raw: Raw) -> LineTorusContact {
-        let chart = self.chart;
-        // The window's ends in the caller's parameter, moved one ulp out
-        // for the rounding of `τ0 + σ`.
-        let ends = |a: f64, b: f64| {
-            (
-                ldexp((chart.tau0 + a).next_down(), chart.t_exp),
-                ldexp((chart.tau0 + b).next_up(), chart.t_exp),
-            )
-        };
+    /// The chart item of one isolated stretch: a simple root is refined and
+    /// enclosed, an unresolved stretch is kept as fenced.
+    fn item(&mut self, raw: Raw) -> Item {
         match raw {
             Raw::Root { lo, hi, rising } => {
                 let (x, a, b) = self.refine(lo, hi, rising);
-                let (t_lo, t_hi) = ends(a, b);
-                let steep = self.flat.crossing_sine(x) >= TORUS_GRAZE_SLOPE;
-                LineTorusContact {
-                    t: chart.to_caller(x).max(t_lo).min(t_hi),
-                    t_lo,
-                    t_hi,
-                    kind: if steep {
-                        ContactKind::Transversal
-                    } else {
-                        ContactKind::Unclassified
-                    },
-                    resolved: true,
+                Item {
+                    lo: a,
+                    hi: b,
+                    at: x,
+                    odd: true,
+                    after: if rising { 1 } else { -1 },
+                    root: true,
+                    steep: self.flat.crossing_sine(x) >= TORUS_GRAZE_SLOPE,
                 }
             }
-            Raw::Window { lo, hi, at, odd } => {
-                let (t_lo, t_hi) = ends(lo, hi);
-                LineTorusContact {
-                    t: chart.to_caller(at).max(t_lo).min(t_hi),
-                    t_lo,
-                    t_hi,
-                    kind: if odd {
-                        ContactKind::Unclassified
-                    } else {
-                        ContactKind::Tangential
-                    },
-                    resolved: false,
+            Raw::Window {
+                lo,
+                hi,
+                at,
+                odd,
+                after,
+            } => Item {
+                lo,
+                hi,
+                at,
+                odd,
+                after,
+                root: false,
+                steep: false,
+            },
+        }
+    }
+
+    /// The quartic's certified sign at the exact chart image `hi + lo` of a
+    /// caller's parameter: from its factors in plain balls, else from the
+    /// wide quartic.
+    fn image_sign(&mut self, (hi, lo): (f64, f64)) -> i8 {
+        match self.plain.factored_sign_at(Plain { v: hi, e: lo.abs() }) {
+            0 => self.wide().sign_at(Wide { hi, lo, e: 0.0 }),
+            s => s,
+        }
+    }
+
+    /// The item alone in the caller's parameter: the `f64` values nearest
+    /// its stretch whose exact chart images are at or outside its ends.
+    fn span(&self, item: &Item) -> Span {
+        Span {
+            t_lo: self.chart.caller_floor(item.lo),
+            t_hi: self.chart.caller_ceil(item.hi),
+            lo: item.lo,
+            hi: item.hi,
+            odd: item.odd,
+            after: item.after,
+            roots: u8::from(item.root),
+            lone: item.root.then_some(item.steep),
+            tail_root: item.root,
+            tail_lo: item.lo,
+            at: [item.at; 4],
+            count: 1,
+            tail_at: item.at,
+        }
+    }
+
+    /// Whether the exact chart image of the caller's parameter `t` is
+    /// certified strictly between the roots of `left` and those of `right`,
+    /// a single item that follows it.
+    ///
+    /// The image must lie strictly inside the stretch from `left` to
+    /// `right`, taking in the enclosure of `left`'s last item and of
+    /// `right` where they are isolated roots. Between the two spans the
+    /// quartic keeps the sign `left` ends with (the isolation certified
+    /// that stretch root-free). Inside an isolated root's enclosure it has
+    /// that sign only on the gap's side of the root, so there the sign is
+    /// certified by evaluation at the image.
+    fn between(&mut self, t: f64, left: &Span, right: &Span) -> bool {
+        use Ordering::{Equal, Greater, Less};
+        let chart = self.chart;
+        let from = if left.tail_root {
+            left.tail_lo
+        } else {
+            left.hi
+        };
+        let to = if right.lone.is_some() {
+            right.hi
+        } else {
+            right.lo
+        };
+        if chart.image_cmp(t, from) != Some(Greater) || chart.image_cmp(t, to) != Some(Less) {
+            return false;
+        }
+        let in_gap = matches!(chart.image_cmp(t, left.hi), Some(Equal | Greater))
+            && matches!(chart.image_cmp(t, right.lo), Some(Equal | Less));
+        in_gap
+            || chart
+                .image(t)
+                .is_some_and(|image| self.image_sign(image) == left.after)
+    }
+
+    /// Two `f64` values of the caller's parameter, the first below the
+    /// second, each certified strictly between the roots of `left` and
+    /// those of `right`, the single item that follows it and whose window
+    /// meets `left`'s. `None` when no such pair is certified: the parameter
+    /// cannot hold the two in disjoint windows.
+    ///
+    /// Only an end that an isolated root stands at can be drawn in. Two
+    /// such roots are parted at neighbouring `f64` values about the middle
+    /// of the two: when at least two `f64` values lie strictly between the
+    /// roots, two of the four tried do, whichever way the middle rounds.
+    fn part(&mut self, left: &Span, right: &Span) -> Option<(f64, f64)> {
+        if left.hi > right.lo {
+            return None;
+        }
+        match (left.tail_root, right.lone.is_some()) {
+            (true, true) => {
+                let middle = f64::midpoint(left.tail_at, right.at[0]);
+                let mut below = self.chart.caller_floor(middle).next_down();
+                let mut below_clear = self.between(below, left, right);
+                for _ in 0..3 {
+                    let above = below.next_up();
+                    let above_clear = self.between(above, left, right);
+                    if below_clear && above_clear {
+                        return Some((below, above));
+                    }
+                    (below, below_clear) = (above, above_clear);
+                }
+                None
+            }
+            (true, false) => {
+                let end = right.t_lo.next_down();
+                self.between(end, left, right).then_some((end, right.t_lo))
+            }
+            (false, true) => {
+                let start = left.t_hi.next_up();
+                self.between(start, left, right)
+                    .then_some((left.t_hi, start))
+            }
+            (false, false) => None,
+        }
+    }
+
+    /// Passes one finished contact to `sink`, with the parameters of its
+    /// items: each one's nearest `f64` inside the window, ascending, a
+    /// value shared by two of them once.
+    fn emit(&self, span: &Span, sink: &mut dyn FnMut(LineTorusContact, &[f64])) {
+        let place = |x: f64| self.chart.to_caller(x).max(span.t_lo).min(span.t_hi);
+        let mut points = [0.0; 4];
+        let mut count = 0;
+        for &x in &span.at[..span.count] {
+            let t = place(x);
+            if count == 0 || points[count - 1] < t {
+                points[count] = t;
+                count += 1;
+            }
+        }
+        let t = if span.count == 1 {
+            points[0]
+        } else {
+            place(f64::midpoint(span.lo, span.hi))
+        };
+        let kind = match (span.lone, span.odd) {
+            (Some(true), _) => ContactKind::Transversal,
+            (Some(false), _) | (None, true) => ContactKind::Unclassified,
+            (None, false) => ContactKind::Tangential,
+        };
+        sink(
+            LineTorusContact {
+                t,
+                t_lo: span.t_lo,
+                t_hi: span.t_hi,
+                kind,
+                resolved: span.lone.is_some(),
+                roots: span.roots,
+            },
+            &points[..count],
+        );
+    }
+
+    /// Turns the isolated chart stretches into contacts of the caller's
+    /// parameter, passing each to `sink` in ascending order.
+    ///
+    /// `found` is ascending and holds every root, with the quartic certified
+    /// nonzero between its stretches and beyond them. This is the one place
+    /// where the contract of the caller's parameter is enforced, as a
+    /// postcondition on what is passed on:
+    ///
+    /// - A window's ends are `f64` values of `t` whose exact chart images
+    ///   lie in the certified root-free gaps either side of the contact's
+    ///   stretches: by error-free arithmetic on the image
+    ///   ([`Chart::caller_floor`], [`Chart::caller_ceil`]) or, for an end
+    ///   drawn in towards an isolated root, by the quartic's certified sign
+    ///   at the image ([`Self::between`]). So the quartic has the gap's
+    ///   sign at each end, every root of the contact is strictly inside the
+    ///   window, and no other root is.
+    /// - Each window ends at an `f64` strictly below the next one's start.
+    ///   Neighbours that would meet are parted ([`Self::part`]) or fused.
+    /// - A contact is resolved only if it is one isolated simple root: its
+    ///   ends then carry opposite signs. A fused contact reports the parity
+    ///   of what it holds and how many simple roots that is.
+    ///
+    /// An end the comparison cannot certify (the image of no `f64` is exact
+    /// there) is moved outward, to infinity at worst: wider, never wrong.
+    fn settle(&mut self, found: &[Raw], sink: &mut dyn FnMut(LineTorusContact, &[f64])) {
+        let mut open: Option<Span> = None;
+        for &raw in found {
+            let item = self.item(raw);
+            let mut next = self.span(&item);
+            if let Some(mut last) = open.take() {
+                if last.t_hi < next.t_lo {
+                    self.emit(&last, sink);
+                } else if let Some((end, start)) = self.part(&last, &next) {
+                    (last.t_hi, next.t_lo) = (end, start);
+                    self.emit(&last, sink);
+                } else {
+                    next = last.fuse(&next);
                 }
             }
+            open = Some(next);
+        }
+        if let Some(last) = open {
+            self.emit(&last, sink);
         }
     }
 }
 
-/// The certified contacts of `origin + t·dir` with `torus`, ascending, or
-/// `None` when the line has no chart or the wide solve ran out of budget.
+/// How [`contacts_of_line`] ended.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) enum Outcome {
+    /// Every contact was certified and passed on (none for a certified
+    /// miss).
+    Settled,
+    /// The line has no chart. Nothing was passed on.
+    NoChart,
+    /// The line has a chart, but its roots were not certified: plain balls
+    /// could not bound the stretch that holds them, or the wide solve
+    /// stopped at its work budget or at an end sign it could not certify.
+    /// Nothing was passed on. `at` is the caller's parameter of the line's
+    /// point nearest the torus's centre.
+    Stopped { at: f64 },
+}
+
+/// Passes the certified contacts of `origin + t·dir` with `torus` to
+/// `sink`, ascending, each with the parameters of its roots (see
+/// [`Finisher::emit`]). The wide solve may spend `wide_work` evaluations
+/// ([`WIDE_WORK`] outside tests). Nothing is passed unless the outcome is
+/// [`Outcome::Settled`].
 pub(super) fn contacts_of_line(
     torus: &ToroidalSurface,
     origin: Point3,
     dir: Vec3,
-) -> Option<Vec<LineTorusContact>> {
-    let chart = Chart::new(torus, origin, dir)?;
-    let plain = Poly::<Plain>::new(&chart);
-    let Some((lo, hi)) = plain.root_interval().ok()? else {
-        return Some(Vec::new());
+    wide_work: u32,
+    sink: &mut dyn FnMut(LineTorusContact, &[f64]),
+) -> Outcome {
+    let Some(chart) = Chart::new(torus, origin, dir) else {
+        return Outcome::NoChart;
     };
+    let plain = Poly::<Plain>::new(&chart);
+    let (lo, hi) = match plain.root_interval() {
+        Ok(Some(ends)) => ends,
+        Ok(None) => return Outcome::Settled,
+        Err(()) => {
+            return Outcome::Stopped {
+                at: chart.to_caller(0.0),
+            };
+        }
+    };
+    isolate_and_settle(&chart, &plain, (lo, hi), wide_work, sink)
+}
+
+/// The roots of a charted line within `ends`, isolated, refined and passed
+/// on in the caller's parameter. Kept out of line: a line that misses the
+/// torus's bounding sphere or slab never gets here, and should not pay for
+/// this frame.
+#[inline(never)]
+fn isolate_and_settle(
+    chart: &Chart,
+    plain: &Poly<Plain>,
+    (lo, hi): (f64, f64),
+    wide_work: u32,
+    sink: &mut dyn FnMut(LineTorusContact, &[f64]),
+) -> Outcome {
     let mut finisher = Finisher {
-        chart: &chart,
-        plain: &plain,
-        flat: Flat::new(&plain),
+        chart,
+        plain,
+        flat: Flat::new(plain),
         wide: None,
     };
-    let found = match Isolator::new(&plain, &chart).run(lo, hi) {
+    let found = match Isolator::new(plain, PLAIN_WORK).run(lo, hi) {
         Ok(found) => found,
-        Err(_) => Isolator::new(finisher.wide(), &chart).run(lo, hi).ok()?,
+        Err(_) => match Isolator::new(finisher.wide(), wide_work).run(lo, hi) {
+            Ok(found) => found,
+            Err(_) => {
+                return Outcome::Stopped {
+                    at: chart.to_caller(0.0),
+                };
+            }
+        },
     };
-    Some(found.into_iter().map(|raw| finisher.contact(raw)).collect())
+    finisher.settle(&found, sink);
+    Outcome::Settled
 }
 
 #[cfg(test)]

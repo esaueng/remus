@@ -21,8 +21,18 @@
 //! is reported as an ambiguous contact with the parity of the signs on its
 //! two sides, and nothing is asserted about how a solver splits it.
 //!
-//! Only `remus_math::ray::ray_torus` and public value types are used, so the
-//! harness also compiles against older trees.
+//! The reference locates roots; it does not decide anything at an `f64`
+//! value of the parameter. For that, [`exact`] evaluates the quartic's sign
+//! at an `f64` exactly, in dyadic big-number arithmetic, and
+//! [`judge_windows`] holds a solver's windows to the contract of the
+//! caller's parameter with it: opposite exact signs at the two ends of a
+//! resolved window, the exact parity of an unresolved one, disjoint windows,
+//! and no two separable roots in one window.
+//!
+//! Apart from [`judge_windows`], which reads
+//! `intersect_line_torus_contacts`, only `remus_math::ray::ray_torus` and
+//! public value types are used, so the harness also compiles against older
+//! trees.
 
 #![allow(
     clippy::unwrap_used,
@@ -31,16 +41,20 @@
     clippy::many_single_char_names,
     clippy::suboptimal_flops,
     clippy::cast_precision_loss,
+    clippy::cast_possible_wrap,
     dead_code
 )]
 
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 use std::ops::{Add, Mul, Neg, Sub};
 
+use remus_math::analytic_intersection::LineTorusContact;
 use remus_math::intersect::ContactKind;
 use remus_math::ray::RayHit;
 use remus_math::surfaces::ToroidalSurface;
 use remus_math::vec::{Point3, Vec3};
+
+pub mod exact;
 
 /// A double-double: the unevaluated sum of two doubles.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -835,6 +849,467 @@ pub fn judge(hits: &[RayHit], truth: &Truth, tally: &mut Tally) -> Option<String
                     }
                 }
             }
+        }
+    }
+    complaint
+}
+
+/// The spacing of `f64` values at `x`: the distance to the next one up.
+pub fn spacing(x: f64) -> f64 {
+    x.abs().next_up() - x.abs()
+}
+
+/// Direction lengths for the families of the caller's parameter: unit
+/// three times in seven, else `1e-12`, `1e-6`, `1e6` or `1e12`.
+fn length(rng: &mut Rng) -> f64 {
+    [1.0, 1.0, 1.0, 1e-12, 1e-6, 1e6, 1e12][(rng.next() % 7) as usize]
+}
+
+/// The line families that put the caller's parameter at its limit.
+pub fn caller_cases() -> Vec<Case> {
+    caller_cases_seeded(0x1638_FDA8_17A0_0005)
+}
+
+/// The families of the caller's parameter drawn from `seed`: lines on
+/// which neighbouring `f64` values of `t` are about as far apart as two
+/// crossings, from well below to well above, so that some pairs resolve
+/// and some cannot.
+///
+/// - `far-centre-ulps/*`: a torus `1e9` to `1e15` from the world origin,
+///   its tube `0.3` to `30` spacings of `t` in radius, crossed from near
+///   the world origin.
+/// - `far-origin-graze/*`: axis-aligned lines `1e3` to `1e12` from a torus
+///   sized so that a line four units in the last place of `R + r` inside
+///   the outer equator (or of `r` under the tube's top) cuts a chord one
+///   spacing of `t` long; the offsets run from outside the tube to a
+///   thousand units inside.
+/// - `far-origin-thin/*`: tilted tori whose tube is `0.05` to `50` spacings
+///   of `t` in radius, chords from `1e3` to `1e12` away.
+/// - `far-centre/1e15`, `non-sterbenz/*`: chords and tangents of a torus
+///   `1e15` out, and lines whose direction spans the whole way from an
+///   origin on the far side of the world origin (so `t` is near one and
+///   `origin − centre` is no exact `f64`).
+/// - `direction/1e±12`, `direction/1e±6`: chords and tangents with
+///   directions `1e-12` to `1e12` long.
+///
+/// Directions in the first three are unit, or `1e-12` to `1e12` long.
+pub fn caller_cases_seeded(seed: u64) -> Vec<Case> {
+    let mut rng = Rng(seed);
+    let mut out = Vec::new();
+    let mut push = |family: &'static str, torus: &ToroidalSurface, origin: Point3, dir: Vec3| {
+        out.push(Case {
+            family,
+            torus: torus.clone(),
+            origin,
+            dir,
+        });
+    };
+
+    for (centre, family) in [
+        (1e9, "far-centre-ulps/1e9"),
+        (1e12, "far-centre-ulps/1e12"),
+        (1e15, "far-centre-ulps/1e15"),
+    ] {
+        for &tube in &[0.3, 1.0, 3.0, 10.0, 30.0] {
+            for &aspect in &[3.0, 30.0] {
+                for tilted in [false, true] {
+                    let away = rng.direction();
+                    let c = Point3::new(away.x() * centre, away.y() * centre, away.z() * centre);
+                    let small = tube * spacing(centre);
+                    let big = small * aspect;
+                    let t = if tilted {
+                        ToroidalSurface::with_axis(c, big, small, rng.direction()).unwrap()
+                    } else {
+                        ToroidalSurface::new(c, big, small).unwrap()
+                    };
+                    for _ in 0..16 {
+                        let (u, v) = (rng.range(0.0, TAU), rng.range(0.0, TAU));
+                        let (_, _, _, n) = frame(&t, u, v);
+                        let radial = t.x_axis() * u.cos() + t.y_axis() * u.sin();
+                        let target = c + radial * big + n * (small * rng.range(0.0, 1.2));
+                        let origin = Point3::new(
+                            rng.range(-1.0, 1.0),
+                            rng.range(-1.0, 1.0),
+                            rng.range(-1.0, 1.0),
+                        );
+                        let unit = (target - origin).normalize().unwrap();
+                        push(family, &t, origin, unit * length(&mut rng));
+                    }
+                }
+            }
+        }
+    }
+
+    for (dist, family) in [
+        (1e3, "far-origin-graze/1e3"),
+        (1e6, "far-origin-graze/1e6"),
+        (1e9, "far-origin-graze/1e9"),
+        (1e12, "far-origin-graze/1e12"),
+    ] {
+        for &aspect in &[10.0, 1e4] {
+            // A line `d` inside the outer equator cuts a chord
+            // `2 √(2 r d)`. With `r (R + r) = dist² 2^-52 / 32` and `d`
+            // four units in the last place of `R + r`, that is one spacing
+            // of `t` at `dist` (to a factor of two).
+            let product = dist * dist * f64::EPSILON / 32.0;
+            let small = (product / (1.0 + aspect)).sqrt();
+            let big = small * aspect;
+            let t = ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), big, small).unwrap();
+            let total = big + small;
+            for steps in [
+                -4.0_f64, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0, 12.0, 16.0, 24.0,
+                32.0, 48.0, 64.0, 128.0, 256.0, 1024.0,
+            ] {
+                let lines = [
+                    // Along the axis, inside the outer equator.
+                    (
+                        Point3::new(total - steps * spacing(total), 0.0, -dist),
+                        Vec3::new(0.0, 0.0, 1.0),
+                    ),
+                    // The same from the other end.
+                    (
+                        Point3::new(0.0, -(total - steps * spacing(total)), dist),
+                        Vec3::new(0.0, 0.0, -1.0),
+                    ),
+                    // Under the tube's top, along its circle.
+                    (
+                        Point3::new(big, -dist, small - steps * spacing(small)),
+                        Vec3::new(0.0, 1.0, 0.0),
+                    ),
+                    // Under the tube's top, across both tubes.
+                    (
+                        Point3::new(-dist, 0.0, small - steps * spacing(small)),
+                        Vec3::new(1.0, 0.0, 0.0),
+                    ),
+                ];
+                for (origin, unit) in lines {
+                    push(family, &t, origin, unit * length(&mut rng));
+                }
+            }
+        }
+    }
+
+    for (dist, family) in [
+        (1e3, "far-origin-thin/1e3"),
+        (1e6, "far-origin-thin/1e6"),
+        (1e9, "far-origin-thin/1e9"),
+        (1e12, "far-origin-thin/1e12"),
+    ] {
+        for &tube in &[0.05, 0.2, 1.0, 3.0, 10.0, 50.0] {
+            for &aspect in &[3.0, 100.0] {
+                let small = tube * spacing(dist);
+                let big = small * aspect;
+                let c = Point3::new(
+                    rng.range(-1.0, 1.0) * big,
+                    rng.range(-1.0, 1.0) * big,
+                    rng.range(-1.0, 1.0) * big,
+                );
+                let t = ToroidalSurface::with_axis(c, big, small, rng.direction()).unwrap();
+                for _ in 0..16 {
+                    let (origin, unit) = chord(&mut rng, &t, dist / (big + small));
+                    push(family, &t, origin, unit * length(&mut rng));
+                }
+            }
+        }
+    }
+
+    for &aspect in &[3.0, 100.0] {
+        for tilted in [false, true] {
+            let t = torus(&mut rng, 2.0, aspect, tilted, 1e15);
+            let total = t.major_radius() + t.minor_radius();
+            for _ in 0..20 {
+                let back = rng.range(0.0, 2.0);
+                let (origin, dir) = chord(&mut rng, &t, back);
+                push("far-centre/1e15", &t, origin, dir);
+            }
+            for kind in TANGENTS {
+                for &offset in &[0.0, 1e-6, 1e-4, 1e-2] {
+                    for side in [-1.0, 1.0] {
+                        let (p, unit, n) = tangent(&mut rng, &t, kind);
+                        let back = rng.range(0.2, 2.0) * total;
+                        let origin = p + n * (side * offset * total) - unit * back;
+                        push("far-centre/1e15", &t, origin, unit);
+                    }
+                }
+            }
+        }
+    }
+    for (centre, family) in [
+        (1e6, "non-sterbenz/1e6"),
+        (1e9, "non-sterbenz/1e9"),
+        (1e12, "non-sterbenz/1e12"),
+        (1e15, "non-sterbenz/1e15"),
+    ] {
+        let c = Point3::new(centre, centre / 3.0, centre * 0.127);
+        let t = ToroidalSurface::new(c, 1.5, 0.5).unwrap();
+        for _ in 0..64 {
+            let origin = Point3::new(
+                -centre * 0.271_828,
+                -centre * 0.314_159,
+                -centre * 0.123_456,
+            );
+            let dir = Vec3::new(
+                c.x() - origin.x() + rng.range(-1.0, 1.0),
+                c.y() - origin.y() + rng.range(-1.0, 1.0),
+                c.z() - origin.z() + rng.range(-1.0, 1.0),
+            );
+            push(family, &t, origin, dir);
+        }
+    }
+
+    for (scale, family) in [
+        (1e-12, "direction/1e-12"),
+        (1e-6, "direction/1e-6"),
+        (1e6, "direction/1e6"),
+        (1e12, "direction/1e12"),
+    ] {
+        for &size in &[1e-3, 1.0, 1e6] {
+            let t = torus(&mut rng, size, 3.0, true, 0.0);
+            let total = t.major_radius() + t.minor_radius();
+            for _ in 0..16 {
+                let back = rng.range(0.0, 3.0);
+                let (origin, dir) = chord(&mut rng, &t, back);
+                push(family, &t, origin, dir * scale);
+            }
+            for kind in TANGENTS {
+                for &offset in &[0.0, 1e-9, 1e-6, 1e-3] {
+                    for side in [-1.0, 1.0] {
+                        let (p, unit, n) = tangent(&mut rng, &t, kind);
+                        let back = rng.range(0.2, 3.0) * total;
+                        let origin = p + n * (side * offset * total) - unit * back;
+                        push(family, &t, origin, unit * scale);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// How one family's windows stand against the contract of the caller's
+/// parameter.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WindowTally {
+    pub lines: usize,
+    /// Reference roots.
+    pub roots: usize,
+    /// Windows, and how many are resolved.
+    pub contacts: usize,
+    pub resolved: usize,
+    /// Unresolved windows holding two or more reference roots (roots the
+    /// parameter, or the arithmetic, could not tell apart), and those
+    /// holding fewer (stretches about a tangency).
+    pub fused: usize,
+    pub stretches: usize,
+    /// Resolved windows next to a contact the reference cannot resolve:
+    /// judged by their exact end signs only.
+    pub unjudged: usize,
+    // The violations.
+    /// A window that is empty, misses its representative, or does not end
+    /// strictly below the next one's start.
+    pub disorder: usize,
+    /// A window with an infinite end: nothing certified.
+    pub unbounded: usize,
+    /// A window end the quartic vanishes at exactly.
+    pub root_at_end: usize,
+    /// A resolved window with equal exact signs at its ends (or labelled a
+    /// touch).
+    pub resolved_parity: usize,
+    /// A resolved window that does not hold exactly one reference root.
+    pub resolved_count: usize,
+    /// An unresolved window whose label disagrees with the exact parity of
+    /// its end signs, or with the number of reference roots inside.
+    pub unresolved_parity: usize,
+    /// Reference roots strictly inside no window.
+    pub lost: usize,
+    /// Pairs of neighbouring roots left in one window although separable.
+    pub separable: usize,
+}
+
+impl WindowTally {
+    pub fn violations(&self) -> usize {
+        self.disorder
+            + self.unbounded
+            + self.root_at_end
+            + self.resolved_parity
+            + self.resolved_count
+            + self.unresolved_parity
+            + self.lost
+            + self.separable
+    }
+
+    pub fn add(&mut self, o: &Self) {
+        self.lines += o.lines;
+        self.roots += o.roots;
+        self.contacts += o.contacts;
+        self.resolved += o.resolved;
+        self.fused += o.fused;
+        self.stretches += o.stretches;
+        self.unjudged += o.unjudged;
+        self.disorder += o.disorder;
+        self.unbounded += o.unbounded;
+        self.root_at_end += o.root_at_end;
+        self.resolved_parity += o.resolved_parity;
+        self.resolved_count += o.resolved_count;
+        self.unresolved_parity += o.unresolved_parity;
+        self.lost += o.lost;
+        self.separable += o.separable;
+    }
+}
+
+/// The `f64` values of the parameter strictly between two neighbouring
+/// simple roots, counted up to `cap`.
+///
+/// An `f64` clear of both roots by more than the reference's own error is
+/// placed by comparison. One within that error of a root is placed by the
+/// quartic's exact sign there: between the roots it is the exact sign at
+/// their midpoint, just outside either it is the other, and on a root it
+/// is zero.
+fn doubles_between(case: &Case, lo: Dd, hi: Dd, size_t: f64, cap: usize) -> usize {
+    let sign = |terms: &[f64]| exact::quartic_sign(&case.torus, case.origin, case.dir, terms);
+    let middle = (lo + hi).half();
+    let inside = sign(&[middle.0, middle.1]);
+    if inside == 0 {
+        return 0;
+    }
+    let mut t = lo.value().next_down();
+    let end = hi.value().next_up();
+    let mut count = 0;
+    while t <= end && count < cap {
+        let noise = 1e-20 * t.abs().max(size_t);
+        let (above, below) = ((Dd::of(t) - lo).value(), (hi - Dd::of(t)).value());
+        let between = if above > noise && below > noise {
+            true
+        } else if above < -noise || below < -noise {
+            false
+        } else {
+            sign(&[t]) == inside
+        };
+        count += usize::from(between);
+        t = t.next_up();
+    }
+    count
+}
+
+/// Hold one line's windows to the contract of the caller's parameter.
+/// Returns a description of the first violation, if any.
+///
+/// With the windows' `f64` ends taken as exact and the quartic's sign at
+/// them evaluated exactly ([`exact::quartic_sign`]):
+///
+/// - every window is non-empty, holds its representative, and ends at an
+///   `f64` strictly below the one the next begins at;
+/// - a resolved window has opposite exact signs at its ends and holds
+///   exactly one reference root, strictly inside;
+/// - an unresolved window is labelled a touch exactly when its end signs
+///   are equal, and the number of reference roots inside has that parity;
+/// - every reference root is strictly inside a window;
+/// - no unresolved window holds two neighbouring roots that are
+///   *separable*: more than `1e-12` torus sizes apart (the reach of the
+///   solver's own arithmetic) with at least two `f64` values of the
+///   parameter strictly between them (what two disjoint windows need).
+pub fn judge_windows(
+    case: &Case,
+    contacts: &[LineTorusContact],
+    truth: &Truth,
+    tally: &mut WindowTally,
+) -> Option<String> {
+    tally.lines += 1;
+    tally.roots += truth.roots.len();
+    tally.contacts += contacts.len();
+    let mut complaint: Option<String> = None;
+    let mut complain = |what: String| {
+        if complaint.is_none() {
+            complaint = Some(what);
+        }
+    };
+    let sign = |t: f64| exact::quartic_sign(&case.torus, case.origin, case.dir, &[t]);
+    // Strictly inside the window; an infinite end holds everything.
+    let inside = |root: Dd, c: &LineTorusContact| {
+        (c.t_lo == f64::NEG_INFINITY || (root - Dd::of(c.t_lo)).sign() > 0)
+            && (c.t_hi == f64::INFINITY || (Dd::of(c.t_hi) - root).sign() > 0)
+    };
+    let slack = 1e-5 * truth.size_t;
+    for pair in contacts.windows(2) {
+        if pair[0].t_hi.partial_cmp(&pair[1].t_lo) != Some(std::cmp::Ordering::Less) {
+            tally.disorder += 1;
+            complain(format!("windows meet: {pair:?}"));
+        }
+    }
+    for c in contacts {
+        if !(c.t_lo < c.t_hi && c.t_lo <= c.t && c.t <= c.t_hi) {
+            tally.disorder += 1;
+            complain(format!("malformed window {c:?}"));
+        }
+        if !(c.t_lo.is_finite() && c.t_hi.is_finite()) {
+            tally.unbounded += 1;
+            complain(format!("unbounded window {c:?}"));
+            continue;
+        }
+        let (s_lo, s_hi) = (sign(c.t_lo), sign(c.t_hi));
+        if s_lo == 0 || s_hi == 0 {
+            tally.root_at_end += 1;
+            complain(format!("a root at an end of {c:?}"));
+            continue;
+        }
+        let odd = s_lo != s_hi;
+        let held: Vec<Dd> = truth
+            .roots
+            .iter()
+            .copied()
+            .filter(|&r| inside(r, c))
+            .collect();
+        let ambiguous = truth
+            .ambiguous
+            .iter()
+            .any(|&(at, _)| at >= c.t_lo - slack && at <= c.t_hi + slack);
+        if c.resolved {
+            tally.resolved += 1;
+            if !odd || c.kind == ContactKind::Tangential {
+                tally.resolved_parity += 1;
+                complain(format!("end signs {s_lo} {s_hi} of resolved {c:?}"));
+            }
+            if held.len() != 1 {
+                if ambiguous {
+                    tally.unjudged += 1;
+                } else {
+                    tally.resolved_count += 1;
+                    complain(format!("{} roots in resolved {c:?}", held.len()));
+                }
+            }
+            continue;
+        }
+        if held.len() >= 2 {
+            tally.fused += 1;
+        } else {
+            tally.stretches += 1;
+        }
+        let labelled_odd = c.kind != ContactKind::Tangential;
+        if labelled_odd != odd || (!ambiguous && (held.len() % 2 == 1) != odd) {
+            tally.unresolved_parity += 1;
+            complain(format!(
+                "end signs {s_lo} {s_hi}, {} roots in unresolved {c:?}",
+                held.len()
+            ));
+        }
+        for pair in held.windows(2) {
+            let apart = (pair[1] - pair[0]).value();
+            if apart > 1e-12 * truth.size_t
+                && doubles_between(case, pair[0], pair[1], truth.size_t, 2) >= 2
+            {
+                tally.separable += 1;
+                complain(format!(
+                    "separable roots {} and {} in {c:?}",
+                    pair[0].value(),
+                    pair[1].value()
+                ));
+            }
+        }
+    }
+    for &root in &truth.roots {
+        if !contacts.iter().any(|c| inside(root, c)) {
+            tally.lost += 1;
+            complain(format!("root {} in no window", root.value()));
         }
     }
     complaint

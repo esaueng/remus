@@ -1709,16 +1709,37 @@ fn newton_refine_torus(
 /// into the torus implicit `(a² + b² + c² + R² − r²)² = 4R²(a² + b²)` — where
 /// `(a, b, c)` are the line point's coordinates in the torus frame — gives a
 /// quartic in `t`. `dir` need not be unit length; `t` is in units of `dir`.
-/// Returns the parameter of every contact [`intersect_line_torus_contacts`]
-/// reports, sorted ascending: each certified simple root, and one point of
-/// each stretch it could not resolve (an exact tangency). Callers that must
-/// tell the two apart, or need a root's enclosure, use that function.
+///
+/// Returns the parameters of the contacts [`intersect_line_torus_contacts`]
+/// reports, ascending and without repeats:
+///
+/// - each certified simple root, as the `f64` of its window nearest it;
+/// - one point of each stretch the arithmetic could not resolve (an exact
+///   tangency);
+/// - for roots certified apart on the line that `t` cannot hold in separate
+///   windows (see "The parameter's own limit" there), the `f64` nearest each
+///   root: two values when the roots round to different doubles, one when
+///   they round to the same. Such roots are closer together than two units
+///   in the last place of `t`; a value returned once then stands for two
+///   crossings, as an exact tangency's does. The list alone does not say
+///   which values these are;
+/// - for a line that could not be certified, the iterative solver's roots,
+///   or one point of the line if it found none: the list is empty only for
+///   a certified miss (or a zero or non-finite direction or origin).
+///
+/// Callers that must tell these apart, count crossings, or need a root's
+/// enclosure use [`intersect_line_torus_contacts`].
 #[must_use]
 pub fn intersect_line_torus(torus: &ToroidalSurface, origin: Point3, dir: Vec3) -> Vec<f64> {
-    intersect_line_torus_contacts(torus, origin, dir)
-        .into_iter()
-        .map(|contact| contact.t)
-        .collect()
+    let mut roots = Vec::new();
+    line_torus_contacts(
+        torus,
+        origin,
+        dir,
+        line_torus::WIDE_WORK,
+        &mut |_, points| roots.extend_from_slice(points),
+    );
+    roots
 }
 
 /// Every real contact of the line `origin + t·dir` with a torus, certified.
@@ -1726,57 +1747,96 @@ pub fn intersect_line_torus(torus: &ToroidalSurface, origin: Point3, dir: Vec3) 
 /// The line and the torus are taken as represented: their `f64` coordinates
 /// are exact numbers, and the contacts are those of that line with that
 /// torus. Contacts come back ascending in `t` (in units of `dir`, which need
-/// not be unit length), each with a window `[t_lo, t_hi]`:
+/// not be unit length), each with a window `[t_lo, t_hi]`.
 ///
-/// - `resolved`: the window holds exactly one simple root of the line–torus
-///   quartic, which has certified opposite signs at the window's two ends.
-///   `t` is that root; the window is its stated accuracy: at most 128
-///   units in the last place of the larger of `|t|` and `(R + r) / |dir|`,
-///   usually a few (never narrower than `2^-60` of the latter). Its kind is
-///   [`ContactKind::Transversal`],
-///   or [`ContactKind::Unclassified`] when the line meets the surface within
-///   `1e-6` rad of tangency: still exactly one crossing, at a known place.
-/// - not `resolved`: a stretch the arithmetic cannot separate. The quartic
-///   has a certified sign at both ends and is within its evaluation error of
-///   zero inside. With equal end signs the contact is
-///   [`ContactKind::Tangential`]: an even number of crossings (a touch, two
-///   crossings inside the window, or none). With different ones it is
-///   [`ContactKind::Unclassified`]: an odd number (an inflectional contact
-///   along an asymptotic direction of the inner tube). `t` is a point of
-///   the window, not a root. Every root that is not reported as resolved
-///   lies in such a window.
+/// **The contract, in the caller's parameter.** The windows' ends are `f64`
+/// values of `t`, taken as exact:
 ///
-/// No root is dropped and none invented: between consecutive windows, and
-/// outside the first and last, the quartic is certified nonzero.
+/// - the line–torus quartic (equivalently, off the axis of a ring torus, the
+///   tube's implicit function: positive outside the tube, negative inside)
+///   has a certified sign at both ends of every window;
+/// - every root lies strictly inside a window, and the windows are pairwise
+///   disjoint: each ends at an `f64` strictly below the one the next begins
+///   at. Between them, and outside the first and last, there is no root;
+/// - `resolved`: the window holds exactly one simple root, so the signs at
+///   its two ends are opposite. `t` is that root to within the window: the
+///   root's enclosure in the solver's own coordinates (at most 128 units in
+///   the last place of `(R + r) / |dir|`, usually a few, never narrower
+///   than `2^-60` of it), moved out by less than one unit in the last place
+///   of `t` at either end. `roots` is 1. Its kind is
+///   [`ContactKind::Transversal`], or [`ContactKind::Unclassified`] when
+///   the line meets the surface within `1e-6` rad of tangency: still
+///   exactly one crossing, at a known place;
+/// - not `resolved`: the window holds what could not be told apart in `t`,
+///   and `t` is a point of it, not a root. The signs at the ends give the
+///   parity of the roots inside. Equal signs make the contact
+///   [`ContactKind::Tangential`]: an even number of crossings, which cancel
+///   in a crossing count. Different signs make it
+///   [`ContactKind::Unclassified`]: an odd number. `roots` tells the two
+///   causes apart:
+///   - `roots == 0`: a stretch the arithmetic cannot separate. The quartic
+///     is within its evaluation error of zero inside: a touch, two
+///     crossings closer than that error resolves, or (for an even contact)
+///     a near miss; an odd one is an inflectional contact along an
+///     asymptotic direction of the inner tube;
+///   - `roots >= 2`: that many simple roots, each certified on the line,
+///     which `t` cannot hold in disjoint windows (below). An even contact
+///     of this sort is known to be two crossings, not a touch.
 ///
-/// **What is resolved.** Two roots are separated whenever the quartic
-/// between them clears the error of double-double arithmetic, about `1e-30`
-/// of the magnitudes involved (see `line_torus.rs`). Roots a few units in
-/// the last place apart are told apart; only a contact that is tangent to
-/// about that precision stays unresolved. Its window is of the order of the
-/// square, cube or fourth root of that error: a few `1e-14` of the torus's
-/// size for a double contact and a few `1e-7` for a quadruple one
-/// (measured), about `1e-10` for a triple one (estimated).
+/// **What is resolved.** Two limits apply, and nothing else:
+///
+/// 1. *The arithmetic.* Two roots are separated on the line whenever the
+///    quartic between them clears the error of double-double arithmetic,
+///    about `1e-30` of the magnitudes involved (see `line_torus.rs`). Only a
+///    contact tangent to about that precision stays unresolved. Its window
+///    is of the order of the square, cube or fourth root of that error: a
+///    few `1e-14` of the torus's size for a double contact and a few `1e-7`
+///    for a quadruple one (measured), about `1e-10` for a triple one
+///    (estimated). This limit does not depend on where `origin` sits on the
+///    line or on how far the torus is from the world origin.
+/// 2. *The parameter's own limit.* Two roots certified apart on the line
+///    are reported apart only if two disjoint windows with `f64` ends can
+///    hold one each, which needs two `f64` values of `t` strictly between
+///    them, the quartic's sign certified at both (it is, unless a root is
+///    within the arithmetic's error of that very value). Roots three or
+///    more units in the last place of `t` apart have two such values; roots
+///    less than one apart never do. Otherwise the roots are fused into one
+///    unresolved contact with `roots >= 2`, the true parity, and a window
+///    that holds them all. This happens only when the
+///    torus is far along the line relative to its features: once
+///    `|t|·2^-52` approaches the distance between two crossings in units of
+///    `dir` (a tube `1e-7` across, `1500` away; a unit torus `1e15` away).
+///    Beyond that the windows stay correct but say less: a torus smaller
+///    than one unit in the last place of `t` is a single even contact. The
+///    remedy is the caller's: put `origin` near the torus.
 ///
 /// **Accuracy and absolute coordinates.** The only operation on absolute
 /// coordinates is `origin − centre`, computed without error, and the line is
 /// re-based at its point nearest the centre in the same exact way. So neither
 /// the centre's distance from the world origin nor the ray origin's distance
-/// from the torus costs accuracy: the windows hold for the represented
-/// inputs. What the *inputs* can express is another matter: a coordinate of
-/// magnitude `M` is itself only given to `M·2^-53`, and a point evaluated as
-/// `origin + t·dir` is rounded to that grid.
+/// from the torus costs the isolation anything; only the windows' ends are
+/// `f64` values of `t` and as coarse as those are. What the *inputs* can
+/// express is another matter: a coordinate of magnitude `M` is itself only
+/// given to `M·2^-53`, and a point evaluated as `origin + t·dir` is rounded
+/// to that grid.
 ///
 /// **Scale.** Lengths and the direction are scaled by exact powers of two
 /// before anything else, so the result does not depend on the size of the
-/// torus or of `dir`.
+/// torus or of `dir`. (A window end comes back infinite if `t` itself
+/// overflows there.)
 ///
 /// **Uncertified lines.** A zero or non-finite direction, a non-finite
 /// origin, a tube thinner than `2^-400` of the torus or an origin farther
 /// than `2^400` torus sizes has no chart. Such a line is solved by the
 /// iterative quartic solver about the caller's origin; its roots come back
 /// unresolved and [`ContactKind::Unclassified`], in the window
-/// `(-∞, +∞)`.
+/// `(-∞, +∞)`, with `roots == 0`, and nothing is certified about it, a miss
+/// included. A line that has a chart but whose solve does not finish (its
+/// root interval cannot be bounded, or the double-double solve exhausts its
+/// work budget; no such line is known) is reported the same way and is
+/// never returned empty: if the iterative solver finds nothing, one such
+/// contact at the line's point nearest the torus's centre stands for it.
+/// An empty result on a charted line is therefore a certified miss.
 ///
 /// Used by the ray classifiers (through [`crate::ray::ray_torus`]) and by
 /// the boolean section trimmer, which finds where a plane×torus oval leaves
@@ -1788,19 +1848,72 @@ pub fn intersect_line_torus_contacts(
     origin: Point3,
     dir: Vec3,
 ) -> Vec<LineTorusContact> {
-    if let Some(contacts) = line_torus::contacts_of_line(torus, origin, dir) {
-        return contacts;
+    let mut contacts = Vec::new();
+    line_torus_contacts(
+        torus,
+        origin,
+        dir,
+        line_torus::WIDE_WORK,
+        &mut |contact, _| contacts.push(contact),
+    );
+    contacts
+}
+
+/// Passes every contact of the line with the torus to `sink`, ascending,
+/// each with the parameters [`intersect_line_torus`] lists for it: the
+/// certified ones, or what the iterative solver gives for a line that is not
+/// certified. `wide_work` is the double-double solve's budget.
+fn line_torus_contacts(
+    torus: &ToroidalSurface,
+    origin: Point3,
+    dir: Vec3,
+    wide_work: u32,
+    sink: &mut dyn FnMut(LineTorusContact, &[f64]),
+) {
+    let outcome = line_torus::contacts_of_line(torus, origin, dir, wide_work, sink);
+    if outcome != line_torus::Outcome::Settled {
+        solve_iteratively(torus, origin, dir, outcome, sink);
     }
-    solve_line_torus(torus, origin, dir)
-        .into_iter()
-        .map(|(t, _)| LineTorusContact {
-            t,
-            t_lo: f64::NEG_INFINITY,
-            t_hi: f64::INFINITY,
-            kind: ContactKind::Unclassified,
-            resolved: false,
-        })
-        .collect()
+}
+
+/// The iterative solve of a line that was not certified, reported by
+/// [`report_unsettled`]. Out of line: certified lines never run it.
+#[cold]
+#[inline(never)]
+fn solve_iteratively(
+    torus: &ToroidalSurface,
+    origin: Point3,
+    dir: Vec3,
+    outcome: line_torus::Outcome,
+    sink: &mut dyn FnMut(LineTorusContact, &[f64]),
+) {
+    report_unsettled(outcome, &solve_line_torus(torus, origin, dir), sink);
+}
+
+/// What a line that was not certified reports: each of the iterative
+/// solver's `roots` as an unresolved contact in the window `(-∞, +∞)`. A
+/// charted line whose solve stopped is not known to miss, so if the
+/// iterative solver found nothing, one such contact at the line's point
+/// nearest the torus's centre stands for it.
+fn report_unsettled(
+    outcome: line_torus::Outcome,
+    roots: &[(f64, usize)],
+    sink: &mut dyn FnMut(LineTorusContact, &[f64]),
+) {
+    let whole_line = |t: f64| LineTorusContact {
+        t,
+        t_lo: f64::NEG_INFINITY,
+        t_hi: f64::INFINITY,
+        kind: ContactKind::Unclassified,
+        resolved: false,
+        roots: 0,
+    };
+    for &(t, _) in roots {
+        sink(whole_line(t), &[t]);
+    }
+    if let (true, line_torus::Outcome::Stopped { at }) = (roots.is_empty(), outcome) {
+        sink(whole_line(at), &[at]);
+    }
 }
 
 /// The real roots of the line–torus quartic about `origin` in units of
@@ -5333,6 +5446,83 @@ mod tests {
                 && root.t_hi == f64::INFINITY));
         }
         assert!(intersect_line_torus_contacts(&torus, finite, Vec3::new(0.0, 0.0, 0.0)).is_empty());
+    }
+
+    /// A charted line whose solve stops is reported uncertified, never as a
+    /// miss. With no wide budget, a line a hair off tangency (which plain
+    /// balls cannot decide) comes back as contacts in the window
+    /// `(-∞, +∞)`: the iterative solver's roots, or, if it finds none, one
+    /// contact at the line's point nearest the centre. A line plain balls
+    /// do decide is unaffected by the budget.
+    #[test]
+    fn line_torus_whose_solve_stops_is_never_a_miss() {
+        use super::line_torus::{self, Outcome};
+        use super::{LineTorusContact, line_torus_contacts, report_unsettled};
+        use crate::intersect::ContactKind;
+        let torus = ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), 1.5, 0.5).unwrap();
+        let collect = |origin: Point3, dir: Vec3, work: u32| {
+            let mut out: Vec<(LineTorusContact, Vec<f64>)> = Vec::new();
+            line_torus_contacts(&torus, origin, dir, work, &mut |contact, points| {
+                out.push((contact, points.to_vec()));
+            });
+            out
+        };
+        let whole_line = |contact: &LineTorusContact| {
+            !contact.resolved
+                && contact.roots == 0
+                && contact.kind == ContactKind::Unclassified
+                && contact.t_lo == f64::NEG_INFINITY
+                && contact.t_hi == f64::INFINITY
+        };
+        // The outer equator along its circle, one unit in the last place
+        // outside and inside, and exactly on it.
+        for x in [2.0_f64.next_up(), 2.0, 2.0_f64.next_down()] {
+            let (origin, dir) = (Point3::new(x, -3.0, 0.0), Vec3::new(0.0, 1.0, 0.0));
+            let mut sink = |_: LineTorusContact, _: &[f64]| {};
+            assert_eq!(
+                line_torus::contacts_of_line(&torus, origin, dir, 0, &mut sink),
+                Outcome::Stopped { at: 3.0 },
+                "{x}"
+            );
+            let stopped = collect(origin, dir, 0);
+            assert!(!stopped.is_empty(), "{x}");
+            for (contact, points) in &stopped {
+                assert!(whole_line(contact), "{x}: {contact:?}");
+                assert_eq!(points, &vec![contact.t], "{x}");
+                assert!((contact.t - 3.0).abs() <= 1e-3, "{x}: {contact:?}");
+            }
+            // With its budget the same line is certified.
+            let budgeted = collect(origin, dir, line_torus::WIDE_WORK);
+            assert!(
+                budgeted.iter().all(|(c, _)| c.t_hi.is_finite()),
+                "{x}: {budgeted:?}"
+            );
+        }
+        // No roots from the iterative solver: one contact where the line
+        // comes nearest, for a stopped solve only.
+        let mut out = Vec::new();
+        report_unsettled(Outcome::Stopped { at: 3.0 }, &[], &mut |contact, points| {
+            out.push((contact, points.to_vec()));
+        });
+        assert_eq!(out.len(), 1);
+        assert!(whole_line(&out[0].0) && out[0].1 == vec![3.0]);
+        assert_eq!(out[0].0.t.to_bits(), 3.0_f64.to_bits());
+        let mut count = 0;
+        report_unsettled(Outcome::NoChart, &[], &mut |_, _| count += 1);
+        assert_eq!(count, 0);
+        report_unsettled(
+            Outcome::Stopped { at: 3.0 },
+            &[(1.0, 2), (2.0, 1)],
+            &mut |_, _| {
+                count += 1;
+            },
+        );
+        assert_eq!(count, 2);
+        // A clean chord and a clean miss never reach the wide solve.
+        let chord = collect(Point3::new(-4.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0), 0);
+        assert_eq!(chord.len(), 4);
+        assert!(chord.iter().all(|(c, _)| c.resolved));
+        assert!(collect(Point3::new(-4.0, 0.0, 0.6), Vec3::new(1.0, 0.0, 0.0), 0).is_empty());
     }
 
     /// Directions and tori of any representable size are certified: the

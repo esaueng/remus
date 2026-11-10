@@ -104,6 +104,66 @@ fn point_just_inside_a_large_thin_torus_is_inside() {
     );
 }
 
+/// Review round 4 of the line–torus solve, through the GFA classifier: tori
+/// far along a ray, where the `f64` values of the ray's parameter are about
+/// as far apart as two crossings.
+///
+/// - A unit torus `1e15` from the point: the `+X` ray crosses it four times,
+///   eight spacings of `t` apart. The solve had merged them into two
+///   tangential contacts, which flagged a clean ray; they are four clean
+///   crossings.
+/// - A tube `1.5e-7` across, `1500` below the point and crossed a hair
+///   inside its outer equator: the two crossings lie in the `f64` cells
+///   either side of `t = 1500`. The solve had returned them as two resolved
+///   crossings, each window holding both. They are one even contact, which
+///   adds no parity and flags the ray.
+///
+/// Either way the point is outside. (The `remus-check` classifier draws its
+/// own ray directions; its face counts along these two rays are pinned in
+/// its `torus_contact_tests`.)
+#[test]
+fn far_tori_classify_by_what_the_ray_parameter_can_separate() {
+    let tol = Tolerance::default();
+    let centre = Point3::new(1e15, 0.0, 0.0);
+    let mut topo = Topology::default();
+    let gfa = whole_torus(&mut topo, centre, 1.5, 0.5);
+    let q = Point3::new(0.0, 0.0, 0.0);
+    assert_eq!(
+        classify_ray_cast(&topo, gfa, q).unwrap(),
+        FaceClass::Outside
+    );
+    let geoms = RayCastGeoms::new(&topo, gfa).unwrap();
+    let [cardinal, _] = ray_cast_rays_cached(&geoms, q, tol, true);
+    // The cardinal rays are +Z, +X, +Y: +X runs through the torus.
+    assert_eq!(cardinal[1], (false, false), "{cardinal:?}");
+    // From the tube's core circle and from the hole, the same torus.
+    let core = Point3::new(1e15 + 1.5, 0.0, 0.0);
+    assert_eq!(
+        classify_ray_cast(&topo, gfa, core).unwrap(),
+        FaceClass::Inside
+    );
+    assert_eq!(
+        classify_ray_cast(&topo, gfa, centre).unwrap(),
+        FaceClass::Outside
+    );
+
+    let (big, small) = (0.0015, 0.000_000_15);
+    let centre = Point3::new(0.0, 0.0, 0.0);
+    let mut topo = Topology::default();
+    let gfa = whole_torus(&mut topo, centre, big, small);
+    let q = Point3::new(0.001_500_15, 0.0, -1500.0);
+    assert_eq!(
+        classify_ray_cast(&topo, gfa, q).unwrap(),
+        FaceClass::Outside
+    );
+    let geoms = RayCastGeoms::new(&topo, gfa).unwrap();
+    let [cardinal, _] = ray_cast_rays_cached(&geoms, q, tol, true);
+    // +Z holds the unseparable pair: no parity, and the ray is flagged.
+    assert_eq!(cardinal[0], (false, true), "{cardinal:?}");
+    assert_eq!(cardinal[1], (false, false), "{cardinal:?}");
+    assert_eq!(cardinal[2], (false, false), "{cardinal:?}");
+}
+
 /// Points a hair inside and outside the tube of large thin tori, at every
 /// tube angle: from each, the cardinal rays run nearly along the surface, so
 /// their roots come in close pairs about the point. Both classifiers agree

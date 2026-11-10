@@ -1199,6 +1199,50 @@ fn torus_oval_tangent_to_a_box_side_defers() {
     assert!(cut.trim(&mut topo, face).is_none());
 }
 
+/// A box side three billion long, `2^-50` inside the oval: its two
+/// crossings are `1.7e-7` apart, about one spacing of the side's own
+/// parameter there (`5.6e-17` of its length), with one `f64` between them.
+/// They are one unresolved even contact holding two certified roots, not
+/// two split points at the same parameter, and the trim defers.
+#[test]
+fn torus_oval_crossed_twice_within_the_edge_parameter_spacing_defers() {
+    let cut = exact_torus_cut();
+    // Exact in the plane's coordinates too: the foot is at `x = 0.5`.
+    let x1 = 4.0 - 2.0_f64.powi(-50);
+    let corners = [
+        cut.in_plane(3.0, -1e9),
+        cut.in_plane(x1, -1e9),
+        cut.in_plane(x1, 2e9),
+        cut.in_plane(3.0, 2e9),
+    ];
+    let contacts = remus_math::analytic_intersection::intersect_line_torus_contacts(
+        &cut.torus,
+        corners[1],
+        corners[2] - corners[1],
+    );
+    assert_eq!(contacts.len(), 1, "{contacts:?}");
+    let contact = contacts[0];
+    assert!(!contact.resolved && contact.roots == 2, "{contact:?}");
+    assert_eq!(
+        contact.kind,
+        remus_math::intersect::ContactKind::Tangential,
+        "{contact:?}"
+    );
+    // The crossings are at `y = ±√((4 − x1)(4 + x1)) = ±8.4e-8` about the
+    // side's third, `2.8e-17` of its length either side of `1/3`. The
+    // `f64` nearest `1/3` is `1.85e-17` below it, between the two, and its
+    // neighbours are `5.55e-17` away: the window is those two neighbours.
+    let third: f64 = 1.0 / 3.0;
+    let half = ((4.0 - x1) * (4.0 + x1)).sqrt() / 3e9;
+    assert!((half - 2.81e-17).abs() < 1e-19, "{half:e}");
+    assert_eq!(contact.t.to_bits(), third.to_bits(), "{contact:?}");
+    assert_eq!(contact.t_lo.to_bits(), third.next_down().to_bits());
+    assert_eq!(contact.t_hi.to_bits(), third.next_up().to_bits());
+    let mut topo = Topology::new();
+    let face = polygon_face(&mut topo, &corners, Vec3::new(0.0, 0.0, 1.0));
+    assert!(cut.trim(&mut topo, face).is_none());
+}
+
 /// A box side a little inside the oval cuts a small cap off it. The side's
 /// two crossings are resolved roots, and the kept arcs end exactly on them
 /// and on the crossings of the two other sides the oval leaves through.

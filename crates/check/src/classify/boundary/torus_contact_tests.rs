@@ -176,3 +176,45 @@ fn a_contact_at_the_ray_origin_abstains() {
         assert_eq!((past % 2, before % 2), (0, 0), "{dir:?}");
     }
 }
+
+/// Review round 4 of the line–torus solve, through the face count.
+///
+/// Four crossings eight spacings of `t` apart on a unit torus `1e15` along
+/// the ray are four crossings. Two crossings in the `f64` cells either side
+/// of `t = 1500` (a tube `1.5e-7` across, a hair inside its equator) are
+/// one even contact: wholly ahead and inside the face at both ends of its
+/// window, it adds no crossing. They had come back as two crossings, each
+/// said to be alone in a window that held both, and the ray abstained.
+#[test]
+fn crossings_count_by_what_the_ray_parameter_can_separate() {
+    let x = Vec3::new(1.0, 0.0, 0.0);
+    let start = Point3::new(0.0, 0.0, 0.0);
+    let far = ToroidalSurface::new(Point3::new(1e15, 0.0, 0.0), 1.5, 0.5).unwrap();
+    let mut topo = Topology::default();
+    let face = whole_torus(&mut topo, &far);
+    assert_eq!(count_face_ray_crossings(&topo, face, start, x).unwrap(), 4);
+
+    // A quarter the size: each pair two spacings apart, one `f64` between
+    // its crossings. Two even contacts from outside; one crossing from
+    // inside the tube.
+    let quarter = ToroidalSurface::new(Point3::new(1e15, 0.0, 0.0), 0.375, 0.125).unwrap();
+    let mut topo = Topology::default();
+    let face = whole_torus(&mut topo, &quarter);
+    assert_eq!(count_face_ray_crossings(&topo, face, start, x).unwrap(), 0);
+    let inside = Point3::new(1e15 + 0.375, 0.0, 0.0);
+    assert_eq!(count_face_ray_crossings(&topo, face, inside, x).unwrap(), 1);
+
+    let thin = ToroidalSurface::new(start, 0.0015, 0.000_000_15).unwrap();
+    let mut topo = Topology::default();
+    let face = whole_torus(&mut topo, &thin);
+    let below = Point3::new(0.001_500_15, 0.0, -1500.0);
+    let z = Vec3::new(0.0, 0.0, 1.0);
+    let hits = remus_math::ray::ray_torus(below, z, &thin);
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert_eq!(
+        hits[0].kind,
+        remus_math::intersect::ContactKind::Tangential,
+        "{hits:?}"
+    );
+    assert_eq!(count_face_ray_crossings(&topo, face, below, z).unwrap(), 0);
+}

@@ -1,8 +1,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::{
-    Ball, Chart, Plain, Poly, Wide, contacts_of_line, cubic_roots_in_unit, exponent, ldexp,
-    max_variations, two_prod, two_sum,
+    Ball, Chart, Outcome, Plain, Poly, WIDE_WORK, Wide, contacts_of_line, cubic_roots_in_unit,
+    exponent, ldexp, max_variations, two_prod, two_sum,
 };
 use crate::intersect::ContactKind;
 use crate::surfaces::ToroidalSurface;
@@ -214,7 +214,12 @@ fn bernstein_coefficients_reproduce_the_quartic() {
 }
 
 fn contacts(torus: &ToroidalSurface, origin: Point3, dir: Vec3) -> Vec<super::LineTorusContact> {
-    contacts_of_line(torus, origin, dir).unwrap()
+    let mut out = Vec::new();
+    let outcome = contacts_of_line(torus, origin, dir, WIDE_WORK, &mut |contact, _| {
+        out.push(contact);
+    });
+    assert_eq!(outcome, Outcome::Settled);
+    out
 }
 
 /// Review round 3, finding 1: a large thin torus, the origin `1e-5` inside
@@ -498,4 +503,185 @@ fn a_near_quadruple_contact_is_one_window() {
     assert!(contact.t_lo <= at && at <= contact.t_hi, "{got:?}");
     let size = torus.major_radius() + torus.minor_radius();
     assert!(contact.t_hi - contact.t_lo <= 1e-6 * size, "{got:?}");
+}
+
+/// A chart whose map to the caller's parameter is `t = (τ0 + σ)·2^t_exp`;
+/// the line itself is not used.
+fn chart_with(tau0: f64, t_exp: i32) -> Chart {
+    Chart {
+        q: [Wide::exact(0.0); 3],
+        d: [0.5, 0.0, 0.0],
+        axes: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        big_r: 1.0,
+        small_r: 0.5,
+        tau0,
+        t_exp,
+        to_t: Chart::scale_of(t_exp),
+    }
+}
+
+/// The exact chart image of a caller's parameter against integer
+/// arithmetic, and the two `f64` values the map brackets a chart point
+/// between: the image of the lower is at or below the point, the image of
+/// the next `f64` up is above it, and likewise from above.
+#[test]
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::float_cmp
+)]
+fn the_caller_map_brackets_chart_points_exactly() {
+    use std::cmp::Ordering::{Equal, Greater, Less};
+    let mut rng = Rng(0x00CA_11E2_F100_2005);
+    // Chart points and `τ0` as multiples of 2^-40, `τ0` between 2^13 and
+    // 2^19: neighbouring `f64` values of `τ0 + σ` are then 2^-40 or more
+    // apart, coarser than the chart points, and every image is an integer
+    // number of 2^-40.
+    let unit = |n: i64| ldexp(n as f64, -40);
+    for _ in 0..40_000 {
+        let t_exp = (rng.next() % 9) as i32 - 4;
+        let significand = ((rng.next() >> 12) | (1 << 51)) as i64;
+        let sign = if rng.next() & 1 == 0 { 1 } else { -1 };
+        let tau0_n = sign * (significand << (2 + rng.next() % 6));
+        let p_n = rng.int(42);
+        let (tau0, p) = (unit(tau0_n), unit(p_n));
+        let chart = chart_with(tau0, t_exp);
+        // The image of `t` in units of 2^-40, as an integer.
+        let image_n = |t: f64| -> i128 {
+            let n = ldexp(t, 40 - t_exp);
+            assert!(n.fract() == 0.0 && n.abs() < 9e18, "{t}");
+            i128::from(n as i64) - i128::from(tau0_n)
+        };
+        let (lo, hi) = (chart.caller_floor(p), chart.caller_ceil(p));
+        assert!(lo <= hi, "{lo} {hi}");
+        assert!(image_n(lo) <= i128::from(p_n), "{tau0} {p} {t_exp}: {lo}");
+        assert!(image_n(lo.next_up()) > i128::from(p_n), "{tau0} {p}: {lo}");
+        assert!(image_n(hi) >= i128::from(p_n), "{tau0} {p} {t_exp}: {hi}");
+        assert!(
+            image_n(hi.next_down()) < i128::from(p_n),
+            "{tau0} {p}: {hi}"
+        );
+        // The double-double image is the integer one.
+        for t in [lo, hi, lo.next_down(), hi.next_up()] {
+            let (image_hi, image_lo) = chart.image(t).unwrap();
+            assert_eq!(distance(image_n(t) << 20, image_hi, image_lo), 0.0);
+            let want = image_n(t).cmp(&i128::from(p_n));
+            assert_eq!(chart.image_cmp(t, p), Some(want));
+        }
+    }
+    // With `τ0` near the chart points the caller's `f64` values are finer
+    // than they are: the bracket is the point's own image, or the two
+    // `f64` values either side of it.
+    for _ in 0..40_000 {
+        let chart = chart_with(rng.float(3), (rng.next() % 9) as i32 - 4);
+        let p = rng.float(3);
+        let (lo, hi) = (chart.caller_floor(p), chart.caller_ceil(p));
+        assert!(matches!(chart.image_cmp(lo, p), Some(Less | Equal)));
+        assert!(matches!(chart.image_cmp(hi, p), Some(Greater | Equal)));
+        assert_eq!(chart.image_cmp(lo.next_up(), p), Some(Greater));
+        assert_eq!(chart.image_cmp(hi.next_down(), p), Some(Less));
+        assert!(hi.to_bits() == lo.to_bits() || hi.to_bits() == lo.next_up().to_bits());
+    }
+
+    // Next to the caller's origin, where `t·2^-t_exp` is subnormal and
+    // inexact, no image is claimed, and the bracket steps over the stretch.
+    let chart = chart_with(0.0, 3);
+    let least = f64::from_bits(1);
+    assert_eq!(chart.image(least), None);
+    assert_eq!(chart.image(0.0), Some((0.0, 0.0)));
+    let edge = ldexp(1.0, 3 - 1022);
+    assert_eq!(chart.image(edge), Some((f64::MIN_POSITIVE, 0.0)));
+    for p in [0.0, least, -least, 3.0 * least, 1e-310, -1e-310] {
+        let (lo, hi) = (chart.caller_floor(p), chart.caller_ceil(p));
+        assert!(
+            matches!(chart.image_cmp(lo, p), Some(Less | Equal))
+                && matches!(chart.image_cmp(hi, p), Some(Greater | Equal))
+                && lo.abs() <= edge
+                && hi.abs() <= edge,
+            "{p:e}: {lo:e} {hi:e}"
+        );
+    }
+    // A parameter that overflows is bracketed by the largest `f64` and
+    // infinity; one that underflows by the subnormals about it.
+    let chart = chart_with(0.0, 1500);
+    assert_eq!(chart.caller_floor(1.0).to_bits(), f64::MAX.to_bits());
+    assert_eq!(chart.caller_ceil(1.0).to_bits(), f64::INFINITY.to_bits());
+    assert_eq!(chart.caller_ceil(-1.0).to_bits(), (-f64::MAX).to_bits());
+    assert_eq!(chart.caller_floor(-1.0), f64::NEG_INFINITY);
+    let chart = chart_with(0.0, -1500);
+    let (lo, hi) = (chart.caller_floor(1.0), chart.caller_ceil(1.0));
+    assert!(lo == 0.0 && hi == least, "{lo:e} {hi:e}");
+}
+
+/// The contract of the caller's parameter, read back in the solver's own
+/// arithmetic: at the exact chart image of every window end the wide
+/// quartic's sign, wherever it is certified, is the one the contact states
+/// (opposite across a resolved or odd contact, equal across an even one),
+/// and the windows are disjoint. Over chords and grazing lines from origins
+/// up to `1e15` torus sizes away, with tubes down to the spacing of `t`.
+#[test]
+#[allow(clippy::cast_precision_loss)]
+fn settled_windows_have_the_stated_end_signs() {
+    let mut rng = Rng(0x5E77_1ED0_0000_0005);
+    let unit = |rng: &mut Rng| (rng.next() >> 11) as f64 / (1_u64 << 53) as f64;
+    let (mut ends, mut signed, mut resolved, mut fused) = (0_usize, 0_usize, 0_usize, 0_usize);
+    for round in 0..6000 {
+        let far = [0.0, 3.0, 1e3, 1e6, 1e9, 1e12, 1e15][round % 7];
+        let thin = [0.3, 0.01, 1e-4, 1e-7][round % 4];
+        let big = 1.0 + unit(&mut rng);
+        let torus = ToroidalSurface::with_axis(
+            Point3::new(unit(&mut rng), unit(&mut rng), unit(&mut rng)),
+            big,
+            big * thin,
+            Vec3::new(unit(&mut rng) - 0.5, unit(&mut rng) - 0.5, 1.0),
+        )
+        .unwrap();
+        // Aim at a point within 1.2 tube radii of the core circle.
+        let (u, v) = (6.3 * unit(&mut rng), 6.3 * unit(&mut rng));
+        let radial = torus.x_axis() * u.cos() + torus.y_axis() * u.sin();
+        let normal = radial * v.cos() + torus.z_axis() * v.sin();
+        let target = torus.center()
+            + radial * torus.major_radius()
+            + normal * (torus.minor_radius() * 1.2 * unit(&mut rng));
+        let dir = Vec3::new(
+            unit(&mut rng) - 0.5,
+            unit(&mut rng) - 0.5,
+            unit(&mut rng) - 0.5,
+        );
+        let origin = target - dir * (far * (1.0 + unit(&mut rng)));
+        let chart = Chart::new(&torus, origin, dir).unwrap();
+        let wide = Poly::<Wide>::new(&chart);
+        let found = contacts(&torus, origin, dir);
+        for pair in found.windows(2) {
+            assert!(pair[0].t_hi < pair[1].t_lo, "{found:?}");
+        }
+        for contact in &found {
+            assert!(
+                contact.t_lo < contact.t_hi
+                    && contact.t_lo <= contact.t
+                    && contact.t <= contact.t_hi,
+                "{contact:?}"
+            );
+            assert_eq!(contact.resolved, contact.roots == 1, "{contact:?}");
+            resolved += usize::from(contact.resolved);
+            fused += usize::from(contact.roots >= 2);
+            let sign = |t: f64| {
+                let (hi, lo) = chart.image(t).unwrap();
+                wide.sign_at(Wide { hi, lo, e: 0.0 })
+            };
+            let (s_lo, s_hi) = (sign(contact.t_lo), sign(contact.t_hi));
+            ends += 2;
+            signed += usize::from(s_lo != 0) + usize::from(s_hi != 0);
+            if s_lo != 0 && s_hi != 0 {
+                let odd = contact.kind != ContactKind::Tangential;
+                assert_eq!(s_lo != s_hi, odd, "{contact:?} {s_lo} {s_hi}");
+                assert!(!contact.resolved || odd, "{contact:?}");
+            }
+        }
+    }
+    assert!(resolved >= 5000 && fused >= 100, "{resolved} {fused}");
+    // An end sits in a root-free gap, where the quartic is rarely too small
+    // to certify by evaluation.
+    assert!(signed * 1000 >= ends * 999, "{signed} of {ends}");
 }

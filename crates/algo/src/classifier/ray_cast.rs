@@ -2408,13 +2408,15 @@ fn ray_torus_crossings(
 ///
 /// [`remus_math::ray::ray_torus`] certifies each contact of the line by the
 /// quartic's sign on both sides of it. A transversal one is one clean
-/// crossing. A tangential one is an unresolved even contact (a touch to the
-/// precision of double-double arithmetic): it leaves parity unchanged and
+/// crossing. A tangential one is an even contact: a touch to the precision
+/// of double-double arithmetic, or two crossings the ray's parameter cannot
+/// hold in separate windows (a torus far along the ray relative to its
+/// tube). Either way its crossings cancel: it leaves parity unchanged and
 /// flags the ray. An unclassified one holds an odd number of crossings (one
-/// certified crossing within `1e-6` rad of tangency, or an unresolved
-/// inflectional contact): it keeps its one crossing and flags the ray. A
-/// torus holds no line, so no contact is coincident; one would be
-/// uncertified like the last.
+/// certified crossing within `1e-6` rad of tangency, an unresolved
+/// inflectional contact, or an odd number the parameter cannot separate):
+/// it keeps one crossing and flags the ray. A torus holds no line, so no
+/// contact is coincident; one would be uncertified like the last.
 fn torus_contact_parity(kind: remus_math::intersect::ContactKind) -> (i32, bool) {
     use remus_math::intersect::ContactKind;
     match kind {
@@ -2846,6 +2848,77 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Review round 4 of the line–torus solve: crossings the ray's own
+    /// parameter can or cannot hold apart, through the whole-torus count.
+    ///
+    /// A unit torus `1e15` along the ray has its four crossings eight
+    /// spacings of `t` apart: four clean crossings (they had come back as
+    /// two tangential contacts, flagging a clean ray). A tube `1.5e-7`
+    /// across, `1500` along the ray and crossed a hair inside its equator,
+    /// has its two crossings in the `f64` cells either side of `1500`: one
+    /// even contact that adds nothing and flags the ray (they had come back
+    /// as two crossings, each said to be alone in a window that held both).
+    /// A band that excludes the contact's whole window drops it cleanly.
+    #[test]
+    fn torus_crossings_count_by_what_the_ray_parameter_can_separate() {
+        use remus_math::intersect::ContactKind;
+        use remus_math::surfaces::ToroidalSurface;
+        let tol = Tolerance::default();
+        let (x, z) = (Vec3::new(1.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0));
+        let start = Point3::new(0.0, 0.0, 0.0);
+
+        let far = ToroidalSurface::new(Point3::new(1e15, 0.0, 0.0), 1.5, 0.5).unwrap();
+        assert_eq!(
+            ray_torus_crossings(start, x, &far, None, None, tol),
+            (4, false)
+        );
+        // The same torus a quarter the size: each pair of crossings two
+        // spacings apart, one `f64` between them. Two even contacts.
+        let quarter = ToroidalSurface::new(Point3::new(1e15, 0.0, 0.0), 0.375, 0.125).unwrap();
+        let hits = remus_math::ray::ray_torus(start, x, &quarter);
+        assert_eq!(hits.len(), 2, "{hits:?}");
+        assert!(hits.iter().all(|h| h.kind == ContactKind::Tangential));
+        assert_eq!(
+            ray_torus_crossings(start, x, &quarter, None, None, tol),
+            (0, true)
+        );
+        // From inside its tube, the wall ahead is one crossing.
+        let inside = Point3::new(1e15 + 0.375, 0.0, 0.0);
+        assert_eq!(
+            ray_torus_crossings(inside, x, &quarter, None, None, tol),
+            (1, false)
+        );
+
+        let thin = ToroidalSurface::new(start, 0.0015, 0.000_000_15).unwrap();
+        let below = Point3::new(0.001_500_15, 0.0, -1500.0);
+        let hits = remus_math::ray::ray_torus(below, z, &thin);
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert_eq!(hits[0].kind, ContactKind::Tangential, "{hits:?}");
+        assert_eq!(
+            torus_hit_place(&hits[0], tol),
+            TorusHitPlace::Ahead,
+            "{hits:?}"
+        );
+        assert_eq!(
+            ray_torus_crossings(below, z, &thin, None, None, tol),
+            (0, true)
+        );
+        // The contact is at the outer equator, tube angle zero: a band
+        // about the inner equator excludes its whole window.
+        assert_eq!(
+            ray_torus_crossings(below, z, &thin, Some((2.0, 2.0)), None, tol),
+            (0, false)
+        );
+        // Such a window reaching the ray origin flags the ray like any
+        // other contact there.
+        let at_origin = remus_math::ray::RayHit {
+            t: 1e-9,
+            kind: ContactKind::Tangential,
+            spread: 2e-9,
+        };
+        assert_eq!(torus_hit_place(&at_origin, tol), TorusHitPlace::AtOrigin);
     }
 
     /// A torus contact whose window reaches the ray origin is never a clean

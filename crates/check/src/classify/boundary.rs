@@ -2616,9 +2616,10 @@ fn count_nurbs_hits_with_trim(
 /// the representative `t`:
 ///
 /// - wholly behind the origin: nothing;
-/// - wholly ahead: a tangential contact adds no crossing as long as the trim
-///   answers alike at both ends of the window (both roots inside: two
-///   crossings; both outside: none). One that straddles the trim, or an
+/// - wholly ahead: a tangential contact (a touch, or two crossings the ray's
+///   parameter cannot hold in separate windows) adds no crossing as long as
+///   the trim answers alike at both ends of the window (both roots inside:
+///   two crossings; both outside: none). One that straddles the trim, or an
 ///   unclassified contact the trim may contain, leaves the parity open;
 /// - reaching the origin: how many of its roots are ahead is not known, and
 ///   the origin may lie on the surface. Unless the trim excludes the whole
