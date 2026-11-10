@@ -9120,6 +9120,32 @@ fn circle_bbox(circle: &remus_math::curves::Circle3D) -> Aabb3 {
     Aabb3::from_points(points)
 }
 
+/// The points of the circle arc `[t0, t1]` that attain an extreme world
+/// coordinate on some axis.
+///
+/// With `P(t) = c + r(cos t u + sin t v)`, coordinate `k` is extreme at
+/// `t = atan2(v_k, u_k)` (maximum) and that angle plus π (minimum). Each such
+/// angle inside the trimmed arc is returned; together with the arc endpoints
+/// they give the arc's exact axis-aligned bounds.
+fn circle_arc_axis_extrema(circle: &remus_math::curves::Circle3D, t0: f64, t1: f64) -> Vec<Point3> {
+    use std::f64::consts::{PI, TAU};
+    let span = (t1 - t0).abs();
+    let start = t0.min(t1);
+    let (u, v) = (circle.u_axis(), circle.v_axis());
+    let mut out = Vec::new();
+    for (uk, vk) in [(u.x(), v.x()), (u.y(), v.y()), (u.z(), v.z())] {
+        // A constant coordinate gives an arbitrary angle; the point is still
+        // on the arc's circle, so it never widens the box past the arc.
+        let peak = vk.atan2(uk);
+        for t in [peak, peak + PI] {
+            if span >= TAU || (t - start).rem_euclid(TAU) <= span {
+                out.push(circle.evaluate(t));
+            }
+        }
+    }
+    out
+}
+
 /// Compute AABB for an ellipse.
 fn ellipse_bbox(ellipse: &remus_math::curves::Ellipse3D) -> Aabb3 {
     let n = 16;
@@ -9922,6 +9948,19 @@ fn emit_split_circle_arcs(
                     min = Point3::new(min.x().min(p.x()), min.y().min(p.y()), min.z().min(p.z()));
                     max = Point3::new(max.x().max(p.x()), max.y().max(p.y()), max.z().max(p.z()));
                     any = true;
+                }
+                // Samples alone bound only the inscribed chord polygon: an
+                // in-face point near a circular rim can lie outside that box
+                // by up to the sagitta, dropping a genuine section arc and
+                // leaving a dangling section end. Add the arc's exact
+                // per-axis extrema so the box contains the whole rim.
+                if let EdgeCurve::Circle(circle) = edge.curve() {
+                    for p in circle_arc_axis_extrema(circle, t0, t1) {
+                        min =
+                            Point3::new(min.x().min(p.x()), min.y().min(p.y()), min.z().min(p.z()));
+                        max =
+                            Point3::new(max.x().max(p.x()), max.y().max(p.y()), max.z().max(p.z()));
+                    }
                 }
             }
         }
@@ -11523,6 +11562,89 @@ mod tests {
         assert!(matches!(err, AlgoError::IntersectionFailed(_)));
         assert_eq!(writer_state(&topo, &arena), before);
         assert!(registry.is_empty());
+    }
+
+    /// A rim sampled at nine points bounds only its inscribed octagon; the
+    /// exact arc extrema close that gap without reaching past the arc.
+    #[test]
+    fn circle_arc_axis_extrema_bound_rim_exactly() {
+        use remus_math::curves::Circle3D;
+        use std::f64::consts::{FRAC_PI_2, PI, TAU};
+
+        let bounds = |points: &[Point3]| {
+            let mut lo = [f64::INFINITY; 3];
+            let mut hi = [f64::NEG_INFINITY; 3];
+            for p in points {
+                for (k, c) in [p.x(), p.y(), p.z()].into_iter().enumerate() {
+                    lo[k] = lo[k].min(c);
+                    hi[k] = hi[k].max(c);
+                }
+            }
+            (lo, hi)
+        };
+        for (normal, reference) in [
+            (
+                Vec3::new(0.0, 0.0, 1.0),
+                Vec3::new(0.3_f64.cos(), 0.3_f64.sin(), 0.0),
+            ),
+            (Vec3::new(0.2, -0.6, 1.0), Vec3::new(1.0, 0.4, 0.0)),
+        ] {
+            let radius = 6.0;
+            let centre = Point3::new(10.0, -7.0, 3.0);
+            let circle = Circle3D::new_with_ref(centre, normal, radius, reference).unwrap();
+            let n = circle.normal();
+            let samples: Vec<Point3> = (0..=8)
+                .map(|i| circle.evaluate(TAU * f64::from(i) / 8.0))
+                .collect();
+            let mut exact = samples.clone();
+            exact.extend(circle_arc_axis_extrema(&circle, 0.0, TAU));
+            let (sample_lo, sample_hi) = bounds(&samples);
+            let (lo, hi) = bounds(&exact);
+            let c = [centre.x(), centre.y(), centre.z()];
+            for (k, nk) in [n.x(), n.y(), n.z()].into_iter().enumerate() {
+                // Independent analytic half-extent of a circle on axis k.
+                let half = radius * nk.mul_add(-nk, 1.0).max(0.0).sqrt();
+                assert!((hi[k] - (c[k] + half)).abs() < 1e-9, "axis {k} max");
+                assert!((lo[k] - (c[k] - half)).abs() < 1e-9, "axis {k} min");
+            }
+            // Negative control: the sampled octagon misses part of the rim.
+            assert!(
+                (0..3).any(|k| sample_hi[k] < hi[k] - 1e-3 || sample_lo[k] > lo[k] + 1e-3),
+                "sampled rim box unexpectedly exact"
+            );
+        }
+
+        // A trimmed arc keeps only extrema inside its own span, wrapped
+        // spans included, so the box never grows past the arc.
+        let circle = Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            1.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        // Distinct arc parameters; the constant z axis repeats an x extremum.
+        let inside = |t0: f64, t1: f64| {
+            let mut ts: Vec<f64> = Vec::new();
+            for p in circle_arc_axis_extrema(&circle, t0, t1) {
+                let t = circle.project(p).rem_euclid(TAU);
+                if !ts
+                    .iter()
+                    .any(|&s| (s - t).abs() < 1e-12 || (s - t).abs() > TAU - 1e-12)
+                {
+                    ts.push(t);
+                }
+            }
+            ts
+        };
+        let quarter = inside(0.1, 1.7);
+        assert_eq!(quarter.len(), 1);
+        assert!((quarter[0] - FRAC_PI_2).abs() < 1e-12);
+        let wrapped = inside(TAU - 0.3, TAU + 0.3);
+        assert_eq!(wrapped.len(), 1);
+        assert!(wrapped[0] < 1e-12 || (wrapped[0] - TAU).abs() < 1e-12);
+        assert!(inside(0.2, 1.3).is_empty());
+        assert_eq!(inside(PI - 0.1, PI + 0.1).len(), 1);
     }
 
     #[test]

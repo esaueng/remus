@@ -8,6 +8,11 @@ historical predecessor-line records, retained for provenance. The
 
 ### Fixed
 
+* **algo:** circular-rim section clipping includes exact arc extrema in
+  its face boxes. The sampled inscribed polygon could discard a genuine
+  section after rotation, leaving a dangling graph that correctly refused.
+  Translated cylinder cuts now remain exact, as do six more placed
+  equal-frustum union cases under the unchanged geometry oracles.
 * **operations,geometry,wasm:** a fillet on a cylinder rim that a boolean
   split into co-circular quarter arcs (a post fused onto a box corner) is
   now the exact torus at every radius. The rolling-ball engine took each
