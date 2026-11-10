@@ -242,7 +242,10 @@ fn a_circle_reaching_past_a_line_crosses_and_one_at_its_radius_touches() {
                 tol,
             )
         };
-        assert_eq!(contact(-1.5 * s), LineContact::Cross, "chord, scale {s}");
+        assert!(
+            matches!(contact(-1.5 * s), LineContact::Cross(_)),
+            "chord, scale {s}"
+        );
         assert!(
             matches!(contact(-s), LineContact::Touch(_)),
             "tangent, scale {s}"
@@ -256,7 +259,10 @@ fn a_circle_reaching_past_a_line_crosses_and_one_at_its_radius_touches() {
             contact(-s + 0.5 * tol.linear),
             LineContact::Touch(_)
         ));
-        assert_eq!(contact(-s - 3.0 * tol.linear), LineContact::Cross);
+        assert!(matches!(
+            contact(-s - 3.0 * tol.linear),
+            LineContact::Cross(_)
+        ));
         assert_eq!(contact(-s + 3.0 * tol.linear), LineContact::Miss);
         assert_eq!(contact(0.5 * s), LineContact::Miss, "clear, scale {s}");
         // The same tangent line, but an edge of it that stops short of the
@@ -301,10 +307,250 @@ fn an_ellipse_touches_the_tangent_at_any_of_its_points() {
             matches!(line(0.0), LineContact::Touch(_)),
             "tangent at t = {t}"
         );
-        assert_eq!(line(0.2), LineContact::Cross, "chord at t = {t}");
+        assert!(
+            matches!(line(0.2), LineContact::Cross(_)),
+            "chord at t = {t}"
+        );
         assert_eq!(line(-0.2), LineContact::Miss, "clear at t = {t}");
     }
     assert!(SectionConic::of_curve(&EdgeCurve::Line).is_none());
+}
+
+// ── Eccentric sections ──────────────────────────────────────────────────
+
+/// The section of a radius-`b` cylinder tilted in the xz-plane so that the
+/// plane `z = z0` cuts it in an ellipse of semi-axes `(a, b)`, major axis
+/// along x, centred on the z axis (`cos θ = b / a`).
+fn tilted_section(a: f64, b: f64, z0: f64) -> (Ellipse3D, FaceSurface) {
+    let cos = b / a;
+    let axis = Vec3::new(-(1.0 - cos * cos).sqrt(), 0.0, cos);
+    let centre = Point3::new(0.0, 0.0, z0);
+    let ellipse = Ellipse3D::new_with_ref(centre, Z, a, b, Vec3::new(1.0, 0.0, 0.0)).unwrap();
+    let surface = FaceSurface::Cylinder(CylindricalSurface::new(centre, axis, b).unwrap());
+    (ellipse, surface)
+}
+
+/// Half the chord the line `x = a − depth` cuts from the ellipse of
+/// semi-axes `(a, b)`: `b √(1 − (x/a)²)`, written without cancellation.
+fn chord_half(a: f64, b: f64, depth: f64) -> f64 {
+    b * (depth * (2.0 * a - depth)).sqrt() / a
+}
+
+/// A straight hole edge 1e-5 inside an eccentric ellipse's major vertex is
+/// crossed: the curve passes 100 × the tolerance beyond it. Its reach used
+/// to be measured in the chart that maps the ellipse to the unit circle and
+/// scaled by the smaller semi-axis, which read 1e-8 for axes (1000, 1) and
+/// called it a touch.
+#[test]
+fn an_eccentric_ellipse_past_a_line_by_more_than_the_tolerance_crosses_it() {
+    let tol = Tolerance::new();
+    for (a, b) in [(10.0, 1.0), (100.0, 1.0), (1000.0, 1.0), (1000.0, 30.0)] {
+        for s in SCALES {
+            let (ellipse, _) = tilted_section(a * s, b * s, 0.0);
+            let conic = SectionConic::of_curve(&EdgeCurve::Ellipse(ellipse)).unwrap();
+            let edge = |x: f64| {
+                conic.line_contact(
+                    Point3::new(x, -0.25 * s, 0.0),
+                    Point3::new(x, 0.25 * s, 0.0),
+                    tol,
+                )
+            };
+            let depth = 1e-5 * s;
+            let what = format!("axes ({a}, {b}) scale {s}");
+            let LineContact::Cross(chord) = edge(a * s - depth) else {
+                panic!("{what}: {:?}", edge(a * s - depth));
+            };
+            // The reach `h − s` carries the rounding of coordinates `a`
+            // across (about 1e-14 · a); the half chord, its square root,
+            // half that relative to the reach.
+            let half = chord_half(a * s, b * s, depth);
+            assert!(
+                (chord.half - half).abs() <= 1e-6 * half,
+                "{what}: half chord {} vs {half}",
+                chord.half
+            );
+            assert!((chord.mid - 0.25 * s).abs() <= 1e-12 * s, "{what}");
+            assert_eq!(chord.ends_inside(), Some(2), "{what}");
+            // The band is the linear tolerance in length units, at every
+            // eccentricity.
+            assert!(
+                matches!(edge(a * s - 0.5 * tol.linear), LineContact::Touch(_)),
+                "{what}"
+            );
+            assert!(
+                matches!(edge(a * s - 3.0 * tol.linear), LineContact::Cross(_)),
+                "{what}"
+            );
+            assert_eq!(edge(a * s + 3.0 * tol.linear), LineContact::Miss, "{what}");
+        }
+    }
+}
+
+/// Along the major axis, near the minor vertex, the chord of a shallow
+/// crossing is long: `a √(1 − (y/b)²)`.
+#[test]
+fn an_eccentric_ellipse_crossed_near_its_minor_vertex_has_the_closed_form_chord() {
+    let tol = Tolerance::new();
+    for s in SCALES {
+        let (a, b) = (1000.0 * s, s);
+        let (ellipse, _) = tilted_section(a, b, 0.0);
+        let conic = SectionConic::of_curve(&EdgeCurve::Ellipse(ellipse)).unwrap();
+        let depth = 1e-5 * s;
+        let y = b - depth;
+        let contact = conic.line_contact(
+            Point3::new(-2.0 * a, y, 0.0),
+            Point3::new(2.0 * a, y, 0.0),
+            tol,
+        );
+        let LineContact::Cross(chord) = contact else {
+            panic!("scale {s}: {contact:?}");
+        };
+        let half = chord_half(b, a, depth);
+        assert!((chord.half - half).abs() <= 1e-6 * half, "scale {s}");
+        assert!((chord.mid - 2.0 * a).abs() <= 1e-9 * a, "scale {s}");
+    }
+}
+
+/// A slot `[near, near + 3] × [−w, w]` in the plane z = 0, as a hole wire.
+fn slot_hole(topo: &mut Topology, near: f64, w: f64) -> WireId {
+    polygon_wire(
+        topo,
+        &[
+            (near, -w),
+            (near, w),
+            (near + 3.0 * w, w),
+            (near + 3.0 * w, -w),
+        ],
+        0.0,
+    )
+}
+
+/// The crossings of the eccentric section of semi-axes `(a, b)` with a slot
+/// whose near end stands `depth` inside the section's major vertex.
+fn eccentric_slot(
+    a: f64,
+    b: f64,
+    depth: f64,
+    w: f64,
+) -> Result<Option<super::PlaneHoleCrossings>, super::AlgoError> {
+    let (ellipse, cylinder) = tilted_section(a, b, 0.0);
+    let mut topo = Topology::new();
+    let hole = slot_hole(&mut topo, a - depth, w);
+    let frame = crate::builder::plane_frame::PlaneFrame::from_normal_and_point(Z, ellipse.center());
+    plane_hole_crossings(
+        &topo,
+        hole,
+        &EdgeCurve::Ellipse(ellipse),
+        &cylinder,
+        &frame,
+        Tolerance::new(),
+    )
+}
+
+/// A hole edge inside an eccentric section's major vertex by enough that
+/// the edge enters the cylinder by ten tolerances (`depth · b / a` from the
+/// surface: the plane meets the tilted cylinder at a grazing angle there):
+/// both crossings, at the closed-form height.
+#[test]
+fn an_eccentric_ellipse_crosses_a_hole_edge_that_enters_its_cylinder() {
+    let tol = Tolerance::new();
+    for a in [10.0, 100.0, 1000.0] {
+        for s in SCALES {
+            let what = format!("a = {a}, scale {s}");
+            let depth = 10.0 * tol.linear * a;
+            let found = eccentric_slot(a * s, s, depth, 0.25 * s).unwrap().unwrap();
+            assert!(found.touches.is_empty(), "{what}");
+            let mut ys: Vec<f64> = found.crossings.iter().map(|p| p.y()).collect();
+            ys.sort_by(f64::total_cmp);
+            let half = chord_half(a * s, s, depth);
+            assert_eq!(ys.len(), 2, "{what}");
+            for (y, wanted) in ys.iter().zip([-half, half]) {
+                assert!(
+                    (y - wanted).abs() <= 1e-6 * half,
+                    "{what}: y {y} vs {wanted}"
+                );
+            }
+            for p in &found.crossings {
+                assert!((p.x() - (a * s - depth)).abs() <= 1e-12 * a * s, "{what}");
+            }
+        }
+    }
+}
+
+/// The reviewer's case, and its family: axes (1000, 1), a hole edge 1e-5
+/// inside the major vertex. In the plane the curve passes the edge by 100
+/// tolerances, yet the edge stays within 1e-8 of the tilted cylinder along
+/// the whole 2.8e-4 chord, so a crossing pair and a touch are the same
+/// contact to within tolerance. It is refused by name; it used to be read
+/// as a touch and its crossings dropped.
+#[test]
+fn an_eccentric_ellipse_whose_hole_edge_grazes_its_cylinder_is_refused() {
+    let tol = Tolerance::new();
+    let refused = |a: f64, b: f64, depth: f64| {
+        let error = eccentric_slot(a, b, depth, 0.25 * b)
+            .map(|_| ())
+            .expect_err("a grazing hole edge");
+        assert!(
+            error
+                .to_string()
+                .contains("within tolerance of the cut surface"),
+            "{error}"
+        );
+    };
+    refused(1000.0, 1.0, 1e-5);
+    for s in SCALES {
+        // The edge a tenth of the tolerance from the cylinder.
+        refused(1000.0 * s, s, 0.1 * tol.linear * 1000.0);
+    }
+}
+
+/// A section that passes a hole edge by more than the tolerance along a
+/// chord shorter than the distance at which two crossings merge cannot be
+/// split there: refused, rather than kept or dropped across the hole.
+#[test]
+fn an_unresolvable_needle_past_a_hole_edge_is_refused() {
+    // Axes (1, 5e-5), the edge 4e-3 inside the major vertex: it enters the
+    // cylinder by 2e-7, along a chord 8.9e-6 long, under the 1e-5 at which
+    // the trim takes two crossings for one.
+    let error = eccentric_slot(1.0, 5e-5, 4e-3, 1e-4)
+        .map(|_| ())
+        .expect_err("an unresolvable chord");
+    assert!(
+        error
+            .to_string()
+            .contains("crossing(s) of the edge bound it"),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_chord_counts_its_ends_inside_the_edge_and_defers_at_an_end() {
+    let chord = |mid: f64, half: f64| super::Chord {
+        mid,
+        half,
+        length: 10.0,
+        slack: 0.1,
+        deepest: Point3::new(0.0, 0.0, 0.0),
+        band: 0.01,
+    };
+    assert_eq!(chord(5.0, 1.0).ends_inside(), Some(2));
+    assert_eq!(chord(0.0, 1.0).ends_inside(), Some(1));
+    assert_eq!(chord(-5.0, 1.0).ends_inside(), Some(0));
+    assert_eq!(
+        chord(1.0, 1.0).ends_inside(),
+        None,
+        "an end at the edge's start"
+    );
+    assert_eq!(
+        chord(9.05, 0.9).ends_inside(),
+        None,
+        "an end at the edge's end"
+    );
+    let p = |y: f64| Point3::new(0.0, y, 0.0);
+    assert!(chord(5.0, 1.0).resolved_by(&[p(4.0), p(6.0)], 1e-5));
+    assert!(!chord(5.0, 1.0).resolved_by(&[p(4.0)], 1e-5));
+    assert!(!chord(5.0, 1.0).resolved_by(&[p(4.0), p(4.0 + 1e-6)], 1e-5));
+    assert!(chord(1.0, 1.0).resolved_by(&[], 1e-5), "undecided count");
 }
 
 // ── plane_hole_crossings ────────────────────────────────────────────────
@@ -327,6 +573,7 @@ fn a_square_hole_is_crossed_where_the_circle_meets_its_edges() {
             &frame,
             tol,
         )
+        .unwrap()
         .unwrap();
         assert!(found.touches.is_empty());
         assert_eq!(found.outline.len(), 4);
@@ -353,6 +600,7 @@ fn a_square_hole_is_crossed_where_the_circle_meets_its_edges() {
             &frame,
             tol,
         )
+        .unwrap()
         .unwrap();
         assert!(found.crossings.is_empty(), "scale {s}");
         assert_eq!(found.touches.len(), 1, "scale {s}");
@@ -388,6 +636,7 @@ fn a_round_hole_is_crossed_at_the_two_circle_circle_points() {
                 &frame,
                 tol,
             )
+            .unwrap()
             .unwrap();
             assert!(found.touches.is_empty());
             assert_eq!(found.crossings.len(), 2, "scale {s}");
@@ -415,6 +664,7 @@ fn a_round_hole_is_crossed_at_the_two_circle_circle_points() {
                     &frame,
                     tol,
                 )
+                .unwrap()
                 .unwrap();
                 assert!(found.crossings.is_empty(), "tangent at {at:?}, scale {s}");
                 assert_eq!(found.touches.len(), 1, "tangent at {at:?}, scale {s}");
@@ -440,6 +690,7 @@ fn a_round_hole_is_crossed_at_the_two_circle_circle_points() {
                     &frame,
                     tol,
                 )
+                .unwrap()
                 .is_none()
             );
         }
@@ -643,6 +894,60 @@ fn the_closed_circle_collector_reads_a_plane_faces_holes() {
             contacts
                 .pinch(&[(touch - 0.2, touch + 0.2)], project, 3.0 * s, tol)
                 .is_none()
+        );
+    }
+}
+
+/// The closed-circle collector against a straight hole edge 1e-5 inside a
+/// circular section (100 tolerances in the plane), the section cut from a
+/// cone. A cone standing steeply on the plane is entered by the edge and
+/// crossed twice; a nearly flat one (generator 1e-3 off the plane) is
+/// entered by only 1e-8 along the whole chord, and the pair is refused.
+#[test]
+fn the_closed_circle_collector_refuses_a_hole_edge_grazing_a_flat_cone() {
+    use remus_math::surfaces::ConicalSurface;
+
+    let tol = Tolerance::new();
+    for s in SCALES {
+        let (radius, depth) = (5.0 * s, 1e-5 * s);
+        let hits = |slope: f64| {
+            let mut topo = Topology::new();
+            let outer = polygon_wire(&mut topo, &square(10.0 * s, (0.0, 0.0)), 0.0);
+            let near = radius - depth;
+            let hole = polygon_wire(
+                &mut topo,
+                &[
+                    (near, -s),
+                    (near, s),
+                    (near + 2.0 * s, s),
+                    (near + 2.0 * s, -s),
+                ],
+                0.0,
+            );
+            let plane = topo.add_face(Face::new(outer, vec![hole], plane_at(0.0)));
+            // `ρ = t · cot(slope)`: the cone meets z = 0 in the circle of
+            // `radius` when its apex is `radius · tan(slope)` below.
+            let apex = Point3::new(0.0, 0.0, -radius * slope.tan());
+            let cone = FaceSurface::Cone(ConicalSurface::new(apex, Z, slope).unwrap());
+            let (wall, _) = cylinder_wall(&mut topo, (0.0, 0.0), radius, (-s, s));
+            topo.face_mut(wall).unwrap().set_surface(cone);
+            let circle = circle_at((0.0, 0.0), 0.0, radius);
+            closed_circle_boundary_crossings(&topo, plane, wall, &circle, tol)
+        };
+
+        let (_, contacts) = hits(0.5).unwrap();
+        assert_eq!(contacts.hole_crossings.len(), 2, "scale {s}");
+        let y = (depth * (2.0 * radius - depth)).sqrt();
+        for p in &contacts.hole_crossings {
+            assert!((p.y().abs() - y).abs() <= 1e-6 * y, "scale {s}: {p:?}");
+        }
+
+        let error = hits(1e-3).map(|_| ()).expect_err("a grazing hole edge");
+        assert!(
+            error
+                .to_string()
+                .contains("within tolerance of the cut surface"),
+            "scale {s}: {error}"
         );
     }
 }

@@ -391,12 +391,20 @@ fn cutters_crossing_the_opening_elsewhere_are_exact() {
 
 /// r = 1 touches both sides of the wall and crosses neither. The touches
 /// are not crossings of the rim's hole, so this change leaves the case as
-/// it was: either refused, or accepted with the closed-form volume. (As
-/// measured when this was written, the unit-scale and ×10 cuts are accepted
-/// with the exact volume and one open mesh edge along the tangent line —
-/// the acceptance gate does not look at the mesh — and at ×0.1 the through
-/// cut is accepted but `solid_volume` declines to measure it.) What must
-/// never happen is an accepted body with a wrong volume.
+/// it was: either refused, or accepted with the closed-form volume. What
+/// must never happen is an accepted body with a wrong volume.
+///
+/// Every accepted result is held to the bar without going through
+/// `solid_volume`: it validates, the volume its mesh encloses at two
+/// deflections is the closed form to within the deflection times the area
+/// of its curved faces, and it is air or material where it should be. Two
+/// known defects are named rather than skipped:
+///
+/// - the cuts mesh with one non-manifold edge along the line where the
+///   cutter touches the wall (the acceptance gate does not read the mesh);
+/// - at scale 0.1, `solid_volume` at the usual deflection (0.01 · s) fails
+///   to converge on the through cut and fuse; at 0.002 · s it measures the
+///   closed form. Follow-up: make the volume path converge there.
 #[test]
 fn a_cutter_tangent_to_both_wall_faces_is_exact_or_refused() {
     for s in SCALES {
@@ -406,24 +414,61 @@ fn a_cutter_tangent_to_both_wall_faces_is_exact_or_refused() {
                 let mut topo = Topology::new();
                 let body = shelled_box(&mut topo, s);
                 let tool = cylinder_at(&mut topo, s, 1.0, MID_WALL, span.0, span.1);
-                match boolean(&mut topo, op, body, tool) {
-                    Err(OperationsError::ExactOnlyUnattainable) => {}
+                let result = match boolean(&mut topo, op, body, tool) {
+                    Err(OperationsError::ExactOnlyUnattainable) => continue,
                     Err(other) => panic!("{what}: untyped refusal {other}"),
-                    Ok(result) => {
-                        let volume = expected(
-                            op,
-                            SHELL_VOLUME,
-                            PI * span.1,
-                            in_shell(1.0, 99.0, 50.0, span.0, span.1),
-                        ) * s.powi(3);
-                        if let Ok(measured) = solid_volume(&topo, result, 0.01 * s) {
-                            assert!(
-                                (measured - volume).abs() <= VOLUME_TOL * volume,
-                                "{what}: accepted with volume {measured} vs {volume}"
-                            );
-                        }
-                    }
+                    Ok(result) => result,
+                };
+                let volume = expected(
+                    op,
+                    SHELL_VOLUME,
+                    PI * span.1,
+                    in_shell(1.0, 99.0, 50.0, span.0, span.1),
+                ) * s.powi(3);
+
+                // Known defect: one non-manifold mesh edge on the tangent
+                // line of a cut.
+                let known_mesh_defects = usize::from(op == BooleanOp::Cut);
+                assert_mesh_geometry(&topo, result, volume, s, known_mesh_defects, &what);
+
+                let in_cutter = classify(&topo, result, s, (99.0, 50.0, 45.0));
+                let wanted = if op == BooleanOp::Cut {
+                    PointClassification::Outside
+                } else {
+                    PointClassification::Inside
+                };
+                assert_eq!(in_cutter, wanted, "{what}: in the cutter");
+                assert_eq!(
+                    classify(&topo, result, s, (99.0, 75.0, 25.0)),
+                    PointClassification::Inside,
+                    "{what}: in the wall"
+                );
+                if span == BLIND_FROM_TOP {
+                    assert_eq!(
+                        classify(&topo, result, s, (99.0, 50.0, 30.0)),
+                        PointClassification::Inside,
+                        "{what}: under the cutter's floor"
+                    );
                 }
+
+                let measured = match solid_volume(&topo, result, 0.01 * s) {
+                    Ok(measured) => measured,
+                    // Known: see the doc comment. Only this case, only this
+                    // error, and the finer deflection must still measure it.
+                    Err(error) if s < 1.0 && span == THROUGH => {
+                        assert!(
+                            format!("{error:?}").contains("ConvergenceFailure"),
+                            "{what}: {error:?}"
+                        );
+                        solid_volume(&topo, result, 0.002 * s)
+                            .unwrap_or_else(|e| panic!("{what}: {e:?} at the finer deflection"))
+                    }
+                    Err(error) => panic!("{what}: solid_volume {error:?}"),
+                };
+                assert!(
+                    (measured - volume).abs() <= VOLUME_TOL * volume,
+                    "{what}: accepted with volume {measured} vs {volume}"
+                );
             }
         }
     }
@@ -626,6 +671,354 @@ fn a_post_fused_through_off_centre_keeps_its_wall_oriented() {
             );
 
             shell_case(s, r, (cx, 50.0), THROUGH, BooleanOp::Fuse);
+        }
+    }
+}
+
+// ── Independent geometry checks ─────────────────────────────────────────
+
+/// Signed volume enclosed by a triangle mesh (divergence theorem).
+fn mesh_volume(mesh: &remus_operations::tessellate::TriangleMesh) -> f64 {
+    mesh.indices
+        .chunks_exact(3)
+        .map(|t| {
+            let [a, b, c] = [t[0], t[1], t[2]].map(|i| {
+                let p = mesh.positions[i as usize];
+                remus_math::vec::Vec3::new(p.x(), p.y(), p.z())
+            });
+            a.dot(b.cross(c)) / 6.0
+        })
+        .sum()
+}
+
+fn mesh_area(mesh: &remus_operations::tessellate::TriangleMesh) -> f64 {
+    mesh.indices
+        .chunks_exact(3)
+        .map(|t| {
+            let [a, b, c] = [t[0], t[1], t[2]].map(|i| mesh.positions[i as usize]);
+            0.5 * (b - a).cross(c - a).length()
+        })
+        .sum()
+}
+
+/// Area of the result's non-planar faces, meshed at `deflection`: the only
+/// faces whose mesh departs from the surface.
+fn curved_area(topo: &Topology, solid: SolidId, deflection: f64) -> f64 {
+    solid_faces(topo, solid)
+        .unwrap()
+        .into_iter()
+        .filter(|&f| !topo.face(f).unwrap().surface().is_planar())
+        .map(|f| mesh_area(&remus_operations::tessellate::tessellate(topo, f, deflection).unwrap()))
+        .sum()
+}
+
+/// What an accepted result looks like when it is measured without
+/// `solid_volume`: validation, and at two deflections the mesh's open and
+/// non-manifold edges and the volume it encloses, held to the closed form
+/// within the volume between the curved faces and their mesh (at most the
+/// deflection times their area).
+///
+/// `known_defects` is the number of open or non-manifold mesh edges a named
+/// defect leaves (zero for an exact result).
+fn assert_mesh_geometry(
+    topo: &Topology,
+    solid: SolidId,
+    volume: f64,
+    s: f64,
+    known_defects: usize,
+    what: &str,
+) {
+    let report = validate_solid(topo, solid).unwrap();
+    assert!(report.is_valid(), "{what}: {:?}", report.issues);
+    for deflection in [0.01 * s, 0.002 * s] {
+        let mesh = tessellate_solid(topo, solid, deflection).unwrap();
+        let (open, non_manifold) = (boundary_edge_count(&mesh), non_manifold_edge_count(&mesh));
+        assert!(
+            open + non_manifold <= known_defects,
+            "{what}: {open} open and {non_manifold} non-manifold mesh edges at deflection \
+             {deflection}"
+        );
+        let measured = mesh_volume(&mesh).abs();
+        let bound = 1.5 * deflection * curved_area(topo, solid, deflection) + VOLUME_TOL * volume;
+        assert!(
+            (measured - volume).abs() <= bound,
+            "{what}: mesh volume {measured} vs {volume} (bound {bound}) at deflection {deflection}"
+        );
+    }
+}
+
+// ── Eccentric sections against a straight hole edge ─────────────────────
+
+/// Plate thickness of the eccentric cases.
+const SLAB: f64 = 0.05;
+/// How far the section's major vertex reaches past the slot's near end on
+/// the plate's top face: 100 × the default linear tolerance at unit scale.
+const POKE: f64 = 1e-5;
+/// The slot: x from `a − POKE` to `a + SLOT_LENGTH`, y within ±`SLOT_HALF`.
+const SLOT_LENGTH: f64 = 3.0;
+const SLOT_HALF: f64 = 0.25;
+
+/// A slotted plate and a radius-1 cylinder tilted so that its section with
+/// the plate's top face (z = `SLAB`) is an ellipse of semi-axes `(a, 1)`
+/// centred on the origin, whose major vertex reaches `poke` past the slot's
+/// near end (a negative `poke` stops short of it). Going down through the plate the section slides toward the
+/// slot (by `tan θ` per unit height), so the cylinder also cuts the slot's
+/// walls. Returns the plate, the cylinder and the cylinder's length.
+fn eccentric_case(topo: &mut Topology, s: f64, a: f64, poke: f64) -> (SolidId, SolidId, f64) {
+    let tan = (a * a - 1.0).sqrt();
+    let x_min = -a - 1.0;
+    let x_max = a + SLOT_LENGTH + SLAB * tan + 2.0;
+    let plate = make_box(topo, (x_max - x_min) * s, 6.0 * s, SLAB * s).unwrap();
+    transform_solid(topo, plate, &Mat4::translation(x_min * s, -3.0 * s, 0.0)).unwrap();
+    let slot = make_box(
+        topo,
+        (SLOT_LENGTH + poke) * s,
+        2.0 * SLOT_HALF * s,
+        (SLAB + 2.0) * s,
+    )
+    .unwrap();
+    transform_solid(
+        topo,
+        slot,
+        &Mat4::translation((a - poke) * s, -SLOT_HALF * s, -s),
+    )
+    .unwrap();
+    let plate = boolean(topo, BooleanOp::Cut, plate, slot).unwrap();
+
+    // Axis direction (−sin θ, 0, cos θ) with cos θ = 1/a, through
+    // (0, 0, SLAB); the caps sit at z = −2 and z = SLAB + 2, clear of the
+    // plate. The seam is turned to the side (+y), away from the slot.
+    let theta = (1.0 / a).acos();
+    let below = (SLAB + 2.0) * a;
+    let length = (SLAB + 4.0) * a;
+    let cylinder = make_cylinder(topo, s, length * s).unwrap();
+    let placement = Mat4::translation(0.0, 0.0, SLAB * s)
+        * Mat4::rotation_y(-theta)
+        * Mat4::translation(0.0, 0.0, -below * s)
+        * Mat4::rotation_z(PI / 2.0);
+    transform_solid(topo, cylinder, &placement).unwrap();
+    (plate, cylinder, length)
+}
+
+/// Adaptive Simpson quadrature of a function that is smooth between the
+/// given breakpoints.
+fn integrate(f: &dyn Fn(f64) -> f64, breaks: &[f64], tol: f64) -> f64 {
+    fn simpson(a: f64, b: f64, fa: f64, fm: f64, fb: f64) -> f64 {
+        (b - a) / 6.0 * (fa + 4.0 * fm + fb)
+    }
+    fn recurse(
+        f: &dyn Fn(f64) -> f64,
+        (a, b): (f64, f64),
+        (fa, fm, fb): (f64, f64, f64),
+        whole: f64,
+        tol: f64,
+        depth: u32,
+    ) -> f64 {
+        let m = 0.5 * (a + b);
+        let (lm, rm) = (0.5 * (a + m), 0.5 * (m + b));
+        let (flm, frm) = (f(lm), f(rm));
+        let left = simpson(a, m, fa, flm, fm);
+        let right = simpson(m, b, fm, frm, fb);
+        if depth == 0 || (left + right - whole).abs() <= 15.0 * tol {
+            return left + right + (left + right - whole) / 15.0;
+        }
+        recurse(f, (a, m), (fa, flm, fm), left, 0.5 * tol, depth - 1)
+            + recurse(f, (m, b), (fm, frm, fb), right, 0.5 * tol, depth - 1)
+    }
+    breaks
+        .windows(2)
+        .map(|w| {
+            let (a, b) = (w[0], w[1]);
+            let (fa, fm, fb) = (f(a), f(0.5 * (a + b)), f(b));
+            let whole = simpson(a, b, fa, fm, fb);
+            recurse(f, (a, b), (fa, fm, fb), whole, tol, 40)
+        })
+        .sum()
+}
+
+/// Volume (unit scale) the tilted cylinder of [`eccentric_case`] shares
+/// with the slotted plate: by Cavalieri each horizontal section of the
+/// cylinder is an ellipse of area `π a`, less what of it lies over the
+/// slot — the unit disc inside the slot's rectangle mapped to the
+/// ellipse's chart, times `a`.
+fn eccentric_common(a: f64, poke: f64) -> f64 {
+    let tan = (a * a - 1.0).sqrt();
+    let (x0, x1) = (a - poke, a + SLOT_LENGTH);
+    let centre = |z: f64| (SLAB - z) * tan;
+    let over_slot = |z: f64| {
+        let c = centre(z);
+        a * disc_in_rect(1.0, (x0 - c) / a, (x1 - c) / a, -SLOT_HALF, SLOT_HALF)
+    };
+    // Where the slot's corners or its far end meet the section.
+    let reach = (1.0 - SLOT_HALF * SLOT_HALF).sqrt() * a;
+    let mut breaks = vec![0.0, SLAB];
+    for c in [
+        x0 - a,
+        x1 - a,
+        x0 - reach,
+        x0 + reach,
+        x1 - reach,
+        x1 + reach,
+    ] {
+        let z = SLAB - c / tan;
+        if z > 0.0 && z < SLAB {
+            breaks.push(z);
+        }
+    }
+    breaks.sort_by(f64::total_cmp);
+    let slot = integrate(&over_slot, &breaks, 1e-15 * a);
+    PI * a * SLAB - slot
+}
+
+fn eccentric_plate_volume(a: f64, poke: f64) -> f64 {
+    let tan = (a * a - 1.0).sqrt();
+    let length = 2.0 * a + SLOT_LENGTH + SLAB * tan + 3.0;
+    (length * 6.0 - (SLOT_LENGTH + poke) * 2.0 * SLOT_HALF) * SLAB
+}
+
+/// One eccentric boolean: the operation's result, and the closed-form
+/// volume (scaled).
+fn eccentric_boolean(
+    s: f64,
+    a: f64,
+    poke: f64,
+    op: BooleanOp,
+) -> (Topology, Result<SolidId, OperationsError>, f64) {
+    let mut topo = Topology::new();
+    let (plate, cylinder, length) = eccentric_case(&mut topo, s, a, poke);
+    let volume = expected(
+        op,
+        eccentric_plate_volume(a, poke),
+        PI * length,
+        eccentric_common(a, poke),
+    ) * s.powi(3);
+    let result = boolean(&mut topo, op, plate, cylinder);
+    (topo, result, volume)
+}
+
+/// An accepted eccentric result: exact by [`assert_exact`]'s bar (bar the
+/// face census: the tunnel is one cylinder face), the same by the mesh, and
+/// air or material where the tunnel runs through the plate.
+fn assert_eccentric_exact(
+    topo: &Topology,
+    result: SolidId,
+    volume: f64,
+    s: f64,
+    (a, op): (f64, BooleanOp),
+    what: &str,
+) {
+    let measured = solid_volume(topo, result, 0.002 * s).unwrap();
+    assert!(
+        (measured - volume).abs() <= 1e-9 * volume,
+        "{what}: volume {measured} vs slicing integral {volume}"
+    );
+    assert_mesh_geometry(topo, result, volume, s, 0, what);
+    // On the cylinder's axis half-way through the plate, and in the plate
+    // beside the tunnel.
+    let tan = (a * a - 1.0).sqrt();
+    let on_axis = classify(topo, result, s, (0.5 * SLAB * tan, 0.0, 0.5 * SLAB));
+    let wanted = if op == BooleanOp::Cut {
+        PointClassification::Outside
+    } else {
+        PointClassification::Inside
+    };
+    assert_eq!(on_axis, wanted, "{what}: on the axis");
+    assert_eq!(
+        classify(topo, result, s, (0.0, 2.0, 0.5 * SLAB)),
+        PointClassification::Inside,
+        "{what}: beside the tunnel"
+    );
+}
+
+/// A tilted cylinder whose section with a slotted plate's top face is an
+/// ellipse of axes (a, 1), its major vertex 1e-5 past the slot's near end:
+/// 100 tolerances in the plane. Measured on the plane alone that is a
+/// crossing; but the plane meets the cylinder at a grazing angle there, and
+/// the edge enters the cylinder by only `1e-5 · s / a` (1e-8 for the axes
+/// (1000, 1)). Where that is within the tolerance the two crossings and a
+/// touch are the same contact, and the pair is refused by name; where it is
+/// not, the result is exact. Nothing is accepted wrong.
+///
+/// The contact used to be measured in the chart that maps the ellipse to
+/// the unit circle, scaled by the smaller semi-axis, and read as a touch
+/// for (10, 1) at scale 0.1, (100, 1) up to scale 1 and (1000, 1) at every
+/// scale: the hole's crossings were dropped and the trim kept spans across
+/// the slot. The engine built wrong bodies (volume 12 % to 480 % off),
+/// which the acceptance gate refused.
+#[test]
+fn an_eccentric_section_past_a_hole_edge_is_exact_or_refused() {
+    let tol = remus_math::tolerance::Tolerance::new().linear;
+    for a in [10.0, 100.0, 1000.0] {
+        for s in SCALES {
+            for op in [BooleanOp::Cut, BooleanOp::Fuse] {
+                let what = format!("eccentric {op:?} axes ({a}, 1) scale {s}");
+                let (topo, result, volume) = eccentric_boolean(s, a, POKE, op);
+                // How far the slot's near end enters the cylinder.
+                let depth = POKE * s / a;
+                match result {
+                    Ok(result) => {
+                        assert_eccentric_exact(&topo, result, volume, s, (a, op), &what);
+                    }
+                    Err(OperationsError::ExactOnlyUnattainable) => {
+                        assert!(depth < 10.0 * tol, "{what}: refused at depth {depth:e}");
+                    }
+                    Err(other) => panic!("{what}: untyped refusal {other}"),
+                }
+
+                // The engine names the grazing contact rather than build a
+                // body from half a reading of it.
+                if depth <= 0.5 * tol {
+                    let mut topo = Topology::new();
+                    let (plate, cylinder, _) = eccentric_case(&mut topo, s, a, POKE);
+                    let algo_op = if op == BooleanOp::Cut {
+                        remus_algo::bop::BooleanOp::Cut
+                    } else {
+                        remus_algo::bop::BooleanOp::Fuse
+                    };
+                    let error = remus_algo::gfa::boolean(&mut topo, algo_op, plate, cylinder)
+                        .expect_err("a hole edge grazing the cut surface");
+                    assert!(
+                        error.to_string().contains("cannot be told from a tangency"),
+                        "{what}: {error}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// The milder eccentricities with the slot's near end well inside the
+/// section (1e-3 past the vertex): exact at every scale.
+#[test]
+fn an_eccentric_section_well_past_a_hole_edge_is_exact() {
+    for a in [10.0, 100.0] {
+        for s in SCALES {
+            for op in [BooleanOp::Cut, BooleanOp::Fuse] {
+                let what = format!("eccentric {op:?} axes ({a}, 1) poke 1e-3 scale {s}");
+                let (topo, result, volume) = eccentric_boolean(s, a, 1e-3, op);
+                let result = result.unwrap_or_else(|e| panic!("{what}: {e}"));
+                assert_eccentric_exact(&topo, result, volume, s, (a, op), &what);
+            }
+        }
+    }
+}
+
+/// Open: a tilted cylinder that enters the slot only below the plate's top
+/// face (its top section stops 0.5 short of the slot) comes out of the
+/// engine with validation errors and the wrong volume (the fuse loses most
+/// of the cylinder), and is refused by the acceptance gate, on `main` as
+/// here. The (1000, 1) cases above also build wrong bodies with the slot's
+/// end well inside the section (0.1 past the vertex), which is what still
+/// refuses them at scale 10; whether that is this defect is not established.
+#[test]
+#[ignore = "open: a tilted cylinder entering a through slot below the top face builds a wrong body"]
+fn a_tilted_cylinder_entering_a_slot_below_the_top_face_is_exact() {
+    for s in SCALES {
+        for op in [BooleanOp::Cut, BooleanOp::Fuse] {
+            let what = format!("slot below the top {op:?} scale {s}");
+            let (topo, result, volume) = eccentric_boolean(s, 10.0, -0.5, op);
+            let result = result.unwrap_or_else(|e| panic!("{what}: {e}"));
+            assert_eccentric_exact(&topo, result, volume, s, (10.0, op), &what);
         }
     }
 }
