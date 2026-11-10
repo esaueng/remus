@@ -697,6 +697,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | FreeCAD saved-shape ASCII BREP read and bounded planar loop classification | `brep/mod.rs`, `brep/reader.rs`, `brep/planar.rs` |
 | Saved-shape analytic line/circle and plane/cylinder carriers, rigid location words, bounded placed occurrences, circular caps and cylindrical seam bands | `brep/reader/carriers.rs`, `brep/reader/locations.rs`, `brep/reader/placed.rs`, `brep/reader/curved.rs` |
 | STEP read/write | `step/reader.rs`, `step/writer.rs` |
+| Verbatim STEP string-decoder oracle, deterministic fuzz, linear-work guards and hostile-name imports (tests) | `step/reader/directive_oracle_tests.rs` |
 | STEP export seam placement: a cylindrical band whose seam runs through one of its own inner wires is written, on a private arena copy, with the seam and its rim vertices moved into the widest free angular gap | `step/writer/seam.rs` |
 | Whole-sphere `VERTEX_LOOP` faces: an independently produced one-face sphere imports as the native two-hemisphere sphere, framed and as a void; other vertex-loop layouts refuse atomically (tests) | `tests/step_vertex_loop_sphere.rs` |
 | Overlapping-cylinder unions export a seam clear of every window in both orders and after reload, from native and independently produced inputs (tests) | `tests/step_crossed_seam_export.rs` |
