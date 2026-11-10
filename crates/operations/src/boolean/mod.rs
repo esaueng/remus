@@ -235,9 +235,7 @@ fn require_chart_certificate_counts(
     if charts == 0 && rescues == 0 {
         Ok(())
     } else {
-        log::debug!(
-            "exact boolean refused: {charts} uncertified charts and {rescues} uncertified rescues"
-        );
+        log::debug!("exact boolean refused: incomplete chart partition");
         Err(crate::OperationsError::ExactOnlyUnattainable)
     }
 }

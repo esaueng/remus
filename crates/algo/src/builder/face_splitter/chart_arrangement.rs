@@ -268,11 +268,7 @@ pub(super) fn trace_subfaces(
     let Some(cert) = certify(face.map, edges, nodes, &face.cert) else {
         decline!();
     };
-    log::debug!(
-        "chart_arrangement: face {:?} certified; contacts confined to node balls of radius {:e}",
-        face.face_id,
-        cert.max_ball
-    );
+    log::debug!("chart_arrangement: exact curve contacts certified");
     let polys: Vec<&[Point2]> = cert.edges.iter().map(|c| c.poly.as_slice()).collect();
 
     // Half-edges: 2k runs node_a → node_b, 2k + 1 the reverse.

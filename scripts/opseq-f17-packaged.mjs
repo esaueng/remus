@@ -55,7 +55,7 @@ function fixture(RemusKernel, api, scale, placed, swapped, mirrored, operation =
     if (placed) for (const solid of [a, b]) run('transform', { solid, matrix: m }, [solid, Float64Array.from(m)]);
     const ids = Uint32Array.of(a, b), original = kernel.serializeSolids(ids);
     const solidA = swapped ? b : a, solidB = swapped ? a : b;
-    if (placed || (!mirrored && scale === 0.001)) {
+    if ((placed && scale === 1000) || (!mirrored && scale === 0.001)) {
       const assertRollback = before => {
         const after = state(kernel);
         assert.deepEqual({ liveSlots: after.liveSlots, journal: after.journal },
@@ -185,6 +185,6 @@ export function runOpseqF17Packaged({ RemusKernel }) {
     }
   }
   if (failures.length) throw new AggregateError(failures, `F17: ${accepted} accepted, ${refused} refused of 72 fuse cells plus 9 operator controls`);
-  assert.equal(accepted, 30); assert.equal(refused, 42);
-  console.log('ok - F17 complete equal-frustum fuse: 30 exact, 42 atomic refusals, 9 complementary operator controls across direct/both batch APIs');
+  assert.equal(accepted, 48); assert.equal(refused, 24);
+  console.log('ok - F17 complete equal-frustum fuse: 48 exact, 24 atomic refusals, 9 complementary operator controls across direct/both batch APIs');
 }

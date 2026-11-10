@@ -1133,8 +1133,6 @@ pub(super) struct Certificate {
     pub(super) edges: Vec<CertifiedEdge>,
     /// Every span's enclosure, as a convex polygon.
     pub(super) enclosures: Vec<Vec<Point2>>,
-    /// The largest node ball any contact was confined to.
-    pub(super) max_ball: f64,
 }
 
 /// Which apex two touching spans share.
@@ -1397,10 +1395,7 @@ fn certify_with_pair_budget(
         }
         let d_b = (cur - nb).length();
         if !(d_a <= cfg.mismatch_cap && d_b <= cfg.mismatch_cap) {
-            log::debug!(
-                "chart_certificate: curve ends miss their nodes by {d_a:e}, {d_b:e} (cap {:e})",
-                cfg.mismatch_cap
-            );
+            log::debug!("chart_certificate: curve ends miss their nodes");
             decline!();
         }
         total += spans.len();
@@ -1579,7 +1574,6 @@ fn finish(ctx: &Ctx<'_>, enclosures: Vec<Vec<Point2>>) -> Certificate {
     Certificate {
         edges: out,
         enclosures,
-        max_ball: ctx.max_ball,
     }
 }
 
