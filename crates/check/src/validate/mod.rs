@@ -4,6 +4,7 @@ pub mod checks;
 pub(crate) mod edge;
 pub(crate) mod face;
 pub(crate) mod finite;
+pub mod planar_regions;
 pub mod shell;
 pub(crate) mod solid;
 pub(crate) mod vertex;

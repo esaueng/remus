@@ -447,6 +447,7 @@ Quick reference — find the right file for any task:
 | Edge geometric checks | `validate/edge.rs` |
 | Face geometric checks | `validate/face.rs` |
 | Validation orchestrator | `validate/mod.rs` |
+| Exact polygon/full-circle profile containment, bounded separation checks and planar winding parity (with tests) | `validate/planar_regions.rs` |
 | GProps accumulator (Huygens' theorem) | `properties/accumulator.rs` |
 | Closed-form formulas (box, sphere, cylinder, etc.) | `properties/analytic.rs` |
 | AABB computation | `properties/bbox.rs` |
@@ -547,6 +548,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Mesh boolean (co-refinement) | `mesh_boolean.rs` |
 | Robust triangle-triangle intersection: the narrow phase shared by mesh co-refinement and validation's component-overlap check | `triangle_intersection.rs` |
 | Extrude, Revolve, Sweep, Loft, Pipe | `extrude.rs`, `revolve.rs`, `sweep.rs`, `loft.rs`, `pipe.rs` |
+| Extrusion nesting preflight, separate island caps, and closed-form material/void regressions | `extrude/nesting.rs`, `extrude/nesting_tests.rs` |
 | Exact loft between parallel full circles: coaxial cylinder/cone bands, and laterally offset (oblique) circles as one exact rational ruled band per section pair with circular rims | `loft.rs` (`try_loft_coaxial_circle_stack`, `try_loft_parallel_circle_stack`), `loft/tests.rs` |
 | Twisted extrusion: the straight extrusion's topology with the top cap turned, fitted helix edges and certified swept side faces (lands concentric with the axis stay exact cylinders while they sweep less than a full turn, and are swept like the rest past it); herringbone: two opposite-hand halves glued at their shared mid-plane edges | `extrude/twist.rs`, `extrude/twist/tests.rs` |
 | Tapered extrusion toward an apex: the straight extrusion's topology with the far cap scaled about the apex; lines sweep to planes through it, concentric circles to exact cones, other curves to ruled NURBS (a concentric hole stays a cylinder) | `extrude/taper.rs`, `extrude/taper/tests.rs` |

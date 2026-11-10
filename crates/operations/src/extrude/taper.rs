@@ -100,6 +100,7 @@ pub(crate) fn tapered_extrude_impl(
     direction: Vec3,
     distance: f64,
 ) -> Result<TaperedExtrusion, OperationsError> {
+    super::nesting::refuse_nested_profile(topo, face, "tapered extrusion")?;
     let axis = direction.normalize()?;
     let perpendicular = match topo.face(face)?.surface() {
         FaceSurface::Plane { normal, .. } => normal.cross(axis).length() < CONCENTRIC_TOLERANCE,
