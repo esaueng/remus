@@ -1493,16 +1493,9 @@ fn build_wire(
                 center,
                 start: from,
                 end: to,
+                ccw,
             } => {
-                let local_turn = (from.x() - center.x()).mul_add(
-                    to.y() - center.y(),
-                    -(from.y() - center.y()) * (to.x() - center.x()),
-                );
-                let normal = if local_turn > 0.0 {
-                    frame.axis
-                } else {
-                    -frame.axis
-                };
+                let normal = if *ccw { frame.axis } else { -frame.axis };
                 let center = frame.point(*center);
                 let from = frame.point(*from);
                 let to = frame.point(*to);
@@ -1510,7 +1503,7 @@ fn build_wire(
                 let circle = Circle3D::new_with_ref(center, normal, radial.length(), radial)?;
                 let t0 = circle.project(from);
                 let span = (circle.project(to) - t0).rem_euclid(TAU);
-                if span <= 0.0 || span >= PI {
+                if span <= 0.0 || span >= TAU {
                     return Err(OperationsError::InvalidInput {
                         reason: format!("gear outline arc spans {span} rad"),
                     }

@@ -45,11 +45,17 @@ fn census(topo: &Topology, solid: SolidId) -> (usize, usize, usize, usize) {
     counts
 }
 
-/// Signed short angle from `a` to `b` about `center`.
-fn arc_sweep(center: Point3, a: Point3, b: Point3) -> f64 {
+/// Signed angle from `a` to `b` about `center`, counter-clockwise when
+/// `ccw` (so a land longer than half a turn keeps its length).
+fn arc_sweep(center: Point3, a: Point3, b: Point3, ccw: bool) -> f64 {
     let (ax, ay) = (a.x() - center.x(), a.y() - center.y());
     let (bx, by) = (b.x() - center.x(), b.y() - center.y());
-    (ax * by - ay * bx).atan2(ax * bx + ay * by)
+    let short = (ax * by - ay * bx).atan2(ax * bx + ay * by);
+    match (ccw, short > 0.0) {
+        (true, false) => short + TAU,
+        (false, true) => short - TAU,
+        _ => short,
+    }
 }
 
 /// Enclosed area of a local outline by Green's theorem, `½∮(x dy − y dx)`.
@@ -67,10 +73,15 @@ fn outline_area(segments: &[Segment], base_radius: f64) -> f64 {
             Segment::Line { start, end } => {
                 twice_area += start.x() * end.y() - end.x() * start.y();
             }
-            Segment::Arc { center, start, end } => {
+            Segment::Arc {
+                center,
+                start,
+                end,
+                ccw,
+            } => {
                 let r = (*start - *center).length();
                 let theta0 = (start.y() - center.y()).atan2(start.x() - center.x());
-                let sweep = arc_sweep(*center, *start, *end);
+                let sweep = arc_sweep(*center, *start, *end, *ccw);
                 let theta1 = theta0 + sweep;
                 twice_area += r * r * sweep
                     + r * (center.x() * (theta1.sin() - theta0.sin())
@@ -249,6 +260,95 @@ fn pitch_circle_tooth_thickness_matches_the_standard_formula() {
             PointClassification::Outside
         );
     }
+}
+
+/// Every outline arc carries its direction. Where the arc is shorter than
+/// half a turn (every arc of a gear with two or more teeth), that direction
+/// must be the one the cross product of its end radii gives, which is how
+/// the wire builder chose it before the direction was carried: those gears'
+/// edges stay bit for bit what they were.
+#[test]
+fn short_outline_arcs_carry_the_direction_their_end_radii_give() {
+    let mut cases = Vec::new();
+    for teeth in [3, 5, 12, 40] {
+        // A 3-tooth gear's standard fillet closes its root land.
+        for root_fillet in [0.0, if teeth > 3 { 0.38 } else { 0.1 }] {
+            // A 3-tooth gear has no room to shift: it points or closes.
+            let shifts: &[f64] = if teeth > 3 { &[0.0, 0.3] } else { &[0.0] };
+            for &profile_shift in shifts {
+                cases.push(GearParams {
+                    profile_shift,
+                    root_fillet,
+                    ..spur(teeth)
+                });
+            }
+        }
+    }
+    for teeth in [30, 48] {
+        for root_fillet in [0.0, 0.38] {
+            cases.push(GearParams {
+                root_fillet,
+                rim_diameter: Some(2.0 * f64::from(teeth) + 20.0),
+                ..GearParams::standard(GearKind::Internal, 2.0, teeth, 5.0)
+            });
+        }
+    }
+    for root_fillet in [0.0, 0.38] {
+        cases.push(GearParams {
+            root_fillet,
+            ..GearParams::standard(GearKind::Rack, 2.0, 4, 5.0)
+        });
+    }
+    let mut helical = vec![GearParams {
+        helix_angle: 20.0_f64.to_radians(),
+        ..spur(12)
+    }];
+    for diameter_factor in [8.0, 10.0, 16.0] {
+        helical.push(crate::gear::worm::equivalent(&WormParams::standard(
+            1.0,
+            2,
+            diameter_factor,
+            6.0,
+        )));
+    }
+    let geometries = cases
+        .iter()
+        .map(|params| gear_geometry(params).unwrap())
+        .chain(helical.iter().map(helical_geometry));
+    let mut arcs = 0;
+    for (params, geometry) in cases.iter().chain(&helical).zip(geometries) {
+        let local = local_outline(params, &geometry, 0.3)
+            .unwrap_or_else(|error| panic!("{params:?}: {error}"));
+        for segment in &local.outline.segments {
+            let Segment::Arc {
+                center,
+                start,
+                end,
+                ccw,
+            } = segment
+            else {
+                continue;
+            };
+            let (ax, ay) = (start.x() - center.x(), start.y() - center.y());
+            let (bx, by) = (end.x() - center.x(), end.y() - center.y());
+            let turn = ax.mul_add(by, -ay * bx);
+            assert!(
+                turn.abs() > 1e-12 * ax.hypot(ay) * bx.hypot(by),
+                "{:?} {} teeth: a straight or half-turn arc",
+                params.kind,
+                params.teeth
+            );
+            assert_eq!(
+                turn > 0.0,
+                *ccw,
+                "{:?} {} teeth: arc direction",
+                params.kind,
+                params.teeth
+            );
+            arcs += 1;
+        }
+    }
+    assert!(arcs > 500, "{arcs}");
 }
 
 #[test]

@@ -590,3 +590,134 @@ fn throats_out_of_range_are_refused() {
     };
     assert_eq!(refuse(30, 14.0, bored), GearRefusal::BoreTooLarge);
 }
+
+/// Transverse area of a sharp-rooted worm (no fillet, root circle on or
+/// above the base circle) from the worm's own closed forms, with no
+/// outline segments: the root disc plus `z₁` teeth whose half-angle at
+/// radius `r` is `ψ₀ − inv α_r`. With `r = r_b √(1 + t²)`,
+/// `∫ inv α_r · r dr = r_b² (t³/3 − ((1 + t²) atan t − t)/2)`.
+/// Also returns the root and tip half-angles, unwrapped.
+// The oracle has no fillet term, so the fillet must be exactly zero.
+#[allow(clippy::float_cmp)]
+fn sharp_worm_area(params: &WormParams) -> (f64, f64, f64) {
+    assert_eq!(params.root_fillet, 0.0);
+    let m = params.module;
+    let z = f64::from(params.starts);
+    let gamma = z.atan2(params.diameter_factor);
+    let r = 0.5 * params.diameter_factor * m;
+    let alpha_t = (params.pressure_angle.tan() / gamma.sin()).atan();
+    let rb = r * alpha_t.cos();
+    let (ra, rf) = (r + params.addendum * m, r - params.dedendum * m);
+    assert!(
+        rf >= rb,
+        "the oracle needs the root circle above the base circle"
+    );
+    // Pitch-circle half-angle of the thread: (π m/2 − j_x)/(z₁ m).
+    let psi0 = (0.5 * PI * m - params.backlash) / (z * m) + (alpha_t.tan() - alpha_t);
+    let roll = |radius: f64| ((radius / rb).powi(2) - 1.0).sqrt();
+    let inv = |t: f64| t - t.atan();
+    let primitive = |t: f64| rb * rb * (t.powi(3) / 3.0 - 0.5 * (t.mul_add(t, 1.0) * t.atan() - t));
+    let (ta, tf) = (roll(ra), roll(rf));
+    let tooth = psi0 * (ra * ra - rf * rf) - 2.0 * (primitive(ta) - primitive(tf));
+    (
+        z.mul_add(tooth, PI * rf * rf),
+        psi0 - inv(tf),
+        psi0 - inv(ta),
+    )
+}
+
+/// A single-start worm with a short sharp tooth and a deep root: the root
+/// land between the tooth's feet is longer than half a turn. Repro for the
+/// outline arc built the short way round, which dropped the worm's core.
+fn single_start_long_land(backlash: f64) -> WormParams {
+    WormParams {
+        backlash,
+        dedendum: 0.5,
+        root_fillet: 0.0,
+        pressure_angle: 14.5_f64.to_radians(),
+        ..WormParams::standard(1.0, 1, 10.0, 3.0)
+    }
+}
+
+/// Builds the sharp worm, checks it against [`sharp_worm_area`] and checks
+/// its core is solid all round; returns the root half-angle and the volume.
+fn assert_sharp_worm_volume(params: &WormParams) -> (f64, f64) {
+    let (topo, outcome) = build_worm(params, &GearPlacement::default());
+    assert_valid_and_watertight(&topo, outcome.solid);
+    let (area, root_half, _) = sharp_worm_area(params);
+    let expected = area * params.length;
+    let volume = solid_volume(&topo, outcome.solid, 1e-4).unwrap();
+    assert!(
+        ((volume - expected) / expected).abs() < 1e-6,
+        "backlash {}: volume {volume} vs closed form {expected}",
+        params.backlash
+    );
+    // The core inside the root circle is material all round, the land side
+    // (opposite the tooth on +x) included.
+    let rf = params.module * 0.5f64.mul_add(params.diameter_factor, -params.dedendum);
+    for angle in [0.0, 0.5 * PI, PI, 1.5 * PI] {
+        assert_eq!(
+            classify(&topo, outcome.solid, 0.9 * rf, angle, 0.5 * params.length),
+            PointClassification::Inside,
+            "backlash {}: core at {angle} rad",
+            params.backlash
+        );
+    }
+    (root_half, volume)
+}
+
+#[test]
+fn single_start_worm_with_a_long_root_land_keeps_its_core() {
+    let params = WormParams {
+        length: 6.0,
+        ..single_start_long_land(0.3)
+    };
+    let (root_half, volume) = assert_sharp_worm_volume(&params);
+    // The case that failed: the root land spans 2π − 2·root_half > π.
+    assert!(root_half < 0.5 * PI, "{root_half}");
+    // The root cylinder alone holds π·4.5²·6 ≈ 381.7 (the wrong arc left
+    // 105.9).
+    assert!(volume > PI * 4.5 * 4.5 * 6.0, "{volume}");
+}
+
+#[test]
+fn single_start_root_lands_either_side_of_half_a_turn_keep_their_area() {
+    // The root half-angle falls through π/2 near a backlash of 0.26, so the
+    // land crosses from under to over half a turn within this sweep.
+    let mut halves = Vec::new();
+    for backlash in [0.0, 0.1, 0.2, 0.25, 0.27, 0.35, 0.45] {
+        halves.push(assert_sharp_worm_volume(&single_start_long_land(backlash)).0);
+    }
+    assert!(halves.iter().any(|&h| h > 0.5 * PI));
+    assert!(halves.iter().any(|&h| h < 0.5 * PI));
+    // A filleted single start whose root half-angle (≈ 3.03 rad) sits just
+    // under the half pitch π: the land is short but open, so it builds.
+    let steep = WormParams {
+        pressure_angle: 30.0_f64.to_radians(),
+        ..WormParams::standard(1.0, 1, 10.0, 3.0)
+    };
+    let (topo, outcome) = build_worm(&steep, &GearPlacement::default());
+    assert_valid_and_watertight(&topo, outcome.solid);
+    let expected = exact_worm_area(&steep) * steep.length;
+    let volume = solid_volume(&topo, outcome.solid, 1e-4).unwrap();
+    assert!(
+        ((volume - expected) / expected).abs() < 1e-6,
+        "{volume} vs {expected}"
+    );
+}
+
+#[test]
+fn a_single_start_root_land_closed_past_half_a_turn_is_refused() {
+    // Root half-angle ≈ 5.6 rad: past the half pitch π, where `atan2` folds
+    // it back to −0.7 rad. The tip half-angle (≈ 1.2 rad) stays open.
+    let params = WormParams {
+        addendum: 0.2,
+        dedendum: 2.0,
+        root_fillet: 0.0,
+        pressure_angle: FRAC_PI_4,
+        ..WormParams::standard(1.0, 1, 20.0, 3.0)
+    };
+    let (_, root_half, tip_half) = sharp_worm_area(&params);
+    assert!(root_half > PI && tip_half > 0.0, "{root_half}, {tip_half}");
+    assert_eq!(worm_refusal(&params), GearRefusal::RootLandClosed);
+}
