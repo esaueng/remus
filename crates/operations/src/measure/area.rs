@@ -203,7 +203,8 @@ fn nurbs_boundary_is_recognized(
 
 /// Sampled fallback for a planar boundary the exact moment integrator does
 /// not support. Computes the Newell area of a 256-sample polygon and
-/// subtracts sampled inner-wire areas.
+/// subtracts sampled inner-wire areas, adding back the islands nested inside
+/// a hole (odd nesting depth).
 fn planar_face_area(topo: &Topology, face_id: FaceId) -> Result<f64, crate::OperationsError> {
     let face = topo.face(face_id)?;
     let outer_wire = topo.wire(face.outer_wire())?;
@@ -211,12 +212,22 @@ fn planar_face_area(topo: &Topology, face_id: FaceId) -> Result<f64, crate::Oper
 
     let outer_area = newell_area(&outer_positions);
 
-    // Subtract hole areas.
+    let inner = face
+        .inner_wires()
+        .iter()
+        .map(|&wid| collect_wire_positions(topo, topo.wire(wid)?))
+        .collect::<Result<Vec<_>, _>>()?;
+    // Nested inner wires alternate void and material: an island inside a
+    // hole restores area, a hole inside that island removes it again.
+    let normal = remus_check::util::polygon_normal(&outer_positions);
+    let depths = remus_check::util::loop_nesting_depths(&inner, &normal);
     let mut hole_area = 0.0;
-    for &inner_wid in face.inner_wires() {
-        let inner_wire = topo.wire(inner_wid)?;
-        let inner_positions = collect_wire_positions(topo, inner_wire)?;
-        hole_area += newell_area(&inner_positions);
+    for (positions, depth) in inner.iter().zip(depths) {
+        if depth % 2 == 0 {
+            hole_area += newell_area(positions);
+        } else {
+            hole_area -= newell_area(positions);
+        }
     }
 
     Ok((outer_area - hole_area).abs())

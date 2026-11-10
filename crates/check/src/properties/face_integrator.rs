@@ -32,6 +32,8 @@ mod knot_rows_oracle_tests;
 mod loop_index;
 mod natural_rectangle;
 #[cfg(test)]
+mod nested_hole_tests;
+#[cfg(test)]
 mod nurbs_rows_oracle_tests;
 #[cfg(test)]
 mod parametric_split_oracle_tests;
@@ -2718,8 +2720,9 @@ fn unwrap_angle(prev: f64, next: f64) -> f64 {
 
 /// Integrate a planar face using polygon fan triangulation.
 ///
-/// Inner wires (holes) are integrated the same way and subtracted from the
-/// outer-wire contribution.
+/// Inner wires are integrated the same way and subtracted from the
+/// outer-wire contribution, or added back for an island nested inside a hole
+/// (odd nesting depth).
 fn integrate_planar_face(
     topo: &Topology,
     face_id: FaceId,
@@ -2738,31 +2741,75 @@ fn integrate_planar_face(
     // The sampled-boundary fallback integrates its polygon in closed form, so
     // there is no quadrature for adaptive controls to refine: any validated
     // controls are satisfied and the sampled boundary is the stated residual.
+    integrate_planar_face_fan(topo, face_id, normal, reference)
+}
+
+/// The chord-polygon fallback of [`integrate_planar_face`]: each wire's
+/// sampled polygon fan-triangulated, with a unit `normal`.
+fn integrate_planar_face_fan(
+    topo: &Topology,
+    face_id: FaceId,
+    normal: Vec3,
+    reference: Point3,
+) -> Result<FaceContribution, CheckError> {
     let polygon = crate::util::face_polygon(topo, face_id)?;
     let mut contrib = integrate_planar_polygon(&polygon, normal, reference);
 
     let face = topo.face(face_id)?;
-    let inner: Vec<_> = face.inner_wires().to_vec();
-    for wid in inner {
-        let hole = crate::util::wire_polygon(topo, wid)?;
-        let h = integrate_planar_polygon(&hole, normal, reference);
-        contrib.area -= h.area;
-        contrib.volume -= h.volume;
-        contrib.volume_moment_x -= h.volume_moment_x;
-        contrib.volume_moment_y -= h.volume_moment_y;
-        contrib.volume_moment_z -= h.volume_moment_z;
-        contrib.volume_second_x -= h.volume_second_x;
-        contrib.volume_second_y -= h.volume_second_y;
-        contrib.volume_second_z -= h.volume_second_z;
-        contrib.volume_product_xy -= h.volume_product_xy;
-        contrib.volume_product_xz -= h.volume_product_xz;
-        contrib.volume_product_yz -= h.volume_product_yz;
-        contrib.centroid_x -= h.centroid_x;
-        contrib.centroid_y -= h.centroid_y;
-        contrib.centroid_z -= h.centroid_z;
+    let holes = face
+        .inner_wires()
+        .iter()
+        .map(|&wid| crate::util::wire_polygon(topo, wid))
+        .collect::<Result<Vec<_>, _>>()?;
+    // Nested inner wires alternate void and material: an island inside a
+    // hole is added back, a hole inside that island subtracted again.
+    let depths = crate::util::loop_nesting_depths(&holes, &normal);
+    for (hole, depth) in holes.iter().zip(depths) {
+        let h = integrate_planar_polygon(hole, normal, reference);
+        if depth % 2 == 0 {
+            subtract_contribution(&mut contrib, &h);
+        } else {
+            add_contribution(&mut contrib, &h);
+        }
     }
 
     Ok(contrib)
+}
+
+/// Remove a hole's positive-area contribution from `contrib`.
+fn subtract_contribution(contrib: &mut FaceContribution, h: &FaceContribution) {
+    contrib.area -= h.area;
+    contrib.volume -= h.volume;
+    contrib.volume_moment_x -= h.volume_moment_x;
+    contrib.volume_moment_y -= h.volume_moment_y;
+    contrib.volume_moment_z -= h.volume_moment_z;
+    contrib.volume_second_x -= h.volume_second_x;
+    contrib.volume_second_y -= h.volume_second_y;
+    contrib.volume_second_z -= h.volume_second_z;
+    contrib.volume_product_xy -= h.volume_product_xy;
+    contrib.volume_product_xz -= h.volume_product_xz;
+    contrib.volume_product_yz -= h.volume_product_yz;
+    contrib.centroid_x -= h.centroid_x;
+    contrib.centroid_y -= h.centroid_y;
+    contrib.centroid_z -= h.centroid_z;
+}
+
+/// Add an island's positive-area contribution back to `contrib`.
+fn add_contribution(contrib: &mut FaceContribution, h: &FaceContribution) {
+    contrib.area += h.area;
+    contrib.volume += h.volume;
+    contrib.volume_moment_x += h.volume_moment_x;
+    contrib.volume_moment_y += h.volume_moment_y;
+    contrib.volume_moment_z += h.volume_moment_z;
+    contrib.volume_second_x += h.volume_second_x;
+    contrib.volume_second_y += h.volume_second_y;
+    contrib.volume_second_z += h.volume_second_z;
+    contrib.volume_product_xy += h.volume_product_xy;
+    contrib.volume_product_xz += h.volume_product_xz;
+    contrib.volume_product_yz += h.volume_product_yz;
+    contrib.centroid_x += h.centroid_x;
+    contrib.centroid_y += h.centroid_y;
+    contrib.centroid_z += h.centroid_z;
 }
 
 /// Integrate a planar polygon's contribution via fan triangulation, about
@@ -4129,12 +4176,30 @@ fn integrate_planar_face_exact(
     let Some(mut moments) = planar_wire_monomial_moments(topo, outer_wire, origin, e1, e2)? else {
         return Ok(None);
     };
-    for wid in inner {
+    // Nested inner wires alternate void and material: an island inside a
+    // hole is added back, a hole inside that island subtracted again. A lone
+    // hole needs no nesting test, and no sampled outline.
+    let depths = if inner.len() < 2 {
+        vec![0; inner.len()]
+    } else {
+        let loops = inner
+            .iter()
+            .map(|&wid| crate::util::wire_polygon(topo, wid))
+            .collect::<Result<Vec<_>, _>>()?;
+        crate::util::loop_nesting_depths(&loops, &boundary_normal)
+    };
+    for (wid, depth) in inner.into_iter().zip(depths) {
         let Some(hole) = planar_wire_monomial_moments(topo, wid, origin, e1, e2)? else {
             return Ok(None);
         };
-        for k in 0..10 {
-            moments[k] -= hole[k];
+        if depth % 2 == 0 {
+            for k in 0..10 {
+                moments[k] -= hole[k];
+            }
+        } else {
+            for k in 0..10 {
+                moments[k] += hole[k];
+            }
         }
     }
 

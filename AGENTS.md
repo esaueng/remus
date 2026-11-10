@@ -418,7 +418,7 @@ Quick reference — find the right file for any task:
 | Task | File(s) |
 |------|---------|
 | Public API, `CheckError` | `lib.rs`, `error.rs` |
-| Shared utilities (face polygon, AABB, edge sampling) | `util.rs` |
+| Shared utilities (face polygon, AABB, edge sampling, inner-loop nesting depths) | `util.rs` |
 | Ray-surface intersection (all types + solvers) | `classify/ray_surface.rs` |
 | UV boundary polygon, containment tests | `classify/boundary.rs` |
 | Point-in-solid classification (ray casting) | `classify/mod.rs` |
@@ -455,6 +455,7 @@ Quick reference — find the right file for any task:
 | Full-turn cylinder bands with rims split into many arcs, integrated over their exact `(u, v)` rectangle past the trim budget (tests) | `properties/face_integrator/cylinder_band_tests.rs` |
 | Full-turn cylinder bands with rims split into many arcs, integrated over their exact `(u, v)` rectangle past the trim budget (tests) | `properties/face_integrator/cylinder_band_tests.rs` |
 | Independent polynomial Green-moment and authoritative-trim oracles (tests) | `properties/face_integrator/polynomial_boundary_tests.rs` |
+| Planar faces with nested inner wires (hole, island, hole) alternate void and material: closed-form rectangle sums and signed single-loop compositions of every moment, exact and fan paths (tests) | `properties/face_integrator/nested_hole_tests.rs` |
 | Properties orchestrator (volume, area, CoM) | `properties/mod.rs` |
 | Opt-in content-keyed memo of fixed-order face integrals (`FaceIntegralCache`, PERF-V02 subset) | `properties/face_cache.rs` |
 | Knot-aligned basis-reuse bit oracle, independent ruled-generator quadrature and closed-form volume/flux oracles (tests) | `properties/face_integrator/knot_rows_oracle_tests.rs` |
@@ -523,6 +524,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Independent carrier and manifold oracles for the sphere equator | `primitives/sphere_equator_tests.rs` |
 | Boolean (union/cut/intersect) | `boolean/` (mod, types, classify, assembly, tests, nway_pairs_tests, disjoint_witness_tests) |
 | Three-box union grouping and order regression: exact volume, solid validation, closed oriented mesh, material probes, source preservation and STEP replay (OpenZCAD 1246) | `tests/regress_issue_1246_box_union_grouping.rs` |
+| Nested inner wires measured with alternating material: a standalone face's area and a pocketed block with a standing, holed island (face area, volume, centre of mass, surface area against signed boxes) (tests) | `tests/nested_inner_wire_measure.rs` |
 | Qualified local drilled-hole cut (through and blind holes; stages 1–2 of the local boolean) and its GFA oracle tests | `boolean/local_cut.rs`, `boolean/local_cut_tests.rs` |
 | Opt-in store-local cut, fuse and intersect: the GFA on the faces the tool touches, spliced onto the untouched ones (stage 4 of the local boolean), and its equivalence oracle tests | `boolean/store_local.rs`, `boolean/store_local_tests.rs` |
 | Mesh boolean (co-refinement) | `mesh_boolean.rs` |
@@ -701,6 +703,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Whole-sphere `VERTEX_LOOP` faces: an independently produced one-face sphere imports as the native two-hemisphere sphere, framed and as a void; other vertex-loop layouts refuse atomically (tests) | `tests/step_vertex_loop_sphere.rs` |
 | Overlapping-cylinder unions export a seam clear of every window in both orders and after reload, from native and independently produced inputs (tests) | `tests/step_crossed_seam_export.rs` |
 | An independently produced box with `same_sense = .F.` planes shells like the native box, open and closed (tests) | `tests/step_reversed_plane_shell.rs` |
+| Nested-inner-wire top face of `oring_nested_holes.step`: face area, solid volume and centre of mass against rounded-square closed forms (tests) | `tests/regress_measure_nested_holes.rs` |
 | IGES read/write | `iges/reader.rs`, `iges/writer.rs` |
 | STL read/write/import | `stl/reader.rs`, `stl/writer.rs`, `stl/import.rs` |
 | 3MF read/write | `threemf/reader.rs`, `threemf/writer.rs` |

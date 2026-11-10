@@ -657,6 +657,89 @@ pub fn point_in_polygon_3d(point: &Point3, polygon: &[Point3], normal: &Vec3) ->
     point_in_polygon(proj_pt, &proj_poly)
 }
 
+/// Nesting depth of each loop among the others: 0 for a loop inside none of
+/// them, 1 for a loop inside one, and so on.
+///
+/// The loops are a face's inner wires, sampled as 3D polygons on its plane.
+/// Nested inner wires alternate void and material by depth (a hole, an island
+/// in it, a hole in that island), the parity the point classifier and the
+/// planar tessellator apply, so a measurement subtracts the loops at even
+/// depth and adds back the ones at odd depth.
+///
+/// Inner wires of a valid face neither cross nor touch, so a container's box
+/// in the plane strictly holds the boxes of the loops it holds. Loops are
+/// taken smallest box first, and the first larger loop whose box and polygon
+/// hold a probe point of the loop is its immediate parent: concentric loops
+/// cost one polygon test each, and loops side by side are told apart by
+/// their boxes alone. The probe is the midpoint of the loop's first segment
+/// rather than a vertex, which two loops of a degenerate face may share.
+/// `normal` only picks the projection plane (see [`point_in_polygon_3d`]).
+#[must_use]
+pub fn loop_nesting_depths(loops: &[Vec<Point3>], normal: &Vec3) -> Vec<usize> {
+    use remus_math::compact_sort::CompactSort;
+
+    let n = loops.len();
+    if n < 2 {
+        return vec![0; n];
+    }
+    let (ax, ay, az) = (normal.x().abs(), normal.y().abs(), normal.z().abs());
+    let project = |p: &Point3| {
+        if az >= ax && az >= ay {
+            (p.x(), p.y())
+        } else if ay >= ax {
+            (p.x(), p.z())
+        } else {
+            (p.y(), p.z())
+        }
+    };
+    let boxes: Vec<[f64; 4]> = loops
+        .iter()
+        .map(|polygon| {
+            polygon.iter().fold(
+                [
+                    f64::INFINITY,
+                    f64::INFINITY,
+                    f64::NEG_INFINITY,
+                    f64::NEG_INFINITY,
+                ],
+                |[a0, b0, a1, b1], p| {
+                    let (a, b) = project(p);
+                    [a0.min(a), b0.min(b), a1.max(a), b1.max(b)]
+                },
+            )
+        })
+        .collect();
+    let box_area = |[a0, b0, a1, b1]: [f64; 4]| (a1 - a0) * (b1 - b0);
+    let mut order: Vec<usize> = (0..n).collect();
+    order.compact_sort_by(|&a, &b| box_area(boxes[a]).total_cmp(&box_area(boxes[b])));
+    let mut parent: Vec<Option<usize>> = vec![None; n];
+    for (position, &k) in order.iter().enumerate() {
+        let probe = match loops[k].as_slice() {
+            [] => continue,
+            [only] => *only,
+            [first, second, ..] => *first + (*second - *first) * 0.5,
+        };
+        let (a, b) = project(&probe);
+        for &j in &order[position + 1..] {
+            let [a0, b0, a1, b1] = boxes[j];
+            if a < a0 || a > a1 || b < b0 || b > b1 {
+                continue;
+            }
+            if loops[j].len() >= 3 && point_in_polygon_3d(&probe, &loops[j], normal) {
+                parent[k] = Some(j);
+                break;
+            }
+        }
+    }
+    // Parents have larger boxes, so walking down from the largest settles
+    // every parent before its children.
+    let mut depth = vec![0; n];
+    for &k in order.iter().rev() {
+        depth[k] = parent[k].map_or(0, |j| depth[j] + 1);
+    }
+    depth
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -667,6 +750,39 @@ mod tests {
     use remus_topology::edge::Edge;
     use remus_topology::vertex::Vertex;
     use remus_topology::wire::{OrientedEdge, Wire};
+
+    #[test]
+    fn loop_nesting_depths_counts_containing_loops() {
+        let square = |cx: f64, cy: f64, h: f64| {
+            vec![
+                Point3::new(cx - h, cy - h, 0.0),
+                Point3::new(cx + h, cy - h, 0.0),
+                Point3::new(cx + h, cy + h, 0.0),
+                Point3::new(cx - h, cy + h, 0.0),
+            ]
+        };
+        // An L-shaped hole whose box holds a square it does not surround.
+        let l_shape = vec![
+            Point3::new(20.0, 0.0, 0.0),
+            Point3::new(30.0, 0.0, 0.0),
+            Point3::new(30.0, 2.0, 0.0),
+            Point3::new(22.0, 2.0, 0.0),
+            Point3::new(22.0, 10.0, 0.0),
+            Point3::new(20.0, 10.0, 0.0),
+        ];
+        let loops = vec![
+            square(0.0, 0.0, 1.0),
+            square(0.0, 0.0, 8.0),
+            l_shape,
+            square(0.0, 0.0, 4.0),
+            square(26.0, 6.0, 1.0),
+            square(0.0, 0.0, 6.0),
+        ];
+        let up = Vec3::new(0.0, 0.0, 1.0);
+        assert_eq!(loop_nesting_depths(&loops, &up), vec![3, 0, 0, 2, 0, 1]);
+        assert_eq!(loop_nesting_depths(&loops[..1], &up), vec![0]);
+        assert!(loop_nesting_depths(&[], &up).is_empty());
+    }
 
     #[test]
     fn wire_polygon_anchors_closed_nurbs_rim_at_seam_vertex() {
