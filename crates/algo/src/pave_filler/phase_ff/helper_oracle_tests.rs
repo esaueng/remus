@@ -1243,6 +1243,36 @@ fn torus_oval_crossed_twice_within_the_edge_parameter_spacing_defers() {
     assert!(cut.trim(&mut topo, face).is_none());
 }
 
+/// Box sides too long for the solve to settle (`1e120`): each comes back as
+/// one open, unresolved window with no point to hold against the oval. The
+/// sides do cross the oval, so "no crossing on this branch" would keep or
+/// drop it whole; the trim defers instead.
+#[test]
+fn torus_oval_against_an_unsettled_box_side_defers() {
+    let cut = exact_torus_cut();
+    let corners = [
+        cut.in_plane(3.0, -1e120),
+        cut.in_plane(3.5, -1e120),
+        cut.in_plane(3.5, 1e119),
+        cut.in_plane(3.0, 1e119),
+    ];
+    let contacts = remus_math::analytic_intersection::intersect_line_torus_contacts(
+        &cut.torus,
+        corners[1],
+        corners[2] - corners[1],
+    );
+    assert!(!contacts.is_empty(), "the side crosses the oval");
+    assert!(
+        contacts
+            .iter()
+            .all(|c| !c.resolved && (c.t_lo.is_infinite() || c.t_hi.is_infinite())),
+        "{contacts:?}"
+    );
+    let mut topo = Topology::new();
+    let face = polygon_face(&mut topo, &corners, Vec3::new(0.0, 0.0, 1.0));
+    assert!(cut.trim(&mut topo, face).is_none());
+}
+
 /// A box side a little inside the oval cuts a small cap off it. The side's
 /// two crossings are resolved roots, and the kept arcs end exactly on them
 /// and on the crossings of the two other sides the oval leaves through.

@@ -1717,12 +1717,15 @@ fn newton_refine_torus(
 /// - one point of each stretch the arithmetic could not resolve (an exact
 ///   tangency);
 /// - for roots certified apart on the line that `t` cannot hold in separate
-///   windows (see "The parameter's own limit" there), the `f64` nearest each
-///   root: two values when the roots round to different doubles, one when
-///   they round to the same. Such roots are closer together than two units
-///   in the last place of `t`; a value returned once then stands for two
-///   crossings, as an exact tangency's does. The list alone does not say
-///   which values these are;
+///   windows (see "The parameter's own limit" there), `f64` values of that
+///   window such that every root has one within a unit in the last place
+///   of `t`, and every value is that close to a root. Each is the nearest
+///   `f64` to its root or that value's neighbour: where the roots sit
+///   within a rounding step of the midpoint between two doubles, `t`
+///   cannot say which side they fall. Such roots are closer together than
+///   two units in the last place of `t`, so the values need not match the
+///   roots one for one: a value may stand for two crossings, as an exact
+///   tangency's does. The list alone does not say which values these are;
 /// - for a line that could not be certified, the iterative solver's roots,
 ///   or one point of the line if it found none: the list is empty only for
 ///   a certified miss (or a zero or non-finite direction or origin).

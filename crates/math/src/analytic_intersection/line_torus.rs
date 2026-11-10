@@ -1614,8 +1614,9 @@ impl Finisher<'_> {
     }
 
     /// Passes one finished contact to `sink`, with the parameters of its
-    /// items: each one's nearest `f64` inside the window, ascending, a
-    /// value shared by two of them once.
+    /// items: for each, an `f64` inside the window within a unit in the
+    /// last place of it (see [`Chart::to_caller`]), ascending, a value
+    /// shared by two of them once.
     fn emit(&self, span: &Span, sink: &mut dyn FnMut(LineTorusContact, &[f64])) {
         let place = |x: f64| self.chart.to_caller(x).max(span.t_lo).min(span.t_hi);
         let mut points = [0.0; 4];

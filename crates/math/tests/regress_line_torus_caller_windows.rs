@@ -79,6 +79,55 @@ fn far_centre_crossings_eight_ulps_apart_are_four_resolved_roots() {
     }
 }
 
+/// Review round 5. Four roots a rounding step from the midpoints between
+/// doubles of `t`: with `C = 1e15` (spacing `0.125`) they are
+/// `C ± (0.125 − 2⁻⁵⁸)` and `C ± (0.0625 + 2⁻⁵⁸)`. No two `f64` values lie
+/// strictly between neighbours, so they are one even contact holding four
+/// roots. The bare list cannot place each root on its nearest double (the
+/// `2⁻⁵⁸` that decides it is far below what `t` holds there); what it does
+/// promise is a value within one spacing of every root, and no value
+/// farther than that from all of them.
+#[test]
+fn fused_roots_at_rounding_midpoints_are_listed_within_one_spacing() {
+    let centre = 1e15;
+    let spacing = 0.125;
+    let minor = 0.031_25_f64.next_down();
+    let torus = ToroidalSurface::new(Point3::new(centre, 0.0, 0.0), 0.093_75, minor).unwrap();
+    let origin = Point3::new(0.0, 0.0, 0.0);
+    let dir = Vec3::new(1.0, 0.0, 0.0);
+    // Offsets from `C`, to far more than the spacing needs.
+    let offsets = [-0.125, -0.0625, 0.0625, 0.125];
+
+    let contacts = intersect_line_torus_contacts(&torus, origin, dir);
+    assert_eq!(contacts.len(), 1, "{contacts:?}");
+    let contact = contacts[0];
+    assert!(!contact.resolved, "{contact:?}");
+    assert_eq!(contact.kind, ContactKind::Tangential, "{contact:?}");
+    assert_eq!(contact.roots, 4, "{contact:?}");
+    assert_eq!(contact.t_lo.to_bits(), (centre - 0.25).to_bits());
+    assert_eq!(contact.t_hi.to_bits(), (centre + 0.25).to_bits());
+
+    let plain = intersect_line_torus(&torus, origin, dir);
+    assert!(plain.windows(2).all(|pair| pair[0] < pair[1]), "{plain:?}");
+    for &value in &plain {
+        assert!(contact.t_lo <= value && value <= contact.t_hi, "{plain:?}");
+        assert!(
+            offsets
+                .iter()
+                .any(|offset| ((value - centre) - offset).abs() <= spacing),
+            "{value} is a spacing from no root: {plain:?}"
+        );
+    }
+    for offset in offsets {
+        assert!(
+            plain
+                .iter()
+                .any(|value| ((value - centre) - offset).abs() <= spacing),
+            "no value within a spacing of C{offset:+}: {plain:?}"
+        );
+    }
+}
+
 /// Review round 4, finding 2. A thin torus `1500` along the line, crossed a
 /// hair inside its outer equator: the two roots are
 /// `1500 ± 8.387 888 541 3e-14`, and the `f64` values about `1500` are

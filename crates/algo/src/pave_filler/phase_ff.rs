@@ -4240,6 +4240,15 @@ fn trim_torus_oval_to_box_face(
             if contact.t_hi < -1e-6 || contact.t_lo > 1.0 + 1e-6 {
                 continue;
             }
+            let placed =
+                contact.t.is_finite() && contact.t_lo.is_finite() && contact.t_hi.is_finite();
+            if !contact.resolved && !placed {
+                // A line the solve could not settle: its window is open and
+                // it has no point to hold against the oval. Reading "on a
+                // different branch" from a point that is not there would
+                // drop a crossing, so leave the oval to the sample clip.
+                return None;
+            }
             let t = contact.t;
             let p = s + dir * t;
             // Must lie on the oval (the marched NURBS), else it's a crossing of
