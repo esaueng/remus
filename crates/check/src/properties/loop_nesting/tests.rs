@@ -568,7 +568,7 @@ fn review_shallow_conic_is_never_certified_past_its_resolution() {
 /// `Nested`; nothing is ever certified wrong.
 #[test]
 fn shallow_arc_families_certify_only_what_they_resolve() {
-    let mut certified = 0;
+    let mut decided = 0;
     let mut refused = 0;
     for exponent in [6, 9, 12, 15] {
         let r = 10f64.powi(exponent);
@@ -598,9 +598,9 @@ fn shallow_arc_families_certify_only_what_they_resolve() {
                 match (case, &answer) {
                     ("inside", InnerLoopNesting::Nested(d)) => {
                         assert_eq!(d, &vec![0, 1]);
-                        certified += 1;
+                        decided += 1;
                     }
-                    ("outside", InnerLoopNesting::Flat) => certified += 1,
+                    ("outside", InnerLoopNesting::Flat) => decided += 1,
                     ("straddling", InnerLoopNesting::Nested(_)) => {
                         panic!("straddling certified nested: r {r}, sagitta {sagitta}")
                     }
@@ -618,8 +618,8 @@ fn shallow_arc_families_certify_only_what_they_resolve() {
         }
     }
     assert!(
-        certified > 0 && refused > 0,
-        "{certified} certified, {refused} refused"
+        decided > 0 && refused > 0,
+        "{decided} decided, {refused} refused"
     );
 }
 

@@ -497,9 +497,9 @@ fn an_uncertified_nesting_is_measured_on_the_mesh() {
             ("squares", squares, 3600.0 - 576.0 + 144.0, 0.0),
         ] {
             let want = want * s * s;
-            let certified = measure::face_area(&topo, face, deflection).unwrap();
+            let exact_area = measure::face_area(&topo, face, deflection).unwrap();
             assert_close(
-                certified,
+                exact_area,
                 want,
                 1e-12,
                 &format!("{label}, certified, scale {s}"),
