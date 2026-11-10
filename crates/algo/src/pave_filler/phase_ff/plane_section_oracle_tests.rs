@@ -1913,3 +1913,57 @@ fn the_reference_is_exact_where_a_closed_form_exists() {
         assert!((p.0 - 0.5).abs() < 1e-15 && (p.1.abs() - 0.75_f64.sqrt()).abs() < 1e-15);
     }
 }
+
+/// The fourth review's second finding, through the trim: the ellipse
+/// `(cos t, 0.001 sin t)` and a triangular hole whose corner stands 4e-8
+/// off it at `t = 0.8`, pointing along it. The section enters the hole at
+/// `t = 0.80000009757`; the trim used to read the crossing's parameter back
+/// off the corner it had snapped the crossing to, and kept the section on
+/// to `t = 0.80002786743`, 3.5e-6 (thirty-five bands) inside the hole at
+/// `t = 0.80001`. A span that ends there now ends at the crossing's own
+/// parameter, or the trim refuses.
+#[test]
+fn a_span_ends_at_its_crossing_not_at_the_chart_angle_of_the_corner_it_snaps_to() {
+    let section = Section::new((0.0, 0.0), 1.0, 0.001, 0.0);
+    let t0 = 0.8;
+    let (on, normal, tangent) = (section.at(t0), section.normal(t0), section.tangent(t0));
+    let hole = Hole::Polygon(vec![
+        add(on, normal, 4e-8),
+        add(add(on, tangent, 7e-4), normal, 4e-4),
+        add(add(on, tangent, 7e-4), normal, -4e-4),
+    ]);
+    let case = Case {
+        family: Family::EccentricCorner,
+        scale: 1e-3,
+        index: 0,
+        section,
+        hole,
+        cut: None,
+    };
+    let exact = reference_crossings(&case.section, &case.hole);
+    assert_eq!(exact.len(), 2, "{exact:?}");
+    assert!(
+        (exact[0].0 - 0.800_000_097_570_739_6).abs() < 1e-12,
+        "{exact:?}"
+    );
+    // The reference: deep inside the hole a hair past the crossing.
+    let inside = case.section.at(t0 + 1e-5);
+    let depth = ray_depth(inside, &case.hole);
+    assert!((depth - 3.5246e-6).abs() < 1e-9, "{depth:e}");
+    match trim(&case) {
+        Ok(Some(kept)) => {
+            for &(lo, hi) in &kept {
+                assert!(
+                    (t0 + 1e-5 - lo).rem_euclid(TAU) > hi - lo,
+                    "the span {lo}..{hi} holds a point {depth:e} inside the hole"
+                );
+            }
+            check_spans_dense(&case, &kept, &exact).unwrap();
+        }
+        Ok(None) => panic!("the section crosses the hole"),
+        Err(error) => assert!(
+            error.to_string().contains("run past the crossing"),
+            "{error}"
+        ),
+    }
+}
