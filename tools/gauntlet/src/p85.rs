@@ -2307,6 +2307,8 @@ fn io_diagnostic(error: &IoError) -> DiagnosticRecord {
 }
 
 fn check_diagnostic(error: &CheckError) -> DiagnosticRecord {
+    use remus_check::properties::loop_nesting::NestingUndecided;
+
     match error {
         CheckError::Topology(_) | CheckError::ValidationFailed(_) => error_diagnostic(
             FailureCategory::InvalidTopology,
@@ -2317,6 +2319,15 @@ fn check_diagnostic(error: &CheckError) -> DiagnosticRecord {
         CheckError::IntegrationFailed(_) => error_diagnostic(
             FailureCategory::Nonconvergence,
             "property_integration_failed",
+            error.to_string(),
+        ),
+        CheckError::UndecidedLoopNesting(reason) => error_diagnostic(
+            if matches!(reason, NestingUndecided::WorkLimit) {
+                FailureCategory::ResourceLimit
+            } else {
+                FailureCategory::Nonconvergence
+            },
+            "inner_loop_nesting_undecided",
             error.to_string(),
         ),
         CheckError::ClassificationFailed(_)
