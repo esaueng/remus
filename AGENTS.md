@@ -418,7 +418,7 @@ Quick reference — find the right file for any task:
 | Task | File(s) |
 |------|---------|
 | Public API, `CheckError` | `lib.rs`, `error.rs` |
-| Shared utilities (face polygon, AABB, edge sampling, inner-loop nesting depths) | `util.rs` |
+| Shared utilities (face polygon, AABB, edge sampling) | `util.rs` |
 | Ray-surface intersection (all types + solvers) | `classify/ray_surface.rs` |
 | UV boundary polygon, containment tests | `classify/boundary.rs` |
 | Point-in-solid classification (ray casting) | `classify/mod.rs` |
@@ -456,6 +456,9 @@ Quick reference — find the right file for any task:
 | Full-turn cylinder bands with rims split into many arcs, integrated over their exact `(u, v)` rectangle past the trim budget (tests) | `properties/face_integrator/cylinder_band_tests.rs` |
 | Independent polynomial Green-moment and authoritative-trim oracles (tests) | `properties/face_integrator/polynomial_boundary_tests.rs` |
 | Planar faces with nested inner wires (hole, island, hole) alternate void and material: closed-form rectangle sums and signed single-loop compositions of every moment, exact and fan paths (tests) | `properties/face_integrator/nested_hole_tests.rs` |
+| Differential oracle: on planar faces whose inner loops do not nest (lines, circles, split arcs, ellipses, trimmed and rational NURBS, overlapping boxes), the exact and fan paths match their pre-nesting subtract-every-hole versions, kept verbatim, bit for bit (tests) | `properties/face_integrator/flat_loop_oracle_tests.rs` |
+| Certified nesting of a planar face's inner loops (`inner_loop_nesting`): each wire read over the trims the Green integration reads, curved pieces held within certified chord deviations, containment by exact `orient2d` parity at an on-curve probe with adaptive bisection, disjointness certified before any depth is reported, box-only cost for side-by-side holes, a work budget, and `Undecided` (subtract every hole) otherwise | `properties/loop_nesting.rs` |
+| Nesting depths on nearly touching curved loops in every order and edge split, trims that hide carrier spans, touching and crossing loops refused, budget and box-only cost (tests) | `properties/loop_nesting/tests.rs` |
 | Properties orchestrator (volume, area, CoM) | `properties/mod.rs` |
 | Opt-in content-keyed memo of fixed-order face integrals (`FaceIntegralCache`, PERF-V02 subset) | `properties/face_cache.rs` |
 | Knot-aligned basis-reuse bit oracle, independent ruled-generator quadrature and closed-form volume/flux oracles (tests) | `properties/face_integrator/knot_rows_oracle_tests.rs` |
@@ -525,6 +528,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Boolean (union/cut/intersect) | `boolean/` (mod, types, classify, assembly, tests, nway_pairs_tests, disjoint_witness_tests) |
 | Three-box union grouping and order regression: exact volume, solid validation, closed oriented mesh, material probes, source preservation and STEP replay (OpenZCAD 1246) | `tests/regress_issue_1246_box_union_grouping.rs` |
 | Nested inner wires measured with alternating material: a standalone face's area and a pocketed block with a standing, holed island (face area, volume, centre of mass, surface area against signed boxes) (tests) | `tests/nested_inner_wire_measure.rs` |
+| Certified inner-loop nesting through the public measures at three scales: an island nearly filling its hole for every edge split, eccentric circles nearly touching, an elliptical island, three levels in every order, reversed and tilted faces, a trimmed NURBS hole whose unused spans surround its neighbour, and a pocketed cylinder whose `solid_volume`, `solid_properties` and `face_area` agree (tests) | `tests/certified_loop_nesting_measure.rs` |
 | Qualified local drilled-hole cut (through and blind holes; stages 1–2 of the local boolean) and its GFA oracle tests | `boolean/local_cut.rs`, `boolean/local_cut_tests.rs` |
 | Opt-in store-local cut, fuse and intersect: the GFA on the faces the tool touches, spliced onto the untouched ones (stage 4 of the local boolean), and its equivalence oracle tests | `boolean/store_local.rs`, `boolean/store_local_tests.rs` |
 | Mesh boolean (co-refinement) | `mesh_boolean.rs` |
@@ -588,6 +592,8 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | 128-bit exact content digest of a single face (handle-free; lets a consumer keep what it derived from faces an edit left untouched) | `measure/face_digest.rs` |
 | Bounded opt-in exact-content memo of single-face bounding boxes (the move's swept-region refusal), and its bit-identity tests | `measure/face_box_memo.rs`, `measure/face_box_memo/tests.rs` |
 | Test assertions that measure volumes and areas (tests) | `measure/test_support.rs` |
+| Planar faces with several inner loops, flat and nested, for the measurement paths' nesting oracles (tests) | `measure/loop_fixtures.rs` |
+| Differential oracles: `planar_face_signed_volume` and the sampled planar area match their pre-nesting subtract-every-hole versions, kept verbatim, bit for bit on unnested loops, and add islands back on a nested stack (tests) | `measure/volume/flat_loop_oracle_tests.rs`, `measure/area/flat_loop_oracle_tests.rs` |
 | Bounded opt-in host-clock phase timings | `performance.rs` |
 | The thread's default cache scope, shared by kernels and the `*_thread_*` cache switches (RFC 0009) | `cache.rs` |
 | Distance queries | `distance.rs` |

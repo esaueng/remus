@@ -1,5 +1,6 @@
 //! Volume, center of mass, and related computations for B-rep solids.
 
+use remus_check::properties::loop_nesting::{InnerLoopNesting, inner_loop_nesting};
 use remus_math::compact_sort::CompactSort;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
@@ -3676,11 +3677,11 @@ fn planar_face_signed_volume(
     };
     let (ex, ey) = (frame.x, frame.y);
 
-    // Hole areas subtract by MAGNITUDE, not by trusting the stored hole-wire
-    // winding: boolean results can emit an inner rim wound the SAME way as the
-    // outer (the #1045 hole-winding class), which would ADD the hole's disc.
-    // A hole is inside the outer by definition, so |outer| − Σ|hole| is the
-    // geometric area either way.
+    // Hole areas subtract (and certified islands add) by MAGNITUDE, not by
+    // trusting the stored hole-wire winding: boolean results can emit an
+    // inner rim wound the SAME way as the outer (the #1045 hole-winding
+    // class), which would ADD the hole's disc. A hole is inside the outer by
+    // definition, so |outer| − Σ|hole| is the geometric area either way.
     let Some(outer) = planar_wire_signed_area2(topo, face.outer_wire(), ex, ey)? else {
         return Ok(None);
     };
@@ -3688,14 +3689,31 @@ fn planar_face_signed_volume(
     let mut arc_length = outer.arc_length;
     let mut area_mag2 = outer.area2.abs();
     let mut exact_boundary = outer.exact_boundary;
+    let mut holes = Vec::with_capacity(face.inner_wires().len());
     for &iw in face.inner_wires() {
         let Some(hole) = planar_wire_signed_area2(topo, iw, ex, ey)? else {
             return Ok(None);
         };
+        holes.push(hole);
+    }
+    // An island certified to lie inside a hole (odd nesting depth) restores
+    // its area, a hole inside that island removes it again. Without a
+    // certified nesting every inner wire is a hole, subtracted in order.
+    let nesting = if holes.len() < 2 {
+        InnerLoopNesting::Flat
+    } else {
+        inner_loop_nesting(topo, face_id, normal)
+    };
+    let depths = nesting.nested_depths();
+    for (k, hole) in holes.iter().enumerate() {
         arc_edges += hole.arc_edges;
         arc_length += hole.arc_length;
         exact_boundary &= hole.exact_boundary;
-        area_mag2 -= hole.area2.abs();
+        if depths.is_some_and(|depths| depths[k] % 2 == 1) {
+            area_mag2 += hole.area2.abs();
+        } else {
+            area_mag2 -= hole.area2.abs();
+        }
     }
     if area_mag2 < 0.0 {
         return Ok(None); // holes exceed the outer boundary — not a sane cap
@@ -5315,6 +5333,8 @@ fn center_of_mass_from_faces(
 
 #[cfg(test)]
 mod edge_census_oracle_tests;
+#[cfg(test)]
+mod flat_loop_oracle_tests;
 
 #[cfg(test)]
 mod planar_outline_tests;

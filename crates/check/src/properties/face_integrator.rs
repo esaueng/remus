@@ -17,6 +17,7 @@ use remus_topology::edge::EdgeCurve;
 use remus_topology::face::{Face, FaceId, FaceSurface};
 
 use super::PropertiesOptions;
+use super::loop_nesting::{InnerLoopNesting, inner_loop_nesting};
 use crate::CheckError;
 
 mod adaptive;
@@ -26,6 +27,8 @@ mod boundary_area;
 #[cfg(test)]
 mod cylinder_band_tests;
 mod cylinder_green;
+#[cfg(test)]
+mod flat_loop_oracle_tests;
 mod knot_axis;
 #[cfg(test)]
 mod knot_rows_oracle_tests;
@@ -2759,17 +2762,34 @@ fn integrate_planar_face_fan(
     let holes = face
         .inner_wires()
         .iter()
-        .map(|&wid| crate::util::wire_polygon(topo, wid))
-        .collect::<Result<Vec<_>, _>>()?;
+        .map(|&wid| {
+            let hole = crate::util::wire_polygon(topo, wid)?;
+            Ok(integrate_planar_polygon(&hole, normal, reference))
+        })
+        .collect::<Result<Vec<_>, CheckError>>()?;
     // Nested inner wires alternate void and material: an island inside a
-    // hole is added back, a hole inside that island subtracted again.
-    let depths = crate::util::loop_nesting_depths(&holes, &normal);
-    for (hole, depth) in holes.iter().zip(depths) {
-        let h = integrate_planar_polygon(hole, normal, reference);
-        if depth % 2 == 0 {
-            subtract_contribution(&mut contrib, &h);
-        } else {
-            add_contribution(&mut contrib, &h);
+    // hole is added back, a hole inside that island subtracted again. Only a
+    // certified nesting changes a sign; otherwise every inner wire is a hole,
+    // subtracted in order.
+    let nesting = if holes.len() < 2 {
+        InnerLoopNesting::Flat
+    } else {
+        inner_loop_nesting(topo, face_id, normal)
+    };
+    match nesting.nested_depths() {
+        Some(depths) => {
+            for (h, &depth) in holes.iter().zip(depths) {
+                if depth % 2 == 0 {
+                    subtract_contribution(&mut contrib, h);
+                } else {
+                    add_contribution(&mut contrib, h);
+                }
+            }
+        }
+        None => {
+            for h in &holes {
+                subtract_contribution(&mut contrib, h);
+            }
         }
     }
 
@@ -4176,29 +4196,42 @@ fn integrate_planar_face_exact(
     let Some(mut moments) = planar_wire_monomial_moments(topo, outer_wire, origin, e1, e2)? else {
         return Ok(None);
     };
-    // Nested inner wires alternate void and material: an island inside a
-    // hole is added back, a hole inside that island subtracted again. A lone
-    // hole needs no nesting test, and no sampled outline.
-    let depths = if inner.len() < 2 {
-        vec![0; inner.len()]
-    } else {
-        let loops = inner
-            .iter()
-            .map(|&wid| crate::util::wire_polygon(topo, wid))
-            .collect::<Result<Vec<_>, _>>()?;
-        crate::util::loop_nesting_depths(&loops, &boundary_normal)
-    };
-    for (wid, depth) in inner.into_iter().zip(depths) {
+    let mut holes = Vec::with_capacity(inner.len());
+    for &wid in &inner {
         let Some(hole) = planar_wire_monomial_moments(topo, wid, origin, e1, e2)? else {
             return Ok(None);
         };
-        if depth % 2 == 0 {
-            for k in 0..10 {
-                moments[k] -= hole[k];
+        holes.push(hole);
+    }
+    // Nested inner wires alternate void and material: an island inside a
+    // hole is added back, a hole inside that island subtracted again. Only a
+    // certified nesting, read off the same edge trims these moments
+    // integrate, changes a sign; otherwise every inner wire is a hole,
+    // subtracted in order.
+    let nesting = if holes.len() < 2 {
+        InnerLoopNesting::Flat
+    } else {
+        inner_loop_nesting(topo, face_id, boundary_normal)
+    };
+    match nesting.nested_depths() {
+        Some(depths) => {
+            for (hole, &depth) in holes.iter().zip(depths) {
+                if depth % 2 == 0 {
+                    for k in 0..10 {
+                        moments[k] -= hole[k];
+                    }
+                } else {
+                    for k in 0..10 {
+                        moments[k] += hole[k];
+                    }
+                }
             }
-        } else {
-            for k in 0..10 {
-                moments[k] += hole[k];
+        }
+        None => {
+            for hole in &holes {
+                for k in 0..10 {
+                    moments[k] -= hole[k];
+                }
             }
         }
     }

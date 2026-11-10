@@ -131,7 +131,8 @@ fn nested_inner_wires_alternate_void_and_material_in_closed_form() {
         sx += sign * x;
         sy += sign * y;
     }
-    // 112 − 48 + 16 − 2 − 9: subtracting every inner wire would read 47.
+    // 112 − 48 + 16 − 2 − 9: subtracting every inner wire would read
+    // 112 − 48 − 16 − 2 − 9 = 37.
     assert_eq!(area.to_bits(), 69.0_f64.to_bits());
     for c in both_paths(&topo, face, Point3::new(0.0, 0.0, 0.0)) {
         let close = |got: f64, want: f64| (got - want).abs() <= 1e-11 * want.abs().max(1.0);

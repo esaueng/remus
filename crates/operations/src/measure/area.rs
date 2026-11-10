@@ -203,9 +203,11 @@ fn nurbs_boundary_is_recognized(
 
 /// Sampled fallback for a planar boundary the exact moment integrator does
 /// not support. Computes the Newell area of a 256-sample polygon and
-/// subtracts sampled inner-wire areas, adding back the islands nested inside
-/// a hole (odd nesting depth).
+/// subtracts sampled inner-wire areas, adding back an island certified to
+/// lie inside a hole (odd nesting depth).
 fn planar_face_area(topo: &Topology, face_id: FaceId) -> Result<f64, crate::OperationsError> {
+    use remus_check::properties::loop_nesting::{InnerLoopNesting, inner_loop_nesting};
+
     let face = topo.face(face_id)?;
     let outer_wire = topo.wire(face.outer_wire())?;
     let outer_positions = collect_wire_positions(topo, outer_wire)?;
@@ -216,17 +218,35 @@ fn planar_face_area(topo: &Topology, face_id: FaceId) -> Result<f64, crate::Oper
         .inner_wires()
         .iter()
         .map(|&wid| collect_wire_positions(topo, topo.wire(wid)?))
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Result<Vec<_>, crate::OperationsError>>()?;
     // Nested inner wires alternate void and material: an island inside a
-    // hole restores area, a hole inside that island removes it again.
-    let normal = remus_check::util::polygon_normal(&outer_positions);
-    let depths = remus_check::util::loop_nesting_depths(&inner, &normal);
+    // hole restores area, a hole inside that island removes it again. The
+    // nesting is decided on the edges themselves, never on these samples;
+    // without a certified nesting every inner wire is a hole.
+    let nesting = if inner.len() < 2 {
+        InnerLoopNesting::Flat
+    } else {
+        inner_loop_nesting(
+            topo,
+            face_id,
+            remus_check::util::polygon_normal(&outer_positions),
+        )
+    };
     let mut hole_area = 0.0;
-    for (positions, depth) in inner.iter().zip(depths) {
-        if depth % 2 == 0 {
-            hole_area += newell_area(positions);
-        } else {
-            hole_area -= newell_area(positions);
+    match nesting.nested_depths() {
+        Some(depths) => {
+            for (positions, &depth) in inner.iter().zip(depths) {
+                if depth % 2 == 0 {
+                    hole_area += newell_area(positions);
+                } else {
+                    hole_area -= newell_area(positions);
+                }
+            }
+        }
+        None => {
+            for positions in &inner {
+                hole_area += newell_area(positions);
+            }
         }
     }
 
@@ -394,3 +414,6 @@ pub fn body_surface_area(
         }
     }
 }
+
+#[cfg(test)]
+mod flat_loop_oracle_tests;

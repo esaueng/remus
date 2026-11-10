@@ -5,6 +5,7 @@ pub mod analytic;
 pub mod bbox;
 pub mod face_cache;
 pub mod face_integrator;
+pub mod loop_nesting;
 
 pub use accumulator::GProps;
 
