@@ -1662,7 +1662,9 @@ mod tests {
 
     /// Documents off the restore fixed point: a standalone face whose index
     /// entries went with a deleted solid that shared its edges (a profile
-    /// face whose extrusion was deleted), a face whose loop was retired, and
+    /// face whose extrusion was deleted, before `delete_solid` retained a
+    /// loose face's boundary; the delete now keeps it, so the retirement it
+    /// used to make is applied directly), a face whose loop was retired, and
     /// a stale index entry.
     fn off_fixed_point_documents() -> Vec<(&'static str, Topology, FaceId)> {
         let mut shared = Topology::new();
@@ -1679,6 +1681,13 @@ mod tests {
         unit_box(&mut shared, 5.0);
         assert!(shared.is_restore_fixed_point());
         shared.delete_solid(body).unwrap();
+        assert!(
+            shared.is_restore_fixed_point(),
+            "the delete keeps the profile"
+        );
+        shared
+            .retire_loose_face_boundary_like_legacy_delete(profile)
+            .unwrap();
 
         let mut dead_loop = Topology::new();
         let (face, _) = triangle(&mut dead_loop);

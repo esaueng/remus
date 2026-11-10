@@ -2193,10 +2193,13 @@ mod tests {
             }
         }
         // The same document taken off the restore fixed point, as a sketch
-        // workflow does: a profile face extruded (its edges shared with the
-        // bottom cap), then the extrusion deleted. The deletion drops the
-        // standalone profile face's index entries while its loops stay live,
-        // so the full-copy restore rebuilt them on every refusal.
+        // workflow did before `delete_solid` retained a loose face's
+        // boundary: a profile face extruded (its edges shared with the
+        // bottom cap), then the extrusion deleted. That deletion dropped the
+        // standalone profile face's index entries while its loops stayed
+        // live, so the full-copy restore rebuilt them on every refusal. The
+        // delete now keeps the profile, so its old retirement is applied
+        // directly.
         let mut off_fixed_point = base.clone();
         let square = [
             (100.0, 100.0),
@@ -2219,6 +2222,10 @@ mod tests {
         )
         .unwrap();
         off_fixed_point.delete_solid(extruded).unwrap();
+        assert!(off_fixed_point.is_restore_fixed_point());
+        off_fixed_point
+            .retire_loose_face_boundary_like_legacy_delete(profile)
+            .unwrap();
         assert!(base.is_restore_fixed_point());
         assert!(!off_fixed_point.is_restore_fixed_point());
         let (mut refusals, mut late_faults, mut rebuilt) = (0, 0, 0);

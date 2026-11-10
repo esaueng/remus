@@ -51,6 +51,7 @@ required-features = ["workflow-probes"]
 
 [dev-dependencies]
 remus = {path = "../remus"}
+remus-topology = {workspace = true, features = ["test-utils"]}
 
 [lints]
 workspace = true
