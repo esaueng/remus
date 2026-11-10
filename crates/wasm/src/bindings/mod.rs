@@ -102,3 +102,6 @@ mod sweep_transaction_tests;
 mod transaction_tests;
 #[cfg(test)]
 mod wire_traversal_contract_tests;
+
+#[cfg(test)]
+mod profile_nesting_tests;

@@ -726,7 +726,7 @@ impl From<remus_operations::OperationsError> for StructuredWasmError {
                 structured
             }
             remus_operations::OperationsError::Unsupported {
-                operation: "sweep" | "sweep_guided",
+                operation: "sweep" | "sweep_guided" | "profile sweep" | "extrude",
                 ..
             } => {
                 let mut structured = Self::operation_failed(message);

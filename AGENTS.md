@@ -447,7 +447,7 @@ Quick reference — find the right file for any task:
 | Edge geometric checks | `validate/edge.rs` |
 | Face geometric checks | `validate/face.rs` |
 | Validation orchestrator | `validate/mod.rs` |
-| Exact polygon/full-circle profile containment, bounded separation checks and planar winding parity (with tests) | `validate/planar_regions.rs` |
+| Inner-wire nesting independent of outer carriers, exact line/circle-arc membership, trim-local conservative bounds and planar winding parity (with tests) | `validate/planar_regions.rs`, `validate/planar_regions/curves.rs` |
 | GProps accumulator (Huygens' theorem) | `properties/accumulator.rs` |
 | Closed-form formulas (box, sphere, cylinder, etc.) | `properties/analytic.rs` |
 | AABB computation | `properties/bbox.rs` |
@@ -549,6 +549,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Robust triangle-triangle intersection: the narrow phase shared by mesh co-refinement and validation's component-overlap check | `triangle_intersection.rs` |
 | Extrude, Revolve, Sweep, Loft, Pipe | `extrude.rs`, `revolve.rs`, `sweep.rs`, `loft.rs`, `pipe.rs` |
 | Extrusion nesting preflight, separate island caps, and closed-form material/void regressions | `extrude/nesting.rs`, `extrude/nesting_tests.rs` |
+| Main-comparison profile families, unnested sweep compatibility and overlapping-arc nesting regressions (tests) | `extrude/profile_compatibility_tests.rs` |
 | Exact loft between parallel full circles: coaxial cylinder/cone bands, and laterally offset (oblique) circles as one exact rational ruled band per section pair with circular rims | `loft.rs` (`try_loft_coaxial_circle_stack`, `try_loft_parallel_circle_stack`), `loft/tests.rs` |
 | Twisted extrusion: the straight extrusion's topology with the top cap turned, fitted helix edges and certified swept side faces (lands concentric with the axis stay exact cylinders while they sweep less than a full turn, and are swept like the rest past it); herringbone: two opposite-hand halves glued at their shared mid-plane edges | `extrude/twist.rs`, `extrude/twist/tests.rs` |
 | Tapered extrusion toward an apex: the straight extrusion's topology with the far cap scaled about the apex; lines sweep to planes through it, concentric circles to exact cones, other curves to ruled NURBS (a concentric hole stays a cylinder) | `extrude/taper.rs`, `extrude/taper/tests.rs` |
@@ -782,6 +783,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Differential oracle: the modifier twins' full-copy rollback envelope kept verbatim, against the rollback scope (tests) | `bindings/modifier_detailed/envelope_oracle_tests.rs` |
 | Bounded fillet twins (`filletDetailedWithCancellation`, `filletV2DetailedWithCancellation`): cancellation token, `maxWalkSteps` budget, typed `cancelled`/`resource_limit` refusals, `details.walkSteps` | `bindings/modifier_detailed/governed.rs` |
 | Typed construction results (`extrudeDetailed`, `revolveDetailed`) | `bindings/construction_detailed.rs` |
+| Profile nesting refusals retain the unsupported category and document/session state through direct and batch routes (tests) | `bindings/profile_nesting_tests.rs` |
 | Gear construction from a JSON spec: new bodies (`makeGearDetailed`), straight bevel gears (`makeBevelGearDetailed`), worms and their wheels, plain or throated (`makeWormDetailed`, `makeWormWheelDetailed`), double-enveloping worms and their wheels (`makeEnvelopingWormDetailed`, `makeEnvelopingWormWheelDetailed`) and teeth on an existing cylinder (`cutGearTeethDetailed`), direct and batch | `bindings/gear.rs` |
 | Screw threads on an existing cylinder from a JSON spec (`cutThreadDetailed`), direct and batch, with `thread:<reason>` refusals | `bindings/thread.rs` |
 | Live planar polygon imprint, direct and both batch adapters | `bindings/construction_imprint.rs` |

@@ -1899,3 +1899,6 @@ mod tests;
 
 #[cfg(test)]
 mod nesting_tests;
+
+#[cfg(test)]
+mod profile_compatibility_tests;

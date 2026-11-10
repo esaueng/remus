@@ -1,7 +1,9 @@
-//! Bounded planar region reader for polygon and full-circle profile wires.
+//! Inner-wire nesting from trim-local bounds and exact line/circle ray events.
 //!
-//! Boundaries are compared as segments and circles, never sampled chords.
-//! Partial arcs, splines, contacts and unresolved/over-budget inputs refuse.
+//! Disjoint conservative boxes prove unnested pairs for every curve carrier.
+//! Overlapping pairs require exact readers and a native-curve separation proof.
+//! An unreadable outer wire never prevents an inner-vs-inner decision.
+mod curves;
 use crate::CheckError;
 use remus_math::vec::{Point2, Vec2, Vec3};
 use remus_topology::{
@@ -25,7 +27,7 @@ enum Boundary {
     Circle(Point2, f64),
 }
 fn refuse() -> CheckError {
-    CheckError::ValidationFailed("planar regions require separated simple line polygons or full circles within the nesting budget".into())
+    CheckError::ValidationFailed("profile nesting requires separated simple boundaries, decidable overlapping line/circle arcs and the bounded work budget".into())
 }
 fn distance(p: Point2, a: Point2, b: Point2) -> f64 {
     let ab = b - a;
@@ -145,7 +147,7 @@ fn read(
             next_edge.end()
         };
         let p = topo.vertex(start)?.point();
-        if !matches!(edge.curve(), EdgeCurve::Line)
+        if !crate::distance::edge::is_linear_curve(edge.curve())
             || end != next_start
             || !in_plane(p)
             || !p.x().is_finite()
@@ -178,16 +180,20 @@ fn read(
     Ok(Boundary::Polygon(points))
 }
 
-/// Read exact boundary containment for a planar polygon/full-circle face.
+/// Read inner-wire containment, independently of the outer wire's carriers.
 ///
-/// All boundaries must be simple, strictly separated and inside the outer.
-/// At most 64 wires and 256 edges per wire are supported, with at most
-/// 262_144 edge-pair comparisons. Winding and face reversal do not affect depth.
+/// Valid faces have inner wires inside their outer boundary. When that boundary
+/// and an inner boundary are readable as polygons/full circles, also reject
+/// invalid outside/contacting inputs. Unreadable outers do not gate nesting.
+/// Pairwise disjoint trim-local boxes prove unnested wires of any curve type.
+/// Overlapping boxes require exact line/circle-arc membership and separation.
+/// At most 63 inner wires, 256 edges per wire and 262_144 separation steps.
 ///
 /// # Errors
-/// Returns a typed validation error for unsupported, contacting, crossing,
-/// non-planar or over-budget geometry, or propagates missing topology handles.
+/// Refuses contacting, crossing, non-planar, over-budget or unresolved pairs,
+/// and propagates missing topology handles.
 pub fn planar_regions(topo: &Topology, face: FaceId) -> Result<PlanarRegions, CheckError> {
+    use crate::distance::plane_trim::PlanarWire;
     let face = topo.face(face)?;
     let FaceSurface::Plane { normal, d } = face.surface() else {
         return Err(refuse());
@@ -200,107 +206,65 @@ pub fn planar_regions(topo: &Topology, face: FaceId) -> Result<PlanarRegions, Ch
         return Err(refuse());
     }
     let eps = remus_math::tolerance::Tolerance::new().linear;
+    let outer = read(topo, face.outer_wire(), *normal, *d, eps).ok();
     let mut boundaries = Vec::new();
-    let mut work = 0usize;
-    let mut counts: Vec<usize> = Vec::new();
-    for id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
-        let count = topo.wire(id)?.edges().len();
-        work += count * count;
-        for &n in &counts {
-            work += count * n;
-        }
-        if work > 262_144 {
+    let mut readers = Vec::new();
+    let mut work = 0;
+    for &wire in face.inner_wires() {
+        let bounds = curves::read(topo, wire, *normal, *d, eps)?;
+        // Retain structural validation of line polygons, including bow ties.
+        let all_lines = topo.wire(wire)?.edges().iter().all(|oe| {
+            topo.edge(oe.edge())
+                .is_ok_and(|e| crate::distance::edge::is_linear_curve(e.curve()))
+        });
+        let boundary = if all_lines {
+            Some(read(topo, wire, *normal, *d, eps)?)
+        } else {
+            read(topo, wire, *normal, *d, eps).ok()
+        };
+        if let (Some(outer), Some(inner)) = (&outer, &boundary)
+            && (outer.touches(inner, eps) || !outer.contains(inner.sample()))
+        {
             return Err(refuse());
         }
-        counts.push(count);
-        boundaries.push(read(topo, id, *normal, *d, eps)?);
+        readers.push(if bounds.exact {
+            Some(PlanarWire::build(topo, wire, *normal)?)
+        } else {
+            None
+        });
+        boundaries.push(bounds);
     }
-    let mut contains = vec![vec![false; boundaries.len()]; boundaries.len()];
-    for i in 0..boundaries.len() {
-        for j in i + 1..boundaries.len() {
-            if boundaries[i].touches(&boundaries[j], eps) {
+    let n = boundaries.len();
+    let mut contains = vec![vec![false; n]; n];
+    for i in 0..n {
+        for j in i + 1..n {
+            if !boundaries[i]
+                .bounds
+                .expanded(eps)
+                .intersects(boundaries[j].bounds.expanded(eps))
+            {
+                continue;
+            }
+            let (Some(a), Some(b)) = (&readers[i], &readers[j]) else {
+                return Err(refuse());
+            };
+            if !curves::wires_separated(&boundaries[i], &boundaries[j], eps, &mut work)? {
                 return Err(refuse());
             }
-            contains[i][j] = boundaries[i].contains(boundaries[j].sample());
-            contains[j][i] = boundaries[j].contains(boundaries[i].sample());
+            contains[i][j] = a.contains(boundaries[j].sample)?;
+            contains[j][i] = b.contains(boundaries[i].sample)?;
             if contains[i][j] && contains[j][i] {
                 return Err(refuse());
             }
         }
     }
-    let depths: Vec<_> = (1..boundaries.len())
-        .map(|i| contains.iter().skip(1).filter(|row| row[i]).count())
+    let depths: Vec<_> = (0..n)
+        .map(|i| contains.iter().filter(|row| row[i]).count())
         .collect();
-    let mut parents = Vec::new();
-    for i in 1..boundaries.len() {
-        if !contains[0][i] {
-            return Err(refuse());
-        }
-        parents.push(
-            (1..boundaries.len())
-                .find(|&j| contains[j][i] && depths[j - 1] + 1 == depths[i - 1])
-                .map(|j| j - 1),
-        );
-    }
+    let parents = (0..n)
+        .map(|i| (0..n).find(|&j| contains[j][i] && depths[j] + 1 == depths[i]))
+        .collect();
     Ok(PlanarRegions { depths, parents })
-}
-
-/// Whether a conservative 3D box lies strictly inside a supported planar outer
-/// boundary.
-///
-/// Used only to preserve provably separate unnested curved profiles.
-/// Unsupported outer carriers and unresolved clearance return `false`.
-///
-/// # Errors
-/// Propagates invalid face and vertex handles or an invalid plane frame.
-pub fn planar_outer_contains_box(
-    topo: &Topology,
-    face: FaceId,
-    bounds: remus_math::aabb::Aabb3,
-) -> Result<bool, CheckError> {
-    let face = topo.face(face)?;
-    let FaceSurface::Plane { normal, d } = face.surface() else {
-        return Ok(false);
-    };
-    let eps = remus_math::tolerance::Tolerance::new().linear;
-    if !normal.length().is_finite() || (normal.length() - 1.).abs() > 1e-10 || !d.is_finite() {
-        return Ok(false);
-    }
-    let Ok(outer) = read(topo, face.outer_wire(), *normal, *d, eps) else {
-        return Ok(false);
-    };
-    let axis = if normal.x().abs() < 0.8 {
-        Vec3::new(1., 0., 0.)
-    } else {
-        Vec3::new(0., 1., 0.)
-    };
-    let u = normal.cross(axis).normalize()?;
-    let v = normal.cross(u);
-    let mut lo = Point2::new(f64::INFINITY, f64::INFINITY);
-    let mut hi = Point2::new(f64::NEG_INFINITY, f64::NEG_INFINITY);
-    for x in [bounds.min.x(), bounds.max.x()] {
-        for y in [bounds.min.y(), bounds.max.y()] {
-            for z in [bounds.min.z(), bounds.max.z()] {
-                let p = Vec3::new(x, y, z);
-                let a = u.dot(p);
-                let b = v.dot(p);
-                if !a.is_finite() || !b.is_finite() {
-                    return Ok(false);
-                }
-                lo = Point2::new(lo.x().min(a), lo.y().min(b));
-                hi = Point2::new(hi.x().max(a), hi.y().max(b));
-            }
-        }
-    }
-    let box_ = Boundary::Polygon(vec![
-        lo,
-        Point2::new(hi.x(), lo.y()),
-        hi,
-        Point2::new(lo.x(), hi.y()),
-    ]);
-    Ok(!outer.touches(&box_, eps)
-        && outer.contains(box_.sample())
-        && !box_.contains(outer.sample()))
 }
 
 #[cfg(test)]

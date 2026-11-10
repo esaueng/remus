@@ -142,6 +142,29 @@ impl PlanarTrim {
     }
 }
 
+/// One exact wire reader, shared with profile nesting after separation is proven.
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) struct PlanarWire {
+    boundary: TrimLoop,
+    x: Vec3,
+    y: Vec3,
+}
+
+impl PlanarWire {
+    pub(crate) fn build(topo: &Topology, wire: WireId, normal: Vec3) -> Result<Self, CheckError> {
+        let frame = remus_math::frame::Frame3::from_normal(Point3::new(0., 0., 0.), normal)?;
+        Ok(Self {
+            boundary: build_loop_with(topo, wire, frame.y, true)?,
+            x: frame.x,
+            y: frame.y,
+        })
+    }
+
+    pub(crate) fn contains(&self, point: Point3) -> Result<bool, CheckError> {
+        loop_contains(&self.boundary, point, self.x, self.y)
+    }
+}
+
 /// Exact planar trim membership for polygonal and circular boundaries.
 ///
 /// # Errors
@@ -157,20 +180,38 @@ pub fn plane_point_in_face(
 }
 
 fn build_loop(topo: &Topology, wire_id: WireId, y: Vec3) -> Result<TrimLoop, CheckError> {
-    match complete_circle_wire(topo, wire_id) {
-        Ok(Some(circle)) => return Ok(TrimLoop::Circle(TrimCircle::new(circle, y))),
-        Ok(None) => {}
-        Err(CheckError::ValidationFailed(message)) => {
-            return Ok(TrimLoop::Refused(Deferred::Validation(message)));
+    build_loop_with(topo, wire_id, y, false)
+}
+
+fn build_loop_with(
+    topo: &Topology,
+    wire_id: WireId,
+    y: Vec3,
+    reconstruct_profile_domains: bool,
+) -> Result<TrimLoop, CheckError> {
+    if !reconstruct_profile_domains {
+        match complete_circle_wire(topo, wire_id) {
+            Ok(Some(circle)) => return Ok(TrimLoop::Circle(TrimCircle::new(circle, y))),
+            Ok(None) => {}
+            Err(CheckError::ValidationFailed(message)) => {
+                return Ok(TrimLoop::Refused(Deferred::Validation(message)));
+            }
+            Err(error) => return Err(error),
         }
-        Err(error) => return Err(error),
     }
     let mut edges = Vec::new();
     for oriented in topo.wire(wire_id)?.edges() {
         let edge = topo.edge(oriented.edge())?;
         let start = topo.vertex(edge.start())?.point();
         let end = topo.vertex(edge.end())?.point();
-        let (a, b) = match edge.strict_domain() {
+        // The nesting reader has already verified the reconstructed intervals.
+        // Legacy classification and distance retain strict domain authority.
+        let domain = if reconstruct_profile_domains {
+            Ok(edge.domain_with_endpoints(start, end))
+        } else {
+            edge.strict_domain()
+        };
+        let (a, b) = match domain {
             Ok(domain) => domain,
             Err(error) => {
                 // As `crate::error::edge_domain_validation`.
