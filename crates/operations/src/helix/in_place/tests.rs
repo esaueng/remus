@@ -970,3 +970,127 @@ fn fillet_and_chamfer_round_both_cap_rims() {
         );
     }
 }
+
+/// A three-turn coil's side is one face of 210 spans along the coil. The
+/// point classifier's UV trim projected the side's wire samples from the
+/// surface's nine-node coarse seed grid, so about a third of them failed or
+/// settled on another turn, the trim polygon stopped bounding the face, and
+/// real ray hits on it were dropped: whole turns of the coil's interior read
+/// as outside. The convex blend material guard then refused a correct fillet
+/// of either cap rim ("added material outside the input"). Every interior
+/// and exterior point here is decided by the exact screw-motion membership,
+/// for both bases of the profile circle (seam at `+Z` or `−Z`, side face
+/// reversed or not) and both handednesses, and the one-shot classifier
+/// agrees with the prepared one.
+#[test]
+fn classifier_decides_a_multi_turn_circle_coil_exactly() {
+    let (major, minor, turns): (f64, f64, f64) = (100.0, 9.0, 3.0);
+    for normal_y in [-1.0, 1.0] {
+        for pitch in [22.5, -22.5] {
+            let mut topo = Topology::new();
+            let profile = circle_face(
+                &mut topo,
+                Point3::new(major, 0.0, 0.0),
+                Vec3::new(0.0, normal_y, 0.0),
+                minor,
+            );
+            let solid =
+                helical_sweep_in_place(&mut topo, profile, origin(), Z, pitch, turns).unwrap();
+            let mut points = Vec::new();
+            let mut inside = Vec::new();
+            for i in 0..90 {
+                let phi = (f64::from(i) + 0.5) / 90.0 * TAU * turns;
+                for rho in [0.0_f64, 4.0, 8.0, 8.9, 9.1, 10.0, 12.0] {
+                    for j in 0..6 {
+                        let theta = f64::from(j).mul_add(TAU / 6.0, 0.1);
+                        let r = rho.mul_add(theta.cos(), major);
+                        points.push(Point3::new(
+                            r * phi.cos(),
+                            r * phi.sin(),
+                            rho.mul_add(theta.sin(), pitch * phi / TAU),
+                        ));
+                        inside.push(rho < minor);
+                    }
+                }
+            }
+            let label = format!("normal {normal_y}·Y, pitch {pitch}");
+            let classes =
+                crate::classify::classify_points(&topo, solid, &points, 0.01, 1e-6).unwrap();
+            for ((point, class), &want) in points.iter().zip(&classes).zip(&inside) {
+                let expected = if want {
+                    crate::classify::PointClassification::Inside
+                } else {
+                    crate::classify::PointClassification::Outside
+                };
+                assert_eq!(*class, expected, "{label}: {point:?}");
+            }
+            for (point, class) in points.iter().zip(&classes).step_by(97) {
+                let one_shot =
+                    crate::classify::classify_point(&topo, solid, *point, 0.01, 1e-6).unwrap();
+                assert_eq!(
+                    one_shot, *class,
+                    "{label}: one-shot vs prepared at {point:?}"
+                );
+            }
+        }
+    }
+}
+
+/// One crossing of a three-turn coil's side, seen from just inside the
+/// wire, reports once. The side's 20 × 20 line seed grid spans about 54° of
+/// the coil per node, so nearly every node seeds Newton, and two far seeds
+/// spent their whole budget walking before stopping within the final check's
+/// `1e-5` of the line but about `1e-6` along the surface from the root the
+/// other seeds converge to — outside the `1e-6` deduplication radius. The
+/// crossing then counted twice, and the classifier read this interior point
+/// as outside on two of its three rays.
+#[test]
+fn multi_turn_coil_side_reports_each_ray_crossing_once() {
+    use remus_math::nurbs::intersection::intersect_line_nurbs;
+    let mut topo = Topology::new();
+    let profile = circle_face(
+        &mut topo,
+        Point3::new(100.0, 0.0, 0.0),
+        Vec3::new(0.0, -1.0, 0.0),
+        9.0,
+    );
+    let solid = helical_sweep_in_place(&mut topo, profile, origin(), Z, 22.5, 3.0).unwrap();
+    let side = solid_faces(&topo, solid)
+        .unwrap()
+        .into_iter()
+        .find_map(|face| match topo.face(face).unwrap().surface() {
+            FaceSurface::Nurbs(surface) => Some(surface.clone()),
+            _ => None,
+        })
+        .unwrap();
+    // 8.9 from the wire's centre line, 1.95 turns along it.
+    let point = Point3::new(
+        103.527_767_866_158_87,
+        -33.638_210_886_743_24,
+        44.763_517_407_156_77,
+    );
+    for direction in [
+        Vec3::new(
+            0.573_576_436_351_046,
+            0.740_535_693_464_567_5,
+            0.350_889_803_483_932_2,
+        ),
+        Vec3::new(
+            0.740_535_693_464_567_5,
+            -0.350_889_803_483_932_2,
+            0.573_576_436_351_046,
+        ),
+    ] {
+        let forward = intersect_line_nurbs(&side, point, direction, 20)
+            .unwrap()
+            .into_iter()
+            .filter(|hit| (hit.point - point).dot(direction) > 0.0)
+            .collect::<Vec<_>>();
+        // The wall lies 0.1 away; the next turn is a pitch farther on.
+        let near = forward
+            .iter()
+            .filter(|hit| (hit.point - point).length() < 1.0)
+            .count();
+        assert_eq!(near, 1, "{direction:?}: {forward:?}");
+    }
+}
