@@ -514,9 +514,27 @@ pub(super) fn orient_revolved_face_wires(
                 oriented_inners.push(inner);
             }
         } else if inners.len() == 1 && matches!(surface, FaceSurface::Cylinder(_)) {
-            let (inner, inner_changed) = orient_wire_to_surface(topo, inners[0], &surface, false)?;
-            changed |= inner_changed;
-            oriented_inners.push(inner);
+            // A hole runs against the chart. Its signed area there decides
+            // that for any contractible loop; the 3D oracle, which compares
+            // the loop's vector area with the normal at its centroid, cannot
+            // once the loop wraps well over half the wall — the centroid
+            // then sits near the axis and the normal there points the other
+            // way (the footprint of a slab a post passes through off-centre
+            // came back wound like the outer wire). It stays the fallback
+            // where the chart cannot read the loop.
+            if let Some(area) = revolved_wire_uv_area(topo, inners[0], &surface)? {
+                if area > 0.0 {
+                    oriented_inners.push(reverse_wire(topo, inners[0])?);
+                    changed = true;
+                } else {
+                    oriented_inners.push(inners[0]);
+                }
+            } else {
+                let (inner, inner_changed) =
+                    orient_wire_to_surface(topo, inners[0], &surface, false)?;
+                changed |= inner_changed;
+                oriented_inners.push(inner);
+            }
         } else if !inners.is_empty() && !matches!(surface, FaceSurface::Plane { .. })
         // Planar inner wires (holes) arrive with the B-rep-correct
         // opposite-handed winding from the face splitter (the disc/hole
