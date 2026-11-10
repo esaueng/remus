@@ -16,6 +16,8 @@ mod arrangement_prod;
 // budgets (preserving legacy) and on out-of-domain inputs; the established
 // band/sector paths remain as fallbacks. No emitter deleted in this slice.
 mod arrangement_cyl;
+mod chart_arrangement;
+mod chart_certificate;
 #[cfg(test)]
 mod closed_form_split_tests;
 #[cfg(test)]
@@ -23,9 +25,13 @@ mod closed_loops_separation_tests;
 mod containment;
 mod conversion;
 mod edge_splitting;
+mod periodic_face_chart;
+mod plane_chart;
 #[cfg(test)]
 mod rim_chain_oracle_tests;
 mod sampling;
+#[cfg(test)]
+mod section_clearance_tests;
 mod special_cases;
 pub(in crate::builder) use special_cases::cylinder_cone_remainder_interior;
 
@@ -5648,6 +5654,687 @@ pub fn split_face_2d(
     context: &OperationContext,
     split_registry: Option<&mut remus_math::det_hash::DetHashMap<usize, Vec<Point3>>>,
 ) -> Result<Vec<SplitSubFace>, AlgoError> {
+    let parts = split_face_2d_established(
+        topo,
+        face_id,
+        sections,
+        rank,
+        tol,
+        frame,
+        info,
+        edge_images,
+        context,
+        split_registry,
+    )?;
+    // A result that runs a section out and back, leaves one out, or does not
+    // tile the face is not a partition of it (the holed-cap weave turns
+    // sections bridging the outer wire and a hole into spurs; a wall section
+    // crossing the lateral's seam twice can be closed along the wrong rim
+    // arc). Re-partition such a planar face or cylinder lateral as a
+    // certified arrangement; keep the established result when that declines.
+    if sections.is_empty() {
+        return Ok(parts);
+    }
+    let Ok(face) = topo.face(face_id) else {
+        return Ok(parts);
+    };
+    let surface = face.surface().clone();
+    if !matches!(
+        surface,
+        FaceSurface::Plane { .. } | FaceSurface::Cylinder(_)
+    ) {
+        return Ok(parts);
+    }
+    // A periodic lateral legitimately runs its seam up and back; only a
+    // planar face has no edge it may traverse both ways.
+    let spur = matches!(surface, FaceSurface::Plane { .. })
+        && subfaces_have_out_and_back(&parts, tol.linear);
+    // A section certified to stay clear of the face (its whole control hull
+    // separated from the face's closed region, up to the boundary's
+    // tolerance band) divides nothing, so the established partition rightly
+    // omits it; only the remaining sections can be left out.
+    let left_out = !spur
+        && sections_left_out(
+            sections
+                .iter()
+                .filter(|s| !section_clear_of_face(topo, face_id, s, tol.linear)),
+            &parts,
+            tol.linear,
+        );
+    if !spur && !left_out && partition_tiles_face(topo, face_id, &parts) {
+        return Ok(parts);
+    }
+    log::debug!(
+        "split_face_2d: face {face_id:?} established partition fails (spur={spur}, left_out={left_out})"
+    );
+    let rescued = if let FaceSurface::Plane { .. } = &surface {
+        plane_chart::split_plane_face_by_chart(topo, face_id, sections, rank, tol.linear)
+    } else {
+        let wire_pts = collect_wire_points(topo, face.outer_wire());
+        let Ok(boundary) =
+            boundary_edges_to_pcurve(topo, face.outer_wire(), &surface, &wire_pts, None)
+        else {
+            return Ok(parts);
+        };
+        periodic_face_chart::split_periodic_face_by_chart(
+            &surface,
+            &boundary,
+            !face.inner_wires().is_empty(),
+            sections,
+            rank,
+            face.is_reversed(),
+            face_id,
+            tol.linear,
+        )
+    };
+    if let chart_arrangement::ChartSplit::Certified(rescued) = &rescued {
+        log::debug!(
+            "split_face_2d: face {face_id:?} re-partitioned as a certified arrangement ({} regions)",
+            rescued.len()
+        );
+        return Ok(rescued.clone());
+    }
+    // The established result failed its checks. Outside the chart family it
+    // stays the established paths' answer; an admitted face whose
+    // certificate failed is reported to the operation's gate.
+    if matches!(rescued, chart_arrangement::ChartSplit::Uncertified) {
+        log::debug!("split_face_2d: face {face_id:?} rescue admitted but not certified");
+        crate::gfa::note_uncertified_rescue();
+    }
+    Ok(parts)
+}
+
+/// Traversal samples of one sub-face wire edge.
+fn wire_edge_samples(e: &OrientedPCurveEdge, n: usize) -> Vec<Point3> {
+    if matches!(e.curve_3d, EdgeCurve::Line) {
+        return vec![e.start_3d, e.end_3d];
+    }
+    let (ns, ne) = if e.forward {
+        (e.start_3d, e.end_3d)
+    } else {
+        (e.end_3d, e.start_3d)
+    };
+    let (a, b) = e
+        .trim
+        .unwrap_or_else(|| e.curve_3d.reconstruct_domain_from_endpoints(ns, ne));
+    let (from, to) = if e.forward { (a, b) } else { (b, a) };
+    (0..=n)
+        .map(|k| {
+            #[allow(clippy::cast_precision_loss)]
+            let f = k as f64 / n as f64;
+            e.curve_3d
+                .evaluate_with_endpoints(from + (to - from) * f, ns, ne)
+        })
+        .collect()
+}
+
+/// A wire of some sub-face traverses one edge both ways.
+fn subfaces_have_out_and_back(parts: &[SplitSubFace], tol: f64) -> bool {
+    let q = 1.0 / tol.max(1e-9);
+    #[allow(clippy::cast_possible_truncation)]
+    let key = |p: Point3| {
+        (
+            (p.x() * q).round() as i64,
+            (p.y() * q).round() as i64,
+            (p.z() * q).round() as i64,
+        )
+    };
+    let mid = |e: &OrientedPCurveEdge| {
+        let s = wire_edge_samples(e, 2);
+        if s.len() == 3 {
+            s[1]
+        } else {
+            Point3::new(
+                0.5 * (s[0].x() + s[1].x()),
+                0.5 * (s[0].y() + s[1].y()),
+                0.5 * (s[0].z() + s[1].z()),
+            )
+        }
+    };
+    parts.iter().any(|part| {
+        std::iter::once(&part.outer_wire)
+            .chain(part.inner_wires.iter())
+            .any(|wire| {
+                let seen: DetHashSet<_> = wire
+                    .iter()
+                    .map(|e| (key(e.start_3d), key(e.end_3d), key(mid(e))))
+                    .collect();
+                wire.iter().any(|e| {
+                    (e.start_3d - e.end_3d).length() > tol
+                        && seen.contains(&(key(e.end_3d), key(e.start_3d), key(mid(e))))
+                })
+            })
+    })
+}
+
+/// Some section's midpoint lies on no sub-face edge: the section was left
+/// out of the partition.
+fn sections_left_out<'s>(
+    sections: impl IntoIterator<Item = &'s SectionEdge>,
+    parts: &[SplitSubFace],
+    tol: f64,
+) -> bool {
+    let band = (tol * 1e3).max(1e-5);
+    let polylines: Vec<Vec<Point3>> = parts
+        .iter()
+        .flat_map(|part| std::iter::once(&part.outer_wire).chain(part.inner_wires.iter()))
+        .flatten()
+        .map(|e| wire_edge_samples(e, 64))
+        .collect();
+    sections.into_iter().any(|s| {
+        let (t0, t1) = s.domain();
+        let mid = s
+            .curve_3d
+            .evaluate_with_endpoints(0.5 * (t0 + t1), s.start, s.end);
+        !polylines.iter().any(|poly| {
+            poly.windows(2).any(|w| {
+                let d = w[1] - w[0];
+                let len2 = d.length_squared();
+                let t = if len2 > 0.0 {
+                    ((mid - w[0]).dot(d) / len2).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                // A chord of a 64-sample polyline sits within its sagitta of
+                // the curve, far below a tenth of the chord.
+                (w[0] + d * t - mid).length() <= band + len2.sqrt() * 0.1
+            })
+        })
+    })
+}
+
+/// Conservative upper bound of `u · p` over a boundary edge's carrier: the
+/// full circle for a circular arc (`c · u + r |u - n (n · u)|`), the end
+/// points of a line, the control net of a positive-weight NURBS (whose curve
+/// lies in the net's convex hull). `None` for any other curve, or a
+/// non-finite bound.
+fn edge_support(topo: &Topology, edge: remus_topology::edge::EdgeId, u: Vec3) -> Option<f64> {
+    let edge = topo.edge(edge).ok()?;
+    let dot = |p: Point3| u.dot(Vec3::new(p.x(), p.y(), p.z()));
+    let bound = match edge.curve() {
+        EdgeCurve::Line => {
+            let a = topo.vertex(edge.start()).ok()?.point();
+            let b = topo.vertex(edge.end()).ok()?.point();
+            dot(a).max(dot(b))
+        }
+        EdgeCurve::Circle(c) => {
+            let n = c.normal().normalize().ok()?;
+            dot(c.center()) + c.radius().abs() * (u - n * n.dot(u)).length()
+        }
+        EdgeCurve::NurbsCurve(curve) => {
+            curve.validate_weights().ok()?;
+            curve
+                .control_points()
+                .iter()
+                .map(|&p| dot(p))
+                .fold(f64::NEG_INFINITY, f64::max)
+        }
+        EdgeCurve::Ellipse(_) | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => return None,
+    };
+    bound.is_finite().then_some(bound)
+}
+
+/// Upper bound of `u · p` over every boundary edge of the face.
+fn face_boundary_support(
+    topo: &Topology,
+    face: &remus_topology::face::Face,
+    u: Vec3,
+) -> Option<f64> {
+    let mut sup = f64::NEG_INFINITY;
+    for wire in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+        for oe in topo.wire(wire).ok()?.edges() {
+            sup = sup.max(edge_support(topo, oe.edge(), u)?);
+        }
+    }
+    sup.is_finite().then_some(sup)
+}
+
+/// Whether a section is certified to meet the face's closed region at most
+/// within the tolerance band of its boundary, so it can divide no part of
+/// it. Only a positive-weight NURBS section qualifies: its curve, over any
+/// trim, lies in the convex hull of its control net, so a linear bound or a
+/// convex containment shown for every control point holds for the curve.
+///
+/// Two certificates, both exact consequences of the hull property:
+///
+/// - Separation by a linear height `u · p` that has no critical point on
+///   the carrier (any in-plane `u` on a plane, `±axis` on a cylinder): over
+///   the compact face its maximum is attained on the boundary edges, so a
+///   hull whose least height reaches the boundary's greatest height (less
+///   the tolerance band) meets the face only within that band. The boundary
+///   height is bounded above per edge ([`edge_support`]); seam lines only
+///   enlarge the bound.
+/// - On a plane, a hull inside the closed disc of a hole wire that is one
+///   whole coplanar circle (less the band): the open hole holds no material.
+///
+/// Every other face, carrier or section declines (`false`), which keeps the
+/// section in the left-out check.
+fn section_clear_of_face(
+    topo: &Topology,
+    face_id: FaceId,
+    section: &SectionEdge,
+    tol: f64,
+) -> bool {
+    let EdgeCurve::NurbsCurve(curve) = &section.curve_3d else {
+        return false;
+    };
+    if curve.validate_weights().is_err() {
+        return false;
+    }
+    let net = curve.control_points();
+    if net.is_empty()
+        || !net
+            .iter()
+            .all(|p| p.x().is_finite() && p.y().is_finite() && p.z().is_finite())
+    {
+        return false;
+    }
+    let Ok(face) = topo.face(face_id) else {
+        return false;
+    };
+    let band = tol.max(0.0);
+    let separated = |u: Vec3| {
+        let least = net
+            .iter()
+            .map(|&p| u.dot(Vec3::new(p.x(), p.y(), p.z())))
+            .fold(f64::INFINITY, f64::min);
+        face_boundary_support(topo, face, u).is_some_and(|sup| least >= sup - band)
+    };
+    match face.surface() {
+        FaceSurface::Cylinder(cylinder) => {
+            let Ok(axis) = cylinder.axis().normalize() else {
+                return false;
+            };
+            separated(axis) || separated(-axis)
+        }
+        FaceSurface::Plane { normal, .. } => {
+            let Ok(n) = normal.normalize() else {
+                return false;
+            };
+            #[allow(clippy::cast_precision_loss)]
+            let count = net.len() as f64;
+            let centroid = net.iter().fold(Vec3::new(0.0, 0.0, 0.0), |acc, p| {
+                acc + Vec3::new(p.x(), p.y(), p.z()) * count.recip()
+            });
+            // Hole discs: one whole circle, coplanar with the face.
+            let in_hole = face.inner_wires().iter().any(|&wire| {
+                let Ok(wire) = topo.wire(wire) else {
+                    return false;
+                };
+                let [oe] = wire.edges() else {
+                    return false;
+                };
+                let Ok(edge) = topo.edge(oe.edge()) else {
+                    return false;
+                };
+                let EdgeCurve::Circle(circle) = edge.curve() else {
+                    return false;
+                };
+                let Ok(cn) = circle.normal().normalize() else {
+                    return false;
+                };
+                if edge.start() != edge.end()
+                    || edge.strict_domain().is_err()
+                    || n.cross(cn).length() > 1e-12
+                {
+                    return false;
+                }
+                let c = circle.center();
+                net.iter().all(|&p| {
+                    let r = p - c;
+                    (r - n * n.dot(r)).length() <= circle.radius() + band
+                })
+            });
+            if in_hole {
+                return true;
+            }
+            // Separating height: from the outer wire's centre towards the
+            // net, in the plane.
+            let Ok(outer) = topo.wire(face.outer_wire()) else {
+                return false;
+            };
+            let mut anchor = Vec3::new(0.0, 0.0, 0.0);
+            let mut points = 0.0_f64;
+            for oe in outer.edges() {
+                let Ok(edge) = topo.edge(oe.edge()) else {
+                    return false;
+                };
+                let p = match edge.curve() {
+                    EdgeCurve::Circle(c) => c.center(),
+                    EdgeCurve::Line
+                    | EdgeCurve::NurbsCurve(_)
+                    | EdgeCurve::Ellipse(_)
+                    | EdgeCurve::Hyperbola(_)
+                    | EdgeCurve::Parabola(_) => match topo.vertex(edge.start()) {
+                        Ok(v) => v.point(),
+                        Err(_) => return false,
+                    },
+                };
+                anchor += Vec3::new(p.x(), p.y(), p.z());
+                points += 1.0;
+            }
+            if points == 0.0 {
+                return false;
+            }
+            let d = centroid - anchor * points.recip();
+            let Ok(u) = (d - n * n.dot(d)).normalize() else {
+                return false;
+            };
+            // Normal-dominated helper nets can leave only projection
+            // roundoff: that direction cannot bound an in-plane distance
+            // with the declared linear tolerance. Genuine planar sections
+            // have in-plane nets and a tangent direction of unit length.
+            let in_plane = (u - n * n.dot(u)).length();
+            if !in_plane.is_finite() || in_plane < 0.5 {
+                return false;
+            }
+            separated(u)
+        }
+        FaceSurface::Nurbs(_)
+        | FaceSurface::Cone(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => false,
+    }
+}
+
+/// Whether the sub-faces' chart areas add up to the face's, and no sub-face
+/// boundary crosses itself: a partition closed along the wrong arc, missing
+/// a piece, or run across a seam it was not cut at fails. Planar faces are
+/// measured in their frame, cylinder laterals in the lifted `(u, v)` chart;
+/// other faces are not measured (`true`).
+///
+/// Every wire is sampled as chords with their midpoints, and the comparison
+/// allows each chord an area slack of two thirds of its length times its
+/// midpoint's deviation ([`chord_bulge_area_estimate`]), so faces dominated
+/// by curved rims (a thin annulus) compare as tightly as straight ones.
+///
+/// This is an estimate, not a bound: it is exact for a parabolic bulge (a
+/// circle arc to leading order), but a skewed bulge holds more area than its
+/// midpoint shows (`h·s³(1 − s)` over a unit chord encloses `h/20` against
+/// an estimate of `h/24`), and nothing between samples is seen at all. The
+/// check only decides whether to try the certified re-partition: a false
+/// mismatch costs a rescue attempt, which either certifies or keeps this
+/// result and reports it (`SectionDropScope::uncertified_rescues`); a passing
+/// check certifies nothing about the established result.
+#[allow(clippy::too_many_lines)]
+fn partition_tiles_face(topo: &Topology, face_id: FaceId, parts: &[SplitSubFace]) -> bool {
+    /// Chords per curved edge.
+    const CHORDS: usize = 64;
+    let Ok(face) = topo.face(face_id) else {
+        return true;
+    };
+    let surface = face.surface().clone();
+    let carrier = match &surface {
+        FaceSurface::Cylinder(_) => crate::periodic_chart::ChartCarrier::of(&surface),
+        FaceSurface::Plane { .. } => None,
+        FaceSurface::Nurbs(_)
+        | FaceSurface::Cone(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => return true,
+    };
+    let frame = match &surface {
+        FaceSurface::Plane { normal, d } => Some(PlaneFrame::from_normal_and_point(
+            *normal,
+            Point3::new(normal.x() * d, normal.y() * d, normal.z() * d),
+        )),
+        FaceSurface::Nurbs(_)
+        | FaceSurface::Cylinder(_)
+        | FaceSurface::Cone(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => None,
+    };
+    // A closed wire given as dense traversal samples (chord ends at even
+    // indices, chord midpoints at odd ones), lifted into the chart; `None`
+    // when its lift does not close.
+    let lift = |pts: &[Point3]| -> Option<Vec<Point2>> {
+        let poly: Vec<Point2> = if let Some(frame) = &frame {
+            pts.iter().map(|&p| frame.project(p)).collect()
+        } else {
+            let carrier = carrier.as_ref()?;
+            let (u, v) = carrier.project(*pts.first()?);
+            crate::periodic_chart::lift_continuous(carrier, pts, Point2::new(u, v))
+        };
+        let (first, last) = (poly.first()?, poly.last()?);
+        ((*first - *last).length() <= 1e-6).then_some(poly)
+    };
+    // Chord polygon, its signed area and the bound on its area error.
+    let measure = |dense: &[Point2]| -> (Vec<Point2>, f64, f64) {
+        let chords: Vec<Point2> = dense.iter().step_by(2).copied().collect();
+        let mut slack = 0.0;
+        for k in (0..dense.len().saturating_sub(2)).step_by(2) {
+            slack += chord_bulge_area_estimate(dense[k], dense[k + 1], dense[k + 2]);
+        }
+        let area = signed_area_2d(&chords);
+        (chords, area, slack)
+    };
+    // Dense samples of a sub-face wire: each curved edge as `CHORDS` chords
+    // with midpoints; a line as one chord.
+    let dense_wire = |wire: &[OrientedPCurveEdge]| -> Vec<Point3> {
+        let mut pts = Vec::new();
+        for e in wire {
+            let n = if matches!(e.curve_3d, EdgeCurve::Line) {
+                2
+            } else {
+                2 * CHORDS
+            };
+            let s = wire_edge_samples(e, n);
+            let s = if s.len() == 2 {
+                vec![
+                    s[0],
+                    Point3::new(
+                        0.5 * (s[0].x() + s[1].x()),
+                        0.5 * (s[0].y() + s[1].y()),
+                        0.5 * (s[0].z() + s[1].z()),
+                    ),
+                    s[1],
+                ]
+            } else {
+                s
+            };
+            pts.extend_from_slice(&s[..s.len() - 1]);
+        }
+        if let Some(first) = pts.first().copied() {
+            pts.push(first);
+        }
+        pts
+    };
+    // Outer minus holes, by magnitude: established planar sub-faces are
+    // oriented later (`orient_planar_outer_wire`), so only their sizes are
+    // compared.
+    let mut parent = 0.0;
+    let mut slack = 0.0;
+    for (wi, wid) in std::iter::once(face.outer_wire())
+        .chain(face.inner_wires().iter().copied())
+        .enumerate()
+    {
+        let Ok(wire) = topo.wire(wid) else {
+            return true;
+        };
+        let mut pts = Vec::new();
+        for oe in wire.edges() {
+            let Ok(edge) = topo.edge(oe.edge()) else {
+                return true;
+            };
+            let (Ok(sv), Ok(ev)) = (topo.vertex(edge.start()), topo.vertex(edge.end())) else {
+                return true;
+            };
+            let (ns, ne) = (sv.point(), ev.point());
+            let (d0, d1) = if matches!(edge.curve(), EdgeCurve::Line) {
+                (0.0, 1.0)
+            } else {
+                match edge.strict_domain() {
+                    Ok(d) => d,
+                    Err(_) => return true,
+                }
+            };
+            let (a, b) = if oe.is_forward() { (d0, d1) } else { (d1, d0) };
+            let n = if matches!(edge.curve(), EdgeCurve::Line) {
+                2
+            } else {
+                2 * CHORDS
+            };
+            for k in 0..n {
+                #[allow(clippy::cast_precision_loss)]
+                let f = k as f64 / n as f64;
+                pts.push(
+                    edge.curve()
+                        .evaluate_with_endpoints(a + (b - a) * f, ns, ne),
+                );
+            }
+        }
+        if let Some(first) = pts.first().copied() {
+            pts.push(first);
+        }
+        let Some(dense) = lift(&pts) else {
+            return true;
+        };
+        let (_, a, e) = measure(&dense);
+        parent += if wi == 0 { a.abs() } else { -a.abs() };
+        slack += e;
+    }
+    let mut total = 0.0;
+    for part in parts {
+        for (wi, wire) in std::iter::once(&part.outer_wire)
+            .chain(part.inner_wires.iter())
+            .enumerate()
+        {
+            let Some(dense) = lift(&dense_wire(wire)) else {
+                log::trace!(
+                    "partition_tiles_face: face {face_id:?} sub-face wire {wi} lift does not close"
+                );
+                return false;
+            };
+            let (chords, a, e) = measure(&dense);
+            // A sub-face boundary loop that crosses itself in the chart (a
+            // section running across the lateral's seam edge it was not cut
+            // at) bounds no region, whatever its signed area adds up to.
+            // Loops are lifted independently, so only each loop against
+            // itself is read: a closed hole loop may legitimately straddle
+            // the seam.
+            if loops_cross(std::slice::from_ref(&chords)) {
+                log::trace!(
+                    "partition_tiles_face: face {face_id:?} sub-face boundary crosses itself"
+                );
+                return false;
+            }
+            total += if wi == 0 { a.abs() } else { -a.abs() };
+            slack += e;
+        }
+    }
+    log::trace!("partition_tiles_face: face {face_id:?} parts {total} face {parent} slack {slack}");
+    (total - parent).abs() <= slack + 1e-9 * parent.abs().max(1.0)
+}
+
+/// The area between a chord `ab` and the curve through its midpoint sample
+/// `m`, estimated as for a parabola: two thirds of the chord times the
+/// midpoint's deviation. Exact for a parabolic bulge; an underestimate for a
+/// skewed one (see [`partition_tiles_face`]), so never a bound.
+fn chord_bulge_area_estimate(a: Point2, m: Point2, b: Point2) -> f64 {
+    let chord = b - a;
+    let deviation = (m - (a + chord * 0.5)).length();
+    2.0 / 3.0 * chord.length() * deviation
+}
+
+#[cfg(test)]
+mod chord_bulge_tests {
+    use super::*;
+
+    /// Area between the unit chord and `y = f(x)`, by fine quadrature.
+    fn area(f: impl Fn(f64) -> f64) -> f64 {
+        let n = 100_000;
+        (0..n)
+            .map(|k| f((f64::from(k) + 0.5) / f64::from(n)) / f64::from(n))
+            .sum()
+    }
+
+    #[test]
+    fn the_bulge_estimate_is_exact_for_a_parabola_and_low_for_a_skew_bulge() {
+        let est = |f: &dyn Fn(f64) -> f64| {
+            chord_bulge_area_estimate(
+                Point2::new(0.0, 0.0),
+                Point2::new(0.5, f(0.5)),
+                Point2::new(1.0, 0.0),
+            )
+        };
+        let h = 1e-2;
+        let parabola = |x: f64| 4.0 * h * x * (1.0 - x);
+        assert!((est(&parabola) - area(parabola)).abs() < 1e-9);
+        // h·s³(1 − s): the true area h/20 exceeds the estimate h/24, so the
+        // slack is not an upper bound (the documented contract).
+        let skew = |x: f64| h * x.powi(3) * (1.0 - x);
+        assert!((area(skew) - h / 20.0).abs() < 1e-9);
+        assert!((est(&skew) - h / 24.0).abs() < 1e-12);
+        assert!(est(&skew) < area(skew));
+    }
+}
+
+/// Whether closed chart polylines cross each other or themselves away from
+/// shared vertices (a proper crossing of two non-adjacent segments).
+///
+/// Sort-and-sweep along `x`: each segment is tested only against the
+/// segments whose `x` range overlaps its own.
+fn loops_cross(loops: &[Vec<Point2>]) -> bool {
+    let orient = |p: Point2, q: Point2, r: Point2| {
+        (q.x() - p.x()) * (r.y() - p.y()) - (q.y() - p.y()) * (r.x() - p.x())
+    };
+    // (x_min, x_max, loop, segment, a, b)
+    let mut segs: Vec<(f64, f64, usize, usize, Point2, Point2)> = loops
+        .iter()
+        .enumerate()
+        .flat_map(|(li, poly)| {
+            poly.windows(2).enumerate().map(move |(si, w)| {
+                (
+                    w[0].x().min(w[1].x()),
+                    w[0].x().max(w[1].x()),
+                    li,
+                    si,
+                    w[0],
+                    w[1],
+                )
+            })
+        })
+        .collect();
+    segs.compact_sort_by(|p, q| p.0.total_cmp(&q.0));
+    let n_of = |li: usize| loops[li].len().saturating_sub(1);
+    for i in 0..segs.len() {
+        let (_, x_hi, li, si, a, b) = segs[i];
+        let (ay0, ay1) = (a.y().min(b.y()), a.y().max(b.y()));
+        for &(x_lo_j, _, lj, sj, c, d) in &segs[i + 1..] {
+            if x_lo_j > x_hi {
+                break;
+            }
+            if li == lj {
+                let n = n_of(li);
+                if si.abs_diff(sj) <= 1 || si.abs_diff(sj) + 1 == n {
+                    continue;
+                }
+            }
+            if c.y().max(d.y()) < ay0 || c.y().min(d.y()) > ay1 {
+                continue;
+            }
+            let (o1, o2) = (orient(a, b, c), orient(a, b, d));
+            let (o3, o4) = (orient(c, d, a), orient(c, d, b));
+            if o1 * o2 < 0.0 && o3 * o4 < 0.0 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+#[allow(clippy::too_many_arguments)]
+fn split_face_2d_established(
+    topo: &Topology,
+    face_id: FaceId,
+    sections: &[SectionEdge],
+    rank: Rank,
+    tol: &remus_math::tolerance::Tolerance,
+    frame: Option<&PlaneFrame>,
+    info: Option<&SurfaceInfo>,
+    edge_images: &DetHashMap<remus_topology::edge::EdgeId, Vec<remus_topology::edge::EdgeId>>,
+    context: &OperationContext,
+    split_registry: Option<&mut remus_math::det_hash::DetHashMap<usize, Vec<Point3>>>,
+) -> Result<Vec<SplitSubFace>, AlgoError> {
     let run_impl = move |secs: &[SectionEdge]| {
         split_face_2d_impl(
             topo,
@@ -6290,6 +6977,34 @@ fn split_face_2d_impl(
             rank,
             precomputed_interior: None,
         }]);
+    }
+
+    // A torus face cut open along its seams: an exact planar arrangement of
+    // its sections in the lifted chart, ahead of the layout-specific torus
+    // emitters below (see `torus_chart`).
+    // An admitted face whose certificate fails still falls through to the
+    // emitters below, but is counted for the operation's gate
+    // (`SectionDropScope::uncertified_charts`): their result is not proven.
+    if matches!(surface, FaceSurface::Torus(_)) {
+        match periodic_face_chart::split_periodic_face_by_chart(
+            &surface,
+            &boundary_edges,
+            !face.inner_wires().is_empty(),
+            sections,
+            rank,
+            reversed,
+            face_id,
+            tol.linear,
+        ) {
+            chart_arrangement::ChartSplit::Certified(parts) => return Ok(parts),
+            chart_arrangement::ChartSplit::Uncertified => {
+                log::debug!(
+                    "split_face_2d_impl: torus face {face_id:?} admitted to the chart partition but not certified"
+                );
+                crate::gfa::note_uncertified_chart();
+            }
+            chart_arrangement::ChartSplit::Unsupported => {}
+        }
     }
 
     // No-seam face shortcut: faces whose boundary is entirely Line edges

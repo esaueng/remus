@@ -115,6 +115,7 @@ pub(super) fn try_store_local_boolean(
         super::BooleanOp::Cut => remus_algo::bop::BooleanOp::Cut,
         super::BooleanOp::Intersect => remus_algo::bop::BooleanOp::Intersect,
     };
+    let drops = remus_algo::gfa::SectionDropScope::enter();
     let patch = match remus_algo::gfa::boolean_patch(topo, algo_op, a, &touched, b, context) {
         Ok(patch) => patch,
         Err(error) => {
@@ -122,6 +123,13 @@ pub(super) fn try_store_local_boolean(
             return Ok(None);
         }
     };
+    super::require_chart_certificates(&drops)?;
+    // A patch built on an incomplete section set needs the whole-result
+    // material check the full GFA route applies; decline to that route.
+    if drops.dropped() > 0 {
+        log::debug!("store-local {op:?} declined: the patch dropped an open section chain");
+        return Ok(None);
+    }
     if patch.faces.is_empty() {
         return Ok(None);
     }

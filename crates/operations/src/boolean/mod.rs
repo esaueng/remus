@@ -6,6 +6,7 @@
 
 pub mod assembly;
 mod local_cut;
+mod material_witness;
 mod store_local;
 mod types;
 pub(crate) use assembly::{
@@ -190,6 +191,7 @@ fn exact_result_is_acceptable(
     b: SolidId,
     result: SolidId,
     tol: remus_math::tolerance::Tolerance,
+    dropped_chains: bool,
 ) -> bool {
     let components = crate::boolean::assembly::face_components(topo, result);
     // As in `boolean`'s gate, the tool-interior probe applies to a result the
@@ -213,16 +215,46 @@ fn exact_result_is_acceptable(
             || (components_are_disjoint_pieces(topo, &components)
                 && (op != BooleanOp::Intersect
                     || intersect_multi_region_semantically_safe(topo, result, a, b, tol))))
+        && (!dropped_chains
+            || material_witness::material_witnesses_agree(topo, op, a, b, &[result], tol))
+}
+
+/// A failed certificate on an admitted chart cannot be repaired by material
+/// samples or structural validation. Refuse both primary charts and rescue
+/// charts, including when their established emitters produced an empty result.
+fn require_chart_certificates(
+    scope: &remus_algo::gfa::SectionDropScope,
+) -> Result<(), crate::OperationsError> {
+    require_chart_certificate_counts(scope.uncertified_charts(), scope.uncertified_rescues())
+}
+
+fn require_chart_certificate_counts(
+    charts: u64,
+    rescues: u64,
+) -> Result<(), crate::OperationsError> {
+    if charts == 0 && rescues == 0 {
+        Ok(())
+    } else {
+        log::debug!("exact boolean refused: incomplete chart partition");
+        Err(crate::OperationsError::ExactOnlyUnattainable)
+    }
 }
 
 /// Refuse an exact-only GFA result that fails [`exact_result_is_acceptable`].
+///
+/// `drops` is the operation's [`remus_algo::gfa::SectionDropScope`], opened
+/// before its GFA call: a result built after a dropped section chain must
+/// also show no material contradiction (see [`material_witness`]). A failed
+/// certificate on an admitted chart always refuses.
 pub(crate) fn require_exact_boolean_result(
     topo: &Topology,
     op: BooleanOp,
     a: SolidId,
     b: SolidId,
     result: SolidId,
+    drops: &remus_algo::gfa::SectionDropScope,
 ) -> Result<(), crate::OperationsError> {
+    require_chart_certificates(drops)?;
     if exact_result_is_acceptable(
         topo,
         op,
@@ -230,6 +262,7 @@ pub(crate) fn require_exact_boolean_result(
         b,
         result,
         remus_math::tolerance::Tolerance::new(),
+        drops.dropped() > 0,
     ) {
         Ok(())
     } else {
@@ -267,9 +300,10 @@ pub fn boolean_with_entity_evolution(
             BooleanOp::Cut => remus_algo::bop::BooleanOp::Cut,
             BooleanOp::Intersect => remus_algo::bop::BooleanOp::Intersect,
         };
+        let drops = remus_algo::gfa::SectionDropScope::enter();
         let (result, evolution) =
             remus_algo::gfa::boolean_with_entity_evolution(topo, algo_op, solid_a, solid_b)?;
-        require_exact_boolean_result(topo, op, solid_a, solid_b, result)?;
+        require_exact_boolean_result(topo, op, solid_a, solid_b, result, &drops)?;
         Ok((result, evolution))
     })
 }
@@ -298,11 +332,44 @@ pub fn boolean_regions(
             BooleanOp::Cut => remus_algo::bop::BooleanOp::Cut,
             BooleanOp::Intersect => remus_algo::bop::BooleanOp::Intersect,
         };
+        let drops = remus_algo::gfa::SectionDropScope::enter();
         let regions = remus_algo::gfa::boolean_regions_with_entity_evolution(
             topo, algo_op, solid_a, solid_b,
         )?;
+        require_region_material(topo, op, solid_a, solid_b, &regions, &drops)?;
         finish_boolean_regions(topo, op, regions)
     })
+}
+
+/// Refuse the regions of one exact region boolean when a section chain was
+/// dropped building them and they contradict their operands' material (see
+/// [`material_witness`]). An empty region list is checked too: no regions
+/// where both operands hold material is a contradiction like any other.
+fn require_region_material(
+    topo: &Topology,
+    op: BooleanOp,
+    a: SolidId,
+    b: SolidId,
+    regions: &[remus_algo::gfa::BooleanRegion],
+    drops: &remus_algo::gfa::SectionDropScope,
+) -> Result<(), crate::OperationsError> {
+    require_chart_certificates(drops)?;
+    if drops.dropped() == 0 {
+        return Ok(());
+    }
+    let solids: Vec<SolidId> = regions.iter().map(|region| region.solid).collect();
+    if material_witness::material_witnesses_agree(
+        topo,
+        op,
+        a,
+        b,
+        &solids,
+        remus_math::tolerance::Tolerance::new(),
+    ) {
+        Ok(())
+    } else {
+        Err(crate::OperationsError::ExactOnlyUnattainable)
+    }
 }
 
 fn finish_boolean_regions(
@@ -449,12 +516,15 @@ pub fn boolean_compound_regions(
                             continue;
                         }
                         refuse_uncertified_carrier_relation(topo, solid_a, solid_b)?;
-                        regions.extend(remus_algo::gfa::boolean_regions_with_entity_evolution(
+                        let drops = remus_algo::gfa::SectionDropScope::enter();
+                        let pair = remus_algo::gfa::boolean_regions_with_entity_evolution(
                             topo,
                             remus_algo::bop::BooleanOp::Intersect,
                             solid_a,
                             solid_b,
-                        )?);
+                        )?;
+                        require_region_material(topo, op, solid_a, solid_b, &pair, &drops)?;
+                        regions.extend(pair);
                     }
                 }
                 finish_boolean_regions(topo, op, regions)
@@ -463,12 +533,15 @@ pub fn boolean_compound_regions(
                 let mut regions = Vec::new();
                 for solid_a in members_a {
                     refuse_uncertified_carrier_relation(topo, solid_a, members_b[0])?;
-                    regions.extend(remus_algo::gfa::boolean_regions_with_entity_evolution(
+                    let drops = remus_algo::gfa::SectionDropScope::enter();
+                    let pair = remus_algo::gfa::boolean_regions_with_entity_evolution(
                         topo,
                         remus_algo::bop::BooleanOp::Cut,
                         solid_a,
                         members_b[0],
-                    )?);
+                    )?;
+                    require_region_material(topo, op, solid_a, members_b[0], &pair, &drops)?;
+                    regions.extend(pair);
                 }
                 finish_boolean_regions(topo, op, regions)
             }
@@ -1399,14 +1472,42 @@ fn boolean_with_context_impl(
     let (gfa_a, gfa_b) = (a, b);
     let gfa_start = timer_now();
     crate::performance::bump_boolean_route(crate::performance::BooleanRoute::GeneralGfa);
+    // This call's dropped section chains (see `SectionDropScope`).
+    let drops = remus_algo::gfa::SectionDropScope::enter();
+    let exact_attempt = remus_topology::transaction::RollbackSnapshot::capture(topo);
     match remus_algo::gfa::boolean_with_context(topo, algo_op, gfa_a, gfa_b, context) {
         Ok(result) => {
+            if let Err(error) = require_chart_certificates(&drops) {
+                // Reject and rewind the uncertified EXACT candidate. The
+                // caller's disclosed mesh policy remains available; neither
+                // the rejected topology nor its Exact quality can escape.
+                exact_attempt.restore(topo);
+                let remus_math::context::FallbackPolicy::AllowApproximate { budget } =
+                    context.fallback
+                else {
+                    return Err(error);
+                };
+                context.check_cancelled()?;
+                *used_fallback = true;
+                return run_mesh_fallback(topo, op, a, b, budget, tol, opts);
+            }
+            exact_attempt.commit(topo);
+            // An open section chain dropped inside a face leaves that face
+            // whole on an incomplete section set; such a result must also
+            // show no material contradiction (see `material_witness`).
+            let dropped_chains = drops.dropped() > 0;
             let result_faces = remus_topology::explorer::solid_faces(topo, result)?.len();
             // Narrow-phase empty intersect: overlapping AABBs but the engine
             // selected no faces for the common region (e.g. boxes whose boxes
             // overlap by tolerance but whose interiors do not). This is the
-            // authoritative witness of an empty intersection.
-            if op == BooleanOp::Intersect && result_faces == 0 {
+            // authoritative witness of an empty intersection — unless a
+            // section chain was dropped, when the empty set must not
+            // contradict material both operands hold either.
+            if op == BooleanOp::Intersect
+                && result_faces == 0
+                && (!dropped_chains
+                    || material_witness::material_witnesses_agree(topo, op, a, b, &[], tol))
+            {
                 log::info!(
                     "GFA intersect empty in {:.1}ms (no common faces)",
                     timer_elapsed_ms(gfa_start)
@@ -1601,11 +1702,23 @@ fn boolean_with_context_impl(
                 let euler_ok = hollow_ok
                     && ((euler_eff == 2 && inner_wire_count == 0)
                         || (euler_balanced(euler_eff, inner_wire_count, 1) && closed_manifold));
+                let material_ok = |topo: &Topology| {
+                    !dropped_chains
+                        || material_witness::material_witnesses_agree(
+                            topo,
+                            op,
+                            a,
+                            b,
+                            &[result],
+                            tol,
+                        )
+                };
                 if euler_ok
                     && open_shell_ok
                     && operands_are_represented(topo, op, result, a, b, tol)
                     && result_within_operand_bounds(topo, op, result, a, b, tol)
                     && validate_boolean_result_with_tolerance(topo, result, tol).is_ok()
+                    && material_ok(topo)
                 {
                     log::info!(
                         "GFA boolean succeeded in {:.1}ms ({result_faces} faces)",
@@ -1709,6 +1822,7 @@ fn boolean_with_context_impl(
                     && operands_are_represented(topo, op, result, a, b, tol)
                     && result_within_operand_bounds(topo, op, result, a, b, tol)
                     && validate_boolean_result_with_tolerance(topo, result, tol).is_ok()
+                    && material_ok(topo)
                 {
                     log::info!(
                         "GFA multi-region succeeded in {:.1}ms ({result_faces} faces, {components} pieces)",
@@ -2165,6 +2279,9 @@ fn fuse_cluster_with_context(
         });
     };
     if cluster.len() >= 3 {
+        // A dropped section chain in the single-pass arrangement declines to
+        // the sequential fuse, whose every step carries the drop check.
+        let drops = remus_algo::gfa::SectionDropScope::enter();
         let fused = match cluster_candidate_pairs(topo, cluster, context.tolerance.linear) {
             ClusterPairs::Candidates(pairs) => {
                 crate::performance::bump_boolean_route(crate::performance::BooleanRoute::Nary);
@@ -2180,10 +2297,14 @@ fn fuse_cluster_with_context(
             // the sequential fallback it would have returned to.
             ClusterPairs::OverBudget => None,
         };
+        if matches!(fused, Some(Ok(_))) {
+            require_chart_certificates(&drops)?;
+        }
         match fused {
             Some(Ok(fused))
-                if validate_boolean_result_with_tolerance(topo, fused, context.tolerance)
-                    .is_ok() =>
+                if drops.dropped() == 0
+                    && validate_boolean_result_with_tolerance(topo, fused, context.tolerance)
+                        .is_ok() =>
             {
                 return Ok(fused);
             }
@@ -2424,9 +2545,11 @@ fn boolean_with_evolution_impl(
             BooleanOp::Cut => remus_algo::bop::BooleanOp::Cut,
             BooleanOp::Intersect => remus_algo::bop::BooleanOp::Intersect,
         };
+        let drops = remus_algo::gfa::SectionDropScope::enter();
         if let Ok((result, origins)) =
             remus_algo::gfa::boolean_with_face_origins(topo, algo_op, a, b)
         {
+            require_chart_certificates(&drops)?;
             // Apply the face-id-preserving result heals so the evolution result
             // is as correct as the standard boolean (manifold, no #801 wire
             // spurs). These rewrite wires in place, so the provenance — keyed by
@@ -2444,7 +2567,9 @@ fn boolean_with_evolution_impl(
             // Trust the faithful path only if its result is valid; otherwise
             // fall through to boolean()'s full pipeline (fast paths + mesh
             // fallback + validation), matching boolean()'s contract.
-            if healed_ok && exact_result_is_acceptable(topo, op, a, b, result, tol) {
+            if healed_ok
+                && exact_result_is_acceptable(topo, op, a, b, result, tol, drops.dropped() > 0)
+            {
                 let mut evo = crate::evolution::EvolutionMap::exact();
                 let mut sourced: HashSet<usize> = HashSet::default();
                 for (out_idx, src) in origins {
@@ -3523,12 +3648,88 @@ fn operands_are_represented(
                     Ok(crate::classify::PointClassification::Inside)
                 )
             };
-            !probes
+            if probes
                 .iter()
                 .any(|&p| inside(&mut in_b, p) && inside(&mut in_a, p))
+            {
+                return false;
+            }
+            // The tool-box probes above all miss a small blank inside a large
+            // tool with a hole in the middle: an annular cutter's box centre
+            // and quarter points sit in its bore or beside the blank, and the
+            // cut that returned a swept tube untouched passed (#1242). Probe a
+            // grid over the region where the result's and the tool's boxes
+            // overlap too, against the RESULT: a difference holds no point
+            // strictly inside its tool, whatever its face count. (Testing the
+            // operands would refuse a correct re-bore, whose result keeps the
+            // blank's faces and box while the annulus it removed lies inside
+            // both operands.) Only a point clear of both boundaries by twice
+            // the tessellation's deflection counts, so a chordal mesh cannot
+            // vote a near-surface point inside; anything less certain
+            // accepts, as above.
+            !overlap_grid_witnesses_material(topo, result, b, r_box, b_box, tol)
         }
         BooleanOp::Intersect => true,
     }
+}
+
+/// Points per axis of [`overlap_grid_witnesses_material`]'s probe grid.
+const OVERLAP_GRID: usize = 5;
+
+/// Whether a cell centre of an [`OVERLAP_GRID`]³ grid over the overlap of
+/// `a_box` and `b_box` lies strictly inside both `a` and `b`, at least twice
+/// the classifiers' deflection away from either boundary.
+fn overlap_grid_witnesses_material(
+    topo: &Topology,
+    a: SolidId,
+    b: SolidId,
+    a_box: remus_math::aabb::Aabb3,
+    b_box: remus_math::aabb::Aabb3,
+    tol: remus_math::tolerance::Tolerance,
+) -> bool {
+    const DEFLECTION: f64 = 0.1;
+    let lo = Point3::new(
+        a_box.min.x().max(b_box.min.x()),
+        a_box.min.y().max(b_box.min.y()),
+        a_box.min.z().max(b_box.min.z()),
+    );
+    let hi = Point3::new(
+        a_box.max.x().min(b_box.max.x()),
+        a_box.max.y().min(b_box.max.y()),
+        a_box.max.z().min(b_box.max.z()),
+    );
+    let extent = hi - lo;
+    if extent.x() <= tol.linear || extent.y() <= tol.linear || extent.z() <= tol.linear {
+        return false;
+    }
+    // A boundary margin of twice the deflection keeps every counted probe
+    // outside the band where the chordal mesh and the exact surface disagree.
+    let margin = (2.0 * DEFLECTION).max(tol.linear);
+    let mut in_a = crate::classify::RobustClassifier::new(topo, a, DEFLECTION, margin);
+    let mut in_b = crate::classify::RobustClassifier::new(topo, b, DEFLECTION, margin);
+    #[allow(clippy::cast_precision_loss)]
+    let at = |i: usize| (i as f64 + 0.5) / OVERLAP_GRID as f64;
+    for i in 0..OVERLAP_GRID {
+        for j in 0..OVERLAP_GRID {
+            for k in 0..OVERLAP_GRID {
+                let p = Point3::new(
+                    extent.x().mul_add(at(i), lo.x()),
+                    extent.y().mul_add(at(j), lo.y()),
+                    extent.z().mul_add(at(k), lo.z()),
+                );
+                if matches!(
+                    in_b.classify(p),
+                    Ok(crate::classify::PointClassification::Inside)
+                ) && matches!(
+                    in_a.classify(p),
+                    Ok(crate::classify::PointClassification::Inside)
+                ) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 /// Whether a GFA result stays inside the space its operands allow it.

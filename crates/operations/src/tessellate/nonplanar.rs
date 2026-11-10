@@ -29,6 +29,37 @@ fn rim_angles_match(a: &[f64], b: &[f64], tolerance: f64) -> bool {
         })
 }
 
+/// A short, level rim connector may be stored as a line after a boolean.
+/// Its chord is a boundary edge, rather than a generator through the apex.
+/// Admit it only when the entire chord stays within a quarter of the mesh
+/// deflection of the cone: endpoint residual plus the exact circle sagitta.
+fn is_cone_rim_chord(surface: &FaceSurface, start: Point3, end: Point3, deflection: f64) -> bool {
+    let FaceSurface::Cone(cone) = surface else {
+        return false;
+    };
+    let tolerance = remus_math::tolerance::Tolerance::default().linear;
+    let (ua, va) = cone.project_point(start);
+    let (ub, vb) = cone.project_point(end);
+    if ![ua, va, ub, vb, deflection].iter().all(|x| x.is_finite())
+        || deflection <= 0.0
+        || va.min(vb) <= tolerance
+        || (va - vb).abs() > tolerance
+    {
+        return false;
+    }
+    let residual = (start - cone.evaluate(ua, va))
+        .length()
+        .max((end - cone.evaluate(ub, vb)).length());
+    if residual > tolerance {
+        return false;
+    }
+    let angle = ((ub - ua + TAU / 2.0).rem_euclid(TAU) - TAU / 2.0).abs();
+    let radius = va.max(vb) * cone.half_angle().cos();
+    // 2*sin²(angle/4) avoids cancellation for the tiny connector arcs.
+    let sagitta = 2.0 * radius * (angle / 4.0).sin().powi(2);
+    residual + sagitta <= deflection / 4.0
+}
+
 /// Per-face variant of the cycle-rim structured band: rims are sampled
 /// LOCALLY at the requested deflection instead of pulled from the solid
 /// tessellation's shared edge pool, so the `tessellate(topo, face, defl)`
@@ -68,7 +99,7 @@ pub(super) fn tessellate_band_face_local(
         | FaceSurface::Torus(_) => return Ok(None),
     };
 
-    // Curved wire edges → endpoint-connected cycles (the pool version's
+    // Rim wire edges → endpoint-connected cycles (the pool version's
     // structure; a closed single-edge NURBS loop has no by-construction
     // winding, so decline).
     let wire = topo.wire(face_data.outer_wire())?;
@@ -87,7 +118,17 @@ pub(super) fn tessellate_band_face_local(
                     curved.push((oe.edge(), e.start(), e.end()));
                 }
             }
-            EdgeCurve::Line => {}
+            EdgeCurve::Line => {
+                if is_cone_rim_chord(
+                    face_data.surface(),
+                    topo.vertex(e.start())?.point(),
+                    topo.vertex(e.end())?.point(),
+                    deflection,
+                ) && seen.insert(oe.edge().index())
+                {
+                    curved.push((oe.edge(), e.start(), e.end()));
+                }
+            }
             EdgeCurve::Ellipse(_) | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => {
                 return Ok(None);
             }
@@ -158,7 +199,7 @@ pub(super) fn tessellate_band_face_local(
             }
             pool.insert(oriented.edge().index(), ids);
         }
-        if tessellate_cone_apex_fan_shared(topo, face_data, &pool, &mut mesh)? {
+        if tessellate_cone_apex_fan_shared(topo, face_data, &pool, &mut mesh, deflection)? {
             let uvs = mesh
                 .positions
                 .iter()
@@ -725,6 +766,7 @@ pub(super) fn tessellate_cone_apex_fan_shared(
     face_data: &remus_topology::face::Face,
     edge_global_indices: &DetHashMap<usize, Vec<u32>>,
     merged: &mut TriangleMesh,
+    deflection: f64,
 ) -> Result<bool, crate::OperationsError> {
     let FaceSurface::Cone(cone) = face_data.surface() else {
         return Ok(false);
@@ -739,22 +781,28 @@ pub(super) fn tessellate_cone_apex_fan_shared(
     let wire = topo.wire(face_data.outer_wire())?;
     let mut seam_edge_indices = Vec::new();
     let mut rim = Vec::new();
-    let mut has_nurbs = false;
+    let mut needs_winding_check = false;
     let mut seam_uses = Vec::new();
     for oe in wire.edges() {
         let edge = topo.edge(oe.edge())?;
-        if matches!(edge.curve(), EdgeCurve::Line) {
+        let rim_chord = matches!(edge.curve(), EdgeCurve::Line)
+            && is_cone_rim_chord(
+                face_data.surface(),
+                topo.vertex(edge.start())?.point(),
+                topo.vertex(edge.end())?.point(),
+                deflection,
+            );
+        if matches!(edge.curve(), EdgeCurve::Line) && !rim_chord {
             seam_edge_indices.push(oe.edge().index());
             seam_uses.push(*oe);
             continue;
         }
         match edge.curve() {
             EdgeCurve::Circle(_) => {}
-            EdgeCurve::NurbsCurve(_) => has_nurbs = true,
-            EdgeCurve::Line
-            | EdgeCurve::Ellipse(_)
-            | EdgeCurve::Hyperbola(_)
-            | EdgeCurve::Parabola(_) => return Ok(false),
+            EdgeCurve::NurbsCurve(_) | EdgeCurve::Line => needs_winding_check = true,
+            EdgeCurve::Ellipse(_) | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => {
+                return Ok(false);
+            }
         }
         let Some(ids) = edge_global_indices.get(&oe.edge().index()) else {
             return Ok(false);
@@ -784,7 +832,7 @@ pub(super) fn tessellate_cone_apex_fan_shared(
     if rim.iter().any(|&g| (g as usize) >= merged.positions.len()) {
         return Ok(false);
     }
-    if has_nurbs {
+    if needs_winding_check {
         let mut winding = 0.0;
         let mut travel = 0.0;
         for i in 0..rim.len() {
@@ -2834,7 +2882,15 @@ pub(super) fn tessellate_nonplanar_cdt(
     use remus_math::vec::Point2;
     use remus_topology::edge::EdgeId;
 
-    let wire = topo.wire(face_data.outer_wire())?;
+    // A torus face's cycles that touch its outer wire join it into one
+    // boundary walk (see `touching_cycles`); other carriers keep their
+    // wires exactly as stored.
+    let chart_wires = touching_cycles::chart_wires(
+        topo,
+        face_data,
+        matches!(face_data.surface(), FaceSurface::Torus(_)),
+    )?;
+    let outer_edges: &[remus_topology::wire::OrientedEdge] = &chart_wires.outer;
     let tol_dup = 1e-10;
     // A NURBS carrier is charted in its own frame (PERF-D01): boundary
     // projection, grid sizing and normals read the control net relative to
@@ -2856,14 +2912,14 @@ pub(super) fn tessellate_nonplanar_cdt(
     // GFA band faces (wire carries a section Circle) project through the
     // exact wall chart (see below); a converted PRIMITIVE wall keeps the
     // established Newton path the seam-wall regression test pins.
-    let has_section_circle = wire.edges().iter().any(|oe| {
+    let has_section_circle = outer_edges.iter().any(|oe| {
         topo.edge(oe.edge())
             .is_ok_and(|e| matches!(e.curve(), EdgeCurve::Circle(_)))
     });
 
     // Fourth element: is_forward flag -- needed for seam UV assignment.
     let mut boundary_3d: Vec<(Point3, u32, EdgeId, bool)> = Vec::new();
-    for oe in wire.edges() {
+    for oe in outer_edges {
         let edge_id_local = oe.edge();
         let edge_idx = edge_id_local.index();
         let is_fwd = oe.is_forward();
@@ -2934,7 +2990,7 @@ pub(super) fn tessellate_nonplanar_cdt(
 
     // Torus holes must unwrap into the same bounded chart as the outer wire;
     // this is checked below before CDT constraints are inserted.
-    if !face_data.inner_wires().is_empty()
+    if !chart_wires.holes.is_empty()
         && !matches!(face_data.surface(), FaceSurface::Torus(_))
         && !matches!(face_data.surface(), FaceSurface::Nurbs(surface) if !surface.is_periodic_u() && !surface.is_periodic_v())
     {
@@ -2944,10 +3000,9 @@ pub(super) fn tessellate_nonplanar_cdt(
     }
 
     let mut hole_boundaries_3d: Vec<Vec<(Point3, u32, EdgeId, bool)>> = Vec::new();
-    for &hole_wire_id in face_data.inner_wires() {
-        let hole_wire = topo.wire(hole_wire_id)?;
+    for hole_wire in &chart_wires.holes {
         let mut hole: Vec<(Point3, u32, EdgeId, bool)> = Vec::new();
-        for oe in hole_wire.edges() {
+        for oe in hole_wire {
             let edge_id = oe.edge();
             let is_forward = oe.is_forward();
             let points_and_ids: Vec<(Point3, u32)> = if let Some(global_ids) =
@@ -3194,6 +3249,21 @@ pub(super) fn tessellate_nonplanar_cdt(
         }
     }
 
+    // A spliced walk is a chart polygon only if its lift closes: the step
+    // back from the last sample to the first, read in the unwrapped chart,
+    // must be one boundary step, not a period. A spliced torus boundary that
+    // still winds a period bounds no cut-open chart region; refuse it as an
+    // unspliced winding hole is refused below.
+    if chart_wires.spliced
+        && let (Some(first), Some(last)) = (boundary_uv.first(), boundary_uv.last())
+        && ((first.0 - last.0).abs() > std::f64::consts::PI
+            || (first.1 - last.1).abs() > std::f64::consts::PI)
+    {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: "torus boundary winds a parameter period".into(),
+        });
+    }
+
     // Compute (u,v) bounding box from a set of UV pairs.
     #[allow(clippy::items_after_statements)]
     fn uv_bounds(uvs: &[(f64, f64)]) -> (f64, f64, f64, f64) {
@@ -3214,7 +3284,7 @@ pub(super) fn tessellate_nonplanar_cdt(
     // Step 2b: Detect and fix degenerate seam edges.
     let (u_min, u_max, v_min, v_max) = {
         let mut wire_edge_counts: DetHashMap<usize, usize> = DetHashMap::default();
-        for oe in wire.edges() {
+        for oe in outer_edges {
             *wire_edge_counts.entry(oe.edge().index()).or_default() += 1;
         }
         let seam_edge_indices: DetHashSet<usize> = wire_edge_counts
@@ -3425,7 +3495,7 @@ pub(super) fn tessellate_nonplanar_cdt(
     let sheared = match chart_surface {
         FaceSurface::Nurbs(surface)
             if !has_section_circle
-                && !wire.edges().iter().any(|oriented| {
+                && !outer_edges.iter().any(|oriented| {
                     topo.edge(oriented.edge())
                         .is_ok_and(|edge| matches!(edge.curve(), EdgeCurve::Ellipse(_)))
                 }) =>
@@ -3666,7 +3736,7 @@ pub(super) fn tessellate_nonplanar_cdt(
             }
             prepared_boundary.is_on_boundary(point)
         };
-        let has_ellipse_wire = wire.edges().iter().any(|oriented| {
+        let has_ellipse_wire = outer_edges.iter().any(|oriented| {
             topo.edge(oriented.edge())
                 .is_ok_and(|edge| matches!(edge.curve(), EdgeCurve::Ellipse(_)))
         });
@@ -3721,7 +3791,7 @@ pub(super) fn tessellate_nonplanar_cdt(
         if matches!(
             face_data.surface(),
             FaceSurface::Cylinder(_) | FaceSurface::Cone(_)
-        ) && face_data.inner_wires().is_empty()
+        ) && chart_wires.holes.is_empty()
             && let Some(extra) = stepped_rim_interior_points(
                 topo,
                 face_data,
@@ -3754,7 +3824,7 @@ pub(super) fn tessellate_nonplanar_cdt(
         let has_nurbs_revolved_wire = matches!(
             face_data.surface(),
             FaceSurface::Cylinder(_) | FaceSurface::Cone(_)
-        ) && wire.edges().iter().any(|oriented| {
+        ) && outer_edges.iter().any(|oriented| {
             topo.edge(oriented.edge()).is_ok_and(|edge| {
                 if !matches!(edge.curve(), EdgeCurve::NurbsCurve(_)) {
                     return false;
@@ -5630,6 +5700,7 @@ fn sphere_native_arcs_in_hemisphere(
 
 mod collapsed_boundary;
 mod sheared_chart;
+mod touching_cycles;
 
 /// Prefer the carrier's own chart, then test great-circle frames against the
 /// entire sampled boundary. A meridian's normal alone does not identify the

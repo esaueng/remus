@@ -206,9 +206,101 @@ pub fn sub_trim(
                     .ok()
                     .map(|result| result.parameter)
             };
-            Some((project(start)?, project(end)?))
+            let (start, end) = (project(start)?, project(end)?);
+            Some(orient_closed_piece(
+                nurbs,
+                parent,
+                closure_parameter_in(nurbs, parent, start),
+                closure_parameter_in(nurbs, parent, end),
+            ))
         }
     }
+}
+
+/// The parameter of a point projected onto a NURBS curve, read inside the
+/// parent span when the point is a closed curve's closure point.
+///
+/// A closed loop's start and end parameters name one point, and projection
+/// returns either. A piece ending there (a section loop cut at both crossings
+/// of a seam) must keep the end its parent span holds: taking the other one
+/// turned the piece into its complement, and the duplicate-edge merge then
+/// gave that wrong arc to both faces sharing it.
+fn closure_parameter_in(
+    nurbs: &remus_math::nurbs::curve::NurbsCurve,
+    parent: (f64, f64),
+    parameter: f64,
+) -> f64 {
+    use remus_math::traits::ParametricCurve;
+    let (lo, hi) = (parent.0.min(parent.1), parent.0.max(parent.1));
+    let (d0, d1) = ParametricCurve::domain(nurbs);
+    let eps = 1e-9 * (d1 - d0).abs().max(1e-300);
+    let inside = |t: f64| t >= lo - eps && t <= hi + eps;
+    if inside(parameter) {
+        return parameter;
+    }
+    if !nurbs_is_closed(nurbs) {
+        return parameter;
+    }
+    // Only a span that itself ends at the other end of the domain names the
+    // closure point by that end.
+    let near = 1e-7 * (d1 - d0).abs();
+    if (parameter - d0).abs() <= near && (hi - d1).abs() <= eps {
+        d1
+    } else if (parameter - d1).abs() <= near && (lo - d0).abs() <= eps {
+        d0
+    } else {
+        parameter
+    }
+}
+
+/// Whether a NURBS curve's ends meet: within the model's default linear
+/// tolerance, the gap at which fitted section loops close (projection itself
+/// is resolved to 1e-9).
+fn nurbs_is_closed(nurbs: &remus_math::nurbs::curve::NurbsCurve) -> bool {
+    use remus_math::traits::ParametricCurve;
+    let (d0, d1) = ParametricCurve::domain(nurbs);
+    let gap =
+        (ParametricCurve::evaluate(nurbs, d0) - ParametricCurve::evaluate(nurbs, d1)).length();
+    gap <= remus_math::tolerance::Tolerance::new().linear.max(1e-9)
+}
+
+/// Read a closed curve's closure point as the end that keeps a piece running
+/// the same way as its parent span.
+///
+/// When the parent span covers the whole domain, both domain ends lie inside
+/// it and the projection's choice for the closure point stands unchecked: a
+/// piece starting there on a forward parent could read `(d1, t)` and run
+/// backwards over the complement. A piece must run the parent's way, so a
+/// closure end that would reverse it takes the other domain end.
+fn orient_closed_piece(
+    nurbs: &remus_math::nurbs::curve::NurbsCurve,
+    parent: (f64, f64),
+    start: f64,
+    end: f64,
+) -> (f64, f64) {
+    use remus_math::traits::ParametricCurve;
+    if !nurbs_is_closed(nurbs) {
+        return (start, end);
+    }
+    let (d0, d1) = ParametricCurve::domain(nurbs);
+    let (lo, hi) = (parent.0.min(parent.1), parent.0.max(parent.1));
+    let eps = 1e-9 * (d1 - d0).abs().max(1e-300);
+    let near = 1e-7 * (d1 - d0).abs();
+    let at = |t: f64, d: f64| (t - d).abs() <= near;
+    let (spans_d0, spans_d1) = ((lo - d0).abs() <= eps, (hi - d1).abs() <= eps);
+    let (mut s, mut e) = (start, end);
+    if parent.1 >= parent.0 {
+        if e < s && at(s, d1) && spans_d0 {
+            s = d0;
+        } else if e < s && at(e, d0) && spans_d1 {
+            e = d1;
+        }
+    } else if e > s && at(s, d0) && spans_d1 {
+        s = d1;
+    } else if e > s && at(e, d1) && spans_d0 {
+        e = d0;
+    }
+    (s, e)
 }
 
 fn angular_sub_trim(
@@ -486,5 +578,123 @@ mod trim_tests {
             pave_block_id: None,
         };
         assert_eq!(section.domain(), (4.0, 7.0));
+    }
+}
+
+#[cfg(test)]
+mod closure_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use remus_math::nurbs::curve::NurbsCurve;
+
+    /// A closed NURBS loop (a unit circle as a rational quadratic) over
+    /// `[0, 1]`: its closure point has both parameters 0 and 1.
+    fn loop_curve() -> NurbsCurve {
+        let w = std::f64::consts::FRAC_1_SQRT_2;
+        let pts = [
+            (1.0, 0.0),
+            (1.0, 1.0),
+            (0.0, 1.0),
+            (-1.0, 1.0),
+            (-1.0, 0.0),
+            (-1.0, -1.0),
+            (0.0, -1.0),
+            (1.0, -1.0),
+            (1.0, 0.0),
+        ];
+        NurbsCurve::new(
+            2,
+            vec![
+                0.0, 0.0, 0.0, 0.25, 0.25, 0.5, 0.5, 0.75, 0.75, 1.0, 1.0, 1.0,
+            ],
+            pts.iter().map(|&(x, y)| Point3::new(x, y, 0.0)).collect(),
+            vec![1.0, w, 1.0, w, 1.0, w, 1.0, w, 1.0],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_piece_ending_at_the_closure_point_keeps_its_own_parameter() {
+        let nurbs = loop_curve();
+        let curve = EdgeCurve::NurbsCurve(nurbs.clone());
+        let (start, end) = (nurbs.evaluate(0.95), nurbs.evaluate(1.0));
+        let trim = sub_trim(&curve, (0.9, 1.0), start, end).unwrap();
+        assert!((trim.0 - 0.95).abs() < 1e-7, "{trim:?}");
+        assert!(
+            (trim.1 - 1.0).abs() < 1e-12,
+            "{trim:?}: took the complement"
+        );
+        let trim = sub_trim(&curve, (0.0, 0.2), end, nurbs.evaluate(0.1)).unwrap();
+        assert!(
+            trim.0.abs() < 1e-12 && (trim.1 - 0.1).abs() < 1e-7,
+            "{trim:?}"
+        );
+    }
+
+    #[test]
+    fn a_whole_loop_parent_keeps_pieces_running_its_way() {
+        let nurbs = loop_curve();
+        // The closure point projected to the far end of the domain.
+        assert_eq!(
+            orient_closed_piece(&nurbs, (0.0, 1.0), 1.0, 0.4),
+            (0.0, 0.4)
+        );
+        assert_eq!(
+            orient_closed_piece(&nurbs, (0.0, 1.0), 0.6, 0.0),
+            (0.6, 1.0)
+        );
+        assert_eq!(
+            orient_closed_piece(&nurbs, (1.0, 0.0), 0.0, 0.4),
+            (1.0, 0.4)
+        );
+        assert_eq!(
+            orient_closed_piece(&nurbs, (1.0, 0.0), 0.6, 1.0),
+            (0.6, 0.0)
+        );
+        // Pieces already running the parent's way are left alone.
+        assert_eq!(
+            orient_closed_piece(&nurbs, (0.0, 1.0), 0.0, 0.4),
+            (0.0, 0.4)
+        );
+        assert_eq!(
+            orient_closed_piece(&nurbs, (0.0, 1.0), 0.2, 0.4),
+            (0.2, 0.4)
+        );
+    }
+
+    #[test]
+    fn a_loop_closing_within_model_tolerance_counts_as_closed() {
+        // The circle loop with its last control point moved 5e-8 off the
+        // first: closed to the model's tolerance, not to 1e-9.
+        let w = std::f64::consts::FRAC_1_SQRT_2;
+        let mut pts: Vec<Point3> = [
+            (1.0, 0.0),
+            (1.0, 1.0),
+            (0.0, 1.0),
+            (-1.0, 1.0),
+            (-1.0, 0.0),
+            (-1.0, -1.0),
+            (0.0, -1.0),
+            (1.0, -1.0),
+            (1.0, 0.0),
+        ]
+        .iter()
+        .map(|&(x, y)| Point3::new(x, y, 0.0))
+        .collect();
+        pts[8] = Point3::new(1.0, 5e-8, 0.0);
+        let nurbs = NurbsCurve::new(
+            2,
+            vec![
+                0.0, 0.0, 0.0, 0.25, 0.25, 0.5, 0.5, 0.75, 0.75, 1.0, 1.0, 1.0,
+            ],
+            pts,
+            vec![1.0, w, 1.0, w, 1.0, w, 1.0, w, 1.0],
+        )
+        .unwrap();
+        assert!(nurbs_is_closed(&nurbs));
+        assert_eq!(
+            orient_closed_piece(&nurbs, (0.0, 1.0), 1.0, 0.4),
+            (0.0, 0.4)
+        );
     }
 }

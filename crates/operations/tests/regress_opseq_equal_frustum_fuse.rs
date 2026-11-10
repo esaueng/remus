@@ -111,9 +111,11 @@ fn complete_equal_frustum_fuse_accepts_and_refuses_the_declared_matrix_atomicall
                     let (lhs, rhs) = if swapped { (b, a) } else { (a, b) };
                     let result =
                         boolean_with_context(&mut topo, BooleanOp::Fuse, lhs, rhs, &context);
-                    // The two tiny translated and all twelve rotated cells are
-                    // retained limits, not a promise of general X10 closure.
-                    if placed || (!mirrored && scale.to_bits() == 1e-3_f64.to_bits()) {
+                    // The four tiny translated cells (either pose) and four large
+                    // rotated cells are retained limits, not a promise of general X10 closure.
+                    if (placed && scale.to_bits() == 1e3_f64.to_bits())
+                        || (!mirrored && scale.to_bits() == 1e-3_f64.to_bits())
+                    {
                         assert!(
                             matches!(
                                 result,
@@ -268,7 +270,7 @@ fn complete_equal_frustum_fuse_accepts_and_refuses_the_declared_matrix_atomicall
             }
         }
     }
-    assert_eq!((accepted, refused), (10, 14));
+    assert_eq!((accepted, refused), (16, 8));
 }
 
 #[test]

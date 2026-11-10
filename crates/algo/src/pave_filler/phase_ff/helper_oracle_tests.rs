@@ -460,7 +460,10 @@ fn graze(
 ) -> bool {
     single_hit_circle_is_graze(
         topo,
-        [(plane.0, plane.1, None), (other.0, other.1, None)],
+        [
+            (plane.0, plane.1, &super::FaceBand::NONE),
+            (other.0, other.1, &super::FaceBand::NONE),
+        ],
         circle,
         t_hit,
         Tolerance::new(),
@@ -1434,8 +1437,8 @@ fn curved_nurbs_trim_authority_stops_at_the_extent_handoff() {
         traces[1].face,
         surfaces[0],
         surfaces[1],
-        None,
-        None,
+        &super::FaceBand::NONE,
+        &super::FaceBand::NONE,
         vec![raw],
         Tolerance::default(),
         &mut super::JunctionRegistry::default(),

@@ -52,3 +52,4 @@ pub use pave_filler::curved_section_clip::{
 };
 pub(crate) mod ds;
 pub(crate) mod pave_filler;
+pub(crate) mod periodic_chart;

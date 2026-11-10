@@ -2217,6 +2217,90 @@ pub fn intersect_analytic_analytic_bounded(
     v_range_hint_a: Option<(f64, f64)>,
     v_range_hint_b: Option<(f64, f64)>,
 ) -> Result<Vec<IntersectionCurve>, MathError> {
+    intersect_analytic_analytic_hinted(
+        a,
+        b,
+        grid_res,
+        VRangeHint::from_width(v_range_hint_a),
+        VRangeHint::from_width(v_range_hint_b),
+    )
+}
+
+/// What a marching `v`-range hint proves about the minor-angle coverage of
+/// the torus face it bounds. Only a torus reads it.
+///
+/// A torus face's band can be a whole turn for three different reasons: the
+/// face provably meets every minor angle, its certified lifted band straddles
+/// the projection's `0 = 2π` wrap (one `[v0, v1]` in `[0, 2π)` cannot hold
+/// it), or nothing about it could be certified. Only the first lets a trace
+/// leave the torus solely through its partner wall's band, so only the first
+/// may land exits exactly on that rim (see [`intersect_analytic_analytic_hinted`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum BandCoverage {
+    /// Infer whole-tube coverage from the hint's width, as
+    /// [`intersect_analytic_analytic_bounded`] always has: a torus hint of a
+    /// whole turn, or no hint, counts as the whole tube.
+    #[default]
+    FromWidth,
+    /// The face provably meets every minor angle of its torus (a boundary
+    /// loop winding in `v`, or one whose attained `v` sweep is a whole turn).
+    WholeTube,
+    /// The hint only bounds the face conservatively. It proves nothing about
+    /// coverage, whatever its width: a wrap-straddling certified band, or an
+    /// uncertified face, marched over the whole period.
+    Bounded,
+}
+
+/// A marching `v`-range hint and what it proves; see [`BandCoverage`].
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct VRangeHint {
+    /// The `v` range to march in (`None`: the carrier's default range).
+    pub range: Option<(f64, f64)>,
+    /// What `range` proves about the face's minor-angle coverage.
+    pub coverage: BandCoverage,
+}
+
+impl VRangeHint {
+    /// A hint whose whole-tube coverage is inferred from its width (the
+    /// [`intersect_analytic_analytic_bounded`] contract).
+    #[must_use]
+    pub const fn from_width(range: Option<(f64, f64)>) -> Self {
+        Self {
+            range,
+            coverage: BandCoverage::FromWidth,
+        }
+    }
+
+    /// A hint with explicit coverage provenance.
+    #[must_use]
+    pub const fn new(range: Option<(f64, f64)>, coverage: BandCoverage) -> Self {
+        Self { range, coverage }
+    }
+}
+
+/// [`intersect_analytic_analytic_bounded`] with explicit band provenance.
+///
+/// Identical except for one decision: a marched torus × cone/cylinder-wall
+/// trace lands its band exits exactly on the band edge (B39) only when the
+/// torus side is a whole tube, and here that must be PROVED
+/// ([`BandCoverage::WholeTube`]) instead of read off the hint's width. A
+/// whole-turn hint marked [`BandCoverage::Bounded`] marches the same range
+/// but keeps the step-short ends every partial torus patch keeps.
+///
+/// # Errors
+///
+/// Returns `MathError` if algebraic intersection fails or marching diverges.
+#[allow(clippy::too_many_lines)]
+pub fn intersect_analytic_analytic_hinted(
+    a: AnalyticSurface<'_>,
+    b: AnalyticSurface<'_>,
+    grid_res: usize,
+    hint_a: VRangeHint,
+    hint_b: VRangeHint,
+) -> Result<Vec<IntersectionCurve>, MathError> {
+    let v_range_hint_a = hint_a.range;
+    let v_range_hint_b = hint_b.range;
     let a = normalize_analytic_plane(a)?;
     let b = normalize_analytic_plane(b)?;
     // Try algebraic specialization for known surface pairs before falling
@@ -2229,6 +2313,8 @@ pub fn intersect_analytic_analytic_bounded(
     let (surf_b, norm_b, u_range_b, default_v_b) = surface_closures(&b);
     let v_range_a = v_range_hint_a.unwrap_or(default_v_a);
     let v_range_b = v_range_hint_b.unwrap_or(default_v_b);
+    let bisect_exits = whole_tube_against_wall(&a, v_range_a, hint_a.coverage, &b)
+        || whole_tube_against_wall(&b, v_range_b, hint_b.coverage, &a);
 
     // Compute characteristic surface dimensions for adaptive parameters.
     let diag_a = if let AnalyticSurface::Torus(torus) = a {
@@ -2354,6 +2440,7 @@ pub fn intersect_analytic_analytic_bounded(
             march_step,
             is_u_periodic(&a),
             is_u_periodic(&b),
+            bisect_exits,
         )?;
 
         if march_result.len() >= 2 {
@@ -4153,6 +4240,52 @@ fn correct_to_intersection(
     p
 }
 
+/// Whether a marched trace between `s` (with its `v` band and that band's
+/// provenance) and `t` lands its band exits exactly on the band edge.
+///
+/// Band exits land exactly on the band edge only for a FULL-TUBE torus
+/// against a frustum or cylinder WALL — the family whose wall arcs must
+/// chain with cap-plane sections at exact rim crossings (B39). With the
+/// torus band spanning the whole tube, the trace can only leave through
+/// the wall's band, i.e. at a rim. Every other marched pair keeps its trace
+/// ending at the last in-band sample: their downstream consumers are
+/// calibrated to that end. Measured:
+/// - an exact end on the rim crossing of two coplanar frustum caps
+///   misbuilds the tapered-feet fuse (cone × cone);
+/// - exact ends of sphere × corner-round traces that run off the sphere
+///   patch survive the in-both restriction and weave an X across the round
+///   (hammer-holder opening replay);
+/// - a torus FILLET patch (a partial tube band) against a fillet cylinder:
+///   the hammer holder's shifted intersect takes 12 such exits, 10 of them
+///   through the torus patch's own band edge, landing on patch-boundary
+///   corners. Natively the result closes; on wasm32, whose libm rounds
+///   differently, the same exits leave 4 free edges and the exact boolean
+///   refuses (WASM smoke, 2026-09-24). Step-short ends there are absorbed by
+///   the EF paves and junction snapping the fillet patches were built with.
+///
+/// The torus side's whole-tube coverage must be PROVED. A band of a whole
+/// turn can also be a certified partial band straddling the projection's
+/// wrap, or the conservative band of an uncertified face; both are partial
+/// patches whose exits would land on patch-boundary corners, so a
+/// [`BandCoverage::Bounded`] hint never qualifies, whatever its width.
+fn whole_tube_against_wall(
+    s: &AnalyticSurface<'_>,
+    s_v: (f64, f64),
+    coverage: BandCoverage,
+    t: &AnalyticSurface<'_>,
+) -> bool {
+    let whole_width = s_v.1 - s_v.0 >= TAU - 1e-9;
+    // A `WholeTube` proof still needs the whole-turn range it was given:
+    // a narrower range would stop traces at the torus band, not the wall's.
+    let proved = match coverage {
+        BandCoverage::FromWidth | BandCoverage::WholeTube => whole_width,
+        BandCoverage::Bounded => false,
+    };
+    matches!(s, AnalyticSurface::Torus(_))
+        && proved
+        && matches!(t, AnalyticSurface::Cone(_) | AnalyticSurface::Cylinder(_))
+}
+
 /// March along the intersection of two surfaces from a seed point.
 ///
 /// Uses the cross product of surface normals as the tangent direction
@@ -4174,6 +4307,7 @@ fn march_analytic_intersection(
     initial_step: f64,
     u_periodic_a: bool,
     u_periodic_b: bool,
+    bisect_exits: bool,
 ) -> Result<Vec<Point3>, MathError> {
     let seed = correct_to_intersection(
         a, b, surf_a, norm_a, surf_b, norm_b, seed, u_range_a, v_range_a, u_range_b, v_range_b, 20,
@@ -4188,33 +4322,8 @@ fn march_analytic_intersection(
     // Angular thresholds for curvature-adaptive stepping.
     let max_angle = 10.0_f64.to_radians();
     let min_angle = 2.0_f64.to_radians();
-    // Band exits land exactly on the band edge only for a FULL-TUBE torus
-    // against a frustum or cylinder WALL — the family whose wall arcs must
-    // chain with cap-plane sections at exact rim crossings (B39). With the
-    // torus band spanning the whole tube, the trace can only leave through
-    // the wall's band, i.e. at a rim. Every other marched pair keeps its trace
-    // ending at the last in-band sample: their downstream consumers are
-    // calibrated to that end. Measured:
-    // - an exact end on the rim crossing of two coplanar frustum caps
-    //   misbuilds the tapered-feet fuse (cone × cone);
-    // - exact ends of sphere × corner-round traces that run off the sphere
-    //   patch survive the in-both restriction and weave an X across the round
-    //   (hammer-holder opening replay);
-    // - a torus FILLET patch (a partial tube band) against a fillet cylinder:
-    //   the hammer holder's shifted intersect takes 12 such exits, 10 of them
-    //   through the torus patch's own band edge, landing on patch-boundary
-    //   corners. Natively the result closes; on wasm32, whose libm rounds
-    //   differently, the same exits leave 4 free edges and the exact boolean
-    //   refuses (WASM smoke, 2026-09-24). Step-short ends there are absorbed by
-    //   the EF paves and junction snapping the fillet patches were built with.
-    let full_tube_torus_wall =
-        |s: &AnalyticSurface<'_>, s_v: (f64, f64), t: &AnalyticSurface<'_>| {
-            matches!(s, AnalyticSurface::Torus(_))
-                && s_v.1 - s_v.0 >= TAU - 1e-9
-                && matches!(t, AnalyticSurface::Cone(_) | AnalyticSurface::Cylinder(_))
-        };
-    let bisect_exits =
-        full_tube_torus_wall(a, v_range_a, b) || full_tube_torus_wall(b, v_range_b, a);
+    // `bisect_exits`: see `whole_tube_against_wall` for the one family whose
+    // band exits land exactly on the band edge.
 
     // March forward from seed, collecting points.
     let mut forward = Vec::new();
@@ -4386,7 +4495,9 @@ fn march_analytic_intersection(
 /// - a CORNER exit — the trace leaves BOTH carriers' bands at the same point
 ///   (two frustum walls meeting exactly where their coplanar cap rims cross:
 ///   the point is a four-face junction the coplanar-cap machinery owns, not a
-///   rim crossing of one wall).
+///   rim crossing of one wall);
+/// - corrected probes switch branches or do not converge onto both carriers
+///   and the exiting band's rim within the linear tolerance.
 #[allow(clippy::too_many_arguments)]
 fn bisect_band_exit(
     a: &AnalyticSurface<'_>,
@@ -4438,18 +4549,48 @@ fn bisect_band_exit(
             20,
         )
     };
-    if out_of_band(current) || !out_of_band(probe(h)) {
+    // Every probe must stay on the branch being marched: within twice its
+    // step of `current` and within 60° of the march direction. Newton
+    // correction of a lengthened step can otherwise land on another branch
+    // of the intersection, and the bracket would then straddle two curves.
+    let dir_len = t_dir.length();
+    let on_branch = |p: Point3, s: f64| {
+        let d = p - current;
+        let len = d.length();
+        len <= 2.0 * s.abs() + 1e-9 && d.dot(t_dir) >= 0.5 * len * dir_len
+    };
+    if out_of_band(current) {
         return None;
     }
-    let (mut lo, mut hi) = (0.0_f64, h);
+    // The uncorrected step left the band, but correcting it onto both
+    // surfaces can pull it back in when the trace meets the band edge at a
+    // shallow angle (a whole-tube torus meeting a wall just below its rim).
+    // Lengthen the step, at most twice, until the corrected probe is out;
+    // stopping at the last in-band sample instead left the trace up to a
+    // step short of the rim it crosses.
+    let mut reach = h;
+    let mut outside = probe(reach);
+    for _ in 0..2 {
+        if out_of_band(outside) {
+            break;
+        }
+        reach *= 2.0;
+        outside = probe(reach);
+    }
+    if !out_of_band(outside) || !on_branch(outside, reach) {
+        return None;
+    }
+    let (mut lo, mut hi) = (0.0_f64, reach);
     let mut inside = current;
-    let mut outside = probe(h);
     for _ in 0..64 {
         let mid = 0.5 * (lo + hi);
         if mid <= lo || mid >= hi {
             break;
         }
         let p = probe(mid);
+        if !on_branch(p, mid) {
+            return None;
+        }
         if out_of_band(p) {
             hi = mid;
             outside = p;
@@ -4460,6 +4601,39 @@ fn bisect_band_exit(
     }
     // Corner exit: both bands end at the crossing.
     if out_a(outside) && out_b(outside) {
+        return None;
+    }
+    // A parameter bracket can converge at a discontinuity between Newton
+    // basins. It represents a geometric rim crossing only if its corrected
+    // points converge too, on both carriers and on the exiting band's rim.
+    let tolerance = Tolerance::default().linear;
+    let close = |distance: f64| distance.is_finite() && distance <= tolerance;
+    let pa = project_analytic(a, inside, u_range_a, v_range_a);
+    let pb = project_analytic(b, inside, u_range_b, v_range_b);
+    if !close((outside - inside).length())
+        || !close((surf_a(pa.0, pa.1) - inside).length())
+        || !close((surf_b(pb.0, pb.1) - inside).length())
+    {
+        return None;
+    }
+    let on_rim = |surface: &dyn Fn(f64, f64) -> Point3,
+                  (u, v): (f64, f64),
+                  ur: (f64, f64),
+                  vr: (f64, f64),
+                  periodic_u: bool| {
+        let mut distance = (surface(u, vr.0) - inside)
+            .length()
+            .min((surface(u, vr.1) - inside).length());
+        if !periodic_u {
+            distance = distance
+                .min((surface(ur.0, v) - inside).length())
+                .min((surface(ur.1, v) - inside).length());
+        }
+        close(distance)
+    };
+    if (out_a(outside) && !on_rim(surf_a, pa, u_range_a, v_range_a, u_periodic_a))
+        || (out_b(outside) && !on_rim(surf_b, pb, u_range_b, v_range_b, u_periodic_b))
+    {
         return None;
     }
     Some(inside)
@@ -6255,6 +6429,37 @@ mod tests {
         }
     }
 
+    #[test]
+    fn band_exit_rejects_a_discontinuous_newton_branch_switch() {
+        // These carriers meet in two circles at z = +/-1. An overstepping
+        // predictor through the tube centre changes Newton's basin from one
+        // circle to the other. A converged parameter bracket at that switch
+        // is not a geometric crossing of a carrier's band boundary.
+        let torus = ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), 3.0, 1.0).unwrap();
+        let cylinder =
+            CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 3.0)
+                .unwrap();
+        let turn = (0.0, std::f64::consts::TAU);
+        let end = bisect_band_exit(
+            &AnalyticSurface::Torus(&torus),
+            &AnalyticSurface::Cylinder(&cylinder),
+            &|u, v| torus.evaluate(u, v),
+            &|u, v| torus.normal(u, v),
+            &|u, v| cylinder.evaluate(u, v),
+            &|u, v| cylinder.normal(u, v),
+            Point3::new(3.0, 0.0, 1.0),
+            Vec3::new(0.0, 0.0, -1.0),
+            2.0,
+            turn,
+            turn,
+            turn,
+            (-0.25, 2.0),
+            true,
+            true,
+        );
+        assert!(end.is_none(), "branch switch accepted as a rim: {end:?}");
+    }
+
     /// B39: a bounded marched trace ends ON the band edge it leaves, not one
     /// step short of it. A torus tube crossing a frustum wall (the B39 unit
     /// cell: R=3/r=0.5 torus, frustum wall between its rims at cone v ∈
@@ -6374,6 +6579,108 @@ mod tests {
                     (v - band.1).abs() > 1e-6,
                     "cone × cone trace end {p:?} was moved onto the top band edge"
                 );
+            }
+        }
+    }
+
+    /// The B39 unit cell's wall-arc ends, as distances from the wall's band
+    /// edges, for a torus hint of `torus_hint`.
+    fn b39_rim_offsets(torus_hint: VRangeHint) -> Vec<f64> {
+        use crate::traits::ParametricCurve;
+        let torus = ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), 3.0, 0.5).unwrap();
+        let cone = ConicalSurface::new(
+            Point3::new(-1.5, 2.0, 1.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            2.0_f64.atan2(1.0),
+        )
+        .unwrap();
+        let band = (5.0_f64.sqrt(), 1.5 * 5.0_f64.sqrt());
+        let curves = intersect_analytic_analytic_hinted(
+            AnalyticSurface::Torus(&torus),
+            AnalyticSurface::Cone(&cone),
+            32,
+            torus_hint,
+            VRangeHint::new(Some(band), BandCoverage::Bounded),
+        )
+        .unwrap();
+        assert_eq!(curves.len(), 2, "two wall arcs");
+        curves
+            .iter()
+            .flat_map(|c| {
+                let (t0, t1) = c.curve.domain();
+                [t0, t1].map(|t| {
+                    let (_, v) = cone.project_point(ParametricCurve::evaluate(&c.curve, t));
+                    (v - band.0).abs().min((v - band.1).abs())
+                })
+            })
+            .collect()
+    }
+
+    /// F2: whole-tube exits need a PROVED whole tube. The same whole-turn
+    /// torus range lands its exits on the wall rim when it is proved (or, for
+    /// the legacy `_bounded` contract, inferred from its width), and keeps
+    /// the step-short ends of a partial patch when it is only a bound: a
+    /// certified band straddling the wrap, or an uncertified face.
+    #[test]
+    fn whole_turn_torus_band_lands_rim_exits_only_with_a_proof() {
+        let turn = Some((0.0, TAU));
+        for hint in [
+            VRangeHint::new(turn, BandCoverage::WholeTube),
+            VRangeHint::new(None, BandCoverage::WholeTube),
+            VRangeHint::from_width(turn),
+            VRangeHint::from_width(None),
+        ] {
+            let worst = b39_rim_offsets(hint).into_iter().fold(0.0, f64::max);
+            assert!(worst < 1e-9, "{hint:?}: exit {worst:e} off the rim");
+        }
+        for hint in [
+            VRangeHint::new(turn, BandCoverage::Bounded),
+            VRangeHint::new(None, BandCoverage::Bounded),
+            // A proof cannot widen a narrower range into a whole tube.
+            VRangeHint::new(Some((0.05, 4.5)), BandCoverage::WholeTube),
+        ] {
+            let nearest = b39_rim_offsets(hint)
+                .into_iter()
+                .fold(f64::INFINITY, f64::min);
+            assert!(
+                nearest > 1e-6,
+                "{hint:?}: a partial band's exit was moved onto the rim ({nearest:e})"
+            );
+        }
+    }
+
+    /// The legacy entry point keeps its contract: it is the hinted one with
+    /// width-inferred coverage.
+    #[test]
+    fn bounded_entry_point_is_the_width_inferred_hint() {
+        let torus = ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), 3.0, 0.5).unwrap();
+        let cone = ConicalSurface::new(
+            Point3::new(-1.5, 2.0, 1.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            2.0_f64.atan2(1.0),
+        )
+        .unwrap();
+        let band = Some((5.0_f64.sqrt(), 1.5 * 5.0_f64.sqrt()));
+        for torus_range in [None, Some((0.0, TAU)), Some((0.05, 4.5))] {
+            let legacy = intersect_analytic_analytic_bounded(
+                AnalyticSurface::Torus(&torus),
+                AnalyticSurface::Cone(&cone),
+                32,
+                torus_range,
+                band,
+            )
+            .unwrap();
+            let hinted = intersect_analytic_analytic_hinted(
+                AnalyticSurface::Torus(&torus),
+                AnalyticSurface::Cone(&cone),
+                32,
+                VRangeHint::from_width(torus_range),
+                VRangeHint::from_width(band),
+            )
+            .unwrap();
+            assert_eq!(legacy.len(), hinted.len());
+            for (l, h) in legacy.iter().zip(&hinted) {
+                assert_eq!(l.curve.control_points(), h.curve.control_points());
             }
         }
     }
