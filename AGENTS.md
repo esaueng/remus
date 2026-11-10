@@ -182,9 +182,12 @@ Quick reference — find the right file for any task:
 | Closed-form oracles for the SSI marcher's private branch geometry (tests) | `nurbs/intersection/surface_marching/oracle_tests.rs` |
 | Analytic-analytic intersection | `analytic_intersection.rs` |
 | Bit-exact oracle for the ray-torus quartic solver's Durand–Kerner cycle jump (tests) | `analytic_intersection/quartic_cycle_tests.rs` |
-| Certified real-root structure of a monic quartic by sign: critical points and inflections in closed form or by safeguarded Newton, a scale-relative error bound, simple roots, even (touch) and odd (triple) contacts each reported once (the line–torus solve) | `analytic_intersection/certified_quartic.rs` |
-| Line–torus roots from origins up to 10 000 tube sizes away and raw directions 1e-5 to 1e4 long, against a bisection reference; tangent `spread` holding the contact, set by the torus not the origin's distance (tests) | `math/tests/regress_line_torus_far_origin.rs` |
-| Line–torus contacts of every multiplicity against the exact tube distance: the reviewed triple-root ray, seeded asymptotic (triple), exterior, interior and quadruple tangents at three scales from 0.1 to 1e4 torus sizes away, lines either side of tangency (tests) | `math/tests/regress_line_torus_contacts.rs` |
+| Certified line–torus contacts: the exact centre-relative chart (power-of-two scaling, error-free `origin − centre`), plain and double-double ball arithmetic, Bernstein/Descartes root isolation of the unexpanded quartic `G² − 4R²N`, certified windows for resolved roots and for unresolved (exactly tangent) contacts | `analytic_intersection/line_torus.rs` |
+| Ball arithmetic against exact integer arithmetic and cancelling identities, the three round-3 review lines, exact tangencies as unresolved windows (tests) | `analytic_intersection/line_torus/tests.rs` |
+| Line–torus roots from origins up to 10 000 tube sizes away and raw directions 1e-5 to 1e4 long, against a bisection reference; an exact tangent's window holding the contact, set by the torus not the origin's distance (tests) | `math/tests/regress_line_torus_far_origin.rs` |
+| Line–torus contacts against the double-double reference: the reviewed near-triple ray, seeded asymptotic, exterior, interior and quadruple tangents and lines either side of them, exact tangencies as the only unresolved contacts, every window of every harness family holding exactly its roots, shallow chords as resolved pairs (tests) | `math/tests/regress_line_torus_contacts.rs` |
+| Independent double-double line–torus reference (quartic from its quadratics, critical points by bisection, roots bisected on the tube implicit), the seeded line families and the judge that compares `ray_torus` hits with it (test support) | `math/tests/line_torus_reference/mod.rs` |
+| Differential harness: `ray_torus` against the reference over chords, near-tangent families either side of exterior, interior, asymptotic and quadruple contacts, thin tori, far centres, far origins and unnormalised directions; `LINE_TORUS_REPORT=1` prints the per-family table, and the file runs unchanged on older trees (tests) | `math/tests/differential_line_torus.rs` |
 | Bit-exact oracles for the plane × torus section: the pre-change grid scan, greedy chaining and pipeline, grid line sign certificates (tests) | `analytic_intersection/plane_torus_oracle_tests.rs` |
 | AABB / bounding boxes | `aabb.rs` |
 | BVH (bounding volume hierarchy) | `bvh.rs` |
@@ -430,7 +433,7 @@ Quick reference — find the right file for any task:
 | Conservative NURBS span hulls for boundary-distance and ray pruning, with bounded quadratic-strip subdivision for long narrow bands; the original surface and solver remain authoritative | `classify/prepared/ray_prefilter.rs` |
 | Persistent whole-topology classification cache (`ClassificationCache`, PERF-Q02) | `classify/cache.rs` |
 | Narrow-bump far-flank crossing through the classifier's NURBS ray path (tests) | `classify/boundary/nurbs_bump_ray_tests.rs` |
-| Torus crossings over exterior, interior, triple and quadruple line contacts: touches resolve with no crossing, triples abstain, never miscount (tests) | `classify/boundary/torus_contact_tests.rs` |
+| Torus crossings over exterior, interior, triple and quadruple line contacts: a ray counts with the right parity or abstains, never miscounts; a contact whose window reaches the ray origin abstains (tests) | `classify/boundary/torus_contact_tests.rs` |
 | Exact trim of sphere faces bounded by circle arcs on the sphere, any number of supports, non-convex or reversed (first crossing along a great-circle walk) | `classify/boundary/sphere_arcs.rs` |
 | Boundary skeleton that makes a ray through an edge or vertex abstain from the classification vote | `classify/graze.rs` |
 | CheckId enum, ValidationReport, severity | `validate/checks.rs` |
@@ -576,6 +579,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Small cylindrical resizes: thin-sleeve cut and fuse below the chord sagitta, rim-rounded bores carrying their rounds, closed-form volumes (tests) | `tests/resize_cylinder_small_delta.rs` |
 | Torus notches thousands of units along long box edges and on 3e-4 edges against slicing-integral volumes, and interior points of large torus-grooved cubes classified (tests) | `tests/regress_torus_far_line_roots.rs` |
 | Rays tangent to a whole torus and a fillet's torus band (top/bottom circles, equators, tube, both horizontal rays touching) keep the GFA ray-cast parity: seeded sweeps against the closed-form solid, through the GFA and `remus-check` classifiers (tests) | `tests/regress_torus_tangent_ray_parity.rs` |
+| Resolved line–torus contacts through their consumers: points a hair inside and outside large thin tori through the GFA and `remus-check` classifiers, a box edge grazing a torus cut exactly (edge split at the closed-form crossings) or refused, and the open shallow-notch repro (tests) | `tests/regress_torus_contact_windows.rs` |
 | Transform, Mirror, Copy | `transform.rs`, `mirror.rs`, `copy.rs` |
 | Pcurves carried into a transformed face's UV chart (exact plane chart map, revolved-carrier `u` rotation, re-derived lift counts) | `transform/pcurves.rs` |
 | Map-based solid copy paths kept verbatim as differential oracles for `CopyPlan` (tests) | `copy/tests/legacy_oracle.rs` |

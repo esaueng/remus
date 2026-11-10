@@ -1053,35 +1053,43 @@ const TORUS_CULL_MAX_REACH: f64 = 1e10;
 /// suspicion, whatever its trim or bands.
 ///
 /// In the torus frame, with `p0` and `v` the line's origin and direction, the
-/// solver's quartic along the line is `P(s) = (d² - r²)(d'² - r²)`, where `d`
-/// is the distance from the line point to the core circle and `d' >= d` the
-/// distance to the core-circle point opposite it across the axis. The solver
-/// certifies its roots by the quartic's sign: it reports a contact only where
-/// the computed `P` changes sign or comes within its rounding bound of zero
-/// at a critical point. That bound is `64 ε` times the magnitudes summed into
-/// each coefficient (at most about `1e3 Λ⁴` for `|s| <= 3 Λ`, with
-/// `Λ = 1 + |p0| + R + r` and `|v|` within 1e-3 of one), plus the change in
-/// `P` from moving the line by `8 ε` times its distances, again a small
-/// multiple of `ε Λ⁴`: below `1e-10 Λ⁴` in all. When the line misses the box
+/// line–torus quartic along the line is `P(t) = (d² - r²)(d'² - r²)`, where
+/// `d` is the distance from the line point to the core circle and `d' >= d`
+/// the distance to the core-circle point opposite it across the axis. Let
+/// `Λ = 1 + |p0| + R + r`. When the line misses the box
 /// `[-(R + r), R + r]² x [-r, r]` grown by `D`, where
-/// `2 r D + D² = 0.0125 Λ²`, every line point has `d >= r + D`, so for
-/// `|s| <= 3 Λ` the quartic is at least `1.55e-4 Λ⁴`, and for `|s| > 3 Λ`,
-/// `d - r > 0.33 |s|` makes it at least `0.012 s⁴` against a bound of a few
-/// `ε s⁴`. It never changes sign and never comes near its bound, so the
-/// solver returns nothing. The box is grown by a further `1e-9 Λ`, far above
-/// the rounding of this test.
+/// `2 r D + D² = 0.0125 Λ²`, every line point has `d >= r + D`, so
+/// `P >= 1.56e-4 Λ⁴` along the whole line. The box is grown by a further
+/// `1e-9 Λ`, far above the rounding of this test.
 ///
-/// The solver forms its quartic about the line's closest point to the torus
-/// centre rather than about `origin`, along the direction re-normalised. That
-/// point is no farther from the centre than `origin`, so its `Λ` is at most
-/// this one, and `D` grows with `Λ`: a line that misses the box grown for
-/// this `Λ` misses the one grown for the solver's, and the argument holds
-/// there.
+/// The solver certifies the line (see
+/// `remus_math::analytic_intersection::intersect_line_torus_contacts`). It
+/// reports a contact only where the quartic of the represented line has
+/// opposite certified signs at two points, or where the error ball around
+/// its double-double value holds zero. The first needs a real root, and
+/// `P` has none. The second needs `|P|` under the ball's radius, which is
+/// below `1e-25` of the magnitudes summed into `P` (at most a few `Λ⁴`
+/// between the line's ends on the torus's bounding sphere, the only stretch
+/// evaluated), against `P >= 1.56e-4 Λ⁴`. So a certified solve returns
+/// nothing.
 ///
-/// No line with `Λ` above [`TORUS_CULL_MAX_REACH`] is cleared. The certified
-/// solver evaluates the quartic only at its critical points and at a root
-/// bound, all finite well past the cap (`Λ⁴` stays near `1e40`), but the cap
-/// keeps the cull to the range its oracles cover.
+/// A solve that gives up (it has a work budget) hands the line to the
+/// iterative solver about `origin`, as before the certified solve. With
+/// `p0` and `v` computed as that solver computes them, a root survives its
+/// residual filter only if
+/// `|P(x) / e4| <= 1e-6 (1 + |c3| + |c2| + |c1| + |c0| + x⁴)`, the `c_k`
+/// being the monic coefficients. With `|v|` within 1e-3 of one that sum is
+/// at most `33 Λ⁴`. For `|x| <= 3 Λ` the left side is at least
+/// `1.55e-4 Λ⁴` against a bound of at most `1.15e-4 Λ⁴`; for `|x| > 3 Λ`,
+/// `d - r > 0.33 |x|` makes it at least `0.012 x⁴` against at most
+/// `1.5e-6 x⁴`. The gaps dwarf the rounding of the coefficients and of
+/// their evaluation. That covers every iterate whose fourth power is
+/// finite. An iterate that overflowed passes the filter's comparisons, so
+/// no line with `Λ` above [`TORUS_CULL_MAX_REACH`] is cleared: from about
+/// `Λ = 1.4e11` that solver overflows on the lines the box test would
+/// clear, and all four roots come back NaN. At the cap the overflowing
+/// product is about `1e276`, and on every cleared line up to it the oracles
+/// get no root at all, finite or not.
 ///
 /// Out of line: only torus faces call it, and the vote loop stays small.
 #[inline(never)]
@@ -1869,39 +1877,7 @@ fn ray_geom_crossings(
             u_gap,
         } => ray_cone_crossings(origin, ray_dir, surface, (*v_min, *v_max), *u_gap, tol),
         FaceGeom::TrimmedTorus { surface, trim } => {
-            let Ok(dir) = ray_dir.normalize() else {
-                return (0, false);
-            };
-            let hits = remus_math::ray::ray_torus(origin, dir, surface);
-            let mut count = 0;
-            let mut suspicious = false;
-            let near = 10.0 * tol.linear;
-            for (index, hit) in hits.iter().enumerate() {
-                let t = hit.t;
-                if t <= tol.linear {
-                    continue;
-                }
-                suspicious |= hits[index + 1..]
-                    .iter()
-                    .any(|other| (other.t - t).abs() <= near);
-                let (mut u, mut v) = surface.project_point(origin + dir * t);
-                let tau = std::f64::consts::TAU;
-                u += tau * ((trim.centre.x() - u) / tau).round();
-                v += tau * ((trim.centre.y() - v) / tau).round();
-                let p = Point2::new(u, v);
-                let metric = surface
-                    .minor_radius()
-                    .min(surface.major_radius() - surface.minor_radius());
-                suspicious |=
-                    crate::builder::classify_2d::distance_to_polygon_boundary(p, &trim.polygon)
-                        <= trim.margin + near / metric;
-                if crate::builder::classify_2d::point_in_polygon_2d(p, &trim.polygon) {
-                    let (crossing, uncertain) = torus_contact_parity(hit.kind);
-                    count += crossing;
-                    suspicious |= uncertain;
-                }
-            }
-            (count, suspicious)
+            ray_trimmed_torus_crossings(origin, ray_dir, surface, trim, tol)
         }
         FaceGeom::Torus {
             surface,
@@ -2219,15 +2195,140 @@ fn ray_trimmed_cylinder_crossings(
     (crossings, suspicious)
 }
 
+/// Where a torus hit lies along a ray, by the whole window its roots may
+/// occupy (see [`remus_math::ray::ray_torus`]), not by its representative
+/// parameter alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TorusHitPlace {
+    /// Wholly behind the ray origin: no crossing of the ray.
+    Behind,
+    /// The window reaches the ray origin: the origin may lie on the
+    /// surface, and how many of the contact's roots are ahead is not known.
+    AtOrigin,
+    /// Wholly ahead of the origin.
+    Ahead,
+}
+
+/// Places a torus hit along the ray.
+///
+/// A transversal root is one point: ahead when past the tolerance, as bare
+/// roots always were. Any other hit is a window `[t - spread, t + spread]`.
+/// One that ends before the origin is behind it. One that reaches within
+/// the tolerance of the origin is [`TorusHitPlace::AtOrigin`], however far
+/// behind the origin its representative `t` sits: skipping it by `t` alone
+/// would read a contact that may put the origin on the surface as a clean
+/// miss. A hit with no finite position (an uncertified line) is at the
+/// origin too.
+fn torus_hit_place(hit: &remus_math::ray::RayHit, tol: Tolerance) -> TorusHitPlace {
+    use remus_math::intersect::ContactKind;
+    if !hit.t.is_finite() {
+        return TorusHitPlace::AtOrigin;
+    }
+    if hit.kind == ContactKind::Transversal {
+        return if hit.t <= tol.linear {
+            TorusHitPlace::Behind
+        } else {
+            TorusHitPlace::Ahead
+        };
+    }
+    if hit.t + hit.spread < -tol.linear {
+        TorusHitPlace::Behind
+    } else if hit.t - hit.spread <= tol.linear {
+        TorusHitPlace::AtOrigin
+    } else {
+        TorusHitPlace::Ahead
+    }
+}
+
+/// The ray parameters at which a torus hit's trim membership is read: the
+/// root itself for a transversal hit, the representative and both ends of
+/// the window for any other (a contact whose window straddles the trim's
+/// border may have roots on either side of it).
+fn torus_hit_samples(hit: &remus_math::ray::RayHit) -> ([f64; 3], usize) {
+    if hit.kind == remus_math::intersect::ContactKind::Transversal || hit.spread <= 0.0 {
+        ([hit.t; 3], 1)
+    } else {
+        ([hit.t, hit.t - hit.spread, hit.t + hit.spread], 3)
+    }
+}
+
+/// Count ray crossings with a toroidal face trimmed by a `(u, v)` polygon.
+///
+/// The hits are the qualified contacts of [`remus_math::ray::ray_torus`],
+/// placed along the ray by [`torus_hit_place`] and counted by
+/// [`torus_contact_parity`]. A hit near the trim's border, a close pair of
+/// hits and any hit that is not a clean transversal crossing flag the ray.
+fn ray_trimmed_torus_crossings(
+    origin: Point3,
+    ray_dir: Vec3,
+    surface: &remus_math::surfaces::ToroidalSurface,
+    trim: &super::torus_patch::TorusTrim,
+    tol: Tolerance,
+) -> (i32, bool) {
+    let Ok(dir) = ray_dir.normalize() else {
+        return (0, false);
+    };
+    let hits = remus_math::ray::ray_torus(origin, dir, surface);
+    let mut count = 0;
+    let mut suspicious = false;
+    let near = 10.0 * tol.linear;
+    let tau = std::f64::consts::TAU;
+    let metric = surface
+        .minor_radius()
+        .min(surface.major_radius() - surface.minor_radius());
+    // Whether the ray point at `t` is inside the trim, and whether it is
+    // within the margin of the trim's border.
+    let trim_at = |t: f64| {
+        let (mut u, mut v) = surface.project_point(origin + dir * t);
+        u += tau * ((trim.centre.x() - u) / tau).round();
+        v += tau * ((trim.centre.y() - v) / tau).round();
+        let p = Point2::new(u, v);
+        let near_border =
+            crate::builder::classify_2d::distance_to_polygon_boundary(p, &trim.polygon)
+                <= trim.margin + near / metric;
+        (
+            crate::builder::classify_2d::point_in_polygon_2d(p, &trim.polygon),
+            near_border,
+        )
+    };
+    for (index, hit) in hits.iter().enumerate() {
+        match torus_hit_place(hit, tol) {
+            TorusHitPlace::Behind => continue,
+            TorusHitPlace::AtOrigin => {
+                suspicious = true;
+                continue;
+            }
+            TorusHitPlace::Ahead => {}
+        }
+        suspicious |= hits[index + 1..]
+            .iter()
+            .any(|other| (other.t - hit.t).abs() <= near);
+        let (samples, sample_count) = torus_hit_samples(hit);
+        let mut inside = false;
+        for &t in &samples[..sample_count] {
+            let (within, near_border) = trim_at(t);
+            inside |= within;
+            suspicious |= near_border;
+        }
+        if inside {
+            let (crossing, uncertain) = torus_contact_parity(hit.kind);
+            count += crossing;
+            suspicious |= uncertain;
+        }
+    }
+    (count, suspicious)
+}
+
 /// Count ray crossings with a full-major-revolution toroidal face.
 ///
-/// Roots come from the residual-verified ray/torus quartic in
-/// `remus_math`, qualified by [`remus_math::ray::ray_torus`]; each accepted
-/// root's tube angle must fall inside the face's periodic `v_band` (`None`
-/// accepts the whole tube). A tangential root counts no crossing (see
-/// [`torus_contact_parity`]); tangential and unclassified roots, near-tangent
-/// root pairs and hits near the band borders flag the ray as unreliable,
-/// mirroring the cylinder/cone grazing conventions.
+/// The hits are the qualified contacts of [`remus_math::ray::ray_torus`],
+/// placed along the ray by [`torus_hit_place`]; each one ahead of the
+/// origin must have its tube angle inside the face's periodic `v_band`
+/// (`None` accepts the whole tube). A tangential contact counts no crossing
+/// (see [`torus_contact_parity`]); tangential and unclassified contacts, a
+/// contact whose window reaches the ray origin, close pairs of hits and
+/// hits near the band borders flag the ray as unreliable, mirroring the
+/// cylinder/cone grazing conventions.
 fn ray_torus_crossings(
     origin: Point3,
     ray_dir: Vec3,
@@ -2245,36 +2346,51 @@ fn ray_torus_crossings(
     let near_angle = near / surface.minor_radius().max(near);
     let mut crossings = 0;
     let mut suspicious = false;
+    // Whether the ray point at `t` is outside the face's bands, and whether
+    // it is within the margin of a band border.
+    let bands_at = |t: f64| {
+        let (u, v) = surface.project_point(origin + dir * t);
+        let radial = (surface.major_radius() + surface.minor_radius() * v.cos()).abs();
+        let bands = [
+            (u_band, u, near / radial.max(near)),
+            (v_band, v, near_angle),
+        ];
+        let (mut outside, mut near_border) = (false, false);
+        for (band, parameter, angular_margin) in bands {
+            if let Some((start, span)) = band {
+                let position = (parameter - start).rem_euclid(TAU);
+                near_border |= position <= angular_margin
+                    || (span - position).abs() <= angular_margin
+                    || TAU - position <= angular_margin;
+                outside |= position > span;
+            }
+        }
+        (outside, near_border)
+    };
     for (i, hit) in hits.iter().enumerate() {
-        let t = hit.t;
-        if t <= tol.linear {
-            continue;
+        match torus_hit_place(hit, tol) {
+            TorusHitPlace::Behind => continue,
+            TorusHitPlace::AtOrigin => {
+                suspicious = true;
+                continue;
+            }
+            TorusHitPlace::Ahead => {}
         }
         // A close root pair is a graze: its two crossings cancel in parity
         // only if BOTH land in the band, so flag the ray instead of trusting
         // the count.
         for other in &hits[i + 1..] {
-            if (other.t - t).abs() <= near {
+            if (other.t - hit.t).abs() <= near {
                 suspicious = true;
             }
         }
         if v_band.is_some() || u_band.is_some() {
-            let hit = origin + dir * t;
-            let (u, v) = surface.project_point(hit);
-            let radial = (surface.major_radius() + surface.minor_radius() * v.cos()).abs();
-            let bands = [
-                (u_band, u, near / radial.max(near)),
-                (v_band, v, near_angle),
-            ];
-            let mut outside = false;
-            for (band, parameter, angular_margin) in bands {
-                if let Some((start, span)) = band {
-                    let position = (parameter - start).rem_euclid(TAU);
-                    suspicious |= position <= angular_margin
-                        || (span - position).abs() <= angular_margin
-                        || TAU - position <= angular_margin;
-                    outside |= position > span;
-                }
+            let (samples, sample_count) = torus_hit_samples(hit);
+            let mut outside = true;
+            for &t in &samples[..sample_count] {
+                let (out, near_border) = bands_at(t);
+                outside &= out;
+                suspicious |= near_border;
             }
             if outside {
                 continue;
@@ -2291,14 +2407,13 @@ fn ray_torus_crossings(
 /// count, and whether it makes the ray's parity unreliable.
 ///
 /// [`remus_math::ray::ray_torus`] certifies each contact of the line by the
-/// quartic's sign on both sides of it and reports it once. A transversal one
-/// is one clean crossing. A tangential one is an even contact (an exterior or
-/// interior touch, a quadruple contact, two crossings too close to separate):
-/// it leaves parity unchanged and flags the ray, as the close root pair the
-/// solver used to return for it did. An unclassified one is an odd contact
-/// whose position is uncertain (an inflectional triple contact, a crossing
-/// within `1e-6` rad of tangency): it keeps its one crossing and flags the
-/// ray. A torus holds no line, so no contact is coincident; one would be
+/// quartic's sign on both sides of it. A transversal one is one clean
+/// crossing. A tangential one is an unresolved even contact (a touch to the
+/// precision of double-double arithmetic): it leaves parity unchanged and
+/// flags the ray. An unclassified one holds an odd number of crossings (one
+/// certified crossing within `1e-6` rad of tangency, or an unresolved
+/// inflectional contact): it keeps its one crossing and flags the ray. A
+/// torus holds no line, so no contact is coincident; one would be
 /// uncertified like the last.
 fn torus_contact_parity(kind: remus_math::intersect::ContactKind) -> (i32, bool) {
     use remus_math::intersect::ContactKind;
@@ -2733,11 +2848,75 @@ mod tests {
         }
     }
 
+    /// A torus contact whose window reaches the ray origin is never a clean
+    /// miss. From a point of exact tangency the ray is flagged and counts
+    /// nothing, whatever the face's trim; from just past the contact (the
+    /// window wholly behind) the ray is clean; from just before it the touch
+    /// adds no parity and flags the ray.
+    #[test]
+    fn torus_contact_at_the_ray_origin_flags_the_ray() {
+        use super::super::torus_patch::TorusTrim;
+        use remus_math::surfaces::ToroidalSurface;
+        let surface = ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), 1.5, 0.5).unwrap();
+        // The outer equator along its circle: an exact double contact at
+        // `(u, v) = (0, 0)`, every number exact.
+        let contact = Point3::new(2.0, 0.0, 0.0);
+        let dir = Vec3::new(0.0, 1.0, 0.0);
+        let hits = remus_math::ray::ray_torus(contact, dir, &surface);
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert!(hits[0].t - hits[0].spread <= 0.0 && hits[0].t + hits[0].spread >= 0.0);
+        let geoms = [
+            FaceGeom::Torus {
+                surface: surface.clone(),
+                u_band: None,
+                v_band: None,
+            },
+            FaceGeom::Torus {
+                surface: surface.clone(),
+                u_band: Some((-0.4, 0.8)),
+                v_band: Some((-0.5, 1.0)),
+            },
+            FaceGeom::TrimmedTorus {
+                surface,
+                trim: TorusTrim {
+                    polygon: vec![
+                        Point2::new(-0.4, -0.5),
+                        Point2::new(0.4, -0.5),
+                        Point2::new(0.4, 0.5),
+                        Point2::new(-0.4, 0.5),
+                    ],
+                    centre: Point2::new(0.0, 0.0),
+                    margin: 1e-8,
+                },
+            },
+        ];
+        let tol = Tolerance::default();
+        for geom in &geoms {
+            let kind = geom_kind(geom);
+            assert_eq!(
+                ray_geom_crossings(contact, dir, geom, tol),
+                (0, true),
+                "{kind} at the contact"
+            );
+            assert_eq!(
+                ray_geom_crossings(contact + dir * 1e-3, dir, geom, tol),
+                (0, false),
+                "{kind} past the contact"
+            );
+            assert_eq!(
+                ray_geom_crossings(contact - dir * 1e-3, dir, geom, tol),
+                (0, true),
+                "{kind} before the contact"
+            );
+        }
+    }
+
     /// A ray tangent to a torus face inside its trim touches it without
-    /// crossing: an even count, and the ray flagged. The solver returns the
-    /// contact as one merged root, which a bare root count read as one
-    /// crossing; checked on a whole torus, a banded patch and a triangular
-    /// trim, at three scales, with the contact inside and outside the trim.
+    /// crossing: an even count, and the ray flagged whenever it has a
+    /// contact ahead (a ray tangent only to rounding may miss by a hair).
+    /// A bare root count once read such a contact as one crossing; checked
+    /// on a whole torus, a banded patch and a triangular trim, at three
+    /// scales, with the contact inside and outside the trim.
     #[test]
     fn torus_tangent_rays_keep_parity() {
         use super::super::torus_patch::TorusTrim;
@@ -2818,8 +2997,8 @@ mod tests {
     /// (entering the saddle-shaped inner half), a triple contact along an
     /// asymptotic direction of the inner half (the line crosses), a
     /// quadruple contact along an asymptotic direction at the inner equator
-    /// (it does not), and two crossings far closer than any merge radius (a
-    /// hair-thin tube's top grazed from just inside). From origins along
+    /// (it does not), and two crossings `3e-13` apart, which are told apart
+    /// (a hair-thin tube's top grazed from just inside). From origins along
     /// each line, inside and outside the tube, a whole-torus face's count
     /// must have the parity of the origin's side.
     #[test]

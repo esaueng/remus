@@ -440,42 +440,56 @@ pub fn ray_cone(origin: Point3, direction: Vec3, cone: &ConicalSurface) -> RayHi
 
 /// Intersect a ray with a torus: every real contact of the line, qualified.
 ///
-/// The line–torus quartic's real-root structure is certified by sign (see
-/// [`crate::analytic_intersection::intersect_line_torus`]), never by a
-/// threshold on an iterative solver's imaginary parts, so no real contact is
-/// dropped however multiple it is. Each comes back once:
+/// The hits are the certified contacts of
+/// [`crate::analytic_intersection::intersect_line_torus_contacts`], which
+/// states the full contract; here each becomes a [`RayHit`] (not filtered by
+/// the sign of `t`):
 ///
-/// - [`ContactKind::Transversal`]: a simple root, the quartic certified to
-///   change sign across it, crossing at least `1e-6` rad from tangency.
-///   `spread` is zero.
-/// - [`ContactKind::Tangential`]: an even contact. The quartic comes within
-///   its rounding bound of zero but has the same certified sign on both sides:
-///   an exterior or interior touch (double or quadruple root), two crossings
-///   too close to separate, or a near miss. It adds no parity.
-/// - [`ContactKind::Unclassified`]: an odd contact, one crossing whose
-///   position is uncertain. The certified signs on its two sides differ (an
-///   inflectional, triple contact along an asymptotic direction of the inner
-///   tube, or a crossing too close to a pair to separate), or it is a simple
-///   root within `1e-6` rad of tangency. It adds one crossing to a parity
-///   count; a classifier may also distrust the ray.
+/// - [`ContactKind::Transversal`]: exactly one simple root, the quartic
+///   certified to change sign across it, crossing at least `1e-6` rad from
+///   tangency. `spread` is zero; `t` is the root to a few units in its last
+///   place.
+/// - [`ContactKind::Tangential`]: an unresolved even contact. The quartic has
+///   the same certified sign on both sides of `[t - spread, t + spread]` and
+///   cannot be told from zero inside: the line touches the torus there, or
+///   crosses it twice inside the window, or just misses it. It adds no
+///   parity, wherever the trim agrees over the window.
+/// - [`ContactKind::Unclassified`] with a finite `spread`: an odd number of
+///   crossings inside `[t - spread, t + spread]`. Either one certified
+///   simple root within `1e-6` rad of tangency (the window is then its
+///   enclosure, a few units in the last place), or an unresolved odd contact
+///   (an inflectional, triple contact along an asymptotic direction of the
+///   inner tube). It adds one crossing to a parity count; a classifier may
+///   also distrust the ray.
 ///
-/// For the last two, `spread` is the half-width, in units of `t`, of the
-/// window where the quartic's sign is not certified, so it holds every root
-/// of the contact. The window comes from a rounding bound relative to the
-/// quartic's own magnitudes and the distances the line was formed from, so
-/// it scales with the problem. A line the certified solve cannot take (a zero
-/// or non-finite direction or origin, a quartic that overflows) gets the
-/// iterative solver's roots, every one unclassified with an infinite spread.
-/// The parameters are the ones `intersect_line_torus` returns, in the same
-/// order.
+/// The window `[t - spread, t + spread]` of a non-transversal hit holds
+/// every root of its contact, and `t` is a point of it, not necessarily a
+/// root. A consumer that filters hits by position (ahead of the ray origin,
+/// inside a trim) must filter the window, not `t`: a window that reaches the
+/// origin means the origin may lie on the surface.
+///
+/// Two roots are reported separately whenever double-double arithmetic can
+/// separate them, which is down to a few units in the last place of `t`:
+/// a near-tangent ray that enters and leaves comes back as two hits, not as
+/// one tangential one. Only a contact tangent to that precision is
+/// unresolved.
+///
+/// A line with no chart (a zero or non-finite direction or origin) gets the
+/// iterative solver's roots, every one [`ContactKind::Unclassified`] with an
+/// infinite spread. The parameters are the ones `intersect_line_torus`
+/// returns, in the same order.
 #[must_use]
 pub fn ray_torus(origin: Point3, direction: Vec3, torus: &ToroidalSurface) -> Vec<RayHit> {
-    crate::analytic_intersection::intersect_line_torus_qualified(torus, origin, direction)
+    crate::analytic_intersection::intersect_line_torus_contacts(torus, origin, direction)
         .into_iter()
-        .map(|root| RayHit {
-            t: root.t,
-            kind: root.kind,
-            spread: root.spread,
+        .map(|contact| RayHit {
+            t: contact.t,
+            kind: contact.kind,
+            spread: if contact.kind == ContactKind::Transversal {
+                0.0
+            } else {
+                (contact.t - contact.t_lo).max(contact.t_hi - contact.t)
+            },
         })
         .collect()
 }

@@ -267,22 +267,25 @@ fn degenerate_directions_find_no_roots() {
     assert!(ray_torus(origin, Vec3::new(0.0, 0.0, 0.0), &torus).is_empty());
 }
 
-/// A tangent line from near and far: the contact is reported as one
-/// tangential contact (the origin-based solve dropped it), its root agrees with
-/// `intersect_line_torus` bit for bit, and `spread` is the honest window of
-/// the contact, measured on the line's chart next to the torus and so the
-/// same in the torus's units whatever the direction's length.
+/// An exactly tangent line from near and far: the contact is one unresolved
+/// tangential contact (the origin-based solve dropped it), its parameter
+/// agrees with `intersect_line_torus` bit for bit, and its window holds the
+/// contact and is set by the torus alone, whatever the origin's distance
+/// and the direction's length.
 ///
 /// Along the tube top's circle the circumferential direction is asymptotic
-/// (the top circle is parabolic), so this contact is a quadruple root: its
-/// roots are fixed only to about the fourth root of the quartic's rounding
-/// bound, a thousandth of the torus here, growing to a few thousandths as the
-/// origin's own rounding grows with its distance. The solver used to report a
-/// `1e-9` merge radius, which did not hold its roots.
+/// (the top circle is parabolic), so this contact is a quadruple root, and
+/// every number here is exact in `f64`: the line is tangent, not nearly so.
+/// A quadruple root is fixed only to the fourth root of the arithmetic's
+/// error; in double-double that is a few `1e-7` of the torus. The iterative
+/// solver reported a `1e-9` merge radius, which did not hold its roots, and
+/// the first certified solve a window of `1e-3`, wide enough to swallow
+/// crossings a resolvable distance apart.
 #[test]
-fn far_tangent_spread_is_the_local_merge_radius() {
+fn far_tangent_window_is_set_by_the_torus() {
     let torus = ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), 1.5, 0.5).unwrap();
     // Along +y over the tube top at x = R: tangent at (R, 0, r).
+    let mut widths = Vec::new();
     for &far in &[2.0, 1e3, 5e3] {
         for &length in &[1.0, 1e-2, 1e-5] {
             let origin = Point3::new(1.5, -far, 0.5);
@@ -294,21 +297,26 @@ fn far_tangent_spread_is_the_local_merge_radius() {
                 assert_eq!(h.t.to_bits(), t.to_bits());
             }
             let contact = far / length;
-            let local: Vec<_> = hits
-                .iter()
-                .filter(|h| (h.t - contact).abs() < 1e-3 / length)
-                .collect();
             let context = format!("far {far} length {length:e}: {hits:?}");
-            // One merged tangential contact at the closest point.
-            assert_eq!(local.len(), 1, "{context}");
-            assert_eq!(local[0].kind, ContactKind::Tangential, "{context}");
+            // One unresolved tangential contact, and nothing else.
+            assert_eq!(hits.len(), 1, "{context}");
+            assert_eq!(hits[0].kind, ContactKind::Tangential, "{context}");
             // The exact contact is inside the window, and the window is set
             // by the torus, not by the origin's distance in units of `t`.
-            assert!((local[0].t - contact).abs() <= local[0].spread, "{context}");
+            assert!((hits[0].t - contact).abs() <= hits[0].spread, "{context}");
             assert!(
-                local[0].spread > 0.0 && local[0].spread * length <= 1e-2,
+                hits[0].spread > 0.0 && hits[0].spread * length <= 1e-6,
                 "{context}"
             );
+            widths.push(hits[0].spread * length);
         }
     }
+    // The same window from every distance and direction length, to the
+    // factor of four its edges are probed in (and the origin's own ulp).
+    let (narrowest, widest) = widths
+        .iter()
+        .fold((f64::INFINITY, 0.0_f64), |(lo, hi), &w| {
+            (lo.min(w), hi.max(w))
+        });
+    assert!(widest <= 16.0 * narrowest, "{widths:?}");
 }

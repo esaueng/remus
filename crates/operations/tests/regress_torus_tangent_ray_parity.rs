@@ -1,15 +1,15 @@
 //! Rays tangent to a torus must not flip the GFA ray-cast classifier's
 //! crossing parity.
 //!
-//! The line–torus solver works from the line's closest point to the torus
-//! centre, and there it merges a tangent line's double root into one root
-//! where it once returned a close pair. The GFA classifier counted bare
-//! roots and saw a tangency only as a close pair, so a ray touching the tube
-//! counted one clean crossing: the point `(-1.2, -0.5, 0.5)`, just outside a
-//! torus `R = 1.5, r = 0.5`, classified Inside because both horizontal
-//! cardinal rays run in the tube's top tangent plane. The classifier now
-//! reads qualified hits (`remus_math::ray::ray_torus`): a tangential contact
-//! leaves parity unchanged and flags the ray as the close pair did.
+//! The GFA classifier once counted bare line–torus roots and saw a tangency
+//! only as a close pair of them. When the solver reported a tangent line's
+//! contact as one root, a ray touching the tube counted one clean crossing:
+//! the point `(-1.2, -0.5, 0.5)`, just outside a torus `R = 1.5, r = 0.5`,
+//! classified Inside because both horizontal cardinal rays run in the
+//! tube's top tangent plane. The classifier now reads qualified hits
+//! (`remus_math::ray::ray_torus`): an unresolved tangential contact leaves
+//! parity unchanged and flags the ray, a shallow chord's two certified
+//! roots count twice, and a hairline miss counts nothing.
 //!
 //! Points are swept along lines tangent to a whole torus and to a fillet's
 //! torus band (top and bottom circles, outer and inner equator, the tube at

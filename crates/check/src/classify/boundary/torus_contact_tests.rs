@@ -1,13 +1,14 @@
 //! The check classifier's torus crossings over every kind of line–torus
 //! contact.
 //!
-//! `remus_math::ray::ray_torus` reports each contact once, certified by the
-//! quartic's sign: a tangential contact (exterior or interior touch,
-//! quadruple contact) must add no crossing and resolve, and an odd contact
-//! (a triple, inflectional crossing) must either count its one crossing or
-//! make the ray abstain, never miscount. Checked on a whole-torus face (two
-//! point seams, as `make_torus` builds it) against the origin's side of the
-//! tube.
+//! `remus_math::ray::ray_torus` certifies each contact by the quartic's
+//! sign. A line built to be tangent is tangent only to the rounding of its
+//! construction: it misses by a hair (no hit), cuts a shallow chord (two
+//! certified roots within `1e-6` rad of tangency, each unclassified) or
+//! stays unresolved (one tangential or, for a triple contact, unclassified
+//! window). Whatever comes back, a ray either counts with the parity of its
+//! origin's side of the tube or abstains; it never miscounts. Checked on a
+//! whole-torus face (two point seams, as `make_torus` builds it).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -119,23 +120,59 @@ fn torus_contacts_resolve_or_abstain_with_the_right_parity() {
                         resolved[kind] += 1;
                     }
                     Err(error) => {
-                        // Only an odd contact's uncertain position may make
-                        // the ray abstain; a touch always resolves.
+                        // A shallow chord's two grazing roots, or an
+                        // unresolved contact, inside the face: the ray
+                        // abstains and the vote loop draws another.
                         assert!(crate::classify::is_nurbs_ray_graze(&error), "{context}");
-                        assert_eq!(kind, 2, "{context}");
                         abstained[kind] += 1;
                     }
                 }
             }
         }
     }
-    assert!(
-        resolved[0] > 100 && resolved[1] > 50 && resolved[3] > 50,
-        "{resolved:?}"
-    );
-    // The triple contact is never miscounted: it abstains (or counts once).
-    assert!(
-        resolved[2] + abstained[2] > 100,
-        "{resolved:?} {abstained:?}"
-    );
+    // Every kind is exercised. The touches resolve on the lines the
+    // rounding moved off the tube; a triple contact always holds a crossing
+    // within `1e-6` rad of tangency, ahead of every origin here, so its rays
+    // abstain.
+    for kind in 0..4 {
+        assert!(
+            resolved[kind] + abstained[kind] > 100 && (kind == 2 || resolved[kind] > 20),
+            "{resolved:?} {abstained:?}"
+        );
+    }
+}
+
+/// A contact whose window reaches the ray origin is never a clean miss:
+/// from a point of exact tangency the ray abstains, since the origin lies on
+/// the face; from just past the contact (the window wholly behind) it counts
+/// nothing, and from just before it the touch adds no parity.
+#[test]
+fn a_contact_at_the_ray_origin_abstains() {
+    let torus = ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), 1.5, 0.5).unwrap();
+    let mut topo = Topology::default();
+    let face = whole_torus(&mut topo, &torus);
+    // Tangent lines with exactly representable contact points: the outer
+    // equator along its circle, and the tube top across its circle.
+    for (contact, dir) in [
+        (Point3::new(2.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0)),
+        (Point3::new(1.5, 0.0, 0.5), Vec3::new(1.0, 0.0, 0.0)),
+    ] {
+        let hits = remus_math::ray::ray_torus(contact, dir, &torus);
+        assert!(
+            hits.iter()
+                .any(|h| h.t - h.spread <= 0.0 && h.t + h.spread >= 0.0),
+            "{hits:?}"
+        );
+        let at_contact = count_face_ray_crossings(&topo, face, contact, dir);
+        assert!(
+            at_contact
+                .as_ref()
+                .is_err_and(crate::classify::is_nurbs_ray_graze),
+            "{at_contact:?}"
+        );
+        let past = count_face_ray_crossings(&topo, face, contact + dir * 1e-3, dir).unwrap();
+        let before = count_face_ray_crossings(&topo, face, contact - dir * 1e-3, dir).unwrap();
+        // The tube-top line touches again at x = -1.5, behind both origins.
+        assert_eq!((past % 2, before % 2), (0, 0), "{dir:?}");
+    }
 }
