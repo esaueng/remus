@@ -4171,7 +4171,9 @@ export class RemusKernel {
      */
     projectEdges(solid: number, origin_x: number, origin_y: number, origin_z: number, dir_x: number, dir_y: number, dir_z: number, x_axis_x: number, x_axis_y: number, x_axis_z: number, hidden_lines: boolean, deflection: number): any;
     /**
-     * Project a 3D point onto a face surface using Newton iteration.
+     * Project a 3D point onto a face's untrimmed surface: in closed form on
+     * planes, cylinders, cones, spheres and tori, by Newton iteration from a
+     * grid seed on NURBS.
      *
      * Returns `[u, v, px, py, pz, distance]`.
      */
