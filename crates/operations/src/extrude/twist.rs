@@ -101,6 +101,7 @@ pub(crate) fn twisted_extrude_impl(
     tolerance: f64,
     max_spans: usize,
 ) -> Result<TwistedExtrusion, OperationsError> {
+    super::nesting::refuse_nested_profile(topo, face, "twisted extrusion")?;
     let axis = direction.normalize()?;
     let perpendicular = match topo.face(face)?.surface() {
         FaceSurface::Plane { normal, .. } => normal.cross(axis).length() < CONCENTRIC_TOLERANCE,

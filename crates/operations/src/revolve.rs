@@ -1614,6 +1614,7 @@ fn revolve_impl(
     axis_direction: Vec3,
     angle_radians: f64,
 ) -> Result<SolidId, crate::OperationsError> {
+    crate::extrude::nesting::refuse_nested_profile(topo, face, "revolution")?;
     let tol = Tolerance::new();
 
     if tol.approx_eq(axis_direction.length_squared(), 0.0) {

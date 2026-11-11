@@ -711,3 +711,106 @@ fn separated_pairs_cost_grows_linearly() {
     );
     assert!(large.work * 8 < large.work_limit, "{large:?}");
 }
+
+#[test]
+fn certified_parents_keep_distinct_branches_in_wire_order() {
+    for s in SCALES {
+        let mut t = Topology::new();
+        let hole_a = rect(&mut t, s, [-10., -2., -5., 5.]);
+        let island_a = rect(&mut t, s, [-8., -4., -3., 3.]);
+        let bore_a = rect(&mut t, s, [-7., -5., -1., 1.]);
+        let hole_b = rect(&mut t, s, [2., 10., -5., 5.]);
+        let island_b = rect(&mut t, s, [4., 8., -3., 3.]);
+        let f = face(&mut t, s, vec![island_a, hole_b, bore_a, island_b, hole_a]);
+        let report = inner_loop_nesting_report(&t, f);
+        assert_eq!(
+            report.nesting,
+            InnerLoopNesting::Nested(vec![1, 0, 2, 1, 0])
+        );
+        assert_eq!(
+            report.parents,
+            Some(vec![Some(4), None, Some(0), Some(1), None])
+        );
+        let limited = with_nesting_work_limit(0, || inner_loop_nesting_report(&t, f));
+        assert_eq!(
+            limited.nesting,
+            InnerLoopNesting::Undecided(NestingUndecided::WorkLimit)
+        );
+        assert_eq!(limited.parents, None);
+    }
+}
+
+#[test]
+fn flat_and_invalid_readings_do_not_expose_partial_parents() {
+    let mut t = Topology::new();
+    let a = circle(&mut t, 1., [0., 0.], 4., 1);
+    let b = circle(&mut t, 1., [10., 0.], 1., 4);
+    let flat = face(&mut t, 1., vec![a, b]);
+    let report = inner_loop_nesting_report(&t, flat);
+    assert_eq!(report.nesting, InnerLoopNesting::Flat);
+    assert_eq!(report.parents, None);
+    let tangent = circle(&mut t, 1., [3., 0.], 1., 2);
+    let invalid = face(&mut t, 1., vec![a, tangent]);
+    let report = inner_loop_nesting_report(&t, invalid);
+    assert_eq!(report.nesting, InnerLoopNesting::Invalid);
+    assert_eq!(report.parents, None);
+}
+
+#[test]
+fn explicit_raw_ranges_leave_strict_measurement_and_document_unchanged() {
+    let mut t = Topology::new();
+    let hole = rect(&mut t, 1., [-10., 10., -10., 10.]);
+    let island = rect(&mut t, 1., [-2., 2., -2., 2.]);
+    let mut domains = std::collections::BTreeMap::new();
+    for wire in [hole, island] {
+        for oe in t.wire(wire).unwrap().edges().to_vec() {
+            let edge = t.edge(oe.edge()).unwrap();
+            let a = t.vertex(edge.start()).unwrap().point();
+            let b = t.vertex(edge.end()).unwrap().point();
+            let curve = NurbsCurve::new(1, vec![0., 0., 1., 1.], vec![a, b], vec![1.; 2]).unwrap();
+            t.edge_mut(oe.edge())
+                .unwrap()
+                .set_curve(EdgeCurve::NurbsCurve(curve));
+            domains.insert(oe.edge(), (0., 1.));
+        }
+    }
+    let f = face(&mut t, 1., vec![island, hole]);
+    let before = format!("{t:?}");
+    assert_eq!(
+        inner_loop_nesting(&t, f),
+        InnerLoopNesting::Undecided(NestingUndecided::Unreadable)
+    );
+    let report = super::inner_loop_nesting_report_with_domains(&t, f, &domains);
+    assert_eq!(report.nesting, InnerLoopNesting::Nested(vec![1, 0]));
+    assert_eq!(report.parents, Some(vec![Some(1), None]));
+    assert_eq!(format!("{t:?}"), before);
+    assert_eq!(
+        inner_loop_nesting(&t, f),
+        InnerLoopNesting::Undecided(NestingUndecided::Unreadable)
+    );
+    let edge = t.wire(island).unwrap().edges()[0].edge();
+    domains.insert(edge, (0., 2.));
+    assert_eq!(
+        super::inner_loop_nesting_report_with_domains(&t, f, &domains).nesting,
+        InnerLoopNesting::Undecided(NestingUndecided::Unreadable)
+    );
+}
+
+#[test]
+fn explicit_raw_ranges_never_replace_a_stored_trim() {
+    let mut t = Topology::new();
+    let hole = circle(&mut t, 1., [0., 0.], 4., 4);
+    let island = circle(&mut t, 1., [0., 0.], 1., 2);
+    let f = face(&mut t, 1., vec![island, hole]);
+    let mut domains = std::collections::BTreeMap::new();
+    for wire in [hole, island] {
+        for oe in t.wire(wire).unwrap().edges() {
+            domains.insert(oe.edge(), (f64::NAN, f64::INFINITY));
+        }
+    }
+    let before = format!("{t:?}");
+    let report = super::inner_loop_nesting_report_with_domains(&t, f, &domains);
+    assert_eq!(report, inner_loop_nesting_report(&t, f));
+    assert_eq!(report.nesting, InnerLoopNesting::Nested(vec![1, 0]));
+    assert_eq!(format!("{t:?}"), before);
+}

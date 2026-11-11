@@ -1090,10 +1090,13 @@ fn nurbs_is_quadratic_circle(
 /// the extrusion direction), an offset copy becomes the top, and rectangular
 /// side faces connect them.
 ///
-/// When the input face has inner wires (holes), they are propagated:
-/// - Both bottom and top cap faces include the inner wires as holes.
-/// - Additional inward-facing side faces are created for each inner wire
-///   edge, forming the interior walls of the hollow extrusion.
+/// Inner wires alternate hole/island/hole by containment depth. Islands get
+/// separate cap faces and outward-facing walls, as disjoint closed material
+/// components of the aggregate outer shell (the same representation as a
+/// disjoint fuse). They are never cavity shells. Multi-inner profiles use the
+/// shared certified reader for line, conic and positive-weight NURBS trims.
+/// Invalid or undecided nesting returns a typed unsupported error. Unnested
+/// single-hole profiles keep their existing behavior.
 ///
 /// # Errors
 ///
@@ -1127,6 +1130,8 @@ pub(crate) struct ExtrudeConstruction {
     pub(crate) bottom: FaceId,
     /// Top cap: translated copy at the swept plane.
     pub(crate) top: FaceId,
+    /// Additional bottom/top caps for disconnected material islands.
+    pub(crate) island_caps: Vec<FaceId>,
     /// The processed outer wire with per-position source identities.
     pub(crate) outer: ExtrudedWire,
     /// Outer side faces, parallel to the outer wire's post-split positions.
@@ -1177,8 +1182,19 @@ pub(crate) fn extrude_impl(
 
     let face_data = topo.face(face)?;
     let mut input_surface = face_data.surface().clone();
-    let input_wire_id = face_data.outer_wire();
-    let inner_wire_ids: Vec<WireId> = face_data.inner_wires().to_vec();
+    let mut input_wire_id = face_data.outer_wire();
+    let mut inner_wire_ids: Vec<WireId> = face_data.inner_wires().to_vec();
+    let regions = profile_regions(topo, face)?;
+    let nested = regions.depths.iter().any(|&depth| depth > 0);
+    if nested
+        && let FaceSurface::Plane { normal, .. } = input_surface
+        && normal.dot(direction * distance).abs() <= tol.linear
+    {
+        return Err(crate::OperationsError::Unsupported {
+            operation: "extrude",
+            reason: "nested profile sweep must clear its plane".into(),
+        });
+    }
 
     normalize_profile_wire_domains(topo, input_wire_id)?;
     normalize_profile_wire_curves(topo, input_wire_id, tol.linear)?;
@@ -1192,6 +1208,17 @@ pub(crate) fn extrude_impl(
         direction.y() * distance,
         direction.z() * distance,
     );
+
+    // Normalize only the new nested path: legacy unnested allocation and
+    // winding remain unchanged. Every region puts material on its left when
+    // viewed along the sweep, making cap and wall traversal agree both ways.
+    if nested {
+        input_wire_id = orient_profile_wire(topo, input_wire_id, offset, false)?;
+        for (index, wire) in inner_wire_ids.iter_mut().enumerate() {
+            *wire =
+                orient_profile_wire(topo, *wire, offset, regions.depths[index].is_multiple_of(2))?;
+        }
+    }
 
     let outer = extrude_wire_vertices_with(
         topo,
@@ -1305,11 +1332,16 @@ pub(crate) fn extrude_impl(
         FaceSurface::Nurbs(nurbs) => FaceSurface::Nurbs(nurbs.clone()),
         other => other.clone(),
     };
-    let bottom_face = topo.add_face(Face::new(
+    let mut island_caps = Vec::new();
+    let bottom_face = region_caps(
+        topo,
         bottom_wire_id,
-        bottom_inner_wire_ids,
-        bottom_surface,
-    ));
+        &bottom_inner_wire_ids,
+        &regions,
+        &bottom_surface,
+        &mut island_caps,
+    );
+    all_faces.extend_from_slice(&island_caps);
     all_faces.push(bottom_face);
 
     let mut outer_sides = Vec::with_capacity(n);
@@ -1377,7 +1409,9 @@ pub(crate) fn extrude_impl(
 
     // --- Inner wire side faces ---
     let mut holes = Vec::with_capacity(inner_wire_data.len());
-    for (iwd, &inner_wire_id) in inner_wire_data.into_iter().zip(&inner_wire_ids) {
+    for (index, (iwd, &inner_wire_id)) in
+        inner_wire_data.into_iter().zip(&inner_wire_ids).enumerate()
+    {
         let iw_n = iwd.positions.len();
         let mut hole_sides = Vec::with_capacity(iw_n);
         let iw_n = iwd.positions.len();
@@ -1403,8 +1437,9 @@ pub(crate) fn extrude_impl(
                 let e = topo.edge(iwd.edge_ids[i])?;
                 (e.curve().clone(), e.start(), e.end(), e.trim())
             };
-            // Inner wires have flipped winding relative to outer
-            let inner_is_cw = !is_cw;
+            // Holes face inward; odd-depth islands face out of their material.
+            let island = regions.depths[index] % 2 == 1;
+            let inner_is_cw = if island { is_cw } else { !is_cw };
             let (arc_mid, arc_tangent) = traced_span_frame(topo, iwd.edge_ids[i])?;
             let arc_tangent = if iwd.oriented[i].is_forward() {
                 arc_tangent
@@ -1425,8 +1460,8 @@ pub(crate) fn extrude_impl(
             // cylinder wall. Retain the explicit hole-wall convention: it
             // faces into the hole (toward the axis), opposite the cylinder's
             // natural radial normal, for either wire traversal.
-            let reversed =
-                reversed || (e_start == e_end && matches!(surface, FaceSurface::Cylinder(_)));
+            let reversed = reversed
+                || (!island && e_start == e_end && matches!(surface, FaceSurface::Cylinder(_)));
 
             // The two quad patterns below are each other's exact reversals.
             // The caps hold the input wires REVERSED (bottom) and forward
@@ -1518,7 +1553,16 @@ pub(crate) fn extrude_impl(
         FaceSurface::Sphere(sph) => FaceSurface::Sphere(sph.translated(offset)),
         FaceSurface::Torus(tor) => FaceSurface::Torus(tor.translated(offset)),
     };
-    let top_face = topo.add_face(Face::new(top_wire_id, top_inner_wire_ids, top_surface));
+    let bottom_islands = island_caps.len();
+    let top_face = region_caps(
+        topo,
+        top_wire_id,
+        &top_inner_wire_ids,
+        &regions,
+        &top_surface,
+        &mut island_caps,
+    );
+    all_faces.extend_from_slice(&island_caps[bottom_islands..]);
     all_faces.push(top_face);
 
     // Assemble shell and solid.
@@ -1532,6 +1576,7 @@ pub(crate) fn extrude_impl(
             profile: face,
             bottom: bottom_face,
             top: top_face,
+            island_caps,
             outer,
             outer_sides,
             holes,
@@ -1545,8 +1590,8 @@ pub struct ExtrudeEntityEvolution {
     /// The extruded solid.
     pub solid: SolidId,
     /// Construction-derived face map: the profile carried into both caps
-    /// (`modified`, a one-to-two split) and every side wall generated from
-    /// it.
+    /// (`modified`, split into each material component's caps) and every
+    /// side wall generated from it.
     pub faces: crate::evolution::EvolutionMap,
     /// Edge and vertex claims from the construction record.
     pub boundary: crate::boundary_evolution::BoundaryEvolution,
@@ -1563,9 +1608,9 @@ pub struct ExtrudeEntityEvolution {
 /// source identities recorded while allocating — never from allocation
 /// order, traversal order, or coordinate matching:
 ///
-/// - bottom and top caps are `modified` pieces of the profile face (a
-///   one-to-two split: the bottom shares the profile plane and boundary,
-///   the top is its translated copy);
+/// - bottom and top caps (including island caps) are `modified` pieces of
+///   the profile face: the bottom shares the profile plane and boundary,
+///   the top is its translated copy;
 /// - every side wall is `generated` from the profile face;
 /// - a shared bottom edge or vertex (the same arena entity the profile
 ///   uses) is `modified` from itself; a chord-split piece is `modified`
@@ -1599,6 +1644,9 @@ pub fn extrude_with_entity_evolution(
         let mut faces = EvolutionMap::exact();
         faces.add_modified(profile, construction.bottom.index());
         faces.add_modified(profile, construction.top.index());
+        for &cap in &construction.island_caps {
+            faces.add_modified(profile, cap.index());
+        }
         let mut boundary = BoundaryEvolution::default();
         let mut record_wire = |wire: &ExtrudedWire, sides: &[FaceId]| {
             for &side in sides {
@@ -1840,8 +1888,16 @@ fn reverse_edge_curve(curve: &EdgeCurve) -> Result<EdgeCurve, crate::OperationsE
     })
 }
 
+pub(crate) mod nesting;
+use nesting::{orient_profile_wire, profile_regions, region_caps};
 pub(crate) mod taper;
 pub(crate) mod twist;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod nesting_tests;
+
+#[cfg(test)]
+mod profile_compatibility_tests;

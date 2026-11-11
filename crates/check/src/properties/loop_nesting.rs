@@ -114,6 +114,7 @@
 //! hashing, sorts by box coordinate with index tie-breaks.
 
 use std::cell::Cell;
+use std::collections::BTreeMap;
 use std::f64::consts::FRAC_PI_4;
 
 use remus_math::compact_sort::CompactSort;
@@ -122,7 +123,7 @@ use remus_math::nurbs::curve::NurbsCurve;
 use remus_math::predicates::orient2d;
 use remus_math::vec::{Point2, Point3, Vec3};
 use remus_topology::Topology;
-use remus_topology::edge::{Edge, EdgeCurve};
+use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
 use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::wire::WireId;
 
@@ -183,6 +184,10 @@ impl std::fmt::Display for NestingUndecided {
 pub struct NestingReport {
     /// The answer.
     pub nesting: InnerLoopNesting,
+    /// Immediate container indices in inner-wire order, certified by the same
+    /// decision as the depths. Present only for `Nested`; flat loops have no
+    /// parents. Undecided and invalid inputs never expose a partial tree.
+    pub parents: Option<Vec<Option<usize>>>,
     /// Pieces read from the inner wires.
     pub pieces: usize,
     /// Work units spent, reading included.
@@ -236,6 +241,22 @@ pub fn inner_loop_nesting(topo: &Topology, face_id: FaceId) -> InnerLoopNesting 
 /// [`inner_loop_nesting`] with its cost.
 #[must_use]
 pub fn inner_loop_nesting_report(topo: &Topology, face_id: FaceId) -> NestingReport {
+    inner_loop_nesting_report_with_domains(topo, face_id, &BTreeMap::new())
+}
+
+/// The certified reader with explicit ranges for raw profile edges that have
+/// no stored trim yet.
+///
+/// Stored trims always take precedence. Each supplied
+/// range must have passed the caller's strict-domain and endpoint validation
+/// and be the range that construction will write. The default measurement
+/// reader never reconstructs or supplies a range.
+#[must_use]
+pub fn inner_loop_nesting_report_with_domains(
+    topo: &Topology,
+    face_id: FaceId,
+    domains: &BTreeMap<EdgeId, (f64, f64)>,
+) -> NestingReport {
     let Ok(face) = topo.face(face_id) else {
         return report(
             InnerLoopNesting::Undecided(NestingUndecided::NotPlanar),
@@ -256,7 +277,11 @@ pub fn inner_loop_nesting_report(topo: &Topology, face_id: FaceId) -> NestingRep
             0,
         );
     };
-    nesting_of(topo, wires, *normal)
+    if domains.is_empty() {
+        nesting_of(topo, wires, *normal)
+    } else {
+        nesting_of_with_domains(topo, wires, *normal, domains)
+    }
 }
 
 const fn report(
@@ -267,6 +292,7 @@ const fn report(
 ) -> NestingReport {
     NestingReport {
         nesting,
+        parents: None,
         pieces,
         work,
         work_limit: limit,
@@ -499,6 +525,16 @@ impl Ctx {
 
 /// [`inner_loop_nesting`] over `wires`, projected along `normal`.
 pub(crate) fn nesting_of(topo: &Topology, wires: &[WireId], normal: Vec3) -> NestingReport {
+    nesting_of_with_domains(topo, wires, normal, &BTreeMap::new())
+}
+
+/// The same decision with caller-certified raw profile ranges.
+pub(crate) fn nesting_of_with_domains(
+    topo: &Topology,
+    wires: &[WireId],
+    normal: Vec3,
+    domains: &BTreeMap<EdgeId, (f64, f64)>,
+) -> NestingReport {
     let unreadable = |pieces| {
         report(
             InnerLoopNesting::Undecided(NestingUndecided::Unreadable),
@@ -526,7 +562,7 @@ pub(crate) fn nesting_of(topo: &Topology, wires: &[WireId], normal: Vec3) -> Nes
     let mut loops = Vec::with_capacity(wires.len());
     let mut pieces = 0usize;
     for &wire in wires {
-        let Some(l) = read_loop(topo, wire, &plane) else {
+        let Some(l) = read_loop(topo, wire, &plane, domains) else {
             return unreadable(pieces);
         };
         pieces += l.pieces.len();
@@ -548,11 +584,14 @@ pub(crate) fn nesting_of(topo: &Topology, wires: &[WireId], normal: Vec3) -> Nes
         work: 0,
         limit,
     };
+    let mut parents = None;
     let nesting = match ctx.spend(pieces) {
-        Ok(()) => decide(&mut ctx, &loops),
+        Ok(()) => decide(&mut ctx, &loops, &mut parents),
         Err(_) => InnerLoopNesting::Undecided(NestingUndecided::WorkLimit),
     };
-    report(nesting, pieces, ctx.work.min(limit), limit)
+    let mut result = report(nesting, pieces, ctx.work.min(limit), limit);
+    result.parents = parents;
+    result
 }
 
 fn first_vertex(topo: &Topology, wire: WireId) -> Option<Point3> {
@@ -573,7 +612,11 @@ const fn undecided(fail: Fail) -> InnerLoopNesting {
 }
 
 #[allow(clippy::too_many_lines)]
-fn decide(ctx: &mut Ctx, loops: &[Loop]) -> InnerLoopNesting {
+fn decide(
+    ctx: &mut Ctx,
+    loops: &[Loop],
+    certified_parents: &mut Option<Vec<Option<usize>>>,
+) -> InnerLoopNesting {
     let n = loops.len();
     let pairs = match overlapping_pairs(ctx, loops) {
         Ok(pairs) => pairs,
@@ -677,7 +720,10 @@ fn decide(ctx: &mut Ctx, loops: &[Loop]) -> InnerLoopNesting {
         }
     }
     match (consistent, verdict) {
-        (true, None) => InnerLoopNesting::Nested(depths),
+        (true, None) => {
+            *certified_parents = Some(parent);
+            InnerLoopNesting::Nested(depths)
+        }
         (_, Some(fail)) => undecided(fail),
         // Every overlapping pair disjoint yet the containments not nested:
         // the probes cannot all be right, so nothing is certified.
@@ -713,12 +759,21 @@ fn overlapping_pairs(ctx: &mut Ctx, loops: &[Loop]) -> Result<Vec<(usize, usize)
 
 // ── Reading ────────────────────────────────────────────────────────────────
 
-fn read_loop(topo: &Topology, wire_id: WireId, plane: &Plane) -> Option<Loop> {
+fn read_loop(
+    topo: &Topology,
+    wire_id: WireId,
+    plane: &Plane,
+    domains: &BTreeMap<EdgeId, (f64, f64)>,
+) -> Option<Loop> {
     let wire = topo.wire(wire_id).ok()?;
     let mut edges: Vec<Vec<Piece>> = Vec::with_capacity(wire.edges().len());
     for oriented in wire.edges() {
         let edge = topo.edge(oriented.edge()).ok()?;
-        let pieces = edge_pieces(topo, edge, plane)?;
+        let supplied = domains
+            .get(&oriented.edge())
+            .copied()
+            .filter(|_| edge.trim().is_none());
+        let pieces = edge_pieces(topo, edge, plane, supplied)?;
         if pieces.is_empty() {
             return None;
         }
@@ -832,11 +887,22 @@ fn read_loop(topo: &Topology, wire_id: WireId, plane: &Plane) -> Option<Loop> {
 
 /// One edge's initial pieces in increasing parameter order, consecutive
 /// pieces sharing their junction points exactly.
-fn edge_pieces(topo: &Topology, edge: &Edge, plane: &Plane) -> Option<Vec<Piece>> {
+fn edge_pieces(
+    topo: &Topology,
+    edge: &Edge,
+    plane: &Plane,
+    supplied: Option<(f64, f64)>,
+) -> Option<Vec<Piece>> {
     let start = topo.vertex(edge.start()).ok()?;
     let end = topo.vertex(edge.end()).ok()?;
     let tol = edge.effective_tolerance(start.tolerance().max(end.tolerance()));
     if !tol.is_finite() || tol < 0.0 {
+        return None;
+    }
+    let trim = edge.strict_domain().ok().or(supplied);
+    if trim.is_some_and(|(a, b)| {
+        !a.is_finite() || !b.is_finite() || a.partial_cmp(&b) == Some(std::cmp::Ordering::Equal)
+    }) {
         return None;
     }
     match edge.curve() {
@@ -856,7 +922,7 @@ fn edge_pieces(topo: &Topology, edge: &Edge, plane: &Plane) -> Option<Vec<Piece>
                 b: scale(v, r),
                 annulus: Some(annulus(centre, centre_err, u, v, r)),
             };
-            conic_pieces(edge, conic, centre_err, 2.0 * r, tol)
+            conic_pieces(trim?, conic, centre_err, 2.0 * r, tol)
         }
         EdgeCurve::Ellipse(e) => {
             let (centre, centre_err) = plane.point(e.center());
@@ -868,7 +934,7 @@ fn edge_pieces(topo: &Topology, edge: &Edge, plane: &Plane) -> Option<Vec<Piece>
                 annulus: None,
             };
             conic_pieces(
-                edge,
+                trim?,
                 conic,
                 centre_err,
                 e.semi_major() + e.semi_minor(),
@@ -877,7 +943,7 @@ fn edge_pieces(topo: &Topology, edge: &Edge, plane: &Plane) -> Option<Vec<Piece>
         }
         EdgeCurve::Hyperbola(h) => {
             let (centre, centre_err) = plane.point(h.center());
-            let (t0, t1) = edge.strict_domain().ok()?;
+            let (t0, t1) = trim?;
             let conic = Conic2 {
                 kind: ConicKind::Hyperbolic,
                 c: centre,
@@ -886,11 +952,11 @@ fn edge_pieces(topo: &Topology, edge: &Edge, plane: &Plane) -> Option<Vec<Piece>
                 annulus: None,
             };
             let reach = (h.semi_major() + h.semi_minor()) * t0.abs().max(t1.abs()).cosh();
-            conic_pieces(edge, conic, centre_err, reach, tol)
+            conic_pieces(trim?, conic, centre_err, reach, tol)
         }
         EdgeCurve::Parabola(p) => {
             let (vertex, vertex_err) = plane.point(p.vertex());
-            let (t0, t1) = edge.strict_domain().ok()?;
+            let (t0, t1) = trim?;
             let conic = Conic2 {
                 kind: ConicKind::Parabolic,
                 c: vertex,
@@ -900,9 +966,9 @@ fn edge_pieces(topo: &Topology, edge: &Edge, plane: &Plane) -> Option<Vec<Piece>
             };
             let t = t0.abs().max(t1.abs());
             let reach = norm1(conic.a).mul_add(t * t, norm1(conic.b) * t);
-            conic_pieces(edge, conic, vertex_err, reach, tol)
+            conic_pieces(trim?, conic, vertex_err, reach, tol)
         }
-        EdgeCurve::NurbsCurve(nc) => nurbs_pieces(edge, nc, plane, tol),
+        EdgeCurve::NurbsCurve(nc) => nurbs_pieces(edge, nc, plane, tol, trim),
     }
 }
 
@@ -924,13 +990,13 @@ fn annulus(centre: P2, centre_error: f64, u: P2, v: P2, r: f64) -> Annulus {
 /// A conic edge over its strict trim. `centre_error` is the rounding of the
 /// projected centre and `reach` bounds `|a·f(t)| + |b·g(t)|` over the trim.
 fn conic_pieces(
-    edge: &Edge,
+    trim: (f64, f64),
     conic: Conic2,
     centre_error: f64,
     reach: f64,
     tol: f64,
 ) -> Option<Vec<Piece>> {
-    let (t0, t1) = edge.strict_domain().ok()?;
+    let (t0, t1) = trim;
     let c = norm1(conic.c);
     // Every computed point: the centre's projection, the offset's products
     // and sums, the rounding of `cos`/`sin` (or `cosh`/`sinh`), and the final
@@ -993,13 +1059,23 @@ fn conic_piece(
 /// inside the trim. Each piece's control points are the blossom of its
 /// span's `p + 1` control points at the trimmed span ends, so nothing
 /// outside the trim is read.
-fn nurbs_pieces(edge: &Edge, nc: &NurbsCurve, plane: &Plane, tol: f64) -> Option<Vec<Piece>> {
+fn nurbs_pieces(
+    edge: &Edge,
+    nc: &NurbsCurve,
+    plane: &Plane,
+    tol: f64,
+    trim: Option<(f64, f64)>,
+) -> Option<Vec<Piece>> {
     // The span the Green integration integrates (`oriented_nurbs_trim`).
-    let (t0, t1) = match edge.strict_domain() {
-        Ok(trim) => trim,
-        Err(_) if edge.start() == edge.end() && edge.trim().is_none() => nc.domain(),
-        Err(_) => return None,
+    let (t0, t1) = match trim {
+        Some(trim) => trim,
+        None if edge.start() == edge.end() && edge.trim().is_none() => nc.domain(),
+        None => return None,
     };
+    let (domain_start, domain_end) = nc.domain();
+    if t0.min(t1) < domain_start || t0.max(t1) > domain_end {
+        return None;
+    }
     let p = nc.degree();
     let knots = nc.knots();
     let points = nc.control_points();

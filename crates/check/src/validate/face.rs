@@ -74,7 +74,8 @@ pub fn check_face_orientation(
     Ok(issues)
 }
 
-/// Check that every inner wire traverses opposite to its outer wire.
+/// Check inner-wire traversal against material nesting parity on planes.
+/// Odd-depth islands wind with the outer wire; even-depth holes oppose it.
 ///
 /// A same-wound hole reverses the material-side convention and can poison the
 /// orientation of a later boolean even when the source solid otherwise passes
@@ -124,21 +125,29 @@ fn check_planar_inner_wire_orientation(
     let Some(outer_normal) = raw_newell_normal(&outer) else {
         return Ok(Vec::new());
     };
+    // Undecided nesting retains the legacy winding check. Certified regions
+    // use depth, independent of their incoming winding.
+    let regions = if face.inner_wires().len() > 1 {
+        super::planar_regions::planar_regions(topo, face_id).ok()
+    } else {
+        None
+    };
     let mut issues = Vec::new();
-    for &wire_id in face.inner_wires() {
+    for (index, &wire_id) in face.inner_wires().iter().enumerate() {
         let inner = crate::util::wire_polygon(topo, wire_id)?;
         let Some(inner_normal) = raw_newell_normal(&inner) else {
             continue;
         };
         let alignment =
             outer_normal.dot(inner_normal) / (outer_normal.length() * inner_normal.length());
-        if alignment > 0.1 {
+        let island = regions.as_ref().is_some_and(|r| r.depths[index] % 2 == 1);
+        if (island && alignment < -0.1) || (!island && alignment > 0.1) {
             issues.push(ValidationIssue {
                 check: CheckId::FaceOrientationConsistency,
                 severity: Severity::Error,
                 entity: EntityRef::Wire(wire_id),
                 description: format!(
-                    "inner wire {} on planar face {} has the same winding as its outer wire",
+                    "inner wire {} on planar face {} violates nesting parity (same winding required only for islands: {island})",
                     wire_id.index(),
                     face_id.index()
                 ),
