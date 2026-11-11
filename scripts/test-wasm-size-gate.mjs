@@ -301,10 +301,14 @@ test('command line: a kernel-only artifact (failed build, translator never built
 
 // Run the checked-in workflow commands, rather than duplicating their shell
 // logic. Cargo metadata is the only stub; size measurement uses the real policy.
+const WORKFLOW_FILES = {
+  ci: 'ci-checks.yml',
+  'wasm-size': 'wasm-size-report.yml',
+};
+
 function workflowCommand(file, name) {
-  const active = JSON.parse(readFileSync(new URL('../.github/fleet-workflows.json', import.meta.url), 'utf8'));
-  assert.ok(active[file], `Missing active workflow family: ${file}`);
-  const workflow = readFileSync(new URL(`../.github/workflows/${active[file]}`, import.meta.url), 'utf8').replaceAll('\r\n', '\n');
+  assert.ok(WORKFLOW_FILES[file], `Missing workflow mapping: ${file}`);
+  const workflow = readFileSync(new URL(`../.github/workflows/${WORKFLOW_FILES[file]}`, import.meta.url), 'utf8').replaceAll('\r\n', '\n');
   const step = workflow.split(`      - name: ${name}\n`)[1]?.split('\n      - ')[0];
   assert.ok(step, `Missing workflow step: ${name}`);
   const command = step.split('        run: |\n')[1] ?? step.match(/^        run: (.+)$/m)?.[1];

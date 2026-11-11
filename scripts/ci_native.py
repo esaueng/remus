@@ -1,209 +1,176 @@
 #!/usr/bin/env python3
-"""Plan the fast native suite, build once, and run verified archive partitions."""
+"""Build the complete native test suite once and run it in partitions.
+
+Cargo compiles and links every file in a package's `tests/` directory as its
+own crate. With several hundred integration tests that link step, not the
+tests, dominated CI: about eight of the ten build minutes and a 2.8 GB
+archive every partition had to download.
+
+`archive` therefore writes a few generated harness files per package, each
+declaring the package's integration tests as modules:
+
+    #[path = "boolean_invariants.rs"]
+    mod boolean_invariants;
+
+and builds those instead of the individual targets. The test files are not
+moved or edited, local `cargo test --test <name>` is unaffected, and nextest
+still runs every test in its own process. Only the test's reported name
+changes, from `<binary> <test>` to `ci_harness_<n> <binary>::<test>`.
+
+A test file stays its own binary when it reads its own executable or crate
+name (see `STANDALONE`), and so does every target Cargo does not discover
+from a top-level `tests/*.rs` file.
+"""
 
 from __future__ import annotations
 
 import argparse
 import json
 import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import re
 import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-MANIFEST = ".github/ci-test-suites.json"
-
-
-def git(*args: str) -> str:
-    return subprocess.check_output(["git", *args], cwd=ROOT, text=True).strip()
-
-
-def suite_manifest(root: Path = ROOT) -> dict:
-    data = json.loads((root / MANIFEST).read_text())
-    if set(data) != {"schema", "critical", "focused_crates"} or type(data["schema"]) is not int or data["schema"] != 1:
-        raise ValueError("Unsupported native suite manifest")
-    paths = data["critical"]
-    if not isinstance(paths, list) or not paths or len(set(paths)) != len(paths):
-        raise ValueError("Critical tests must be a nonempty unique list")
-    for path in paths:
-        if not isinstance(path, str) or not re.fullmatch(r"crates/[a-z-]+/tests/[a-zA-Z0-9_]+\.rs", path):
-            raise ValueError("Critical test path is malformed")
-        if not (root / path).is_file():
-            raise ValueError(f"Critical test is missing: {path}")
-    crates = data["focused_crates"]
-    if not isinstance(crates, list) or not crates or len(set(crates)) != len(crates):
-        raise ValueError("Focused crates must be a nonempty unique list")
-    for crate in crates:
-        if not isinstance(crate, str) or not re.fullmatch(r"[a-z-]+", crate) or not (root / "crates" / crate / "Cargo.toml").is_file():
-            raise ValueError("Focused crate is malformed or missing")
-    return data
-
-
-def package(crate: str) -> str:
-    return "remus" if crate == "remus" else "remus-" + crate
-
-
-def binary_filter(path: str) -> str:
-    parts = PurePosixPath(path).parts
-    return f"(package(={package(parts[1])}) & kind(test) & binary(={parts[3][:-3]}))"
-
-
-def plan(paths: list[str], manifest: dict, *, full: bool = False, queue: bool = False) -> dict:
-    """Unknown, deleted, fixture and foundational paths select the full suite."""
-    critical = list(manifest["critical"])
-    targets = set(critical)
-    modules = set()
-    reason = "explicit full run" if full else "critical and affected module tests"
-    for path in paths:
-        p = PurePosixPath(path)
-        if p.is_absolute() or ".." in p.parts or str(p) != path:
-            raise ValueError("Changed path is not a normalized repository path")
-        if path.endswith(".md") or path.startswith(("docs/", "book/", ".claude/")):
-            continue
-        parts = p.parts
-        if len(parts) >= 4 and parts[0] == "crates" and parts[1] in manifest["focused_crates"]:
-            if parts[2] == "tests" and path.endswith(".rs"):
-                # Nested test support files select their containing integration binary.
-                target = "/".join(parts[:3]) + "/" + parts[3].removesuffix(".rs") + ".rs"
-                targets.add(target)
-                continue
-            if parts[2] == "src" and path.endswith(".rs") and parts[3] not in ("lib.rs", "main.rs"):
-                module = parts[3].removesuffix(".rs")
-                if re.fullmatch(r"[a-zA-Z0-9_]+", module):
-                    modules.add((package(parts[1]), module))
-                    continue
-        # Package artifacts are tested independently, but a mixed diff must
-        # never accidentally turn into an untested native path.
-        full, reason = True, f"broad validation for {path}"
-    if not paths:
-        full, reason = True, "empty or unavailable diff"
-    # Queue smoke is selected only for a known leaf-source/test diff. A
-    # foundational change still receives full native tests on its candidate.
-    if queue and not full:
-        modules.clear()
-        reason = "critical integration tests on the combined queue candidate"
-    return {"schema": 1, "mode": "full" if full else "fast", "reason": reason,
-            "targets": sorted(targets), "modules": [list(x) for x in sorted(modules)]}
-
-
-def expression(selection: dict) -> str:
-    if selection["mode"] == "full":
-        return "all()"
-    terms = [binary_filter(path) for path in selection["targets"]]
-    terms.extend(f"(package(={name}) & kind(lib) & test(/^{re.escape(module)}::/))"
-                 for name, module in selection["modules"])
-    return " | ".join(terms)
-
-
-def build_args(selection: dict) -> list[str]:
-    args = ["--cargo-profile", "ci-test", "--locked"]
-    if selection["mode"] == "full":
-        args += ["--workspace"]
-    else:
-        packages = {package(PurePosixPath(path).parts[1]) for path in selection["targets"]}
-        packages.update(name for name, _module in selection["modules"])
-        for name in sorted(packages):
-            args += ["--package", name]
-        args += ["--lib"]
-        for target in sorted({PurePosixPath(p).stem for p in selection["targets"]}):
-            args += ["--test", target]
-    return args
-
-
-def verify_inventory(selection: dict, inventory: dict) -> bool:
-    """Reject missing critical binaries; request full fallback for empty modules."""
-    suites = inventory["rust-suites"]
-    for path in selection["targets"]:
-        parts = PurePosixPath(path).parts
-        matches = [s for s in suites.values() if s["package-name"] == package(parts[1])
-                   and s["binary-name"] == PurePosixPath(path).stem and s["kind"] == "test"]
-        if len(matches) != 1 or not matches[0]["testcases"]:
-            raise ValueError(f"Selected integration binary has no tests: {path}")
-    for name, module in selection["modules"]:
-        if not any(s["package-name"] == name and s["kind"] == "lib"
-                   and any(test.startswith(module + "::") and not case["ignored"]
-                           for test, case in s["testcases"].items()) for s in suites.values()):
-            return False
-    return True
+HARNESS_PREFIX = "ci_harness_"
+# One rustc invocation per harness: several medium crates use the build
+# machine's cores better than one very large crate.
+CHUNK_LINES = 30_000
+# Source that depends on being the crate root or on the binary's identity.
+STANDALONE = re.compile(
+    r"CARGO_BIN_EXE|CARGO_CRATE_NAME|module_path!|current_exe|type_name|insta::"
+    r"|extern\s+crate|macro_export|#!\[\s*(?:feature|recursion_limit|no_main|type_length_limit)"
+    r"|\bcrate::"
+)
+RUST_KEYWORDS = frozenset(
+    "as async await break const continue crate dyn else enum extern false fn for gen if impl in let loop "
+    "match mod move mut pub ref return self static struct super trait true try type unsafe use where while".split()
+)
+PROFILE = ("--cargo-profile", "ci-test", "--locked")
 
 
 def run(command: list[str], **kwargs):
     print("+ " + " ".join(command), flush=True)
-    try:
-        return subprocess.run(command, cwd=ROOT, check=True, **kwargs)
-    except subprocess.CalledProcessError as error:
-        # Inventory JSON must be captured, but setup/extraction diagnostics
-        # must still reach the CI log when nextest cannot create it.
-        if error.stderr:
-            detail = error.stderr.decode(errors="replace") if isinstance(error.stderr, bytes) else error.stderr
-            print(detail, file=sys.stderr)
-        raise
+    return subprocess.run(command, cwd=ROOT, check=True, **kwargs)
+
+
+def workspace_packages() -> list[dict]:
+    raw = subprocess.check_output(
+        ["cargo", "metadata", "--no-deps", "--format-version", "1", "--locked"], cwd=ROOT)
+    return json.loads(raw)["packages"]
+
+
+def module_name(stem: str) -> str:
+    name = re.sub(r"[^A-Za-z0-9_]", "_", stem)
+    if not re.match(r"[A-Za-z_]", name) or name in RUST_KEYWORDS:
+        name = "t_" + name
+    return name
+
+
+def without_comments(source: str) -> str:
+    """Drop line comments so prose mentioning `crate::` does not pin a file."""
+    return "\n".join(line.split("//", 1)[0] for line in source.splitlines())
+
+
+def split_targets(package: dict) -> tuple[list[Path], list[str]]:
+    """Return (files to merge, target names that stay their own binary)."""
+    tests_dir = Path(package["manifest_path"]).parent / "tests"
+    merged, standalone = [], []
+    for target in package["targets"]:
+        if "test" not in target["kind"]:
+            continue
+        path = Path(target["src_path"])
+        mergeable = (
+            path.parent == tests_dir
+            and path.stem == target["name"]
+            and target.get("test", True)
+            and not target.get("required-features")
+            and not STANDALONE.search(without_comments(path.read_text(encoding="utf-8")))
+        )
+        if mergeable:
+            merged.append(path)
+        else:
+            standalone.append(target["name"])
+    return sorted(merged), sorted(standalone)
+
+
+def chunks(files: list[Path]) -> list[list[Path]]:
+    """Greedy split into chunks of about CHUNK_LINES source lines."""
+    result, current, lines = [], [], 0
+    for path in files:
+        size = path.read_text(encoding="utf-8").count("\n")
+        if current and lines + size > CHUNK_LINES:
+            result.append(current)
+            current, lines = [], 0
+        current.append(path)
+        lines += size
+    if current:
+        result.append(current)
+    return result
+
+
+def harness_source(files: list[Path]) -> str:
+    names = [module_name(path.stem) for path in files]
+    if len(set(names)) != len(names):
+        raise ValueError("Integration test file names collide as module names")
+    body = "".join(f'#[path = "{path.name}"]\nmod {name};\n' for path, name in zip(files, names))
+    return "//! Generated by scripts/ci_native.py for CI builds. Never commit this file.\n" + body
+
+
+def remove_harnesses(root: Path = ROOT) -> None:
+    """Delete harnesses from an earlier run before Cargo lists them as targets."""
+    for stale in root.glob(f"*/*/tests/{HARNESS_PREFIX}*.rs"):
+        stale.unlink()
+
+
+def write_harnesses(packages: list[dict]) -> tuple[list[str], list[str]]:
+    """Write the harness files; return (harness target names, standalone target names)."""
+    harnesses, standalone = set(), set()
+    for package in packages:
+        merged, alone = split_targets(package)
+        standalone.update(alone)
+        tests_dir = Path(package["manifest_path"]).parent / "tests"
+        for index, files in enumerate(chunks(merged), 1):
+            name = f"{HARNESS_PREFIX}{index}"
+            (tests_dir / f"{name}.rs").write_text(harness_source(files), encoding="utf-8", newline="\n")
+            harnesses.add(name)
+    # A generated name must never shadow a real test, and the reverse.
+    standalone = {name for name in standalone if not name.startswith(HARNESS_PREFIX)}
+    return sorted(harnesses), sorted(standalone)
+
+
+def build_args(harnesses: list[str], standalone: list[str]) -> list[str]:
+    args = [*PROFILE, "--workspace", "--lib", "--bins"]
+    for name in [*harnesses, *standalone]:
+        args += ["--test", name]
+    return args
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("plan", "archive", "run"))
-    parser.add_argument("--plan", required=True, type=Path)
-    parser.add_argument("--base")
-    parser.add_argument("--head", default="HEAD")
-    parser.add_argument("--full", action="store_true")
-    parser.add_argument("--queue", action="store_true")
-    parser.add_argument("--smoke", action="store_true", help="critical-suite proof; not a substitute for PR classification")
-    parser.add_argument("--archive", type=Path)
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("command", choices=("archive", "run"))
+    parser.add_argument("--archive", required=True, type=Path)
     parser.add_argument("--shard", type=int, default=1)
-    parser.add_argument("--total", type=int, default=4)
+    parser.add_argument("--total", type=int, default=1)
     args = parser.parse_args()
-    manifest = suite_manifest()
-    if args.command == "plan":
-        if not args.base:
-            parser.error("plan requires --base")
-        raw = subprocess.check_output(["git", "diff", "--name-only", "-z", args.base, args.head], cwd=ROOT)
-        paths = [p.decode() for p in raw.split(b"\0") if p]
-        selection = plan(paths, manifest, full=args.full, queue=args.queue)
-        if args.smoke:
-            selection = plan(["README.md"], manifest)
-            selection["reason"] = "staged critical-suite proof"
-        # Deleted targets and non-Cargo test layout changes require broad validation.
-        if not args.smoke and (any(not (ROOT / p).is_file() for p in paths) or any(not (ROOT / p).is_file() for p in selection["targets"])):
-            selection["mode"], selection["reason"] = "full", "deleted path or unsupported nested test layout"
-        selection["source_sha"] = git("rev-parse", args.head)
-        selection["paths"] = paths
-        args.plan.write_text(json.dumps(selection, indent=2) + "\n")
+    if args.command == "archive":
+        remove_harnesses()
+        harnesses, standalone = write_harnesses(workspace_packages())
+        print(f"Merged integration tests into {len(harnesses)} harness name(s); "
+              f"{len(standalone)} target(s) stay standalone: {', '.join(standalone)}", flush=True)
+        run(["cargo", "nextest", "archive", *build_args(harnesses, standalone),
+             "--archive-file", str(args.archive)])
     else:
-        selection = json.loads(args.plan.read_text())
-        if selection.get("schema") != 1 or selection.get("source_sha") != git("rev-parse", "HEAD") or selection.get("mode") not in ("fast", "full"):
-            raise ValueError("Native test plan does not match this source")
-        if not args.archive:
-            parser.error("archive/run requires --archive")
-        if args.command == "archive":
-            run(["cargo", "nextest", "archive", *build_args(selection), "--archive-file", str(args.archive)])
-            if selection["mode"] == "fast":
-                # Fast selection needs an inventory to detect missing modules.
-                # Full archives are extracted and run by all four mandatory
-                # workers; unpacking them again beside the build duplicates
-                # their complete target directory without validating selection.
-                inventory = json.loads(run(["cargo", "nextest", "list", "--archive-file", str(args.archive),
-                                            "--workspace-remap", str(ROOT), "--message-format", "json"],
-                                           capture_output=True, text=True).stdout)
-                if not verify_inventory(selection, inventory):
-                    selection["mode"], selection["reason"] = "full", "affected module has no runnable unit tests"
-                    run(["cargo", "nextest", "archive", *build_args(selection), "--archive-file", str(args.archive)])
-                    args.plan.write_text(json.dumps(selection, indent=2) + "\n")
-        else:
-            if not 1 <= args.shard <= args.total:
-                raise ValueError("Invalid native partition")
-            run(["cargo", "nextest", "run", "--archive-file", str(args.archive), "--workspace-remap", str(ROOT),
-                 "-E", expression(selection), "--partition", f"hash:{args.shard}/{args.total}",
-                 "--test-threads", os.environ.get("RUST_TEST_THREADS", "num-cpus")])
-    print(json.dumps(selection, indent=2))
-    if output := os.environ.get("GITHUB_OUTPUT"):
-        with open(output, "a") as stream:
-            stream.write(f"mode={selection['mode']}\n")
-    if summary := os.environ.get("GITHUB_STEP_SUMMARY"):
-        with open(summary, "a") as stream:
-            stream.write(f"### Native test selection\n\nMode: **{selection['mode']}**. {selection['reason']}.\n\n")
+        if not 1 <= args.shard <= args.total:
+            raise ValueError("Invalid native partition")
+        run(["cargo", "nextest", "run", "--archive-file", str(args.archive), "--workspace-remap", str(ROOT),
+             "--partition", f"hash:{args.shard}/{args.total}",
+             "--test-threads", os.environ.get("RUST_TEST_THREADS", "num-cpus")])
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except subprocess.CalledProcessError as error:
+        sys.exit(error.returncode)

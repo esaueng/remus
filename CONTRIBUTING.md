@@ -47,6 +47,7 @@ independent implementation with a regression test proving the contract.
    cargo test --workspace
    ./scripts/check-boundaries.sh    # if you touched crate dependencies
    ./scripts/check-doc-paths.sh     # if you moved or renamed a source file
+   python3 scripts/ci_preflight.py  # the whole Repository Policy job
    ```
 
 4. Commit with a signed-off conventional commit message.
@@ -54,8 +55,9 @@ independent implementation with a regression test proving the contract.
 
 The hooks split the work: pre-commit runs the fast checks (fmt, clippy,
 taplo, machete in parallel), commit-msg runs commitlint, and the full test
-matrix — nextest, doc tests, cargo-deny, boundaries, lineage, audit — is
-gated by CI on every push and PR.
+matrix — nextest, doc tests, boundaries, lineage, and cargo-deny and audit
+when dependency or toolchain files change — is gated by CI on pull requests
+and pushes to `main`. See [`docs/ci-cadence.md`](docs/ci-cadence.md).
 
 ## Commit messages
 

@@ -12,7 +12,6 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
-from fleet_workflows import workflow_path
 
 
 sys.dont_write_bytecode = True
@@ -26,8 +25,7 @@ SPEC.loader.exec_module(MODULE)
 
 
 ROOT = MODULE_PATH.resolve().parents[1]
-# This suite exercises the legacy classifier still imported by the daily wrapper.
-FLEET_CI = ROOT / ".github/workflows/fleet-ci-v11.yml"
+CHECKS = ROOT / ".github/workflows/ci-checks.yml"
 # The engine crates below the wasm bindings. A PR touching any of them must
 # rebuild and smoke-test the packaged kernel (PR #618 broke main's WASM
 # Build & Validate from crates/algo, crates/math and crates/operations alone).
@@ -94,107 +92,115 @@ def fleet_jobs() -> dict[str, str]:
 
 
 class ClassifyCiChangesTests(unittest.TestCase):
+    def classify(self, paths, event="pull_request", **kwargs):
+        return MODULE.classify(paths, event, **kwargs)
+
+    def assertSelection(self, result, mode, **expected):
+        self.assertEqual(result["mode"], mode)
+        for flag in MODULE.FLAGS:
+            self.assertEqual(result[flag], expected.get(flag, False), flag)
+
     def test_source_change_on_a_pr_runs_the_pr_tier(self) -> None:
-        result = MODULE.classify_paths(["crates/math/src/lib.rs"])
-        self.assertTrue(result.heavy)
-        self.assertTrue(result.docs)
-        self.assertFalse(result.full)
-        self.assertTrue(result.wasm)
-        self.assertEqual(result.mode, "pr")
-
-    def test_distribution_licenses_always_select_a_tested_package(self) -> None:
-        for path in ("LICENSE-APACHE", "NOTICE"):
-            for paths in ([path], [path, "README.md"], [path, "crates/wasm/pkg/package.json"]):
-                for force_full in (False, True):
-                    with self.subTest(paths=paths, full=force_full):
-                        result = MODULE.classify_paths(paths, force_full=force_full)
-                        self.assertTrue(result.heavy)
-                        self.assertTrue(result.wasm)
-
-    def test_source_change_with_full_runs_everything(self) -> None:
-        result = MODULE.classify_paths(["crates/math/src/lib.rs"], force_full=True)
-        self.assertTrue(result.heavy)
-        self.assertTrue(result.full)
-        self.assertTrue(result.wasm)
-        self.assertEqual(result.mode, "full")
-
-    def test_wasm_affecting_paths_select_the_package_build(self) -> None:
-        for path in (
-            "crates/wasm/src/kernel.rs",
-            "crates/wasm-io/Cargo.toml",
-            "xtask/src/wasm.rs",
-            "tools/vs-bench/workflows/w9-preflight.mjs",
-            "scripts/test-wasm-smoke.mjs",
-            "scripts/test-w9-preflight.sh",
-            "Cargo.lock",
-            "rust-toolchain.toml",
-        ):
-            with self.subTest(path=path):
-                result = MODULE.classify_paths([path])
-                self.assertTrue(result.heavy)
-                self.assertTrue(result.wasm)
-                self.assertFalse(result.full)
-
-    def test_algo_only_pr_selects_the_package_build(self) -> None:
-        result = MODULE.classify_paths(["crates/algo/src/pave_filler/phase_ff.rs"])
-        self.assertTrue(result.heavy)
-        self.assertTrue(result.wasm)
-        self.assertFalse(result.full)
-        self.assertEqual(result.mode, "pr")
+        self.assertSelection(self.classify(["crates/math/src/lib.rs"]), "pr",
+                             heavy=True, docs=True, wasm=True)
 
     def test_every_kernel_crate_selects_the_package_build(self) -> None:
-        found = {path.parent.name for path in (ROOT / "crates").glob("*/Cargo.toml")}
-        # A renamed or removed engine crate must fail here, not silently
-        # shrink the set this test walks.
-        self.assertLessEqual(set(KERNEL_CRATES), found)
-        for crate in sorted(found):
-            for path in (f"crates/{crate}/src/lib.rs", f"crates/{crate}/Cargo.toml",
-                         f"crates/{crate}/tests/case.rs"):
-                with self.subTest(path=path):
-                    result = MODULE.classify_paths([path])
-                    self.assertTrue(result.heavy)
-                    self.assertTrue(result.wasm)
-                    self.assertFalse(result.full)
+        for crate in KERNEL_CRATES:
+            with self.subTest(crate=crate):
+                result = self.classify([f"crates/{crate}/src/lib.rs"])
+                self.assertTrue(result["heavy"])
+                self.assertTrue(result["wasm"])
+        self.assertTrue(self.classify(PR_618_PATHS)["wasm"])
 
-    def test_pr_618_diff_selects_the_package_build(self) -> None:
-        result = MODULE.classify_paths(PR_618_PATHS)
-        self.assertTrue(result.heavy)
-        self.assertTrue(result.wasm)
-        self.assertFalse(result.full)
-        self.assertEqual(result.mode, "pr")
+    def test_wasm_affecting_paths_select_the_package_build(self) -> None:
+        for path in ("xtask/src/wasm.rs", "tools/vs-bench/workflows/w9-preflight.mjs",
+                     "scripts/test-wasm-smoke.mjs", "scripts/test-w9-preflight.sh", "Cargo.lock",
+                     "rust-toolchain.toml", ".cargo/config.toml", "LICENSE-APACHE", "NOTICE",
+                     ".github/workflows/ci.yml", ".github/workflows/ci-checks.yml",
+                     ".github/workflows/publish.yml", ".github/workflows/wasm-size-report.yml"):
+            with self.subTest(path=path):
+                result = self.classify([path, "README.md"])
+                self.assertTrue(result["heavy"])
+                self.assertTrue(result["wasm"])
 
-    def test_docs_and_ci_only_prs_skip_the_package_build(self) -> None:
-        for paths in (
-            ["docs/kernel-maturity/roadmap.md"],
-            ["book/src/guide.md", "README.md"],
-            [".github/dependabot.yml"],
-            [".github/CODEOWNERS", "docs/architecture.md"],
-            [".claude/skills/roadmap/SKILL.md", "CLAUDE.md"],
-        ):
+    def test_dependency_and_toolchain_inputs_select_their_checks(self) -> None:
+        for path in ("Cargo.lock", "Cargo.toml", "crates/math/Cargo.toml", "deny.toml", "clippy.toml",
+                     "rust-toolchain.toml", ".cargo/config.toml", ".config/nextest.toml",
+                     ".github/workflows/ci-checks.yml", ".github/workflows/gauntlet.yml"):
+            for event in ("pull_request", "push"):
+                with self.subTest(path=path, event=event):
+                    result = self.classify([path], event)
+                    self.assertTrue(result["heavy"])
+                    self.assertTrue(result["full"])
+        self.assertFalse(self.classify(["crates/math/src/lib.rs"])["full"])
+        self.assertFalse(self.classify(["crates/math/src/lib.rs"], "push")["full"])
+
+    def test_main_push_runs_the_selected_tiers(self) -> None:
+        self.assertSelection(self.classify(["crates/algo/src/gfa.rs"], "push"), "main",
+                             heavy=True, docs=True, wasm=True)
+
+    def test_label_dispatch_and_unknown_diffs_run_everything(self) -> None:
+        everything = dict(heavy=True, docs=True, full=True, wasm=True)
+        self.assertSelection(self.classify(["README.md"], force_full=True), "full", **everything)
+        self.assertSelection(self.classify(["README.md"], "workflow_dispatch"), "full", **everything)
+        for event in ("pull_request", "push", "merge_group", "workflow_dispatch"):
+            with self.subTest(event=event):
+                self.assertSelection(self.classify([], event), "full", **everything)
+
+    def test_coverage_runs_only_on_request_with_the_heavy_tier(self) -> None:
+        self.assertTrue(self.classify(["crates/math/src/lib.rs"], coverage=True)["coverage"])
+        self.assertTrue(self.classify(["README.md"], "workflow_dispatch", coverage=True)["coverage"])
+        self.assertFalse(self.classify(["crates/math/src/lib.rs"])["coverage"])
+        self.assertFalse(self.classify(["README.md"], coverage=True)["coverage"])
+        self.assertFalse(self.classify(["crates/math/src/lib.rs"], "merge_group", coverage=True)["coverage"])
+
+    def test_merge_group_runs_the_light_gates_only(self) -> None:
+        for paths in (["crates/math/src/lib.rs"], PR_618_PATHS, ["Cargo.lock"],
+                      [".github/workflows/ci-checks.yml"], ["scripts/ci_native.py"],
+                      ["crates/wasm/pkg/remus_wasm_bg.wasm", "crates/algo/src/gfa.rs"]):
             with self.subTest(paths=paths):
-                result = MODULE.classify_paths(paths)
-                self.assertFalse(result.heavy)
-                self.assertFalse(result.wasm)
-                self.assertFalse(result.full)
+                self.assertSelection(self.classify(paths, "merge_group"), "queue", docs=True)
 
-    def test_cargo_config_selects_the_package_build(self) -> None:
-        # It defines the `cargo xtask` alias the package build runs.
-        self.assertTrue(MODULE.classify_paths([".cargo/config.toml"]).wasm)
-        self.assertFalse(MODULE.classify_paths([".cargo/mutants.toml"]).wasm)
+    def test_package_refresh_leaves_validation_to_the_integrity_job(self) -> None:
+        refresh = ["crates/wasm-io/pkg/package.json", "crates/wasm-io/pkg/remus_wasm_io_bg.wasm",
+                   "crates/wasm/pkg/package.json", "crates/wasm/pkg/remus_wasm_bg.wasm"]
+        for event in ("pull_request", "push", "merge_group"):
+            with self.subTest(event=event):
+                self.assertSelection(self.classify(refresh, event), "package")
 
-    def test_fleet_ci_runs_the_wasm_job_from_the_classifier_output(self) -> None:
-        jobs = fleet_jobs()
-        wasm = jobs["wasm"]
-        self.assertIn("name: WASM Build & Validate", wasm)
-        self.assertIn('needs: [queue-trust, changes, repo-policy, secrets-scan]', wasm)
-        self.assertIn("if: ${{ !cancelled() && needs.changes.result == 'success' && "
-                      "needs.repo-policy.result == 'success' && needs.secrets-scan.result == 'success' && "
-                      "(needs.changes.outputs.wasm == 'true') }}", wasm)
-        self.assertIn("cargo xtask wasm-build", wasm)
-        changes = jobs["changes"]
-        self.assertIn("wasm: ${{ steps.classify.outputs.wasm }}", changes)
-        self.assertRegex(changes, r"python3 scripts/classify-ci-changes\.py \\\n\s+--base \"\$base\" \\\n"
-                                  r"\s+--head \"\$GITHUB_SHA\" \$full_flag \| tee -a \"\$GITHUB_OUTPUT\"")
+    def test_package_with_any_other_path_keeps_the_suite(self) -> None:
+        # The package mode trusts the base commit's checker; a diff that also
+        # touches the checker, its workflow or any source is not a refresh.
+        for other in ("scripts/check-wasm-package-integrity.py", ".github/workflows/wasm-version.yml",
+                      "xtask/src/wasm.rs", "crates/math/src/lib.rs", "Cargo.lock",
+                      "docs/kernel-maturity/roadmap.md"):
+            with self.subTest(other=other):
+                result = self.classify(["crates/wasm/pkg/remus_wasm_bg.wasm", other])
+                self.assertTrue(result["heavy"])
+                self.assertTrue(result["wasm"])
+
+    def test_documentation_and_metadata_stay_lightweight(self) -> None:
+        self.assertSelection(self.classify(["docs/kernel-maturity/roadmap.md", "README.md"]), "docs", docs=True)
+        self.assertSelection(self.classify([".github/dependabot.yml"]), "ci-only")
+        self.assertSelection(self.classify([".claude/skills/testing/SKILL.md"]), "ci-only")
+        self.assertSelection(self.classify([".github/pull_request_template.md", "CHANGELOG.md"]),
+                             "docs", docs=True)
+        for event in ("push", "merge_group"):
+            self.assertSelection(self.classify(["book/src/intro.md"], event), "docs", docs=True)
+
+    def test_unknown_paths_are_not_assumed_to_be_light(self) -> None:
+        for path in ("scripts/classify-ci-changes.py", "some/new/file.bin", "package.json",
+                     "crates/io/tests/data/readme.md", "crates/math/README.md"):
+            with self.subTest(path=path):
+                self.assertTrue(self.classify([path])["heavy"])
+
+    def test_checks_workflow_consumes_the_classifier_outputs(self) -> None:
+        text = CHECKS.read_text(encoding="utf-8").replace("\r\n", "\n")
+        self.assertIn('python3 scripts/classify-ci-changes.py \\\n            --base "$base" \\\n'
+                      '            --head "$GITHUB_SHA" $full_flag | tee -a "$GITHUB_OUTPUT"', text)
+        for flag in MODULE.FLAGS:
+            self.assertIn(f"{flag}: ${{{{ steps.classify.outputs.{flag} }}}}", text)
+        self.assertIn("cargo xtask wasm-build", text)
 
     def run_cli(self, files: dict[str, str], *args: str,
                 event: str = "pull_request") -> dict[str, str]:
@@ -226,46 +232,18 @@ class ClassifyCiChangesTests(unittest.TestCase):
         self.assertEqual(outputs["wasm"], "true")
         self.assertEqual(outputs["full"], "false")
         self.assertEqual(outputs["mode"], "pr")
+        self.assertEqual(outputs["base"], "HEAD~1")
         self.assertEqual(outputs["changed_count"], "1")
 
-    def test_cli_skips_wasm_for_a_docs_only_diff(self) -> None:
-        outputs = self.run_cli({"docs/kernel-maturity/roadmap.md": "# change\n"})
-        self.assertEqual(outputs["heavy"], "false")
-        self.assertEqual(outputs["wasm"], "false")
-        self.assertEqual(outputs["mode"], "docs")
+    def test_cli_reads_the_event_and_the_full_flag(self) -> None:
+        queued = self.run_cli({"crates/algo/src/gfa.rs": "// change\n"}, event="merge_group")
+        self.assertEqual((queued["heavy"], queued["docs"], queued["mode"]), ("false", "true", "queue"))
+        labelled = self.run_cli({"docs/kernel-maturity/roadmap.md": "# change\n"}, "--full")
+        self.assertEqual((labelled["heavy"], labelled["full"], labelled["mode"]), ("true", "true", "full"))
 
-    def test_package_refresh_leaves_validation_to_the_integrity_job(self) -> None:
-        # The refresh PR's own diff (#1248): both packages, nothing else.
-        refresh = ["crates/wasm-io/pkg/package.json", "crates/wasm-io/pkg/remus_wasm_io_bg.wasm",
-                   "crates/wasm/pkg/package.json", "crates/wasm/pkg/remus_wasm.d.ts",
-                   "crates/wasm/pkg/remus_wasm_bg.wasm", "crates/wasm/pkg/remus_wasm_node.cjs"]
-        for force_full in (False, True):
-            for merge_group in (False, True):
-                with self.subTest(force_full=force_full, merge_group=merge_group):
-                    result = MODULE.classify_paths(
-                        refresh, force_full=force_full, merge_group=merge_group
-                    )
-                    self.assertFalse(result.heavy)
-                    self.assertFalse(result.docs)
-                    self.assertFalse(result.full)
-                    self.assertFalse(result.wasm)
-                    self.assertEqual(result.mode, "package")
-
-    def test_package_with_any_other_path_keeps_the_suite(self) -> None:
-        # The light mode trusts the base commit's checker; a diff that also
-        # touches the checker, its workflow or any source is not a refresh.
-        for other in ("scripts/check-wasm-package-integrity.py",
-                      ".github/workflows/wasm-version.yml", "xtask/src/wasm.rs",
-                      "crates/math/src/lib.rs", "Cargo.lock"):
-            with self.subTest(other=other):
-                result = MODULE.classify_paths(["crates/wasm/pkg/remus_wasm_bg.wasm", other])
-                self.assertTrue(result.heavy)
-                self.assertTrue(result.wasm)
-                self.assertNotEqual(result.mode, "package")
-        result = MODULE.classify_paths(
-            ["crates/wasm/pkg/remus_wasm_bg.wasm", "docs/kernel-maturity/roadmap.md"]
-        )
-        self.assertTrue(result.heavy)
+    def test_cli_runs_no_heavy_tier_for_a_package_refresh(self) -> None:
+        outputs = self.run_cli({"crates/wasm/pkg/package.json": "{}\n"}, event="push")
+        self.assertEqual((outputs["heavy"], outputs["wasm"], outputs["mode"]), ("false", "false", "package"))
 
     def test_integrity_job_rebuilds_and_compares_committed_packages(self) -> None:
         # The package mode is safe only while this required job rebuilds both
@@ -298,219 +276,6 @@ class ClassifyCiChangesTests(unittest.TestCase):
         self.assertIn("needs: integrity", version)
         self.assertIn('if [[ "$INTEGRITY_RESULT" != "success" ]]; then', version)
 
-    def test_package_refresh_with_source_change_is_heavy(self) -> None:
-        result = MODULE.classify_paths(
-            ["crates/wasm/pkg/remus_wasm_bg.wasm", "crates/wasm/src/kernel.rs"]
-        )
-        self.assertTrue(result.heavy)
-        self.assertTrue(result.wasm)
-        self.assertEqual(result.mode, "pr")
-
-    def test_agent_instructions_stay_lightweight(self) -> None:
-        result = MODULE.classify_paths([".claude/skills/roadmap/SKILL.md", "CLAUDE.md"])
-        self.assertFalse(result.heavy)
-        self.assertTrue(result.docs)
-        self.assertEqual(result.mode, "docs")
-        result = MODULE.classify_paths([".claude/settings.json"])
-        self.assertFalse(result.heavy)
-        self.assertFalse(result.docs)
-        self.assertEqual(result.mode, "ci-only")
-
-    def test_unknown_path_fails_closed(self) -> None:
-        result = MODULE.classify_paths(["deny.toml"])
-        self.assertTrue(result.heavy)
-        self.assertEqual(result.mode, "pr")
-        self.assertEqual(MODULE.classify_paths(["deny.toml"], force_full=True).mode, "full")
-
-    def test_empty_diff_fails_closed(self) -> None:
-        result = MODULE.classify_paths([])
-        self.assertTrue(result.heavy)
-        self.assertTrue(result.full)
-        self.assertTrue(result.wasm)
-        self.assertEqual(result.mode, "full")
-
-    def test_docs_only_builds_docs_without_heavy_jobs(self) -> None:
-        result = MODULE.classify_paths(["book/src/guide.md", "README.md"])
-        self.assertFalse(result.heavy)
-        self.assertTrue(result.docs)
-        self.assertFalse(result.wasm)
-        self.assertEqual(result.mode, "docs")
-
-    def test_workflow_change_runs_everything(self) -> None:
-        for path in (".github/workflows/ci.yml", ".github/workflows/fleet-ci-v9.yml",
-                     ".github/workflows/publish.yml", ".github/workflows/wasm-version.yml",
-                     ".github/fleet-workflows.json"):
-            with self.subTest(path=path):
-                result = MODULE.classify_paths([path])
-                self.assertTrue(result.heavy)
-                self.assertTrue(result.docs)
-                self.assertTrue(result.wasm)
-                self.assertFalse(result.full)
-                self.assertEqual(result.mode, "pr")
-
-    def test_github_metadata_only_skips_docs_and_heavy_jobs(self) -> None:
-        result = MODULE.classify_paths([".github/dependabot.yml"])
-        self.assertFalse(result.heavy)
-        self.assertFalse(result.docs)
-        self.assertFalse(result.wasm)
-        self.assertEqual(result.mode, "ci-only")
-
-    def test_docs_and_github_metadata_changes_stay_lightweight(self) -> None:
-        result = MODULE.classify_paths(
-            [".github/CODEOWNERS", "docs/architecture.md"]
-        )
-        self.assertFalse(result.heavy)
-        self.assertTrue(result.docs)
-        self.assertEqual(result.mode, "docs")
-
-    def test_scripts_are_not_assumed_to_be_ci_only(self) -> None:
-        result = MODULE.classify_paths(["scripts/classify-ci-changes.py"])
-        self.assertTrue(result.heavy)
-
-    def test_nested_markdown_fixture_is_not_assumed_to_be_docs(self) -> None:
-        result = MODULE.classify_paths(["crates/io/tests/fixtures/case.md"])
-        self.assertTrue(result.heavy)
-
-    def test_nested_readme_is_not_assumed_to_be_docs(self) -> None:
-        result = MODULE.classify_paths(["crates/io/README.md"])
-        self.assertTrue(result.heavy)
-
-
-    def test_merge_group_source_change_leaves_the_pr_tier_to_pr_and_main(self) -> None:
-        # The PR ran tier 1 and the package build; the main push of the same
-        # tree runs every tier after the merge.
-        self.assertFalse(MODULE.QUEUE_RERUNS_PR_TIER)
-        for paths in (PR_618_PATHS, ["fuzz/fuzz_targets/nurbs_surface.rs"],
-                      ["crates/render/src/lib.rs"], ["scripts/check-boundaries.sh"]):
-            with self.subTest(paths=paths):
-                result = MODULE.classify_paths(paths, force_full=True, merge_group=True)
-                self.assertFalse(result.heavy)
-                self.assertTrue(result.docs)
-                self.assertFalse(result.full)
-                self.assertFalse(result.wasm)
-                self.assertEqual(result.mode, "queue")
-
-    def test_merge_group_skip_needs_the_queue_event_and_its_full_flag(self) -> None:
-        # A PR or labelled PR never takes the queue shortcut.
-        for force_full in (False, True):
-            with self.subTest(force_full=force_full):
-                result = MODULE.classify_paths(PR_618_PATHS, force_full=force_full)
-                self.assertTrue(result.heavy)
-                self.assertTrue(result.wasm)
-        result = MODULE.classify_paths(PR_618_PATHS, merge_group=True)
-        self.assertTrue(result.heavy)
-        self.assertEqual(result.mode, "pr")
-
-    def test_merge_group_pairing_a_refresh_with_source_skips_the_pr_tier(self) -> None:
-        # wasm-version.yml's integrity job rebuilds and compares the packages.
-        result = MODULE.classify_paths(
-            ["crates/wasm/pkg/remus_wasm_bg.wasm", "crates/wasm-io/pkg/package.json",
-             "crates/math/src/lib.rs", "docs/kernel-maturity/roadmap.md"],
-            force_full=True, merge_group=True,
-        )
-        self.assertFalse(result.heavy)
-        self.assertFalse(result.full)
-        self.assertEqual(result.mode, "queue")
-
-    def test_restored_merge_group_source_change_runs_the_pr_tier(self) -> None:
-        # The main push of the same tree runs the second tier after the merge.
-        with queue_reruns_pr_tier(True):
-            result = MODULE.classify_paths(
-                PR_618_PATHS, force_full=True, merge_group=True
-            )
-        self.assertTrue(result.heavy)
-        self.assertTrue(result.docs)
-        self.assertFalse(result.full)
-        self.assertTrue(result.wasm)
-        self.assertEqual(result.mode, "queue")
-
-    def test_restored_merge_group_leaves_fuzz_and_render_to_the_first_tier(self) -> None:
-        # Both jobs run with tier 1 (fleet-ci-v4.yml), so their sources alone
-        # do not select tier 2.
-        for path in ("fuzz/fuzz_targets/nurbs_surface.rs", "crates/render/src/lib.rs"):
-            with self.subTest(path=path), queue_reruns_pr_tier(True):
-                result = MODULE.classify_paths([path], force_full=True, merge_group=True)
-                self.assertTrue(result.heavy)
-                self.assertFalse(result.full)
-                self.assertEqual(result.mode, "queue")
-
-    def test_restored_merge_group_without_wasm_paths_skips_the_package_build(self) -> None:
-        with queue_reruns_pr_tier(True):
-            result = MODULE.classify_paths(
-                ["scripts/check-boundaries.sh"], force_full=True, merge_group=True
-            )
-        self.assertTrue(result.heavy)
-        self.assertFalse(result.full)
-        self.assertFalse(result.wasm)
-
-    def test_merge_group_keeps_the_second_tier_for_its_inputs(self) -> None:
-        for path in (
-            "Cargo.lock", "Cargo.toml", "crates/math/Cargo.toml", "deny.toml",
-            "rust-toolchain.toml", "clippy.toml", ".cargo/config.toml",
-            ".config/nextest.toml", ".github/workflows/ci.yml",
-        ):
-            for restored in (False, True):
-                with self.subTest(path=path, restored=restored), queue_reruns_pr_tier(restored):
-                    result = MODULE.classify_paths(
-                        ["crates/math/src/lib.rs", path], force_full=True, merge_group=True
-                    )
-                    self.assertTrue(result.heavy)
-                    self.assertTrue(result.full)
-                    self.assertTrue(result.wasm)
-                    self.assertEqual(result.mode, "full")
-
-    def test_merge_group_never_relaxes_what_fails_closed(self) -> None:
-        for restored in (False, True):
-            with self.subTest(restored=restored), queue_reruns_pr_tier(restored):
-                result = MODULE.classify_paths([], force_full=True, merge_group=True)
-                self.assertTrue(result.heavy)
-                self.assertTrue(result.full)
-                self.assertEqual(result.mode, "full")
-        # A queue batch that pairs a package refresh with a source PR.
-        with queue_reruns_pr_tier(True):
-            result = MODULE.classify_paths(
-                ["crates/wasm/pkg/remus_wasm_bg.wasm", "crates/wasm-io/pkg/package.json",
-                 "crates/math/src/lib.rs", "docs/kernel-maturity/roadmap.md"],
-                force_full=True, merge_group=True,
-            )
-        self.assertTrue(result.full)
-        self.assertEqual(result.mode, "full")
-        # A merge group never selects more than the event's own tier.
-        result = MODULE.classify_paths(["Cargo.lock"], merge_group=True)
-        self.assertFalse(result.full)
-
-    def test_main_push_and_labelled_pr_keep_the_full_suite(self) -> None:
-        result = MODULE.classify_paths(PR_618_PATHS, force_full=True)
-        self.assertTrue(result.full)
-        self.assertEqual(result.mode, "full")
-
-    def test_cli_reads_the_merge_group_event_from_the_runner(self) -> None:
-        files = {"crates/algo/src/pave_filler/phase_ff.rs": "// change\n"}
-        queued = self.run_cli(files, "--full", event="merge_group")
-        self.assertEqual(queued["heavy"], "false")
-        self.assertEqual(queued["docs"], "true")
-        self.assertEqual(queued["full"], "false")
-        self.assertEqual(queued["wasm"], "false")
-        self.assertEqual(queued["mode"], "queue")
-        pushed = self.run_cli(files, "--full", event="push")
-        self.assertEqual(pushed["full"], "true")
-        self.assertEqual(pushed["mode"], "full")
-        locked = self.run_cli({**files, "Cargo.lock": "# lock\n"}, "--full", event="merge_group")
-        self.assertEqual(locked["heavy"], "true")
-        self.assertEqual(locked["full"], "true")
-
-    def test_cli_runs_no_heavy_tier_for_a_package_refresh(self) -> None:
-        files = {"crates/wasm/pkg/remus_wasm_bg.wasm": "wasm\n",
-                 "crates/wasm-io/pkg/package.json": "{}\n"}
-        for event, args in (("pull_request", ()), ("merge_group", ("--full",)),
-                            ("push", ("--full",))):
-            with self.subTest(event=event):
-                outputs = self.run_cli(files, *args, event=event)
-                self.assertEqual(outputs["heavy"], "false")
-                self.assertEqual(outputs["full"], "false")
-                self.assertEqual(outputs["wasm"], "false")
-                self.assertEqual(outputs["docs"], "false")
-                self.assertEqual(outputs["mode"], "package")
 
 if __name__ == "__main__":
     unittest.main()

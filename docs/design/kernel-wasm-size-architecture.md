@@ -29,7 +29,8 @@ The browser kernel (`crates/wasm/pkg/remus_wasm_bg.wasm`) is at its limits:
   +222 KB, the O2.3b UV arrangement +127 KB). H2–H6 hold many more rows of
   that kind.
 - The only per-PR control is the advisory `WASM Binary Size` comment
-  (`fleet-wasm-size.yml`), raw bytes only, warning above 50 KB.
+  (then `fleet-wasm-size.yml`, now `wasm-size-report.yml`), raw bytes only,
+  warning above 50 KB.
 
 Raising the cap alone does not fix this: at the historical rate a 12 MiB cap
 lasts about two months and 16 MiB about four.
@@ -147,8 +148,8 @@ that baseline. Every raise of a byte ceiling must keep these green.
 ## Workstreams
 
 Each item lists the repository, the deliverable and its acceptance bar.
-Changes to `fleet-*.yml` follow the fleet pin rule: callee change on main
-first, then the re-pin.
+A CI workflow change takes effect in its own PR (`docs/ci-cadence.md`,
+"Changing CI").
 
 ### W0 — Unblock (Remus)
 
@@ -170,8 +171,9 @@ first, then the re-pin.
 
 ### W1 — Per-PR growth control (Remus)
 
-1. `fleet-wasm-size.yml` reports raw, gzip and Brotli deltas for the kernel
-   and fails the job when the PR build exceeds any hard limit.
+1. The size report (`wasm-size-report.yml`) and the `WASM Size Gate` job report
+   raw, gzip and Brotli deltas for the kernel and fail when the PR build
+   exceeds any hard limit.
 2. A kernel growth above 64 KiB raw requires a `WASM-Size:` line in the PR
    description naming the capability and its tier; the job fails without it.
 3. Each package refresh records sizes in its PR body, as the OpenZCAD updater

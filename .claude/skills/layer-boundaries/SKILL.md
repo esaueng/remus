@@ -18,7 +18,7 @@ rg -n '_ =>' crates/io/src/step/writer.rs crates/io/src/iges/writer.rs crates/op
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| CI `boundaries` job fails / `VIOLATION: crates/X depends on remus-Y` | Cargo dep added against the layer table | Remove the dep; move the code to a layer where the dep is legal, or invert the dependency |
+| CI Repository Policy fails at `Layer boundaries` / `VIOLATION: crates/X depends on remus-Y` | Cargo dep added against the layer table | Remove the dep; move the code to a layer where the dep is legal, or invert the dependency |
 | `use remus_x::...` fails to resolve in crate Y | Y's layer may not depend on x | Same as above; do NOT add the dep to "make it compile" |
 | "two different versions of crate `remus-topology`" type errors | A higher-layer crate was added as a dev-dep of topology | Revert; use topology's `test-utils` feature instead (see below) |
 | Hundreds of `non-exhaustive patterns` errors after adding an enum variant | Expected; matches are exhaustive by design | Work through them; this IS the checklist (see procedure below) |
@@ -28,7 +28,7 @@ rg -n '_ =>' crates/io/src/step/writer.rs crates/io/src/iges/writer.rs crates/op
 
 `scripts/check-boundaries.sh` reads only the `[dependencies]` section of each `crates/*/Cargo.toml` and compares against a per-crate allowlist. Dev-dependencies are deliberately exempt. It does not inspect `use` paths; those are enforced transitively because a `use remus_x::` without the Cargo dep will not compile.
 
-When it runs: CI only, as the `boundaries` job gated into `ci-pass` (`.github/workflows/ci.yml`). The pre-push hook delegates all validation to CI, so run the script manually before pushing:
+When it runs: CI only, as the `Layer boundaries` check of the Repository Policy job, gated into `CI Pass` (`.github/workflows/ci-checks.yml`; `python3 scripts/ci_preflight.py` runs the same job locally). The pre-push hook delegates all validation to CI, so run the script manually before pushing:
 
 ```bash
 ./scripts/check-boundaries.sh

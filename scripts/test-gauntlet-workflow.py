@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
-from fleet_workflows import workflow_path
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -15,23 +14,16 @@ WORKFLOW = ROOT / ".github" / "workflows" / "gauntlet.yml"
 class GauntletWorkflowTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        caller = WORKFLOW.read_text(encoding="utf-8")
-        callee = workflow_path("gauntlet").read_text(encoding="utf-8")
-        cls.caller = caller
-        cls.text = caller + "\n" + callee
-        cls.run_job, cls.publish_job = callee.split("\n  publish:\n", maxsplit=1)
+        cls.text = WORKFLOW.read_text(encoding="utf-8")
+        cls.run_job, cls.publish_job = cls.text.split("\n  publish:\n", maxsplit=1)
 
     def test_declares_daily_smoke_and_weekly_abc_schedules(self) -> None:
         self.assertIn('- cron: "17 3 * * *"', self.text)
         self.assertIn('- cron: "47 3 * * 0"', self.text)
-        # The caller maps its own weekly cron to the tier, so editing the
-        # schedule line and the tier selection happens in one file; the callee
-        # only reads its input.
-        self.assertIn("tier: ${{ github.event.schedule == '47 3 * * 0' && 'abc-1k' || inputs.tier || 'smoke' }}",
-                      self.caller)
+        # The weekly cron selects the abc-1k tier in the tier-selection step.
+        self.assertIn("REQUESTED_TIER: ${{ github.event.schedule == '47 3 * * 0' && 'abc-1k' || inputs.tier || 'smoke' }}",
+                      self.run_job)
         self.assertIn("tier=${REQUESTED_TIER:-smoke}", self.run_job)
-        self.assertNotIn("github.event.schedule", self.run_job)
-        self.assertNotIn("47 3 * * 0", self.run_job)
 
     def test_runner_is_read_only_and_publisher_is_main_only(self) -> None:
         self.assertIn("permissions: {}", self.text)
@@ -47,8 +39,6 @@ class GauntletWorkflowTests(unittest.TestCase):
         self.assertIn("--timeout-ms 30000", self.run_job)
         self.assertIn("--jobs 2", self.run_job)
         self.assertIn('MAX_STAGE_DROP_BPS: "50"', self.run_job)
-        # A caller `env` never reaches the reusable workflow; keep one source.
-        self.assertNotIn("MAX_STAGE_DROP_BPS:", self.caller)
         self.assertIn("remus-gauntlet trend", self.run_job)
         self.assertIn("--max-drop-bps", self.run_job)
 

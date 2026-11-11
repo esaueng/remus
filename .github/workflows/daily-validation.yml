@@ -1,4 +1,4 @@
-name: Daily full validation
+name: Daily dependency validation
 on:
   schedule:
     - cron: "43 6 * * *"
@@ -9,60 +9,9 @@ concurrency:
   group: daily-validation-${{ github.ref }}
   cancel-in-progress: false
 jobs:
-  build:
-    if: github.repository == 'esaueng/remus' && github.ref == 'refs/heads/main' && github.ref_protected
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
-        with:
-          prefix-key: v1-native-workspace
-          save-if: false
-      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
-        with:
-          tool: nextest@0.9.150
-      - run: cargo clippy --all-targets --all-features -- -D warnings
-      - run: cargo test --workspace --profile ci-test --doc
-      - run: python3 scripts/ci_native.py plan --base HEAD^ --full --plan "$RUNNER_TEMP/native-plan.json"
-      - run: python3 scripts/check-native-test-workspace.py --record "$RUNNER_TEMP/native-test-workspace.json"
-      - run: python3 scripts/ci_native.py archive --plan "$RUNNER_TEMP/native-plan.json" --archive "$RUNNER_TEMP/native-tests.tar.zst"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: daily-native-tests
-          compression-level: 0
-          path: |
-            ${{ runner.temp }}/native-plan.json
-            ${{ runner.temp }}/native-test-workspace.json
-            ${{ runner.temp }}/native-tests.tar.zst
-          if-no-files-found: error
-          retention-days: 1
-  partitions:
-    needs: build
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
-        with:
-          tool: nextest@0.9.150
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: daily-native-tests
-          path: ${{ runner.temp }}
-      - run: python3 scripts/check-native-test-workspace.py "$RUNNER_TEMP/native-test-workspace.json"
-      - env:
-          SHARD: ${{ matrix.shard }}
-        run: python3 scripts/ci_native.py run --plan "$RUNNER_TEMP/native-plan.json" --archive "$RUNNER_TEMP/native-tests.tar.zst" --shard "$SHARD" --total 4
+  # Every main push already runs the complete native suite and clippy
+  # (ci-checks.yml). This workflow covers what changes without a push: new
+  # advisories against the committed lockfile, and the declared MSRV.
   dependencies:
     if: github.repository == 'esaueng/remus' && github.ref == 'refs/heads/main' && github.ref_protected
     runs-on: ubuntu-24.04

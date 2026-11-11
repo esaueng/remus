@@ -22,8 +22,7 @@ class Check:
     command: tuple[str, ...]
 
 
-# Keep the v12 policy's order and commands. Historical workflow definitions
-# remain immutable; this catalog is used by the next reviewed CI callee.
+# The Repository Policy job in ci-checks.yml runs exactly this catalog.
 CHECKS = (
     Check("Apache lineage", ("./scripts/check-apache-lineage.sh",)),
     Check("Rust format", ("cargo", "fmt", "--all", "--", "--check")),
@@ -39,15 +38,9 @@ CHECKS = (
     Check("Product naming", ("./scripts/check-remus-rename.sh",)),
     Check("Publish workflow contract", ("./scripts/test-publish-credentials.sh",)),
     Check("Gauntlet workflow contract", ("python3", "scripts/test-gauntlet-workflow.py")),
-    Check("Owner PR policy tests", ("python3", "scripts/test-owner-pr-policy.py")),
-    Check("Fleet selector tests", ("python3", "scripts/test-fleet-selector.py")),
-    Check("Fleet runner policy tests", ("python3", "scripts/test-fleet-runner-policy.py")),
-    Check("Owner PR routing tests", ("python3", "scripts/test-owner-pr-routing.py")),
-    Check("CI convergence tests", ("python3", "scripts/test-ci-convergence.py")),
     Check("CI classifier tests", ("python3", "scripts/test-classify-ci-changes.py")),
+    Check("CI gate and native runner tests", ("python3", "scripts/test_ci_native.py")),
     Check("Privacy regressions", ("python3", "-m", "unittest", "discover", "-s", ".github/privacy", "-p", "test_*.py")),
-    Check("CI speed contracts", ("python3", "scripts/test_ci_speed.py")),
-    Check("Daily CI contracts", ("python3", "scripts/test_ci_daily.py")),
     Check("Unused dependencies", ("cargo", "machete")),
     Check("TOML format", ("taplo", "fmt", "--check")),
 )

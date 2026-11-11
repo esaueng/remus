@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Pre-commit: fast checks only (fmt + clippy + taplo + machete in parallel)
-# Full test suite runs in pre-push and CI.
+# The full test suite runs in CI.
 echo "🔍 Running pre-commit checks..."
 
 cargo fmt --all -- --check &

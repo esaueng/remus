@@ -6,9 +6,58 @@ on:
 permissions:
   contents: read
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  checks:
-    uses: esaueng/remus/.github/workflows/fleet-wasm-candidate-v6.yml@ff8415b3005256df5a65af5c92b8c26caa4c878f
+  package:
+    name: Build fork package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
     permissions:
       contents: read
       pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+        with:
+          tool: wasm-pack
+
+      - name: Build and validate WASM packages
+        run: cargo xtask wasm-build
+
+      - name: Stamp fork provenance
+        run: |
+          for pkg in crates/wasm/pkg crates/wasm-io/pkg; do
+            npm --prefix "$pkg" pkg set \
+              repository.type=git \
+              repository.url=git+https://github.com/esaueng/remus.git \
+              homepage=https://github.com/esaueng/remus \
+              remusSourceCommit="$GITHUB_SHA"
+          done
+
+      - name: Pack npm-compatible artifacts
+        id: pack
+        run: |
+          mkdir -p "$RUNNER_TEMP/packed"
+          for pkg in crates/wasm/pkg crates/wasm-io/pkg; do
+            (cd "$pkg" && npm pack --pack-destination "$RUNNER_TEMP/packed")
+          done
+          echo "path=$RUNNER_TEMP/packed" >> "$GITHUB_OUTPUT"
+
+      - name: Upload validation artifacts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: remus-wasm-candidate-${{ github.sha }}
+          path: ${{ steps.pack.outputs.path }}/*.tgz
+          if-no-files-found: error
