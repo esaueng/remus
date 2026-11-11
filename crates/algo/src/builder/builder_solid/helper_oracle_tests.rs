@@ -19,8 +19,9 @@ use remus_topology::wire::Wire;
 use super::{
     CapPlane, EdgeCurve, EdgeId, Face, FaceId, FaceSurface, OrientedEdge, Point3, SelectedFace,
     Topology, Vec3, WireId, analytic_cap_loop_area, cap_partial_overlap_free_loops,
-    closed_pair_traversal_flipped, conics_share_support, measure_revolved_wire_uv_area,
-    orient_revolved_face_wires, revolved_wire_uv_area,
+    closed_pair_traversal_flipped, conics_share_support, cylinder_face_is_bounded,
+    cylinder_wire_winding, measure_revolved_wire_uv_area, orient_revolved_face_wires,
+    reject_endless_cylinder_faces, revolved_wire_uv_area,
 };
 
 const Z: Vec3 = Vec3::new(0.0, 0.0, 1.0);
@@ -947,5 +948,373 @@ fn spur_excision_keeps_only_the_actual_apex_turn() {
         assert_eq!(uses.len(), 3, "rotation {rotation}");
         assert_eq!(uses.iter().filter(|use_| use_.edge() == seam).count(), 2);
         assert!(uses.iter().all(|use_| use_.edge() != spur));
+    }
+}
+
+// ── reject_endless_cylinder_faces ───────────────────────────────────────
+
+/// A cylinder face is bounded along its axis when its loops that wind
+/// round the axis come in pairs. By construction: a rim winds once (either
+/// way), a patch loop and a rim-seam-rim-seam loop not at all; a wall with
+/// two rims (as one loop or as two) and a wall with a hole are faces, a
+/// wall with one rim alone is not, and neither is one with three.
+#[test]
+fn a_cylinder_face_with_an_odd_number_of_rims_is_refused() {
+    let wall = Revolved::cylinder();
+    let mut topo = Topology::new();
+    let rim = |topo: &mut Topology, z: f64, forward: bool| {
+        let seam = wall.at(0.0, z);
+        let vertex = topo.add_vertex(Vertex::new(seam, 1e-7));
+        let edge = ring(topo, vertex, seam, wall.apex + Vec3::new(0.0, 0.0, z), Z);
+        topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, forward)], true).unwrap())
+    };
+    let (low, high, higher) = (
+        rim(&mut topo, 0.0, true),
+        rim(&mut topo, 3.0, false),
+        rim(&mut topo, 5.0, true),
+    );
+    let patch = wall.patch_loop(&mut topo, (0.4, 1.1), (1.0, 2.0), false);
+    // Both rims and the seam between them, as one loop.
+    let banded = {
+        let (vb, vt) = (
+            topo.add_vertex(Vertex::new(wall.at(0.0, 0.0), 1e-7)),
+            topo.add_vertex(Vertex::new(wall.at(0.0, 3.0), 1e-7)),
+        );
+        let bottom = ring(&mut topo, vb, wall.at(0.0, 0.0), wall.apex, Z);
+        let top = ring(
+            &mut topo,
+            vt,
+            wall.at(0.0, 3.0),
+            wall.apex + Vec3::new(0.0, 0.0, 3.0),
+            Z,
+        );
+        let seam = topo.add_edge(Edge::new(vb, vt, EdgeCurve::Line));
+        topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(bottom, true),
+                    OrientedEdge::new(seam, true),
+                    OrientedEdge::new(top, false),
+                    OrientedEdge::new(seam, false),
+                ],
+                true,
+            )
+            .unwrap(),
+        )
+    };
+    for (wire, winding) in [(low, 1), (high, -1), (higher, 1), (patch, 0), (banded, 0)] {
+        assert_eq!(
+            cylinder_wire_winding(&topo, wire, &wall.surface),
+            Some(winding),
+            "{wire:?}"
+        );
+    }
+    let mut face = |outer: WireId, inner: Vec<WireId>| {
+        topo.add_face(Face::new(outer, inner, wall.surface.clone()))
+    };
+    let faces = [
+        (face(banded, vec![]), true),
+        (face(banded, vec![patch]), true),
+        (face(low, vec![high]), true),
+        (face(low, vec![high, patch]), true),
+        (face(low, vec![]), false),
+        (face(low, vec![patch]), false),
+        (face(low, vec![high, higher]), false),
+    ];
+    for (face, bounded) in faces {
+        let outcome = reject_endless_cylinder_faces(&topo, &[face]);
+        assert_eq!(outcome.is_ok(), bounded, "{face:?}: {outcome:?}");
+        if let Err(error) = outcome {
+            assert!(
+                error.to_string().contains("not bounded along the axis"),
+                "{error}"
+            );
+        }
+    }
+    // The same loops on a cone are not this check's to judge: a cone face
+    // can end at its apex.
+    let cone = Revolved::cone();
+    let seam = cone.at(0.0, 2.0);
+    let vertex = topo.add_vertex(Vertex::new(seam, 1e-7));
+    let edge = ring(
+        &mut topo,
+        vertex,
+        seam,
+        cone.apex + Vec3::new(0.0, 0.0, 2.0),
+        Z,
+    );
+    let rim = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap());
+    let cap = topo.add_face(Face::new(rim, vec![], cone.surface));
+    assert!(reject_endless_cylinder_faces(&topo, &[cap]).is_ok());
+}
+
+/// The standard rational-quadratic full circle of radius `r` about `center`
+/// with its knots crowded: three of its four quarter turns take up three
+/// thousandths of the parameter range and the fourth the rest. The geometry
+/// is the circle, exactly; uniform samples of the parameter all but one fall
+/// in the last quarter.
+fn crowded_ring(center: Point3, r: f64, ccw: bool) -> NurbsCurve {
+    let ring = nurbs_ring(center, r, ccw);
+    NurbsCurve::new(
+        2,
+        vec![
+            0.0, 0.0, 0.0, 0.001, 0.001, 0.002, 0.002, 0.003, 0.003, 1.0, 1.0, 1.0,
+        ],
+        ring.control_points().to_vec(),
+        ring.weights().to_vec(),
+    )
+    .unwrap()
+}
+
+/// A rim is counted by its geometry, not by how fast its parameter runs.
+///
+/// A cylinder wall between a circle and an exact NURBS circle with crowded
+/// knots is bounded: both rims wind once. Thirty-two uniform samples of the
+/// spline miss three of its quadrants, and the steps between them, each
+/// wrapped into a half turn, sum to no turn at all: the wall then counted
+/// one rim and was refused.
+#[test]
+fn a_rim_is_counted_by_its_geometry_not_its_parameter_speed() {
+    let surface =
+        FaceSurface::Cylinder(CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), Z, 1.0).unwrap());
+    for ccw in [true, false] {
+        let mut topo = Topology::new();
+        let top = crowded_ring(Point3::new(0.0, 0.0, 3.0), 1.0, ccw);
+        // The curve is the circle at every parameter, the crowded ones too.
+        for t in [0.0, 0.0005, 0.001, 0.0015, 0.002, 0.0025, 0.003, 0.5, 1.0] {
+            let p = top.evaluate(t);
+            assert!((p.x().hypot(p.y()) - 1.0).abs() < 1e-14 && (p.z() - 3.0).abs() < 1e-14);
+        }
+        // What uniform samples see of it: every step under a half turn
+        // would be needed, and one is a three-quarter turn.
+        let angles: Vec<f64> = (0..=32)
+            .map(|k| {
+                let p = top.evaluate(f64::from(k) / 32.0);
+                p.y().atan2(p.x())
+            })
+            .collect();
+        let wrapped: f64 = angles
+            .windows(2)
+            .map(|pair| {
+                (pair[1] - pair[0] + std::f64::consts::PI).rem_euclid(TAU) - std::f64::consts::PI
+            })
+            .sum();
+        assert!(wrapped.abs() < 1e-9, "uniform samples sum to {wrapped}");
+
+        let low = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+        let high = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 3.0), 1e-7));
+        let bottom = ring(
+            &mut topo,
+            low,
+            Point3::new(1.0, 0.0, 0.0),
+            Point3::new(0.0, 0.0, 0.0),
+            Z,
+        );
+        let top = closed_edge(&mut topo, high, EdgeCurve::NurbsCurve(top), (0.0, 1.0));
+        let wire = |topo: &mut Topology, edge: EdgeId, forward: bool| {
+            topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, forward)], true).unwrap())
+        };
+        let (outer, inner) = (wire(&mut topo, bottom, true), wire(&mut topo, top, false));
+        let turn = if ccw { -1 } else { 1 };
+        assert_eq!(cylinder_wire_winding(&topo, outer, &surface), Some(1));
+        assert_eq!(cylinder_wire_winding(&topo, inner, &surface), Some(turn));
+        let face = topo.add_face(Face::new(outer, vec![inner], surface.clone()));
+        assert_eq!(cylinder_face_is_bounded(&topo, face).unwrap(), Some(true));
+        reject_endless_cylinder_faces(&topo, &[face]).unwrap();
+        // The spline rim alone is still one rim: refused.
+        let alone = topo.add_face(Face::new(inner, vec![], surface.clone()));
+        assert_eq!(cylinder_face_is_bounded(&topo, alone).unwrap(), Some(false));
+        assert!(reject_endless_cylinder_faces(&topo, &[alone]).is_err());
+    }
+}
+
+/// The walls a cylinder face is in practice, none of them refused: a
+/// partial turn; a full turn under a rim made of several edges of several
+/// kinds (arcs at different heights joined by lines along the axis, a
+/// spline rim cut in two); a full turn under an oblique ellipse; and each
+/// of those with a hole in it.
+#[test]
+fn bounded_walls_of_every_make_pass_the_rim_guard() {
+    let wall = Revolved::cylinder();
+    let mut topo = Topology::new();
+    let vertex = |topo: &mut Topology, p: Point3| topo.add_vertex(Vertex::new(p, 1e-7));
+    let closed = |topo: &mut Topology, edges: Vec<OrientedEdge>| {
+        topo.add_wire(Wire::new(edges, true).unwrap())
+    };
+    // The bottom rim, one closed circle.
+    let seam = vertex(&mut topo, wall.at(0.0, 0.0));
+    let bottom = ring(&mut topo, seam, wall.at(0.0, 0.0), wall.apex, Z);
+    let bottom = closed(&mut topo, vec![OrientedEdge::new(bottom, true)]);
+
+    // A stepped top: three arcs at heights 3, 2.5 and 3.5, joined by lines
+    // along the axis. It winds once.
+    let stepped = {
+        let cuts = [0.0, 2.0, 4.5, TAU];
+        let heights = [3.0, 2.5, 3.5];
+        let mut edges = Vec::new();
+        let first = vertex(&mut topo, wall.at(cuts[0], heights[0]));
+        let mut at = first;
+        for (k, &z) in heights.iter().enumerate() {
+            let (from, to) = (cuts[k], cuts[k + 1]);
+            let circle = wall.parallel(z);
+            let t0 = circle.project(wall.at(from, z));
+            let end = vertex(&mut topo, wall.at(to, z));
+            let mut arc = Edge::with_tolerance(at, end, EdgeCurve::Circle(circle), Some(1e-7));
+            arc.set_trim(Some((t0, t0 + (to - from))));
+            edges.push(OrientedEdge::new(topo.add_edge(arc), true));
+            // Down or up the wall to the next arc's start (the first, at
+            // the end).
+            let next = if k + 1 == heights.len() {
+                first
+            } else {
+                vertex(&mut topo, wall.at(to, heights[k + 1]))
+            };
+            edges.push(OrientedEdge::new(
+                topo.add_edge(Edge::new(end, next, EdgeCurve::Line)),
+                true,
+            ));
+            at = next;
+        }
+        closed(&mut topo, edges)
+    };
+    assert_eq!(
+        cylinder_wire_winding(&topo, stepped, &wall.surface),
+        Some(1)
+    );
+
+    // A spline rim with crowded knots, cut in two at a tenth of its range:
+    // the first piece holds three and a bit of its four quarter turns.
+    let halves = {
+        let centre = wall.apex + Vec3::new(0.0, 0.0, 4.0);
+        let whole = crowded_ring(centre, 2.0, true);
+        let (first, second) = remus_math::nurbs::knot_ops::curve_split(&whole, 0.1).unwrap();
+        let (start, middle) = (
+            vertex(&mut topo, whole.evaluate(0.0)),
+            vertex(&mut topo, whole.evaluate(0.1)),
+        );
+        let edge = |topo: &mut Topology, from, to, curve: NurbsCurve| {
+            let domain = curve.domain();
+            let mut edge = Edge::with_tolerance(from, to, EdgeCurve::NurbsCurve(curve), Some(1e-7));
+            edge.set_trim(Some(domain));
+            topo.add_edge(edge)
+        };
+        let (a, b) = (
+            edge(&mut topo, start, middle, first),
+            edge(&mut topo, middle, start, second),
+        );
+        // Traversed against the curve.
+        closed(
+            &mut topo,
+            vec![OrientedEdge::new(b, false), OrientedEdge::new(a, false)],
+        )
+    };
+    assert_eq!(
+        cylinder_wire_winding(&topo, halves, &wall.surface),
+        Some(-1)
+    );
+
+    // An oblique section of the wall: an ellipse, one closed edge.
+    let oblique = {
+        let tilt = 0.6_f64;
+        let normal = Vec3::new(tilt.sin(), 0.0, tilt.cos());
+        let centre = wall.apex + Vec3::new(0.0, 0.0, 6.0);
+        let ellipse = Ellipse3D::new_with_ref(
+            centre,
+            normal,
+            2.0 / tilt.cos(),
+            2.0,
+            Vec3::new(tilt.cos(), 0.0, -tilt.sin()),
+        )
+        .unwrap();
+        let p = ellipse.evaluate(0.0);
+        // A point of the wall, at every parameter.
+        for k in 0..8 {
+            let q = ellipse.evaluate(TAU * f64::from(k) / 8.0) - wall.apex;
+            assert!((q.x().hypot(q.y()) - 2.0).abs() < 1e-12);
+        }
+        let v = vertex(&mut topo, p);
+        let edge = closed_edge(&mut topo, v, EdgeCurve::Ellipse(ellipse), (0.0, TAU));
+        closed(&mut topo, vec![OrientedEdge::new(edge, true)])
+    };
+    assert_eq!(
+        cylinder_wire_winding(&topo, oblique, &wall.surface).map(i64::abs),
+        Some(1)
+    );
+
+    let hole = wall.patch_loop(&mut topo, (0.4, 1.1), (1.0, 2.0), false);
+    let partial = wall.patch_loop(&mut topo, (3.0, 5.5), (0.5, 2.5), true);
+    assert_eq!(
+        cylinder_wire_winding(&topo, partial, &wall.surface),
+        Some(0)
+    );
+    for (outer, inner) in [
+        (partial, vec![]),
+        (bottom, vec![stepped]),
+        (bottom, vec![stepped, hole]),
+        (bottom, vec![halves]),
+        (bottom, vec![halves, hole]),
+        (bottom, vec![oblique]),
+        (stepped, vec![oblique, hole]),
+    ] {
+        let face = topo.add_face(Face::new(outer, inner, wall.surface.clone()));
+        assert_eq!(
+            cylinder_face_is_bounded(&topo, face).unwrap(),
+            Some(true),
+            "{face:?}"
+        );
+        reject_endless_cylinder_faces(&topo, &[face]).unwrap();
+    }
+}
+
+/// A loop the guard cannot read with certainty is not counted, and its
+/// face is left alone: an edge with no stored parameter range, and a wire
+/// whose edges do not chain vertex to vertex.
+#[test]
+fn a_wall_with_an_unread_loop_is_left_to_the_other_checks() {
+    let wall = Revolved::cylinder();
+    let mut topo = Topology::new();
+    let seam = topo.add_vertex(Vertex::new(wall.at(0.0, 0.0), 1e-7));
+    // A closed circle with no trim.
+    let bare = topo.add_edge(Edge::with_tolerance(
+        seam,
+        seam,
+        EdgeCurve::Circle(wall.parallel(0.0)),
+        Some(1e-7),
+    ));
+    let bare = topo.add_wire(Wire::new(vec![OrientedEdge::new(bare, true)], true).unwrap());
+    assert_eq!(cylinder_wire_winding(&topo, bare, &wall.surface), None);
+    let face = topo.add_face(Face::new(bare, vec![], wall.surface.clone()));
+    assert_eq!(cylinder_face_is_bounded(&topo, face).unwrap(), None);
+    reject_endless_cylinder_faces(&topo, &[face]).unwrap();
+
+    // Two arcs that do not meet: the second starts at another vertex.
+    let v =
+        |topo: &mut Topology, theta: f64| topo.add_vertex(Vertex::new(wall.at(theta, 1.0), 1e-7));
+    let (a, b, c, d) = (
+        v(&mut topo, 0.0),
+        v(&mut topo, 3.0),
+        v(&mut topo, 3.0),
+        v(&mut topo, 0.0),
+    );
+    let arc = |topo: &mut Topology, from, to, t: (f64, f64)| {
+        let circle = wall.parallel(1.0);
+        let t0 = circle.project(wall.at(t.0, 1.0));
+        let mut edge = Edge::with_tolerance(from, to, EdgeCurve::Circle(circle), Some(1e-7));
+        edge.set_trim(Some((t0, t0 + (t.1 - t.0))));
+        topo.add_edge(edge)
+    };
+    let (first, second) = (
+        arc(&mut topo, a, b, (0.0, 3.0)),
+        arc(&mut topo, c, d, (3.0, TAU)),
+    );
+    if let Ok(broken) = Wire::new(
+        vec![
+            OrientedEdge::new(first, true),
+            OrientedEdge::new(second, true),
+        ],
+        true,
+    ) {
+        let broken = topo.add_wire(broken);
+        assert_eq!(cylinder_wire_winding(&topo, broken, &wall.surface), None);
     }
 }

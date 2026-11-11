@@ -36,8 +36,11 @@ pub use memo::MemoStats;
 mod builder;
 pub mod classifier;
 mod conic_bounds;
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) mod section_tolerance;
 
 pub use builder::FaceClass;
+pub use builder::builder_solid::cylinder_face_is_bounded;
 pub use builder::pcurve_compute::{
     compute_pcurve_on_surface, compute_pcurve_on_surface_in_domain, wall_chart, wall_chart_uv,
 };

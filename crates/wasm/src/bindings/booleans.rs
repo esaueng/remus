@@ -2423,3 +2423,7 @@ mod box_torus_cut_tests;
 #[cfg(test)]
 #[path = "steinmetz_measurement_tests.rs"]
 mod steinmetz_measurement_tests;
+
+#[cfg(test)]
+#[path = "shelled_wall_notch_tests.rs"]
+mod shelled_wall_notch_tests;

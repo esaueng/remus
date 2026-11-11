@@ -25,6 +25,8 @@ mod closed_loops_separation_tests;
 mod containment;
 mod conversion;
 mod edge_splitting;
+#[cfg(test)]
+mod hole_split_tests;
 mod periodic_face_chart;
 mod plane_chart;
 #[cfg(test)]
@@ -66,7 +68,7 @@ use conversion::{
 };
 use edge_splitting::{
     find_splits_on_line, find_splits_on_nurbs_section, find_splits_on_section_arc,
-    find_splits_on_section_ellipse, split_boundary_edges_at_3d_points,
+    find_splits_on_section_ellipse, split_boundary_edges_at_3d_points, split_hole_edges_at_anchors,
 };
 use sampling::{sample_wire_loop_uv, sample_wire_loop_uv_periodic, sample_wire_loop_uv_via_frame};
 use special_cases::{
@@ -84,8 +86,12 @@ const HOLE_PROBE_SAMPLES: usize = 8;
 const ARR_ARC_SAMPLES: usize = 32;
 
 /// Preserve the historical fit allowance until it can consume a local feature.
+///
+/// The one definition is [`crate::section_tolerance::split_weld`], which
+/// phase FF reads too: it puts no two section vertices on a planar face
+/// closer than the largest value this can take.
 fn local_weld_band(linear: f64, extent: f64) -> f64 {
-    (linear * 100.0).min(extent * 0.01).max(linear)
+    crate::section_tolerance::split_weld(linear, extent)
 }
 
 fn boundary_weld_band(edges: &[OrientedPCurveEdge], linear: f64) -> f64 {
@@ -961,6 +967,80 @@ fn integrate_holes_plane(
     }
 
     Ok(any_crossing.then_some((out, passthrough)))
+}
+
+/// A plane-face hole with its edges split where sections end strictly
+/// inside them, or `None` when no section ends on the hole that way.
+///
+/// The hole-side counterpart of splitting the outer boundary at every
+/// section end ([`split_boundary_edges_at_3d_points`]): a section that
+/// leaves the face through a hole ends on one of its edges, and the
+/// arrangement needs a vertex there to close the regions either side of it.
+/// Only section ends inside the hole's own bounding box are offered, so a
+/// face carrying many openings pays for the ones a section reaches and
+/// leaves the others whole.
+///
+/// The hole is split exactly at the section ends that lie on it
+/// ([`split_hole_edges_at_anchors`]): those are the vertices phase FF
+/// certified there, and the partner face of each section carries the same
+/// ones.
+///
+/// # Errors
+///
+/// [`AlgoError::FaceSplitFailed`] when two of those vertices are closer
+/// than the weld the arrangement applies next: see
+/// [`split_hole_edges_at_anchors`].
+fn split_hole_at_section_ends(
+    hole: &[OrientedPCurveEdge],
+    sections: &[SectionEdge],
+    frame: &PlaneFrame,
+    surface: &FaceSurface,
+    linear: f64,
+) -> Result<Option<Vec<OrientedPCurveEdge>>, AlgoError> {
+    // Every point of an edge lies in the box of its endpoints widened by the
+    // edge's own reach: nothing for a line, the radius for a circle, the
+    // larger semi-axis for an ellipse, the control net for a spline.
+    let mut corners: Vec<Point3> = Vec::with_capacity(hole.len() * 4);
+    for edge in hole {
+        corners.extend([edge.start_3d, edge.end_3d]);
+        let (center, reach) = match &edge.curve_3d {
+            EdgeCurve::Line => continue,
+            EdgeCurve::Circle(c) => (c.center(), c.radius()),
+            EdgeCurve::Ellipse(e) => (e.center(), e.semi_major()),
+            EdgeCurve::NurbsCurve(n) => {
+                corners.extend(n.control_points().iter().copied());
+                continue;
+            }
+            // Unreachable inside the GFA (`gfa::reject_unsupported_curves`);
+            // an unbounded conic has no box, so the hole stays whole.
+            EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => return Ok(None),
+        };
+        let reach = Vec3::new(reach, reach, reach);
+        corners.extend([center + reach, center + (-reach)]);
+    }
+    let Some(bounds) = remus_math::aabb::Aabb3::try_from_points(corners.iter().copied()) else {
+        return Ok(None);
+    };
+    let weld = linear * 100.0;
+    let near = |p: Point3| {
+        p.x() >= bounds.min.x() - weld
+            && p.x() <= bounds.max.x() + weld
+            && p.y() >= bounds.min.y() - weld
+            && p.y() <= bounds.max.y() + weld
+            && p.z() >= bounds.min.z() - weld
+            && p.z() <= bounds.max.z() + weld
+    };
+    let ends: Vec<Point3> = sections
+        .iter()
+        .filter(|section| (section.start - section.end).length() > linear)
+        .flat_map(|section| [section.start, section.end])
+        .filter(|&p| near(p))
+        .collect();
+    if ends.is_empty() {
+        return Ok(None);
+    }
+    let split = split_hole_edges_at_anchors(hole.to_vec(), &ends, frame, surface, linear)?;
+    Ok((split.len() > hole.len()).then_some(split))
 }
 
 /// A section as the forward and reverse edges a planar arrangement takes, its
@@ -7757,18 +7837,28 @@ fn split_face_2d_impl(
                 }
             }
             if coincident.is_empty() {
+                // A section ending strictly inside one of the hole's edges
+                // (a round cutter standing on the wall of a shelled box: its
+                // arcs on the rim run from the outline to the cavity
+                // opening). No pave vertex exists there, so the hole edge is
+                // split at the section end, as the outer boundary is at
+                // every section end, and the hole joins the arrangement.
+                let split_hole =
+                    split_hole_at_section_ends(hole, sections, frame, &surface, tol.linear)?;
+                let hole = split_hole.as_ref().unwrap_or(hole);
                 // A curved outline ending on the hole: internal gear teeth
                 // over part of a bore, whose tip corners sit on the bore
                 // circle of the collars' annular caps. The pave filler split
                 // the hole there, so it joins the arrangement as it is.
                 let weld = tol.linear * 10.0;
-                let touched = hole.iter().any(|e| {
-                    [e.start_3d, e.end_3d].into_iter().any(|p| {
-                        sections.iter().any(|sct| {
-                            (sct.start - p).length() < weld || (sct.end - p).length() < weld
+                let touched = split_hole.is_some()
+                    || hole.iter().any(|e| {
+                        [e.start_3d, e.end_3d].into_iter().any(|p| {
+                            sections.iter().any(|sct| {
+                                (sct.start - p).length() < weld || (sct.end - p).length() < weld
+                            })
                         })
-                    })
-                });
+                    });
                 if !touched {
                     continue;
                 }

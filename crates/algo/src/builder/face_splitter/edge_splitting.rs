@@ -19,7 +19,6 @@ use super::sampling::normalize_angle_in_span;
 /// split points onto the curve via `Circle3D::project` / `Ellipse3D::project`
 /// and checks distance from the curve. Creates sub-arc edges with pcurves
 /// computed via sampling.
-#[allow(clippy::too_many_lines)]
 pub(super) fn split_boundary_edges_at_3d_points(
     edges: Vec<OrientedPCurveEdge>,
     split_pts_3d: &[Point3],
@@ -27,11 +26,114 @@ pub(super) fn split_boundary_edges_at_3d_points(
     surface: &FaceSurface,
     tol: f64,
 ) -> Result<Vec<OrientedPCurveEdge>, crate::error::AlgoError> {
+    split_edges_at_3d_points(edges, split_pts_3d, frame, surface, tol, AnchorRule::Weld)
+}
+
+/// Split the edges of a planar face's HOLE at the section ends that lie on
+/// them, each exactly where it is.
+///
+/// The ends are the vertices phase FF certified on the hole (see
+/// `pave_filler::phase_ff::plane_section_certificate`), and the partner face
+/// of each section carries the same vertices, so the hole must be split at
+/// those points and no others. Unlike [`split_boundary_edges_at_3d_points`]
+/// a straight edge takes an anchor only when the anchor is a point of it
+/// ([`crate::section_tolerance::on_edge_band`]), and anchors are one split
+/// only within the distance at which assembly welds two vertices anyway
+/// ([`crate::section_tolerance::VERTEX_WELD_FACTOR`] linear tolerances): a
+/// wider fit weld would merge two vertices phase FF kept apart.
+///
+/// # Errors
+///
+/// [`crate::error::AlgoError::FaceSplitFailed`] when two distinct anchors
+/// on one edge, or an anchor and an end of its edge, are closer than the
+/// weld the arrangement applies to the split loop
+/// ([`crate::section_tolerance::split_weld`]): the arrangement would merge
+/// them, and the hole and the sections ending on it would disagree. Phase
+/// FF emits no such pair (its crossings are farther apart than
+/// [`crate::section_tolerance::SectionTolerance::separate`]); this is the
+/// same rule read from the other side.
+pub(super) fn split_hole_edges_at_anchors(
+    edges: Vec<OrientedPCurveEdge>,
+    anchors: &[Point3],
+    frame: &PlaneFrame,
+    surface: &FaceSurface,
+    tol: f64,
+) -> Result<Vec<OrientedPCurveEdge>, crate::error::AlgoError> {
+    split_edges_at_3d_points(edges, anchors, Some(frame), surface, tol, AnchorRule::Exact)
+}
+
+/// How a boundary edge takes the points offered to split it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AnchorRule {
+    /// A point within the fit weld of a straight edge splits it at its
+    /// foot, and points within that weld of one another are one split.
+    Weld,
+    /// Only a point of the edge splits it, where it is, and two distinct
+    /// splits closer than the weld are an error.
+    Exact,
+}
+
+/// The error for two split points of a hole edge closer than the weld the
+/// face's arrangement applies (one of them may be an end of the edge).
+fn anchors_too_close(close: crate::section_tolerance::CloseAnchors) -> crate::error::AlgoError {
+    let crate::section_tolerance::CloseAnchors {
+        first,
+        second,
+        weld,
+    } = close;
+    crate::error::AlgoError::FaceSplitFailed(format!(
+        "two vertices of a hole of a planar face, {first:?} and {second:?}, would lie {:e} \
+         apart, closer than {weld:e}, the weld the face's arrangement applies; the hole and \
+         the sections ending on it would disagree",
+        (first - second).length()
+    ))
+}
+
+/// Refuse consecutive split points of `edge` (and its ends) closer than
+/// `weld`; see [`split_hole_edges_at_anchors`].
+fn check_anchor_spacing(
+    edge: &OrientedPCurveEdge,
+    splits: &[(f64, Point3)],
+    weld: f64,
+) -> Result<(), crate::error::AlgoError> {
+    let mut previous = edge.start_3d;
+    // A closed edge ends where it starts, at its seam vertex.
+    let end = splits.last().map(|_| edge.end_3d);
+    for point in splits.iter().map(|split| split.1).chain(end) {
+        if (point - previous).length() < weld {
+            return Err(anchors_too_close(crate::section_tolerance::CloseAnchors {
+                first: previous,
+                second: point,
+                weld,
+            }));
+        }
+        previous = point;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_lines)]
+fn split_edges_at_3d_points(
+    edges: Vec<OrientedPCurveEdge>,
+    split_pts_3d: &[Point3],
+    frame: Option<&PlaneFrame>,
+    surface: &FaceSurface,
+    tol: f64,
+    rule: AnchorRule,
+) -> Result<Vec<OrientedPCurveEdge>, crate::error::AlgoError> {
     let mut result = Vec::new();
     for edge in edges {
         let splits = match &edge.curve_3d {
             EdgeCurve::Circle(circle) => {
-                find_splits_on_circle(circle, &edge, split_pts_3d, surface, tol)
+                let splits = find_splits_on_circle(circle, &edge, split_pts_3d, surface, tol);
+                if rule == AnchorRule::Exact {
+                    check_anchor_spacing(
+                        &edge,
+                        &splits,
+                        super::local_weld_band(tol, f64::INFINITY),
+                    )?;
+                }
+                splits
             }
             EdgeCurve::Ellipse(ellipse) => {
                 find_splits_on_ellipse(ellipse, &edge, split_pts_3d, tol)
@@ -42,6 +144,9 @@ pub(super) fn split_boundary_edges_at_3d_points(
             // on-curve points by the sagitta, leaving the shared edge whole on
             // one face and split on the other (cross-face desync).
             EdgeCurve::NurbsCurve(_) => find_splits_on_nurbs_section(&edge, split_pts_3d, tol),
+            EdgeCurve::Line if rule == AnchorRule::Exact => {
+                find_exact_splits_on_line(&edge, split_pts_3d, tol)?
+            }
             EdgeCurve::Line => find_splits_on_line(&edge, split_pts_3d, tol),
             // Unreachable: `gfa::reject_unsupported_curves` refuses these
             // curve types before the pipeline starts. A chord-based fallback
@@ -233,6 +338,22 @@ pub(super) fn find_splits_on_line(
     // anchors on long edges.
     splits.dedup_by(|a, b| (a.1 - b.1).length() < weld);
     splits
+}
+
+/// Split parameters on a straight HOLE edge: only the points that lie on
+/// the edge, each at its own foot, sorted along it. The rule is
+/// [`crate::section_tolerance::exact_line_splits`], which phase FF runs
+/// too. See [`split_hole_edges_at_anchors`].
+fn find_exact_splits_on_line(
+    edge: &OrientedPCurveEdge,
+    anchors: &[Point3],
+    tol: f64,
+) -> Result<Vec<(f64, Point3)>, crate::error::AlgoError> {
+    for _ in anchors {
+        crate::perf::bump_face_split_probe();
+    }
+    crate::section_tolerance::exact_line_splits(edge.start_3d, edge.end_3d, anchors, tol)
+        .map_err(anchors_too_close)
 }
 
 // Angular fractions have no fixed conversion to length, especially on an
