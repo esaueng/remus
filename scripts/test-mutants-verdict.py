@@ -12,13 +12,13 @@ import importlib.util
 import io
 import json
 from pathlib import Path
-from fleet_workflows import workflow_path
 import re
 import tempfile
 import unittest
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
+MUTANTS_WORKFLOW = ROOT / ".github" / "workflows" / "mutants.yml"
 
 
 def load(name, filename):
@@ -277,8 +277,8 @@ class PlanTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             PLAN.round_robin_costs([], 0)
 
-    def test_cap_is_one_wave_of_the_callee_parallelism(self):
-        text = workflow_path("mutants-sharded").read_text()
+    def test_cap_is_one_wave_of_the_workflow_parallelism(self):
+        text = MUTANTS_WORKFLOW.read_text()
         parallel = int(re.search(r"^      max-parallel: (\d+)$", text, re.M)[1])
         self.assertEqual(PLAN.MAX_SHARDS, parallel)
 
@@ -327,7 +327,7 @@ class PlanTests(unittest.TestCase):
 class WorkflowContractTests(unittest.TestCase):
     """The staged sharded workflow must feed these scripts what they expect."""
 
-    TEXT = workflow_path("mutants-sharded").read_text()
+    TEXT = MUTANTS_WORKFLOW.read_text()
 
     def test_budget_and_shards_are_shared_between_plan_and_shards(self):
         text = self.TEXT

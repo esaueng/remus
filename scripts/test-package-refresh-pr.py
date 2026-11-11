@@ -137,7 +137,7 @@ class PackageRefreshTests(unittest.TestCase):
 
     def gate(self, body, growth, hard_limit=False):
         # wasm-version.yml runs this on ubuntu-24.04, which ships Node; a
-        # self-hosted policy runner without it reports the skip.
+        # local run without it reports the skip.
         if shutil.which('node') is None:
             self.skipTest('node is required to run the size gate on the description')
         script = GATE_EVAL % json.dumps(GATE.as_uri())

@@ -1,22 +1,24 @@
 #!/usr/bin/env python3
-"""Classify a Git diff for CI without changing required check names.
+"""Classify a Git diff into the CI tiers that `ci-checks.yml` runs.
 
-Outputs (all lowercase booleans except ``mode``):
+Outputs (lowercase booleans except ``mode``):
 
-* ``heavy`` — source changed: build, lint, and test the workspace. A merge
-  group that touches no second-tier path leaves it to the PR and the main
-  push while ``QUEUE_RERUNS_PR_TIER`` is off.
-* ``docs`` — documentation changed: build rustdoc and the book.
-* ``full`` — run the second tier (MSRV, deny, audit, plus coverage outside
-  main pushes; main coverage is nightly). True only
-  for heavy changes on non-PR events or PRs carrying the ``ci:full`` label
-  (``--full``). A merge group keeps it only
-  for a diff that touches a second-tier path (see ``needs_second_tier``).
-* ``wasm`` — build and validate the distributable WASM packages. True for
-  heavy changes when ``full`` is set or the diff touches a WASM-affecting
-  path, which includes every crate under ``crates/``.
-* ``mode`` — ``full``, ``pr``, ``queue``, ``package``, ``docs``, or
+* ``heavy`` — source changed: build, lint and test the workspace.
+* ``docs`` — build rustdoc and the book.
+* ``full`` — dependency and toolchain checks (MSRV, Cargo Deny, Security
+  Audit). Selected when the diff touches one of their inputs, by the
+  ``ci:full`` PR label, and by a manual dispatch.
+* ``wasm`` — build and validate the distributable WASM packages.
+* ``coverage`` — instrumented coverage, only on request.
+* ``mode`` — ``full``, ``pr``, ``main``, ``queue``, ``package``, ``docs`` or
   ``ci-only``.
+
+A merge group runs the light gates only (Repository Policy, Secrets Scan and
+Documentation here, plus the privacy, dependency-review and WASM version
+workflows). Its pull request already ran every selected tier on its merge
+ref, and the main push of the squashed tree runs them again. Two pull
+requests that pass alone but break together therefore turn `main` red after
+the merge instead of blocking the queue entry.
 """
 
 from __future__ import annotations
@@ -24,7 +26,6 @@ from __future__ import annotations
 import argparse
 import os
 import subprocess
-from dataclasses import dataclass
 from pathlib import PurePosixPath
 
 
@@ -44,69 +45,35 @@ DOC_FILENAMES = {
 AGENT_DIRECTORIES = (".claude/",)
 # The committed distributable packages. A diff confined to them (a refresh
 # PR from publish.yml) leaves every source, script and workflow at the base
-# commit, which already passed the full suite on its main push. Paths alone
-# do not prove the committed bytes came from that source; the "Committed
-# packages match source" job in wasm-version.yml does, by deleting both
-# package trees, rebuilding them with `cargo xtask wasm-build` (which also
-# runs the package smoke and installed-tarball consumer tests) and comparing
-# every file. That job sits outside CI Pass but still gates merging: the
-# "Changed kernel requires a new version" job needs it and fails unless it
-# succeeded, and that check is a required branch-protection context, so the
-# merge queue waits for it too. So a package-only diff runs no heavy tier here:
-# re-running the suites on an unchanged source tree proves nothing new, and
-# did cost three full runs (PR, merge group, main push) per refresh. Any
-# other path in the diff, including the checker's own scripts and
-# workflows, makes it heavy again.
+# commit, which already passed the full suite on its main push. The
+# "Committed packages match source" job in wasm-version.yml proves the
+# committed bytes came from that source by rebuilding and comparing them, and
+# the required "Changed kernel requires a new version" check needs it. So a
+# package-only diff runs no heavy tier here. Any other path in the diff makes
+# it heavy again.
 PACKAGE_DIRECTORIES = ("crates/wasm/pkg/", "crates/wasm-io/pkg/")
 # Paths whose change can alter the distributable WASM binaries or their
-# packaging in a way the native suite does not exercise.
-#
-# Every crate sits below the wasm bindings, so any change under `crates/`
-# can break the packaged kernel. This used to list only `crates/wasm/` and
-# `crates/wasm-io/`, which made the package smoke a main-only gate for engine
-# changes: PR #618 (algo, math, operations) passed PR CI with WASM
-# Build & Validate skipped, then failed that job on main at 8539b266.
-# The job runs beside Test (median 13.6 vs 20.6 minutes on hosted runners,
-# 2026-09), so selecting it for every kernel PR does not lengthen the PR.
-WASM_DIRECTORIES = ("crates/", "xtask/", "tools/vs-bench/")
-# `.cargo/config.toml` defines the `cargo xtask` alias the package build runs.
+# packaging in a way the native suite does not exercise. Every crate sits
+# below the wasm bindings, so any change under `crates/` can break the
+# packaged kernel (PR #618 passed with the package build skipped, then failed
+# it on main).
+# `.cargo/` defines the `cargo xtask` alias the package build runs; Cargo reads
+# `config` as well as `config.toml` there.
+WASM_DIRECTORIES = ("crates/", "xtask/", "tools/vs-bench/", ".cargo/")
 WASM_FILENAMES = {
-    "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", ".cargo/config.toml",
-    "LICENSE-APACHE", "NOTICE", ".github/fleet-workflows.json",
-    ".github/workflows/ci.yml", ".github/workflows/publish.yml",
+    "Cargo.lock", "Cargo.toml", "rust-toolchain.toml",
+    "LICENSE-APACHE", "NOTICE",
+    ".github/workflows/ci.yml", ".github/workflows/ci-checks.yml",
+    ".github/workflows/publish.yml", ".github/workflows/wasm-size-report.yml",
     ".github/workflows/wasm-version.yml",
 }
-# Paths whose effect a merge group cannot leave to the main push: dependency
-# and toolchain inputs (Cargo Deny, Security Audit, MSRV) and the CI
-# definitions. Fuzz compile and render run in the first tier. Any other
-# heavy merge group runs the PR tier, or nothing heavy while
-# QUEUE_RERUNS_PR_TIER is off. The main push of the same squashed tree
-# still runs dependency and MSRV checks; complete coverage runs nightly,
-# or on an explicitly selected full PR, merge-group or manual CI event.
+# Inputs of the dependency and toolchain checks, and the CI definitions.
 SECOND_TIER_DIRECTORIES = (".cargo/", ".config/", ".github/workflows/")
 SECOND_TIER_FILENAMES = {
     "Cargo.lock", "Cargo.toml", "clippy.toml", "deny.toml", "rust-toolchain.toml",
 }
-# Speed over depth while development runs fast (2026-10-25). A source merge
-# group re-ran tier 1 and the package build on a tree whose PR had just passed
-# them: about 20-25 of the 45 minutes from a green PR to a merge (Test 14-16,
-# WASM Build & Validate 15-19, 2026-10). While this is False, such a merge
-# group runs only the light gates (Repository Policy, Secrets Scan,
-# Documentation, and the separate privacy, dependency-review and WASM version
-# workflows), and the main push of the squashed tree still runs every tier.
-# Two PRs that pass alone but break together turn `main` red after the merge
-# instead of blocking the entry. A merge group touching a second-tier input
-# keeps the full suite either way. Set True to restore the pre-merge run.
-QUEUE_RERUNS_PR_TIER = False
 
-
-@dataclass(frozen=True)
-class Classification:
-    heavy: bool
-    docs: bool
-    full: bool
-    wasm: bool
-    mode: str
+FLAGS = ("heavy", "docs", "full", "wasm", "coverage")
 
 
 def is_documentation(path: str) -> bool:
@@ -142,7 +109,6 @@ def affects_wasm(path: str) -> bool:
     return (
         normalized.startswith(WASM_DIRECTORIES)
         or normalized in WASM_FILENAMES
-        or (normalized.startswith(".github/workflows/fleet-ci-") and normalized.endswith(".yml"))
         or (normalized.startswith("scripts/") and ("wasm" in name or "w9" in name))
     )
 
@@ -150,28 +116,27 @@ def affects_wasm(path: str) -> bool:
 def needs_second_tier(path: str) -> bool:
     normalized = PurePosixPath(path).as_posix()
     return (
-        # A queue batch can pair a package refresh with source PRs, so its diff
-        # is not package-only; the refresh still needs the full suite. Unless
-        # the queue skips the PR tier: the integrity job in wasm-version.yml
-        # then verifies the refresh, as it does for a package-only diff.
-        (QUEUE_RERUNS_PR_TIER and is_committed_package(normalized))
-        or normalized.startswith(SECOND_TIER_DIRECTORIES)
+        normalized.startswith(SECOND_TIER_DIRECTORIES)
         or normalized in SECOND_TIER_FILENAMES
         or PurePosixPath(normalized).name == "Cargo.toml"
     )
 
 
-def classify_paths(
-    paths: list[str], force_full: bool = False, merge_group: bool = False
-) -> Classification:
-    # An empty or unrecognized diff must receive the complete suite.
-    if not paths:
-        return Classification(heavy=True, docs=True, full=True, wasm=True, mode="full")
+def selection(mode: str, **selected: bool) -> dict:
+    return {**{flag: bool(selected.get(flag, False)) for flag in FLAGS}, "mode": mode}
 
-    # A package refresh: wasm-version.yml rebuilds and compares the packages,
-    # whatever the event or --full asks for (see PACKAGE_DIRECTORIES).
+
+def classify(paths: list[str], event: str, force_full: bool = False, coverage: bool = False) -> dict:
+    """Select tiers for ``paths`` on ``event``; an unknown diff gets everything."""
+    everything = selection("full", heavy=True, docs=True, full=True, wasm=True, coverage=coverage)
+    # A manual dispatch and the `ci:full` label ask for every tier, whatever
+    # the diff. An empty or unavailable diff cannot be classified.
+    if event == "workflow_dispatch" or force_full or not paths:
+        return everything
+
+    # A package refresh is verified by wasm-version.yml (see PACKAGE_DIRECTORIES).
     if all(is_committed_package(path) for path in paths):
-        return Classification(heavy=False, docs=False, full=False, wasm=False, mode="package")
+        return selection("package")
 
     has_docs = any(is_documentation(path) for path in paths)
     lightweight = all(
@@ -181,35 +146,28 @@ def classify_paths(
         for path in paths
     )
     package_input = any(affects_wasm(path) for path in paths)
-    if not lightweight or package_input:
-        full = force_full and (
-            not merge_group or any(needs_second_tier(path) for path in paths)
-        )
-        if force_full and not full and not QUEUE_RERUNS_PR_TIER:
-            # CI Pass accepts every heavy-tier skip once heavy, full and wasm
-            # are all false; docs still builds rustdoc for the combined tree.
-            return Classification(heavy=False, docs=True, full=False, wasm=False, mode="queue")
-        wasm = full or package_input
-        if full:
-            mode = "full"
-        elif force_full:
-            mode = "queue"
-        else:
-            mode = "pr"
-        return Classification(heavy=True, docs=True, full=full, wasm=wasm, mode=mode)
+    if lightweight and not package_input:
+        return selection("docs" if has_docs else "ci-only", docs=has_docs)
 
-    return Classification(
-        heavy=False,
-        docs=has_docs,
-        full=False,
-        wasm=False,
-        mode="docs" if has_docs else "ci-only",
+    if event == "merge_group":
+        # Rustdoc still builds for the combined tree; see the module docstring.
+        return selection("queue", docs=True)
+
+    return selection(
+        "main" if event == "push" else "pr",
+        heavy=True,
+        docs=True,
+        full=any(needs_second_tier(path) for path in paths),
+        wasm=package_input,
+        coverage=coverage,
     )
 
 
 def changed_paths(base: str, head: str) -> list[str]:
     result = subprocess.run(
-        ["git", "diff", "--name-only", "-z", base, head],
+        # --no-renames lists both sides: moving `deny.toml` under `docs/` must
+        # still count as a change to `deny.toml`.
+        ["git", "diff", "--name-only", "--no-renames", "-z", base, head],
         check=True,
         capture_output=True,
     )
@@ -220,29 +178,22 @@ def changed_paths(base: str, head: str) -> list[str]:
     ]
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser()
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--base", required=True)
     parser.add_argument("--head", required=True)
-    parser.add_argument(
-        "--full",
-        action="store_true",
-        help="select the second tier for heavy changes (main pushes, ci:full label)",
-    )
-    return parser.parse_args()
-
-
-def main() -> None:
-    args = parse_args()
+    parser.add_argument("--full", action="store_true", help="select every tier (the ci:full label)")
+    args = parser.parse_args()
     paths = changed_paths(args.base, args.head)
-    # The pinned callee passes only --full; the event name comes from the runner.
-    merge_group = os.environ.get("GITHUB_EVENT_NAME") == "merge_group"
-    result = classify_paths(paths, force_full=args.full, merge_group=merge_group)
-    print(f"heavy={str(result.heavy).lower()}")
-    print(f"docs={str(result.docs).lower()}")
-    print(f"full={str(result.full).lower()}")
-    print(f"wasm={str(result.wasm).lower()}")
-    print(f"mode={result.mode}")
+    result = classify(
+        paths,
+        os.environ.get("GITHUB_EVENT_NAME", ""),
+        force_full=args.full,
+        coverage=os.environ.get("COVERAGE_REQUESTED") == "true",
+    )
+    for key, value in result.items():
+        print(f"{key}={str(value).lower() if isinstance(value, bool) else value}")
+    print(f"base={args.base}")
     print(f"changed_count={len(paths)}")
 
 

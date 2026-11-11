@@ -99,7 +99,7 @@ Notes that matter:
 - It force-stages (`git add --force`) because wasm-pack writes a `*`
   `.gitignore` into its own output directory.
 - The refresh PR runs no heavy CI tier (a diff confined to the two `pkg`
-  directories is mode `package`, see `docs/owner-pr-ci.md`, "Tiers"): the
+  directories is mode `package`, see `docs/ci-cadence.md`, "Tier selection"): the
   required "Committed packages match source" job rebuilds both packages,
   compares every file and applies the WASM Size Gate. It goes through the
   merge queue like any other PR. It does not merge on its own.

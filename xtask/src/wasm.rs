@@ -1079,27 +1079,22 @@ mod tests {
     #[test]
     fn consumer_workflows_cannot_skip_wasm_optimization() {
         let root = project_root().unwrap();
-        let manifest: serde_json::Value = serde_json::from_str(
-            &fs::read_to_string(root.join(".github/fleet-workflows.json")).unwrap(),
-        )
-        .unwrap();
-        for (relative, family) in [
-            (".github/workflows/ci.yml", Some("ci")),
-            (".github/workflows/publish.yml", None),
+        for (relative, callee) in [
             (
-                ".github/workflows/openzcad-wasm-release.yml",
-                Some("wasm-candidate"),
+                ".github/workflows/ci.yml",
+                Some(".github/workflows/ci-checks.yml"),
             ),
+            (".github/workflows/publish.yml", None),
+            (".github/workflows/openzcad-wasm-release.yml", None),
         ] {
             let caller = fs::read_to_string(root.join(relative)).unwrap();
-            let workflow = if let Some(family) = family {
-                let target = format!(".github/workflows/{}", manifest[family].as_str().unwrap());
+            let workflow = if let Some(target) = callee {
                 assert!(
-                    caller.contains(&format!("uses: esaueng/remus/{target}@")),
+                    caller.contains(&format!("uses: ./{target}")),
                     "{relative} must delegate to {target}"
                 );
                 assert!(!caller.contains("wasm-build --skip-opt"));
-                fs::read_to_string(root.join(&target)).unwrap()
+                fs::read_to_string(root.join(target)).unwrap()
             } else {
                 caller
             };

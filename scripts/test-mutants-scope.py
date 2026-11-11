@@ -11,7 +11,6 @@ tests in scripts/test-mutants-verdict.py pass.
 import collections
 import json
 from pathlib import Path
-from fleet_workflows import workflow_path
 import re
 import subprocess
 import sys
@@ -102,11 +101,8 @@ def check_versions(version):
     for path in sorted(WORKFLOWS.glob("*.yml")):
         for found in re.findall(r"cargo-mutants@([0-9.]+)", path.read_text()):
             installs.setdefault(path.name, set()).add(found)
-    if workflow_path("mutants-sharded").name not in installs:
-        raise AssertionError("the weekly sharded mutation workflow does not install cargo-mutants")
-    caller = (WORKFLOWS / "mutants.yml").read_text()
-    if not re.search(r"uses: esaueng/remus/\.github/workflows/fleet-mutants-sharded(?:-v[1-9][0-9]*)?\.yml@[0-9a-f]{40}", caller):
-        raise AssertionError("mutants.yml does not call the sharded mutation workflow at a pinned commit")
+    if "mutants.yml" not in installs:
+        raise AssertionError("the weekly sharded mutation workflow mutants.yml does not install cargo-mutants")
     for name, found in sorted(installs.items()):
         if {f"cargo-mutants {v}" for v in found} != {version}:
             raise AssertionError(f"{name} pins cargo-mutants {sorted(found)}; this check runs {version}")

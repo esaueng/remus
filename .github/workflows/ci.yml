@@ -33,10 +33,6 @@ env:
 permissions:
   contents: read
 
-# rust-toolchain.toml pins the exact Rust version (1.96.0) and includes
-# rustfmt, clippy, and the wasm32 target. Rustup auto-detects it, so most
-# jobs don't need dtolnay/rust-toolchain.
-
 jobs:
   public-commit-metadata:
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.event_name == 'push'
@@ -82,19 +78,18 @@ jobs:
       id-token: write
       contents: read
       pull-requests: read
-    uses: esaueng/remus/.github/workflows/fleet-ci-v12.yml@6701fc2dc528514e4e841270255eacfa5ff1dcd6
-
+    uses: ./.github/workflows/ci-checks.yml
     with:
       coverage: ${{ inputs.coverage || false }}
 
   # Posts the WASM size report as a PR comment. It needs a write token, so it
   # stays outside `checks`; the same policy gates CI Pass through
-  # fleet-ci-v12.yml's read-only wasm-size-gate job. It also runs when CI failed
+  # ci-checks.yml's read-only wasm-size-gate job. It also runs when CI failed
   # (a size failure fails CI Pass), so the comment never goes stale.
   wasm-size:
     needs: checks
     if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.checks.outputs.wasm == 'true' }}
-    uses: esaueng/remus/.github/workflows/fleet-wasm-size-v5.yml@4e5bd846fae03e87e3d4ca1169e35b18952d4fb9
+    uses: ./.github/workflows/wasm-size-report.yml
     permissions:
       contents: read
       pull-requests: write

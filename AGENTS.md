@@ -94,7 +94,7 @@ Enforced by `scripts/check-boundaries.sh` — run before pushing:
 | `wasm` | all crates (`blend` only transitively, via `operations`) |
 | `wasm-io` | `math`, `topology`, `operations`, `io` |
 
-The script checks `[dependencies]` in each `Cargo.toml`. A violation fails the `boundaries` job in CI.
+The script checks `[dependencies]` in each `Cargo.toml`. A violation fails the Repository Policy job (`Layer boundaries` check) in CI.
 
 **Allowed `use` paths per crate:**
 - `math/src/**` → only `std`, external crates

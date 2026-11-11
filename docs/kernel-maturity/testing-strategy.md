@@ -177,8 +177,8 @@ operations tests), builds only test targets (not the 17 operations examples),
 stops each mutant's tests at the first failure, keeps the per-mutant oracle
 to the mutated package, and drops the five operations regression pins over
 60 s (859 of 1,367 CPU-s) by exact name; `scripts/test-mutants-scope.py`
-fails if one is renamed. The staged
-`fleet-mutants-sharded.yml` sizes a round-robin shard matrix from
+fails if one is renamed. The sharded workflow (then
+`fleet-mutants-sharded.yml`, now `mutants.yml`) sizes a round-robin shard matrix from
 `scripts/plan-mutation-shards.py`'s measured cost model, gives every shard
 its own baseline and a 300-minute budget, and judges each with
 `scripts/mutants-verdict.py` (`python3 scripts/test-mutants-verdict.py`
@@ -197,8 +197,9 @@ missed mutants. Under the former single-job callee the new config cut the
 runner's baseline from 129 s build + 7,667 s test to 229 s + 133 s and
 examined 34 mutants in the first ~80 minutes (dispatch run 36055955228);
 the planner's per-package costs come from those two runs. The weekly
-`mutants.yml` now calls the sharded callee pinned at `2a735434` (the PR #614
-squash), and the single-job `fleet-mutants.yml` is gone.
+`mutants.yml` first called the sharded callee pinned at `2a735434` (the PR
+#614 squash); it now runs the shard plan itself, and the single-job
+`fleet-mutants.yml` is gone.
 
 ## Corpus
 
