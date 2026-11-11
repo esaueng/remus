@@ -136,7 +136,7 @@ fn corpus_refusals_really_dirty_the_document_without_rollback() {
             dirty.push(family);
         }
     }
-    assert_eq!(dirty, ["pushPullFace", "resizeCylindricalFace"]);
+    assert_eq!(dirty, ["pushPullFace"]);
 }
 
 /// A direct-binding body run through both transaction helpers.

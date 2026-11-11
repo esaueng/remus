@@ -1010,7 +1010,8 @@ fn simple_cylinder_cap_position(
 ///
 /// Returns an error if `new_radius` is not positive and finite, the face is
 /// not part of `solid`, the face is not cylindrical, the new radius equals the
-/// current one, or the result's shell is not closed.
+/// current one, or the result's shell is not closed. The live topology is
+/// unchanged on every error.
 pub fn resize_cylindrical_face(
     topo: &mut Topology,
     solid: SolidId,
@@ -1033,93 +1034,98 @@ pub(crate) fn resize_cylindrical_face_with(
         &mut Topology,
     ) -> Result<Option<crate::blend_cluster::GroupEdit>, crate::OperationsError>,
 ) -> Result<SolidId, crate::OperationsError> {
-    let tol = Tolerance::new();
-    let cyl = validate_cylindrical_resize(topo, solid, face, new_radius)?;
+    // Cover the sleeve tool, the off-axis operand copy, and every late
+    // postcondition as one edit, including callers using a prepared group.
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let tol = Tolerance::new();
+        let cyl = validate_cylindrical_resize(topo, solid, face, new_radius)?;
 
-    if let Some(result) =
-        sphere_rim_resize::resize_sphere_rimmed_wall(topo, solid, face, &cyl, new_radius)?
-    {
-        return Ok(result.0.solid);
-    }
-
-    // A wall whose seam with a sphere carries an exact rolling-ball band
-    // takes the band along. A freeform band needs the caller's permission to
-    // be rebuilt approximately (`resize_cylindrical_face_reblended`), so this
-    // exact-only entry leaves it to the refusals below.
-    match crate::resize_blend::resize_cylindrical_face_reblended(
-        topo,
-        solid,
-        face,
-        new_radius,
-        crate::resize_blend::ReblendPolicy::ExactOnly,
-    ) {
-        Ok(Some(result)) => return Ok(result.solid),
-        Ok(None) | Err(crate::OperationsError::ExactOnlyUnattainable) => {}
-        Err(error) => return Err(error),
-    }
-
-    if !cylindrical_face_is_full_turn(topo, face, &cyl)? {
-        let refusal = match crate::performance::timed("resize_cylinder.partial_turn", || {
-            resize_partial_cylindrical_face(topo, solid, face, &cyl, new_radius)
-        }) {
-            Ok(result) => return Ok(result),
-            Err(refusal) => refusal,
-        };
-        // A wall the blends it supports keep the partial path from moving
-        // (its seams, shoulder and the edges running into them are filleted)
-        // is resized through that group: remove it to sharp, resize the
-        // sharp wall exactly, re-fillet at the recorded radii.
-        return match group(topo)? {
-            Some(edit) => Ok(edit.solid),
-            None => Err(refusal),
-        };
-    }
-
-    if let Some(result) =
-        crate::resize_blend::resize_cylindrical_strip(topo, solid, face, new_radius)?
-    {
-        return Ok(result.0.solid);
-    }
-
-    // A bore whose rims are blended onto its caps carries those blends to the
-    // new radius; the sleeve below would leave them behind at the old one.
-    if let Some(result) =
-        crate::resize_blend::resize_cylindrical_face_with_blends(topo, solid, face, new_radius)?
-    {
-        return Ok(result);
-    }
-
-    let axis = unit(cyl.axis())?;
-    if axis.dot(Vec3::new(0.0, 0.0, 1.0)) > 1.0 - tol.angular {
-        return resize_cylindrical_face_aligned(topo, solid, face, new_radius, false)
-            .map(|result| result.0.solid);
-    }
-
-    // The analytic boolean pipeline is most robust in its canonical +Z frame.
-    // Rigidly normalize a copied operand, perform the exact edit there, then
-    // return the result to world space. The face map keeps selection exact;
-    // no geometric re-matching is involved.
-    let (base, _) = axial_extent(topo, face, &cyl)?;
-    let seam_direction = cylinder_seam_direction(topo, face, &cyl)?;
-    let to_world = frame_matrix(base, axis, seam_direction)?;
-    let to_local = inverse_rigid_frame(&to_world);
-    let (local_solid, face_map) = copy_solid_with_face_map(topo, solid)?;
-    let local_face_index = face_map.get(&face.index()).copied().ok_or_else(|| {
-        crate::OperationsError::InvalidInput {
-            reason: format!("copied solid lost cylindrical face {}", face.index()),
+        if let Some(result) =
+            sphere_rim_resize::resize_sphere_rimmed_wall(topo, solid, face, &cyl, new_radius)?
+        {
+            return Ok(result.0.solid);
         }
-    })?;
-    let local_face = topo.face_id_from_index(local_face_index).ok_or_else(|| {
-        crate::OperationsError::InvalidInput {
-            reason: format!("copied cylindrical face {local_face_index} is unavailable"),
+
+        // A wall whose seam with a sphere carries an exact rolling-ball band
+        // takes the band along. A freeform band needs the caller's permission to
+        // be rebuilt approximately (`resize_cylindrical_face_reblended`), so this
+        // exact-only entry leaves it to the refusals below.
+        match crate::resize_blend::resize_cylindrical_face_reblended(
+            topo,
+            solid,
+            face,
+            new_radius,
+            crate::resize_blend::ReblendPolicy::ExactOnly,
+        ) {
+            Ok(Some(result)) => return Ok(result.solid),
+            Ok(None) | Err(crate::OperationsError::ExactOnlyUnattainable) => {}
+            Err(error) => return Err(error),
         }
-    })?;
-    transform_solid(topo, local_solid, &to_local)?;
-    let result = resize_cylindrical_face_aligned(topo, local_solid, local_face, new_radius, false)?
-        .0
-        .solid;
-    transform_solid(topo, result, &to_world)?;
-    Ok(result)
+
+        if !cylindrical_face_is_full_turn(topo, face, &cyl)? {
+            let refusal = match crate::performance::timed("resize_cylinder.partial_turn", || {
+                resize_partial_cylindrical_face(topo, solid, face, &cyl, new_radius)
+            }) {
+                Ok(result) => return Ok(result),
+                Err(refusal) => refusal,
+            };
+            // A wall the blends it supports keep the partial path from moving
+            // (its seams, shoulder and the edges running into them are filleted)
+            // is resized through that group: remove it to sharp, resize the
+            // sharp wall exactly, re-fillet at the recorded radii.
+            return match group(topo)? {
+                Some(edit) => Ok(edit.solid),
+                None => Err(refusal),
+            };
+        }
+
+        if let Some(result) =
+            crate::resize_blend::resize_cylindrical_strip(topo, solid, face, new_radius)?
+        {
+            return Ok(result.0.solid);
+        }
+
+        // A bore whose rims are blended onto its caps carries those blends to the
+        // new radius; the sleeve below would leave them behind at the old one.
+        if let Some(result) =
+            crate::resize_blend::resize_cylindrical_face_with_blends(topo, solid, face, new_radius)?
+        {
+            return Ok(result);
+        }
+
+        let axis = unit(cyl.axis())?;
+        if axis.dot(Vec3::new(0.0, 0.0, 1.0)) > 1.0 - tol.angular {
+            return resize_cylindrical_face_aligned(topo, solid, face, new_radius, false)
+                .map(|result| result.0.solid);
+        }
+
+        // The analytic boolean pipeline is most robust in its canonical +Z frame.
+        // Rigidly normalize a copied operand, perform the exact edit there, then
+        // return the result to world space. The face map keeps selection exact;
+        // no geometric re-matching is involved.
+        let (base, _) = axial_extent(topo, face, &cyl)?;
+        let seam_direction = cylinder_seam_direction(topo, face, &cyl)?;
+        let to_world = frame_matrix(base, axis, seam_direction)?;
+        let to_local = inverse_rigid_frame(&to_world);
+        let (local_solid, face_map) = copy_solid_with_face_map(topo, solid)?;
+        let local_face_index = face_map.get(&face.index()).copied().ok_or_else(|| {
+            crate::OperationsError::InvalidInput {
+                reason: format!("copied solid lost cylindrical face {}", face.index()),
+            }
+        })?;
+        let local_face = topo.face_id_from_index(local_face_index).ok_or_else(|| {
+            crate::OperationsError::InvalidInput {
+                reason: format!("copied cylindrical face {local_face_index} is unavailable"),
+            }
+        })?;
+        transform_solid(topo, local_solid, &to_local)?;
+        let result =
+            resize_cylindrical_face_aligned(topo, local_solid, local_face, new_radius, false)?
+                .0
+                .solid;
+        transform_solid(topo, result, &to_world)?;
+        Ok(result)
+    })
 }
 
 pub(crate) fn validate_cylindrical_resize(
