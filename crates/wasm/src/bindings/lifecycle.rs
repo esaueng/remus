@@ -155,6 +155,55 @@ mod tests {
         let fresh = kernel.make_box_solid(2.0, 2.0, 2.0).unwrap();
         assert!(fresh > retired);
     }
+    /// Runs one `executeBatch` operation and returns its `ok` value.
+    fn batch_ok(kernel: &mut RemusKernel, op: &str, args: &serde_json::Value) -> serde_json::Value {
+        let ops = serde_json::json!([{"op": op, "args": args}]);
+        let output: serde_json::Value =
+            serde_json::from_str(&kernel.execute_batch(&ops.to_string())).unwrap();
+        assert!(output[0].get("error").is_none(), "{op}: {output}");
+        output[0]["ok"].clone()
+    }
+
+    /// Extrudes `face` 3 along +Z through `executeBatch` and returns the
+    /// solid handle and its batch-measured volume.
+    fn batch_extrude(kernel: &mut RemusKernel, face: u32) -> (u32, f64) {
+        let args = serde_json::json!({"face": face, "dz": 1.0, "distance": 3.0});
+        let solid = batch_ok(kernel, "extrude", &args);
+        let solid = u32::try_from(solid.as_u64().unwrap()).unwrap();
+        let args = serde_json::json!({"solid": solid, "deflection": 0.001});
+        let volume = batch_ok(kernel, "volume", &args).as_f64().unwrap();
+        (solid, volume)
+    }
+
+    #[test]
+    fn deleting_an_extrusion_keeps_its_profile_for_the_next_extrude() {
+        // The extrusion's bottom cap reuses the profile's edges. Deleting it
+        // once retired them under the still-live profile face, and the next
+        // extrude failed with "edge not found".
+        let mut kernel = RemusKernel::new();
+        let face = kernel.make_rectangle(10.0, 5.0).unwrap();
+        let (first, first_volume) = batch_extrude(&mut kernel, face);
+        assert!((first_volume - 150.0).abs() < 1e-6, "{first_volume}");
+
+        kernel.delete_solid_impl(first).unwrap();
+        assert!(kernel.resolve_solid(first).is_err());
+        let face_id = kernel.resolve_face(face).unwrap();
+        remus_topology::validation::validate_face_loops(&kernel.topo, face_id).unwrap();
+        assert!(kernel.topo.is_restore_fixed_point());
+
+        let (second, second_volume) = batch_extrude(&mut kernel, face);
+        assert!(second > first);
+        assert!((second_volume - 150.0).abs() < 1e-6, "{second_volume}");
+
+        // A checkpoint restore around a second delete keeps the profile too.
+        let checkpoint = kernel.checkpoint().unwrap();
+        kernel.delete_solid_impl(second).unwrap();
+        kernel.restore(checkpoint).unwrap();
+        assert!(kernel.resolve_solid(second).is_err());
+        let (_, third_volume) = batch_extrude(&mut kernel, face);
+        assert!((third_volume - 150.0).abs() < 1e-6, "{third_volume}");
+    }
+
     #[test]
     fn fuse_all_does_not_pin_inputs_in_a_hidden_compound() {
         for batch in [false, true] {

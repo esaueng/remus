@@ -2038,7 +2038,11 @@ impl Topology {
     /// subtrees. A wire not owned by any face boundary is a standalone wire
     /// body and retains its edges and vertices. Face-owned wires remain part
     /// of their owning face's subtree; their default wire tag alone does not
-    /// make every solid boundary an independent root.
+    /// make every solid boundary an independent root. A live face outside
+    /// the retiring solid's tree, including one that no shell holds (a
+    /// sketch profile whose edges an extrusion's cap reuses), retains its
+    /// wires, loops, coedges, edges, vertices and pcurve entries, so it stays
+    /// valid and usable after the delete.
     ///
     /// Retirement invalidates the solid handle and unshared shell, face,
     /// wire, edge, vertex, and pcurve handles. It does **not** compact the
@@ -2095,14 +2099,25 @@ impl Topology {
         // Wires all carry the wire tag, including face boundaries. Only a
         // wire with no owning face is a standalone root under the current
         // representation; a boundary wire is retained through its live body.
+        //
+        // Every live face outside the retiring solid's own tree is a root
+        // too, whether or not a shell holds it: a sketch profile face whose
+        // edges an extrusion's cap reuses keeps its whole boundary when the
+        // extrusion is deleted. Faces of other solids and sheet shells are
+        // already marked above, so this walks only the loose ones.
         let mut face_owned_wires = vec![false; self.wires.slot_len()];
-        for (_, face) in self.faces.iter() {
+        for (face_id, face) in self.faces.iter() {
             for wire_id in
                 std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
             {
                 if let Some(owned) = face_owned_wires.get_mut(wire_id.index()) {
                     *owned = true;
                 }
+            }
+            if !DenseEntityMarks::is_marked(&retained.faces, face_id.index())
+                && !retiring.faces.contains(&face_id)
+            {
+                self.retain_loose_face_boundary(face_id, face, &mut retained);
             }
         }
         for (wire_id, _) in self.wires.iter() {
@@ -2194,6 +2209,100 @@ impl Topology {
         }
 
         Ok(())
+    }
+
+    /// Retires the edges `face`'s wires use, their vertices and the edges'
+    /// pcurve-index entries, while the face, its wires, loops and coedges
+    /// stay live: the state [`Self::delete_solid`] left a loose sketch
+    /// profile in, before it retained loose faces' boundaries, when the
+    /// deleted solid's cap reused the profile's edges.
+    ///
+    /// Test support only (`test-utils`): it builds a document off the
+    /// restore fixed point ([`Self::is_restore_fixed_point`]) for tests of
+    /// the restore and rollback paths. It records nothing in the undo log.
+    /// Call it only on a face whose boundary no other live entity uses.
+    ///
+    /// # Errors
+    ///
+    /// Returns a not-found error when the face, one of its wires or one of
+    /// their edges is not live; nothing is retired then.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn retire_loose_face_boundary_like_legacy_delete(
+        &mut self,
+        face: FaceId,
+    ) -> Result<(), TopologyError> {
+        let face_data = self.face(face)?;
+        let mut edges = HashSet::new();
+        let mut vertices = Vec::new();
+        for wire_id in
+            std::iter::once(face_data.outer_wire()).chain(face_data.inner_wires().iter().copied())
+        {
+            for oriented in self.wire(wire_id)?.edges() {
+                let edge = self.edge(oriented.edge())?;
+                if edges.insert(oriented.edge()) {
+                    vertices.extend([edge.start(), edge.end()]);
+                }
+            }
+        }
+        self.bump_cache_generation();
+        self.pcurves
+            .remove_for_retired_entities(&edges, &HashSet::new());
+        for edge in edges {
+            self.edges.retire(edge);
+        }
+        for vertex in vertices {
+            self.vertices.retire(vertex);
+        }
+        Ok(())
+    }
+
+    /// Marks the boundary of a live face outside every body as retained: its
+    /// wires, the edges they and its loops' coedges use, and their vertices.
+    ///
+    /// Unlike the body walks, a dangling reference here is skipped, not
+    /// refused: such a face (left by an earlier delete that did not retain
+    /// it) must not block deleting an unrelated solid, and an entity that is
+    /// not live is not retired either way.
+    fn retain_loose_face_boundary(
+        &self,
+        face_id: FaceId,
+        face: &Face,
+        retained: &mut DenseEntityMarks,
+    ) {
+        retained.mark_face(face_id);
+        let retain_edge = |retained: &mut DenseEntityMarks, edge_id: EdgeId| {
+            if let Ok(edge) = self.edge(edge_id)
+                && retained.mark_edge(edge_id)
+            {
+                for vertex_id in [edge.start(), edge.end()] {
+                    if self.vertex(vertex_id).is_ok() {
+                        retained.mark_vertex(vertex_id);
+                    }
+                }
+            }
+        };
+        for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+        {
+            let Ok(wire) = self.wire(wire_id) else {
+                continue;
+            };
+            if !retained.mark_wire(wire_id) {
+                continue;
+            }
+            for oriented_edge in wire.edges() {
+                retain_edge(retained, oriented_edge.edge());
+            }
+        }
+        for &loop_id in face.boundary_loops() {
+            let Some(boundary) = self.loops.get(loop_id) else {
+                continue;
+            };
+            for &coedge_id in boundary.coedges() {
+                if let Some(coedge) = self.coedges.get(coedge_id) {
+                    retain_edge(retained, coedge.edge());
+                }
+            }
+        }
     }
 
     fn collect_solid_entities(&self, solid: SolidId) -> Result<SolidEntities, TopologyError> {
@@ -3477,6 +3586,226 @@ mod tests {
                 .iter()
                 .all(|entry| entry.kind() != crate::journal::UNJOURNALED_MUTATIONS)
         );
+    }
+
+    /// A loose profile face (in no shell) and a solid built over it, as an
+    /// extrusion builds its bottom cap: the cap reuses the profile's three
+    /// edges reversed, and a second face of the solid has its own edges and
+    /// two own vertices, meeting the profile only at one vertex.
+    struct LooseProfile {
+        solid: SolidId,
+        profile: FaceId,
+        cap: FaceId,
+        side: FaceId,
+        shared_edges: [EdgeId; 3],
+        shared_vertices: [VertexId; 3],
+        own_edges: [EdgeId; 3],
+        own_vertices: [VertexId; 2],
+    }
+
+    fn make_loose_profile(topo: &mut Topology) -> LooseProfile {
+        let point = |x: f64, y: f64, z: f64| Point3::new(x, y, z);
+        let plane = || FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 0.0,
+        };
+        let shared_vertices = [
+            topo.add_vertex(Vertex::new(point(0.0, 0.0, 0.0), 1e-7)),
+            topo.add_vertex(Vertex::new(point(1.0, 0.0, 0.0), 1e-7)),
+            topo.add_vertex(Vertex::new(point(0.0, 1.0, 0.0), 1e-7)),
+        ];
+        let [v0, v1, v2] = shared_vertices;
+        let shared_edges = [
+            topo.add_edge(Edge::new(v0, v1, EdgeCurve::Line)),
+            topo.add_edge(Edge::new(v1, v2, EdgeCurve::Line)),
+            topo.add_edge(Edge::new(v2, v0, EdgeCurve::Line)),
+        ];
+        let forward = shared_edges
+            .iter()
+            .map(|&edge| OrientedEdge::new(edge, true))
+            .collect();
+        let profile_wire = topo.add_wire(Wire::new(forward, true).unwrap());
+        let profile = topo.add_face(Face::new(profile_wire, Vec::new(), plane()));
+        let reversed = shared_edges
+            .iter()
+            .rev()
+            .map(|&edge| OrientedEdge::new(edge, false))
+            .collect();
+        let cap_wire = topo.add_wire(Wire::new(reversed, true).unwrap());
+        let mut cap_face = Face::new(cap_wire, Vec::new(), plane());
+        cap_face.set_reversed(true);
+        let cap = topo.add_face(cap_face);
+
+        let own_vertices = [
+            topo.add_vertex(Vertex::new(point(0.0, 0.0, 1.0), 1e-7)),
+            topo.add_vertex(Vertex::new(point(1.0, 0.0, 1.0), 1e-7)),
+        ];
+        let [v3, v4] = own_vertices;
+        let own_edges = [
+            topo.add_edge(Edge::new(v0, v3, EdgeCurve::Line)),
+            topo.add_edge(Edge::new(v3, v4, EdgeCurve::Line)),
+            topo.add_edge(Edge::new(v4, v0, EdgeCurve::Line)),
+        ];
+        let side_uses = own_edges
+            .iter()
+            .map(|&edge| OrientedEdge::new(edge, true))
+            .collect();
+        let side_wire = topo.add_wire(Wire::new(side_uses, true).unwrap());
+        let side = topo.add_face(Face::new(
+            side_wire,
+            Vec::new(),
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 1.0, 0.0),
+                d: 0.0,
+            },
+        ));
+        let shell = topo.add_shell(Shell::new(vec![cap, side]).unwrap());
+        let solid = topo.add_solid(Solid::new(shell, Vec::new()));
+        for (offset, &edge) in shared_edges.iter().enumerate() {
+            let offset = f64::from(u32::try_from(offset).unwrap());
+            topo.set_pcurve(edge, profile, test_pcurve(offset)).unwrap();
+            topo.set_pcurve(edge, cap, test_pcurve(10.0 + offset))
+                .unwrap();
+        }
+        topo.set_pcurve(own_edges[0], side, test_pcurve(20.0))
+            .unwrap();
+        LooseProfile {
+            solid,
+            profile,
+            cap,
+            side,
+            shared_edges,
+            shared_vertices,
+            own_edges,
+            own_vertices,
+        }
+    }
+
+    /// The loose profile is intact: its edges, vertices, loops, coedges and
+    /// pcurves are live, the index is consistent, and its loops re-derive.
+    fn assert_profile_intact(topo: &Topology, fixture: &LooseProfile, loops: &[LoopId]) {
+        assert!(topo.face(fixture.profile).is_ok());
+        assert!(
+            topo.wire(topo.face(fixture.profile).unwrap().outer_wire())
+                .is_ok()
+        );
+        for &edge in &fixture.shared_edges {
+            assert!(topo.edge(edge).is_ok());
+        }
+        for &vertex in &fixture.shared_vertices {
+            assert!(topo.vertex(vertex).is_ok());
+        }
+        assert_eq!(topo.loops_of_face(fixture.profile).unwrap(), loops);
+        for (offset, &edge) in fixture.shared_edges.iter().enumerate() {
+            let pcurve = topo.pcurve(edge, fixture.profile).unwrap().unwrap();
+            let offset = f64::from(u32::try_from(offset).unwrap());
+            assert_eq!(pcurve.evaluate(0.0), Point2::new(offset, 0.0));
+        }
+        validate_boundary_authority(topo).unwrap();
+        crate::validation::validate_face_loops(topo, fixture.profile).unwrap();
+        assert!(topo.is_restore_fixed_point());
+        let wire = topo.face(fixture.profile).unwrap().outer_wire();
+        assert!(
+            topo.boundary_loop_specs(&[wire], None).is_ok(),
+            "the profile's boundary re-derives"
+        );
+    }
+
+    #[test]
+    fn delete_solid_retains_the_boundary_of_a_loose_face_it_shares() {
+        let mut topo = Topology::new();
+        let fixture = make_loose_profile(&mut topo);
+        let loops = topo.loops_of_face(fixture.profile).unwrap().to_vec();
+        let coedges = topo.face_loop(loops[0]).unwrap().coedges().to_vec();
+        assert!(topo.is_restore_fixed_point());
+
+        topo.delete_solid(fixture.solid).unwrap();
+
+        assert!(topo.solid(fixture.solid).is_err());
+        assert!(topo.face(fixture.cap).is_err());
+        assert!(topo.face(fixture.side).is_err());
+        for &edge in &fixture.own_edges {
+            assert!(topo.edge(edge).is_err());
+        }
+        for &vertex in &fixture.own_vertices {
+            assert!(topo.vertex(vertex).is_err());
+        }
+        for &edge in &fixture.shared_edges {
+            assert!(!topo.has_pcurve(edge, fixture.cap).unwrap());
+        }
+        assert!(!topo.has_pcurve(fixture.own_edges[0], fixture.side).unwrap());
+        assert_eq!(topo.face_loop(loops[0]).unwrap().coedges(), coedges);
+        assert_profile_intact(&topo, &fixture, &loops);
+        assert_eq!(topo.num_solids(), 0);
+        assert_eq!(topo.num_shells(), 0);
+        assert_eq!(topo.num_faces(), 1);
+        assert_eq!(topo.num_wires(), 1);
+        assert_eq!(topo.num_edges(), 3);
+        assert_eq!(topo.num_vertices(), 3);
+        assert_eq!(topo.num_loops(), 1);
+        assert_eq!(topo.num_coedges(), 3);
+        assert_eq!(topo.num_pcurves(), 3);
+    }
+
+    #[test]
+    fn delete_solid_retaining_a_loose_face_rolls_back_exactly() {
+        let mut topo = Topology::new();
+        let fixture = make_loose_profile(&mut topo);
+        let before = format!("{topo:?}");
+
+        let result =
+            crate::transaction::run_transacted(&mut topo, |topo| -> Result<(), TopologyError> {
+                topo.delete_solid(fixture.solid).unwrap();
+                Err(TopologyError::WireNotClosed)
+            });
+
+        assert!(result.is_err());
+        assert_eq!(format!("{topo:?}"), before);
+        assert!(topo.solid(fixture.solid).is_ok());
+        assert!(
+            topo.has_pcurve(fixture.shared_edges[0], fixture.cap)
+                .unwrap()
+        );
+        validate_boundary_authority(&topo).unwrap();
+    }
+
+    #[test]
+    fn checkpoint_restores_around_the_delete_keep_the_loose_face() {
+        let mut topo = Topology::new();
+        let fixture = make_loose_profile(&mut topo);
+        let loops = topo.loops_of_face(fixture.profile).unwrap().to_vec();
+        let before_delete = topo.clone();
+
+        topo.delete_solid(fixture.solid).unwrap();
+        let after_delete = topo.clone();
+        let (later, _, _) = make_triangle_solid(&mut topo, 10.0);
+        topo.restore_preserving_handle_slots(&after_delete);
+        assert!(topo.solid(later).is_err());
+        assert_profile_intact(&topo, &fixture, &loops);
+
+        // A checkpoint taken before the delete keeps the retirement and
+        // still finds the profile's authority live: nothing is re-derived.
+        topo.restore_preserving_handle_slots(&before_delete);
+        assert!(topo.solid(fixture.solid).is_err());
+        assert!(topo.face(fixture.cap).is_err());
+        assert_profile_intact(&topo, &fixture, &loops);
+    }
+
+    #[test]
+    fn delete_solid_skips_a_loose_face_that_already_dangles() {
+        // A loose face whose edge an older delete retired (the state this
+        // fix stops producing) must not block deleting an unrelated solid.
+        let mut topo = Topology::new();
+        let fixture = make_loose_profile(&mut topo);
+        topo.delete_solid(fixture.solid).unwrap();
+        assert!(topo.edges.retire(fixture.shared_edges[1]));
+        let (unrelated, _, _) = make_triangle_solid(&mut topo, 20.0);
+
+        topo.delete_solid(unrelated).unwrap();
+
+        assert!(topo.solid(unrelated).is_err());
+        assert!(topo.face(fixture.profile).is_ok());
+        assert!(topo.edge(fixture.shared_edges[0]).is_ok());
     }
 
     #[test]

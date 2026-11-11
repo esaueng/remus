@@ -765,10 +765,12 @@ fn failed_operation_retirements_are_revived_not_sticky() {
 }
 
 /// Takes the document off the restore fixed point the way a sketch workflow
-/// does: a profile face extruded (the solid's bottom cap shares the
-/// profile's edges), then the solid deleted. The shared edges retire with
-/// it, and so do the standalone profile face's index entries, while its
-/// loops and coedges stay live. A sheet body stands beside it.
+/// did before `deleteSolid` retained a loose face's boundary: a profile face
+/// extruded (the solid's bottom cap shares the profile's edges), then the
+/// solid deleted. The shared edges retired with it, and so did the
+/// standalone profile face's index entries, while its loops and coedges
+/// stayed live. The delete now keeps the profile, so its old retirement is
+/// applied directly. A sheet body stands beside it.
 pub(super) fn break_fixed_point(k: &mut RemusKernel) {
     let square = |x: f64| {
         vec![
@@ -791,6 +793,12 @@ pub(super) fn break_fixed_point(k: &mut RemusKernel) {
     let sheet = k.make_polygon(square(40.0)).unwrap();
     k.make_sheet_body(vec![sheet]).unwrap();
     k.delete_solid(body).unwrap();
+    let profile = k.resolve_face(profile).unwrap();
+    // The delete keeps the profile's boundary.
+    remus_topology::validation::validate_face_loops(k.topo(), profile).unwrap();
+    k.topo_mut()
+        .retire_loose_face_boundary_like_legacy_delete(profile)
+        .unwrap();
     assert!(!k.topo().is_restore_fixed_point());
 }
 
