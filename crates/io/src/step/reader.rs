@@ -11765,9 +11765,22 @@ fn decode_step_directive(text: &str, latin1: &mut bool, out: &mut String) -> usi
         let Some(rest) = text.strip_prefix(open) else {
             continue;
         };
-        let Some(end) = rest.find("\\X0\\") else {
+        // A valid payload is all hex up to its terminator. Stop at the first
+        // non-hex byte instead of searching the remaining string for X0:
+        // malformed openers otherwise rescan the same suffix quadratically.
+        // Hex runs contain no backslashes, so later attempts cannot overlap
+        // this run, even when decoding fails and consumes only the opener's
+        // first byte. The non-hex byte is also a UTF-8 character boundary.
+        let Some(end) = rest.bytes().position(|byte| {
+            #[cfg(test)]
+            directive_oracle_tests::record_scan_bytes(1);
+            !byte.is_ascii_hexdigit()
+        }) else {
             break;
         };
+        if !rest[end..].starts_with("\\X0\\") {
+            break;
+        }
         let decoded = hex_units(&rest[..end], width).and_then(|units| {
             if width == 4 {
                 let units: Vec<u16> = units
@@ -13062,6 +13075,10 @@ fn parse_bspline_curve_attrs(attrs: &str) -> Option<(usize, Vec<u64>, Vec<u32>, 
 
     Some((degree, cp_refs, mults, knots))
 }
+
+#[cfg(test)]
+#[path = "reader/directive_oracle_tests.rs"]
+mod directive_oracle_tests;
 
 #[cfg(test)]
 mod tests {
