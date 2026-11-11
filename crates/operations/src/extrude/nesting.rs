@@ -1,6 +1,6 @@
 //! Exact supported profile regions and separate caps for material islands.
 use super::{Face, FaceId, FaceSurface, OrientedEdge, Topology, Vec3, Wire, WireId};
-use remus_check::validate::planar_regions::{PlanarRegions, planar_regions};
+use remus_check::validate::planar_regions::{PlanarRegions, planar_regions_with_domains};
 
 pub(super) fn profile_regions(
     topo: &Topology,
@@ -13,7 +13,24 @@ pub(super) fn profile_regions(
             parents: vec![None; count],
         });
     }
-    match planar_regions(topo, face) {
+    // Read exactly the ranges the existing normalizer will later write, on
+    // missing trims only. This preflight does not mutate even the source
+    // edges, so refused private sweeps and WASM calls preserve the document.
+    let data = topo.face(face)?;
+    let mut domains = std::collections::BTreeMap::new();
+    for wire in std::iter::once(data.outer_wire()).chain(data.inner_wires().iter().copied()) {
+        for oe in topo.wire(wire)?.edges() {
+            let edge = topo.edge(oe.edge())?;
+            if edge.trim().is_none()
+                && !matches!(edge.curve(), remus_topology::edge::EdgeCurve::Line)
+            {
+                let range =
+                    crate::reconstruct_legacy_edge_domain(topo, oe.edge(), "profile nesting")?;
+                domains.insert(oe.edge(), range);
+            }
+        }
+    }
+    match planar_regions_with_domains(topo, face, &domains) {
         Ok(regions) => Ok(regions),
         Err(error) => Err(crate::OperationsError::Unsupported {
             operation: "profile sweep",

@@ -1093,11 +1093,10 @@ fn nurbs_is_quadratic_circle(
 /// Inner wires alternate hole/island/hole by containment depth. Islands get
 /// separate cap faces and outward-facing walls, as disjoint closed material
 /// components of the aggregate outer shell (the same representation as a
-/// disjoint fuse). They are never cavity shells. Multi-inner profiles require
-/// strictly separated simple line polygons or single-edge full circles;
-/// other carriers with overlapping conservative bounds, contacts, crossings
-/// and unresolved nesting return a typed
-/// error. Unnested single-hole profiles keep their existing behavior.
+/// disjoint fuse). They are never cavity shells. Multi-inner profiles use the
+/// shared certified reader for line, conic and positive-weight NURBS trims.
+/// Invalid or undecided nesting returns a typed unsupported error. Unnested
+/// single-hole profiles keep their existing behavior.
 ///
 /// # Errors
 ///

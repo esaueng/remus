@@ -479,3 +479,139 @@ fn nested_affine_nurbs_uses_the_existing_exact_line_certificate() {
             .is_empty()
     );
 }
+
+/// These three counts were independently measured on main before the nesting
+/// change. Their volumes also follow from the exact conic/Bezier Green areas.
+fn verify_overlapping_boxes(
+    mut topo: Topology,
+    holes: Vec<WireId>,
+    counts: (usize, usize, usize),
+    expected: f64,
+) {
+    let outer = make_polygon_wire(
+        &mut topo,
+        &[p(-20., -20.), p(20., -20.), p(20., 20.), p(-20., 20.)],
+        1e-9,
+    )
+    .unwrap();
+    let face = topo.add_face(Face::new(
+        outer,
+        holes,
+        FaceSurface::Plane { normal: z(), d: 5. },
+    ));
+    for scale in [1e-3_f64, 1., 1e3] {
+        for reversed in [false, true] {
+            let mut scaled = topo.clone();
+            crate::transform::transform_face(
+                &mut scaled,
+                face,
+                &remus_math::mat::Mat4::scale(scale, scale, scale),
+            )
+            .unwrap();
+            scaled.face_mut(face).unwrap().set_reversed(reversed);
+            let solid = extrude(&mut scaled, face, z(), 2. * scale).unwrap();
+            assert_eq!(solid_entity_counts(&scaled, solid).unwrap(), counts);
+            let volume = crate::measure::solid_volume(&scaled, solid, 0.01 * scale).unwrap();
+            assert!(
+                (volume / scale.powi(3) - expected).abs() < 1e-7,
+                "scale={scale}, reversed={reversed}, volume={volume}"
+            );
+            assert!(
+                crate::validate::validate_solid(&scaled, solid)
+                    .unwrap()
+                    .issues
+                    .is_empty()
+            );
+        }
+    }
+}
+
+#[test]
+fn unnested_ellipse_holes_with_overlapping_boxes_match_main() {
+    let mut topo = Topology::new();
+    let mut holes = Vec::new();
+    for (x, y) in [(0., 0.), (3., 1.5)] {
+        let c = Ellipse3D::new_with_ref(p(x, y), z(), 2., 1., Vec3::new(1., 0., 0.)).unwrap();
+        let vertices: Vec<_> = (0..4)
+            .map(|i| topo.add_vertex(Vertex::new(c.evaluate(f64::from(i) * PI / 2.), 1e-9)))
+            .collect();
+        let edges = (0..4)
+            .rev()
+            .map(|i| {
+                let mut edge = Edge::new(
+                    vertices[i],
+                    vertices[(i + 1) % 4],
+                    EdgeCurve::Ellipse(c.clone()),
+                );
+                edge.set_trim(Some((i as f64 * PI / 2., (i + 1) as f64 * PI / 2.)));
+                OrientedEdge::new(topo.add_edge(edge), false)
+            })
+            .collect();
+        holes.push(topo.add_wire(Wire::new(edges, true).unwrap()));
+    }
+    // Under (x/2,y), the ellipses become unit circles sqrt(4.5) apart.
+    verify_overlapping_boxes(topo, holes, (14, 36, 24), 3200. - 8. * PI);
+}
+
+#[test]
+fn unnested_spline_concavity_with_overlapping_boxes_matches_main() {
+    let mut topo = Topology::new();
+    let points: Vec<_> = [
+        (-5., -5.),
+        (5., -5.),
+        (5., -3.),
+        (-3., -3.),
+        (-3., 5.),
+        (-5., 5.),
+    ]
+    .into_iter()
+    .rev()
+    .map(|(x, y)| p(x, y))
+    .collect();
+    let hole = make_polygon_wire(&mut topo, &points, 1e-9).unwrap();
+    for oe in topo.wire(hole).unwrap().edges().to_vec() {
+        let edge = topo.edge(oe.edge()).unwrap();
+        let a = topo.vertex(edge.start()).unwrap().point();
+        let b = topo.vertex(edge.end()).unwrap().point();
+        let delta = b - a;
+        let curve = NurbsCurve::new(
+            2,
+            vec![0., 0., 0., 1., 1., 1.],
+            vec![
+                a,
+                a + delta * 0.5 + Vec3::new(delta.y(), -delta.x(), 0.) * 0.05,
+                b,
+            ],
+            vec![1.; 3],
+        )
+        .unwrap();
+        topo.edge_mut(oe.edge())
+            .unwrap()
+            .set_curve(EdgeCurve::NurbsCurve(curve));
+    }
+    let concavity = make_polygon_wire(
+        &mut topo,
+        &[p(-2., -2.), p(-2., -1.), p(-1., -1.), p(-1., -2.)],
+        1e-9,
+    )
+    .unwrap();
+    // The quadratic Green area is 36 - 0.05 * 336 / 3 = 30.4.
+    verify_overlapping_boxes(topo, vec![hole, concavity], (16, 42, 28), 3137.2);
+}
+
+#[test]
+fn unnested_split_circle_seam_alignment_matches_main() {
+    let mut topo = Topology::new();
+    let a = circle(&mut topo, 0., 4);
+    let x = -(PI + PI * 0.371).cos();
+    let b = circle(&mut topo, x, 2);
+    crate::transform::transform_wire(
+        &mut topo,
+        b,
+        &remus_math::mat::Mat4::translation(0., 1.99, 0.),
+    )
+    .unwrap();
+    // The center distance exceeds two radii; the ray meets an ordinary join.
+    assert!(x.hypot(1.99) > 2.);
+    verify_overlapping_boxes(topo, vec![a, b], (12, 30, 20), 3200. - 4. * PI);
+}

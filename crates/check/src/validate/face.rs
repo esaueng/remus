@@ -125,8 +125,8 @@ fn check_planar_inner_wire_orientation(
     let Some(outer_normal) = raw_newell_normal(&outer) else {
         return Ok(Vec::new());
     };
-    // Unsupported carriers retain the legacy check. Exact polygon/full-circle
-    // regions use depth, independent of their incoming winding.
+    // Undecided nesting retains the legacy winding check. Certified regions
+    // use depth, independent of their incoming winding.
     let regions = if face.inner_wires().len() > 1 {
         super::planar_regions::planar_regions(topo, face_id).ok()
     } else {

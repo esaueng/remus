@@ -1,11 +1,11 @@
-//! Trim-local conservative bounds and bounded line/arc separation proofs.
+//! Preserved trim-bound oracles; construction uses the shared nesting reader.
 use super::{CheckError, refuse};
 use remus_geometry::bounds::curve::{
     circle_arc_bounds, ellipse_arc_bounds, hyperbola_arc_bounds, line_segment_bounds,
     nurbs_curve_bounds, parabola_arc_bounds,
 };
 use remus_math::{aabb::Aabb3, nurbs::knot_ops::curve_split, vec::Point3};
-use remus_topology::{Topology, edge::EdgeCurve, wire::WireId};
+use remus_topology::edge::EdgeCurve;
 
 pub(super) struct Span {
     curve: EdgeCurve,
@@ -64,81 +64,6 @@ impl Span {
     }
 }
 
-pub(super) struct WireBounds {
-    pub(super) bounds: Aabb3,
-    pub(super) spans: Vec<Span>,
-    pub(super) sample: Point3,
-    pub(super) exact: bool,
-}
-#[allow(clippy::float_cmp)] // Exact empty parameter interval.
-pub(super) fn read(
-    topo: &Topology,
-    wire: WireId,
-    normal: remus_math::vec::Vec3,
-    d: f64,
-    eps: f64,
-) -> Result<WireBounds, CheckError> {
-    let wire = topo.wire(wire)?;
-    if !wire.is_closed() || wire.edges().is_empty() || wire.edges().len() > 256 {
-        return Err(refuse());
-    }
-    let mut spans = Vec::new();
-    let mut bounds: Option<Aabb3> = None;
-    let mut exact = true;
-    for (oe, next) in wire.edges().iter().zip(wire.edges().iter().cycle().skip(1)) {
-        let edge = topo.edge(oe.edge())?;
-        if oe.oriented_end(edge) != next.oriented_start(topo.edge(next.edge())?) {
-            return Err(refuse());
-        }
-        let start = topo.vertex(edge.start())?.point();
-        let end = topo.vertex(edge.end())?.point();
-        let (a, b) = edge.domain_with_endpoints(start, end);
-        if !a.is_finite() || !b.is_finite() || a == b {
-            return Err(refuse());
-        }
-        exact &= match edge.curve() {
-            EdgeCurve::Line => true,
-            EdgeCurve::Circle(c) => {
-                if c.normal().cross(normal).length() > 1e-12
-                    || (normal.dot(c.center() - Point3::new(0., 0., 0.)) - d).abs() > eps
-                    || (c.evaluate(a) - start).length() > eps
-                    || (c.evaluate(b) - end).length() > eps
-                    || (b - a).abs() > std::f64::consts::TAU + 1e-12
-                {
-                    return Err(refuse());
-                }
-                true
-            }
-            _ => crate::distance::edge::is_linear_curve(edge.curve()),
-        };
-        for p in [start, end] {
-            if p.0.iter().any(|v| !v.is_finite())
-                || (normal.dot(p - Point3::new(0., 0., 0.)) - d).abs() > eps
-            {
-                return Err(refuse());
-            }
-        }
-        let span = Span {
-            curve: edge.curve().clone(),
-            start,
-            end,
-            a,
-            b,
-        };
-        let box_ = span.bounds()?;
-        bounds = Some(bounds.map_or(box_, |old| old.union(box_)));
-        spans.push(span);
-    }
-    let bounds = bounds.ok_or_else(refuse)?;
-    let sample = spans[0].at(spans[0].a + (spans[0].b - spans[0].a) * 0.371);
-    Ok(WireBounds {
-        bounds,
-        spans,
-        sample,
-        exact,
-    })
-}
-
 // Interval subdivision proves separation on the native curves. No chord or
 // sampling approximation can turn a crossing into a decided containment.
 // Unresolved contacts and the deterministic work/depth limits refuse.
@@ -172,22 +97,6 @@ fn separated(
             && separated(a, &b.part(mid, b.b), eps, depth + 1, work)?)
     }
 }
-pub(super) fn wires_separated(
-    a: &WireBounds,
-    b: &WireBounds,
-    eps: f64,
-    work: &mut usize,
-) -> Result<bool, CheckError> {
-    for x in &a.spans {
-        for y in &b.spans {
-            if !separated(x, y, eps, 0, work)? {
-                return Ok(false);
-            }
-        }
-    }
-    Ok(true)
-}
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]

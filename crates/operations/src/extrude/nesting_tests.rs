@@ -245,7 +245,7 @@ fn nested_other_sweeps_refuse_before_allocating() {
 }
 
 #[test]
-fn nested_profiles_refuse_contacts_crossings_and_unknown_curves_atomically() {
+fn nested_profiles_refuse_contacts_crossings_and_exhausted_work_atomically() {
     for bounds in [[-7., -5., 0., 2.], [-8., -6., 0., 2.], [-30., -25., 0., 2.]] {
         let mut topo = Topology::new();
         let outer = rectangle(&mut topo, [-20., 20., -20., 20.], 1., false);
@@ -303,7 +303,9 @@ fn nested_profiles_refuse_contacts_crossings_and_unknown_curves_atomically() {
             .unwrap(),
         ));
     assert!(matches!(
-        extrude(&mut topo, face, Vec3::new(0., 0., 1.), 2.),
+        remus_check::properties::loop_nesting::with_nesting_work_limit(0, || {
+            extrude(&mut topo, face, Vec3::new(0., 0., 1.), 2.)
+        }),
         Err(crate::OperationsError::Unsupported { .. })
     ));
 }
