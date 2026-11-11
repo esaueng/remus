@@ -560,9 +560,16 @@ jobs:
       # build — so a new dep release cannot fail an unrelated PR. New
       # advisories against the pinned versions still fail (the advisory DB
       # is fetched live), and dependabot bumps re-audit the updated lock.
-      - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
+      #
+      # `cargo audit` fails on a vulnerability and prints informational
+      # advisories (unsound, unmaintained, yanked) without failing. The
+      # rustsec/audit-check action did the same, but reported a warning by
+      # creating a check run, which this job's read-only token cannot do, so
+      # any informational advisory failed the job.
+      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
-          token: ${{ github.token }}
+          tool: cargo-audit@0.23.0
+      - run: cargo audit
   docs:
     name: Documentation
     needs: changes
