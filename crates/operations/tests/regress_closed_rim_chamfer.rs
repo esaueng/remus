@@ -26,6 +26,7 @@ use std::collections::HashMap;
 
 use remus_blend::BlendError;
 use remus_check::classify::{ClassifyOptions, PointClassification, classify_point};
+use remus_math::compact_sort::CompactSort;
 use remus_math::curves::Circle3D;
 use remus_math::mat::Mat4;
 use remus_math::vec::{Point3, Vec3};
@@ -142,6 +143,55 @@ fn closed_rims(topo: &Topology, s: SolidId) -> Vec<EdgeId> {
             ed.start() == ed.end() && ed.curve().type_tag() == "circle"
         })
         .collect()
+}
+
+/// Snapshot every live entity and boundary use, including unrelated bodies.
+/// Rollback deliberately retires newly issued handle slots, so those dead
+/// slots are excluded from the unchanged-state contract.
+fn live_arena_state(topo: &Topology) -> String {
+    let boundaries: Vec<_> = topo
+        .faces()
+        .iter()
+        .map(|(id, face)| {
+            let loops: Vec<_> = face
+                .boundary_loops()
+                .iter()
+                .map(|&id| {
+                    let boundary = topo.face_loop(id).unwrap();
+                    let uses: Vec<_> = boundary
+                        .coedges()
+                        .iter()
+                        .map(|&id| {
+                            (
+                                id,
+                                topo.coedge(id).unwrap(),
+                                topo.coedge_pcurve(id).unwrap(),
+                            )
+                        })
+                        .collect();
+                    (id, boundary, uses)
+                })
+                .collect();
+            (id, loops, topo.pcurves_for_face(id))
+        })
+        .collect();
+    format!(
+        "{:?}",
+        (
+            topo.vertices().iter().collect::<Vec<_>>(),
+            topo.edges().iter().collect::<Vec<_>>(),
+            topo.wires().iter().collect::<Vec<_>>(),
+            topo.faces().iter().collect::<Vec<_>>(),
+            topo.shells().iter().collect::<Vec<_>>(),
+            topo.solids().iter().collect::<Vec<_>>(),
+            topo.compounds().iter().collect::<Vec<_>>(),
+            topo.compsolids().iter().collect::<Vec<_>>(),
+            (topo.num_loops(), topo.num_coedges(), topo.num_pcurves()),
+            boundaries,
+            topo.attributes(),
+            topo.journal(),
+        )
+    )
 }
 
 fn assert_curved_edge_authority(topo: &Topology, solid: SolidId) -> usize {
@@ -562,6 +612,211 @@ fn both_rims_chamfered_in_one_call() {
         (vol - want).abs() / want < 1e-6,
         "volume {vol} vs {want} (two chamfers)"
     );
+}
+
+/// Each setback fits the original wall, but together they cross. Refusal must
+/// roll back the first rim's assembly too, including unrelated arena state.
+#[test]
+fn overlapping_rim_chamfers_are_refused_without_changing_the_arena() {
+    for bore in [false, true] {
+        let mut source = Topology::new();
+        let solid = if bore {
+            let plate = primitives::make_box(&mut source, 20.0, 20.0, 3.0).unwrap();
+            let tool = primitives::make_cylinder(&mut source, 5.0, 5.0).unwrap();
+            transform_solid(&mut source, tool, &Mat4::translation(10.0, 10.0, -1.0)).unwrap();
+            boolean(&mut source, BooleanOp::Cut, plate, tool).unwrap()
+        } else {
+            primitives::make_cylinder(&mut source, 5.0, 3.0).unwrap()
+        };
+        let rims = closed_rims(&source, solid);
+        assert_eq!(rims.len(), 2);
+        for reverse in [false, true] {
+            let mut topo = source.clone();
+            let mut selected = rims.clone();
+            if reverse {
+                selected.reverse();
+            }
+            let before = live_arena_state(&topo);
+            let err = blend_ops::chamfer_v2(&mut topo, solid, &selected, 2.0, 2.0)
+                .err()
+                .expect("two 2 mm setbacks cannot fit a 3 mm wall");
+            match err {
+                OperationsError::Blend(BlendError::RadiusTooLarge { edge, max_radius }) => {
+                    assert_eq!(edge, selected[1]);
+                    assert!((max_radius - 1.0).abs() < 1e-9, "{max_radius}");
+                }
+                other => panic!("expected a typed size refusal, got {other:?}"),
+            }
+            assert_eq!(
+                live_arena_state(&topo),
+                before,
+                "bore={bore}, reverse={reverse}"
+            );
+        }
+    }
+}
+
+/// A first stripe that leaves less wall than the setback's own roundoff must
+/// not read as "the contact extends the wall": the second stripe is still
+/// bounded by what is left.
+#[test]
+fn rim_chamfers_that_nearly_exhaust_the_wall_are_refused() {
+    for (radius, height, slack) in [(5.0, 3.0, 2e-9), (5e6, 3e6, 1e-3)] {
+        let mut source = Topology::new();
+        let solid = primitives::make_cylinder(&mut source, radius, height).unwrap();
+        let rims = closed_rims(&source, solid);
+        assert_eq!(rims.len(), 2);
+        let d = height - slack;
+        for reverse in [false, true] {
+            let mut topo = source.clone();
+            let mut selected = rims.clone();
+            if reverse {
+                selected.reverse();
+            }
+            let before = live_arena_state(&topo);
+            let err = blend_ops::chamfer_v2(&mut topo, solid, &selected, d, d)
+                .err()
+                .expect("two setbacks of nearly the whole wall cannot both fit");
+            assert!(
+                matches!(
+                    err,
+                    OperationsError::Blend(BlendError::RadiusTooLarge { edge, .. })
+                        if edge == selected[1]
+                ),
+                "height={height}, reverse={reverse}: {err:?}"
+            );
+            assert_eq!(
+                live_arena_state(&topo),
+                before,
+                "height={height}, reverse={reverse}"
+            );
+        }
+    }
+}
+
+/// Preserve both fitting two-rim chamfers and a single larger setback. Each
+/// removed ring is a cylinder slice minus the retained cone frustum.
+#[test]
+fn thin_cylinder_rim_chamfers_match_the_closed_form() {
+    use std::f64::consts::PI;
+
+    let mut source = Topology::new();
+    let solid = primitives::make_cylinder(&mut source, 5.0, 3.0).unwrap();
+    let rims = closed_rims(&source, solid);
+    assert_eq!(rims.len(), 2);
+    for (count, distance) in [(2, 1.0_f64), (1, 2.0)] {
+        for reverse in [false, true] {
+            let mut topo = source.clone();
+            let mut selected = rims.clone();
+            if reverse {
+                selected.reverse();
+            }
+            selected.truncate(count);
+            let before = remus_io::arena_io::serialize_solid(&topo, solid).unwrap();
+            let result = blend_ops::chamfer_v2(&mut topo, solid, &selected, distance, distance)
+                .expect("setbacks fit the wall");
+            assert!(!result.is_partial);
+            assert_eq!(result.succeeded.len(), count);
+            assert_eq!(brep_edge_health(&topo, result.solid), (0, 0));
+            let report = remus_operations::validate::validate_solid(&topo, result.solid).unwrap();
+            assert!(report.is_valid(), "{report:?}");
+            assert_eq!(
+                surface_census(&topo, result.solid).get("cone"),
+                Some(&count)
+            );
+            let inner = 5.0 - distance;
+            let frustum = PI * distance * (25.0 + 5.0 * inner + inner * inner) / 3.0;
+            let ring = PI * 25.0 * distance - frustum;
+            let expected = PI * 25.0 * 3.0 - selected.len() as f64 * ring;
+            let actual = measure::solid_volume(&topo, result.solid, 0.01).unwrap();
+            assert!((actual - expected).abs() < 1e-9, "{actual} vs {expected}");
+            assert_eq!(
+                remus_io::arena_io::serialize_solid(&topo, solid).unwrap(),
+                before
+            );
+        }
+    }
+}
+
+/// The cylinder's upper rim meets a cone rather than a cap. Its per-stripe
+/// analytic reach check also predates the other rim's assembly.
+#[test]
+fn overlapping_cap_and_wall_rim_chamfers_are_refused() {
+    let mut source = Topology::new();
+    let wire = remus_topology::builder::make_polygon_wire(
+        &mut source,
+        &[
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(5.0, 0.0, 0.0),
+            Point3::new(5.0, 0.0, 3.0),
+            Point3::new(7.0, 0.0, 5.0),
+            Point3::new(0.0, 0.0, 5.0),
+        ],
+        1e-7,
+    )
+    .unwrap();
+    let face = remus_topology::builder::make_planar_face_from_wire(&mut source, wire).unwrap();
+    let solid = remus_operations::revolve::revolve(
+        &mut source,
+        face,
+        Point3::new(0.0, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, 1.0),
+        std::f64::consts::TAU,
+    )
+    .unwrap();
+    let mut rims: Vec<_> = closed_rims(&source, solid)
+        .into_iter()
+        .filter(|&edge| {
+            let EdgeCurve::Circle(circle) = source.edge(edge).unwrap().curve() else {
+                unreachable!()
+            };
+            (circle.radius() - 5.0).abs() < 1e-9
+        })
+        .collect();
+    rims.compact_sort_by(|&a, &b| {
+        source
+            .vertex(source.edge(a).unwrap().start())
+            .unwrap()
+            .point()
+            .z()
+            .total_cmp(
+                &source
+                    .vertex(source.edge(b).unwrap().start())
+                    .unwrap()
+                    .point()
+                    .z(),
+            )
+    });
+    assert_eq!(rims.len(), 2);
+    for reverse in [false, true] {
+        let mut selected = rims.clone();
+        if reverse {
+            selected.reverse();
+        }
+        // Each stripe qualifies on its own; this is a cumulative reach defect.
+        for &rim in &selected {
+            let mut topo = source.clone();
+            blend_ops::chamfer_v2(&mut topo, solid, &[rim], 2.0, 2.0).unwrap();
+        }
+        let mut topo = source.clone();
+        let before = live_arena_state(&topo);
+        let err = blend_ops::chamfer_v2(&mut topo, solid, &selected, 2.0, 2.0)
+            .err()
+            .expect("cap and wall setbacks cross on the common cylinder");
+        assert!(
+            matches!(err, OperationsError::Blend(BlendError::RadiusTooLarge { edge, max_radius })
+            if edge == selected[1] && (max_radius - 1.0).abs() < 1e-9),
+            "{err:?}"
+        );
+        assert_eq!(live_arena_state(&topo), before);
+
+        let result = blend_ops::chamfer_v2(&mut topo, solid, &selected, 1.0, 1.0)
+            .expect("two smaller setbacks fit the common cylinder");
+        assert!(!result.is_partial);
+        assert_eq!(brep_edge_health(&topo, result.solid), (0, 0));
+        let report = remus_operations::validate::validate_solid(&topo, result.solid).unwrap();
+        assert!(report.is_valid(), "{report:?}");
+    }
 }
 
 // ---------------------------------------------------------------------------
