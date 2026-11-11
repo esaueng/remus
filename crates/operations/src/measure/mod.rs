@@ -14,6 +14,8 @@ mod volume;
 pub(crate) mod volume_memo;
 
 #[cfg(test)]
+pub(crate) mod loop_fixtures;
+#[cfg(test)]
 pub(crate) mod test_support;
 
 pub use area::{

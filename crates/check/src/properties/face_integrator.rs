@@ -17,6 +17,7 @@ use remus_topology::edge::EdgeCurve;
 use remus_topology::face::{Face, FaceId, FaceSurface};
 
 use super::PropertiesOptions;
+use super::loop_nesting::{InnerLoopNesting, inner_loop_nesting};
 use crate::CheckError;
 
 mod adaptive;
@@ -26,11 +27,15 @@ mod boundary_area;
 #[cfg(test)]
 mod cylinder_band_tests;
 mod cylinder_green;
+#[cfg(test)]
+mod flat_loop_oracle_tests;
 mod knot_axis;
 #[cfg(test)]
 mod knot_rows_oracle_tests;
 mod loop_index;
 mod natural_rectangle;
+#[cfg(test)]
+mod nested_hole_tests;
 #[cfg(test)]
 mod nurbs_rows_oracle_tests;
 #[cfg(test)]
@@ -416,8 +421,9 @@ pub fn integrate_face_area(
 /// Area of a planar face from its Green's-theorem boundary moments, or
 /// `None` where that exact path declines.
 ///
-/// It declines a face that is not planar, a degenerate boundary, or a NURBS
-/// edge whose spans the adaptive rule cannot certify. Unlike
+/// It declines a face that is not planar, a degenerate boundary, a NURBS
+/// edge whose spans the adaptive rule cannot certify, or inner loops whose
+/// nesting cannot be certified (see [`super::loop_nesting`]). Unlike
 /// [`integrate_face_area`] it never substitutes the chord polygon, so a
 /// caller keeps its own fallback.
 ///
@@ -431,10 +437,13 @@ pub fn planar_face_exact_area(topo: &Topology, face_id: FaceId) -> Result<Option
     let Ok(normal) = normal.normalize() else {
         return Ok(None);
     };
-    Ok(
-        integrate_planar_face_exact(topo, face_id, normal, Point3::new(0.0, 0.0, 0.0))?
-            .map(|contribution| contribution.area),
-    )
+    match integrate_planar_face_exact(topo, face_id, normal, Point3::new(0.0, 0.0, 0.0)) {
+        Ok(contribution) => Ok(contribution.map(|contribution| contribution.area)),
+        // Uncertified nesting is a decline here: the caller's fallback
+        // measures the face on its mesh.
+        Err(CheckError::UndecidedLoopNesting(_)) => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 /// Area of a cylinder, cone, sphere or torus face by exact boundary
@@ -2718,8 +2727,9 @@ fn unwrap_angle(prev: f64, next: f64) -> f64 {
 
 /// Integrate a planar face using polygon fan triangulation.
 ///
-/// Inner wires (holes) are integrated the same way and subtracted from the
-/// outer-wire contribution.
+/// Inner wires are integrated the same way and subtracted from the
+/// outer-wire contribution, or added back for an island nested inside a hole
+/// (odd nesting depth).
 fn integrate_planar_face(
     topo: &Topology,
     face_id: FaceId,
@@ -2738,31 +2748,99 @@ fn integrate_planar_face(
     // The sampled-boundary fallback integrates its polygon in closed form, so
     // there is no quadrature for adaptive controls to refine: any validated
     // controls are satisfied and the sampled boundary is the stated residual.
+    integrate_planar_face_fan(topo, face_id, normal, reference)
+}
+
+/// The chord-polygon fallback of [`integrate_planar_face`]: each wire's
+/// sampled polygon fan-triangulated, with a unit `normal`.
+fn integrate_planar_face_fan(
+    topo: &Topology,
+    face_id: FaceId,
+    normal: Vec3,
+    reference: Point3,
+) -> Result<FaceContribution, CheckError> {
     let polygon = crate::util::face_polygon(topo, face_id)?;
     let mut contrib = integrate_planar_polygon(&polygon, normal, reference);
 
     let face = topo.face(face_id)?;
-    let inner: Vec<_> = face.inner_wires().to_vec();
-    for wid in inner {
-        let hole = crate::util::wire_polygon(topo, wid)?;
-        let h = integrate_planar_polygon(&hole, normal, reference);
-        contrib.area -= h.area;
-        contrib.volume -= h.volume;
-        contrib.volume_moment_x -= h.volume_moment_x;
-        contrib.volume_moment_y -= h.volume_moment_y;
-        contrib.volume_moment_z -= h.volume_moment_z;
-        contrib.volume_second_x -= h.volume_second_x;
-        contrib.volume_second_y -= h.volume_second_y;
-        contrib.volume_second_z -= h.volume_second_z;
-        contrib.volume_product_xy -= h.volume_product_xy;
-        contrib.volume_product_xz -= h.volume_product_xz;
-        contrib.volume_product_yz -= h.volume_product_yz;
-        contrib.centroid_x -= h.centroid_x;
-        contrib.centroid_y -= h.centroid_y;
-        contrib.centroid_z -= h.centroid_z;
+    let holes = face
+        .inner_wires()
+        .iter()
+        .map(|&wid| {
+            let hole = crate::util::wire_polygon(topo, wid)?;
+            Ok(integrate_planar_polygon(&hole, normal, reference))
+        })
+        .collect::<Result<Vec<_>, CheckError>>()?;
+    // Nested inner wires alternate void and material: an island inside a
+    // hole is added back, a hole inside that island subtracted again. A
+    // certified flat or invalid face subtracts every inner wire in order; an
+    // undecided one is refused, never guessed.
+    match planar_inner_nesting(topo, face_id, holes.len()) {
+        InnerLoopNesting::Nested(depths) => {
+            for (h, &depth) in holes.iter().zip(&depths) {
+                if depth % 2 == 0 {
+                    subtract_contribution(&mut contrib, h);
+                } else {
+                    add_contribution(&mut contrib, h);
+                }
+            }
+        }
+        InnerLoopNesting::Flat | InnerLoopNesting::Invalid => {
+            for h in &holes {
+                subtract_contribution(&mut contrib, h);
+            }
+        }
+        InnerLoopNesting::Undecided(reason) => {
+            return Err(CheckError::UndecidedLoopNesting(reason));
+        }
     }
 
     Ok(contrib)
+}
+
+/// The nesting of a planar face's inner loops, read only when it has at
+/// least two (one loop cannot nest).
+fn planar_inner_nesting(topo: &Topology, face_id: FaceId, inner: usize) -> InnerLoopNesting {
+    if inner < 2 {
+        return InnerLoopNesting::Flat;
+    }
+    inner_loop_nesting(topo, face_id)
+}
+
+/// Remove a hole's positive-area contribution from `contrib`.
+fn subtract_contribution(contrib: &mut FaceContribution, h: &FaceContribution) {
+    contrib.area -= h.area;
+    contrib.volume -= h.volume;
+    contrib.volume_moment_x -= h.volume_moment_x;
+    contrib.volume_moment_y -= h.volume_moment_y;
+    contrib.volume_moment_z -= h.volume_moment_z;
+    contrib.volume_second_x -= h.volume_second_x;
+    contrib.volume_second_y -= h.volume_second_y;
+    contrib.volume_second_z -= h.volume_second_z;
+    contrib.volume_product_xy -= h.volume_product_xy;
+    contrib.volume_product_xz -= h.volume_product_xz;
+    contrib.volume_product_yz -= h.volume_product_yz;
+    contrib.centroid_x -= h.centroid_x;
+    contrib.centroid_y -= h.centroid_y;
+    contrib.centroid_z -= h.centroid_z;
+}
+
+/// Add an island's positive-area contribution back to `contrib`.
+fn add_contribution(contrib: &mut FaceContribution, h: &FaceContribution) {
+    contrib.area += h.area;
+    contrib.volume += h.volume;
+    contrib.volume_moment_x += h.volume_moment_x;
+    contrib.volume_moment_y += h.volume_moment_y;
+    contrib.volume_moment_z += h.volume_moment_z;
+    contrib.volume_second_x += h.volume_second_x;
+    contrib.volume_second_y += h.volume_second_y;
+    contrib.volume_second_z += h.volume_second_z;
+    contrib.volume_product_xy += h.volume_product_xy;
+    contrib.volume_product_xz += h.volume_product_xz;
+    contrib.volume_product_yz += h.volume_product_yz;
+    contrib.centroid_x += h.centroid_x;
+    contrib.centroid_y += h.centroid_y;
+    contrib.centroid_z += h.centroid_z;
 }
 
 /// Integrate a planar polygon's contribution via fan triangulation, about
@@ -4095,7 +4173,9 @@ fn wire_newell_normal(
 /// Returns `Ok(None)` when any wire contains an edge type the exact path
 /// does not handle, or when the boundary is too
 /// degenerate to determine its plane; the caller then falls back to the
-/// chord-polygon fan path for the whole face.
+/// chord-polygon fan path for the whole face. Returns
+/// [`CheckError::UndecidedLoopNesting`] when the inner loops' nesting cannot
+/// be certified: the fan path would read the same nesting.
 fn integrate_planar_face_exact(
     topo: &Topology,
     face_id: FaceId,
@@ -4129,12 +4209,41 @@ fn integrate_planar_face_exact(
     let Some(mut moments) = planar_wire_monomial_moments(topo, outer_wire, origin, e1, e2)? else {
         return Ok(None);
     };
-    for wid in inner {
+    let mut holes = Vec::with_capacity(inner.len());
+    for &wid in &inner {
         let Some(hole) = planar_wire_monomial_moments(topo, wid, origin, e1, e2)? else {
             return Ok(None);
         };
-        for k in 0..10 {
-            moments[k] -= hole[k];
+        holes.push(hole);
+    }
+    // Nested inner wires alternate void and material: an island inside a
+    // hole is added back, a hole inside that island subtracted again. The
+    // nesting is read off the same edge trims these moments integrate. A
+    // certified flat or invalid face subtracts every inner wire in order; an
+    // undecided one is refused, never guessed.
+    match planar_inner_nesting(topo, face_id, holes.len()) {
+        InnerLoopNesting::Nested(depths) => {
+            for (hole, &depth) in holes.iter().zip(&depths) {
+                if depth % 2 == 0 {
+                    for k in 0..10 {
+                        moments[k] -= hole[k];
+                    }
+                } else {
+                    for k in 0..10 {
+                        moments[k] += hole[k];
+                    }
+                }
+            }
+        }
+        InnerLoopNesting::Flat | InnerLoopNesting::Invalid => {
+            for hole in &holes {
+                for k in 0..10 {
+                    moments[k] -= hole[k];
+                }
+            }
+        }
+        InnerLoopNesting::Undecided(reason) => {
+            return Err(CheckError::UndecidedLoopNesting(reason));
         }
     }
 
