@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794323900678,
+  "lastUpdate": 1794408601400,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -143513,6 +143513,304 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 85886,
             "range": "± 3240",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Peter",
+            "username": "petertoday",
+            "email": "171875562+petertoday@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "ea391e029a664d2ed604e17c63844f603afa67fa",
+          "message": "ci: run cargo audit directly (#1660)\n\n## Change\n\n`main` is red at `055672e1` (run 42998118730): `checks / Security Audit`\nfailed, and `CI Pass` with it. No vulnerability was found.\n\n- The audit reported one informational advisory: `RUSTSEC-2026-0486`,\n\"unsound\", against `rustix 1.1.4`.\n- `rustsec/audit-check` reports a warning by creating a check run. The\njob's token is read-only, so the action failed with \"Resource not\naccessible by integration\".\n\nThis PR runs `cargo audit` directly in `ci-checks.yml` and\n`daily-validation.yml`.\n\n- `cargo audit` fails on a vulnerability and prints informational\nadvisories (unsound, unmaintained, yanked) without failing. That is what\nthe action did when it could report.\n- It needs no write permission.\n- The prebuilt `cargo-audit@0.23.0` replaces a three-minute source build\nof the same version in every audit run.\n- `.cargo/audit.toml` still supplies the ignore list.\n\nThe action and its read-only token predate #1656, but since #1656 the\naudit also runs on PRs that touch dependency inputs or workflows, so\nuntil this lands those PRs fail on the same warning.\n\n## Verification\n\n- `cargo audit` 0.23.0 on the committed `Cargo.lock` (WSL): exit 0,\nprints `RUSTSEC-2026-0486` as \"1 allowed warning found\".\n- `python3 scripts/test_ci_native.py`: 13 of 13 pass, including a new\ntest that no job in `ci-checks.yml` uses `rustsec/audit-check` and that\nthe only write permission granted there is `id-token` for the coverage\nupload.\n- Pre-commit hook passed.\n\nThis PR touches `.github/workflows/`, so its own run selects the\ndependency tier and runs the new Security Audit step.\n\nNot verified: that `cargo audit` exits non-zero on a real vulnerability\nin this workspace. That is its documented behaviour; there is no\nvulnerable dependency here to test it against.\n\n## Compatibility and risks\n\n- An informational advisory no longer produces a separate check run; it\nappears in the job log only.\n- `rustix 1.1.4` still carries the advisory. Bumping it is a dependency\nchange and is not part of this PR.\n\n## WASM module tier\n\nNone.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-authored-by: Claude Fable 5.2 <noreply@anthropic.com>",
+          "timestamp": "2026-11-11T10:27:14Z",
+          "url": "https://github.com/esaueng/remus/commit/ea391e029a664d2ed604e17c63844f603afa67fa"
+        },
+        "date": 1794408598053,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1252051,
+            "range": "± 15020",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1331467,
+            "range": "± 7188",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 26893,
+            "range": "± 326",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 8286636,
+            "range": "± 17214",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 8267658,
+            "range": "± 41646",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 8286902,
+            "range": "± 75924",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 28612,
+            "range": "± 161",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 4637206,
+            "range": "± 23304",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 33056332,
+            "range": "± 678381",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 40,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 115,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 80,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 230,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 195,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 911,
+            "range": "± 8",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 169,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 390,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 248,
+            "range": "± 13",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 562,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 933,
+            "range": "± 9",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 3528,
+            "range": "± 17",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 36,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 85,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 85,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "surface_projection/cached_grid/3",
+            "value": 25389,
+            "range": "± 162",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "surface_projection/cached_grid/9",
+            "value": 147941,
+            "range": "± 377",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/bilinear_hit",
+            "value": 4032,
+            "range": "± 43",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_secant",
+            "value": 15776,
+            "range": "± 280",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_miss",
+            "value": 55541,
+            "range": "± 663",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/quadratic_hit",
+            "value": 5418,
+            "range": "± 38",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 521896,
+            "range": "± 13095",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 2658233,
+            "range": "± 8419",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 147131,
+            "range": "± 866",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 298010,
+            "range": "± 2345",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/plane_torus_grid",
+            "value": 361819,
+            "range": "± 1804",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 67154,
+            "range": "± 1025",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/narrow_bump_flank",
+            "value": 35305,
+            "range": "± 202",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_hit",
+            "value": 21171,
+            "range": "± 82",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_miss",
+            "value": 120451,
+            "range": "± 197",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_grid_build",
+            "value": 149855,
+            "range": "± 1479",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 652279,
+            "range": "± 34866",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 8117407,
+            "range": "± 155165",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 753477,
+            "range": "± 4356",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1262759,
+            "range": "± 2996",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 86592,
+            "range": "± 460",
             "unit": "ns/iter"
           }
         ]
