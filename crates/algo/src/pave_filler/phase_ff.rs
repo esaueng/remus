@@ -29,8 +29,8 @@ use crate::error::AlgoError;
 mod circular_cap_clip;
 mod cone_plane;
 mod cylinder_section_fit;
-mod torus_extent;
 mod plane_section_certificate;
+mod torus_extent;
 
 /// Default number of samples for NURBS intersection.
 const NURBS_SAMPLES: usize = 32;

@@ -25,10 +25,10 @@ mod closed_loops_separation_tests;
 mod containment;
 mod conversion;
 mod edge_splitting;
-mod periodic_face_chart;
-mod plane_chart;
 #[cfg(test)]
 mod hole_split_tests;
+mod periodic_face_chart;
+mod plane_chart;
 #[cfg(test)]
 mod rim_chain_oracle_tests;
 mod sampling;
