@@ -28,7 +28,7 @@ Outside the fan-in: the `wasm-size` comment job and `public-commit-metadata` in 
 | `msrv` | MSRV (1.88) | yes (`full` tier) | `cargo +1.88.0 check --workspace --all-features` |
 | `wasm-no-io` | WASM without optional I/O | yes (heavy) | clippy and tests for `remus-wasm --no-default-features` |
 | `wasm` | WASM Build & Validate | yes (`wasm` tier) | `cargo xtask wasm-build --defer-package-tests`, package contents |
-| `wasm-runtime` | WASM runtime (smoke / tarball-consumer) | yes (`wasm` tier) | the package suites against the built archive |
+| `wasm-runtime` | WASM runtime (smoke, tarball-consumer; three parts each) | yes (`wasm` tier) | the package suites against the built archive |
 | `w9-preflight` | W9 Preflight | yes (`wasm` tier) | `scripts/test-w9-preflight.sh` |
 | `wasm-size-gate` | WASM Size Gate | yes (skips without a package build or outside PRs) | base commit's `scripts/wasm-size-gate.mjs`: kernel hard limits, and a `WASM-Size:` line for kernel growth above 64 KiB raw |
 | `fuzz-check` | Fuzz Targets Compile | yes (heavy) | `cargo check --manifest-path fuzz/Cargo.toml --bins` |

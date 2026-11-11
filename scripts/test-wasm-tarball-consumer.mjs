@@ -55,9 +55,12 @@ import { runRevolveHistoryPackaged } from './revolve-history-packaged.mjs';
 import { runPlanarImprintPackaged } from './planar-imprint-packaged.mjs';
 import { runMixedSeamFilletPackaged } from './mixed-seam-fillet-packaged.mjs';
 import { runRotationalFaceEditsPackaged } from './rotational-face-edits-packaged.mjs';
+import { suiteParts } from './packaged-suite-parts.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(scriptDir, '..');
+// CI splits the suites below across jobs; see packaged-suite-parts.mjs.
+const part = suiteParts();
 const packageDirs = {
   'remus-wasm': resolve(projectRoot, 'crates/wasm/pkg'),
   'remus-wasm-io': resolve(projectRoot, 'crates/wasm-io/pkg'),
@@ -114,7 +117,7 @@ try {
   }
 
   const packageExports = consumerRequire('remus-wasm');
-  runSingleEdgeChamferPackaged(packageExports);
+  part(() => runSingleEdgeChamferPackaged(packageExports));
   assert.equal(typeof packageExports.RemusKernel, 'function', 'installed RemusKernel export');
   assert.equal(
     packageExports.BrepKernel,
@@ -129,50 +132,51 @@ try {
   const ioExports = consumerRequire('remus-wasm-io');
   assert.equal(typeof ioExports.RemusIo, 'function', 'installed RemusIo export');
 
-  runSecurityResourceRegressions({ ...packageExports, ...ioExports });
-  runBrepImportPackaged({ ...packageExports, ...ioExports });
-  runPackageQueueWitness({ ...packageExports, ...ioExports });
-  runPointedConeCutPackaged(packageExports);
-  runOpseqF3Packaged(packageExports);
-  runOpseqF17Packaged(packageExports);
-  runOpseqSphereCapPackaged(packageExports);
-  runOpseqTorusPropertiesPackaged(packageExports);
-  runDocumentCopyPackaged({ ...packageExports, ...ioExports });
-  runBoundedTabRolloverPackaged(packageExports);
-  runMixedSeamFilletPackaged(packageExports);
-  runRotationalFaceEditsPackaged({ ...packageExports, ...ioExports });
-  runPackagedPreviewWorkContract({
+  part(() => runSecurityResourceRegressions({ ...packageExports, ...ioExports }));
+  part(() => runBrepImportPackaged({ ...packageExports, ...ioExports }));
+  part(() => runPackageQueueWitness({ ...packageExports, ...ioExports }));
+  part(() => runPointedConeCutPackaged(packageExports));
+  part(() => runOpseqF3Packaged(packageExports));
+  part(() => runOpseqF17Packaged(packageExports));
+  part(() => runOpseqSphereCapPackaged(packageExports));
+  part(() => runOpseqTorusPropertiesPackaged(packageExports));
+  part(() => runDocumentCopyPackaged({ ...packageExports, ...ioExports }));
+  part(() => runBoundedTabRolloverPackaged(packageExports));
+  part(() => runMixedSeamFilletPackaged(packageExports));
+  part(() => runRotationalFaceEditsPackaged({ ...packageExports, ...ioExports }));
+  part(() => runPackagedPreviewWorkContract({
     kernelPackage: realpathSync(resolve(consumerDir, 'node_modules/remus-wasm')),
     ioPackage: realpathSync(resolve(consumerDir, 'node_modules/remus-wasm-io')),
-  });
-  runOpenZcadConsumerRegressions({ ...packageExports, ...ioExports });
-  runGridPatternPackaged(packageExports);
-  runRevolveHistoryPackaged(packageExports);
-  runPlanarImprintPackaged(packageExports);
-  runProjectCurvePackaged(packageExports);
-  runKernelCorrectnessPackaged(packageExports);
-  runNextKernelCorrectnessPackaged(packageExports);
-  runMaximumDistancePackaged(packageExports);
-  runDraftAnalysisPackaged(packageExports);
-  runWasmParserReferencesPackaged(packageExports);
-  runVariableFilletInputPackaged(packageExports);
-  runVariableFilletBoundariesPackaged(packageExports);
-  runFaceMoveQualityPackaged(packageExports);
-  runTaperedHollowSweepPackaged(packageExports);
-  runWasmRayNurbsPackaged(packageExports);
-  runOpseqF5Packaged(packageExports);
-  runOpseqF6Packaged(packageExports);
-  runOpseqOffsetWallPackaged(packageExports);
-  runOpseqOffsetRefusalPackaged(packageExports);
-  runOpseqOffsetCollapsePackaged(packageExports);
-  runOpseqF10Packaged(packageExports);
-  runSphereCylinderClosedSectionPackaged({ ...packageExports, ...ioExports });
-  runOpseqTorusSphereFusePackaged(packageExports);
-  runOpseqSphereTorusIntersectPackaged(packageExports);
-  runOpseqF13Packaged(packageExports);
-  runWasmRayTorusPackaged(packageExports);
-  runLinkedSketchPackaged(packageExports);
+  }));
+  runOpenZcadConsumerRegressions({ ...packageExports, ...ioExports }, part);
+  part(() => runGridPatternPackaged(packageExports));
+  part(() => runRevolveHistoryPackaged(packageExports));
+  part(() => runPlanarImprintPackaged(packageExports));
+  part(() => runProjectCurvePackaged(packageExports));
+  part(() => runKernelCorrectnessPackaged(packageExports));
+  part(() => runNextKernelCorrectnessPackaged(packageExports));
+  part(() => runMaximumDistancePackaged(packageExports));
+  part(() => runDraftAnalysisPackaged(packageExports));
+  part(() => runWasmParserReferencesPackaged(packageExports));
+  part(() => runVariableFilletInputPackaged(packageExports));
+  part(() => runVariableFilletBoundariesPackaged(packageExports));
+  part(() => runFaceMoveQualityPackaged(packageExports));
+  part(() => runTaperedHollowSweepPackaged(packageExports));
+  part(() => runWasmRayNurbsPackaged(packageExports));
+  part(() => runOpseqF5Packaged(packageExports));
+  part(() => runOpseqF6Packaged(packageExports));
+  part(() => runOpseqOffsetWallPackaged(packageExports));
+  part(() => runOpseqOffsetRefusalPackaged(packageExports));
+  part(() => runOpseqOffsetCollapsePackaged(packageExports));
+  part(() => runOpseqF10Packaged(packageExports));
+  part(() => runSphereCylinderClosedSectionPackaged({ ...packageExports, ...ioExports }));
+  part(() => runOpseqTorusSphereFusePackaged(packageExports));
+  part(() => runOpseqSphereTorusIntersectPackaged(packageExports));
+  part(() => runOpseqF13Packaged(packageExports));
+  part(() => runWasmRayTorusPackaged(packageExports));
+  part(() => runLinkedSketchPackaged(packageExports));
 
+  part.summary();
   console.log('\nInstalled-tarball consumer regressions passed');
 } finally {
   rmSync(temporaryRoot, { recursive: true, force: true });
