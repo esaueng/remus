@@ -22,11 +22,10 @@ jobs:
           persist-credentials: false
       - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
-          tool: cargo-deny@0.20.2
+          tool: cargo-deny@0.20.2,cargo-audit@0.23.0
       - run: cargo deny --all-features check
-      - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
-        with:
-          token: ${{ github.token }}
+      # Fails on a vulnerability; informational advisories are printed only.
+      - run: cargo audit
   msrv:
     if: github.repository == 'esaueng/remus' && github.ref == 'refs/heads/main' && github.ref_protected
     runs-on: ubuntu-24.04

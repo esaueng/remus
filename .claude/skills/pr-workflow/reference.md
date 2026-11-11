@@ -34,7 +34,7 @@ Outside the fan-in: the `wasm-size` comment job and `public-commit-metadata` in 
 | `fuzz-check` | Fuzz Targets Compile | yes (heavy) | `cargo check --manifest-path fuzz/Cargo.toml --bins` |
 | `render` | Software Rendering | yes (heavy) | `cargo test -p remus-render` on Mesa lavapipe |
 | `deny` | Cargo Deny | yes (`full` tier) | `cargo deny ... --all-features check` |
-| `audit` | Security Audit | yes (`full` tier) | `rustsec/audit-check` |
+| `audit` | Security Audit | yes (`full` tier) | `cargo audit` |
 | `docs` | Documentation | yes | `cargo doc --no-deps --all-features`, `mdbook build book` |
 | `wasm-size` (`ci.yml`) | WASM Size Report | **no** | PR-only comment with the same report (`wasm-size-report.yml`); fails with the gate |
 
@@ -136,7 +136,7 @@ Supply-chain jobs can fail on a PR that never touched dependencies. `Cargo.lock`
 
 ### cargo-deny / audit / OSV advisories
 
-The `deny` job runs cargo-deny-action against `deny.toml`; the `audit` job runs rustsec/audit-check on a freshly generated lockfile. Both gate PRs through `CI Pass`. OSV lives in its own workflow (`.github/workflows/osv-scan.yml`): on PRs it is report-only and does not gate; pushes to `main` and the Monday 06:00 UTC schedule fail closed.
+The `deny` job runs cargo-deny-action against `deny.toml`; the `audit` job runs `cargo audit` on a freshly generated lockfile. Both gate PRs through `CI Pass`. OSV lives in its own workflow (`.github/workflows/osv-scan.yml`): on PRs it is report-only and does not gate; pushes to `main` and the Monday 06:00 UTC schedule fail closed.
 
 Policy: do NOT widen the `deny.toml` license allowlist and do NOT add blanket ignore entries to get green. Current state to preserve: `licenses.allow` has eight permissive entries, the four non-obvious ones (CC0-1.0, ISC, BSD-2-Clause, BSD-3-Clause) carrying a provenance comment that names the dependency tree pulling them in, and there is no `[advisories] ignore` list at all (`[advisories]` sets only `unmaintained` and `yanked`).
 

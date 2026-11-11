@@ -67,6 +67,14 @@ class GateTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             GATE.validate(broken, flags(), "pull_request")
 
+    def test_no_job_needs_a_write_token_to_report_its_result(self):
+        # rustsec/audit-check reports an informational advisory by creating a
+        # check run; with this workflow's read-only token that failed the job.
+        self.assertNotIn("uses: rustsec/audit-check", CHECKS)
+        self.assertIn("      - run: cargo audit\n", CHECKS)
+        granted = set(re.findall(r"(?m)^ +([a-z-]+): write$", CHECKS))
+        self.assertEqual(granted, {"id-token"})  # coverage upload only
+
     def test_malformed_input_fails_closed(self):
         with self.assertRaises(ValueError):
             GATE.validate(results(self.ALWAYS), flags(), "")
