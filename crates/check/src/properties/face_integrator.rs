@@ -1102,9 +1102,14 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
                 // sample, so a loop that starts on the seam's far image
                 // (`u = hi`, a contact edge starting at its seam vertex)
                 // would put the whole face a period past the knot domain,
-                // where the surface clamps. Read the seam as its near image.
+                // where the surface clamps. Read the seam as its near image
+                // only in the angular chart that the trim unwrapping uses.
+                // A unit-knot spline's two end images bound its rectangle:
+                // collapsing the far one to zero would cut a wedge from it,
+                // since `unwrap_angle` cannot lift that unit-sized jump.
+                let angular_u = ((full.0.1 - full.0.0) - std::f64::consts::TAU).abs() <= 1e-12;
                 let seam_eps = 1e-9 * (full.0.1 - full.0.0);
-                if periodic_u && u >= full.0.1 - seam_eps {
+                if periodic_u && angular_u && u >= full.0.1 - seam_eps {
                     (full.0.0, v)
                 } else {
                     (u, v)
