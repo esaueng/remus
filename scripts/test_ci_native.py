@@ -128,9 +128,8 @@ class NativeBuildTests(unittest.TestCase):
             self.assertEqual(sorted(re.findall(r'#\[path = "(\w+)\.rs"\]\nmod (\w+);', written)),
                              [("a", "a"), ("b", "b"), ("match", "t_match")])
             args = NATIVE.build_args(harnesses, standalone)
-            self.assertEqual(args[:7], ["--cargo-profile", "ci-test", "--locked", "--workspace",
-                                        "--lib", "--bins", "--examples"])
-            self.assertEqual(args[7:], ["--test", "ci_harness_1", "--test", "ci_harness_2",
+            self.assertEqual(args[:6], ["--cargo-profile", "ci-test", "--locked", "--workspace", "--lib", "--bins"])
+            self.assertEqual(args[6:], ["--test", "ci_harness_1", "--test", "ci_harness_2",
                                         "--test", "ci_harness_3", "--test", "cli"])
 
     def test_a_harness_cargo_does_not_discover_fails_the_build(self):
@@ -167,6 +166,8 @@ class NativeBuildTests(unittest.TestCase):
         self.assertIn(f"name: Native tests (${{{{ matrix.shard }}}}/{total})", CHECKS)
         self.assertEqual(CHECKS.count("ci_native.py archive"), 1)
         self.assertIn("cargo test --workspace --profile ci-test --doc", CHECKS)
+        # `cargo test` links examples by default; the merged build does not.
+        self.assertIn("cargo build --workspace --examples --locked", CHECKS)
 
 
 if __name__ == "__main__":

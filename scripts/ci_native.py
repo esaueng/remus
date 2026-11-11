@@ -154,8 +154,8 @@ def verify_discovered(harnesses: list[Path], packages: list[dict]) -> None:
 
 
 def build_args(harnesses: list[Path], standalone: list[str]) -> list[str]:
-    # `--examples` keeps the link check `cargo test` gives examples by default.
-    args = [*PROFILE, "--workspace", "--lib", "--bins", "--examples"]
+    # Examples are linked by the Clippy job, off the path the partitions wait on.
+    args = [*PROFILE, "--workspace", "--lib", "--bins"]
     for name in [*sorted({path.stem for path in harnesses}), *standalone]:
         args += ["--test", name]
     return args

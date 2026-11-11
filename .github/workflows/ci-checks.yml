@@ -187,6 +187,9 @@ jobs:
           prefix-key: v1-native-workspace
           save-if: false
       - run: cargo clippy --all-targets --all-features -- -D warnings
+      # The native test build compiles no examples; link them here.
+      - name: Link examples
+        run: cargo build --workspace --examples --locked
   complexity-guards:
     # Deterministic work-counter tests that fail if a boolean hot path
     # regresses to O(N²) (issue #987). They need the `perf-counters` feature
