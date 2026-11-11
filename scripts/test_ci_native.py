@@ -122,15 +122,28 @@ class NativeBuildTests(unittest.TestCase):
             package = self.package(root, {"a": big, "b": big, "match": "#[test]\nfn ok() {}\n",
                                           "cli": "fn exe() { std::env::current_exe().unwrap(); }\n"})
             harnesses, standalone = NATIVE.write_harnesses([package])
-            self.assertEqual(harnesses, [f"{NATIVE.HARNESS_PREFIX}{n}" for n in (1, 2, 3)])
+            self.assertEqual(harnesses, [root / "tests" / f"{NATIVE.HARNESS_PREFIX}{n}.rs" for n in (1, 2, 3)])
             self.assertEqual(standalone, ["cli"])
-            written = "".join((root / "tests" / f"{name}.rs").read_text(encoding="utf-8") for name in harnesses)
+            written = "".join(path.read_text(encoding="utf-8") for path in harnesses)
             self.assertEqual(sorted(re.findall(r'#\[path = "(\w+)\.rs"\]\nmod (\w+);', written)),
                              [("a", "a"), ("b", "b"), ("match", "t_match")])
             args = NATIVE.build_args(harnesses, standalone)
-            self.assertEqual(args[:6], ["--cargo-profile", "ci-test", "--locked", "--workspace", "--lib", "--bins"])
-            self.assertEqual(args[6:], ["--test", "ci_harness_1", "--test", "ci_harness_2",
+            self.assertEqual(args[:7], ["--cargo-profile", "ci-test", "--locked", "--workspace",
+                                        "--lib", "--bins", "--examples"])
+            self.assertEqual(args[7:], ["--test", "ci_harness_1", "--test", "ci_harness_2",
                                         "--test", "ci_harness_3", "--test", "cli"])
+
+    def test_a_harness_cargo_does_not_discover_fails_the_build(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            package = self.package(root, {"a": "#[test]\nfn ok() {}\n"})
+            harnesses, _ = NATIVE.write_harnesses([package])
+            # `autotests = false`: Cargo still lists only the declared target.
+            with self.assertRaisesRegex(ValueError, "ci_harness_1"):
+                NATIVE.verify_discovered(harnesses, [package])
+            package["targets"].append({"kind": ["test"], "name": "ci_harness_1",
+                                       "src_path": str(harnesses[0]), "test": True})
+            NATIVE.verify_discovered(harnesses, [package])
 
     def test_stale_harnesses_are_removed_before_cargo_lists_targets(self):
         with tempfile.TemporaryDirectory() as tmp:

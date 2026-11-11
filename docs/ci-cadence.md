@@ -10,7 +10,9 @@ When this page and a workflow disagree, the workflow is right; fix the page.
   It calls `./.github/workflows/ci-checks.yml` from the same commit, so a
   change to either file takes effect in the pull request that makes it.
 - `ci-checks.yml` holds every job behind the required status check
-  `checks / CI Pass`, which is the only required check on `main`.
+  `checks / CI Pass`. `main` requires five checks: `checks / CI Pass`,
+  `Changed kernel requires a new version`, `commit-privacy`,
+  `history-privacy` and `dependency-review`.
 - `ci.yml` also runs, outside `CI Pass`: `public-commit-metadata`, the
   `WASM Size Report` PR comment (`wasm-size-report.yml`, it needs a write
   token) and, on a protected `main` push that built the package, the
@@ -63,9 +65,16 @@ cancellation or missing result fails the gate.
 - **Manual dispatch** of `ci.yml`: every tier; tick the `coverage` input to
   add coverage.
 
+A PR that changes the coverage tooling (`scripts/ci_coverage.py`, its tests,
+`.config/nextest.toml` or the coverage workflows) also runs
+`coverage-tooling.yml`: the archive and scheduler fixtures and the
+budget-sensitive instrumented replay.
+
 ## Labels
 
 - `ci:full` selects every tier on a PR.
+- Adding `ci:full` or `ci:coverage` does not start a run by itself. The label
+  is read by the next run: push a commit, or re-run CI.
 - `ci:coverage` adds the instrumented coverage job on a same-repository PR.
 - `ci:benchmark` runs `benchmark.yml` (`Kernel perf` and its publisher) on a
   PR; later pushes keep benchmarking while the label stays.

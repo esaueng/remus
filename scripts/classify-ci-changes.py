@@ -57,10 +57,11 @@ PACKAGE_DIRECTORIES = ("crates/wasm/pkg/", "crates/wasm-io/pkg/")
 # below the wasm bindings, so any change under `crates/` can break the
 # packaged kernel (PR #618 passed with the package build skipped, then failed
 # it on main).
-WASM_DIRECTORIES = ("crates/", "xtask/", "tools/vs-bench/")
-# `.cargo/config.toml` defines the `cargo xtask` alias the package build runs.
+# `.cargo/` defines the `cargo xtask` alias the package build runs; Cargo reads
+# `config` as well as `config.toml` there.
+WASM_DIRECTORIES = ("crates/", "xtask/", "tools/vs-bench/", ".cargo/")
 WASM_FILENAMES = {
-    "Cargo.lock", "Cargo.toml", "rust-toolchain.toml", ".cargo/config.toml",
+    "Cargo.lock", "Cargo.toml", "rust-toolchain.toml",
     "LICENSE-APACHE", "NOTICE",
     ".github/workflows/ci.yml", ".github/workflows/ci-checks.yml",
     ".github/workflows/publish.yml", ".github/workflows/wasm-size-report.yml",
@@ -164,7 +165,9 @@ def classify(paths: list[str], event: str, force_full: bool = False, coverage: b
 
 def changed_paths(base: str, head: str) -> list[str]:
     result = subprocess.run(
-        ["git", "diff", "--name-only", "-z", base, head],
+        # --no-renames lists both sides: moving `deny.toml` under `docs/` must
+        # still count as a change to `deny.toml`.
+        ["git", "diff", "--name-only", "--no-renames", "-z", base, head],
         check=True,
         capture_output=True,
     )

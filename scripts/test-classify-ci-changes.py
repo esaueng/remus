@@ -115,13 +115,14 @@ class ClassifyCiChangesTests(unittest.TestCase):
     def test_wasm_affecting_paths_select_the_package_build(self) -> None:
         for path in ("xtask/src/wasm.rs", "tools/vs-bench/workflows/w9-preflight.mjs",
                      "scripts/test-wasm-smoke.mjs", "scripts/test-w9-preflight.sh", "Cargo.lock",
-                     "rust-toolchain.toml", ".cargo/config.toml", "LICENSE-APACHE", "NOTICE",
-                     ".github/workflows/ci.yml", ".github/workflows/ci-checks.yml",
+                     "rust-toolchain.toml", ".cargo/config.toml", ".cargo/config", "LICENSE-APACHE",
+                     "NOTICE", ".github/workflows/ci.yml", ".github/workflows/ci-checks.yml",
                      ".github/workflows/publish.yml", ".github/workflows/wasm-size-report.yml"):
             with self.subTest(path=path):
-                result = self.classify([path, "README.md"])
-                self.assertTrue(result["heavy"])
-                self.assertTrue(result["wasm"])
+                for event in ("pull_request", "push"):
+                    result = self.classify([path, "README.md"], event)
+                    self.assertTrue(result["heavy"])
+                    self.assertTrue(result["wasm"])
 
     def test_dependency_and_toolchain_inputs_select_their_checks(self) -> None:
         for path in ("Cargo.lock", "Cargo.toml", "crates/math/Cargo.toml", "deny.toml", "clippy.toml",
@@ -202,8 +203,8 @@ class ClassifyCiChangesTests(unittest.TestCase):
             self.assertIn(f"{flag}: ${{{{ steps.classify.outputs.{flag} }}}}", text)
         self.assertIn("cargo xtask wasm-build", text)
 
-    def run_cli(self, files: dict[str, str], *args: str,
-                event: str = "pull_request") -> dict[str, str]:
+    def run_cli(self, files: dict[str, str], *args: str, event: str = "pull_request",
+                removed: tuple[str, ...] = ()) -> dict[str, str]:
         """Classify a real two-commit diff through the CLI the changes job runs."""
         with tempfile.TemporaryDirectory(prefix="remus-classify-") as tmp:
             git = fixture_git()
@@ -217,6 +218,8 @@ class ClassifyCiChangesTests(unittest.TestCase):
                 path = Path(tmp) / relative
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(content)
+            for relative in removed:
+                (Path(tmp) / relative).unlink()
             run("add", "-A")
             run("commit", "-q", "-m", "head")
             result = subprocess.run(
@@ -240,6 +243,12 @@ class ClassifyCiChangesTests(unittest.TestCase):
         self.assertEqual((queued["heavy"], queued["docs"], queued["mode"]), ("false", "true", "queue"))
         labelled = self.run_cli({"docs/kernel-maturity/roadmap.md": "# change\n"}, "--full")
         self.assertEqual((labelled["heavy"], labelled["full"], labelled["mode"]), ("true", "true", "full"))
+
+    def test_cli_classifies_both_sides_of_a_rename(self) -> None:
+        # Git reports a rename by its destination alone unless told otherwise.
+        outputs = self.run_cli({"docs/seed.txt": "seed\n"}, removed=("seed.txt",))
+        self.assertEqual(outputs["changed_count"], "2")
+        self.assertEqual(outputs["heavy"], "true")
 
     def test_cli_runs_no_heavy_tier_for_a_package_refresh(self) -> None:
         outputs = self.run_cli({"crates/wasm/pkg/package.json": "{}\n"}, event="push")

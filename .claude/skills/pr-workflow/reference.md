@@ -10,7 +10,7 @@ Deep catalog behind SKILL.md. Everything here was verified against the repo; whe
 [changes, repo-policy, secrets-scan, test, test-shards, clippy, complexity-guards, approx-census, coverage, msrv, wasm, wasm-runtime, w9-preflight, wasm-size-gate, wasm-no-io, fuzz-check, render, deny, audit, docs]
 ```
 
-`scripts/ci_gate.py` requires `changes`, `repo-policy` and `secrets-scan` to succeed, and accepts a skipped job only when the classifier deselected its tier (`docs/ci-cadence.md`, "Tier selection"). Branch protection on `main` requires it under the context name `checks / CI Pass` (see "Repo merge settings"). It is the only required status check.
+`scripts/ci_gate.py` requires `changes`, `repo-policy` and `secrets-scan` to succeed, and accepts a skipped job only when the classifier deselected its tier (`docs/ci-cadence.md`, "Tier selection"). Branch protection on `main` requires it under the context name `checks / CI Pass` (see "Repo merge settings"). The required status checks are `checks / CI Pass`, `Changed kernel requires a new version`, `commit-privacy`, `history-privacy` and `dependency-review`.
 
 Outside the fan-in: the `wasm-size` comment job and `public-commit-metadata` in `ci.yml`, and other workflows' checks such as the `WASM version guard` jobs (`wasm-version.yml`). Read them yourself. The size policy is enforced inside the fan-in by `wasm-size-gate`.
 

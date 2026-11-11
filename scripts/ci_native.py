@@ -124,25 +124,39 @@ def remove_harnesses(root: Path = ROOT) -> None:
         stale.unlink()
 
 
-def write_harnesses(packages: list[dict]) -> tuple[list[str], list[str]]:
-    """Write the harness files; return (harness target names, standalone target names)."""
-    harnesses, standalone = set(), set()
+def write_harnesses(packages: list[dict]) -> tuple[list[Path], list[str]]:
+    """Write the harness files; return (harness paths, standalone target names)."""
+    harnesses, standalone = [], set()
     for package in packages:
         merged, alone = split_targets(package)
         standalone.update(alone)
         tests_dir = Path(package["manifest_path"]).parent / "tests"
         for index, files in enumerate(chunks(merged), 1):
-            name = f"{HARNESS_PREFIX}{index}"
-            (tests_dir / f"{name}.rs").write_text(harness_source(files), encoding="utf-8", newline="\n")
-            harnesses.add(name)
+            path = tests_dir / f"{HARNESS_PREFIX}{index}.rs"
+            path.write_text(harness_source(files), encoding="utf-8", newline="\n")
+            harnesses.append(path)
     # A generated name must never shadow a real test, and the reverse.
     standalone = {name for name in standalone if not name.startswith(HARNESS_PREFIX)}
     return sorted(harnesses), sorted(standalone)
 
 
-def build_args(harnesses: list[str], standalone: list[str]) -> list[str]:
-    args = [*PROFILE, "--workspace", "--lib", "--bins"]
-    for name in [*harnesses, *standalone]:
+def verify_discovered(harnesses: list[Path], packages: list[dict]) -> None:
+    """Fail unless Cargo lists every written harness as a test target.
+
+    A package with `autotests = false` would not discover its harness, and
+    the tests merged into it would silently leave the suite.
+    """
+    discovered = {Path(target["src_path"]).resolve() for package in packages
+                  for target in package["targets"] if "test" in target["kind"]}
+    missing = [str(path) for path in harnesses if path.resolve() not in discovered]
+    if missing:
+        raise ValueError("Cargo does not build these generated harnesses: " + ", ".join(missing))
+
+
+def build_args(harnesses: list[Path], standalone: list[str]) -> list[str]:
+    # `--examples` keeps the link check `cargo test` gives examples by default.
+    args = [*PROFILE, "--workspace", "--lib", "--bins", "--examples"]
+    for name in [*sorted({path.stem for path in harnesses}), *standalone]:
         args += ["--test", name]
     return args
 
@@ -157,8 +171,9 @@ def main() -> None:
     if args.command == "archive":
         remove_harnesses()
         harnesses, standalone = write_harnesses(workspace_packages())
-        print(f"Merged integration tests into {len(harnesses)} harness name(s); "
-              f"{len(standalone)} target(s) stay standalone: {', '.join(standalone)}", flush=True)
+        verify_discovered(harnesses, workspace_packages())
+        print(f"Merged integration tests into {len(harnesses)} harness binaries; "
+              f"{len(standalone)} target name(s) stay standalone: {', '.join(standalone)}", flush=True)
         run(["cargo", "nextest", "archive", *build_args(harnesses, standalone),
              "--archive-file", str(args.archive)])
     else:
@@ -174,3 +189,5 @@ if __name__ == "__main__":
         main()
     except subprocess.CalledProcessError as error:
         sys.exit(error.returncode)
+    except ValueError as error:
+        sys.exit(str(error))
