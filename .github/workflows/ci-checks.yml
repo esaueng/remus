@@ -393,7 +393,9 @@ jobs:
           if-no-files-found: error
           retention-days: 1
   wasm-runtime:
-    name: WASM runtime (${{ matrix.suite }})
+    # Each suite runs as parts in parallel (scripts/packaged-suite-parts.mjs):
+    # these jobs follow the 11-minute package build on the longest CI path.
+    name: WASM runtime (${{ matrix.suite }} ${{ matrix.part }}/3)
     needs: [changes, wasm]
     if: needs.changes.outputs.wasm == 'true'
     runs-on: ubuntu-24.04
@@ -402,6 +404,7 @@ jobs:
       fail-fast: false
       matrix:
         suite: [smoke, tarball-consumer]
+        part: [1, 2, 3]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -418,6 +421,7 @@ jobs:
       - name: Run the complete package suite
         env:
           SUITE: ${{ matrix.suite }}
+          REMUS_PACKAGE_SUITE_PART: ${{ matrix.part }}/3
         run: |
           case "$SUITE" in
             smoke|tarball-consumer) node "scripts/test-wasm-$SUITE.mjs" ;;

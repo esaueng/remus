@@ -54,6 +54,7 @@ import { runBoundedTabRolloverPackaged } from './bounded-tab-rollover-packaged.m
 import { runPackagedPreviewWorkContract } from './perf/face-drag-session/packaged_contract.cjs';
 import { runLinkedSketchPackaged } from './linked-sketch-packaged.mjs';
 import { runRotationalFaceEditsPackaged } from './rotational-face-edits-packaged.mjs';
+import { suiteParts } from './packaged-suite-parts.mjs';
 import {
   runOpenZcadAnalyticFlangeBooleanRegression,
   runOpenZcadCylindricalFaceResizeRegression,
@@ -96,28 +97,31 @@ const {
 } = require(resolve(projectRoot, 'crates/wasm/pkg/remus_wasm_node.cjs'));
 const { RemusIo } = require(resolve(projectRoot, 'crates/wasm-io/pkg/remus_wasm_io_node.cjs'));
 
-runSecurityResourceRegressions({ RemusKernel, RemusIo });
-runSingleEdgeChamferPackaged({ RemusKernel });
-runBrepImportPackaged({ RemusKernel, RemusIo });
-runPackageQueueWitness({ RemusKernel, RemusIo });
-runPointedConeCutPackaged({ RemusKernel });
-runTruckNurbsReusePackaged({ RemusKernel });
-runWasmRayNurbsPackaged({ RemusKernel });
-runWasmParserReferencesPackaged({ RemusKernel });
-runVariableFilletInputPackaged({ RemusKernel });
-runVariableFilletBoundariesPackaged({ RemusKernel });
-runFaceMoveQualityPackaged({ RemusKernel });
-runTaperedHollowSweepPackaged({ RemusKernel });
-runOpseqF3Packaged({ RemusKernel });
-runOpseqF17Packaged({ RemusKernel });
-runOpseqSphereCapPackaged({ RemusKernel });
-runOpseqTorusPropertiesPackaged({ RemusKernel });
-runDocumentCopyPackaged({ RemusKernel, RemusIo });
-runBoundedTabRolloverPackaged({ RemusKernel, decodeEvolutionPayload });
-runPackagedPreviewWorkContract({
+// CI splits the suites below across jobs; see packaged-suite-parts.mjs.
+const part = suiteParts();
+
+part(() => runSecurityResourceRegressions({ RemusKernel, RemusIo }));
+part(() => runSingleEdgeChamferPackaged({ RemusKernel }));
+part(() => runBrepImportPackaged({ RemusKernel, RemusIo }));
+part(() => runPackageQueueWitness({ RemusKernel, RemusIo }));
+part(() => runPointedConeCutPackaged({ RemusKernel }));
+part(() => runTruckNurbsReusePackaged({ RemusKernel }));
+part(() => runWasmRayNurbsPackaged({ RemusKernel }));
+part(() => runWasmParserReferencesPackaged({ RemusKernel }));
+part(() => runVariableFilletInputPackaged({ RemusKernel }));
+part(() => runVariableFilletBoundariesPackaged({ RemusKernel }));
+part(() => runFaceMoveQualityPackaged({ RemusKernel }));
+part(() => runTaperedHollowSweepPackaged({ RemusKernel }));
+part(() => runOpseqF3Packaged({ RemusKernel }));
+part(() => runOpseqF17Packaged({ RemusKernel }));
+part(() => runOpseqSphereCapPackaged({ RemusKernel }));
+part(() => runOpseqTorusPropertiesPackaged({ RemusKernel }));
+part(() => runDocumentCopyPackaged({ RemusKernel, RemusIo }));
+part(() => runBoundedTabRolloverPackaged({ RemusKernel, decodeEvolutionPayload }));
+part(() => runPackagedPreviewWorkContract({
   kernelPackage: resolve(projectRoot, 'crates/wasm/pkg'),
   ioPackage: resolve(projectRoot, 'crates/wasm-io/pkg'),
-});
+}));
 
 const DEFLECTION = 0.1;
 
@@ -927,7 +931,7 @@ console.log(`ok - meshQuality: watertight, euler=${quality.eulerCharacteristic}`
 }
 
 // 11. Analytic preservation through an OpenZCAD-shaped flange boolean.
-runOpenZcadAnalyticFlangeBooleanRegression({ RemusKernel });
+part(() => runOpenZcadAnalyticFlangeBooleanRegression({ RemusKernel }));
 
 // 12. Versioned fillet/chamfer evolution contract on the shipped package.
 //
@@ -1828,68 +1832,69 @@ for (const operation of ['fillet', 'chamfer']) {
 }
 
 // 15. OpenZCAD mounting-bracket cylindrical-face resize and STEP round trip.
-runOpenZcadCylindricalFaceResizeRegression({ RemusKernel, decodeEvolutionPayload, RemusIo });
-runOpenZcadGeckoEditRegression({ RemusKernel, RemusIo });
+part(() => runOpenZcadCylindricalFaceResizeRegression({ RemusKernel, decodeEvolutionPayload, RemusIo }));
+part(() => runOpenZcadGeckoEditRegression({ RemusKernel, RemusIo }));
 
-runWideSphereCapRegression({ RemusKernel, RemusIo });
-runSphereCylinderWallRegression({ RemusKernel, RemusIo });
-runOffsetConeSphereRegression({ RemusKernel });
-runOffsetSphereCylinderRegression({ RemusKernel });
+part(() => runWideSphereCapRegression({ RemusKernel, RemusIo }));
+part(() => runSphereCylinderWallRegression({ RemusKernel, RemusIo }));
+part(() => runOffsetConeSphereRegression({ RemusKernel }));
+part(() => runOffsetSphereCylinderRegression({ RemusKernel }));
 
-runOffsetTorusSphereRegression({ RemusKernel });
-runTorusNotchRegression({ RemusKernel });
-runTangencyBandRegression({ RemusKernel });
-runPartialCylinderResizeRegression({ RemusKernel, RemusIo });
-runDirectEditHistoryRegression({ RemusKernel, RemusIo });
-runSurfaceReplacementHistoryRegression({ RemusKernel, RemusIo });
-runCylindricalRadiusHistoryRegression({ RemusKernel, RemusIo });
-runRotationalFaceEditsPackaged({ RemusKernel, RemusIo });
-runBlendResizeHistoryRegression({ RemusKernel, RemusIo });
-runDraftHistoryRegression({ RemusKernel, RemusIo });
-runDefeatureHistoryRegression({ RemusKernel, RemusIo });
-runHealingHistoryRegression({ RemusKernel, RemusIo });
-runUnifyHistoryRegression({ RemusKernel });
-runSewingHistoryRegression({ RemusKernel });
-runInnerWireHistoryRegression({ RemusKernel });
-runSplitVertexRefusalRegression({ RemusKernel });
-runBooleanScaleRegression({ RemusKernel });
-runAnisotropicBooleanRegression({ RemusKernel });
-runZeroAreaMeshExportRegression({ RemusKernel, RemusIo });
+part(() => runOffsetTorusSphereRegression({ RemusKernel }));
+part(() => runTorusNotchRegression({ RemusKernel }));
+part(() => runTangencyBandRegression({ RemusKernel }));
+part(() => runPartialCylinderResizeRegression({ RemusKernel, RemusIo }));
+part(() => runDirectEditHistoryRegression({ RemusKernel, RemusIo }));
+part(() => runSurfaceReplacementHistoryRegression({ RemusKernel, RemusIo }));
+part(() => runCylindricalRadiusHistoryRegression({ RemusKernel, RemusIo }));
+part(() => runRotationalFaceEditsPackaged({ RemusKernel, RemusIo }));
+part(() => runBlendResizeHistoryRegression({ RemusKernel, RemusIo }));
+part(() => runDraftHistoryRegression({ RemusKernel, RemusIo }));
+part(() => runDefeatureHistoryRegression({ RemusKernel, RemusIo }));
+part(() => runHealingHistoryRegression({ RemusKernel, RemusIo }));
+part(() => runUnifyHistoryRegression({ RemusKernel }));
+part(() => runSewingHistoryRegression({ RemusKernel }));
+part(() => runInnerWireHistoryRegression({ RemusKernel }));
+part(() => runSplitVertexRefusalRegression({ RemusKernel }));
+part(() => runBooleanScaleRegression({ RemusKernel }));
+part(() => runAnisotropicBooleanRegression({ RemusKernel }));
+part(() => runZeroAreaMeshExportRegression({ RemusKernel, RemusIo }));
 
 // 16. B6 plane-section/split packaged-runtime witnesses (actual WASM execution,
 // not native contract tests): ordinary/coincident/empty sections, cavity and
 // through-hole hole counts, degenerate InvalidInput, split halves with
 // volume-sum/material oracles, and typed refusals with session preservation.
-runB6SectionSplitPackaged({ RemusKernel });
+part(() => runB6SectionSplitPackaged({ RemusKernel }));
 
 // 17. Journaled circular-pattern packaged-runtime witnesses (actual WASM
 // execution, not native contract tests): origin count-2 and offset count-3
 // copies through direct, batch v1 and batch v2 with rotated-vertex,
 // volume/census, original-versus-generated, journal, and typed-refusal
 // oracles plus session preservation.
-runCircularPatternPackaged({ RemusKernel });
-runGridPatternPackaged({ RemusKernel });
-runRevolveHistoryPackaged({ RemusKernel });
-runPlanarImprintPackaged({ RemusKernel });
-runProjectCurvePackaged({ RemusKernel });
-runNextKernelCorrectnessPackaged({ RemusKernel });
-runMaximumDistancePackaged({ RemusKernel });
-runDraftAnalysisPackaged({ RemusKernel });
+part(() => runCircularPatternPackaged({ RemusKernel }));
+part(() => runGridPatternPackaged({ RemusKernel }));
+part(() => runRevolveHistoryPackaged({ RemusKernel }));
+part(() => runPlanarImprintPackaged({ RemusKernel }));
+part(() => runProjectCurvePackaged({ RemusKernel }));
+part(() => runNextKernelCorrectnessPackaged({ RemusKernel }));
+part(() => runMaximumDistancePackaged({ RemusKernel }));
+part(() => runDraftAnalysisPackaged({ RemusKernel }));
 
-runKernelCorrectnessPackaged({ RemusKernel });
-runOpseqF5Packaged({ RemusKernel });
-runOpseqF6Packaged({ RemusKernel });
-runOpseqOffsetWallPackaged({ RemusKernel });
-runOpseqOffsetRefusalPackaged({ RemusKernel });
-runOpseqOffsetCollapsePackaged({ RemusKernel });
-runOpseqF10Packaged({ RemusKernel });
-runSphereCylinderClosedSectionPackaged({ RemusKernel, RemusIo });
-runOpseqTorusSphereFusePackaged({ RemusKernel });
-runOpseqSphereTorusIntersectPackaged({ RemusKernel });
-runOpseqF13Packaged({ RemusKernel });
+part(() => runKernelCorrectnessPackaged({ RemusKernel }));
+part(() => runOpseqF5Packaged({ RemusKernel }));
+part(() => runOpseqF6Packaged({ RemusKernel }));
+part(() => runOpseqOffsetWallPackaged({ RemusKernel }));
+part(() => runOpseqOffsetRefusalPackaged({ RemusKernel }));
+part(() => runOpseqOffsetCollapsePackaged({ RemusKernel }));
+part(() => runOpseqF10Packaged({ RemusKernel }));
+part(() => runSphereCylinderClosedSectionPackaged({ RemusKernel, RemusIo }));
+part(() => runOpseqTorusSphereFusePackaged({ RemusKernel }));
+part(() => runOpseqSphereTorusIntersectPackaged({ RemusKernel }));
+part(() => runOpseqF13Packaged({ RemusKernel }));
 
-runWasmRayTorusPackaged({ RemusKernel });
+part(() => runWasmRayTorusPackaged({ RemusKernel }));
 
-runLinkedSketchPackaged({ RemusKernel });
+part(() => runLinkedSketchPackaged({ RemusKernel }));
 
 console.log('\nAll smoke tests passed');
+part.summary();

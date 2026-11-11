@@ -297,33 +297,34 @@ export const runRidgeChamferContactRegression = ({ RemusKernel }) => {
 
 /** `exports` merges the kernel package (`RemusKernel`, `decodeEvolutionPayload`)
  * with the translator package (`RemusIo`). */
-export const runOpenZcadConsumerRegressions = (exports) => {
-  runOpenZcadGeckoEditRegression(exports);
-  runRidgeChamferContactRegression(exports);
-  runOpenZcadAnalyticFlangeBooleanRegression(exports);
-  runOpenZcadCylindricalFaceResizeRegression(exports);
-  runPartialCylinderResizeRegression(exports);
-  runDirectEditHistoryRegression(exports);
-  runSurfaceReplacementHistoryRegression(exports);
-  runCylindricalRadiusHistoryRegression(exports);
-  runBlendResizeHistoryRegression(exports);
-  runDraftHistoryRegression(exports);
-  runDefeatureHistoryRegression(exports);
-  runHealingHistoryRegression(exports);
-  runUnifyHistoryRegression(exports);
-  runSewingHistoryRegression(exports);
-  runInnerWireHistoryRegression(exports);
-  runSplitVertexRefusalRegression(exports);
-  runWideSphereCapRegression(exports);
-  runSphereCylinderWallRegression(exports);
-  runOffsetConeSphereRegression(exports);
-  runOffsetSphereCylinderRegression(exports);
-  runOffsetTorusSphereRegression(exports);
-  runTorusNotchRegression(exports);
-  runTangencyBandRegression(exports);
-  runBooleanScaleRegression(exports);
-  runAnisotropicBooleanRegression(exports);
-  runZeroAreaMeshExportRegression(exports);
+// `part` lets a caller run a subset (packaged-suite-parts.mjs); the default runs all.
+export const runOpenZcadConsumerRegressions = (exports, part = run => run()) => {
+  part(() => runOpenZcadGeckoEditRegression(exports));
+  part(() => runRidgeChamferContactRegression(exports));
+  part(() => runOpenZcadAnalyticFlangeBooleanRegression(exports));
+  part(() => runOpenZcadCylindricalFaceResizeRegression(exports));
+  part(() => runPartialCylinderResizeRegression(exports));
+  part(() => runDirectEditHistoryRegression(exports));
+  part(() => runSurfaceReplacementHistoryRegression(exports));
+  part(() => runCylindricalRadiusHistoryRegression(exports));
+  part(() => runBlendResizeHistoryRegression(exports));
+  part(() => runDraftHistoryRegression(exports));
+  part(() => runDefeatureHistoryRegression(exports));
+  part(() => runHealingHistoryRegression(exports));
+  part(() => runUnifyHistoryRegression(exports));
+  part(() => runSewingHistoryRegression(exports));
+  part(() => runInnerWireHistoryRegression(exports));
+  part(() => runSplitVertexRefusalRegression(exports));
+  part(() => runWideSphereCapRegression(exports));
+  part(() => runSphereCylinderWallRegression(exports));
+  part(() => runOffsetConeSphereRegression(exports));
+  part(() => runOffsetSphereCylinderRegression(exports));
+  part(() => runOffsetTorusSphereRegression(exports));
+  part(() => runTorusNotchRegression(exports));
+  part(() => runTangencyBandRegression(exports));
+  part(() => runBooleanScaleRegression(exports));
+  part(() => runAnisotropicBooleanRegression(exports));
+  part(() => runZeroAreaMeshExportRegression(exports));
 };
 
 // W12a: the imported part, using the same journal/evolution entry points as

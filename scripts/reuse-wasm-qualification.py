@@ -17,8 +17,11 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY = "esaueng/remus"
 PACKAGE_ROOTS = ("crates/wasm/pkg", "crates/wasm-io/pkg")
-REQUIRED_JOBS = {"checks / WASM Build & Validate", "checks / WASM runtime (smoke)",
-                 "checks / WASM runtime (tarball-consumer)", "checks / CI Pass"}
+# Every part of both runtime suites; scripts/test-packaged-suite-parts.mjs
+# keeps this list in step with the matrix in ci-checks.yml.
+REQUIRED_JOBS = {"checks / WASM Build & Validate", "checks / CI Pass",
+                 *(f"checks / WASM runtime ({suite} {part}/3)"
+                   for suite in ("smoke", "tarball-consumer") for part in (1, 2, 3))}
 MAX_BYTES = 128 * 1024 * 1024
 INTEGRITY_REASONS = {"provenance_mismatch", "package_mismatch", "invalid_package_layout"}
 

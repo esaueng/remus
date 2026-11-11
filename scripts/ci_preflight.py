@@ -40,6 +40,7 @@ CHECKS = (
     Check("Gauntlet workflow contract", ("python3", "scripts/test-gauntlet-workflow.py")),
     Check("CI classifier tests", ("python3", "scripts/test-classify-ci-changes.py")),
     Check("CI gate and native runner tests", ("python3", "scripts/test_ci_native.py")),
+    Check("Package suite split tests", ("node", "--test", "scripts/test-packaged-suite-parts.mjs")),
     Check("Privacy regressions", ("python3", "-m", "unittest", "discover", "-s", ".github/privacy", "-p", "test_*.py")),
     Check("Unused dependencies", ("cargo", "machete")),
     Check("TOML format", ("taplo", "fmt", "--check")),
