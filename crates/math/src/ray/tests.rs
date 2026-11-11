@@ -431,13 +431,15 @@ fn reads_as_one_crossing(local: &[RayHit]) -> bool {
 
 /// Tangent lines to a torus, on the convex outer part (exterior tangency) and
 /// on the saddle-shaped inner part including the inner equator, across
-/// scales and translations. `intersect_line_torus` merges a double root into
-/// one root for a large share of them (about 18% of the outer ones before
-/// this change); `ray_torus` must never return such a contact as a single
-/// transversal crossing.
+/// scales and translations. Each line is tangent only to the rounding of its
+/// construction, so it misses by a hair, cuts a shallow chord (two roots), or
+/// stays unresolved (one tangential contact); `ray_torus` must never return
+/// such a contact as a single transversal crossing, and what it returns near
+/// the contact must have the parity of the tube distance's sign change
+/// across it.
 #[test]
 fn torus_tangent_lines_never_read_as_one_crossing() {
-    let mut merged = 0usize;
+    let mut outcomes = [0usize; 3];
     let mut total = 0usize;
     for &s in &[1e-3, 0.37, 1.0, 13.0, 1e3] {
         for &offset in &[0.0, 1e3, 1e6] {
@@ -459,14 +461,10 @@ fn torus_tangent_lines_never_read_as_one_crossing() {
                         total += 1;
                         let plain =
                             crate::analytic_intersection::intersect_line_torus(&tor, origin, d);
-                        if plain
+                        let crossings = local
                             .iter()
-                            .filter(|&&t| (t - 2.0 * s).abs() <= 0.05 * s)
-                            .count()
-                            == 1
-                        {
-                            merged += 1;
-                        }
+                            .filter(|h| h.kind != ContactKind::Tangential)
+                            .count();
                         // True parity over the window, from the implicit's
                         // sign at its ends. Near an asymptotic direction of
                         // the saddle-shaped inner part the line also crosses
@@ -483,6 +481,12 @@ fn torus_tangent_lines_never_read_as_one_crossing() {
                                 !reads_as_one_crossing(&local),
                                 "s {s:e} offset {offset:e} u {u} v {v}: {hits:?}"
                             );
+                            assert_eq!(
+                                crossings % 2,
+                                0,
+                                "s {s:e} offset {offset:e} u {u} v {v}: {hits:?}"
+                            );
+                            outcomes[local.len().min(2)] += 1;
                         }
                         // Same roots as the plain solve, in the same order.
                         assert_eq!(hits.len(), plain.len());
@@ -494,29 +498,27 @@ fn torus_tangent_lines_never_read_as_one_crossing() {
             }
         }
     }
-    // The fixture exercises the merged case it guards against.
+    // The fixture exercises both sides of tangency: hairline misses and
+    // shallow chords.
     assert!(
-        merged > total / 20,
-        "only {merged} of {total} tangents merged"
+        outcomes[0] > total / 20 && outcomes[2] > total / 20,
+        "{outcomes:?} of {total}"
     );
 }
 
-/// Merged double roots carry an even multiplicity.
+/// An exact tangency over the tube top (every number here is exact, and the
+/// contact is a quadruple root) is the one contact of its line: unresolved,
+/// tangential, adding no parity, in a window that holds the contact and is
+/// a few `1e-7` of the torus wide.
 #[test]
 fn torus_tangent_through_tube_top_reports_an_even_multiplicity() {
     // Horizontal line along +y over the tube top at x = R: tangent at (R, 0, r).
     let tor = ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), 3.0, 1.0).unwrap();
-    let counted = crate::analytic_intersection::intersect_line_torus_counted(
-        &tor,
-        Point3::new(3.0, -2.0, 1.0),
-        Vec3::new(0.0, 1.0, 0.0),
-    );
-    let local: Vec<_> = counted
-        .iter()
-        .filter(|(t, _)| (t - 2.0).abs() < 1e-3)
-        .collect();
-    let total: usize = local.iter().map(|(_, m)| m).sum();
-    assert!(total.is_multiple_of(2), "{counted:?}");
+    let hits = ray_torus(Point3::new(3.0, -2.0, 1.0), Vec3::new(0.0, 1.0, 0.0), &tor);
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert_eq!(hits[0].kind, ContactKind::Tangential, "{hits:?}");
+    assert!((hits[0].t - 2.0).abs() <= hits[0].spread, "{hits:?}");
+    assert!(hits[0].spread > 0.0 && hits[0].spread <= 1e-6, "{hits:?}");
 }
 
 proptest! {

@@ -66,9 +66,8 @@ pub fn ray_sphere(origin: Point3, direction: Vec3, sph: &SphericalSurface) -> Ra
 // Ray-torus
 // ---------------------------------------------------------------------------
 
-/// Intersect a ray with a torus: every real root, qualified so that a merged
-/// double root is not read as one crossing
-/// ([`remus_math::ray::ray_torus`]), unfiltered by sign.
+/// Intersect a ray with a torus: every real contact of the line, certified
+/// and qualified ([`remus_math::ray::ray_torus`]), unfiltered by sign.
 pub fn ray_torus(origin: Point3, direction: Vec3, tor: &ToroidalSurface) -> Vec<RayHit> {
     remus_math::ray::ray_torus(origin, direction, tor)
 }

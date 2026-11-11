@@ -657,8 +657,12 @@ struct TorusCut {
 
 impl TorusCut {
     fn new() -> Self {
-        let center = Point3::new(0.7, -0.3, 0.2);
-        let (major, minor, h): (f64, f64, f64) = (3.0, 1.25, 0.5);
+        Self::at(Point3::new(0.7, -0.3, 0.2), 3.0, 1.25, 0.5)
+    }
+
+    /// The cut of the torus `(major, minor)` at `center` by the plane `h`
+    /// above it.
+    fn at(center: Point3, major: f64, minor: f64, h: f64) -> Self {
         let half = minor.mul_add(minor, -h * h).sqrt();
         let axis_foot = center + Vec3::new(0.0, 0.0, h);
         Self {
@@ -1158,6 +1162,192 @@ fn torus_oval_on_a_straight_box_face_keeps_the_exact_in_box_arc() {
         x >= x0 - 1e-9 && x <= x1 + 1e-9 && y >= y0 - 1e-9 && y <= y1 + 1e-9
     };
     assert_kept_arc(&cut, &pieces, ends, expected_angle, &inside, "straight box");
+}
+
+/// A cut whose numbers are exact: the outer section circle has radius 4
+/// about the axis foot `(0.5, -0.25, 1)`.
+fn exact_torus_cut() -> TorusCut {
+    let cut = TorusCut::at(Point3::new(0.5, -0.25, 0.25), 3.0, 1.25, 0.75);
+    assert!(cut.outer.to_bits() == 4.0_f64.to_bits());
+    cut
+}
+
+/// A box side exactly tangent to the oval gives a line–torus contact with
+/// no certified crossing: a point of an unresolved window, not a split
+/// point. The trim defers the whole oval to the sample clip, although the
+/// oval also leaves the box through two other sides.
+#[test]
+fn torus_oval_tangent_to_a_box_side_defers() {
+    let cut = exact_torus_cut();
+    let corners = [
+        cut.in_plane(3.0, -1.0),
+        cut.in_plane(4.0, -1.0),
+        cut.in_plane(4.0, 1.5),
+        cut.in_plane(3.0, 1.5),
+    ];
+    // The side x = 4 touches the outer circle at (4, 0), exactly.
+    let contacts = remus_math::analytic_intersection::intersect_line_torus_contacts(
+        &cut.torus,
+        corners[1],
+        corners[2] - corners[1],
+    );
+    assert_eq!(contacts.len(), 1, "{contacts:?}");
+    assert!(!contacts[0].resolved, "{contacts:?}");
+    assert!(
+        contacts[0].t_lo <= 0.4 && 0.4 <= contacts[0].t_hi,
+        "{contacts:?}"
+    );
+    let mut topo = Topology::new();
+    let face = polygon_face(&mut topo, &corners, Vec3::new(0.0, 0.0, 1.0));
+    assert!(cut.trim(&mut topo, face).is_none());
+}
+
+/// A box side three billion long, `2^-50` inside the oval: its two
+/// crossings are `1.7e-7` apart, about one spacing of the side's own
+/// parameter there (`5.6e-17` of its length), with one `f64` between them.
+/// They are one unresolved even contact holding two certified roots, not
+/// two split points at the same parameter, and the trim defers.
+#[test]
+fn torus_oval_crossed_twice_within_the_edge_parameter_spacing_defers() {
+    let cut = exact_torus_cut();
+    // Exact in the plane's coordinates too: the foot is at `x = 0.5`.
+    let x1 = 4.0 - 2.0_f64.powi(-50);
+    let corners = [
+        cut.in_plane(3.0, -1e9),
+        cut.in_plane(x1, -1e9),
+        cut.in_plane(x1, 2e9),
+        cut.in_plane(3.0, 2e9),
+    ];
+    let contacts = remus_math::analytic_intersection::intersect_line_torus_contacts(
+        &cut.torus,
+        corners[1],
+        corners[2] - corners[1],
+    );
+    assert_eq!(contacts.len(), 1, "{contacts:?}");
+    let contact = contacts[0];
+    assert!(!contact.resolved && contact.roots == 2, "{contact:?}");
+    assert_eq!(
+        contact.kind,
+        remus_math::intersect::ContactKind::Tangential,
+        "{contact:?}"
+    );
+    // The crossings are at `y = ±√((4 − x1)(4 + x1)) = ±8.4e-8` about the
+    // side's third, `2.8e-17` of its length either side of `1/3`. The
+    // `f64` nearest `1/3` is `1.85e-17` below it, between the two, and its
+    // neighbours are `5.55e-17` away: the window is those two neighbours.
+    let third: f64 = 1.0 / 3.0;
+    let half = ((4.0 - x1) * (4.0 + x1)).sqrt() / 3e9;
+    assert!((half - 2.81e-17).abs() < 1e-19, "{half:e}");
+    assert_eq!(contact.t.to_bits(), third.to_bits(), "{contact:?}");
+    assert_eq!(contact.t_lo.to_bits(), third.next_down().to_bits());
+    assert_eq!(contact.t_hi.to_bits(), third.next_up().to_bits());
+    let mut topo = Topology::new();
+    let face = polygon_face(&mut topo, &corners, Vec3::new(0.0, 0.0, 1.0));
+    assert!(cut.trim(&mut topo, face).is_none());
+}
+
+/// Box sides too long for the solve to settle (`1e120`): each comes back as
+/// one open, unresolved window with no point to hold against the oval. The
+/// sides do cross the oval, so "no crossing on this branch" would keep or
+/// drop it whole; the trim defers instead.
+#[test]
+fn torus_oval_against_an_unsettled_box_side_defers() {
+    let cut = exact_torus_cut();
+    let corners = [
+        cut.in_plane(3.0, -1e120),
+        cut.in_plane(3.5, -1e120),
+        cut.in_plane(3.5, 1e119),
+        cut.in_plane(3.0, 1e119),
+    ];
+    let contacts = remus_math::analytic_intersection::intersect_line_torus_contacts(
+        &cut.torus,
+        corners[1],
+        corners[2] - corners[1],
+    );
+    assert!(!contacts.is_empty(), "the side crosses the oval");
+    assert!(
+        contacts
+            .iter()
+            .all(|c| !c.resolved && (c.t_lo.is_infinite() || c.t_hi.is_infinite())),
+        "{contacts:?}"
+    );
+    let mut topo = Topology::new();
+    let face = polygon_face(&mut topo, &corners, Vec3::new(0.0, 0.0, 1.0));
+    assert!(cut.trim(&mut topo, face).is_none());
+}
+
+/// A box side a little inside the oval cuts a small cap off it. The side's
+/// two crossings are resolved roots, and the kept arcs end exactly on them
+/// and on the crossings of the two other sides the oval leaves through.
+///
+/// The cap here is 1/64 deep. A cap shallower than the plane face's extent
+/// margin (1/1024 is) passes the trim's own inside test and is kept with the
+/// rest of the oval; that is the trim's resolution, not the crossings'.
+#[test]
+fn torus_oval_grazed_by_a_box_side_is_split_at_both_crossings() {
+    let cut = exact_torus_cut();
+    let depth: f64 = 1.0 / 64.0;
+    {
+        let (x0, x1, y0, y1) = (3.0, 4.0 - depth, -1.0, 1.5);
+        let corners = [
+            cut.in_plane(x0, y0),
+            cut.in_plane(x1, y0),
+            cut.in_plane(x1, y1),
+            cut.in_plane(x0, y1),
+        ];
+        let mut topo = Topology::new();
+        let face = polygon_face(&mut topo, &corners, Vec3::new(0.0, 0.0, 1.0));
+        let pieces = cut.trim(&mut topo, face).expect("the in-box arcs");
+        // (4 − x1)(4 + x1), exactly representable factors.
+        let half = ((4.0 - x1) * (4.0 + x1)).sqrt();
+        let x_at = |y: f64| y.mul_add(-y, 16.0).sqrt();
+        let expected = [
+            cut.in_plane(x_at(y0), y0),
+            cut.in_plane(x1, -half),
+            cut.in_plane(x1, half),
+            cut.in_plane(x_at(y1), y1),
+        ];
+        // Two arcs: from the y0 side up to the grazed side, and from the
+        // grazed side on to the y1 side. Every arc end is one of the four
+        // exact crossings, and each crossing ends exactly one arc.
+        let mut ends: Vec<Point3> = Vec::new();
+        for (i, piece) in pieces.iter().enumerate() {
+            let chained = |p: Point3, q: Point3| (p - q).length() < 1e-9;
+            if i == 0 || !chained(pieces[i - 1].p_end, piece.p_start) {
+                ends.push(piece.p_start);
+            }
+            if i + 1 == pieces.len() || !chained(piece.p_end, pieces[i + 1].p_start) {
+                ends.push(piece.p_end);
+            }
+            for k in 0..=32 {
+                let t = piece.t_range.0 + (piece.t_range.1 - piece.t_range.0) * f64::from(k) / 32.0;
+                let p = piece
+                    .curve
+                    .evaluate_with_endpoints(t, piece.p_start, piece.p_end);
+                let (x, y) = (p.x() - cut.axis_foot.x(), p.y() - cut.axis_foot.y());
+                assert!(
+                    (x.hypot(y) - 4.0).abs() < 1e-6,
+                    "depth {depth}: off the circle"
+                );
+                // The arcs are refitted through samples walked from the
+                // oval's nearest 1/1024 station to each crossing, so an arc
+                // can run up to half a station past a side before it
+                // returns to its exact end (below).
+                assert!(
+                    x <= x1 + 1e-3 && y >= y0 - 1e-3 && y <= y1 + 1e-3,
+                    "depth {depth}: kept sample ({x}, {y}) outside the face"
+                );
+            }
+        }
+        assert_eq!(ends.len(), 4, "depth {depth}: {ends:?}");
+        for want in expected {
+            assert_eq!(
+                ends.iter().filter(|p| (**p - want).length() < 1e-9).count(),
+                1,
+                "depth {depth}: {want:?} among {ends:?}"
+            );
+        }
+    }
 }
 
 // ── perform_with_context: B39 single-rim notch split ─────────────────────

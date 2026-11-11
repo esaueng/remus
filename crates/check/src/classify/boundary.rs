@@ -2657,12 +2657,23 @@ fn count_nurbs_hits_with_trim(
 /// Crossings of one ray over a quadric or torus face from its qualified hits.
 ///
 /// `count` is the face's trim count over a set of points on the ray. The
-/// transversal hits are counted in one call, exactly as bare roots were. A
-/// tangential contact adds no crossing as long as the trim answers alike at
-/// both ends of its root window (both roots inside: two crossings; both
-/// outside: none). One that straddles the trim, or an unclassified contact
-/// the trim may contain, leaves the parity open: the ray abstains with the
-/// same refusal as a NURBS graze, and the vote loop draws another ray.
+/// transversal hits are counted in one call, exactly as bare roots were.
+/// Every other hit is a window `[t - spread, t + spread]` that holds the
+/// contact's roots, and it is the window that is placed along the ray, not
+/// the representative `t`:
+///
+/// - wholly behind the origin: nothing;
+/// - wholly ahead: a tangential contact (a touch, or two crossings the ray's
+///   parameter cannot hold in separate windows) adds no crossing as long as
+///   the trim answers alike at both ends of the window (both roots inside:
+///   two crossings; both outside: none). One that straddles the trim, or an
+///   unclassified contact the trim may contain, leaves the parity open;
+/// - reaching the origin: how many of its roots are ahead is not known, and
+///   the origin may lie on the surface. Unless the trim excludes the whole
+///   window, the parity is open.
+///
+/// With the parity open the ray abstains with the same refusal as a NURBS
+/// graze, and the vote loop draws another ray.
 fn count_quadric_crossings(
     origin: Point3,
     direction: Vec3,
@@ -2682,15 +2693,15 @@ fn count_quadric_crossings(
             return Err(abstain());
         }
         let (lo, hi) = (hit.t - hit.spread, hit.t + hit.spread);
-        if hi <= RAY_T_MIN {
+        if hi < -RAY_T_MIN {
             continue;
         }
-        let mut inside = |t: f64| -> Result<bool, CheckError> {
-            Ok(t > RAY_T_MIN && count(&[origin + direction * t])? > 0)
-        };
+        let mut inside =
+            |t: f64| -> Result<bool, CheckError> { Ok(count(&[origin + direction * t])? > 0) };
         let resolved = if hit.kind == ContactKind::Tangential && lo > RAY_T_MIN {
             inside(lo)? == inside(hi)?
         } else {
+            // Unclassified, or a window that reaches the ray origin.
             !(inside(lo)? || inside(hit.t)? || inside(hi)?)
         };
         if !resolved {
@@ -2773,6 +2784,9 @@ pub fn surface_point_in_face(
 
 #[cfg(test)]
 mod nurbs_bump_ray_tests;
+
+#[cfg(test)]
+mod torus_contact_tests;
 
 #[cfg(test)]
 mod spherical_triangle_tests {

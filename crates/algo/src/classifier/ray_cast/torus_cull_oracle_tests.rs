@@ -352,15 +352,21 @@ fn misses_bare_box(torus: &ToroidalSurface, origin: Point3, dir: Vec3) -> bool {
     lo > hi
 }
 
-/// Lines just past small and thin tori, outside the carrier box. On many the
-/// solver keeps a root: a near-tangent pair whose imaginary parts fall under
-/// its `1e-7` filter, with a residual its filter accepts. The box's own
-/// rounding allowance does not reach those lines, so only the cull's margin
-/// keeps them uncleared; a cull without it fails here.
+/// Lines a hair either side of small and thin tori: outside the carrier box
+/// by `1e-9` to `1e-7`, or inside the tube by as much.
+///
+/// The iterative solver kept a root on many of the outside lines: a
+/// near-tangent pair whose imaginary parts fell under its `1e-7` filter,
+/// with a residual its filter accepted. Only the cull's margin kept those
+/// lines uncleared. The certified solver returns nothing for a line that
+/// misses, so here every line past the bare box has no root (and the cull
+/// may clear it or not), while every line with roots, the shallow chords
+/// above all, must stay uncleared.
 #[test]
 fn margin_leaves_near_miss_roots_to_the_solver() {
     let mut rng = Rng(0x94d0_49bb_1331_11eb);
     let (mut lines, mut rooted, mut past_bare_box) = (0_usize, 0_usize, 0_usize);
+    let mut chords = 0_usize;
     for k in 0..300 {
         let centre = Point3::new(
             rng.range(-5.0, 5.0),
@@ -378,7 +384,9 @@ fn margin_leaves_near_miss_roots_to_the_solver() {
         };
         let torus = ToroidalSurface::new(centre, big_r, small_r).unwrap();
         for _ in 0..40 {
-            let gap = 10_f64.powf(rng.range(-9.0, -7.0));
+            // Every fourth line dips into the tube instead of passing it.
+            let inward = lines % 4 == 3;
+            let gap = 10_f64.powf(rng.range(-9.0, -7.0)) * if inward { -1.0 } else { 1.0 };
             let side = if rng.next() < 0.5 { 1.0 } else { -1.0 };
             let (origin, dir) = match (rng.next() * 3.0) as usize {
                 // Level, over the top or bottom of the tube.
@@ -413,19 +421,27 @@ fn margin_leaves_near_miss_roots_to_the_solver() {
             };
             lines += 1;
             let roots = intersect_line_torus(&torus, origin, dir.normalize().unwrap());
+            if misses_bare_box(&torus, origin, dir) {
+                past_bare_box += 1;
+                assert!(
+                    roots.is_empty(),
+                    "roots {roots:?} on a line past the box: {torus:?} from {origin:?} along {dir:?}"
+                );
+            }
             if roots.is_empty() {
                 continue;
             }
             rooted += 1;
+            chords += usize::from(inward && roots.len() >= 2);
             assert!(
                 !torus_line_is_clear(&torus, origin, dir),
                 "cleared a line with roots {roots:?}: {torus:?} from {origin:?} along {dir:?}"
             );
-            past_bare_box += usize::from(misses_bare_box(&torus, origin, dir));
         }
     }
     assert!(
-        past_bare_box > 500,
-        "{past_bare_box} rooted lines past the bare box ({rooted} rooted of {lines})"
+        past_bare_box > 5000 && chords > 1500,
+        "{past_bare_box} lines past the bare box, {chords} shallow chords \
+         ({rooted} rooted of {lines})"
     );
 }

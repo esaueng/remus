@@ -438,58 +438,72 @@ pub fn ray_cone(origin: Point3, direction: Vec3, cone: &ConicalSurface) -> RayHi
     hits
 }
 
-/// Below this angle (radians) between a ray and the torus at a lone root,
-/// the root's partner may have been lost to the quartic solver's filters, so
-/// the root's parity is not certified. A double root resolves to about
-/// `sqrt(ε)` relative, i.e. a slope of order `1e-8`; this keeps two decades
-/// of margin while leaving any usefully transversal crossing alone.
-const TORUS_GRAZE_SLOPE: f64 = 1e-6;
-
-/// Intersect a ray with a torus: every real root of the quartic, qualified.
+/// Intersect a ray with a torus: every real contact of the line, qualified.
 ///
-/// Wraps [`crate::analytic_intersection::intersect_line_torus`], whose
-/// de-dup merges a tangent line's double root into one root that a parity
-/// count would read as one crossing. Here a root that absorbed an even number
-/// of candidates is [`ContactKind::Tangential`], an odd number above one is
-/// [`ContactKind::Unclassified`] (an inflectional contact may cross), and a
-/// lone root meeting the surface within `1e-6` rad of tangency is
-/// [`ContactKind::Unclassified`] too. `spread` is the solver's merge radius
-/// `1e-9 (1 + |t|)` for every non-transversal hit. The roots are the same
-/// values, in the same order, as `intersect_line_torus` returns.
+/// The hits are the certified contacts of
+/// [`crate::analytic_intersection::intersect_line_torus_contacts`], which
+/// states the full contract; here each becomes a [`RayHit`] (not filtered by
+/// the sign of `t`):
+///
+/// - [`ContactKind::Transversal`]: exactly one simple root, the quartic
+///   certified to change sign across it, crossing at least `1e-6` rad from
+///   tangency. `spread` is zero; `t` is the root to a few units in its last
+///   place.
+/// - [`ContactKind::Tangential`]: an even contact. The quartic has the same
+///   certified sign at both ends of `[t - spread, t + spread]`, so the roots
+///   inside are even in number and add no parity, wherever the trim agrees
+///   over the window. Either the arithmetic cannot tell the quartic from
+///   zero inside (the line touches the torus there, crosses it twice within
+///   that error, or just misses it), or the line crosses twice at points
+///   the ray's parameter cannot hold in separate windows (below).
+/// - [`ContactKind::Unclassified`] with a finite `spread`: an odd number of
+///   crossings inside `[t - spread, t + spread]`. One certified simple root
+///   within `1e-6` rad of tangency (the window is then its enclosure, a few
+///   units in the last place), an unresolved odd contact (an inflectional,
+///   triple contact along an asymptotic direction of the inner tube), or an
+///   odd number of crossings the parameter cannot separate. It adds one
+///   crossing to a parity count; a classifier may also distrust the ray.
+///
+/// The window `[t - spread, t + spread]` of a non-transversal hit holds
+/// every root of its contact, and `t` is a point of it, not necessarily a
+/// root. A consumer that filters hits by position (ahead of the ray origin,
+/// inside a trim) must filter the window, not `t`: a window that reaches the
+/// origin means the origin may lie on the surface. The windows of distinct
+/// hits are disjoint, and no root lies outside them.
+///
+/// Two roots are reported separately whenever double-double arithmetic can
+/// separate them on the line and two `f64` values of `t` lie strictly
+/// between them: a near-tangent ray that enters and leaves comes back as
+/// two hits, not as one tangential one. That is down to two or three units
+/// in the last place of `t`, and it is the ray's own limit: a torus so far
+/// along the ray, relative to its tube, that neighbouring `f64` values of
+/// `t` are farther apart than two crossings cannot have them reported one
+/// by one. Such crossings come back as one hit with the right parity (two
+/// that cancel as [`ContactKind::Tangential`]) and a window that holds
+/// them, about two units in the last place of `t` wide. `origin + t·dir` is
+/// then no closer to the surface than that spacing, so trim tests at the
+/// window's ends are only as fine as it is: start the ray nearer the torus
+/// to resolve them.
+///
+/// A line that is not certified (a zero or non-finite direction or origin
+/// has no chart; see the contract for the others) gets the iterative
+/// solver's roots, every one [`ContactKind::Unclassified`] with an infinite
+/// spread. The parameters are those of the same contacts as
+/// `intersect_line_torus` lists, in the same order; that list holds one
+/// more value for a hit whose crossings the parameter cannot separate but
+/// which round to different `f64` values.
 #[must_use]
 pub fn ray_torus(origin: Point3, direction: Vec3, torus: &ToroidalSurface) -> Vec<RayHit> {
-    let c = torus.center();
-    let (xa, ya, za) = (torus.x_axis(), torus.y_axis(), torus.z_axis());
-    let big_r = torus.major_radius();
-    let d = Vec3::new(xa.dot(direction), ya.dot(direction), za.dot(direction));
-    let d_len = d.length();
-    crate::analytic_intersection::intersect_line_torus_counted(torus, origin, direction)
+    crate::analytic_intersection::intersect_line_torus_contacts(torus, origin, direction)
         .into_iter()
-        .map(|(t, count)| {
-            let kind = if count % 2 == 0 {
-                ContactKind::Tangential
-            } else if count > 1 {
-                ContactKind::Unclassified
-            } else {
-                // Gradient of (ρ − R)² + z² in the torus frame.
-                let q = origin + direction * t - c;
-                let (a, b, z) = (xa.dot(q), ya.dot(q), za.dot(q));
-                let rho = a.hypot(b);
-                let k = if rho > 0.0 { (rho - big_r) / rho } else { 0.0 };
-                let grad = Vec3::new(k * a, k * b, z);
-                let norm = grad.length() * d_len;
-                if norm > 0.0 && grad.dot(d).abs() >= TORUS_GRAZE_SLOPE * norm {
-                    ContactKind::Transversal
-                } else {
-                    ContactKind::Unclassified
-                }
-            };
-            let spread = if kind == ContactKind::Transversal {
+        .map(|contact| RayHit {
+            t: contact.t,
+            kind: contact.kind,
+            spread: if contact.kind == ContactKind::Transversal {
                 0.0
             } else {
-                1e-9 * (1.0 + t.abs())
-            };
-            RayHit { t, kind, spread }
+                (contact.t - contact.t_lo).max(contact.t_hi - contact.t)
+            },
         })
         .collect()
 }
