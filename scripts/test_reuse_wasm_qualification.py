@@ -22,7 +22,7 @@ class QualificationTests(unittest.TestCase):
         self.run = {"id": 42, "event": "push", "head_branch": "main", "status": "completed",
                     "conclusion": "success", "path": ".github/workflows/ci.yml", "run_attempt": 1,
                     "head_repository": {"full_name": "esaueng/remus"}, "head_sha": "a" * 40}
-        self.jobs = {"total_count": 4, "jobs": [
+        self.jobs = {"total_count": len(subject["REQUIRED_JOBS"]), "jobs": [
             {"name": name, "status": "completed", "conclusion": "success", "started_at": "2026-11-01T12:01:00Z"}
             for name in subject["REQUIRED_JOBS"]]}
         self.artifact = {"expired": False, "created_at": "2026-11-01T12:00:00Z"}
@@ -40,11 +40,11 @@ class QualificationTests(unittest.TestCase):
     def test_each_required_job_must_have_succeeded_on_the_actual_artifact(self):
         self.assertTrue(subject["tested_artifact"](self.jobs, self.artifact))
         for state in ("failure", "cancelled", "skipped", None):
-            for index in range(4):
+            for index in range(len(self.jobs["jobs"])):
                 jobs = copy.deepcopy(self.jobs)
                 jobs["jobs"][index]["conclusion"] = state
                 self.assertFalse(subject["tested_artifact"](jobs, self.artifact))
-        self.assertFalse(subject["tested_artifact"](dict(self.jobs, total_count=5), self.artifact))
+        self.assertFalse(subject["tested_artifact"](dict(self.jobs, total_count=len(self.jobs["jobs"]) + 1), self.artifact))
         self.assertFalse(subject["tested_artifact"](self.jobs, dict(self.artifact, expired=True)))
         self.assertFalse(subject["tested_artifact"](self.jobs, dict(self.artifact, created_at="2026-11-01T12:02:00Z")))
 
