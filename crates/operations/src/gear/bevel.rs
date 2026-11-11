@@ -565,6 +565,7 @@ fn heel_outline(
             center: Point3::new(0.0, 0.0, 0.0),
             start: mirror(tip_point),
             end: tip_point,
+            ccw: true,
         },
         GearFaceRole::Tip { tooth: 0 },
     ));

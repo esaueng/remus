@@ -50,12 +50,15 @@ const MIN_LAND_FRACTION: f64 = 1e-9;
 pub(super) enum Segment {
     /// A straight piece.
     Line { start: Point3, end: Point3 },
-    /// A circular arc shorter than half a turn, swept from `start` to `end`
-    /// on the side that keeps it shorter than half a turn.
+    /// A circular arc swept from `start` to `end` about `center`,
+    /// counter-clockwise about `+z` when `ccw` and clockwise otherwise. The
+    /// direction is carried, not inferred, because a one-tooth outline has
+    /// lands longer than half a turn.
     Arc {
         center: Point3,
         start: Point3,
         end: Point3,
+        ccw: bool,
     },
     /// An involute flank, parameterized outward; `reversed` walks it inward.
     Flank { curve: NurbsCurve, reversed: bool },
@@ -83,10 +86,16 @@ impl Segment {
                 start: end,
                 end: start,
             },
-            Self::Arc { center, start, end } => Self::Arc {
+            Self::Arc {
+                center,
+                start,
+                end,
+                ccw,
+            } => Self::Arc {
                 center,
                 start: end,
                 end: start,
+                ccw: !ccw,
             },
             Self::Flank { curve, reversed } => Self::Flank {
                 curve,
@@ -95,16 +104,24 @@ impl Segment {
         }
     }
 
-    fn mapped(&self, map: impl Fn(Point3) -> Point3) -> Result<Self, GearError> {
+    /// The piece under a rotation about the origin (an orientation-keeping
+    /// map, so an arc keeps its direction).
+    fn rotated(&self, map: impl Fn(Point3) -> Point3) -> Result<Self, GearError> {
         Ok(match self {
             Self::Line { start, end } => Self::Line {
                 start: map(*start),
                 end: map(*end),
             },
-            Self::Arc { center, start, end } => Self::Arc {
+            Self::Arc {
+                center,
+                start,
+                end,
+                ccw,
+            } => Self::Arc {
                 center: map(*center),
                 start: map(*start),
                 end: map(*end),
+                ccw: *ccw,
             },
             Self::Flank { curve, reversed } => Self::Flank {
                 curve: map_curve(curve, &map)?,
@@ -153,10 +170,6 @@ pub(super) fn polar(radius: f64, angle: f64) -> Point3 {
     Point3::new(radius * cos, radius * sin, 0.0)
 }
 
-pub(super) fn angle_of(p: Point3) -> f64 {
-    p.y().atan2(p.x())
-}
-
 fn radius_of(p: Point3) -> f64 {
     p.x().hypot(p.y())
 }
@@ -199,6 +212,20 @@ fn fillet_center(base_radius: f64, psi0: f64, t: f64, along_line: f64) -> Point3
     );
     let (s0, c0) = psi0.sin_cos();
     rotate(local, c0, s0)
+}
+
+/// Unwrapped polar angle of [`fillet_center`]: `B(t)` sits at `−t` and the
+/// line of action is orthogonal to it, so the offset `along_line ≥ 0` turns
+/// the angle forward by `atan(along_line / r_b)`. With `along_line = r_b t`
+/// this is the flank point [`flank_angle`].
+fn fillet_center_angle(base_radius: f64, psi0: f64, t: f64, along_line: f64) -> f64 {
+    psi0 - t + along_line.atan2(base_radius)
+}
+
+/// Unwrapped polar angle `ψ₀ − (t − atan t)` of the upper flank at roll
+/// angle `t` (the tooth axis itself for `t = 0`).
+fn flank_angle(psi0: f64, t: f64) -> f64 {
+    psi0 - (t - t.atan())
 }
 
 /// The fitted upper flank over `[t0, t1]`.
@@ -283,16 +310,21 @@ pub(super) fn external_outline(tooth: &CircularTooth) -> Result<Outline, GearErr
 
     // Where the flank leaves the fillet (or the root circle).
     let involute_meets_fillet = rf.mul_add(rf, 2.0 * rf * rho) >= rb * rb;
-    let (t_start, center) = if involute_meets_fillet {
+    // `root_angle` is the root point's polar angle (the fillet center's, or
+    // the flank foot's without a fillet), unwrapped: a one-tooth outline's
+    // half-angles reach past half a turn, where `atan2` folds them back.
+    let (t_start, center, root_angle) = if involute_meets_fillet {
         let along = (rf + rho).mul_add(rf + rho, -rb * rb).sqrt();
         let t = (along - rho) / rb;
-        (t, fillet_center(rb, psi0, t, along))
+        (
+            t,
+            fillet_center(rb, psi0, t, along),
+            fillet_center_angle(rb, psi0, t, along),
+        )
     } else {
         let center_radius = rf + rho;
-        (
-            0.0,
-            polar(center_radius, psi0 + (rho / center_radius).asin()),
-        )
+        let angle = psi0 + (rho / center_radius).asin();
+        (0.0, polar(center_radius, angle), angle)
     };
     if t_tip - t_start <= MIN_LAND_FRACTION {
         return Err(GearError::refused(
@@ -315,14 +347,14 @@ pub(super) fn external_outline(tooth: &CircularTooth) -> Result<Outline, GearErr
     } else {
         tangent_point
     };
-    if angle_of(root_point) >= half_pitch * (1.0 - MIN_LAND_FRACTION) {
+    if root_angle >= half_pitch * (1.0 - MIN_LAND_FRACTION) {
         return Err(GearError::refused(
             GearRefusal::RootLandClosed,
             "adjacent teeth meet at the root circle; reduce the root fillet, \
              dedendum or backlash",
         ));
     }
-    if angle_of(tip_point) <= half_pitch * MIN_LAND_FRACTION {
+    if flank_angle(psi0, t_tip) <= half_pitch * MIN_LAND_FRACTION {
         return Err(GearError::refused(
             GearRefusal::PointedTip,
             "the flanks cross before the tip circle",
@@ -336,6 +368,7 @@ pub(super) fn external_outline(tooth: &CircularTooth) -> Result<Outline, GearErr
                 center: mirror(center),
                 start: mirror(root_point),
                 end: mirror(tangent_point),
+                ccw: false,
             },
             GearFaceRole::Fillet {
                 tooth: 0,
@@ -370,6 +403,7 @@ pub(super) fn external_outline(tooth: &CircularTooth) -> Result<Outline, GearErr
             center: Point3::new(0.0, 0.0, 0.0),
             start: mirror(tip_point),
             end: tip_point,
+            ccw: true,
         },
         GearFaceRole::Tip { tooth: 0 },
     ));
@@ -401,6 +435,7 @@ pub(super) fn external_outline(tooth: &CircularTooth) -> Result<Outline, GearErr
                 center,
                 start: tangent_point,
                 end: root_point,
+                ccw: false,
             },
             GearFaceRole::Fillet {
                 tooth: 0,
@@ -465,14 +500,15 @@ pub(super) fn internal_outline(space: &CircularTooth) -> Result<Outline, GearErr
     } else {
         tangent_point
     };
-    if angle_of(root_point) <= half_pitch * MIN_LAND_FRACTION {
+    // Unwrapped polar angles, as for the external outline.
+    if fillet_center_angle(rb, psi0, t_end, along) <= half_pitch * MIN_LAND_FRACTION {
         return Err(GearError::refused(
             GearRefusal::RootLandClosed,
             "the tooth space closes before the root circle; reduce the root \
              fillet or dedendum",
         ));
     }
-    if angle_of(tip_corner) >= half_pitch * (1.0 - MIN_LAND_FRACTION) {
+    if flank_angle(psi0, t_begin) >= half_pitch * (1.0 - MIN_LAND_FRACTION) {
         return Err(GearError::refused(
             GearRefusal::PointedTip,
             "adjacent tooth spaces meet before the tip circle",
@@ -508,6 +544,7 @@ pub(super) fn internal_outline(space: &CircularTooth) -> Result<Outline, GearErr
                 center: mirror(center),
                 start: mirror(tangent_point),
                 end: mirror(root_point),
+                ccw: true,
             },
             GearFaceRole::Fillet {
                 tooth: 0,
@@ -520,6 +557,7 @@ pub(super) fn internal_outline(space: &CircularTooth) -> Result<Outline, GearErr
             center: Point3::new(0.0, 0.0, 0.0),
             start: mirror(root_point),
             end: root_point,
+            ccw: true,
         },
         GearFaceRole::Root { gap: 0 },
     ));
@@ -529,6 +567,7 @@ pub(super) fn internal_outline(space: &CircularTooth) -> Result<Outline, GearErr
                 center,
                 start: root_point,
                 end: tangent_point,
+                ccw: true,
             },
             GearFaceRole::Fillet {
                 tooth: 1,
@@ -601,7 +640,7 @@ pub(super) fn replicate(
     for k in 0..teeth {
         let here = rotation(k);
         for (piece, role) in period {
-            segments.push(piece.mapped(here)?);
+            segments.push(piece.rotated(here)?);
             roles.push(role.shifted(k, teeth));
         }
         let next = rotation((k + 1) % teeth);
@@ -609,6 +648,7 @@ pub(super) fn replicate(
             center: Point3::new(0.0, 0.0, 0.0),
             start: here(last_end),
             end: next(first_start),
+            ccw: true,
         });
         roles.push(between.shifted(k, teeth));
     }
@@ -721,6 +761,7 @@ pub(super) fn rack_outline(rack: &RackTooth) -> Result<Outline, GearError> {
                     center: shift(center, dx),
                     start: right_root,
                     end: shift(tangent, dx),
+                    ccw: false,
                 },
                 GearFaceRole::Fillet {
                     tooth: k,
@@ -761,6 +802,7 @@ pub(super) fn rack_outline(rack: &RackTooth) -> Result<Outline, GearError> {
                     center: shift(left(center), dx),
                     start: shift(left(tangent), dx),
                     end: shift(left(root), dx),
+                    ccw: false,
                 },
                 GearFaceRole::Fillet {
                     tooth: k,
