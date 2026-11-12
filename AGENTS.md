@@ -155,6 +155,7 @@ Quick reference — find the right file for any task:
 | NURBS surface evaluation | `nurbs/surface.rs` |
 | Bit-identity oracle for `NurbsSurface::evaluate`'s u/v basis buffers against the verbatim pre-widening evaluate, degrees 1–12 (tests) | `nurbs/surface/eval_stack_oracle_tests.rs` |
 | Bit-identity oracle for the loop-based `evaluate` contraction, the lane first-order solve, the allocation-free `normal`, the fused `evaluate_and_partials_from`/`point_and_normal(_with)` and the per-axis `first_order_at` tables against the verbatim pre-change code, degrees 1–5, 9 and 11 (tests) | `nurbs/surface/contraction_oracle_tests.rs` |
+| The cached periodicity flags against the control-net comparisons kept verbatim, `with_control_points` against `NurbsSurface::new` on copied knots and weights bit for bit, and their work counts: one net comparison per surface, no knot-vector comparison per sample (tests) | `nurbs/surface/shared_storage_tests.rs` |
 | NURBS knot insertion/removal | `nurbs/knot_ops.rs` |
 | Certified NURBS reduction contracts and interval Bernstein bounds | `nurbs/reuse.rs`, `nurbs/reuse_bounds.rs` |
 | Bounded parallel curves for monotone planar spline profiles | `nurbs/planar_offset.rs` |
@@ -639,6 +640,9 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Independent global maximum-distance oracles (tests) | `distance/maximum_tests.rs` |
 | Tessellation | `tessellate/` (mod, face, planar, nonplanar, nurbs, solid, edge_sampling, mesh_ops, tests, tests/face_cache, tests/mesh_oracles, tests/mutation_oracles) |
 | Differential oracle for the interior grid's boundary scans: the `(i + 1) % n` indexed containment and clearance loops kept verbatim (tests) | `tessellate/nonplanar/polygon_scan_oracle_tests.rs` |
+| Whole display meshes with the NURBS chart frame built over shared and over copied knots and weights, bit for bit (tests) | `tessellate/nonplanar/frame_storage_oracle_tests.rs` |
+| Freshly generated swept bodies (threads, an in-place coil, a helical gear) and ordinary curved ones for the tessellator's bit-identity oracles (tests) | `tessellate/swept_fixtures.rs` |
+| Bit-identity oracle for the NURBS edge sizing measures that carry each segment's end over to the next, with pinned evaluation counts (tests) | `tessellate/edge_measure_oracle_tests.rs` |
 | Metric (first-fundamental-form) chart for an open NURBS face whose parameter lines run nearly parallel, e.g. a thread flank: interior grid and CDT in surface lengths; the averaged-metric `v` scale every other NURBS CDT chart triangulates with | `tessellate/nonplanar/sheared_chart.rs` |
 | Collapsed NURBS domain sides (a pole, or a blend rail stopping at a corner of its own radius) read from the control net, and monotone chart placement of the CDT boundary samples on them | `tessellate/nonplanar/collapsed_boundary.rs` |
 | One chart boundary for a torus face whose wires touch its outer wire: cycles sharing a vertex with it (seam slits and period-winding band boundaries left by face unification) spliced into one boundary walk | `tessellate/nonplanar/touching_cycles.rs` |

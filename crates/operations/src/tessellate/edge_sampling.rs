@@ -210,21 +210,40 @@ pub(super) fn measure_max_chord_deviation(
     u1: f64,
     n: usize,
 ) -> f64 {
+    max_chord_deviation_by(|t| nurbs.evaluate(t), u0, u1, n)
+}
+
+/// [`measure_max_chord_deviation`] over any curve evaluator.
+///
+/// Segment `i` ends at the parameter segment `i + 1` starts at, computed by
+/// the same expression, so its end point is carried over rather than
+/// evaluated again.
+fn max_chord_deviation_by(
+    mut evaluate: impl FnMut(f64) -> Point3,
+    u0: f64,
+    u1: f64,
+    n: usize,
+) -> f64 {
+    if n == 0 {
+        return 0.0;
+    }
     let mut max_dev: f64 = 0.0;
     #[allow(clippy::cast_precision_loss)]
+    let at = |i: usize| u0 + (u1 - u0) * (i as f64) / (n as f64);
+    let mut t0 = at(0);
+    let mut p0 = evaluate(t0);
     for i in 0..n {
-        let t0 = u0 + (u1 - u0) * (i as f64) / (n as f64);
-        let t1 = u0 + (u1 - u0) * ((i + 1) as f64) / (n as f64);
-        let p0 = nurbs.evaluate(t0);
-        let p1 = nurbs.evaluate(t1);
+        let t1 = at(i + 1);
+        let p1 = evaluate(t1);
         let mid_chord = Point3::new(
             (p0.x() + p1.x()) * 0.5,
             (p0.y() + p1.y()) * 0.5,
             (p0.z() + p1.z()) * 0.5,
         );
-        let mid_curve = nurbs.evaluate((t0 + t1) * 0.5);
+        let mid_curve = evaluate((t0 + t1) * 0.5);
         let dev = (mid_curve - mid_chord).length();
         max_dev = max_dev.max(dev);
+        (t0, p0) = (t1, p1);
     }
     max_dev
 }
@@ -240,15 +259,32 @@ pub(super) fn measure_max_segment_turn(
     u1: f64,
     n: usize,
 ) -> f64 {
+    max_segment_turn_by(|t| nurbs.tangent(t).ok(), u0, u1, n)
+}
+
+/// [`measure_max_segment_turn`] over any tangent evaluator (`None` where
+/// the curve has no tangent). Each segment's end tangent is carried over to
+/// the next segment, which starts at the same parameter.
+fn max_segment_turn_by(
+    mut tangent: impl FnMut(f64) -> Option<Vec3>,
+    u0: f64,
+    u1: f64,
+    n: usize,
+) -> f64 {
+    if n == 0 {
+        return 0.0;
+    }
     let mut max_turn: f64 = 0.0;
     #[allow(clippy::cast_precision_loss)]
+    let at = |i: usize| u0 + (u1 - u0) * (i as f64) / (n as f64);
+    let mut start = tangent(at(0));
     for i in 0..n {
-        let t0 = u0 + (u1 - u0) * (i as f64) / (n as f64);
-        let t1 = u0 + (u1 - u0) * ((i + 1) as f64) / (n as f64);
-        if let (Ok(a), Ok(b)) = (nurbs.tangent(t0), nurbs.tangent(t1)) {
+        let end = tangent(at(i + 1));
+        if let (Some(a), Some(b)) = (start, end) {
             let dot = a.dot(b).clamp(-1.0, 1.0);
             max_turn = max_turn.max(dot.acos());
         }
+        start = end;
     }
     max_turn
 }
@@ -885,3 +921,7 @@ pub(super) fn sample_wire_positions(
 
     Ok(positions)
 }
+
+#[cfg(test)]
+#[path = "edge_measure_oracle_tests.rs"]
+mod measure_oracle_tests;

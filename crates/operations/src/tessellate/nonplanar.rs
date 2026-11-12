@@ -2861,6 +2861,10 @@ mod row_containment_tests;
 #[path = "nonplanar/band_emit_oracle_tests.rs"]
 mod band_emit_oracle_tests;
 
+#[cfg(test)]
+#[path = "nonplanar/frame_storage_oracle_tests.rs"]
+mod frame_storage_oracle_tests;
+
 /// CDT-based tessellation for non-planar faces with exact boundary constraints.
 ///
 /// Projects shared edge points into (u,v) parameter space, generates interior
@@ -4294,19 +4298,31 @@ pub(super) struct NurbsFrame {
 impl NurbsFrame {
     pub(super) fn new(surface: &remus_math::nurbs::surface::NurbsSurface) -> Option<Self> {
         let anchor = *surface.control_points().first()?.first()?;
-        let rel = remus_math::nurbs::surface::NurbsSurface::new(
-            surface.degree_u(),
-            surface.degree_v(),
-            surface.knots_u().to_vec(),
-            surface.knots_v().to_vec(),
-            surface
-                .control_points()
-                .iter()
-                .map(|row| row.iter().map(|&p| self_relative(p, anchor)).collect())
-                .collect(),
-            surface.weights().to_vec(),
-        )
-        .ok()?;
+        let net: Vec<Vec<Point3>> = surface
+            .control_points()
+            .iter()
+            .map(|row| row.iter().map(|&p| self_relative(p, anchor)).collect())
+            .collect();
+        // The surface's own knots and weights, shared rather than copied:
+        // every interior sample asks whether the pair has the same bases
+        // (`point_and_normal_in`), and copies answer by comparing both knot
+        // vectors, which grow with a sweep's turns.
+        #[cfg(not(test))]
+        let rel = surface.with_control_points(net);
+        #[cfg(test)]
+        let rel = if frame_storage_oracle_tests::copy_storage() {
+            remus_math::nurbs::surface::NurbsSurface::new(
+                surface.degree_u(),
+                surface.degree_v(),
+                surface.knots_u().to_vec(),
+                surface.knots_v().to_vec(),
+                net,
+                surface.weights().to_vec(),
+            )
+        } else {
+            surface.with_control_points(net)
+        };
+        let rel = rel.ok()?;
         let grid = remus_math::nurbs::projection::SurfaceSeedGrid::for_surface(&rel);
         Some(Self {
             anchor,
