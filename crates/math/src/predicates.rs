@@ -65,7 +65,23 @@ pub fn in_circle(a: Point2, b: Point2, c: Point2, d: Point2) -> f64 {
 /// number: non-zero means the point is inside.
 #[must_use]
 pub fn winding_number(point: Point2, polygon: &[Point2]) -> i32 {
-    let n = polygon.len();
+    winding_number_of(point, polygon.len(), |i| polygon[i])
+}
+
+/// [`winding_number`] of a polygon given as `(x, y)` pairs, without copying
+/// it into [`Point2`]s.
+#[must_use]
+pub fn winding_number_xy(point: Point2, polygon: &[(f64, f64)]) -> i32 {
+    winding_number_of(point, polygon.len(), |i| {
+        let (x, y) = polygon[i];
+        Point2::new(x, y)
+    })
+}
+
+/// The winding number of `point` about the closed loop of the `n` vertices
+/// `vertex(0..n)`.
+#[inline]
+fn winding_number_of(point: Point2, n: usize, vertex: impl Fn(usize) -> Point2) -> i32 {
     if n < 3 {
         return 0;
     }
@@ -73,8 +89,8 @@ pub fn winding_number(point: Point2, polygon: &[Point2]) -> i32 {
     let mut wn = 0i32;
     for i in 0..n {
         let j = (i + 1) % n;
-        let vi = polygon[i];
-        let vj = polygon[j];
+        let vi = vertex(i);
+        let vj = vertex(j);
 
         if vi.y() <= point.y() {
             if vj.y() > point.y() {
@@ -357,6 +373,35 @@ mod tests {
             ),
             0
         );
+    }
+
+    #[test]
+    fn winding_number_xy_matches_the_point_slice() {
+        // Self-crossing, clockwise and repeated-vertex loops, with probes on
+        // vertices, on edges and on the loops' y levels.
+        let mut state = 0x9E37_79B9_u64;
+        let mut next = |range: f64| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            #[allow(clippy::cast_precision_loss)]
+            let unit = (state >> 11) as f64 / (1u64 << 53) as f64;
+            ((unit * 8.0).floor() / 4.0 - 1.0) * range
+        };
+        for n in 0..12 {
+            for _ in 0..200 {
+                let xy: Vec<(f64, f64)> = (0..n).map(|_| (next(1.0), next(1.0))).collect();
+                let points: Vec<Point2> = xy.iter().map(|&(x, y)| Point2::new(x, y)).collect();
+                for _ in 0..8 {
+                    let probe = Point2::new(next(1.25), next(1.25));
+                    assert_eq!(
+                        winding_number_xy(probe, &xy),
+                        winding_number(probe, &points),
+                        "{xy:?} about {probe:?}"
+                    );
+                }
+            }
+        }
     }
 
     use proptest::prelude::*;

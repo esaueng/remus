@@ -250,7 +250,9 @@ impl BoundarySkeleton {
         let near = |edge: &SkeletonEdge| -> Result<bool, CheckError> {
             for &(point, radius) in &edge.ends {
                 let reach = margin + radius;
-                if ray_segment_distance_sq(origin, direction, point, point) <= reach * reach {
+                if !surely_beyond(origin, direction, point, point, reach)
+                    && ray_segment_distance_sq(origin, direction, point, point) <= reach * reach
+                {
                     return Ok(true);
                 }
             }
@@ -262,9 +264,10 @@ impl BoundarySkeleton {
             {
                 return Ok(false);
             }
-            Ok(edge_segments(topo, edge)?
-                .iter()
-                .any(|&(a, b)| ray_segment_distance_sq(origin, direction, a, b) <= margin_sq))
+            Ok(edge_segments(topo, edge)?.iter().any(|&(a, b)| {
+                !surely_beyond(origin, direction, a, b, margin)
+                    && ray_segment_distance_sq(origin, direction, a, b) <= margin_sq
+            }))
         };
         // The boxes were padded with the build margin; a wider query margin
         // (a distant origin) scans them all, each widened to match.
@@ -481,6 +484,42 @@ fn segment_box(a: Point3, b: Point3) -> Aabb3 {
     }
 }
 
+/// Whether the half-line `origin + t·direction` (`t ≥ 0`) certainly stays
+/// farther than `reach` from the segment `[a, b]`, so that
+/// [`ray_segment_distance_sq`] certainly reads more than `reach²`.
+///
+/// Read with plain products and sums (a fused multiply-add costs a software
+/// emulation on `wasm32`): the segment lies within its half-length of its
+/// midpoint, so the midpoint's distance to the half-line less that
+/// half-length bounds the segment's from below. Both this reading and the
+/// fused one are within a few units in the last place of the operands'
+/// magnitudes of the exact distances, far inside the `1e-9` slack. `false`
+/// decides nothing; non-finite input and a zero direction never rule out.
+fn surely_beyond(origin: Point3, direction: Vec3, a: Point3, b: Point3, reach: f64) -> bool {
+    let l1 = |p: [f64; 3]| p[0].abs() + p[1].abs() + p[2].abs();
+    let scale = l1(origin.0) + l1(a.0) + l1(b.0) + reach.abs();
+    let dd = l1([
+        direction.x() * direction.x(),
+        direction.y() * direction.y(),
+        direction.z() * direction.z(),
+    ]);
+    if !(scale.is_finite() && dd.is_finite() && dd > 0.0) {
+        return false;
+    }
+    let mid = [0, 1, 2].map(|k| 0.5 * (a.0[k] + b.0[k]));
+    let half = 0.5 * l2([0, 1, 2].map(|k| b.0[k] - a.0[k]));
+    let w = [0, 1, 2].map(|k| mid[k] - origin.0[k]);
+    let along = w[0] * direction.x() + w[1] * direction.y() + w[2] * direction.z();
+    let t = (along / dd).max(0.0);
+    let across = l2([0, 1, 2].map(|k| w[k] - direction.0[k] * t));
+    across - half > reach + 1e-9 * scale
+}
+
+/// Plain Euclidean length.
+fn l2(v: [f64; 3]) -> f64 {
+    (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
+}
+
 /// Squared distance between the half-line `origin + t·direction` (`t ≥ 0`)
 /// and the segment `[a, b]`.
 ///
@@ -540,6 +579,88 @@ fn ray_segment_distance_sq(origin: Point3, direction: Vec3, a: Point3, b: Point3
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plain_reject_never_rules_out_a_grazing_segment() {
+        let mut state = 0x6A09_E667_u64;
+        let mut unit = move || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            #[allow(clippy::cast_precision_loss)]
+            let u = (state >> 11) as f64 / (1u64 << 53) as f64;
+            2.0 * u - 1.0
+        };
+        let (mut ruled_out, mut near) = (0usize, 0usize);
+        for scale in [1e-6, 1e-3, 1.0, 1e3, 1e6] {
+            for far in [0.0, 1e3, 1e9] {
+                for _ in 0..2000 {
+                    let mut point = |s: f64| {
+                        let (x, y, z) = (unit(), unit(), unit());
+                        Point3::new(far * scale + x * s, y * s, -far * scale + z * s)
+                    };
+                    let origin = point(scale);
+                    let a = point(scale);
+                    // Point segments, short and long ones.
+                    let b = point(scale);
+                    let b = match (unit().abs() * 3.0) as i32 {
+                        0 => a,
+                        1 => a + (b - a) * 1e-3,
+                        _ => b,
+                    };
+                    let (x, y, z, length) = (unit(), unit(), unit(), unit());
+                    let direction = Vec3::new(x, y, z) * (length.abs() * 3.0 + 1e-3);
+                    let exact = ray_segment_distance_sq(origin, direction, a, b).sqrt();
+                    // Thresholds around the reading, within a few ulps and
+                    // well away from it.
+                    for factor in [0.0, 0.5, 1.0 - 1e-12, 1.0, 1.0 + 1e-12, 2.0] {
+                        let reach = exact * factor;
+                        if surely_beyond(origin, direction, a, b, reach) {
+                            ruled_out += 1;
+                            assert!(
+                                ray_segment_distance_sq(origin, direction, a, b) > reach * reach,
+                                "{origin:?} {direction:?} {a:?} {b:?} reach {reach}"
+                            );
+                        } else {
+                            near += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(ruled_out > 10_000 && near > 10_000, "{ruled_out} / {near}");
+        // Non-finite input and a zero direction decide nothing.
+        let o = Point3::new(0.0, 0.0, 0.0);
+        let far_point = Point3::new(1e3, 0.0, 0.0);
+        assert!(!surely_beyond(
+            o,
+            Vec3::new(0.0, 0.0, 0.0),
+            far_point,
+            far_point,
+            1.0
+        ));
+        assert!(!surely_beyond(
+            o,
+            Vec3::new(f64::NAN, 1.0, 0.0),
+            far_point,
+            far_point,
+            1.0
+        ));
+        assert!(!surely_beyond(
+            o,
+            Vec3::new(0.0, 1.0, 0.0),
+            far_point,
+            far_point,
+            f64::INFINITY
+        ));
+        assert!(surely_beyond(
+            o,
+            Vec3::new(0.0, 1.0, 0.0),
+            far_point,
+            far_point,
+            1.0
+        ));
+    }
 
     #[test]
     fn circle_prefilter_keeps_every_ray_near_the_circle() {

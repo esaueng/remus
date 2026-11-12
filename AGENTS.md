@@ -651,6 +651,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Pre-cache band emitter kept verbatim as a bit-identity oracle for its per-vertex outward reference (tests) | `tessellate/nonplanar/band_emit_oracle_tests.rs` |
 | Measurement-only tessellation and cold/warm byte parity tests | `tessellate/measurement_tests.rs` |
 | Whole-mesh passes kept verbatim as byte-identity oracles for the rewritten `mesh_ops` and `pool_index` (PERF-D07, tests) | `tessellate/tests/mesh_passes.rs` |
+| One-pass boundary and non-manifold edge census (`edge_census`) against the hash-set and hash-map counts it replaced, kept verbatim (tests) | `tessellate/mesh_ops/edge_census_oracle_tests.rs` |
 | Per-vertex analytic grid kept verbatim as a bit-identity oracle for the trig-table `tessellate_analytic` (tests) | `tessellate/tests/analytic_grid_oracle.rs` |
 | Explicit shared-boundary plan and deterministic refinement reconciliation | `tessellate/boundary_plan.rs` |
 | Exact boundary/CDT reuse and incremental mesh connectivity | `tessellate/reuse.rs`, `tessellate/reuse/incremental.rs` |

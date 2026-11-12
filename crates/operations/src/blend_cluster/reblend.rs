@@ -881,8 +881,10 @@ pub fn measuring_postconditions(topo: &Topology, solid: SolidId) -> Result<(), O
     let mesh = crate::performance::timed("blend_group.post.mesh", || {
         crate::tessellate::tessellate_solid(topo, solid, deflection)
     })?;
-    let boundary = crate::tessellate::boundary_edge_count(&mesh);
-    let non_manifold = crate::tessellate::non_manifold_edge_count(&mesh);
+    let crate::tessellate::MeshEdgeCensus {
+        boundary_edges: boundary,
+        non_manifold_edges: non_manifold,
+    } = crate::tessellate::edge_census(&mesh);
     if boundary != 0 || non_manifold != 0 {
         return Err(failed(format!(
             "the re-filleted body meshes with {boundary} boundary and {non_manifold} non-manifold edges"

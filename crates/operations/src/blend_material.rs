@@ -207,30 +207,52 @@ impl ReachBox {
         (0..3).all(|k| offset.dot(self.axes[k]).abs() <= self.half[k])
     }
 
-    /// Whether [`Self::contains`] is certainly false at `p`, read with plain
-    /// products and sums instead of its fused dot products (which cost a
+    /// [`Self::contains`] at `p`, decided with plain products and sums where
+    /// they are certain, instead of its fused dot products (which cost a
     /// software emulation on `wasm32`).
     ///
     /// The plain dot and the fused one each lie within a few units in the
     /// last place of `Σ|offset_i · axis_i|` of the exact dot, so a plain
-    /// reading beyond `half` by a millionth of a millionth of that sum
-    /// cannot be a fused reading within `half`. `false` decides nothing:
-    /// [`Self::contains`] answers then. Non-finite input never excludes.
-    fn surely_excludes(&self, p: Point3) -> bool {
+    /// reading beyond `half` by a millionth of a millionth of that sum cannot
+    /// be a fused reading within `half`, and a plain reading inside `half` by
+    /// that margin on every axis cannot be a fused reading outside it. Any
+    /// other reading (non-finite input included) asks [`Self::contains`].
+    fn contains_filtered(&self, p: Point3) -> bool {
+        match self.plain_membership(p) {
+            Some(inside) => inside,
+            None => self.contains(p),
+        }
+    }
+
+    /// `Some(false)` when `p` is certainly outside, `Some(true)` when it is
+    /// certainly inside, `None` when only the fused test can tell. See
+    /// [`Self::contains_filtered`].
+    fn plain_membership(&self, p: Point3) -> Option<bool> {
         let offset = p - self.center;
         let o = [offset.x(), offset.y(), offset.z()];
-        (0..3).any(|k| {
+        let mut inside = true;
+        for k in 0..3 {
             let a = [self.axes[k].x(), self.axes[k].y(), self.axes[k].z()];
             let terms = [o[0] * a[0], o[1] * a[1], o[2] * a[2]];
             let dot = terms[0] + terms[1] + terms[2];
             let scale = terms[0].abs() + terms[1].abs() + terms[2].abs();
             // Plain on purpose: a fused multiply-add is the cost this
-            // avoids. Exclusion needs |dot| > half, so scale > half and the
-            // margin is far above an ulp of the sum it is added to.
-            #[allow(clippy::suboptimal_flops)]
-            let limit = self.half[k] + 1e-12 * scale;
-            dot.abs() > limit
-        })
+            // avoids. The margin is far above the two dots' difference, and
+            // where it is below an ulp of `half` the dot is far inside.
+            let margin = 1e-12 * scale;
+            if dot.abs() > self.half[k] + margin {
+                return Some(false);
+            }
+            inside &= dot.abs() < self.half[k] - margin;
+        }
+        inside.then_some(true)
+    }
+
+    /// Whether [`Self::contains`] is certainly false at `p` (the plain
+    /// reading of [`Self::plain_membership`]).
+    #[cfg(test)]
+    fn surely_excludes(&self, p: Point3) -> bool {
+        self.plain_membership(p) == Some(false)
     }
 
     fn draw(&self, rng: &mut TubeRng) -> Point3 {
@@ -377,7 +399,7 @@ pub fn sample_reach_tube(
         let p = local.draw(&mut rng);
         let multiplicity = boxes
             .iter()
-            .filter(|local| !local.surely_excludes(p) && local.contains(p))
+            .filter(|local| local.contains_filtered(p))
             .count()
             .max(1);
         #[allow(clippy::cast_precision_loss)]
@@ -733,9 +755,9 @@ mod tests {
     /// exactly on each face and an ulp either side, so the overlap counts
     /// (and every tube's weights) are the full scan's.
     #[test]
-    fn plain_pre_reject_never_rejects_a_contained_point() {
+    fn plain_membership_agrees_with_the_fused_test() {
         let mut rng = TubeRng(0x5EED);
-        let mut accepted = 0usize;
+        let (mut accepted, mut surely_in, mut undecided) = (0usize, 0usize, 0usize);
         for scale in [1e-6, 1e-3, 1.0, 1e3, 1e6] {
             for _ in 0..64 {
                 let mut coordinate = || (2.0 * rng.next_unit() - 1.0) * scale;
@@ -769,7 +791,21 @@ mod tests {
                     }
                 }
                 for p in probes {
-                    if local.contains(p) {
+                    let contained = local.contains(p);
+                    assert_eq!(
+                        local.contains_filtered(p),
+                        contained,
+                        "{p:?} at scale {scale}"
+                    );
+                    match local.plain_membership(p) {
+                        Some(true) => {
+                            assert!(contained, "{p:?} at scale {scale}");
+                            surely_in += 1;
+                        }
+                        Some(false) => assert!(!contained, "{p:?} at scale {scale}"),
+                        None => undecided += 1,
+                    }
+                    if contained {
                         accepted += 1;
                         assert!(!local.surely_excludes(p), "{p:?} at scale {scale}");
                     }
@@ -780,6 +816,10 @@ mod tests {
             accepted > 10_000,
             "the probes reach inside the boxes: {accepted}"
         );
+        // The plain reading decides nearly every probe; the ulp-nudged probes
+        // on the box faces are the ones left to the fused test.
+        assert!(surely_in > 9_000, "{surely_in} certainly inside");
+        assert!(undecided > 0, "the face probes reach the fused test");
     }
 
     /// Degenerate reach refuses to sample rather than guessing.

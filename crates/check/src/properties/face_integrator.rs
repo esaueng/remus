@@ -636,29 +636,20 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
                 false,
                 true,
             )?;
+            // Every rule (fixed or adaptive, full, volume-only or area-only)
+            // takes the row-normal sampler: it keeps every sample, and every
+            // contribution and flux bit (see `cylinder_row_tests`).
             #[cfg(target_arch = "wasm32")]
-            let sampled = if !AREA_ONLY && rule.volume_only {
-                integrate_cylinder_with_trimming::<_, AREA_ONLY>(
-                    s,
-                    u_range,
-                    v_range,
-                    rule,
-                    sign,
-                    &uv,
-                    PatchScale::ANGULAR,
-                    None,
-                )
-            } else {
-                integrate_with_trimming::<_, AREA_ONLY>(
-                    s,
-                    u_range,
-                    v_range,
-                    rule,
-                    sign,
-                    &uv,
-                    PatchScale::ANGULAR,
-                )
-            };
+            let sampled = integrate_cylinder_with_trimming::<_, AREA_ONLY>(
+                s,
+                u_range,
+                v_range,
+                rule,
+                sign,
+                &uv,
+                PatchScale::ANGULAR,
+                None,
+            );
             #[cfg(not(target_arch = "wasm32"))]
             let sampled = integrate_with_trimming::<_, AREA_ONLY>(
                 s,
@@ -7394,6 +7385,67 @@ mod cylinder_row_tests {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    /// The adaptive full rule (`integrate_face_about`) also keeps its bits on
+    /// the row-normal sampler, trimmed (tiled) and untrimmed (adaptive).
+    #[test]
+    fn cylinder_rows_preserve_adaptive_full_rule_bits() {
+        let outer = UvLoop::new(
+            vec![
+                Point2::new(0.0, -1.0),
+                Point2::new(1.0, -0.8),
+                Point2::new(1.0, 8.0),
+                Point2::new(0.0, 7.7),
+            ],
+            false,
+            false,
+        );
+        let options = PropertiesOptions::default();
+        for axis in [Vec3::new(0.0, 0.0, 1.0), Vec3::new(0.3, -0.4, 0.8)] {
+            let surface = CylindricalSurface::new(Point3::new(13.0, -7.0, 5.0), axis, 3.0).unwrap();
+            for trim in [
+                UvTrim::new(None, &[], &[], false),
+                UvTrim::new(Some(&outer), &[], &[], false),
+            ] {
+                let rule = |flux| IntegrationRule {
+                    order: options.gauss_order,
+                    adaptive: Some(&options),
+                    knots: None,
+                    reference: Point3::new(0.2, -0.3, 0.4),
+                    volume_only: false,
+                    ruled_guard: false,
+                    flux,
+                    cone_apex: None,
+                };
+                let (fresh_flux, reused_flux) = (Cell::new(None), Cell::new(None));
+                let fresh = integrate_parametric::<_, false>(
+                    &surface,
+                    (0.0, 1.0),
+                    (-1.0, 8.0),
+                    rule(Some(&fresh_flux)),
+                    1.0,
+                    &trim,
+                    PatchScale::ANGULAR,
+                )
+                .unwrap();
+                let reused = integrate_cylinder_parametric::<_, false>(
+                    &surface,
+                    (0.0, 1.0),
+                    (-1.0, 8.0),
+                    rule(Some(&reused_flux)),
+                    1.0,
+                    &trim,
+                    PatchScale::ANGULAR,
+                )
+                .unwrap();
+                assert_eq!(bits(&fresh), bits(&reused));
+                assert_eq!(
+                    fresh_flux.get().map(|f| f.0.map(f64::to_bits)),
+                    reused_flux.get().map(|f| f.0.map(f64::to_bits))
+                );
             }
         }
     }
