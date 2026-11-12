@@ -3342,6 +3342,30 @@ class RemusKernel {
         return ret[0] >>> 0;
     }
     /**
+     * Restore a session from `snapshot()` bytes into a new kernel.
+     *
+     * The new kernel answers every handle, journal and evolution query as
+     * the snapshotted one did, and allocates the same next handles. It has
+     * no checkpoints (earlier checkpoint IDs stay stale), prepared drags or
+     * warm per-session caches. All or nothing: a refusal builds no kernel.
+     * Throws `snapshot:<code>: ...` with code `not_a_snapshot`,
+     * `unsupported_format`, `build_mismatch` (written by another build),
+     * `corrupt` (truncated, extended, digest mismatch, undecodable),
+     * `invalid` (inconsistent topology) or `limit_exceeded`. On any of
+     * them, rebuild from the modeling history instead.
+     * @param {Uint8Array} bytes
+     * @returns {RemusKernel}
+     */
+    static fromSnapshot(bytes) {
+        const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_fromSnapshot(ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return RemusKernel.__wrap(ret[0]);
+    }
+    /**
      * Fuse (union) two solids into one.
      *
      * Returns a new solid handle (`u32`).
@@ -8799,6 +8823,76 @@ class RemusKernel {
             return getStringFromWasm0(ptr1, len1);
         } finally {
             wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+        }
+    }
+    /**
+     * Snapshot the whole session for a later `RemusKernel.fromSnapshot`.
+     *
+     * Take it after a successful rebuild. The bytes carry the topology
+     * verbatim (retired handles included), the attributes, the whole
+     * journal and the handle counters, stamped with this build's identity
+     * (`RemusKernel.snapshotBuildId()`) and a content digest
+     * (`RemusKernel.snapshotDigest(bytes)`). Checkpoints, prepared drags
+     * and caches are not carried.
+     *
+     * Read-only. Throws `snapshot:poisoned` on a poisoned kernel,
+     * `snapshot:transient_state` while an assembly, legacy sketch or GCS
+     * sketch is live, and `snapshot:limit_exceeded` past the import limits
+     * (256 MiB of bytes or of decoded pcurve copies, 3,000,000 arena slots)
+     * that `fromSnapshot` would refuse.
+     * @returns {Uint8Array}
+     */
+    snapshot() {
+        const ret = wasm.remuskernel_snapshot(this.__wbg_ptr);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v1 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v1;
+    }
+    /**
+     * The build identity this kernel stamps into snapshots and requires
+     * of the snapshots it restores.
+     * @returns {string}
+     */
+    static snapshotBuildId() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.remuskernel_snapshotBuildId();
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * The verified 128-bit content digest of snapshot bytes, as 32 hex
+     * characters, from any build. Store it beside the bytes to detect
+     * storage corruption before loading them.
+     * @param {Uint8Array} bytes
+     * @returns {string}
+     */
+    static snapshotDigest(bytes) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_malloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ret = wasm.remuskernel_snapshotDigest(ptr0, len0);
+            var ptr2 = ret[0];
+            var len2 = ret[1];
+            if (ret[3]) {
+                ptr2 = 0; len2 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred3_0 = ptr2;
+            deferred3_1 = len2;
+            return getStringFromWasm0(ptr2, len2);
+        } finally {
+            wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
         }
     }
     /**
