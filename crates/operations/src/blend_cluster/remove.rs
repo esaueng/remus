@@ -136,6 +136,34 @@ pub fn remove_blend_cluster(
     remove_blend_members(topo, solid, cluster, &all)
 }
 
+/// [`remove_blend_cluster`] of a cluster the caller has just recognized
+/// with [`recognize_blend_cluster`] on `solid` in this `topo`, with no
+/// mutation since.
+///
+/// The removal's freshness check re-recognizes the cluster from its seed
+/// and refuses a stale one. Recognition is a deterministic read of the
+/// arena, so on an arena unchanged since the caller's own recognition the
+/// check can only agree; this skips that second recognition. Every other
+/// planning check and postcondition still runs.
+pub(super) fn remove_freshly_recognized_cluster(
+    topo: &mut Topology,
+    solid: SolidId,
+    cluster: &BlendCluster,
+) -> Result<SharpRestoration, OperationsError> {
+    let _span = crate::performance::span("blend_group.remove");
+    let all: Vec<usize> = (0..cluster.members.len()).collect();
+    remove_members(topo, solid, cluster, &all, Freshness::Recognized)
+}
+
+/// Whether [`plan`] re-recognizes the cluster before trusting it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Freshness {
+    /// A caller-held cluster: re-measure it.
+    Check,
+    /// Recognized by the caller on this unchanged arena.
+    Recognized,
+}
+
 /// Remove the members `members` (indices into [`BlendCluster::members`]) of
 /// `cluster` from `solid`, restoring their sharp edges and vertices exactly.
 ///
@@ -162,7 +190,17 @@ pub fn remove_blend_members(
     cluster: &BlendCluster,
     members: &[usize],
 ) -> Result<SharpRestoration, OperationsError> {
-    let removed = plan(topo, solid, cluster, members)?;
+    remove_members(topo, solid, cluster, members, Freshness::Check)
+}
+
+fn remove_members(
+    topo: &mut Topology,
+    solid: SolidId,
+    cluster: &BlendCluster,
+    members: &[usize],
+    freshness: Freshness,
+) -> Result<SharpRestoration, OperationsError> {
+    let removed = plan(topo, solid, cluster, members, freshness)?;
     let source_faces = remus_topology::explorer::solid_faces(topo, solid)?;
     let mut work = Topology::new();
     let copied = copy_solid_between_with_entity_map(topo, &mut work, solid)?;
@@ -214,6 +252,7 @@ fn plan(
     solid: SolidId,
     cluster: &BlendCluster,
     members: &[usize],
+    freshness: Freshness,
 ) -> Result<Vec<usize>, OperationsError> {
     if members.is_empty() {
         return Err(invalid("no blend members selected"));
@@ -257,11 +296,13 @@ fn plan(
     check_supports(topo, cluster, &requested)?;
     // The cluster is evidence about one solid state; re-measure it rather
     // than trusting a caller-held copy.
-    let fresh = recognize_blend_cluster(topo, solid, cluster.seed)?;
-    if fresh != *cluster {
-        return Err(invalid(
-            "the cluster does not describe the solid's current blends; recognize it again",
-        ));
+    if freshness == Freshness::Check {
+        let fresh = recognize_blend_cluster(topo, solid, cluster.seed)?;
+        if fresh != *cluster {
+            return Err(invalid(
+                "the cluster does not describe the solid's current blends; recognize it again",
+            ));
+        }
     }
 
     // Dependency closure over shared edges and vertices.

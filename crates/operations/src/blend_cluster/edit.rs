@@ -60,9 +60,10 @@ use super::reblend::{
     Gate, ReblendStage, compose_evolution, plan_reblend, reblend_restoration,
     reblend_restoration_gated,
 };
+use super::remove::remove_freshly_recognized_cluster;
 use super::{
     BlendCluster, BlendClusterError, BlendMemberKind, Convexity, SharpRestoration, StageBlend,
-    recognize_blend_cluster, remove_blend_cluster,
+    recognize_blend_cluster,
 };
 use crate::OperationsError;
 use crate::copy::{CopiedSolidEntities, copy_solid_between_with_entity_map};
@@ -215,7 +216,7 @@ pub(super) fn band_group(
     }
     // A group that cannot be removed to sharp is not this route's to
     // answer: the caller keeps its own refusal.
-    let Ok(restoration) = remove_blend_cluster(&mut work, solid, &cluster) else {
+    let Ok(restoration) = remove_freshly_recognized_cluster(&mut work, solid, &cluster) else {
         return Ok(None);
     };
     Ok(Some((
@@ -266,7 +267,7 @@ pub(super) fn cylinder_group(
     }
     // A group that cannot be removed to sharp is not this route's to
     // answer: the caller keeps its own refusal.
-    let Ok(restoration) = remove_blend_cluster(&mut work, solid, &cluster) else {
+    let Ok(restoration) = remove_freshly_recognized_cluster(&mut work, solid, &cluster) else {
         return Ok(None);
     };
     let wall = restoration
@@ -404,7 +405,7 @@ pub fn resize_band_through_group(
         return Ok(None);
     };
     let work = std::mem::take(&mut group.work);
-    let (work, built) = build_band(&group, work, member, new_radius, Gate::Full)?;
+    let (work, built) = build_band(&group, work, member, new_radius, Gate::current())?;
     let edit = copy_out(topo, solid, &work, &group.inputs, &built, None)?;
     Ok(Some(ResizeBlendResult {
         solid: edit.solid,
@@ -435,7 +436,7 @@ pub fn resize_cylinder_through_group(
         return Ok(None);
     };
     let work = std::mem::take(&mut group.work);
-    let (work, built) = build_cylinder(&group, work, wall, new_radius, Gate::Full)?;
+    let (work, built) = build_cylinder(&group, work, wall, new_radius, Gate::current())?;
     copy_out(topo, solid, &work, &group.inputs, &built, None).map(Some)
 }
 
@@ -601,7 +602,7 @@ fn group_fillet_as_is(
             return Ok(None);
         }
     }
-    let Ok(restoration) = remove_blend_cluster(work, solid, &cluster) else {
+    let Ok(restoration) = remove_freshly_recognized_cluster(work, solid, &cluster) else {
         return Ok(None);
     };
     // The selected edges on the sharp body, through the removal's history.
