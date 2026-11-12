@@ -158,6 +158,7 @@ export const remuskernel_fixFaceOrientations: (a: number, b: number) => [number,
 export const remuskernel_fixShapeWithConfig: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const remuskernel_fixShapeWithConfigJournaled: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const remuskernel_fromBREP: (a: number, b: number, c: number) => [number, number, number];
+export const remuskernel_fromSnapshot: (a: number, b: number) => [number, number, number];
 export const remuskernel_fuse: (a: number, b: number, c: number) => [number, number, number];
 export const remuskernel_fuseAll: (a: number, b: number, c: number) => [number, number, number];
 export const remuskernel_fuseDetailed: (a: number, b: number, c: number) => [number, number, number];
@@ -396,6 +397,9 @@ export const remuskernel_sketchAddPoint: (a: number, b: number, c: number, d: nu
 export const remuskernel_sketchDof: (a: number, b: number) => [number, number, number, number];
 export const remuskernel_sketchNew: (a: number) => [number, number, number];
 export const remuskernel_sketchSolve: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+export const remuskernel_snapshot: (a: number) => [number, number, number, number];
+export const remuskernel_snapshotBuildId: () => [number, number];
+export const remuskernel_snapshotDigest: (a: number, b: number) => [number, number, number, number];
 export const remuskernel_solidEdgeRelations: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const remuskernel_solidEdgeRelationsSubset: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
 export const remuskernel_solidFromShell: (a: number, b: number) => [number, number, number];
