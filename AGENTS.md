@@ -502,7 +502,7 @@ Quick reference — find the right file for any task:
 | Non-finite geometry detection | `validate/finite.rs` |
 | Surface curvature interrogation (pointwise + min radius) | `analyze/curvature.rs` |
 | Signed draft-angle samples and constant-angle reports for planar solids (native) | `analyze/draft.rs` |
-| Deterministic work counters for the point-classification hot path (`perf-counters` feature) | `perf.rs` |
+| Deterministic work counters for the point-classification hot path and for face integration (planar readings, knot-aligned counting passes and Gauss lines; `perf-counters` feature) | `perf.rs` |
 
 ### L2: offset (`crates/offset/src/`)
 | Task | File(s) |
