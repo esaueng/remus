@@ -35,6 +35,11 @@ use undo_log::{UndoBase, UndoLog, UndoOrigin};
 
 #[path = "memory.rs"]
 mod memory;
+
+/// Exact whole-topology images for session snapshots. A child module so it
+/// may read and rebuild the private arenas.
+#[path = "image.rs"]
+pub mod image;
 pub use memory::MemoryEstimate;
 
 #[cfg(test)]

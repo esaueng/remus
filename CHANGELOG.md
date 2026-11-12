@@ -214,6 +214,18 @@ historical predecessor-line records, retained for provenance. The
 
 ### Added
 
+* **topology,io,wasm:** whole-session snapshots. `Topology::image_view` /
+  `to_image` / `from_image` (`remus_topology::image`) expose a topology as
+  plain data, every arena slot verbatim with retired tombstones, the pcurve
+  index, attributes and the whole journal with its recorded ticks, and
+  rebuild it after structural validation with a fresh cache lineage.
+  `remus_io::snapshot` encodes that image as a canonical little-endian binary
+  with a magic, a format version, a build identity and a 128-bit digest, and
+  refuses truncated, corrupt, foreign or inconsistent input before building
+  anything. The kernel binds it as `snapshot()` / `fromSnapshot(bytes)`,
+  carrying its handle counters too, so a restored session issues the same
+  handles and journal entries as the original. Consumer guide:
+  `docs/kernel-snapshots.md`.
 * **operations,wasm:** exact in-place helical sweep
   (`helix::helical_sweep_in_place`, `helicalSweepInPlace`). The profile is
   screwed about an axis from where it sits (no radius parameter, no move to

@@ -38,6 +38,7 @@ pub mod project_curve;
 pub mod query;
 pub mod shapes;
 pub mod sketch;
+pub mod snapshot;
 pub mod tessellate;
 pub mod thread;
 pub mod transform_detailed;
@@ -89,6 +90,8 @@ mod sequential_fillet_tests;
 mod sew_faces_default_tests;
 #[cfg(test)]
 mod sketch_validation_tests;
+#[cfg(test)]
+mod snapshot_tests;
 #[cfg(test)]
 mod sphere_boss_seam_fillet_tests;
 #[cfg(test)]

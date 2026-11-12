@@ -25,6 +25,7 @@ pub mod naming_io;
 pub mod obj;
 #[cfg(feature = "formats")]
 pub mod ply;
+pub mod snapshot;
 #[cfg(feature = "formats")]
 pub mod step;
 #[cfg(feature = "formats")]
