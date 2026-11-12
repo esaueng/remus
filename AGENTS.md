@@ -269,6 +269,8 @@ Quick reference — find the right file for any task:
 | Attribute store (names, colors, app ids) | `attributes.rs` |
 | Append-only evolution journal | `journal.rs` |
 | Persistent references and their resolver | `naming.rs` |
+| Exact whole-topology images for session snapshots: every arena slot verbatim (retired tombstones, liveness), pcurve index, attributes, the whole journal with its recorded ticks; borrowed `image_view`, owned `to_image`, structurally validating `from_image` with a fresh cache lineage | `image.rs` |
+| Image round trip, next-handle and journal-continuity parity, structural refusals (tests) | `image/tests.rs` |
 
 ### L2: algo (`crates/algo/src/`)
 | Task | File(s) |
@@ -762,6 +764,8 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Minimal non-generic JSON reader/writer shared by the arena and reference codecs | `json.rs` |
 | Differential tests of the JSON reader/writer against `serde_json`, shared mutation fuzzer (tests) | `json/oracle_tests.rs`, `json/mutation.rs` |
 | Resource limits for untrusted imports | `limits.rs` |
+| Whole-session snapshot codec: magic, format version, build identity, canonical little-endian payload of a topology image (raw `f64` bits), 128-bit digest; all-or-nothing read with limits | `snapshot.rs`, `snapshot/payload.rs` |
+| Snapshot round trip over every carrier, determinism, framing and limit refusals, the pcurve-copy budget on repeated pcurve back-references, re-sealed single-byte edits refused or accepted but never a panic (tests) | `snapshot/tests.rs` |
 | Persistent-reference JSON codec | `naming_io.rs` |
 | Differential oracle for the persistent-reference codec (tests) | `naming_io/oracle_tests.rs` |
 | Differential oracles over the STEP fixtures and synthetic bodies for the prepared classifier's exact skips: the boundary test's trim-window prune and the crossing count's NURBS knot-span prefilter, with its skips counted on either side of its span cap (tests) | `tests/boundary_prune_oracle.rs` |
@@ -822,6 +826,8 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | File I/O import/export (`#[cfg(feature = "io")]`; off in the shipped kernel package) | `bindings/io.rs` |
 | Shape healing, validation, feature recognition | `bindings/heal.rs` |
 | Checkpoint / restore | `bindings/checkpoint.rs` |
+| Whole-session snapshots (`snapshot`, `fromSnapshot`, `snapshotDigest`, `snapshotBuildId`): the topology verbatim plus the session handle counters, `snapshot:<code>` refusals | `bindings/snapshot.rs` |
+| Snapshot contracts: handle and counter parity, stale-handle refusals, journaled edits byte-identical after a restore (primitives and the Gentle-Gecko STEP), refusals of transient, poisoned, truncated, corrupt, foreign-format and foreign-build input (tests) | `bindings/snapshot_tests.rs` |
 | Prepared face moves for interactive drags (`prepareMoveFaces`, `moveFacesPrepared`, `moveFacesPreparedJournaled`, `releasePreparedMove`) | `bindings/prepared_move.rs` |
 | Prepared blend-group edits for live drags (`prepareResizeBlend`, `prepareResizeCylindricalFace`, `previewPreparedGroupEdit`, `commitPreparedGroupEdit`, `commitPreparedGroupEditJournaled`, `releasePreparedGroupEdit`) | `bindings/prepared_group_edit.rs` |
 | Prepared Gecko boss and band drags through checkpoint restores against the unprepared and journaled calls, typed refusals and the live-handle cap (tests) | `bindings/prepared_group_edit/tests.rs` |

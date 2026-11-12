@@ -74,6 +74,16 @@ impl RemusKernel {
     #[wasm_bindgen(constructor)]
     #[must_use]
     pub fn new() -> Self {
+        Self::with_module_caches(Topology::new())
+    }
+}
+
+impl RemusKernel {
+    /// A kernel around `topology` with the public constructor's module set-up:
+    /// the panic hook and the module-wide content caches. Shared by
+    /// [`Self::new`] and session-snapshot restore, so a restored kernel reads
+    /// and fills the same caches as a fresh one.
+    pub(crate) fn with_module_caches(topology: Topology) -> Self {
         crate::panics::install_hook();
         // Content-keyed face integrals, NURBS areas, face boxes, planar arc
         // pcurves, revolved wire areas, the ray classifier's torus trims and
@@ -97,7 +107,7 @@ impl RemusKernel {
         remus_algo::pcurve_memo::enable_thread_pcurve_memo();
         remus_algo::wire_area_memo::enable_thread_wire_area_memo();
         remus_algo::ray_geom_memo::enable_thread_ray_geom_memo();
-        let kernel = Self::from_document_topology(Topology::new());
+        let kernel = Self::from_document_topology(topology);
         remus_operations::query::enable_crossing_memo(&kernel.caches);
         kernel
     }

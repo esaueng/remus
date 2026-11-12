@@ -101,6 +101,15 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
 
 ### Features
 
+* Add whole-session snapshots: `snapshot()` returns the session as bytes and
+  the static `RemusKernel.fromSnapshot(bytes)` restores it into a new kernel
+  with identical handles (retired ones stay stale, the next allocation of
+  every kind takes the same handle), attributes and journal, so a consumer can
+  reopen a project without replaying its history. `snapshotDigest(bytes)` and
+  `snapshotBuildId()` are static helpers. Snapshots carry no checkpoints,
+  prepared drags or caches, are refused while a GCS sketch, legacy sketch or
+  assembly is live, and are restored only by the same build identity; every
+  refusal throws `snapshot:<code>: ...`. See `docs/kernel-snapshots.md`.
 * `resizeCylindricalFaceDetailed(solid, face, radius, allowApproximate?)`
   (and the batch op's `allowApproximate`) carries a sphere-seam rolling-ball
   fillet through the resize and reports it in `details.reblend`. A sampled

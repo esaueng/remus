@@ -548,6 +548,20 @@ impl Journal {
         self.entries.last().map(|entry| entry.ticks_after)
     }
 
+    /// Overwrites every entry's recorded tick count, oldest first: the
+    /// session-image import restores them verbatim where
+    /// [`Self::from_snapshot`] re-derives them. `false`, writing nothing,
+    /// unless there is exactly one count per entry.
+    pub(crate) fn set_entry_ticks(&mut self, ticks: &[u64]) -> bool {
+        if ticks.len() != self.entries.len() {
+            return false;
+        }
+        for (entry, &ticks_after) in self.entries.iter_mut().zip(ticks) {
+            entry.ticks_after = ticks_after;
+        }
+        true
+    }
+
     /// Interns an arena key, assigning a fresh ordinal on first sight.
     ///
     /// Returns the ordinal and whether this call created it. Creation

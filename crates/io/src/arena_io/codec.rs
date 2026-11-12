@@ -931,7 +931,7 @@ fn read_boundary(reader: &mut Reader<'_>) -> Res<SerBoundaryAuthority> {
 // ---------------------------------------------------------------------------
 
 /// A decoded field of a math carrier.
-enum Part {
+pub enum Part {
     F64(f64),
     Usize(usize),
     Coords3([f64; 3]),
@@ -959,9 +959,10 @@ impl Part {
     }
 }
 
-/// The JSON shape of a math carrier field.
+/// The shape of a math carrier field (shared with the binary session
+/// snapshot codec, which reads the same schemas).
 #[derive(Clone, Copy)]
-enum Kind {
+pub enum Kind {
     F64,
     Usize,
     Coords3,
@@ -1139,6 +1140,35 @@ fn with_carrier(
     }
 }
 
+/// Builds a math carrier from its fields, decoded in declaration order,
+/// through its derived `Deserialize` impl, which populates the private
+/// fields directly with no validation. `None` when the fields do not match
+/// the carrier's schema.
+pub fn carrier_from_parts<T: DeserializeOwned>(parts: &[Part]) -> Option<T> {
+    let mut shapes = [Shape::F64(0.0); 8];
+    let count = shapes_of(parts, &mut shapes)?;
+    deserialize_carrier(Shape::Fields(shapes.get(..count)?))
+}
+
+/// Views `parts` as shapes, for every carrier type alike; `None` past the
+/// eight fields a carrier has at most.
+#[inline(never)]
+fn shapes_of<'s>(parts: &'s [Part], shapes: &mut [Shape<'s>; 8]) -> Option<usize> {
+    let fields = shapes.get_mut(..parts.len())?;
+    for (shape, part) in fields.iter_mut().zip(parts) {
+        *shape = part.shape();
+    }
+    Some(parts.len())
+}
+
+/// The one copy of a carrier's derived `Deserialize` over [`Shape`], shared
+/// by this codec and the binary snapshot codec: kept out of line so neither
+/// caller inlines its own.
+#[inline(never)]
+fn deserialize_carrier<T: DeserializeOwned>(fields: Shape<'_>) -> Option<T> {
+    T::deserialize(fields).ok()
+}
+
 /// Reads a math carrier and builds it through its derived `Deserialize`
 /// impl, which populates the private fields directly with no validation.
 fn read_carrier<T: DeserializeOwned>(
@@ -1147,20 +1177,20 @@ fn read_carrier<T: DeserializeOwned>(
 ) -> Res<T> {
     let mut value = None;
     with_carrier(reader, schema, &mut |fields| {
-        value = T::deserialize(fields).ok();
+        value = deserialize_carrier(fields);
         value.is_some()
     })?;
     value.ok_or_else(|| reader.error("invalid geometry carrier"))
 }
 
-const CIRCLE3: &[(&str, Kind)] = &[
+pub const CIRCLE3: &[(&str, Kind)] = &[
     ("center", Kind::Coords3),
     ("normal", Kind::Coords3),
     ("radius", Kind::F64),
     ("u_axis", Kind::Coords3),
     ("v_axis", Kind::Coords3),
 ];
-const CONIC3: &[(&str, Kind)] = &[
+pub const CONIC3: &[(&str, Kind)] = &[
     ("center", Kind::Coords3),
     ("normal", Kind::Coords3),
     ("semi_major", Kind::F64),
@@ -1168,19 +1198,19 @@ const CONIC3: &[(&str, Kind)] = &[
     ("u_axis", Kind::Coords3),
     ("v_axis", Kind::Coords3),
 ];
-const PARABOLA3: &[(&str, Kind)] = &[
+pub const PARABOLA3: &[(&str, Kind)] = &[
     ("vertex", Kind::Coords3),
     ("axis_dir", Kind::Coords3),
     ("focal_length", Kind::F64),
     ("u_axis", Kind::Coords3),
 ];
-const NURBS_CURVE: &[(&str, Kind)] = &[
+pub const NURBS_CURVE: &[(&str, Kind)] = &[
     ("degree", Kind::Usize),
     ("knots", Kind::F64s),
     ("control_points", Kind::Points3),
     ("weights", Kind::F64s),
 ];
-const NURBS_SURFACE: &[(&str, Kind)] = &[
+pub const NURBS_SURFACE: &[(&str, Kind)] = &[
     ("degree_u", Kind::Usize),
     ("degree_v", Kind::Usize),
     ("knots_u", Kind::F64s),
@@ -1188,28 +1218,28 @@ const NURBS_SURFACE: &[(&str, Kind)] = &[
     ("control_points", Kind::Grid3),
     ("weights", Kind::Grid),
 ];
-const CYLINDER: &[(&str, Kind)] = &[
+pub const CYLINDER: &[(&str, Kind)] = &[
     ("origin", Kind::Coords3),
     ("axis", Kind::Coords3),
     ("radius", Kind::F64),
     ("x_axis", Kind::Coords3),
     ("y_axis", Kind::Coords3),
 ];
-const CONE: &[(&str, Kind)] = &[
+pub const CONE: &[(&str, Kind)] = &[
     ("apex", Kind::Coords3),
     ("axis", Kind::Coords3),
     ("half_angle", Kind::F64),
     ("x_axis", Kind::Coords3),
     ("y_axis", Kind::Coords3),
 ];
-const SPHERE: &[(&str, Kind)] = &[
+pub const SPHERE: &[(&str, Kind)] = &[
     ("center", Kind::Coords3),
     ("radius", Kind::F64),
     ("x_axis", Kind::Coords3),
     ("y_axis", Kind::Coords3),
     ("z_axis", Kind::Coords3),
 ];
-const TORUS: &[(&str, Kind)] = &[
+pub const TORUS: &[(&str, Kind)] = &[
     ("center", Kind::Coords3),
     ("major_radius", Kind::F64),
     ("minor_radius", Kind::F64),
@@ -1217,15 +1247,15 @@ const TORUS: &[(&str, Kind)] = &[
     ("y_axis", Kind::Coords3),
     ("z_axis", Kind::Coords3),
 ];
-const LINE2: &[(&str, Kind)] = &[("origin", Kind::Coords2), ("direction", Kind::Coords2)];
-const CIRCLE2: &[(&str, Kind)] = &[("center", Kind::Coords2), ("radius", Kind::F64)];
-const ELLIPSE2: &[(&str, Kind)] = &[
+pub const LINE2: &[(&str, Kind)] = &[("origin", Kind::Coords2), ("direction", Kind::Coords2)];
+pub const CIRCLE2: &[(&str, Kind)] = &[("center", Kind::Coords2), ("radius", Kind::F64)];
+pub const ELLIPSE2: &[(&str, Kind)] = &[
     ("center", Kind::Coords2),
     ("semi_major", Kind::F64),
     ("semi_minor", Kind::F64),
     ("rotation", Kind::F64),
 ];
-const NURBS2: &[(&str, Kind)] = &[
+pub const NURBS2: &[(&str, Kind)] = &[
     ("degree", Kind::Usize),
     ("knots", Kind::F64s),
     ("control_points", Kind::Points2),

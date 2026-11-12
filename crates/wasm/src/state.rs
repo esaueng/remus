@@ -65,6 +65,20 @@ impl CheckpointStore {
             drop(self.live.split_off(&id));
         }
     }
+
+    /// The ID the next checkpoint will take.
+    pub(crate) const fn next_id(&self) -> u32 {
+        self.next
+    }
+
+    /// An empty store whose IDs below `next` are all permanently stale: a
+    /// restored session snapshot, whose checkpoints are not carried.
+    pub(crate) const fn starting_at(next: u32) -> Self {
+        Self {
+            live: BTreeMap::new(),
+            next,
+        }
+    }
 }
 
 /// State for one sketch in the typed GCS API (`gcs*` bindings).
@@ -118,49 +132,74 @@ pub struct SketchState {
 
 /// Append-only opaque session handles. Restore retires slots instead of
 /// rewinding the index used by the next allocation.
+///
+/// Handles below `base` are retired without storage: a session snapshot
+/// restores only the allocation high-water mark, so a restored store costs
+/// nothing however many handles its source had issued.
 #[derive(Debug, Clone)]
 pub struct HandleStore<T> {
+    base: usize,
     slots: Vec<Option<T>>,
 }
 
 impl<T> Default for HandleStore<T> {
     fn default() -> Self {
-        Self { slots: Vec::new() }
+        Self {
+            base: 0,
+            slots: Vec::new(),
+        }
     }
 }
 
 impl<T> HandleStore<T> {
     pub(crate) fn get(&self, index: usize) -> Option<&T> {
-        self.slots.get(index)?.as_ref()
+        self.slots.get(index.checked_sub(self.base)?)?.as_ref()
     }
     pub(crate) fn get_mut(&mut self, index: usize) -> Option<&mut T> {
-        self.slots.get_mut(index)?.as_mut()
+        self.slots.get_mut(index.checked_sub(self.base)?)?.as_mut()
     }
     pub(crate) fn iter(&self) -> impl Iterator<Item = (usize, &T)> {
+        let base = self.base;
         self.slots
             .iter()
             .enumerate()
-            .filter_map(|(index, value)| value.as_ref().map(|v| (index, v)))
+            .filter_map(move |(index, value)| value.as_ref().map(|v| (base + index, v)))
     }
     pub(crate) fn push(&mut self, value: T) -> Result<u32, crate::error::WasmError> {
-        let handle = next_handle(self.slots.len())?;
+        let handle = next_handle(self.slot_len())?;
         self.slots.push(Some(value));
         Ok(handle)
+    }
+    /// Handles ever issued: the next allocation takes this one.
+    pub(crate) fn slot_len(&self) -> usize {
+        self.base + self.slots.len()
+    }
+    /// Whether any handle is live.
+    pub(crate) fn has_live(&self) -> bool {
+        self.slots.iter().any(Option::is_some)
+    }
+    /// A store whose first `issued` handles are all retired.
+    pub(crate) const fn retired(issued: usize) -> Self {
+        Self {
+            base: issued,
+            slots: Vec::new(),
+        }
     }
 }
 
 impl<T: Clone> HandleStore<T> {
     pub(crate) fn restore(&mut self, snapshot: &Self, restore_inner: impl Fn(&mut T, &T)) {
-        for (index, slot) in self.slots.iter_mut().enumerate() {
-            match (slot.as_mut(), snapshot.get(index)) {
+        let base = self.base;
+        for (offset, slot) in self.slots.iter_mut().enumerate() {
+            match (slot.as_mut(), snapshot.get(base + offset)) {
                 (Some(current), Some(saved)) => restore_inner(current, saved),
                 (_, saved) => *slot = saved.cloned(),
             }
         }
         // Checkpoints may be restored repeatedly; their live values always fit
         // below the preserved allocation high-water mark.
-        for slot in snapshot.slots.iter().skip(self.slots.len()) {
-            self.slots.push(slot.clone());
+        for index in self.slot_len()..snapshot.slot_len() {
+            self.slots.push(snapshot.get(index).cloned());
         }
     }
 }
