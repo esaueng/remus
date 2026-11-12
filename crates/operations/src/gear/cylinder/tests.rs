@@ -1140,3 +1140,70 @@ fn the_glued_ring_is_the_fused_ring() {
         assert_valid_and_watertight(&topo, outcome.solid);
     }
 }
+
+/// A fuse of the gear ring onto the kept body pairs every flank with the
+/// kept body's coaxial walls: the seam wall `0.1 m` below the roots, and for
+/// a bore the blank's outer wall. Their boxes overlap (a full-turn wall's
+/// box holds everything inside it) but the flanks stay clear of those
+/// cylinders, so phase FF must clear each pair from the flank's control net
+/// instead of running the surface marcher on it, whose seed search ends in
+/// an all-pairs grid scan when there is nothing to find. The ring is fused
+/// here, as it is whenever the glue declines.
+///
+/// Runs only with `--features perf-counters`, in the `test(scaling_)` step.
+#[cfg(feature = "perf-counters")]
+#[test]
+fn scaling_flanks_clear_of_coaxial_walls_skip_the_marcher() {
+    let boss = |teeth: u32| {
+        let radius = 0.5 * f64::from(teeth + 2);
+        let mut topo = Topology::new();
+        let blank = make_cylinder(&mut topo, radius, 6.0).unwrap();
+        let face = cylinder_face(&topo, blank, radius);
+        remus_algo::perf::reset();
+        let (outcome, _) = cut_gear_teeth_joined(
+            &mut topo,
+            blank,
+            face,
+            &spur(teeth, 6.0),
+            &CylinderGearOptions::default(),
+            false,
+        )
+        .unwrap();
+        let counts = remus_algo::perf::snapshot();
+        assert_roles_are_unique_and_typed(&topo, &outcome, teeth);
+        counts
+    };
+    for teeth in [20_u32, 40] {
+        let counts = boss(teeth);
+        assert_eq!(counts.ff_cylinder_nurbs_marches, 0, "{teeth} teeth");
+        // At most one seam wall per flank; flanks whose boxes miss the
+        // wall's box never reach the gate.
+        assert!(
+            (1..=u64::from(2 * teeth)).contains(&counts.ff_cylinder_nurbs_cleared),
+            "{teeth} teeth: {} pairs cleared",
+            counts.ff_cylinder_nurbs_cleared
+        );
+    }
+
+    // A bore: every flank against the seam wall and the blank's rim.
+    let mut topo = Topology::new();
+    let outer = make_cylinder(&mut topo, 30.0, 5.0).unwrap();
+    let drill = moved_cylinder(&mut topo, 19.0, 20.0, -5.0);
+    let ring = boolean(&mut topo, BooleanOp::Cut, outer, drill).unwrap();
+    let face = cylinder_face(&topo, ring, 19.0);
+    let params = GearParams::standard(GearKind::Internal, 1.0, 40, 5.0);
+    remus_algo::perf::reset();
+    let (outcome, _) = cut_gear_teeth_joined(
+        &mut topo,
+        ring,
+        face,
+        &params,
+        &CylinderGearOptions::default(),
+        false,
+    )
+    .unwrap();
+    let counts = remus_algo::perf::snapshot();
+    assert_roles_are_unique_and_typed(&topo, &outcome, 40);
+    assert_eq!(counts.ff_cylinder_nurbs_marches, 0);
+    assert_eq!(counts.ff_cylinder_nurbs_cleared, 2 * 80);
+}
