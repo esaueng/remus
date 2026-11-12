@@ -7199,7 +7199,9 @@ pub(super) fn polygon_row_contains(polygon: &[(f64, f64)], xs: &[f64], y: f64) -
 /// in raw `(u, v)` space, and the distance test is the old `clear_of_boundary`
 /// body verbatim in CDT space; only the segment loop is shared. A failed
 /// clearance cannot short-circuit the scan because the winding verdict still
-/// needs every segment.
+/// needs every segment, but it ends the distance work, and a segment whose
+/// box the candidate is certainly clear of ([`segment_surely_clear`]) skips
+/// it: the verdicts are the full test's either way.
 fn classify_dense_candidate(
     boundary_uv: &[(f64, f64)],
     boundary_cdt: &[remus_math::vec::Point2],
@@ -7227,6 +7229,9 @@ fn classify_dense_candidate(
                 winding -= 1;
             }
         }
+        if !clear || segment_surely_clear(a, b, point, clearance) {
+            return;
+        }
         let ab = b - a;
         let length_squared = ab.dot(ab);
         let t = if length_squared > 1.0e-30 {
@@ -7235,7 +7240,7 @@ fn classify_dense_candidate(
             0.0
         };
         let foot = remus_math::vec::Point2::new(a.x() + ab.x() * t, a.y() + ab.y() * t);
-        clear = (point - foot).length() > clearance && clear;
+        clear = (point - foot).length() > clearance;
     };
     // `boundary_cdt` is mapped from `boundary_uv` one-to-one at the call
     // site, so both walk the same segments, in `point_in_polygon_2d`'s order.
@@ -7252,6 +7257,40 @@ fn classify_dense_candidate(
         segment(last, first, a, b);
     }
     (winding != 0, clear)
+}
+
+/// Whether the clearance test of [`classify_dense_candidate`] certainly
+/// passes for segment `a`-`b`, read off the segment's bounding box alone.
+///
+/// The test's foot point lies in the segment's box up to a few ulps of its
+/// coordinates (`t` is clamped to `[0, 1]`), and its distance is within a
+/// few ulps of the coordinate gap it contains. A candidate beyond the box
+/// grown by the clearance, a part in a billion of it and a part in a
+/// trillion of the coordinates' magnitude is therefore a distance the test
+/// reads as greater than `clearance`, and skipping it leaves `clear` as the
+/// full test leaves it. Non-finite input is never certain.
+#[inline]
+fn segment_surely_clear(
+    a: remus_math::vec::Point2,
+    b: remus_math::vec::Point2,
+    point: remus_math::vec::Point2,
+    clearance: f64,
+) -> bool {
+    let scale = a
+        .x()
+        .abs()
+        .max(a.y().abs())
+        .max(b.x().abs())
+        .max(b.y().abs())
+        .max(point.x().abs())
+        .max(point.y().abs());
+    // Plain on purpose: a fused multiply-add is emulated on wasm32.
+    #[allow(clippy::suboptimal_flops)]
+    let margin = clearance.abs() * (1.0 + 1e-9) + 1e-12 * scale;
+    point.x() < a.x().min(b.x()) - margin
+        || point.x() > a.x().max(b.x()) + margin
+        || point.y() < a.y().min(b.y()) - margin
+        || point.y() > a.y().max(b.y()) + margin
 }
 
 /// The `shared_revolved` guard admits only cylinders and cones; any other

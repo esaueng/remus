@@ -207,6 +207,32 @@ impl ReachBox {
         (0..3).all(|k| offset.dot(self.axes[k]).abs() <= self.half[k])
     }
 
+    /// Whether [`Self::contains`] is certainly false at `p`, read with plain
+    /// products and sums instead of its fused dot products (which cost a
+    /// software emulation on `wasm32`).
+    ///
+    /// The plain dot and the fused one each lie within a few units in the
+    /// last place of `Σ|offset_i · axis_i|` of the exact dot, so a plain
+    /// reading beyond `half` by a millionth of a millionth of that sum
+    /// cannot be a fused reading within `half`. `false` decides nothing:
+    /// [`Self::contains`] answers then. Non-finite input never excludes.
+    fn surely_excludes(&self, p: Point3) -> bool {
+        let offset = p - self.center;
+        let o = [offset.x(), offset.y(), offset.z()];
+        (0..3).any(|k| {
+            let a = [self.axes[k].x(), self.axes[k].y(), self.axes[k].z()];
+            let terms = [o[0] * a[0], o[1] * a[1], o[2] * a[2]];
+            let dot = terms[0] + terms[1] + terms[2];
+            let scale = terms[0].abs() + terms[1].abs() + terms[2].abs();
+            // Plain on purpose: a fused multiply-add is the cost this
+            // avoids. Exclusion needs |dot| > half, so scale > half and the
+            // margin is far above an ulp of the sum it is added to.
+            #[allow(clippy::suboptimal_flops)]
+            let limit = self.half[k] + 1e-12 * scale;
+            dot.abs() > limit
+        })
+    }
+
     fn draw(&self, rng: &mut TubeRng) -> Point3 {
         let mut p = self.center;
         for k in 0..3 {
@@ -351,7 +377,7 @@ pub fn sample_reach_tube(
         let p = local.draw(&mut rng);
         let multiplicity = boxes
             .iter()
-            .filter(|local| local.contains(p))
+            .filter(|local| !local.surely_excludes(p) && local.contains(p))
             .count()
             .max(1);
         #[allow(clippy::cast_precision_loss)]
@@ -700,6 +726,60 @@ mod tests {
         assert_exhaustive_estimate(&topo, body, cut, &tube);
         let hits = crate::query::PASS_HITS.with(std::cell::Cell::get);
         assert!(hits > 0, "the far boss answers from the input pass");
+    }
+
+    /// The plain pre-reject never rejects a point the fused test accepts:
+    /// boxes along tilted chords at scales 1e-6 to 1e6, probed at random,
+    /// exactly on each face and an ulp either side, so the overlap counts
+    /// (and every tube's weights) are the full scan's.
+    #[test]
+    fn plain_pre_reject_never_rejects_a_contained_point() {
+        let mut rng = TubeRng(0x5EED);
+        let mut accepted = 0usize;
+        for scale in [1e-6, 1e-3, 1.0, 1e3, 1e6] {
+            for _ in 0..64 {
+                let mut coordinate = || (2.0 * rng.next_unit() - 1.0) * scale;
+                let a = Point3::new(coordinate(), coordinate(), coordinate());
+                let b = Point3::new(coordinate(), coordinate(), coordinate());
+                let offset = Point3::new(1e3 * scale, -7e2 * scale, 3e2 * scale);
+                let (a, b) = (
+                    a + (offset - Point3::new(0.0, 0.0, 0.0)),
+                    b + (offset - Point3::new(0.0, 0.0, 0.0)),
+                );
+                let Some(local) = ReachBox::around(a, b, 0.25 * scale, 0.01 * scale) else {
+                    continue;
+                };
+                let mut probes = Vec::new();
+                for _ in 0..64 {
+                    probes.push(local.draw(&mut rng));
+                    let mut p = local.center;
+                    for k in 0..3 {
+                        p = p + local.axes[k] * ((2.5 * rng.next_unit() - 1.25) * local.half[k]);
+                    }
+                    probes.push(p);
+                }
+                for k in 0..3 {
+                    for sign in [-1.0, 1.0] {
+                        let face = local.center + local.axes[k] * (sign * local.half[k]);
+                        for step in [-2.0, -1.0, 0.0, 1.0, 2.0] {
+                            let nudge = face.x().abs().max(1.0) * f64::EPSILON * step;
+                            probes.push(Point3::new(face.x() + nudge, face.y(), face.z()));
+                            probes.push(Point3::new(face.x(), face.y() + nudge, face.z() - nudge));
+                        }
+                    }
+                }
+                for p in probes {
+                    if local.contains(p) {
+                        accepted += 1;
+                        assert!(!local.surely_excludes(p), "{p:?} at scale {scale}");
+                    }
+                }
+            }
+        }
+        assert!(
+            accepted > 10_000,
+            "the probes reach inside the boxes: {accepted}"
+        );
     }
 
     /// Degenerate reach refuses to sample rather than guessing.
