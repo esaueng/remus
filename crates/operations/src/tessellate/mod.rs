@@ -36,6 +36,8 @@ mod solid;
 mod sphere_pole_patch;
 pub(crate) mod surface_normal;
 #[cfg(test)]
+mod swept_fixtures;
+#[cfg(test)]
 mod tests;
 
 use remus_math::vec::{Point3, Vec3};

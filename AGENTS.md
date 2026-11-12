@@ -639,6 +639,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Independent global maximum-distance oracles (tests) | `distance/maximum_tests.rs` |
 | Tessellation | `tessellate/` (mod, face, planar, nonplanar, nurbs, solid, edge_sampling, mesh_ops, tests, tests/face_cache, tests/mesh_oracles, tests/mutation_oracles) |
 | Differential oracle for the interior grid's boundary scans: the `(i + 1) % n` indexed containment and clearance loops kept verbatim (tests) | `tessellate/nonplanar/polygon_scan_oracle_tests.rs` |
+| Freshly generated swept bodies (threads, an in-place coil, a helical gear) and ordinary curved ones for the tessellator's bit-identity oracles (tests) | `tessellate/swept_fixtures.rs` |
 | Metric (first-fundamental-form) chart for an open NURBS face whose parameter lines run nearly parallel, e.g. a thread flank: interior grid and CDT in surface lengths; the averaged-metric `v` scale every other NURBS CDT chart triangulates with | `tessellate/nonplanar/sheared_chart.rs` |
 | Collapsed NURBS domain sides (a pole, or a blend rail stopping at a corner of its own radius) read from the control net, and monotone chart placement of the CDT boundary samples on them | `tessellate/nonplanar/collapsed_boundary.rs` |
 | One chart boundary for a torus face whose wires touch its outer wire: cycles sharing a vertex with it (seam slits and period-winding band boundaries left by face unification) spliced into one boundary walk | `tessellate/nonplanar/touching_cycles.rs` |
