@@ -336,6 +336,87 @@ fn framing_refusals_are_typed() {
     }
 }
 
+/// A session whose `uses` boundary uses all carry one large pcurve: written
+/// once, decoded as `uses - 1` full copies.
+fn repeated_pcurve(poles: usize, uses: usize) -> Topology {
+    let knots: Vec<f64> = std::iter::once(0.0)
+        .chain((0..poles).map(|i| i as f64 / (poles - 1) as f64))
+        .chain(std::iter::once(1.0))
+        .collect();
+    let points = (0..poles)
+        .map(|i| Point2::new(i as f64 / (poles - 1) as f64, 0.0))
+        .collect();
+    let pcurve = Curve2D::Nurbs(NurbsCurve2D::new(1, knots, points, vec![1.0; poles]).unwrap());
+    let mut topo = Topology::new();
+    for face in 0..uses.div_ceil(4) {
+        let z = face as f64;
+        let vertices: Vec<_> = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+            .iter()
+            .map(|&(x, y)| topo.add_vertex(Vertex::new(Point3::new(x, y, z), 1e-7)))
+            .collect();
+        let edges: Vec<_> = (0..4)
+            .map(|i| {
+                topo.add_edge(Edge::new(
+                    vertices[i],
+                    vertices[(i + 1) % 4],
+                    EdgeCurve::Line,
+                ))
+            })
+            .collect();
+        let wire = topo.add_wire(
+            Wire::new(
+                edges.iter().map(|&e| OrientedEdge::new(e, true)).collect(),
+                true,
+            )
+            .unwrap(),
+        );
+        let face = topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: z,
+            },
+        ));
+        for edge in edges {
+            topo.set_pcurve(edge, face, PCurve::new(pcurve.clone(), 0.0, 1.0))
+                .unwrap();
+        }
+    }
+    topo
+}
+
+/// pcurves own their arrays, so each back-reference decodes to a full copy:
+/// a small payload must not decode into unbounded memory. Both sides count
+/// the copies against the byte budget, the reader before it copies.
+#[test]
+fn repeated_pcurve_references_are_bounded() {
+    let topo = repeated_pcurve(2_000, 80);
+    let bytes = write(&topo);
+    assert!(bytes.len() < 100_000, "written once: {} bytes", bytes.len());
+    assert_eq!(write(&read(&bytes).unwrap().topology), bytes);
+
+    let budget = ImportLimits {
+        max_input_bytes: 1_000_000,
+        ..ImportLimits::default()
+    };
+    match read_snapshot(&bytes, BUILD, budget).unwrap_err() {
+        SnapshotError::LimitExceeded {
+            resource, limit, ..
+        } => {
+            assert_eq!(resource, "snapshot pcurve copies");
+            assert_eq!(limit, 1_000_000);
+        }
+        other => panic!("expected the pcurve copy budget, got {other}"),
+    }
+    match write_snapshot(&topo, BUILD, &[3, 0, u64::MAX], budget).unwrap_err() {
+        SnapshotError::LimitExceeded { resource, .. } => {
+            assert_eq!(resource, "snapshot pcurve copies");
+        }
+        other => panic!("the writer refuses what the reader would, got {other}"),
+    }
+}
+
 #[test]
 fn limits_apply_to_both_sides() {
     let topo = session();

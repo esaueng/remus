@@ -159,7 +159,8 @@ impl RemusKernel {
     /// Read-only. Throws `snapshot:poisoned` on a poisoned kernel,
     /// `snapshot:transient_state` while an assembly, legacy sketch or GCS
     /// sketch is live, and `snapshot:limit_exceeded` past the import limits
-    /// (256 MiB, 3,000,000 arena slots) that `fromSnapshot` would refuse.
+    /// (256 MiB of bytes or of decoded pcurve copies, 3,000,000 arena slots)
+    /// that `fromSnapshot` would refuse.
     #[wasm_bindgen(js_name = "snapshot")]
     pub fn snapshot(&self) -> Result<Vec<u8>, JsError> {
         Ok(self.snapshot_impl()?)

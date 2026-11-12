@@ -38,8 +38,9 @@
 //!
 //! [`read_snapshot`] is all-or-nothing and checks, in order: the input size
 //! limit, the magic, the format version, the framing (truncation, trailing
-//! bytes), the digest, the build identity, the payload encoding and the
-//! entity budget, and finally the structural invariants of
+//! bytes), the digest, the build identity, the payload encoding, the
+//! entity budget and the pcurve-copy budget, and finally the structural
+//! invariants of
 //! [`Topology::from_image`]. It returns a new topology and never touches an
 //! existing one.
 
@@ -169,8 +170,9 @@ pub struct SessionSnapshot {
 /// [`SnapshotError::InvalidRequest`] for an empty or over-long build
 /// identity or more than [`MAX_SESSION_WORDS`] session words, and
 /// [`SnapshotError::LimitExceeded`] when the topology holds more slots than
-/// `limits.max_model_entities` or the encoding exceeds
-/// `limits.max_input_bytes` (a snapshot [`read_snapshot`] would refuse).
+/// `limits.max_model_entities`, or the encoding or the pcurve copies its
+/// decoding makes exceed `limits.max_input_bytes` (a snapshot
+/// [`read_snapshot`] would refuse).
 pub fn write_snapshot(
     topo: &Topology,
     build: &str,
@@ -196,7 +198,14 @@ pub fn write_snapshot(
             actual: slots,
         });
     }
-    let body = payload::encode(&view, session);
+    let (body, pcurve_copies) = payload::encode(&view, session);
+    if pcurve_copies > limits.max_input_bytes {
+        return Err(SnapshotError::LimitExceeded {
+            resource: "snapshot pcurve copies",
+            limit: limits.max_input_bytes,
+            actual: pcurve_copies,
+        });
+    }
     let mut bytes = Vec::with_capacity(body.len() + build.len() + 40);
     bytes.extend_from_slice(MAGIC);
     bytes.extend_from_slice(&SNAPSHOT_FORMAT_VERSION.to_le_bytes());

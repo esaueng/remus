@@ -763,7 +763,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Differential tests of the JSON reader/writer against `serde_json`, shared mutation fuzzer (tests) | `json/oracle_tests.rs`, `json/mutation.rs` |
 | Resource limits for untrusted imports | `limits.rs` |
 | Whole-session snapshot codec: magic, format version, build identity, canonical little-endian payload of a topology image (raw `f64` bits), 128-bit digest; all-or-nothing read with limits | `snapshot.rs`, `snapshot/payload.rs` |
-| Snapshot round trip over every carrier, determinism, framing and limit refusals, re-sealed single-byte edits refused or accepted but never a panic (tests) | `snapshot/tests.rs` |
+| Snapshot round trip over every carrier, determinism, framing and limit refusals, the pcurve-copy budget on repeated pcurve back-references, re-sealed single-byte edits refused or accepted but never a panic (tests) | `snapshot/tests.rs` |
 | Persistent-reference JSON codec | `naming_io.rs` |
 | Differential oracle for the persistent-reference codec (tests) | `naming_io/oracle_tests.rs` |
 | Differential oracles over the STEP fixtures and synthetic bodies for the prepared classifier's exact skips: the boundary test's trim-window prune and the crossing count's NURBS knot-span prefilter, with its skips counted on either side of its span cap (tests) | `tests/boundary_prune_oracle.rs` |

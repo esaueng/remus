@@ -38,7 +38,7 @@ Every refusal throws an `Error` whose message starts `snapshot:<code>:`.
 |------|------|---------|
 | `poisoned` | `snapshot` | The kernel panicked earlier; replay instead. |
 | `transient_state` | `snapshot` | A GCS sketch, legacy sketch or assembly is live (see below). |
-| `limit_exceeded` | both | Over 256 MiB or 3,000,000 arena slots. |
+| `limit_exceeded` | both | Over 256 MiB, over 3,000,000 arena slots, or pcurves whose decoded copies would take over 256 MiB. |
 | `not_a_snapshot` | `fromSnapshot` | Wrong magic. |
 | `unsupported_format` | `fromSnapshot` | Another snapshot format version. |
 | `corrupt` | `fromSnapshot`, `snapshotDigest` | Truncated, extended, digest mismatch, or undecodable. |

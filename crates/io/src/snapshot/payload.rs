@@ -10,7 +10,13 @@
 //! one written earlier is written as a reference to it instead: copies of a
 //! body share their carriers in memory, so without this every retained copy
 //! would repeat them. The reader rebuilds each reference as a clone of the
-//! carrier it names, which shares its storage again.
+//! carrier it names. Edge curves and face surfaces keep their arrays behind
+//! shared pointers, so their clones share storage again; pcurves own theirs,
+//! so every pcurve reference is a full copy. Those copies are the one place
+//! a small payload can decode into much more memory, so both sides count
+//! them against [`ImportLimits::max_input_bytes`] ([`pcurve_copy_bytes`]):
+//! the writer refuses a session whose copies exceed it and the reader
+//! refuses before making the copy that would.
 
 use remus_math::curves::{Circle3D, Ellipse3D, Hyperbola3D, Parabola3D};
 use std::hash::Hasher;
@@ -192,6 +198,19 @@ fn pcurve_hash(curve: &NurbsCurve2D) -> u64 {
 }
 
 #[inline(never)]
+/// The memory one decoded copy of `curve` takes: its arrays plus their
+/// three allocations. Counted for every pcurve back-reference.
+fn pcurve_copy_bytes(curve: &NurbsCurve2D) -> usize {
+    const ALLOCATION: usize = 3 * 24;
+    curve
+        .knots()
+        .len()
+        .saturating_add(curve.control_points().len().saturating_mul(2))
+        .saturating_add(curve.weights().len())
+        .saturating_mul(8)
+        .saturating_add(ALLOCATION)
+}
+
 fn same_pcurve(a: &NurbsCurve2D, b: &NurbsCurve2D) -> bool {
     a.degree() == b.degree()
         && same_reals(a.knots(), b.knots())
@@ -204,6 +223,8 @@ struct Out<'a> {
     curves: Table<'a, NurbsCurve>,
     surfaces: Table<'a, NurbsSurface>,
     pcurves: Table<'a, NurbsCurve2D>,
+    /// Bytes the reader will spend copying pcurve back-references.
+    pcurve_copies: usize,
 }
 
 impl<'a> Out<'a> {
@@ -319,12 +340,15 @@ const fn kind_tag(kind: EntityKind) -> u8 {
 
 /// Encodes the payload: session words, then the view; see the module docs.
 #[allow(clippy::too_many_lines)]
-pub(super) fn encode(view: &TopologyView<'_>, session: &[u64]) -> Vec<u8> {
+/// Encodes the payload, and reports the bytes its pcurve back-references
+/// will take once decoded (see the module docs).
+pub(super) fn encode(view: &TopologyView<'_>, session: &[u64]) -> (Vec<u8>, usize) {
     let mut out = Out {
         bytes: Vec::new(),
         curves: Table::default(),
         surfaces: Table::default(),
         pcurves: Table::default(),
+        pcurve_copies: 0,
     };
     out.ordinals(session);
     out.varint(view.mutation_ticks);
@@ -460,7 +484,7 @@ pub(super) fn encode(view: &TopologyView<'_>, session: &[u64]) -> Vec<u8> {
         out.varint(recorded.ticks_after());
         write_payload(&mut out, &entry.payload);
     }
-    out.bytes
+    (out.bytes, out.pcurve_copies)
 }
 
 #[inline(never)]
@@ -662,6 +686,7 @@ fn write_curve2d<'a>(out: &mut Out<'a>, curve: &'a Curve2D) {
         }
         Curve2D::Nurbs(nurbs) => {
             if let Some(index) = out.pcurves.intern(nurbs, pcurve_hash(nurbs), same_pcurve) {
+                out.pcurve_copies = out.pcurve_copies.saturating_add(pcurve_copy_bytes(nurbs));
                 out.byte(4);
                 out.index(index);
                 return;
@@ -697,6 +722,9 @@ struct In<'a> {
     curves: Vec<NurbsCurve>,
     surfaces: Vec<NurbsSurface>,
     pcurves: Vec<NurbsCurve2D>,
+    /// Bytes pcurve back-references have copied so far, and their budget.
+    pcurve_copies: usize,
+    pcurve_copy_limit: usize,
 }
 
 impl In<'_> {
@@ -948,6 +976,8 @@ pub(super) fn decode(bytes: &[u8], limits: ImportLimits) -> Res<(TopologyImage, 
         curves: Vec::new(),
         surfaces: Vec::new(),
         pcurves: Vec::new(),
+        pcurve_copies: 0,
+        pcurve_copy_limit: limits.max_input_bytes,
     };
     let image = read_payload(&mut input)?;
     if input.remaining() != 0 {
@@ -1259,10 +1289,20 @@ fn read_curve2d(input: &mut In<'_>) -> Res<Curve2D> {
         }
         4 => {
             let index = input.index()?;
-            match input.pcurves.get(index) {
-                Some(curve) => Curve2D::Nurbs(curve.clone()),
-                None => return input.fail("unknown NURBS pcurve reference"),
+            let Some(curve) = input.pcurves.get(index) else {
+                return input.fail("unknown NURBS pcurve reference");
+            };
+            // Account for the copy before making it.
+            let copies = input.pcurve_copies.saturating_add(pcurve_copy_bytes(curve));
+            if copies > input.pcurve_copy_limit {
+                return Err(SnapshotError::LimitExceeded {
+                    resource: "snapshot pcurve copies",
+                    limit: input.pcurve_copy_limit,
+                    actual: copies,
+                });
             }
+            input.pcurve_copies = copies;
+            Curve2D::Nurbs(curve.clone())
         }
         _ => return input.fail("invalid pcurve"),
     })
