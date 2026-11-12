@@ -52,8 +52,8 @@ pub use face_cache::{
 };
 pub(crate) use mesh_ops::COINCIDENT_DEDUPE_GRID;
 pub use mesh_ops::{
-    EdgeLines, WeldedMeshQuality, boundary_edge_count, is_watertight, non_manifold_edge_count,
-    sample_solid_edges, sample_solid_edges_filtered, welded_mesh_quality,
+    EdgeLines, MeshEdgeCensus, WeldedMeshQuality, boundary_edge_count, edge_census, is_watertight,
+    non_manifold_edge_count, sample_solid_edges, sample_solid_edges_filtered, welded_mesh_quality,
 };
 pub(crate) use nurbs::torus_band_tube_window;
 pub use reuse::{

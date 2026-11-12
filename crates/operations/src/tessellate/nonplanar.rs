@@ -3925,23 +3925,23 @@ pub(super) fn tessellate_nonplanar_cdt(
                     let boundary_cdt: Vec<Point2> =
                         boundary_uv_ref.iter().map(|&(u, v)| to_cdt(u, v)).collect();
                     let clearance = 0.4 * du / n_u as f64;
+                    let mut row_scan = DenseRowScan::default();
+                    let mut row_points = Vec::with_capacity(n_u.saturating_sub(1));
                     for row in 0..=rows {
                         let v = lo + (hi - lo) * (row as f64 / rows as f64);
+                        row_points.clear();
                         for column in 1..n_u {
                             let u = u_min + du * (column as f64 / n_u as f64);
-                            let point = to_cdt(u, v);
-                            let (inside, clear) = classify_dense_candidate(
-                                boundary_uv_ref,
-                                &boundary_cdt,
-                                u,
-                                v,
-                                point,
-                                clearance,
-                            );
-                            if inside && clear {
-                                interior_pts.push(point);
-                            }
+                            row_points.push((u, to_cdt(u, v)));
                         }
+                        row_scan.classify(
+                            boundary_uv_ref,
+                            &boundary_cdt,
+                            v,
+                            &row_points,
+                            clearance,
+                            |point| interior_pts.push(point),
+                        );
                     }
                 }
             }
@@ -7187,6 +7187,116 @@ pub(super) fn polygon_row_contains(polygon: &[(f64, f64)], xs: &[f64], y: f64) -
         .collect()
 }
 
+/// [`classify_dense_candidate`] for every candidate of one dense-band row
+/// (one `v`), from two per-row segment lists instead of a whole-boundary scan
+/// per candidate.
+///
+/// Only a segment straddling `v` (the winding loop's two branches, read on
+/// `v` alone) can change a row candidate's winding number, so each candidate
+/// sums its signed crossings over those segments; the sum is the same in any
+/// order. A segment whose box every candidate of the row is certainly clear
+/// of — `segment_surely_clear`'s `y` test, read with the largest margin any
+/// row candidate's own test uses (the margin only grows with the candidate's
+/// coordinates) — is skipped by each candidate's own test too, so the
+/// clearance runs over the others, in boundary order, with the same
+/// arithmetic. The verdicts are `classify_dense_candidate`'s exactly (see the
+/// tests).
+#[derive(Default)]
+struct DenseRowScan {
+    straddling: Vec<usize>,
+    near: Vec<usize>,
+}
+
+impl DenseRowScan {
+    fn classify(
+        &mut self,
+        boundary_uv: &[(f64, f64)],
+        boundary_cdt: &[remus_math::vec::Point2],
+        v: f64,
+        row: &[(f64, remus_math::vec::Point2)],
+        clearance: f64,
+        mut keep: impl FnMut(remus_math::vec::Point2),
+    ) {
+        // `boundary_cdt` is mapped from `boundary_uv` one-to-one at the call
+        // site, so both walk the same segments, in `point_in_polygon_2d`'s
+        // order (closing segment last).
+        debug_assert_eq!(boundary_uv.len(), boundary_cdt.len());
+        let n = boundary_uv.len().min(boundary_cdt.len());
+        let next = |i: usize| if i + 1 == n { 0 } else { i + 1 };
+        self.straddling.clear();
+        self.near.clear();
+        if n == 0 || row.is_empty() {
+            return;
+        }
+        // The row's extent and the largest coordinate magnitude any of its
+        // candidates contributes to its own margin.
+        let (mut y_lo, mut y_hi, mut point_scale) = (f64::INFINITY, f64::NEG_INFINITY, 0.0_f64);
+        let mut finite = true;
+        for &(_, point) in row {
+            finite &= point.x().is_finite() && point.y().is_finite();
+            y_lo = y_lo.min(point.y());
+            y_hi = y_hi.max(point.y());
+            point_scale = point_scale.max(point.x().abs()).max(point.y().abs());
+        }
+        for i in 0..n {
+            let ((_, yi), (_, yj)) = (boundary_uv[i], boundary_uv[next(i)]);
+            if (yi <= v && yj > v) || (yi > v && yj <= v) {
+                self.straddling.push(i);
+            }
+            let (a, b) = (boundary_cdt[i], boundary_cdt[next(i)]);
+            let scale = a
+                .x()
+                .abs()
+                .max(a.y().abs())
+                .max(b.x().abs())
+                .max(b.y().abs())
+                .max(point_scale);
+            // `segment_surely_clear`'s margin at the largest candidate scale.
+            #[allow(clippy::suboptimal_flops)]
+            let margin = clearance.abs() * (1.0 + 1e-9) + 1e-12 * scale;
+            let row_clear =
+                finite && (y_hi < a.y().min(b.y()) - margin || y_lo > a.y().max(b.y()) + margin);
+            if !row_clear {
+                self.near.push(i);
+            }
+        }
+        for &(u, point) in row {
+            let mut winding = 0i32;
+            for &i in &self.straddling {
+                let ((xi, yi), (xj, yj)) = (boundary_uv[i], boundary_uv[next(i)]);
+                let cross = (xj - xi) * (v - yi) - (u - xi) * (yj - yi);
+                if yi <= v {
+                    if cross > 0.0 {
+                        winding += 1;
+                    }
+                } else if cross < 0.0 {
+                    winding -= 1;
+                }
+            }
+            if winding == 0 {
+                continue;
+            }
+            let clear = self.near.iter().all(|&i| {
+                let (a, b) = (boundary_cdt[i], boundary_cdt[next(i)]);
+                segment_surely_clear(a, b, point, clearance) || {
+                    let ab = b - a;
+                    let length_squared = ab.dot(ab);
+                    let t = if length_squared > 1.0e-30 {
+                        ((point - a).dot(ab) / length_squared).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    let foot = remus_math::vec::Point2::new(a.x() + ab.x() * t, a.y() + ab.y() * t);
+                    (point - foot).length() > clearance
+                }
+            });
+            if clear {
+                keep(point);
+            }
+        }
+    }
+}
+
 /// Containment and trim clearance of one dense-band candidate in a single
 /// boundary scan.
 ///
@@ -7202,6 +7312,9 @@ pub(super) fn polygon_row_contains(polygon: &[(f64, f64)], xs: &[f64], y: f64) -
 /// needs every segment, but it ends the distance work, and a segment whose
 /// box the candidate is certainly clear of ([`segment_surely_clear`]) skips
 /// it: the verdicts are the full test's either way.
+///
+/// Kept as the oracle of [`DenseRowScan`], which the band now runs.
+#[cfg(test)]
 fn classify_dense_candidate(
     boundary_uv: &[(f64, f64)],
     boundary_cdt: &[remus_math::vec::Point2],
@@ -7691,6 +7804,108 @@ mod interior_grid_limit_tests {
                 }
             }
         }
+    }
+
+    /// The per-row scan keeps exactly the candidates the per-candidate scan
+    /// keeps, in the same order: concave, convex, self-touching and
+    /// degenerate trims, rows on vertex levels, straight and sheared CDT
+    /// charts, clearances from far below to far above the row spacing, at
+    /// scales 1e-6 to 1e6 and far from the origin.
+    #[test]
+    fn row_scan_matches_the_per_candidate_scan() {
+        use remus_math::vec::Point2;
+
+        use super::{DenseRowScan, classify_dense_candidate};
+
+        let notch: Vec<(f64, f64)> = vec![
+            (0.0, 0.0),
+            (4.0, 0.0),
+            (4.0, 3.0),
+            (2.5, 3.0),
+            (2.0, 1.2),
+            (2.0, 1.2),
+            (1.5, 3.0),
+            (0.0, 3.0),
+        ];
+        let disc: Vec<(f64, f64)> = (0..97)
+            .map(|k| {
+                #[allow(clippy::cast_precision_loss)]
+                let a = k as f64 / 97.0 * std::f64::consts::TAU;
+                (5.0 + 2.0 * a.cos(), 5.0 + 1.5 * a.sin())
+            })
+            .collect();
+        // A figure-eight touching itself, and a two-point sliver.
+        let bow: Vec<(f64, f64)> = vec![(0.0, 0.0), (2.0, 2.0), (2.0, 0.0), (0.0, 2.0)];
+        let sliver: Vec<(f64, f64)> = vec![(0.0, 0.0), (3.0, 1.0)];
+        let (mut kept_total, mut candidates) = (0usize, 0usize);
+        for polygon in [&notch, &disc, &bow, &sliver] {
+            for (scale, offset) in [(1.0, 0.0), (1e-6, 0.0), (1e6, 0.0), (1.0, 1e6), (1e-3, 1e3)] {
+                let uv: Vec<(f64, f64)> = polygon
+                    .iter()
+                    .map(|&(u, v)| (u * scale + offset, v * scale - offset))
+                    .collect();
+                let (lo_u, hi_u) = uv
+                    .iter()
+                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &(u, _)| {
+                        (lo.min(u), hi.max(u))
+                    });
+                let (lo_v, hi_v) = uv
+                    .iter()
+                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &(_, v)| {
+                        (lo.min(v), hi.max(v))
+                    });
+                let charts: [&dyn Fn(f64, f64) -> Point2; 3] = [
+                    &|u, v| Point2::new(u, v),
+                    &|u, v| Point2::new(u, v * std::f64::consts::TAU / 6.0),
+                    &|u, v| Point2::new(u + 0.3 * (v - lo_v), v - 0.2 * (u - lo_u)),
+                ];
+                for to_cdt in charts {
+                    let boundary_cdt: Vec<Point2> = uv.iter().map(|&(u, v)| to_cdt(u, v)).collect();
+                    let mut scan = DenseRowScan::default();
+                    for clearance in [0.0, 1e-4, 0.0073, 0.05, 0.6].map(|c| c * scale) {
+                        // Rows through the vertex levels and between them.
+                        let mut vs: Vec<f64> = uv.iter().map(|&(_, v)| v).collect();
+                        #[allow(clippy::cast_precision_loss)]
+                        vs.extend((0..=37).map(|iv| lo_v + (hi_v - lo_v) * iv as f64 / 37.0));
+                        for v in vs {
+                            #[allow(clippy::cast_precision_loss)]
+                            let row: Vec<(f64, Point2)> = (0..=41)
+                                .map(|iu| {
+                                    let u = lo_u + (hi_u - lo_u) * iu as f64 / 41.0;
+                                    (u, to_cdt(u, v))
+                                })
+                                .collect();
+                            let expected: Vec<Point2> = row
+                                .iter()
+                                .filter(|&&(u, point)| {
+                                    let (inside, clear) = classify_dense_candidate(
+                                        &uv,
+                                        &boundary_cdt,
+                                        u,
+                                        v,
+                                        point,
+                                        clearance,
+                                    );
+                                    inside && clear
+                                })
+                                .map(|&(_, point)| point)
+                                .collect();
+                            let mut kept = Vec::new();
+                            scan.classify(&uv, &boundary_cdt, v, &row, clearance, |point| {
+                                kept.push(point);
+                            });
+                            assert_eq!(kept, expected, "row v = {v}, clearance {clearance}");
+                            kept_total += kept.len();
+                            candidates += row.len();
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            kept_total > 10_000 && kept_total < candidates,
+            "{kept_total} of {candidates}"
+        );
     }
 
     /// A debug build stops a dense scan whose CDT boundary does not map the

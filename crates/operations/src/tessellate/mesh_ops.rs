@@ -30,8 +30,11 @@ pub const COINCIDENT_DEDUPE_GRID: f64 = 1e-6;
 pub fn is_watertight(mesh: &TriangleMesh) -> bool {
     !mesh.indices.is_empty()
         && mesh.indices.len().is_multiple_of(3)
-        && boundary_edge_count(mesh) == 0
-        && non_manifold_edge_count(mesh) == 0
+        && edge_census(mesh)
+            == MeshEdgeCensus {
+                boundary_edges: 0,
+                non_manifold_edges: 0,
+            }
 }
 
 /// Count boundary (one-sided) edges in a mesh.
@@ -40,22 +43,7 @@ pub fn is_watertight(mesh: &TriangleMesh) -> bool {
 /// does not. Returns the number of such edges. A watertight mesh has 0.
 #[must_use]
 pub fn boundary_edge_count(mesh: &TriangleMesh) -> usize {
-    let mut half_edges: DetHashSet<(u32, u32)> = DetHashSet::default();
-    let tri_count = mesh.indices.len() / 3;
-
-    for t in 0..tri_count {
-        let i0 = mesh.indices[t * 3];
-        let i1 = mesh.indices[t * 3 + 1];
-        let i2 = mesh.indices[t * 3 + 2];
-        half_edges.insert((i0, i1));
-        half_edges.insert((i1, i2));
-        half_edges.insert((i2, i0));
-    }
-
-    half_edges
-        .iter()
-        .filter(|&&(a, b)| !half_edges.contains(&(b, a)))
-        .count()
+    edge_census(mesh).boundary_edges
 }
 
 /// Count non-manifold (branching) edges in a mesh.
@@ -66,17 +54,108 @@ pub fn boundary_edge_count(mesh: &TriangleMesh) -> usize {
 /// to validate that a tessellated solid is a closed 2-manifold.
 #[must_use]
 pub fn non_manifold_edge_count(mesh: &TriangleMesh) -> usize {
-    let mut edge_count: DetHashMap<(u32, u32), u32> = DetHashMap::default();
-    for tri in mesh.indices.chunks_exact(3) {
-        let (a, b, c) = (tri[0], tri[1], tri[2]);
-        for (p, q) in [(a, b), (b, c), (c, a)] {
-            let key = if p < q { (p, q) } else { (q, p) };
-            *edge_count.entry(key).or_default() += 1;
+    edge_census(mesh).non_manifold_edges
+}
+
+/// [`boundary_edge_count`] and [`non_manifold_edge_count`] of one mesh, from
+/// one pass over its index list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MeshEdgeCensus {
+    /// Distinct half-edges `(a, b)` whose reverse `(b, a)` no triangle runs.
+    pub boundary_edges: usize,
+    /// Undirected edges (a degenerate `(a, a)` edge included) that three or
+    /// more triangle sides use.
+    pub non_manifold_edges: usize,
+}
+
+/// Both edge counts of `mesh`'s triangles (trailing indices short of a
+/// triangle ignored), as [`boundary_edge_count`] and
+/// [`non_manifold_edge_count`] define them.
+///
+/// Every side is keyed by its undirected edge with its direction in the low
+/// bits, so sorting the keys groups each undirected edge's uses: its count is
+/// the run's length, and the edge holds a boundary half-edge for each
+/// direction present without the other (a degenerate side is its own
+/// reverse). Index lists whose vertices fit `positions` are bucketed under
+/// the smaller endpoint by a counting sort and each short bucket sorted;
+/// others sort all keys at once. The hash-set and hash-map counts this
+/// replaces are its oracle (see the tests).
+#[must_use]
+pub fn edge_census(mesh: &TriangleMesh) -> MeshEdgeCensus {
+    let triangles = mesh.indices.chunks_exact(3);
+    let sides = |tri: &[u32]| [(tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])];
+    // The larger endpoint above two direction bits: 0 down, 1 degenerate,
+    // 2 up. Sorting a bucket groups its uses by edge.
+    let key = |i: u32, j: u32| -> u64 {
+        let direction = match i.cmp(&j) {
+            std::cmp::Ordering::Less => 2,
+            std::cmp::Ordering::Equal => 1,
+            std::cmp::Ordering::Greater => 0,
+        };
+        (u64::from(i.max(j)) << 2) | direction
+    };
+    let mut census = MeshEdgeCensus {
+        boundary_edges: 0,
+        non_manifold_edges: 0,
+    };
+    let mut tally = |run: &[u64]| {
+        if run.len() > 2 {
+            census.non_manifold_edges += 1;
+        }
+        let up = run.iter().any(|&k| k & 3 == 2);
+        // Direction bits `00`: the side runs down.
+        let down = run.iter().any(|&k| k.trailing_zeros() >= 2);
+        census.boundary_edges += usize::from(up != down);
+    };
+    let Some(&max) = triangles.clone().flatten().max() else {
+        return census;
+    };
+    let vertex_count = max as usize;
+    if vertex_count < mesh.positions.len() {
+        let vertex_count = vertex_count + 1;
+        let mut starts = vec![0_usize; vertex_count + 1];
+        for tri in triangles.clone() {
+            for (i, j) in sides(tri) {
+                starts[i.min(j) as usize + 1] += 1;
+            }
+        }
+        for v in 0..vertex_count {
+            starts[v + 1] += starts[v];
+        }
+        let mut fill = starts.clone();
+        let mut keyed = vec![0_u64; starts[vertex_count]];
+        for tri in triangles {
+            for (i, j) in sides(tri) {
+                let slot = &mut fill[i.min(j) as usize];
+                keyed[*slot] = key(i, j);
+                *slot += 1;
+            }
+        }
+        for v in 0..vertex_count {
+            let bucket = &mut keyed[starts[v]..starts[v + 1]];
+            // Keys equal only when identical, so the unstable order is the
+            // stable one.
+            bucket.compact_sort_unstable();
+            for run in bucket.chunk_by(|a, b| a >> 2 == b >> 2) {
+                tally(run);
+            }
+        }
+    } else {
+        // Indices past the vertex list: no bucket per vertex.
+        let mut keyed: Vec<(u32, u64)> = triangles
+            .flat_map(|tri| sides(tri).map(|(i, j)| (i.min(j), key(i, j))))
+            .collect();
+        keyed.compact_sort_unstable();
+        for run in keyed.chunk_by(|a, b| a.0 == b.0 && a.1 >> 2 == b.1 >> 2) {
+            let keys: Vec<u64> = run.iter().map(|&(_, k)| k).collect();
+            tally(&keys);
         }
     }
-
-    edge_count.values().filter(|&&c| c > 2).count()
+    census
 }
+
+#[cfg(test)]
+mod edge_census_oracle_tests;
 
 /// Position-welded mesh quality metrics.
 ///

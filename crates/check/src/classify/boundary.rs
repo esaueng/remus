@@ -17,7 +17,6 @@ use remus_math::nurbs::projection::{
     SurfaceSeedGrid, project_point_to_surface, project_point_to_surface_with_grid,
 };
 use remus_math::nurbs::surface::NurbsSurface;
-use remus_math::predicates::point_in_polygon;
 use remus_math::ray::RayHit;
 use remus_math::traits::ParametricSurface;
 use remus_math::vec::{Point2, Point3, Vec3};
@@ -223,6 +222,7 @@ pub fn uv_boundary_is_degenerate(poly: &[(f64, f64)]) -> bool {
 ///
 /// Adjusts the test point's u coordinate (and v when periodic) to lie within
 /// the unwrapped polygon's coordinate range before testing.
+#[cfg(test)]
 fn point_in_uv_boundary(
     hit_u: f64,
     hit_v: f64,
@@ -230,6 +230,8 @@ fn point_in_uv_boundary(
     u_period: Option<f64>,
     v_period: Option<f64>,
 ) -> bool {
+    // Verbatim from before prepared trims cached each loop's centre; the
+    // oracle of `point_in_uv_loop` (see the tests).
     let u_min = uv_boundary
         .iter()
         .map(|(u, _)| *u)
@@ -262,7 +264,48 @@ fn point_in_uv_boundary(
         .map(|(u, v)| Point2::new(*u, *v))
         .collect();
     let test = Point2::new(hu, hv);
-    point_in_polygon(test, &poly)
+    remus_math::predicates::point_in_polygon(test, &poly)
+}
+
+/// The centre of a UV loop's bounding box, `((u_min + u_max) / 2, (v_min +
+/// v_max) / 2)`: where [`point_in_uv_loop`] unwraps a periodic hit to. A
+/// prepared trim computes it once per loop.
+fn uv_loop_center(uv_loop: &[(f64, f64)]) -> (f64, f64) {
+    let u_min = uv_loop
+        .iter()
+        .map(|(u, _)| *u)
+        .fold(f64::INFINITY, f64::min);
+    let u_max = uv_loop
+        .iter()
+        .map(|(u, _)| *u)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let v_min = uv_loop
+        .iter()
+        .map(|(_, v)| *v)
+        .fold(f64::INFINITY, f64::min);
+    let v_max = uv_loop
+        .iter()
+        .map(|(_, v)| *v)
+        .fold(f64::NEG_INFINITY, f64::max);
+    ((u_min + u_max) * 0.5, (v_min + v_max) * 0.5)
+}
+
+/// Whether `(hit_u, hit_v)`, unwrapped on each periodic axis to the period
+/// nearest the loop's `center` ([`uv_loop_center`]), has a nonzero winding
+/// number about `uv_loop`.
+fn point_in_uv_loop(
+    hit_u: f64,
+    hit_v: f64,
+    uv_loop: &[(f64, f64)],
+    (u_center, v_center): (f64, f64),
+    u_period: Option<f64>,
+    v_period: Option<f64>,
+) -> bool {
+    // Shift hit_u to be closest to the polygon's u center.
+    let hu = u_period.map_or(hit_u, |p| unwrap_periodic(u_center, hit_u, p));
+    // For surfaces that also close in v (torus), shift hit_v the same way.
+    let hv = v_period.map_or(hit_v, |period| unwrap_periodic(v_center, hit_v, period));
+    remus_math::predicates::winding_number_xy(Point2::new(hu, hv), uv_loop) != 0
 }
 
 /// Crossings closer together than this along a ray, in parameter units, are
@@ -476,14 +519,17 @@ pub fn outer_contains_point(outer: &[Point3], point: Point3) -> bool {
 /// has no material and therefore no crossing.
 fn hit_in_hole_uv(
     holes: &[Vec<(f64, f64)>],
+    centers: &[(f64, f64)],
     hit_u: f64,
     hit_v: f64,
     u_period: Option<f64>,
     v_period: Option<f64>,
 ) -> bool {
+    debug_assert_eq!(holes.len(), centers.len());
     holes
         .iter()
-        .any(|hole| point_in_uv_boundary(hit_u, hit_v, hole, u_period, v_period))
+        .zip(centers)
+        .any(|(hole, &center)| point_in_uv_loop(hit_u, hit_v, hole, center, u_period, v_period))
 }
 
 /// Per-face trim data reused across rays and query points (PERF-Q01).
@@ -586,8 +632,12 @@ pub struct FaceCache {
 struct AnalyticUvTrim {
     /// The outer loop in UV, or `None` for a full-surface face.
     uv_boundary: Option<Vec<(f64, f64)>>,
+    /// [`uv_loop_center`] of `uv_boundary`.
+    boundary_center: Option<(f64, f64)>,
     /// Hole loops in UV.
     holes: Vec<Vec<(f64, f64)>>,
+    /// [`uv_loop_center`] of each hole.
+    hole_centers: Vec<(f64, f64)>,
     /// Whether some loop wraps a period of a doubly periodic surface, so
     /// containment is decided by orientation rather than parity.
     wraps: bool,
@@ -634,6 +684,8 @@ impl AnalyticUvTrim {
                 .chain(&holes)
                 .any(|uv_loop| uv_loop_wraps(uv_loop, u_period, v_period));
         Self {
+            boundary_center: uv_boundary.as_deref().map(uv_loop_center),
+            hole_centers: holes.iter().map(|hole| uv_loop_center(hole)).collect(),
             uv_boundary,
             holes,
             wraps,
@@ -727,11 +779,15 @@ struct NurbsUvTrim {
     v_period: Option<f64>,
     /// The outer loop in UV, or `None` for a full-surface face.
     uv_boundary: Option<Vec<(f64, f64)>>,
+    /// [`uv_loop_center`] of `uv_boundary`.
+    boundary_center: Option<(f64, f64)>,
     /// Whether `uv_boundary` encloses no UV area.
     degenerate: bool,
     /// Hole loops in UV; built only for a non-degenerate boundary, exactly
     /// when the one-shot path builds them.
     holes: Vec<Vec<(f64, f64)>>,
+    /// [`uv_loop_center`] of each hole.
+    hole_centers: Vec<(f64, f64)>,
 }
 
 impl NurbsUvTrim {
@@ -779,6 +835,8 @@ impl NurbsUvTrim {
         Self {
             u_period,
             v_period,
+            boundary_center: uv_boundary.as_deref().map(uv_loop_center),
+            hole_centers: holes.iter().map(|hole| uv_loop_center(hole)).collect(),
             uv_boundary,
             degenerate,
             holes,
@@ -887,13 +945,13 @@ where
     for &hit in hits {
         let (hit_u, hit_v) = project(hit);
 
-        if let Some(boundary) = uv_boundary
-            && !point_in_uv_boundary(hit_u, hit_v, boundary, u_period, v_period)
+        if let (Some(boundary), Some(center)) = (uv_boundary, uv.boundary_center)
+            && !point_in_uv_loop(hit_u, hit_v, boundary, center, u_period, v_period)
         {
             continue;
         }
         // The trimmed face carries no material inside its inner wires.
-        if hit_in_hole_uv(holes, hit_u, hit_v, u_period, v_period) {
+        if hit_in_hole_uv(holes, &uv.hole_centers, hit_u, hit_v, u_period, v_period) {
             continue;
         }
         crossings += 1;
@@ -2640,12 +2698,12 @@ fn count_nurbs_hits_with_trim(
 
     let mut crossings = 0u32;
     for (_, hit_u, hit_v) in hits {
-        if let Some(boundary) = uv_boundary
-            && !point_in_uv_boundary(*hit_u, *hit_v, boundary, u_period, v_period)
+        if let (Some(boundary), Some(center)) = (uv_boundary, uv.boundary_center)
+            && !point_in_uv_loop(*hit_u, *hit_v, boundary, center, u_period, v_period)
         {
             continue;
         }
-        if hit_in_hole_uv(holes, *hit_u, *hit_v, u_period, v_period) {
+        if hit_in_hole_uv(holes, &uv.hole_centers, *hit_u, *hit_v, u_period, v_period) {
             continue;
         }
         crossings += 1;
@@ -2787,6 +2845,81 @@ mod nurbs_bump_ray_tests;
 
 #[cfg(test)]
 mod torus_contact_tests;
+
+#[cfg(test)]
+mod uv_loop_center_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    /// The prepared trims' cached loop centres give the containment the
+    /// per-hit centre always gave: random and degenerate loops, hits on and
+    /// near loop vertices and one or more periods away, with and without
+    /// each period.
+    #[test]
+    fn cached_center_matches_the_per_hit_center() {
+        let mut state = 0x51_7CC1_B727_220A_u64;
+        let mut unit = move || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            #[allow(clippy::cast_precision_loss)]
+            let u = (state >> 11) as f64 / (1u64 << 53) as f64;
+            u
+        };
+        let tau = std::f64::consts::TAU;
+        let mut inside = 0usize;
+        for n in 0..10 {
+            for _ in 0..300 {
+                let (cu, cv, ru, rv) = (
+                    unit() * 20.0 - 10.0,
+                    unit() * 20.0 - 10.0,
+                    unit() * 4.0,
+                    unit() * 4.0,
+                );
+                #[allow(clippy::cast_precision_loss)]
+                let uv_loop: Vec<(f64, f64)> = (0..n)
+                    .map(|k| {
+                        let a = k as f64 / n.max(1) as f64 * tau + unit() * 0.3;
+                        let r = 0.5 + unit();
+                        (cu + ru * r * a.cos(), cv + rv * r * a.sin())
+                    })
+                    .collect();
+                let center = uv_loop_center(&uv_loop);
+                for _ in 0..12 {
+                    let (mut hu, mut hv) = (
+                        cu + (unit() - 0.5) * 3.0 * ru,
+                        cv + (unit() - 0.5) * 3.0 * rv,
+                    );
+                    if !uv_loop.is_empty() && unit() < 0.2 {
+                        (hu, hv) = uv_loop[(unit() * uv_loop.len() as f64) as usize];
+                    }
+                    #[allow(clippy::cast_precision_loss)]
+                    let shift = ((unit() * 5.0).floor() - 2.0) * tau;
+                    for (u_period, v_period) in [
+                        (None, None),
+                        (Some(tau), None),
+                        (Some(tau), Some(tau)),
+                        (None, Some(tau)),
+                    ] {
+                        let (hu, hv) = (
+                            if u_period.is_some() { hu + shift } else { hu },
+                            if v_period.is_some() { hv - shift } else { hv },
+                        );
+                        let expected = point_in_uv_boundary(hu, hv, &uv_loop, u_period, v_period);
+                        inside += usize::from(expected);
+                        assert_eq!(
+                            point_in_uv_loop(hu, hv, &uv_loop, center, u_period, v_period),
+                            expected,
+                            "{uv_loop:?} at ({hu}, {hv}), periods {u_period:?} {v_period:?}"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(inside > 5_000, "{inside} hits inside");
+    }
+}
 
 #[cfg(test)]
 mod spherical_triangle_tests {
