@@ -271,14 +271,19 @@ impl Hindley {
         }
     }
 
+    /// Angle from a flank line's tangent point on the base circle to its
+    /// point at radius `rho ≥ r_b`, seen from the wheel center.
+    fn line_offset(&self, rho: f64) -> f64 {
+        rho.mul_add(rho, -self.rb * self.rb)
+            .max(0.0)
+            .sqrt()
+            .atan2(self.rb)
+    }
+
     /// Polar angle about the wheel center of tooth 0's flank line at
     /// radius `rho ≥ r_b`.
     pub(super) fn line_angle(&self, side: ToothSide, rho: f64) -> f64 {
-        let off = rho
-            .mul_add(rho, -self.rb * self.rb)
-            .max(0.0)
-            .sqrt()
-            .atan2(self.rb);
+        let off = self.line_offset(rho);
         match side {
             ToothSide::Plus => self.tangent_plus - off,
             ToothSide::Minus => self.tangent_minus + off,
@@ -362,24 +367,40 @@ impl Hindley {
     /// groove, negative outside; roughly the distance to the nearest of
     /// those boundaries.
     pub(super) fn material_margin(&self, p: Point3) -> f64 {
-        let u = p.y().atan2(p.x());
+        let (blank, section) = self.blank_margin(p);
+        blank.min(self.groove_margin(p, section))
+    }
+
+    /// The blank's share of [`Self::material_margin`], which is never above
+    /// it: the margin inside the hourglass blank alone. Also the point's
+    /// `(y, z, ρ)` in the rotated mid-plane, for [`Self::groove_margin`].
+    pub(super) fn blank_margin(&self, p: Point3) -> (f64, [f64; 3]) {
         let r = p.x().hypot(p.y());
         let (y, z) = (r - self.a, p.z());
         let rho = y.hypot(z);
         let blank = (self.half - z.abs()).min(rho - self.rho_tip);
+        (blank, [y, z, rho])
+    }
+
+    /// The groove's share of [`Self::material_margin`]: the margin clear of
+    /// every wheel tooth that cut the groove, at a point whose
+    /// [`Self::blank_margin`] section is `[y, z, rho]`.
+    pub(super) fn groove_margin(&self, p: Point3, [y, z, rho]: [f64; 3]) -> f64 {
+        let u = p.y().atan2(p.x());
         let phi = (FRAC_PI_2 + self.phase - u) / (self.sigma * self.ratio);
         let pitch = TAU / f64::from(self.wheel_teeth);
         let angle = z.atan2(y) - phi;
-        let radius = rho.max(self.rb);
-        let lo = self.line_angle(ToothSide::Minus, radius);
-        let width = self.line_angle(ToothSide::Plus, radius) - lo;
+        // Both flank lines turn by the same angle from their tangent points.
+        let off = self.line_offset(rho.max(self.rb));
+        let lo = self.tangent_minus + off;
+        let width = (self.tangent_plus - off) - lo;
         let offset = (angle - lo).rem_euclid(pitch);
         let angular = if offset <= width {
             -offset.min(width - offset)
         } else {
             (offset - width).min(pitch - offset)
         };
-        blank.min((angular * rho).max(rho - self.rho_root))
+        (angular * rho).max(rho - self.rho_root)
     }
 
     /// Whether a local point lies inside one of the wheel teeth that cut
