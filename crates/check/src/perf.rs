@@ -1,4 +1,5 @@
-//! Deterministic work counters for the point-classification hot path (PERF-Q01).
+//! Deterministic work counters for the point-classification hot path (PERF-Q01)
+//! and for face integration.
 //!
 //! These count the *preparation work* of ray-cast point classification — the
 //! per-ray face-bound collection, BVH construction, and per-face trim-polygon
@@ -60,6 +61,72 @@ pub(crate) fn bump_classify_face_aabb_eval() {
 pub(crate) fn bump_classify_trim_build() {
     #[cfg(feature = "perf-counters")]
     increment(&CLASSIFY_TRIM_BUILDS);
+}
+
+#[cfg(feature = "perf-counters")]
+std::thread_local! {
+    static PLANAR_FACE_INTEGRATIONS: Cell<u64> = const { Cell::new(0) };
+    static KNOT_ALIGNED_PREFLIGHTS: Cell<u64> = const { Cell::new(0) };
+    static KNOT_ALIGNED_LINES: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Count one planar face integration (the exact boundary integral or its
+/// polygon fallback), whatever Gauss order the request named.
+#[inline]
+pub(crate) fn bump_planar_face_integration() {
+    #[cfg(feature = "perf-counters")]
+    increment(&PLANAR_FACE_INTEGRATIONS);
+}
+
+/// Count one counting-only pass of the knot-aligned NURBS rule: the walk
+/// over every abscissa's trim spans that only decides its work refusal.
+#[inline]
+pub(crate) fn bump_knot_aligned_preflight() {
+    #[cfg(feature = "perf-counters")]
+    increment(&KNOT_ALIGNED_PREFLIGHTS);
+}
+
+/// Count the Gauss lines (one `v` cell at one `u` abscissa) one knot-aligned
+/// integration evaluated.
+#[inline]
+pub(crate) fn add_knot_aligned_lines(lines: usize) {
+    #[cfg(feature = "perf-counters")]
+    KNOT_ALIGNED_LINES.with(|value| value.set(value.get().saturating_add(lines as u64)));
+    #[cfg(not(feature = "perf-counters"))]
+    let _ = lines;
+}
+
+/// Face-integration work since the last [`reset_integration`]. Only
+/// available with `perf-counters`.
+#[cfg(feature = "perf-counters")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IntegrationSnapshot {
+    /// Planar face integrations.
+    pub planar_faces: u64,
+    /// Counting-only passes of the knot-aligned NURBS rule.
+    pub knot_aligned_preflights: u64,
+    /// Gauss lines the knot-aligned NURBS rule evaluated.
+    pub knot_aligned_lines: u64,
+}
+
+/// Reset the face-integration counters. Only available with `perf-counters`.
+#[cfg(feature = "perf-counters")]
+pub fn reset_integration() {
+    PLANAR_FACE_INTEGRATIONS.set(0);
+    KNOT_ALIGNED_PREFLIGHTS.set(0);
+    KNOT_ALIGNED_LINES.set(0);
+}
+
+/// Every face-integration counter since the last [`reset_integration`]. Only
+/// available with `perf-counters`.
+#[cfg(feature = "perf-counters")]
+#[must_use]
+pub fn integration_snapshot() -> IntegrationSnapshot {
+    IntegrationSnapshot {
+        planar_faces: PLANAR_FACE_INTEGRATIONS.get(),
+        knot_aligned_preflights: KNOT_ALIGNED_PREFLIGHTS.get(),
+        knot_aligned_lines: KNOT_ALIGNED_LINES.get(),
+    }
 }
 
 /// A snapshot of every classification work counter since the last [`reset`].

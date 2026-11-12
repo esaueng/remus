@@ -117,11 +117,27 @@ fn hammer_move_reads_its_unchanged_faces_and_measures_its_volume_once() {
     let end = (thread_face_cache_stats(), thread_volume_memo_stats());
     assert!(valid);
     // The volume sums the probe's own fixed-order face integrals, so it reads
-    // every face once more and lands on the probe's signed volume exactly. Its
-    // order-3 convergence terms are new only for the faces the move
-    // re-limited, the ones it integrated afresh.
-    assert_eq!(end.0.misses - start.0.misses, integrated);
-    assert_eq!(end.0.hits - start.0.hits, 3 * faces - integrated);
+    // every face once more and lands on the probe's signed volume exactly. A
+    // planar face has no quadrature order and its convergence term is that
+    // same reading, so only the curved faces take an order-3 term: new only
+    // for the curved faces among the ones the move re-limited and integrated
+    // afresh (6 of its 14 on this body when recorded).
+    let curved = solid_faces(&after, moved)
+        .unwrap()
+        .iter()
+        .filter(|&&f| !matches!(after.face(f).unwrap().surface(), FaceSurface::Plane { .. }))
+        .count() as u64;
+    let fresh_terms = end.0.misses - start.0.misses;
+    assert!(
+        (1..=integrated).contains(&fresh_terms),
+        "{fresh_terms} new order-3 terms after {integrated} fresh integrations"
+    );
+    assert_eq!(
+        end.0.hits - start.0.hits,
+        2 * faces + curved - fresh_terms,
+        "the probe and the volume each read every face, and the convergence \
+         guard each curved face once more"
+    );
     assert_eq!(read.to_bits(), signed.abs().to_bits());
     assert_eq!(
         (end.1.misses - start.1.misses, end.1.hits - start.1.hits),
