@@ -780,3 +780,68 @@ fn edge_images_match_transform_edges() {
         }
     }
 }
+
+/// A display-only frame ([`crate::blend_ops::set_display_only_blends`]) of
+/// the translation builds exactly the checked move's document, and skips its
+/// measuring checks: strict validation, the volume sign and the whole-body
+/// mesh closure (forced on here, as when no axial bound certifies it).
+#[test]
+fn display_only_translation_builds_the_checked_document_without_measuring_it() {
+    fn clock() -> f64 {
+        0.0
+    }
+    struct Restore;
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            crate::blend_ops::set_display_only_blends(false);
+            crate::performance::configure(None);
+        }
+    }
+    let _reset = Reset;
+    let _restore = Restore;
+    let (topo, solid, support, _, _) = super::tests::filleted_cube_support_and_band();
+    for distance in [1.0, 0.25, -0.5, -4.0] {
+        FORCE_WHOLE_CLOSURE.with(|force| force.set(true));
+        let traced = |display_only: bool| {
+            crate::blend_ops::set_display_only_blends(display_only);
+            crate::performance::configure(Some(clock));
+            let moved = run(
+                &topo,
+                move_translation_invariant_blend_region,
+                solid,
+                &[support],
+                distance,
+                false,
+            );
+            let phases: Vec<&'static str> = crate::performance::drain()
+                .into_iter()
+                .map(|phase| phase.name)
+                .collect();
+            crate::performance::configure(None);
+            crate::blend_ops::set_display_only_blends(false);
+            (moved, phases)
+        };
+        let (checked, checked_phases) = traced(false);
+        let (display, display_phases) = traced(true);
+        assert!(
+            matches!(checked.0, Outcome::Moved { .. }),
+            "distance {distance}: {:?}",
+            checked.0
+        );
+        assert_eq!(display, checked, "distance {distance}");
+        for phase in [
+            "move_faces.blend.validate_exact",
+            "move_faces.blend.translation_volume",
+            "move_faces.blend.translation_mesh_closure",
+        ] {
+            assert!(
+                checked_phases.contains(&phase),
+                "distance {distance}: the checked move skipped {phase}"
+            );
+            assert!(
+                !display_phases.contains(&phase),
+                "distance {distance}: a display-only frame ran {phase}"
+            );
+        }
+    }
+}

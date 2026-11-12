@@ -121,6 +121,19 @@ pub(super) enum Gate {
     Preview,
 }
 
+impl Gate {
+    /// The gate an unprepared edit runs: [`Gate::Preview`] while the thread
+    /// builds display-only frames
+    /// ([`crate::blend_ops::set_display_only_blends`]), else [`Gate::Full`].
+    pub(super) fn current() -> Self {
+        if crate::blend_ops::display_only_blends() {
+            Self::Preview
+        } else {
+            Self::Full
+        }
+    }
+}
+
 /// A re-filleted group.
 #[derive(Debug, Clone)]
 pub struct GroupReblend {

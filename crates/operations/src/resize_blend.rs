@@ -2803,12 +2803,20 @@ fn execute_translation(
     };
     let copied = translated_solid_copy(topo, solid, &translation)?;
     let result = copied.solid;
+    // A display-only frame (`crate::blend_ops::set_display_only_blends`)
+    // keeps the analytic refusals above and the structural checks below (a
+    // closed shell, unchanged entity counts) and skips the measuring ones:
+    // strict validation, the volume sign and the whole-body mesh closure.
+    let display_only = crate::blend_ops::display_only_blends();
     // Validate the deliverable: the copy is entity-for-entity, so one strict
     // pass serves both it and the translated input, and running it here
     // keeps validation ahead of the count and volume refusals. A refusal is
     // reported against the translated input, whose ids are the caller's and
     // stay live after the rollback; the copy's do not.
-    if let Err(copy_error) = validate_exact_result(topo, result, "translation-invariant blend move")
+    if display_only {
+        crate::push_pull::require_closed_shells(topo, result, "translation-invariant blend move")?;
+    } else if let Err(copy_error) =
+        validate_exact_result(topo, result, "translation-invariant blend move")
     {
         let work = translation.applied_to_copy_of(topo)?;
         validate_exact_result(&work, solid, "translation-invariant blend move")?;
@@ -2830,6 +2838,52 @@ fn execute_translation(
     // negligible next to its area, is refused, independent of body size. A
     // region the integral cannot vouch for keeps the whole-body mesh
     // comparison with its original slack, so those bodies behave as before.
+    if !display_only {
+        check_translation_volume(topo, solid, analysis, &translation, &copied, distance)?;
+    }
+    let certified = analysis.mesh_clearances.iter().all(|interval| {
+        interval.is_some_and(|(lower, upper)| distance > lower && distance < upper)
+    });
+    #[cfg(test)]
+    let certified =
+        certified && !translation_oracle_tests::FORCE_WHOLE_CLOSURE.with(std::cell::Cell::get);
+    if certified {
+        let _route = crate::performance::span("move_faces.blend.translation_boundary_certificate");
+    } else if !display_only {
+        require_closed_mesh(topo, result)?;
+    }
+
+    let boundary_pairs =
+        copied
+            .edge_map
+            .into_iter()
+            .map(|(source, target)| (EntityKey::edge(source), EntityKey::edge(target.index())))
+            .chain(copied.vertex_map.into_iter().map(|(source, target)| {
+                (EntityKey::vertex(source), EntityKey::vertex(target.index()))
+            }))
+            .collect();
+    Ok(BlendMoveEntities {
+        solid: result,
+        evolution: crate::push_pull::exact_face_evolution(
+            topo,
+            source_faces,
+            result,
+            copied.face_map,
+        )?,
+        boundary_pairs,
+    })
+}
+
+/// The translation's volume oracle: the body's volume must change with the
+/// sign of `distance`, by more than the read's slack.
+fn check_translation_volume(
+    topo: &Topology,
+    solid: SolidId,
+    analysis: &TranslationAnalysis,
+    translation: &BlendTranslation,
+    copied: &crate::copy::CopiedSolidEntities,
+    distance: f64,
+) -> Result<(), OperationsError> {
     let _volume = crate::performance::span("move_faces.blend.translation_volume");
     // Keep the established cached-integral path for general blend moves.
     // Only the axial shoulder/rim family (a spring bounded by a fixed full
@@ -2874,37 +2928,7 @@ fn execute_translation(
             "blend-aware move changed volume by {volume_change}, inconsistent with distance {distance}"
         )));
     }
-    let certified = analysis.mesh_clearances.iter().all(|interval| {
-        interval.is_some_and(|(lower, upper)| distance > lower && distance < upper)
-    });
-    #[cfg(test)]
-    let certified =
-        certified && !translation_oracle_tests::FORCE_WHOLE_CLOSURE.with(std::cell::Cell::get);
-    if certified {
-        let _route = crate::performance::span("move_faces.blend.translation_boundary_certificate");
-    } else {
-        require_closed_mesh(topo, result)?;
-    }
-
-    let boundary_pairs =
-        copied
-            .edge_map
-            .into_iter()
-            .map(|(source, target)| (EntityKey::edge(source), EntityKey::edge(target.index())))
-            .chain(copied.vertex_map.into_iter().map(|(source, target)| {
-                (EntityKey::vertex(source), EntityKey::vertex(target.index()))
-            }))
-            .collect();
-    Ok(BlendMoveEntities {
-        solid: result,
-        evolution: crate::push_pull::exact_face_evolution(
-            topo,
-            source_faces,
-            result,
-            copied.face_map,
-        )?,
-        boundary_pairs,
-    })
+    Ok(())
 }
 
 /// Refuses a translation result whose mesh does not close.
