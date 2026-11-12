@@ -8364,6 +8364,14 @@ class RemusKernel {
      * still run: every named edge is blended, the outer shell is closed and
      * the result carries no validation error the input did not.
      *
+     * Face moves and cylinder resizes (`moveFaces*`, prepared moves
+     * included, and `resizeCylindricalFace*`) follow the same switch: they
+     * keep their analytic refusals (swept-region and clearance bounds,
+     * unchanged entity counts) and a closed-shell check, and skip strict
+     * validation, their volume oracles and the whole-body mesh closure. A
+     * cylinder resize through a blend group re-fillets it as a preview
+     * frame does (`previewPreparedGroupEdit`).
+     *
      * A result built this way is for display only. Turn the switch off and
      * rebuild before keeping a result: a band those checks would refuse can
      * look plausible on screen.
