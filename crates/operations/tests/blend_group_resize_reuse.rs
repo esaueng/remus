@@ -96,7 +96,7 @@ const CENSUS: &str = "cylinder,cylinder,cylinder,cylinder,cylinder,nurbs,nurbs,p
 /// and on the caller's solid for the identity carry. (Before the reuse the
 /// removal recognized the copy a second time: 7 in all, counting the fillet
 /// cascade's own cheap probes.)
-const RECOGNITIONS_PER_RESIZE: usize = 6;
+const RECOGNITIONS_PER_RESIZE: usize = 5;
 
 const VOLUME_DEFLECTION: f64 = 0.01;
 

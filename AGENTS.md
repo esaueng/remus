@@ -667,7 +667,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Pattern (linear/circular) | `pattern.rs` |
 | Shape queries (edge filtering) | `query.rs` |
 | Oracle for the prepared `ConcavityProbe` against the one-shot edge concavity on primitives, booleans and STEP bodies (tests) | `query/concavity_probe_oracle_tests.rs` |
-| Opt-in exact-content memo of the edge-concavity probes' per-face ray crossing counts, a part of the owner's cache scope (RFC 0009 stage 1), so relations and recognition after an edit recount only changed faces (the WASM kernel enables it) | `query/crossing_memo.rs` |
+| Opt-in exact-content memo of the edge-concavity probes' per-face ray crossing counts, a part of the owner's cache scope (RFC 0009 stage 1), so relations and recognition after an edit recount only changed faces (the WASM kernel enables it); a guard-private two-pass store for the convex material guard | `query/crossing_memo.rs` |
 | Sewing | `sew.rs` |
 | Thickening | `thicken.rs` |
 | Untrimming | `untrim.rs` |
@@ -684,7 +684,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Immutable deferred measuring obligations that certify adoption of a private prepared preview | `blend_ops/preview_checks.rs` |
 | Differential oracle for the fillet feature grouping: the pairwise polyline grouping before its connected-pair skip, box prefilter and early-exit scan, kept verbatim (tests) | `blend_ops/grouping_oracle_tests.rs` |
 | Sphere-boss seam fillet work counters (no whole-solid robust mesh, pinned walker steps) and the governed fillet cancellation/step-budget contract with rollback (tests) | `blend_ops/governed_fillet_tests.rs` |
-| Convex blend material-side acceptance | `blend_material.rs` |
+| Convex blend material-side acceptance (its input and result classification passes share per-face crossing counts of the faces the blend left unchanged) | `blend_material.rs` |
 | Exact standalone face-face blend sheets | `face_face_blend.rs` |
 | Offset v2 (delegates to remus-offset) | `offset_v2.rs` |
 | Shared winding utilities | `winding.rs` |
@@ -721,6 +721,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Blend-group removal: Gentle-Gecko returns its sharp STEP face for face (8/19/13, volume to 1e-9) and re-fillets back; the native shoulder at R4/R5 returns its blank; rim-only removal keeps the other blends; dependency, stale-cluster and sphere-support refusals leave the arena byte-identical (tests) | `tests/blend_cluster_remove.rs` |
 | Staged re-blend of a sharp restoration: candidate stage plans from the recognized order and radius overrides (equal radii merged into one call first; chamfer stages last, as tangent-chain or plain chamfers), later stages' edges found again by their closed-form carriers, composed face history (carrier-identity inference where the engine reports no origins), strict-validation and watertight-mesh postconditions, typed `ReblendFailed` naming every attempt | `blend_cluster/reblend.rs` |
 | Direct edits through a blend group, run on a private arena: a band radius edit (`resize_blend` falls back to it when the per-band path refuses), a cylindrical support resize (`resize_cylindrical_face`'s partial-turn fallback: remove group, exact sharp wall resize, edges carried through its history, re-fillet at recorded radii), and a new fillet whose chain runs into a group (`fillet_cascade`'s fallback after the reorder: the new edges join the re-fillet plan in the planner's order) | `blend_cluster/edit.rs` |
+| Differential oracle: the group a route recognized on its private copy, carried back to the caller's solid, against recognizing the caller's solid again; boss resizes record the same history either way (tests) | `blend_cluster/edit/source_cluster_tests.rs` |
 | Prepared blend-group edits for live drags (`PreparedGroupEdit`): recognition, removal to sharp and the learned per-band/partial-turn refusal read once; preview frames clone the sharp arena and re-blend with display-only blends under a closed-shell + strict-validation gate; commits run the unprepared route under every guard (plain and journaled) | `blend_cluster/prepared.rs` |
 | Group edits on a body whose rounded cap was lowered into its shoulder with sampled permission: the cap is lifted clear on the private copy, the ordinary group route edits the lifted body, and the cap is lowered back with the permission read off its own sampled rim bands | `blend_cluster/joined_cap.rs` |
 | Prepared band-radius and boss-diameter drags on the filleted Gentle-Gecko and the cumulative body: every frame equal to the unprepared edit (F/E/V, census, volume 1e-9) and on the verification bar, commits equal to the unprepared and journaled edits, cancel byte-identical, staleness and typed refusals (tests) | `tests/prepared_group_edit.rs` |

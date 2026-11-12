@@ -18,6 +18,8 @@ use crate::measure::face_area;
 use crate::polygon::{face_polygon, wire_polygon};
 
 mod crossing_memo;
+#[cfg(test)]
+pub(crate) use crossing_memo::PASS_HITS;
 pub use crossing_memo::{
     CrossingMemoStats, DEFAULT_CROSSING_MEMO_CAPACITY, DEFAULT_CROSSING_MEMO_FACE_BYTE_BUDGET,
     DEFAULT_CROSSING_MEMO_FACE_CAPACITY, crossing_memo_content_bytes, crossing_memo_stats,
@@ -25,6 +27,7 @@ pub use crossing_memo::{
     enable_thread_crossing_memo, set_crossing_memo_limits, set_thread_crossing_memo_limits,
     thread_crossing_memo_stats,
 };
+pub(crate) use crossing_memo::{PassCrossingMemo, SharedPassCrossings};
 
 /// An opposing pair of parallel planar faces with a non-zero projected overlap.
 #[derive(Debug, Clone, Copy, PartialEq)]

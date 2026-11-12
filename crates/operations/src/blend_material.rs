@@ -51,7 +51,10 @@
 //! # Cost
 //!
 //! The work is bounded: `N` fixed samples, two batched prepared
-//! classifications. Analytic inputs classify in bulk in well under a second;
+//! classifications. The result pass casts the input pass's rays from the
+//! input pass's points, so it takes the crossing counts of every face the
+//! blend left unchanged from the input pass (a store private to the guard:
+//! the same counts, computed once, and none of the session memo's traffic). Analytic inputs classify in bulk in well under a second;
 //! a result carrying a NURBS band costs ray-vs-NURBS intersections per sample
 //! (the earlier B71 sampler measured ~1 ms/sample, ~7 s total in release;
 //! the revised sampler and protected rebuild remain unmeasured). The check runs only for the
@@ -67,7 +70,9 @@ use remus_topology::edge::{EdgeCurve, EdgeId};
 use remus_topology::solid::SolidId;
 
 use crate::OperationsError;
-use crate::classify::{PointClassification, classify_points};
+use crate::classify::PointClassification;
+#[cfg(any(doc, test))]
+use crate::classify::classify_points;
 
 /// Monte Carlo samples in the reach tube. Calibrated so B71's `0.037` of
 /// added material in a 14-unit tube reads ~16 counts (`±4`, lower-3σ bound
@@ -377,8 +382,12 @@ pub fn estimate_added_material(
     result: SolidId,
     tube: &ReachTube,
 ) -> Result<AddedEstimate, OperationsError> {
+    // The result pass asks about the very points and rays the input pass
+    // cast, so faces the blend left as they were answer from the input pass.
+    let (input_crossings, result_crossings) =
+        crate::query::SharedPassCrossings::for_solids((pristine, input), (live, result))?;
     let before = crate::performance::timed("blend.material.input", || {
-        classify_points(pristine, input, &tube.points, 0.01, MATERIAL_RAY_TOLERANCE)
+        classify_with_memo(pristine, input, &tube.points, input_crossings)
     })?;
     // Only a point outside the input can count as added, so the result is
     // asked about those alone; every other point keeps its input verdict,
@@ -391,7 +400,7 @@ pub fn estimate_added_material(
     let probes: Vec<Point3> = outside.iter().map(|&i| tube.points[i]).collect();
     let mut after = before.clone();
     let classes = crate::performance::timed("blend.material.result", || {
-        classify_points(live, result, &probes, 0.01, MATERIAL_RAY_TOLERANCE)
+        classify_with_memo(live, result, &probes, result_crossings)
     })?;
     for (&i, c) in outside.iter().zip(classes) {
         after[i] = c;
@@ -422,6 +431,27 @@ pub fn estimate_added_material(
         se: tube.proposal_volume * variance.sqrt(),
         added_counts,
     })
+}
+
+/// [`classify_points`] at the material ray tolerance, consulting `memo` for
+/// per-face crossing counts instead of the session's memo.
+fn classify_with_memo(
+    topo: &Topology,
+    solid: SolidId,
+    points: &[Point3],
+    memo: crate::query::PassCrossingMemo,
+) -> Result<Vec<PointClassification>, OperationsError> {
+    let options = remus_check::classify::ClassifyOptions {
+        tolerance: MATERIAL_RAY_TOLERANCE,
+        ..Default::default()
+    };
+    let prepared = remus_check::classify::PreparedSolid::prepare(topo, solid)?
+        .with_crossing_memo(std::sync::Arc::new(memo));
+    Ok(prepared
+        .classify_points(points, &options)?
+        .into_iter()
+        .map(PointClassification::from)
+        .collect())
 }
 
 /// Refuse a convex blend on positive evidence of added material.
@@ -633,6 +663,43 @@ mod tests {
             refusal.to_string().contains("convex edges added"),
             "{refusal}"
         );
+    }
+
+    /// The result pass answers faces the result shares with the input from
+    /// the input pass, and the estimate keeps its bits: a far boss the cut
+    /// never touches meets the same rays in both passes.
+    #[test]
+    fn result_pass_reuses_unchanged_faces_without_changing_the_estimate() {
+        use remus_math::mat::Mat4;
+        let mut topo = Topology::new();
+        let block = make_box(&mut topo, 60.0, 60.0, 10.0).unwrap();
+        let near = make_cylinder(&mut topo, 3.0, 10.0).unwrap();
+        transform_solid(&mut topo, near, &Mat4::translation(10.0, 10.0, 10.0)).unwrap();
+        // Along the classifier's first ray direction from the near boss, and
+        // tall, so rays from its rim tube pass through it.
+        let far = make_cylinder(&mut topo, 4.0, 40.0).unwrap();
+        transform_solid(&mut topo, far, &Mat4::translation(20.5, 23.5, 10.0)).unwrap();
+        let body = boolean(&mut topo, BooleanOp::Fuse, block, near).unwrap();
+        let body = boolean(&mut topo, BooleanOp::Fuse, body, far).unwrap();
+        let notch = make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
+        transform_solid(&mut topo, notch, &Mat4::translation(11.0, 6.0, 19.0)).unwrap();
+        let cut = boolean(&mut topo, BooleanOp::Cut, body, notch).unwrap();
+        let rim = remus_topology::explorer::solid_edges(&topo, body)
+            .unwrap()
+            .into_iter()
+            .find(|&id| {
+                let edge = topo.edge(id).unwrap();
+                matches!(edge.curve(), EdgeCurve::Circle(c)
+                    if (c.radius() - 3.0).abs() < 1e-9 && (c.center().z() - 20.0).abs() < 1e-9)
+            })
+            .expect("the near boss has a top rim");
+        let tube = sample_reach_tube(&topo, &[vec![rim]], 0.5)
+            .unwrap()
+            .unwrap();
+        crate::query::PASS_HITS.with(|hits| hits.set(0));
+        assert_exhaustive_estimate(&topo, body, cut, &tube);
+        let hits = crate::query::PASS_HITS.with(std::cell::Cell::get);
+        assert!(hits > 0, "the far boss answers from the input pass");
     }
 
     /// Degenerate reach refuses to sample rather than guessing.
