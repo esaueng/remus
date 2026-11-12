@@ -17,6 +17,13 @@
 //! order never intersects a flank with a cylinder: the flanks meet only the
 //! cap planes, which have an exact ruled × plane arm.
 //!
+//! Step 2 needs no boolean where each end of the band is a free end of the
+//! body or a shoulder the tips stand clear of: the two bodies meet only on
+//! the seam cylinder and the end planes, so the ring is glued on
+//! ([`crate::thread::glue_coaxial_ring`]) with exactly the faces, edges and
+//! vertices the fuse builds. The fuse stays the general path, and the one
+//! taken where a collar is flush with the tips.
+//!
 //! The two steps equal the single cut exactly when the band they rebuild is
 //! solid material in the input, so that is proven first: the input's
 //! intersection with the band's tube must have the tube band's exact
@@ -117,7 +124,6 @@ impl Default for CylinderGearOptions {
 /// cannot be built, or features crossing the tooth band;
 /// [`GearError::Operations`] when a boolean fails. Refusals and failures
 /// leave the topology unchanged.
-#[allow(clippy::too_many_lines)]
 pub fn cut_gear_teeth(
     topo: &mut Topology,
     solid: SolidId,
@@ -125,6 +131,21 @@ pub fn cut_gear_teeth(
     params: &GearParams,
     options: &CylinderGearOptions,
 ) -> Result<GearOutcome, GearError> {
+    cut_gear_teeth_joined(topo, solid, face, params, options, true).map(|(outcome, _)| outcome)
+}
+
+/// [`cut_gear_teeth`], putting the ring on by the glue where it applies
+/// (`glue`) or always by the fuse, which the tests keep as the glue's
+/// oracle. Also returns whether the ring was glued.
+#[allow(clippy::too_many_lines)]
+fn cut_gear_teeth_joined(
+    topo: &mut Topology,
+    solid: SolidId,
+    face: FaceId,
+    params: &GearParams,
+    options: &CylinderGearOptions,
+    glue: bool,
+) -> Result<(GearOutcome, bool), GearError> {
     if !solid_faces(topo, solid)?.contains(&face) {
         return Err(GearError::invalid("the face does not belong to the solid"));
     }
@@ -342,6 +363,38 @@ pub fn cut_gear_teeth(
         } else {
             (ring, ring_roles)
         };
+        // Every ring face but its seam wall (and a cap a shoulder covers) is
+        // a face of the glued result, under its own id.
+        let glued = if glue {
+            crate::thread::glue_coaxial_ring(
+                topo,
+                kept,
+                ring,
+                (frame.origin, frame.axis, reference),
+                kind == GearKind::Internal,
+                band,
+                c.tip_radius,
+                width,
+            )
+        } else {
+            None
+        };
+        if let Some(result) = glued {
+            let result_faces = solid_faces(topo, result)?;
+            let face_roles = ring_roles
+                .into_iter()
+                .filter(|(face, _)| result_faces.contains(face))
+                .collect();
+            let outcome = GearOutcome {
+                solid: result,
+                geometry: geometry.clone(),
+                flank_deviation_bound,
+                spans_per_flank,
+                spans_along_axis: twisted.spans,
+                face_roles,
+            };
+            return Ok((outcome, true));
+        }
         let (result, map) = boolean_with_evolution(topo, BooleanOp::Fuse, kept, ring)?;
 
         // A ring face keeps its role only when the fuse maps it to exactly
@@ -369,14 +422,15 @@ pub fn cut_gear_teeth(
                 }
             }
         }
-        Ok(GearOutcome {
+        let outcome = GearOutcome {
             solid: result,
             geometry: geometry.clone(),
             flank_deviation_bound,
             spans_per_flank,
             spans_along_axis: twisted.spans,
             face_roles,
-        })
+        };
+        Ok((outcome, false))
     })
     .map_err(|error| error.with_geometry(&geometry))
 }

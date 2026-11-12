@@ -887,3 +887,256 @@ fn helical_teeth_classified_against_twisted_flanks_match_the_standalone_gear() {
         );
     }
 }
+
+// ── The glue against the fuse ───────────────────────────────────────────
+
+/// A blank, the face to cut, and the request.
+type Request = (SolidId, FaceId, GearParams, CylinderGearOptions);
+
+/// A named arrangement to cut teeth on.
+type Arrangement = (&'static str, Box<dyn Fn(&mut Topology) -> Request>);
+
+fn bored_ring(topo: &mut Topology, height: f64) -> (SolidId, FaceId) {
+    let outer = make_cylinder(topo, 30.0, height).unwrap();
+    let drill = moved_cylinder(topo, 19.0, height + 10.0, -5.0);
+    let ring = boolean(topo, BooleanOp::Cut, outer, drill).unwrap();
+    let face = cylinder_face(topo, ring, 19.0);
+    (ring, face)
+}
+
+fn plain_boss(topo: &mut Topology, radius: f64, height: f64) -> (SolidId, FaceId) {
+    let blank = make_cylinder(topo, radius, height).unwrap();
+    let face = cylinder_face(topo, blank, radius);
+    (blank, face)
+}
+
+/// Everything about a result that does not depend on entity ids: counts,
+/// each face's carrier and loop sizes, each edge's curve kind and ends,
+/// the vertices, and the role names with the carrier they sit on.
+fn fingerprint(topo: &Topology, outcome: &GearOutcome) -> Vec<String> {
+    let at = |p: Point3| format!("({:.6},{:.6},{:.6})", p.x() + 0.0, p.y() + 0.0, p.z() + 0.0);
+    let carrier = |face: FaceId| {
+        let data = topo.face(face).unwrap();
+        match data.surface() {
+            FaceSurface::Cylinder(c) => format!("cylinder r={:.6}", c.radius()),
+            FaceSurface::Plane { normal, d } => {
+                let sign = if data.is_reversed() { -1.0 } else { 1.0 };
+                let n = Point3::new(sign * normal.x(), sign * normal.y(), sign * normal.z());
+                format!("plane n={} d={:.6}", at(n), sign * d + 0.0)
+            }
+            FaceSurface::Nurbs(n) => format!(
+                "nurbs {}x{}",
+                n.control_points().len(),
+                n.control_points()[0].len()
+            ),
+            other => other.type_tag().to_owned(),
+        }
+    };
+    let mut lines = Vec::new();
+    let (mut edges, mut vertices) = (BTreeSet::new(), BTreeSet::new());
+    for face in solid_faces(topo, outcome.solid).unwrap() {
+        let data = topo.face(face).unwrap();
+        let mut loops = Vec::new();
+        for wire in std::iter::once(data.outer_wire()).chain(data.inner_wires().iter().copied()) {
+            let wire = topo.wire(wire).unwrap().edges();
+            loops.push(wire.len());
+            for oriented in wire {
+                let edge = topo.edge(oriented.edge()).unwrap();
+                let a = at(topo.vertex(edge.start()).unwrap().point());
+                let b = at(topo.vertex(edge.end()).unwrap().point());
+                vertices.insert(a.clone());
+                vertices.insert(b.clone());
+                let (a, b) = if a <= b { (a, b) } else { (b, a) };
+                edges.insert((oriented.edge().index(), edge.curve().type_tag(), a, b));
+            }
+        }
+        let outer = loops.remove(0);
+        loops.sort_unstable();
+        lines.push(format!("F {} outer={outer} inner={loops:?}", carrier(face)));
+    }
+    lines.extend(
+        edges
+            .iter()
+            .map(|(_, kind, a, b)| format!("E {kind} {a} {b}")),
+    );
+    lines.extend(vertices.iter().map(|v| format!("V {v}")));
+    lines.extend(
+        outcome
+            .face_roles
+            .iter()
+            .map(|(face, role)| format!("R {} on {}", role.name(), carrier(*face))),
+    );
+    lines.sort();
+    let counts = remus_topology::explorer::solid_entity_counts(topo, outcome.solid).unwrap();
+    lines.push(format!(
+        "{counts:?} {} edges {} points",
+        edges.len(),
+        vertices.len()
+    ));
+    lines
+}
+
+/// Where each end of the band is a free end or a shoulder the tips stand
+/// clear of, the ring is glued on, not fused, and the glued body is the
+/// fused one: the same faces on the same carriers with the same loops, the
+/// same edges and vertices, the same roles on the same carriers, the same
+/// volume. A collar flush with the tips still fuses.
+///
+/// The fuse is nearly all of the operation where it runs; a request in the
+/// first list that stops gluing has gone back to it.
+#[test]
+fn the_glued_ring_is_the_fused_ring() {
+    let helical = |kind, teeth, width, hand, herringbone| GearParams {
+        helix_angle: 15.0_f64.to_radians(),
+        hand,
+        herringbone,
+        ..GearParams::standard(kind, 1.0, teeth, width)
+    };
+    let at = |offset: f64| CylinderGearOptions {
+        offset,
+        ..CylinderGearOptions::default()
+    };
+    let cases: Vec<Arrangement> = vec![
+        (
+            "plain boss, whole face",
+            Box::new(|topo| {
+                let (blank, face) = plain_boss(topo, 11.0, 6.0);
+                (blank, face, spur(20, 6.0), CylinderGearOptions::default())
+            }),
+        ),
+        (
+            "boss turned down, half a pitch of phase",
+            Box::new(|topo| {
+                let (blank, face) = plain_boss(topo, 15.0, 4.0);
+                let params = GearParams::standard(GearKind::External, 1.25, 18, 4.0);
+                let options = CylinderGearOptions {
+                    fit: GearFit::UseModule,
+                    x_direction: Some(Vec3::new(1.0, 0.0, 0.0)),
+                    phase: PI / 18.0,
+                    ..CylinderGearOptions::default()
+                };
+                (blank, face, params, options)
+            }),
+        ),
+        (
+            "helical boss, whole face",
+            Box::new(move |topo| {
+                let (blank, face) = plain_boss(topo, 11.0, 6.0);
+                let params = helical(GearKind::External, 20, 6.0, Hand::Left, false);
+                (blank, face, params, CylinderGearOptions::default())
+            }),
+        ),
+        (
+            "herringbone boss, whole face",
+            Box::new(move |topo| {
+                let (blank, face) = plain_boss(topo, 11.0, 6.0);
+                let params = helical(GearKind::External, 20, 6.0, Hand::Right, true);
+                (blank, face, params, CylinderGearOptions::default())
+            }),
+        ),
+        (
+            "bore, whole face",
+            Box::new(|topo| {
+                let (ring, face) = bored_ring(topo, 5.0);
+                let params = GearParams::standard(GearKind::Internal, 1.0, 40, 5.0);
+                (ring, face, params, CylinderGearOptions::default())
+            }),
+        ),
+        (
+            "stepped bored hub, turned-down band",
+            Box::new(|topo| {
+                let (blank, face, _) = mid_hub_blank(topo);
+                let params = GearParams::standard(GearKind::External, 0.9, 22, 6.0);
+                let options = CylinderGearOptions {
+                    fit: GearFit::UseModule,
+                    offset: 2.0,
+                    ..CylinderGearOptions::default()
+                };
+                (blank, face, params, options)
+            }),
+        ),
+    ];
+    let flush: Vec<Arrangement> = vec![
+        (
+            "stepped bored hub, flush collars",
+            Box::new(move |topo| {
+                let (blank, face, _) = mid_hub_blank(topo);
+                let params = GearParams::standard(GearKind::External, 1.0, 22, 6.0);
+                (blank, face, params, at(2.0))
+            }),
+        ),
+        (
+            "helical band on a boss, flush collars",
+            Box::new(move |topo| {
+                let (blank, face) = plain_boss(topo, 12.0, 10.0);
+                let params = helical(GearKind::External, 22, 6.0, Hand::Right, false);
+                (blank, face, params, at(2.0))
+            }),
+        ),
+        (
+            "bore, band with a collar above",
+            Box::new(move |topo| {
+                let (ring, face) = bored_ring(topo, 9.0);
+                let params = GearParams::standard(GearKind::Internal, 1.0, 40, 5.0);
+                (ring, face, params, at(0.0))
+            }),
+        ),
+    ];
+    let mut failures = Vec::new();
+    for (name, build) in &cases {
+        let run = |glue: bool| {
+            let mut topo = Topology::new();
+            let (blank, face, params, options) = build(&mut topo);
+            let (outcome, glued) =
+                cut_gear_teeth_joined(&mut topo, blank, face, &params, &options, glue)
+                    .unwrap_or_else(|error| panic!("{name}: {error}"));
+            assert_valid_and_watertight(&topo, outcome.solid);
+            let measured = volume(&topo, outcome.solid);
+            (fingerprint(&topo, &outcome), measured, glued)
+        };
+        let (glued_print, glued_volume, glued) = run(true);
+        let (fused_print, fused_volume, fused_glued) = run(false);
+        assert!(!fused_glued, "{name}: the oracle run must fuse");
+        if !glued {
+            failures.push(format!("{name}: not glued"));
+            continue;
+        }
+        if ((glued_volume - fused_volume) / fused_volume).abs() > 1e-10 {
+            failures.push(format!("{name}: volume {glued_volume} vs {fused_volume}"));
+        }
+        if glued_print != fused_print {
+            let only = |a: &[String], b: &[String]| {
+                let mut rest = b.to_vec();
+                let mut out = Vec::new();
+                for line in a {
+                    if let Some(i) = rest.iter().position(|other| other == line) {
+                        rest.swap_remove(i);
+                    } else {
+                        out.push(line.clone());
+                    }
+                }
+                out
+            };
+            let glue_only = only(&glued_print, &fused_print);
+            let fuse_only = only(&fused_print, &glued_print);
+            failures.push(format!(
+                "{name}: {} lines only glued, {} only fused\n  glued: {:#?}\n  fused: {:#?}",
+                glue_only.len(),
+                fuse_only.len(),
+                &glue_only[..glue_only.len().min(12)],
+                &fuse_only[..fuse_only.len().min(12)],
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+
+    for (name, build) in &flush {
+        let mut topo = Topology::new();
+        let (blank, face, params, options) = build(&mut topo);
+        let (outcome, glued) =
+            cut_gear_teeth_joined(&mut topo, blank, face, &params, &options, true)
+                .unwrap_or_else(|error| panic!("{name}: {error}"));
+        assert!(!glued, "{name}: a flush collar must fuse");
+        assert_valid_and_watertight(&topo, outcome.solid);
+    }
+}

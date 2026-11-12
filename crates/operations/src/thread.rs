@@ -671,7 +671,18 @@ pub fn cut_thread(
         let ring = ring.solid;
         // Glue the ring on where the faces it meets are recognized; the fuse
         // is the general fallback.
-        let (result, glued) = match glue(topo, kept, ring, &frame, kind, band, crest, length)? {
+        let glued = glue(
+            topo,
+            kept,
+            ring,
+            &frame,
+            kind,
+            band,
+            crest,
+            length,
+            Glue::Simplest,
+        )?;
+        let (result, glued) = match glued {
             Some(result) => (result, true),
             None => (boolean(topo, BooleanOp::Fuse, kept, ring)?, false),
         };
@@ -928,6 +939,72 @@ struct Ring {
     spans_per_flank: usize,
 }
 
+/// What [`glue`] builds where it has a choice.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Glue {
+    /// The simplest boundary: a kept face and a ring cap facing the same
+    /// way become one face, and a collar flush with the crest is split
+    /// into crescents.
+    Simplest,
+    /// Only what a fuse of the two bodies builds, entity for entity: a kept
+    /// face and a ring cap facing the same way stay two faces sharing the
+    /// seam circle, and a collar flush with the crest declines (the fuse
+    /// splits such a rim at points of its own and refits the edges on it).
+    AsFused,
+}
+
+/// [`glue`] for another ring built on the same tube cut (gear teeth on a
+/// cylinder): `band` is the tube's inner and outer radius, `crest` the
+/// radius of the ring's faces that can lie flush with a collar, and the
+/// ring runs `length` along the axis from the origin of `placement`
+/// (origin, axis, reference direction).
+///
+/// The result is what the fuse of the two builds, face for face, edge for
+/// edge and vertex for vertex ([`Glue::AsFused`]), with every ring face in
+/// it under its own id.
+///
+/// Returns `None`, with the topology as it was, whenever the glue declines
+/// or fails; the caller's fuse is the general path.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn glue_coaxial_ring(
+    topo: &mut Topology,
+    kept: SolidId,
+    ring: SolidId,
+    (origin, axis, x_direction): (Point3, Vec3, Vec3),
+    internal: bool,
+    band: (f64, f64),
+    crest: f64,
+    length: f64,
+) -> Option<SolidId> {
+    let frame = Frame::new(origin, axis, x_direction).ok()?;
+    let kind = if internal {
+        ThreadKind::Internal
+    } else {
+        ThreadKind::External
+    };
+    // The glue rewrites a cap's seam loop in place before its last checks,
+    // so a decline is rolled back.
+    let attempt = remus_topology::transaction::RollbackSnapshot::capture(topo);
+    let glued = glue(
+        topo,
+        kept,
+        ring,
+        &frame,
+        kind,
+        band,
+        crest,
+        length,
+        Glue::AsFused,
+    );
+    if let Ok(Some(solid)) = glued {
+        attempt.commit(topo);
+        Some(solid)
+    } else {
+        attempt.restore(topo);
+        None
+    }
+}
+
 /// Put the ring on the kept body without a boolean, or `None` when the
 /// faces it meets are not the ones the tube cut leaves.
 ///
@@ -956,6 +1033,7 @@ fn glue(
     band: (f64, f64),
     crest: f64,
     length: f64,
+    mode: Glue,
 ) -> Result<Option<SolidId>, ThreadError> {
     let tol = Tolerance::new().linear;
     let seam = match kind {
@@ -1103,11 +1181,13 @@ fn glue(
             a * b > 0.0
         };
         let kept_outer_is_seam = circle_wire(topo, kept_data.outer_wire(), seam)?;
+        let mut kept_seam = kept_data.outer_wire();
         let mut kept_inners = Vec::new();
         let mut seam_inner = false;
         for &wire in kept_data.inner_wires() {
             if !seam_inner && circle_wire(topo, wire, seam)? {
                 seam_inner = true;
+                kept_seam = wire;
             } else {
                 kept_inners.push(wire);
             }
@@ -1136,7 +1216,8 @@ fn glue(
         if let Some(rim) = flush {
             // Only a step face that is exactly the annulus between the seam
             // and the collar, facing the other way from the cap.
-            if same_way || !kept_inners.is_empty() && kept_inners != [rim] {
+            if same_way || !kept_inners.is_empty() && kept_inners != [rim] || mode == Glue::AsFused
+            {
                 return Ok(None);
             }
             let rim_edge = topo.wire(rim)?.edges()[0].edge();
@@ -1162,6 +1243,46 @@ fn glue(
             removed.push(split.collar);
             merged.push(split.new_collar);
             merged.extend(split.crescents);
+            continue;
+        }
+        if same_way && mode == Glue::AsFused {
+            // Both faces stay: the cap's seam loop becomes the kept face's
+            // seam circle, run the other way round.
+            if kept_outer_is_seam != (kind == ThreadKind::External) {
+                return Ok(None);
+            }
+            let sense = |topo: &Topology, wire: WireId| -> Result<Option<f64>, ThreadError> {
+                let oriented = topo.wire(wire)?.edges()[0];
+                Ok(match topo.edge(oriented.edge())?.curve() {
+                    EdgeCurve::Circle(c) => {
+                        let turn = c.normal().dot(frame.axis).signum();
+                        Some(if oriented.is_forward() { turn } else { -turn })
+                    }
+                    EdgeCurve::Line
+                    | EdgeCurve::NurbsCurve(_)
+                    | EdgeCurve::Ellipse(_)
+                    | EdgeCurve::Hyperbola(_)
+                    | EdgeCurve::Parabola(_) => None,
+                })
+            };
+            let (Some(kept_sense), Some(cap_sense)) =
+                (sense(topo, kept_seam)?, sense(topo, cap_seam)?)
+            else {
+                return Ok(None);
+            };
+            if kept_sense * cap_sense >= 0.0 {
+                return Ok(None);
+            }
+            let shared = topo.wire(kept_seam)?.edges()[0];
+            let shared = topo.add_wire(Wire::new(
+                vec![OrientedEdge::new(shared.edge(), !shared.is_forward())],
+                true,
+            )?);
+            let (outer, inners) = match kind {
+                ThreadKind::External => (cap_data.outer_wire(), vec![shared]),
+                ThreadKind::Internal => (shared, cap_data.inner_wires().to_vec()),
+            };
+            topo.set_face_boundary_wires(cap, outer, inners)?;
             continue;
         }
         // Expected pairings (see the doc comment): the seam loop is the kept
