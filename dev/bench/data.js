@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794408601400,
+  "lastUpdate": 1794497960682,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -143811,6 +143811,304 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 86592,
             "range": "± 460",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Peter",
+            "username": "petertoday",
+            "email": "171875562+petertoday@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "495bc1dee143ec02762cf26907ab097c004183e5",
+          "message": "perf(math): cache NURBS periodicity and share knots with the chart frame (#1679)\n\n## Change\n\nDisplay tessellation of an in-place helical sweep grew faster than its\noutput: 2.0 µs per triangle at 5 turns, 5.2 at 20 (geometry-generation\nprobe, #1663). Roadmap owner row\n[B30](https://github.com/esaueng/remus/blob/main/docs/kernel-maturity/roadmap.md#b30);\nPERF-D01 (fine curved-face meshing).\n\nAttribution on the 20-turn coil (callgrind): two per-sample costs were\nproportional to the number of turns.\n\n- `is_periodic_u` compared a whole control row on every interior sample\nand on every Newton projection: 49.8% of instructions.\n- `point_and_normal_with` compared both knot vectors per sample, because\nthe chart frame held its own copies of them: about 14%.\n\nThree commits:\n\n1. **Shared test fixtures** (`tessellate/swept_fixtures.rs`): threads,\nan in-place coil, a helical gear and ordinary curved bodies for the\noracle tests below.\n2. **Periodicity cache and shared knots** (`math/src/nurbs/surface.rs`,\n`NurbsFrame::new`). The periodicity flags are computed once and kept in\nthe existing lazily built seed-grid cache, so struct size, `Debug`,\nequality and serde are unchanged. A new additive\n`NurbsSurface::with_control_points` shares the knots and weights `Arc`s,\nand `shares_bases_with` short-circuits on shared storage.\n3. **Edge sizing** (`tessellate/edge_sampling.rs`). The chord-deviation\nand turn measures carry each segment's end over to the next: 2n+1 points\nand n+1 tangents instead of 3n and 2n.\n\nThe thread rows of the probe are not changed by this PR: their cost was\nthe CDT dense trim band, which #1673 already classifies a row at a time.\n\n## Verification\n\nMesh identity:\n- The probe's digest table (#1678) is identical between current `main`\nand this change for all 46 scenarios: every mesh byte for byte\n(positions, normals, indices) and every volume's bits.\n- `nurbs/surface/shared_storage_tests.rs`: the cached flags against the\ncontrol-net comparisons kept verbatim; shared against copied nets bit\nfor bit; one net comparison per surface and zero knot comparisons per\nsample (the count-based regression guard).\n- `tessellate/nonplanar/frame_storage_oracle_tests.rs`: whole display\nmeshes with the frame over shared against copied storage, bit for bit.\n- `tessellate/edge_measure_oracle_tests.rs`: the previous measures kept\nverbatim, bit for bit on every NURBS edge of the fixtures, with\nevaluation counts pinned.\n\nTessellation time, ms: current `main` against this change, two binaries\nrun in alternation, four rounds of 3-run medians (4-core cloud Xeon,\nprofiling profile):\n\n| scenario | main | this change |\n|---|---|---|\n| helix/in-place circle 20t | 419 / 366 / 386 / 373 | 136 / 153 / 140 /\n164 |\n| helix/in-place circle 5t | 73.8 / 82.4 / 77.9 / 70.7 | 53.4 / 52.0 /\n54.6 / 53.5 |\n| gear/bevel z20:40 | 59.6 / 62.7 / 64.2 / 55.3 | 52.2 / 57.8 / 49.9 /\n51.6 |\n| gear/helical z20 | 78.4 / 76.9 / 83.8 / 96.9 | 80.3 / 74.4 / 73.8 /\n93.5 |\n| gear/herringbone z20 | 151 / 135 / 136 / 142 | 168 / 143 / 148 / 132 |\n| gear/spur z20 | 51.8 / 55.5 / 49.8 / 71.0 | 63.1 / 50.1 / 50.8 / 49.6\n|\n| thread/M6 external 10t | 270 / 317 / 269 / 230 | 267 / 261 / 244 / 249\n|\n| sweep/circle spline | 14.4 / 14.2 / 14.3 / 14.8 | 14.0 / 15.3 / 14.1 /\n14.7 |\n\nThe coil is about 2.7× faster at 20 turns and about 30% faster at 5.\nGears, threads and the spline sweep are unchanged within run-to-run\nnoise; the edge-sizing commit's saving there is a few percent of\ninstructions (helical z20: 9.8% → 6.3% of the mesh spent in edge\nsampling).\n\nChecks run on this series:\n- `cargo test --profile ci-test -p remus-math --lib`: 1043 passed, 1\nignored.\n- `cargo test --profile ci-test -p remus-operations --lib -- tessellate\nthread:: helix:: gear::`: 395 passed, 2 ignored.\n- `cargo clippy -p remus-math -p remus-operations --all-targets -- -D\nwarnings`: clean.\n- `cargo fmt --all -- --check`, `./scripts/check-boundaries.sh`,\n`./scripts/check-det-hash.sh`, `./scripts/check-doc-paths.sh`: pass.\n- Not run locally: the whole workspace, the WASM build (left to CI).\n\n## Compatibility and risks\n\n- `NurbsSurface::with_control_points` is a new public method on\n`remus-math` (additive). No tolerance, default, sizing or density\nchange; triangle counts are unchanged.\n- The periodicity flags are cached per surface; a surface is immutable\nonce built, and the cache lives beside the existing seed-grid cache.\n\nFound and left alone (they change mesh bytes, so they are not for this\nPR):\n- On the in-place coil, 550 of 752 boundary-vertex normals at 20 turns\n(108 of 215 at 5) take `face_surface_normal_with_grid`'s midpoint-normal\nfallback because the coarse-seeded projection fails. That looks like a\nshading defect at the seam and cap rims; it was counted, not rendered.\n- 1,102 of 1,468 coil boundary samples at 20 turns fail the 9×9 coarse\nseed after 50 Newton iterations and succeed only after a span-grid scan;\nthis is the remaining per-triangle growth with turns.\n\n## WASM module tier\n\nNone. No new capability.\n\n---\n_Generated by [Claude\nCode](https://claude.ai/code/session_013o7773LQ7m61EzUbgsqP9Q)_\n\n---------\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-11-12T14:46:02Z",
+          "url": "https://github.com/esaueng/remus/commit/495bc1dee143ec02762cf26907ab097c004183e5"
+        },
+        "date": 1794497956205,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 981327,
+            "range": "± 1939",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1057305,
+            "range": "± 4554",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 21636,
+            "range": "± 58",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 6903146,
+            "range": "± 29648",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 6884238,
+            "range": "± 31518",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 6763453,
+            "range": "± 18791",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 21869,
+            "range": "± 70",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 3877065,
+            "range": "± 9413",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 26413852,
+            "range": "± 1026408",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 29,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 90,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 67,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 191,
+            "range": "± 8",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 169,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 681,
+            "range": "± 17",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 124,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 297,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 183,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 451,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 816,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 2745,
+            "range": "± 123",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 16,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 28,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 74,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 74,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "surface_projection/cached_grid/3",
+            "value": 18883,
+            "range": "± 38",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "surface_projection/cached_grid/9",
+            "value": 115698,
+            "range": "± 333",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/bilinear_hit",
+            "value": 3230,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_secant",
+            "value": 12166,
+            "range": "± 25",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_miss",
+            "value": 41955,
+            "range": "± 2733",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/quadratic_hit",
+            "value": 4264,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 400634,
+            "range": "± 2274",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 2166998,
+            "range": "± 5595",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 114710,
+            "range": "± 1161",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 235302,
+            "range": "± 824",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/plane_torus_grid",
+            "value": 292735,
+            "range": "± 7086",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 50124,
+            "range": "± 165",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/narrow_bump_flank",
+            "value": 26921,
+            "range": "± 379",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_hit",
+            "value": 16405,
+            "range": "± 61",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_miss",
+            "value": 90421,
+            "range": "± 176",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_grid_build",
+            "value": 113509,
+            "range": "± 473",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 505085,
+            "range": "± 45810",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 7134951,
+            "range": "± 416380",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 624976,
+            "range": "± 1349",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 999345,
+            "range": "± 2176",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 80990,
+            "range": "± 3117",
             "unit": "ns/iter"
           }
         ]
