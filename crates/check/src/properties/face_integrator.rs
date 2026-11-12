@@ -3406,17 +3406,7 @@ fn green_cell_moments<F>(
 where
     F: Fn(f64) -> (Point3, Vec3),
 {
-    let mut value = [0.0; 10];
-    accumulate_green_segment(
-        &mut value,
-        range,
-        ADAPTIVE_GREEN_ORDER,
-        1.0,
-        eval,
-        origin,
-        e1,
-        e2,
-    );
+    let value = green_cell_value(range, eval, origin, e1, e2);
     let mut magnitude = [0.0; 10];
     let scale = (range.1 - range.0).abs() / 2.0;
     let mid = f64::midpoint(range.0, range.1);
@@ -3444,6 +3434,27 @@ where
     (value, magnitude)
 }
 
+/// The moments of [`green_cell_moments`] alone, for a cell whose magnitudes
+/// nothing reads: the bisection compares and keeps only these, and the
+/// magnitudes cost a second evaluation of the curve at every abscissa.
+fn green_cell_value<F>(range: (f64, f64), eval: &F, origin: Point3, e1: Vec3, e2: Vec3) -> [f64; 10]
+where
+    F: Fn(f64) -> (Point3, Vec3),
+{
+    let mut value = [0.0; 10];
+    accumulate_green_segment(
+        &mut value,
+        range,
+        ADAPTIVE_GREEN_ORDER,
+        1.0,
+        eval,
+        origin,
+        e1,
+        e2,
+    );
+    value
+}
+
 /// Shared state of one edge's adaptive Green integration.
 struct AdaptiveGreen<'a, F> {
     eval: &'a F,
@@ -3468,21 +3479,20 @@ impl<F: Fn(f64) -> (Point3, Vec3)> AdaptiveGreen<'_, F> {
         depth: u32,
     ) -> bool {
         let mid = f64::midpoint(range.0, range.1);
-        let left = green_cell_moments((range.0, mid), self.eval, self.origin, self.e1, self.e2);
-        let right = green_cell_moments((mid, range.1), self.eval, self.origin, self.e1, self.e2);
+        let left = green_cell_value((range.0, mid), self.eval, self.origin, self.e1, self.e2);
+        let right = green_cell_value((mid, range.1), self.eval, self.origin, self.e1, self.e2);
         // A non-finite moment never compares as converged.
-        let converged =
-            (0..10).all(|k| (left.0[k] + right.0[k] - whole[k]).abs() <= self.allowance[k]);
+        let converged = (0..10).all(|k| (left[k] + right[k] - whole[k]).abs() <= self.allowance[k]);
         if converged {
             self.cells += 1;
             for k in 0..10 {
-                out[k] += left.0[k] + right.0[k];
+                out[k] += left[k] + right[k];
             }
             return self.cells <= ADAPTIVE_GREEN_MAX_CELLS;
         }
         depth < ADAPTIVE_GREEN_MAX_DEPTH
-            && self.cell(out, (range.0, mid), &left.0, depth + 1)
-            && self.cell(out, (mid, range.1), &right.0, depth + 1)
+            && self.cell(out, (range.0, mid), &left, depth + 1)
+            && self.cell(out, (mid, range.1), &right, depth + 1)
     }
 }
 
@@ -7099,6 +7109,58 @@ mod tests {
             ),
             Err(CheckError::IntegrationFailed(_))
         ));
+    }
+
+    /// The bisection reads only a cell's moments, so it evaluates the curve
+    /// once per abscissa of each half, and keeps the sums the full cell
+    /// reading (moments and magnitudes) gives.
+    #[test]
+    fn adaptive_green_cells_evaluate_each_abscissa_once() {
+        let (origin, e1, e2) = (
+            Point3::new(0.2, -0.1, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+        );
+        let evaluations = Cell::new(0usize);
+        // A quarter turn in a rational parameter: no fixed rule is exact.
+        let eval = |u: f64| {
+            evaluations.set(evaluations.get() + 1);
+            let w = 1.0 + u * u;
+            let (x, y) = ((1.0 - u * u) / w, 2.0 * u / w);
+            let (dx, dy) = (-4.0 * u / (w * w), 2.0 * (1.0 - u * u) / (w * w));
+            (Point3::new(x, y, 0.0), Vec3::new(dx, dy, 0.0))
+        };
+        let range = (0.0, 1.0);
+        let (whole, magnitude) = green_cell_moments(range, &eval, origin, e1, e2);
+        for (loose, expected_cells) in [(true, 1), (false, 0)] {
+            let mut adaptive = AdaptiveGreen {
+                eval: &eval,
+                origin,
+                e1,
+                e2,
+                allowance: magnitude.map(|m| if loose { m } else { 1e-13 * m }),
+                cells: 0,
+            };
+            let mut out = [0.0; 10];
+            evaluations.set(0);
+            assert!(adaptive.cell(&mut out, range, &whole, 0));
+            let used = evaluations.get();
+            if loose {
+                assert_eq!(adaptive.cells, expected_cells);
+                assert_eq!(used, 2 * ADAPTIVE_GREEN_ORDER);
+                let left = green_cell_moments((0.0, 0.5), &eval, origin, e1, e2).0;
+                let right = green_cell_moments((0.5, 1.0), &eval, origin, e1, e2).0;
+                for k in 0..10 {
+                    assert_eq!(out[k].to_bits(), (left[k] + right[k]).to_bits());
+                }
+            } else {
+                // Every visited cell reads its two halves, nothing else.
+                assert!(adaptive.cells > expected_cells);
+                assert_eq!(used % (2 * ADAPTIVE_GREEN_ORDER), 0);
+                assert!(used >= 2 * ADAPTIVE_GREEN_ORDER * adaptive.cells);
+                assert!(used < 4 * ADAPTIVE_GREEN_ORDER * adaptive.cells);
+            }
+        }
     }
 
     #[test]
