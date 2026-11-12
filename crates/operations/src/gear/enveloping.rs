@@ -384,17 +384,32 @@ impl Hindley {
 
     /// The groove's share of [`Self::material_margin`]: the margin clear of
     /// every wheel tooth that cut the groove, at a point whose
-    /// [`Self::blank_margin`] section is `[y, z, rho]`.
-    pub(super) fn groove_margin(&self, p: Point3, [y, z, rho]: [f64; 3]) -> f64 {
+    /// [`Self::blank_margin`] section is `section`.
+    pub(super) fn groove_margin(&self, p: Point3, section: [f64; 3]) -> f64 {
+        let (lead, width) = self.groove_window(p, section);
+        self.groove_depth(lead, width, section[2])
+    }
+
+    /// Where a point sits against the wheel tooth that cut the groove at
+    /// its place along the thread: its angle about the wheel center ahead
+    /// of that tooth's minus flank line, before reduction to one tooth
+    /// pitch, and the tooth's angular width at the point's radius.
+    pub(super) fn groove_window(&self, p: Point3, [y, z, rho]: [f64; 3]) -> (f64, f64) {
         let u = p.y().atan2(p.x());
         let phi = (FRAC_PI_2 + self.phase - u) / (self.sigma * self.ratio);
-        let pitch = TAU / f64::from(self.wheel_teeth);
         let angle = z.atan2(y) - phi;
         // Both flank lines turn by the same angle from their tangent points.
         let off = self.line_offset(rho.max(self.rb));
         let lo = self.tangent_minus + off;
         let width = (self.tangent_plus - off) - lo;
-        let offset = (angle - lo).rem_euclid(pitch);
+        (angle - lo, width)
+    }
+
+    /// The groove margin of a point `lead` ahead of a tooth `width` wide
+    /// ([`Self::groove_window`]) at the distance `rho` from the wheel center.
+    pub(super) fn groove_depth(&self, lead: f64, width: f64, rho: f64) -> f64 {
+        let pitch = TAU / f64::from(self.wheel_teeth);
+        let offset = lead.rem_euclid(pitch);
         let angular = if offset <= width {
             -offset.min(width - offset)
         } else {
