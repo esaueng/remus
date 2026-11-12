@@ -39,20 +39,22 @@ pub struct NurbsSurface {
     #[cfg_attr(feature = "serde", serde(skip))]
     #[cfg_attr(feature = "simd", allow(dead_code))]
     uniform_weights: std::sync::OnceLock<bool>,
-    /// Projection seed grids, built individually on first use and shared by
-    /// clones (see [`Self::seed_grid`] and [`Self::span_seed_grid`]).
+    /// Projection seed grids and the periodicity flags, built individually
+    /// on first use and shared by clones (see [`Self::seed_grid`],
+    /// [`Self::span_seed_grid`] and [`Self::is_periodic_u`]).
     #[cfg_attr(feature = "serde", serde(skip))]
     seed_grid: SeedGridCache,
 }
 
-/// Lazily built [`SurfaceSeedGrid`] of one surface.
+/// Lazily built [`SurfaceSeedGrid`]s and periodicity flags of one surface.
 ///
-/// The grid is a pure function of the immutable surface, so it never goes
-/// stale. Clones share it. It takes no part in equality or serialization, and
+/// Each is a pure function of the immutable surface, so it never goes
+/// stale. Clones share them. It takes no part in equality or serialization, and
 /// `Debug` prints a constant so a read-only projection never changes a
 /// formatted snapshot of the topology. Like the other lazily filled caches
 /// here it is not counted by memory estimates (about 3.3 KB for the coarse
-/// grid and at most 2.6 MB for the optional span grid).
+/// grid, at most 2.6 MB for the optional span grid, and under a hundred
+/// bytes for a surface that was only asked whether it is periodic).
 #[derive(Default)]
 struct SeedGridCache(std::sync::OnceLock<std::sync::Arc<ProjectionGrids>>);
 
@@ -60,6 +62,10 @@ struct SeedGridCache(std::sync::OnceLock<std::sync::Arc<ProjectionGrids>>);
 struct ProjectionGrids {
     coarse: std::sync::OnceLock<SurfaceSeedGrid>,
     spans: std::sync::OnceLock<SurfaceSeedGrid>,
+    /// `(is_periodic_u, is_periodic_v)`: each compares a whole control row
+    /// or column, and per-point callers (a projection, a tessellation grid
+    /// sample) ask on every call.
+    periodic: std::sync::OnceLock<(bool, bool)>,
 }
 
 impl Clone for SeedGridCache {
@@ -646,6 +652,40 @@ impl NurbsSurface {
         Ok(surface)
     }
 
+    /// A surface with this one's degrees, knots and weights over another
+    /// control net of the same shape: what [`Self::new`] builds from copies
+    /// of them, sharing their storage instead. A net moved into a local
+    /// frame built this way is recognized as sharing this surface's bases
+    /// (see [`Self::point_and_normal_with`]) without comparing knot vectors.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`Self::new`] for a control grid whose shape does not
+    /// match the knots and weights.
+    pub fn with_control_points(&self, control_points: Vec<Vec<Point3>>) -> Result<Self, MathError> {
+        validate_data(
+            self.degree_u,
+            self.degree_v,
+            &self.knots_u,
+            &self.knots_v,
+            &control_points,
+            &self.weights,
+        )?;
+        let surface = Self {
+            degree_u: self.degree_u,
+            degree_v: self.degree_v,
+            knots_u: self.knots_u.clone(),
+            knots_v: self.knots_v.clone(),
+            control_points: control_points.into(),
+            weights: self.weights.clone(),
+            max_weight: std::sync::OnceLock::new(),
+            uniform_weights: std::sync::OnceLock::new(),
+            seed_grid: SeedGridCache::default(),
+        };
+        let _ = surface.max_weight();
+        Ok(surface)
+    }
+
     /// The coarse grid [`crate::nurbs::projection::project_point_to_surface`]
     /// seeds Newton from, evaluated on first use and kept with the surface.
     pub(crate) fn seed_grid(&self) -> &SurfaceSeedGrid {
@@ -711,6 +751,24 @@ impl NurbsSurface {
     /// sphere, torus).
     #[must_use]
     pub fn is_periodic_u(&self) -> bool {
+        self.periodic().0
+    }
+
+    /// Both periodicity flags, compared once per surface.
+    fn periodic(&self) -> (bool, bool) {
+        *self
+            .seed_grid
+            .0
+            .get_or_init(|| std::sync::Arc::new(ProjectionGrids::default()))
+            .periodic
+            .get_or_init(|| {
+                #[cfg(test)]
+                shared_storage_tests::record_periodic_compare();
+                (self.compare_periodic_u(), self.compare_periodic_v())
+            })
+    }
+
+    fn compare_periodic_u(&self) -> bool {
         let n = self.control_points.len();
         if n < 2 {
             return false;
@@ -733,6 +791,10 @@ impl NurbsSurface {
     /// control point columns coincide within a tight tolerance.
     #[must_use]
     pub fn is_periodic_v(&self) -> bool {
+        self.periodic().1
+    }
+
+    fn compare_periodic_v(&self) -> bool {
         if self.control_points.is_empty() {
             return false;
         }
@@ -1559,11 +1621,20 @@ impl NurbsSurface {
         let same_bits = |a: &[f64], b: &[f64]| {
             a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits())
         };
+        // Shared storage is the same knots; only distinct vectors compare.
+        let same_knots = |a: &std::sync::Arc<Vec<f64>>, b: &std::sync::Arc<Vec<f64>>| {
+            if std::sync::Arc::ptr_eq(a, b) {
+                return true;
+            }
+            #[cfg(test)]
+            shared_storage_tests::record_knot_compare();
+            same_bits(a, b)
+        };
         std::ptr::eq(self, other)
             || (self.degree_u == other.degree_u
                 && self.degree_v == other.degree_v
-                && same_bits(&self.knots_u, &other.knots_u)
-                && same_bits(&self.knots_v, &other.knots_v))
+                && same_knots(&self.knots_u, &other.knots_u)
+                && same_knots(&self.knots_v, &other.knots_v))
     }
 
     /// Whether [`Self::stack_first_order_bases`] serves this surface: a u
@@ -4052,6 +4123,9 @@ mod eval_stack_oracle_tests;
 
 #[cfg(test)]
 mod contraction_oracle_tests;
+
+#[cfg(test)]
+mod shared_storage_tests;
 
 #[cfg(test)]
 mod borrowed_validation_tests {
