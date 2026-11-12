@@ -7,7 +7,9 @@
 //! - display tessellation (`tessellate_solid` at the printed deflection),
 //! - `solid_volume` at the same deflection,
 //!
-//! and records the face and triangle counts. Each phase reports the median
+//! and records the face and triangle counts, a digest of the mesh bytes and
+//! the volume's bits (a last table, for checking that a change left the
+//! results as they were). Each phase reports the median
 //! over the runs (5 by default; 3 when one run takes over 1 s, 1 over 10 s).
 //! Parameters come from each module's own tests.
 //!
@@ -653,6 +655,33 @@ struct Sample {
     faces: usize,
     tris: usize,
     vol: f64,
+    mesh_digest: u64,
+}
+
+/// FNV-1a over the mesh's position bits, normal bits and indices, in order:
+/// two builds print the same digest exactly when their meshes are byte for
+/// byte the same.
+fn mesh_digest(mesh: &tessellate::TriangleMesh) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    let mut feed = |word: u64| {
+        for byte in word.to_le_bytes() {
+            hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+        }
+    };
+    for p in &mesh.positions {
+        for c in [p.x(), p.y(), p.z()] {
+            feed(c.to_bits());
+        }
+    }
+    for n in &mesh.normals {
+        for c in [n.x(), n.y(), n.z()] {
+            feed(c.to_bits());
+        }
+    }
+    for &i in &mesh.indices {
+        feed(u64::from(i));
+    }
+    hash
 }
 
 fn run_once(sc: &Scenario) -> Result<Sample, String> {
@@ -679,6 +708,7 @@ fn run_once(sc: &Scenario) -> Result<Sample, String> {
         faces,
         tris: mesh.indices.len() / 3,
         vol,
+        mesh_digest: mesh_digest(&mesh),
     })
 }
 
@@ -758,6 +788,28 @@ fn print_table(title: &str, rows: &[&Row]) {
     }
 }
 
+/// The results themselves, for comparing two builds: the mesh digest and
+/// the volume's bits, in scenario order.
+fn print_digests(rows: &[Row]) {
+    println!("\n== result digests (first run) ==");
+    println!(
+        "{:<32} {:>6} {:>8} {:>18} {:>18}",
+        "scenario", "faces", "tris", "mesh digest", "volume bits"
+    );
+    for row in rows {
+        if let Ok(m) = &row.result {
+            println!(
+                "{:<32} {:>6} {:>8} {:>18} {:>18}",
+                row.name,
+                m.faces,
+                m.tris,
+                format!("{:016x}", m.mesh_digest),
+                format!("{:016x}", m.vol.to_bits())
+            );
+        }
+    }
+}
+
 fn main() {
     let mut filter: Option<String> = None;
     let mut default_runs = 5_usize;
@@ -823,6 +875,7 @@ fn main() {
                         faces: samples[0].faces,
                         tris: samples[0].tris,
                         vol: samples[0].vol,
+                        mesh_digest: samples[0].mesh_digest,
                     }),
                 };
                 Row {
@@ -844,4 +897,5 @@ fn main() {
     let mut by_tess: Vec<&Row> = rows.iter().collect();
     by_tess.compact_sort_by(|a, b| key(b, |m| m.tess).cmp(&key(a, |m| m.tess)));
     print_table("sorted by tessellation (median ms)", &by_tess);
+    print_digests(&rows);
 }
