@@ -1165,7 +1165,26 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
             // down as chords, they add no vertices to the projected outline,
             // so no `u` break the trimmed rule must integrate a Gauss row on,
             // and no projection noise either.
-            let iso_edges = natural_rectangle::outer_iso_edges(topo, face_id, s)?;
+            //
+            // A chord is laid down only when both of its vertices project to
+            // the parameters its side gives them. A vertex on a pole or a
+            // collapsed iso line (`(u v, v)` at `v = 0`) projects anywhere
+            // along it; dense samples keep that to a sliver, a chord to it
+            // would cut the face across.
+            let agree = |p: Point3, (u, v): (f64, f64)| {
+                let (pu, pv) = project(p);
+                (pu - u).abs() <= ISO_EDGE_PARAMETER_TOLERANCE * (full.0.1 - full.0.0).abs()
+                    && (pv - v).abs() <= ISO_EDGE_PARAMETER_TOLERANCE * (full.1.1 - full.1.0).abs()
+            };
+            let mut iso_edges = Vec::new();
+            for iso in natural_rectangle::outer_iso_edges(topo, face_id, s)? {
+                let edge = topo.edge(iso.edge)?;
+                if agree(topo.vertex(edge.start())?.point(), iso.start)
+                    && agree(topo.vertex(edge.end())?.point(), iso.end)
+                {
+                    iso_edges.push(iso.edge);
+                }
+            }
             let prepared = if iso_edges.is_empty() {
                 None
             } else {
@@ -4622,6 +4641,12 @@ impl Accumulator {
 /// integrand is low-degree, so a bounded number of patches stays exact. Angular
 /// axes never exceed 2*PI (= 8 patches), well under the cap.
 const MAX_PATCHES: usize = 16;
+
+/// Fraction of each axis of a NURBS carrier's domain by which a chorded iso
+/// edge's vertex may project away from the parameter its side gives it. The
+/// trim projections converge to 1e-7 in space, far inside this; a vertex
+/// whose projection is ambiguous (a pole) lands a whole side away.
+const ISO_EDGE_PARAMETER_TOLERANCE: f64 = 1e-6;
 
 /// `u` cells per knot span, up to [`TRIM_SAMPLES`] in all, that an
 /// iso-bounded NURBS face or full-turn band integrated as its whole rectangle
