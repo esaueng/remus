@@ -34,8 +34,9 @@
 //! `OperationsError::Unsupported` from `solid_volume`. These meshes stay open
 //! at the clamp retry too, and every face is one the boundary-trimmed Gauss
 //! fallback measures, so today the answer is that integral: within 1e-4 of
-//! the oracle (measured 8e-6 – 7e-5). Should B51's mesh close, the closed
-//! mesh measures them and the contract still holds. The open-mesh order
+//! the oracle (measured 8e-6 – 7e-5). B51 has since closed these meshes (the
+//! cone wall's pierce loops are pre-split at its seam), so the closed mesh
+//! measures them and the contract still holds. The open-mesh order
 //! itself (exact integral, then the clamp retry, then a typed refusal) is
 //! pinned geometry-independently by the unit tests in `measure/volume.rs`.
 //!

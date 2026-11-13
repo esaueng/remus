@@ -1113,8 +1113,18 @@ fn build_boundary_plan(
         let mut refinements: DetHashMap<usize, Vec<(usize, f64, Point3)>> = DetHashMap::default();
         for &face_id in all_faces {
             let face_data = topo.face(face_id)?;
-            let FaceSurface::Cylinder(cyl) = face_data.surface() else {
-                continue;
+            // Cylinder and cone walls share the developed-chart mesher
+            // (`tessellate_revolved_with_holes`), so both fabricate the same
+            // seam vertex and both need the pre-split (B51: a torus tube
+            // piercing a cone wall across its seam left a 3-edge T-junction
+            // per crossing once the deflection fell below the gap filler).
+            let cyl: &dyn remus_math::traits::ParametricSurface = match face_data.surface() {
+                FaceSurface::Cylinder(cylinder) => cylinder,
+                FaceSurface::Cone(cone) => cone,
+                FaceSurface::Plane { .. }
+                | FaceSurface::Sphere(_)
+                | FaceSurface::Torus(_)
+                | FaceSurface::Nurbs(_) => continue,
             };
             if face_data.inner_wires().is_empty() {
                 continue;

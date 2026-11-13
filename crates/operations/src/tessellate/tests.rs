@@ -4142,6 +4142,74 @@ fn cross_drilled_shaft_bore_rim_on_seam_is_watertight() {
     }
 }
 
+/// The cone twin of the cross-drilled shaft above (B51): a bar entering a
+/// frustum wall across its seam meridian. Cone walls share the cylinder's
+/// developed-chart mesher, which cuts the pierce loop at the seam and
+/// fabricates a vertex there; without the pool pre-split the bar wall never
+/// saw it. The sub-deflection gap filler closed the three-edge T-junction at
+/// preview deflections, so only the finest value here ever opened (3
+/// boundary edges at (1.9, 0, 1.8)); the coarser ones guard the other
+/// sampling densities.
+#[test]
+fn bar_through_cone_wall_seam_is_watertight() {
+    use remus_math::mat::Mat4;
+
+    let mut topo = Topology::new();
+    let cone = crate::primitives::make_cone(&mut topo, 1.0, 2.5, 3.0).unwrap();
+    let bar = crate::primitives::make_cylinder(&mut topo, 0.3, 2.0).unwrap();
+    // Axis along +x from x = 1 to x = 3 at mid-height: the wall (radius 1.75
+    // there) is crossed on the +x meridian, the cone primitive's seam.
+    crate::transform::transform_solid(
+        &mut topo,
+        bar,
+        &(Mat4::translation(1.0, 0.0, 1.5) * Mat4::rotation_y(std::f64::consts::FRAC_PI_2)),
+    )
+    .unwrap();
+    let solid =
+        crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Fuse, cone, bar).unwrap();
+
+    // The fixture is the seam-straddling pierce: one hole in the cone wall,
+    // bounded by one closed edge with samples on both sides of y = 0.
+    let wall = remus_topology::explorer::solid_faces(&topo, solid)
+        .unwrap()
+        .into_iter()
+        .find(|&f| matches!(topo.face(f).unwrap().surface(), FaceSurface::Cone(_)))
+        .unwrap();
+    let holes = topo.face(wall).unwrap().inner_wires().to_vec();
+    assert_eq!(holes.len(), 1, "one pierce hole in the cone wall");
+    let loop_edges = topo.wire(holes[0]).unwrap().edges().to_vec();
+    let mut side = [false; 2];
+    for oriented in &loop_edges {
+        let edge = topo.edge(oriented.edge()).unwrap();
+        for p in super::edge_sampling::sample_edge(&topo, edge, 0.01, 0.1, false).unwrap() {
+            assert!(p.x() > 1.0, "the loop sits on the +x side");
+            side[usize::from(p.y() > 0.0)] |= p.y().abs() > 0.05;
+        }
+    }
+    assert_eq!(side, [true; 2], "the pierce loop straddles the seam");
+
+    let brep_volume = crate::measure::solid_volume(&topo, solid, 0.05).unwrap();
+    for deflection in [0.1, 0.01, 1e-3, 8e-5] {
+        let mesh = tessellate_solid(&topo, solid, deflection).unwrap();
+        assert_eq!(
+            (boundary_edge_count(&mesh), non_manifold_edge_count(&mesh)),
+            (0, 0),
+            "deflection {deflection}: mesh indices must describe a closed manifold"
+        );
+        let quality = welded_mesh_quality(&mesh);
+        assert_eq!(
+            (quality.boundary_edges, quality.non_manifold_edges),
+            (0, 0),
+            "deflection {deflection}: position-welded mesh must be closed and manifold"
+        );
+        let mesh_volume = signed_volume_raw(&mesh).abs();
+        assert!(
+            (mesh_volume - brep_volume).abs() / brep_volume < 0.02,
+            "deflection {deflection}: mesh volume {mesh_volume:.6} vs B-rep {brep_volume:.6}"
+        );
+    }
+}
+
 /// A bilinear carrier is flat: its interior grid must be the two-column
 /// minimum however many millimetres its knot span covers. Feeding the span
 /// to the circular-arc chord formula as radians demanded thousands of
