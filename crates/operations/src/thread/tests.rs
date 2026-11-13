@@ -476,8 +476,11 @@ fn chamfered_external_ends_taper_into_the_cone() {
     let expected = chamfered_volume(&form, ThreadKind::External, r, root, 0.0, h, |z| {
         at_end + z.min(h - z)
     });
+    // The face integrals measure the body (its shell closes, see
+    // `chamfer_cones_integrate_their_own_region`): 6.2e-6 from the
+    // quadrature, which itself sits within 4e-8 of its converged value.
     let got = volume(&topo, outcome.solid);
-    assert!(rel(got, expected) < 2e-4, "{got} vs {expected}");
+    assert!(rel(got, expected) < 2e-5, "{got} vs {expected}");
     // The two chamfers take about 1.9 volume units off the plain body.
     let plain = outline_area(&form, r, root) * h;
     assert!(plain - got > 1.5, "{plain} vs {got}");
@@ -512,7 +515,92 @@ fn chamfered_internal_ends_countersink_the_thread() {
         at_end - z.min(h - z)
     });
     let got = volume(&topo, outcome.solid);
-    assert!(rel(got, expected) < 2e-4, "{got} vs {expected}");
+    assert!(rel(got, expected) < 1e-5, "{got} vs {expected}");
+}
+
+/// The vector area `½∮ x × dx` of `face`'s wires, densely sampled: the
+/// face's oriented `∫ n dA`, which depends on its boundary alone.
+fn boundary_vector_area(topo: &Topology, face: FaceId) -> remus_math::vec::Vec3 {
+    use remus_math::vec::Vec3;
+    use remus_topology::edge::EdgeCurve;
+    let f = topo.face(face).unwrap();
+    let mut sum = Vec3::new(0.0, 0.0, 0.0);
+    for wire in std::iter::once(f.outer_wire()).chain(f.inner_wires().iter().copied()) {
+        let mut points = Vec::new();
+        for oe in topo.wire(wire).unwrap().edges() {
+            let e = topo.edge(oe.edge()).unwrap();
+            let start = topo.vertex(e.start()).unwrap().point();
+            let end = topo.vertex(e.end()).unwrap().point();
+            let (t0, t1) = if matches!(e.curve(), EdgeCurve::Line) {
+                (0.0, 1.0)
+            } else {
+                e.strict_domain().unwrap()
+            };
+            let (a, b) = if oe.is_forward() { (t0, t1) } else { (t1, t0) };
+            let n = 4000;
+            points.extend((0..n).map(|k| {
+                let t = (b - a).mul_add(k as f64 / f64::from(n), a);
+                e.curve().evaluate_with_endpoints(t, start, end)
+            }));
+        }
+        for (i, &p) in points.iter().enumerate() {
+            let q = points[(i + 1) % points.len()];
+            sum += Vec3::new(p.x(), p.y(), p.z()).cross(Vec3::new(q.x(), q.y(), q.z())) * 0.5;
+        }
+    }
+    if f.is_reversed() { -sum } else { sum }
+}
+
+/// A chamfer cone is one full turn of the cone at the thread's foot plus a
+/// tab that climbs between the flanks, past the end of that turn in the
+/// cone's angle. Its integrated vector area must be its boundary's, and the
+/// shell must close: the face integrator wrapped the tab back into one turn,
+/// counted part of the cone twice, and read the external thread's first cone
+/// 0.69 off its boundary (the shell 2.7e-3 of its area open), so the volume
+/// fell back to the whole-solid mesh.
+#[test]
+fn chamfer_cones_integrate_their_own_region() {
+    use remus_math::vec::Vec3;
+    use remus_topology::face::FaceSurface;
+    let mut topo = Topology::new();
+    let (external, face) = boss(&mut topo, 3.0, 8.0);
+    let form = ThreadForm::iso_metric(1.0, ThreadKind::External);
+    let external = cut_thread(&mut topo, external, face, &form, &both_chamfers(PI / 4.0))
+        .unwrap()
+        .solid;
+    let form = ThreadForm::iso_metric(1.0, ThreadKind::Internal);
+    let (internal, face) = bored(&mut topo, 6.0, 3.0 - form.depth, 6.0);
+    let internal = cut_thread(&mut topo, internal, face, &form, &both_chamfers(PI / 4.0))
+        .unwrap()
+        .solid;
+    for (label, solid) in [("external", external), ("internal", internal)] {
+        let reference = Point3::new(0.0, 0.0, 4.0);
+        let (mut closure, mut area, mut cones) = (Vec3::new(0.0, 0.0, 0.0), 0.0, 0);
+        for face in remus_topology::explorer::solid_faces(&topo, solid).unwrap() {
+            let term = remus_check::properties::face_cache::integrate_face_volume_about_memoized(
+                &topo, face, 5, reference,
+            )
+            .unwrap();
+            let n = term.vector_area.unwrap();
+            closure += n;
+            area += term.area;
+            if matches!(topo.face(face).unwrap().surface(), FaceSurface::Cone(_)) {
+                cones += 1;
+                let gap = (n - boundary_vector_area(&topo, face)).length();
+                assert!(
+                    gap <= 1e-3 * term.area,
+                    "{label} cone: {gap:e} of {}",
+                    term.area
+                );
+            }
+        }
+        assert_eq!(cones, 2, "{label}");
+        assert!(
+            closure.length() <= 1e-6 * area,
+            "{label}: {:e} of {area}",
+            closure.length()
+        );
+    }
 }
 
 #[test]

@@ -5774,6 +5774,23 @@ macro_rules! define_trimmed_integrator {
                     &UvTrim::holes_of(uv),
                     scale,
                 )
+            } else if let Some(u_max) = wider_than_one_turn(uv, u_min) {
+                // The outline closes without winding (it climbs a seam and
+                // comes back down it) yet spans more than one period: a full
+                // rim plus a tab beyond it, as on a thread's chamfer cone.
+                // Wrapping abscissae into one period around the outline's
+                // centre cannot read such a loop: part of it is counted twice
+                // and part never. It is simple in the unwrapped chart, so
+                // integrate it there, over its own extent, unwrapped.
+                $integrate::<_, AREA_ONLY>(
+                    surface,
+                    (u_min, u_max),
+                    v_range,
+                    rule,
+                    sign,
+                    &UvTrim::new(Some(&uv.boundary), &[], &[], false),
+                    scale,
+                )
             } else {
                 $integrate::<_, AREA_ONLY>(
                     surface,
@@ -5787,6 +5804,22 @@ macro_rules! define_trimmed_integrator {
             }
         }
     };
+}
+
+/// The far end of `uv`'s outer outline in `u` when the outline, unwrapped
+/// from `u_min`, spans more than one period of a periodic `u` and the face
+/// has no inner wires; `None` otherwise.
+fn wider_than_one_turn(uv: &FaceUv, u_min: f64) -> Option<f64> {
+    if !uv.u_periodic || !uv.pockets.is_empty() || !uv.bands.is_empty() {
+        return None;
+    }
+    let u_max = uv
+        .boundary
+        .points
+        .iter()
+        .map(|p| p.x())
+        .fold(f64::NEG_INFINITY, f64::max);
+    (u_max - u_min > std::f64::consts::TAU + WRAP_EPS).then_some(u_max)
 }
 
 define_trimmed_integrator!(integrate_with_trimming_to_pole, integrate_parametric);
