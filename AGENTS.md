@@ -520,6 +520,7 @@ Quick reference — find the right file for any task:
 | Shell assembly + solid creation | `assemble.rs` |
 | Self-intersection removal (BOP-based) | `self_int.rs` |
 | Cavity (inner shell) extent checks | `cavity.rs` |
+| Shell-interference certificates (slab collapse, cavity clearance, cavity inside the outer shell) | `interference.rs` |
 | Topology-preserving planar face moves | `move_faces.rs` |
 | Quarter-cylinder replacement clearance | `move_faces/quarter_cylinder.rs` |
 | Clearance for coaxially resizing a general partial-turn boss wall | `move_faces/partial_cylinder.rs` |
