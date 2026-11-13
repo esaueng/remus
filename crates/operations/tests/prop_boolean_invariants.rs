@@ -1673,16 +1673,11 @@ fn is_sphere_torus_pair(a: &GenPrim, b: &GenPrim) -> bool {
     )
 }
 
-/// Torus–cone pair predicate for the finding-14 generation exclusion.
-/// Broken at 1e-3 (ops-invalid cut; valid-but-open/drifting fuse) and at
-/// unit scale (valid fuse with open-at-fine mesh; ops-invalid cut;
-/// translation-drifting valid fuse) across placements — the pair-cell, not
-/// the placement or scale, is broken. Pinned repros + row B39 own it. All
-/// four pinned repros are green since B39 (2026-09-24), but a deterministic
-/// 60-draw torus–cone sweep of the slow lattice still fails 3 draws
-/// (two open fuse meshes, one disjoint 1e3 fuse that drops the torus), so
-/// the exclusion stays until those placements close (row B51,
-/// `b51_toruscone_sweep_*`).
+/// Torus–cone pair predicate. It was the finding-14 generation exclusion
+/// (rows B39, then B51) until the four finding-14 repros, the three B51
+/// sweep repros (`b51_toruscone_sweep_*`) and a clean deterministic 60-draw
+/// sweep (`b51_toruscone_slow_lattice_sweep`) closed the cell; the pairs
+/// are drawn again and the predicate now only selects that sweep's draws.
 fn is_torus_cone_pair(a: &GenPrim, b: &GenPrim) -> bool {
     matches!(
         (a, b),
@@ -1791,18 +1786,16 @@ fn arb_bool_pair_slow() -> impl Strategy<Value = BoolPairInput> {
                 scale,
             })
         })
-        // Finding 13 (sphere–torus), finding 14 (torus–cone), and oblique
-        // box–torus pairs: excluded from generation at every scale —
-        // pervasively broken across placements and scales (pinned repros +
-        // rows B38/B39/B44). The finding-17 neighborhood is drawn again
-        // since B53 closed it (clean exhaustive sweep). Rejection rate is
-        // ~1/5 of draws — far below the abort threshold.
+        // Finding 13 (sphere–torus) and oblique box–torus pairs: excluded
+        // from generation at every scale — pervasively broken across
+        // placements and scales (pinned repros + rows B38/B44). Torus–cone
+        // pairs (finding 14) are drawn again since B51 closed them, and the
+        // finding-17 neighborhood since B53 (clean sweeps both). Rejection
+        // rate is ~1/6 of draws — far below the abort threshold.
         .prop_filter(
             "broken cells excluded until their rows close",
             |input: &BoolPairInput| {
-                !is_sphere_torus_pair(&input.a, &input.b)
-                    && !is_torus_cone_pair(&input.a, &input.b)
-                    && !is_oblique_boxtorus(input)
+                !is_sphere_torus_pair(&input.a, &input.b) && !is_oblique_boxtorus(input)
             },
         )
 }
@@ -1950,11 +1943,9 @@ fn check_bool_pair(input: &BoolPairInput) -> Result<(), TestCaseError> {
     // out. The pinned repro + row B35 own the defect. If the band rule is
     // ever lifted, these legs fail LOUD through the standard oracles
     // below.)
-    // (No finding-14 gate here by design: torus–cone pairs are excluded
-    // from generation entirely — see `arb_bool_pair_slow` — so there is no
-    // drawn input to carve out. The pinned repros + row B39 own the cell;
-    // if the exclusion is ever lifted, these legs fail LOUD through the
-    // standard oracles below, which is the correct signal for new rows.)
+    // (No finding-14 gate here by design: torus–cone pairs are drawn again
+    // since B51 closed the cell, with every standard oracle below judging
+    // them.)
     #[allow(clippy::float_cmp)]
     let finding1 = matches!(
         (
@@ -3762,13 +3753,13 @@ fn b26_finding14_toruscone_oblique_drift() {
         .expect("translation invariant");
 }
 
-/// Ready-repros for the torus–cone placements that keep the generation
-/// exclusion in place after B39 (row B51). A deterministic 60-draw sweep of
-/// the slow lattice (`TestRunner::deterministic()` over `arb_gen_prim(true)`
-/// filtered to torus–cone pairs, through `check_bool_pair`) failed these
-/// three on the B39 branch AND identically on unmodified `origin/main`
-/// (`3fcb1bc4`, 2026-09-24): they are not the composite-pierce cell B39
-/// closed. Committed as `#[ignore]` per the testing skill.
+/// The torus–cone placements that kept the generation exclusion in place
+/// after B39 (row B51). A deterministic 60-draw sweep of the slow lattice
+/// (`b51_toruscone_slow_lattice_sweep`) failed these three on the B39 branch
+/// and identically on `origin/main` (`3fcb1bc4`, 2026-09-24): they are not
+/// the composite-pierce cell B39 closed. Un-ignored with the B51 close;
+/// `regress_b51_toruscone_seam_pierce.rs` holds the same three cells to
+/// independent oracles.
 fn b51_sweep_input(a: GenPrim, b: GenPrim, angle: f64, offset: (f64, f64, f64), scale: f64) {
     let input = BoolPairInput {
         a,
@@ -3781,10 +3772,12 @@ fn b51_sweep_input(a: GenPrim, b: GenPrim, angle: f64, offset: (f64, f64, f64), 
     check_bool_pair(&input).expect("torus–cone pair satisfies the B26 battery");
 }
 
-/// Sweep draw #5: the fuse mesh opens (6 boundary edges at the scaled
-/// deflection).
+/// Sweep draw #5: the fuse mesh opened (6 boundary edges at the scaled
+/// deflection) on a valid exact B-Rep. Each pierce loop on the cone wall
+/// crosses the wall's seam meridian, where the developed-chart mesher
+/// fabricated a vertex the torus band never shared; cone walls now get the
+/// seam pre-split cylinder walls had (`tessellate/solid.rs`, stage A4).
 #[test]
-#[ignore = "open: torus-cone slow-lattice fuse mesh opens (B51)"]
 fn b51_toruscone_sweep_oblique_fuse_mesh() {
     b51_sweep_input(
         GenPrim::Cone {
@@ -3802,10 +3795,9 @@ fn b51_toruscone_sweep_oblique_fuse_mesh() {
     );
 }
 
-/// Sweep draw #19: the fuse mesh opens (6 boundary edges at the scaled
-/// deflection).
+/// Sweep draw #19: the fuse mesh opened (6 boundary edges at the scaled
+/// deflection) — the same seam-crossing pierce loop as draw #5.
 #[test]
-#[ignore = "open: torus-cone slow-lattice fuse mesh opens (B51)"]
 fn b51_toruscone_sweep_axis_aligned_fuse_mesh() {
     b51_sweep_input(
         GenPrim::Cone {
@@ -3823,10 +3815,11 @@ fn b51_toruscone_sweep_axis_aligned_fuse_mesh() {
     );
 }
 
-/// Sweep draw #25: a DISJOINT torus–cone fuse at 1e3 scale returns only the
-/// cone (fuse 4.97e9 against 2.22e10 + 4.97e9): the torus is dropped.
+/// Sweep draw #25: a DISJOINT torus–cone fuse at 1e3 scale returned only the
+/// cone (fuse 4.97e9 against 2.22e10 + 4.97e9): the torus was dropped. Green
+/// before the B51 mesh fix landed (three consecutive runs on `24040dda`); the
+/// fixing change was not bisected.
 #[test]
-#[ignore = "open: disjoint torus-cone fuse at 1e3 drops the torus (B51)"]
 fn b51_toruscone_sweep_disjoint_fuse_drops_torus() {
     b51_sweep_input(
         GenPrim::Torus {
@@ -3842,6 +3835,82 @@ fn b51_toruscone_sweep_disjoint_fuse_drops_torus() {
         (0.0, 0.0, 3.0),
         1000.0,
     );
+}
+
+/// The deterministic torus–cone draws of the slow lattice (row B51): the
+/// first `count` torus–cone pairs `arb_bool_pair_slow` yields from
+/// `TestRunner::deterministic()`. A fixed RNG stream, so the list is the
+/// same on every run and every machine.
+fn b51_toruscone_sweep_draws(count: usize) -> Vec<BoolPairInput> {
+    use proptest::strategy::ValueTree;
+    use proptest::test_runner::TestRunner;
+    let strategy = arb_bool_pair_slow().prop_filter("torus–cone pairs only", |input| {
+        is_torus_cone_pair(&input.a, &input.b)
+    });
+    let mut runner = TestRunner::deterministic();
+    (0..count)
+        .map(|_| {
+            strategy
+                .new_tree(&mut runner)
+                .expect("the slow lattice yields torus–cone pairs")
+                .current()
+        })
+        .collect()
+}
+
+/// Manual deterministic sweep of the torus–cone cell (row B51): 60 torus–cone
+/// draws of the slow lattice through `check_bool_pair`, panics caught. Prints
+/// every draw's verdict and which fuse/intersect/cut legs came back exact
+/// (the rest refused typed); fails if any draw fails or panics. This is the
+/// evidence the generation exclusion was lifted on. Run with
+/// `cargo test --profile ci-test -p remus-operations --test
+/// prop_boolean_invariants b51_toruscone_slow_lattice_sweep -- --ignored
+/// --nocapture`.
+#[test]
+#[ignore = "manual: deterministic 60-draw torus-cone sweep of the slow lattice (B51)"]
+fn b51_toruscone_slow_lattice_sweep() {
+    let inputs = b51_toruscone_sweep_draws(60);
+    let (mut pass, mut reject, mut fail, mut panicked) = (0usize, 0usize, 0usize, 0usize);
+    let mut exact_legs = [0usize; 3];
+    for (i, input) in inputs.iter().enumerate() {
+        let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let verdict = check_bool_pair(input);
+            let exact = [BooleanOp::Fuse, BooleanOp::Intersect, BooleanOp::Cut]
+                .map(|op| run_pair_op(input, op).is_ok());
+            (verdict, exact)
+        }));
+        let Ok((verdict, exact)) = run else {
+            panicked += 1;
+            println!("draw {i}: PANIC {input:?}");
+            continue;
+        };
+        for (count, ok) in exact_legs.iter_mut().zip(exact) {
+            *count += usize::from(ok);
+        }
+        match verdict {
+            Ok(()) => {
+                pass += 1;
+                println!("draw {i}: pass exact {exact:?} {input:?}");
+            }
+            Err(TestCaseError::Reject(_)) => {
+                reject += 1;
+                println!("draw {i}: reject {input:?}");
+            }
+            Err(TestCaseError::Fail(why)) => {
+                fail += 1;
+                println!("draw {i}: FAIL {input:?}: {why}");
+            }
+        }
+    }
+    println!(
+        "torus-cone slow-lattice sweep: {} draws, {pass} pass, {reject} reject, {fail} fail, \
+         {panicked} panic; exact legs: fuse {}, intersect {}, cut {}",
+        inputs.len(),
+        exact_legs[0],
+        exact_legs[1],
+        exact_legs[2]
+    );
+    assert_eq!(fail + panicked, 0, "torus-cone sweep is not clean");
 }
 
 /// Ready-repro for the fifteenth proptest-found defect (2026-09-16): a
