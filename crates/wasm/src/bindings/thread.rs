@@ -67,7 +67,9 @@
 //! BSPT measure them. The thread must fit the cylinder at both ends:
 //! `thread:cylinder-too-small` is decided at an external thread's large end,
 //! `thread:bore-too-large` and `thread:too-deep` at the small end. A ratio
-//! outside `(0, 0.25]` refuses with `thread:taper-out-of-range`.
+//! outside `[0.001, 0.25]` refuses with `thread:taper-out-of-range`: below
+//! 1 in 1000 the lands' cones are too slender to evaluate to the reported
+//! bound, and such a thread is cylindrical to any tolerance that matters.
 //!
 //! Pipe-thread forms, with `P` the pitch (`25.4 / tpi` in millimetres) and
 //! `ratio: 0.0625`:

@@ -89,6 +89,18 @@ pub const MAX_FLANK_ANGLE_DEG: f64 = 75.0;
 /// threads are `1/16`.
 pub const MAX_TAPER_RATIO: f64 = 0.25;
 
+/// Smallest supported taper: diameter change per unit of length.
+///
+/// A tapered thread's lands are cone faces, and a cone of radial rate `τ`
+/// through radius `ρ` has its apex `ρ/τ` away and a generator `τ` off the
+/// axis: evaluating it loses about `ε·ρ/τ` of the radius to rounding (`ε`
+/// the machine epsilon), which the reported deviation bound allows for. At
+/// 1 in 1000 that is `4e-13·ρ`; it passes the default tolerance near 1 in
+/// `1e11`, where the lands sit visibly off their own edges. No thread
+/// standard tapers less than 1 in 1000 (pipe threads are 1 in 16), and a
+/// slighter taper is a cylindrical thread to any tolerance that matters.
+pub const MIN_TAPER_RATIO: f64 = 1e-3;
+
 /// Uniform Hermite spans allowed along the axis of one ring segment.
 const MAX_THREAD_SPANS: usize = 4096;
 
@@ -271,7 +283,7 @@ pub enum ThreadEnd {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ThreadTaper {
     /// Change of diameter per unit of length along the axis, in
-    /// `(0, MAX_TAPER_RATIO]`; `1/16` for NPT and BSPT.
+    /// `[MIN_TAPER_RATIO, MAX_TAPER_RATIO]`; `1/16` for NPT and BSPT.
     pub ratio: f64,
     /// The end of the thread with the smaller diameters.
     pub small_end: ThreadEndSide,
@@ -510,7 +522,7 @@ pub enum ThreadRefusal {
     FeaturesInThreadRegion,
     /// The chamfers or runouts of the two ends reach past each other.
     EndsOverlap,
-    /// The taper ratio is outside `(0, MAX_TAPER_RATIO]`.
+    /// The taper ratio is outside `[MIN_TAPER_RATIO, MAX_TAPER_RATIO]`.
     TaperOutOfRange,
 }
 
@@ -762,13 +774,12 @@ pub fn cut_thread(
     let radial_rate = match options.taper {
         None => 0.0,
         Some(taper) => {
-            let in_range =
-                taper.ratio.is_finite() && taper.ratio > 0.0 && taper.ratio <= MAX_TAPER_RATIO;
+            let in_range = (MIN_TAPER_RATIO..=MAX_TAPER_RATIO).contains(&taper.ratio);
             if !in_range {
                 return Err(ThreadError::refused(
                     ThreadRefusal::TaperOutOfRange,
                     format!(
-                        "the taper ratio must be in (0, {MAX_TAPER_RATIO}] of diameter per unit \
+                        "the taper ratio must be in [{MIN_TAPER_RATIO}, {MAX_TAPER_RATIO}] of diameter per unit \
                          length, got {}",
                         taper.ratio
                     ),

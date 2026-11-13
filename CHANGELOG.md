@@ -337,7 +337,8 @@ historical predecessor-line records, retained for provenance. The
   thread takes chamfered and runout ends like a cylindrical one.
   `details.geometry` gains `taperAngle` (half-angle, degrees) and
   `majorDiameterAtStart|AtEnd`, `minorDiameterAtStart|AtEnd`. A ratio outside
-  `(0, 0.25]` refuses with `thread:taper-out-of-range`;
+  `[0.001, 0.25]` refuses with `thread:taper-out-of-range` (below 1 in 1000
+  the lands' cone faces are too slender to evaluate to the reported bound);
   `thread:cylinder-too-small` is decided at an external thread's large end
   and `thread:bore-too-large` and `thread:too-deep` at the small end. Not
   covered: a pipe thread carried past where its major cone meets the pipe

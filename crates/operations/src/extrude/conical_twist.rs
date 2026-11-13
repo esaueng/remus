@@ -48,6 +48,10 @@ use crate::OperationsError;
 /// a line as radial.
 const CONCENTRIC_TOLERANCE: f64 = 1e-9;
 
+/// Rounding allowance of a cone face, in units of `ε · reach / τ` (see
+/// `conical_twisted_extrude_impl`).
+const CONE_ROUNDING: f64 = 64.0;
+
 /// The radial direction nets of spline edges, by edge index: one direction
 /// per control point of the edge's curve.
 #[allow(clippy::redundant_pub_crate)]
@@ -116,8 +120,17 @@ pub(crate) fn conical_twisted_extrude_impl(
     let longest = plans.iter().map(|plan| plan.longest).fold(1.0, f64::max);
     let screw = motion.plan(reach, longest, tolerance, max_spans)?;
     // The bound is exact-arithmetic; allow for rounding at the largest
-    // coordinate the fits evaluate.
-    let deviation_bound = (64.0 * f64::EPSILON).mul_add(reach + distance, screw.remainder_bound);
+    // coordinate the fits evaluate, and on the cone faces: a cone of radial
+    // rate `τ` has its apex `reach / τ` away and its generator `τ` off the
+    // axis, so evaluating it loses about `ε · reach / τ` of the radius.
+    #[allow(clippy::float_cmp)]
+    let cone_rounding = if radial_rate == 0.0 {
+        0.0
+    } else {
+        CONE_ROUNDING * f64::EPSILON * reach / radial_rate.abs()
+    };
+    let deviation_bound =
+        (64.0 * f64::EPSILON).mul_add(reach + distance, screw.remainder_bound) + cone_rounding;
     for plan in plans {
         apply(topo, &motion, &screw, plan, deviation_bound, nets)?;
     }

@@ -1793,7 +1793,7 @@ fn taper_refusals() {
         taper: Some(taper),
         ..CylinderThreadOptions::default()
     };
-    for ratio in [0.0, -0.0625, 0.3, f64::NAN] {
+    for ratio in [0.0, -0.0625, 1e-12, 0.999e-3, 0.3, f64::NAN] {
         let taper = ThreadTaper { ratio, ..pipe };
         assert_eq!(
             refusal(cut_thread(
@@ -1984,4 +1984,86 @@ fn chamfer_on_a_flank_wider_than_half_a_turn() {
     });
     let got = volume(&topo, outcome.solid);
     assert!(rel(got, expected) < 2e-4, "{got} vs {expected}");
+}
+
+/// The largest distance from a cone land's boundary (its vertices and the
+/// middle of every edge) to the cone it is said to lie on.
+fn cone_land_residual(topo: &Topology, outcome: &ThreadOutcome) -> (usize, f64) {
+    let (mut lands, mut worst) = (0, 0.0_f64);
+    for &(face, role) in &outcome.face_roles {
+        if !matches!(role, ThreadFaceRole::Crest | ThreadFaceRole::Root) {
+            continue;
+        }
+        let data = topo.face(face).unwrap();
+        let FaceSurface::Cone(cone) = data.surface() else {
+            continue;
+        };
+        lands += 1;
+        for oe in topo.wire(data.outer_wire()).unwrap().edges() {
+            let edge = topo.edge(oe.edge()).unwrap();
+            let start = topo.vertex(edge.start()).unwrap().point();
+            let end = topo.vertex(edge.end()).unwrap().point();
+            let (t0, t1) = edge.strict_domain().unwrap();
+            let mid = edge
+                .curve()
+                .evaluate_with_endpoints(0.5 * (t0 + t1), start, end);
+            for p in [start, mid, end] {
+                let (u, v) = cone.project_point(p);
+                worst = worst.max((cone.evaluate(u, v) - p).length());
+            }
+        }
+    }
+    (lands, worst)
+}
+
+/// A slight taper's lands are slender cones: the apex is `ρ/τ` away and
+/// evaluating the cone loses about `ε·ρ/τ`. At a ratio of 1e-12, which was
+/// accepted, the lands' own vertices sat 1.27e-3 off their cones under a
+/// reported bound of 8.1e-5. The ratio now has a floor, and from the floor
+/// up every land's boundary lies on its cone within the reported bound.
+#[test]
+fn slight_tapers_keep_their_cone_lands_within_the_reported_bound() {
+    let form = ThreadForm::iso_metric(1.0, ThreadKind::External);
+    for ratio in [MIN_TAPER_RATIO, 1.5e-3, 4e-3, 0.02, 1.0 / 16.0] {
+        for small_end in [ThreadEndSide::Start, ThreadEndSide::End] {
+            let mut topo = Topology::new();
+            let (body, face) = boss(&mut topo, 6.0, 8.0);
+            let options = CylinderThreadOptions {
+                taper: Some(ThreadTaper {
+                    ratio,
+                    small_end,
+                    gauge_offset: None,
+                }),
+                ..CylinderThreadOptions::default()
+            };
+            let outcome = cut_thread(&mut topo, body, face, &form, &options).unwrap();
+            let (lands, residual) = cone_land_residual(&topo, &outcome);
+            assert!(lands >= 32, "ratio {ratio}: {lands} cone lands");
+            assert!(
+                residual <= outcome.deviation_bound,
+                "ratio {ratio} {small_end:?}: lands {residual:e} off their cones, bound {:e}",
+                outcome.deviation_bound
+            );
+            // Far inside it, in fact: the cones are well conditioned here.
+            assert!(residual < 1e-9, "ratio {ratio} {small_end:?}: {residual:e}");
+            assert_valid_and_watertight(&topo, outcome.solid);
+        }
+    }
+    // Below the floor the taper refuses, the reviewed ratio among them.
+    let mut topo = Topology::new();
+    let (body, face) = boss(&mut topo, 6.0, 8.0);
+    for ratio in [1e-12, 1e-6, 0.99 * MIN_TAPER_RATIO] {
+        let options = CylinderThreadOptions {
+            taper: Some(ThreadTaper {
+                ratio,
+                ..ThreadTaper::pipe(ThreadEndSide::Start)
+            }),
+            ..CylinderThreadOptions::default()
+        };
+        assert_eq!(
+            refusal(cut_thread(&mut topo, body, face, &form, &options)),
+            ThreadRefusal::TaperOutOfRange,
+            "ratio {ratio}"
+        );
+    }
 }
