@@ -1,79 +1,55 @@
-//! B7 ready-repros: face–face section curves never receive interior paves.
+//! B7 regressions: a third cut through a body whose curved faces an earlier
+//! cut has already trimmed.
 //!
 //! Both cases are a three-step primitive chain on a 10 × 10 × 4 plate: a
 //! vertical bore (r 2, axis (5, 5)), then a horizontal tunnel (r 1.2, axis
 //! y = 6, z = 2) whose wall meets the bore wall in a MARCHED (NURBS) loop,
-//! then a third cutter. The third step's operand therefore carries marched
-//! edges on curved faces and holes in curved faces, which is the condition the
-//! cross-face desync family needs.
+//! then a third cutter. After the second cut the bore wall carries that loop
+//! as a HOLE straddling its seam, and the tunnel wall carries it as a BAY in
+//! its outer wire. Neither is a chart rectangle any more, and three stages
+//! of the third cut assumed one:
 //!
-//! Root (traced with an env-gated `eprintln!` of the GFA arena after
-//! `make_split_edges`, kept out of the tree): every face–face curve gets
-//! exactly ONE pave block from its two endpoints in `phase_ff`, and
-//! `make_blocks` only splits operand-edge pave blocks. Nothing puts an EF
-//! pave, or an existing face vertex, that lies inside a section's span onto
-//! that section's pave block, and nothing checks that each piece of a section
-//! lies on BOTH faces. Splitting and keep/drop decisions are instead taken per
-//! face in the builder, independently, so the two faces sharing a section
-//! disagree.
-//!
-//! What these repros do and do not certify: B7 is named for pave-block
-//! attachment of MARCHED sections, but the coaxial case's failing sections
-//! are a Line and a Circle (analytic; the Line reaches the builder through
-//! the per-pave-block path in `fill_images_faces.rs`, the Circle as one whole
-//! curve), and the oblique case's in-hole loop survives because the
-//! analytic-face extent used by `restrict_curves_to_faces`
-//! (`FaceExtent::Analytic` in `phase_ff.rs`) has no hole field, a restriction
-//! gap rather than a pave gap. Only the oblique exit (marched sections C6/C7
-//! below) is a marched section ending on unshared vertices. A fix that
-//! attaches paves to marched curves alone will not turn these green; they
-//! certify the general section-pave pass the roadmap row's fix site names.
+//! - **Section curves had no paves.** Every face–face curve got one
+//!   end-to-end pave block in `phase_ff`, `make_blocks` split only
+//!   operand-edge blocks, and the analytic extent `phase_ff` restricts curved
+//!   sections with is a height band plus an angular gap. A section entering
+//!   the hole or the bay reached both faces whole and each decided alone
+//!   what to keep. `pave_filler::section_paves` now puts the trimming edges'
+//!   pave vertices on the curve, splits its block, and drops the pieces off
+//!   the face for both faces at once.
+//! - **The classifier did not model the operand.** A cylinder wall with a
+//!   non-band hole fell to the planar polygon fallback and a bayed wall read
+//!   as a full band, so the whole bore void classified as INSIDE the step-2
+//!   body (2,278 of 25,306 points of a quarter-unit grid) and void pieces of
+//!   the cutter wall were kept. `classifier::ray_cast` now reads such a wall
+//!   through its chart outlines.
+//! - **No splitter joined a section to a hole or a bay.** The established
+//!   paths route such a wall to the internal-loops emitter, which keeps
+//!   closed loops only, and the certified chart partition admitted chart
+//!   rectangles only. `face_splitter::trimmed_cylinder_chart` admits the
+//!   holed and the bayed wall to the same certified arrangement.
 //!
 //! - `coaxial_wider_half_tunnel`: the third cutter is a coaxial r 1.5 tunnel
-//!   ending at x = 6. EF correctly splits the old bore × tunnel loop where it
-//!   crosses the cutter's end-cap plane, at (6, 6.732, 1.049) and
-//!   (6, 6.732, 2.951), but neither section through those points takes them:
-//!   - the bore wall × end cap Line (the bore generator at x = 6, y = 6.732)
-//!     spans the bore face's whole height z 0..4, with no pave at the end-cap
-//!     disc rim (z 0.691 and 3.309, where the marched bore × cutter-wall
-//!     section ends) or where it enters and leaves the bore wall's tunnel
-//!     hole;
-//!   - the old tunnel wall × end cap Circle (r 1.2 at x = 6) stays one closed
-//!     block, never broken where it enters the bore.
-//!
-//!   The result has no r 1.2 tunnel-wall face and no annular end-cap face at
-//!   all: the tunnel wall's x 6..10 piece is lost, so its far rim (the
-//!   r 1.2 circle on the x = 10 plate face) and the old loop (left unsplit
-//!   on the bore wall) are each used once: 4 edges.
+//!   ending at x = 6. Its end cap meets the bore wall in a ruling that runs
+//!   through the hole, and the old tunnel wall in a circle that runs through
+//!   the bay.
 //! - `oblique_tunnel_crossing`: the third cutter is an oblique r 0.8 tunnel at
-//!   30°, z = 2.3, through the bore axis, so it meets the bore wall in two
-//!   closed marched loops. The entry loop (near (3.0, 4.8)) lies in solid
-//!   bore wall and is built correctly; the exit loop (near (7.0, 5.2)) lies
-//!   entirely inside the bore wall's existing tunnel hole and is kept on the
-//!   bore face anyway (the hole-blind `FaceExtent::Analytic`), used once. At
-//!   the plate's x = 10 face the cutter's elliptical rim crosses the tunnel
-//!   opening at (10, 7.034, 2.608) and (10, 7.180, 1.784). The tunnel's
-//!   x = 10 rim circle gets no EF pave there, and the plate × cutter ellipse
-//!   arcs and the tunnel × cutter marched sections (C6/C7 in the arena) that
-//!   meet at each point end on DIFFERENT vertices at the same position. The
-//!   plate face splits its hole correctly; the tunnel wall instead keeps the
-//!   arc of its rim that lies inside the cutter (used once), and C6/C7 are
-//!   used once each, by cutter faces only. Why the tunnel wall declines
-//!   C6/C7 is not traced past the missing paves. The old bore × tunnel loop
-//!   is used three times (once by the bore wall, and as both an outer and an
-//!   inner wire of the tunnel wall); that duplication is not diagnosed.
-//!   Together: 7 edges.
+//!   30°, z = 2.3. One of its two loops on the bore wall lies wholly inside
+//!   the hole, and one of its loops on the old tunnel wall's carrier lies
+//!   wholly inside the bay.
 //!
-//! Oracles are independent of the kernel: edge use per `EdgeId`;
+//! Oracles are independent of the kernel under test: edge use per `EdgeId`;
 //! position-keyed edge pairing (quantized endpoints plus the arc-length
 //! midpoint, so a closed curve split into two arcs between the same two
-//! vertices pairs arc by arc); point classification probes; and volume. The
-//! repro volumes come from a column integration of the primitives' analytic
-//! membership (h = 0.004, 0.002 and 0.001, then Richardson-extrapolated); the
-//! controls' from closed-form 1-D integrals. The two controls pass today and
-//! pin the oracles to valid topology, including two-arc split loops.
-//! Assertions target the raw GFA (`remus_algo::gfa::boolean`), the layer B7
-//! owns.
+//! vertices pairs arc by arc); point classification probes, through both the
+//! operations classifier and the check crate's ray cast, at points the
+//! primitives decide; a grid classification of the step-2 operand with the
+//! engine's own ray-cast classifier; and volume. The repro volumes come from
+//! a column integration of the primitives' analytic membership (h = 0.004,
+//! 0.002 and 0.001, then Richardson-extrapolated); the controls' from
+//! closed-form 1-D integrals. The two controls pin the oracles to valid
+//! topology, including two-arc split loops. Assertions target the raw GFA
+//! (`remus_algo::gfa::boolean`), the layer B7 owns.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -85,6 +61,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::f64::consts::{FRAC_PI_2, FRAC_PI_6, PI};
 
 use remus_algo::bop::BooleanOp;
+use remus_check::classify::{ClassifyOptions, PointClassification as CheckClass};
 use remus_check::properties::PropertiesOptions;
 use remus_math::mat::Mat4;
 use remus_math::vec::Point3;
@@ -251,6 +228,43 @@ fn assert_desired(
     );
 }
 
+fn in_bore(x: f64, y: f64) -> bool {
+    (x - 5.0).powi(2) + (y - 5.0).powi(2) < 4.0
+}
+
+fn in_tunnel(y: f64, z: f64) -> bool {
+    (y - 6.0).powi(2) + (z - 2.0).powi(2) < 1.44
+}
+
+/// Ray-cast classification of `solid` (the check crate's classifier) at
+/// points whose membership the primitives decide: `(point, expected inside)`.
+fn assert_material(
+    topo: &Topology,
+    solid: SolidId,
+    material: &[((f64, f64, f64), bool)],
+    tag: &str,
+) {
+    let mut wrong = Vec::new();
+    for &((x, y, z), inside) in material {
+        let got = remus_check::classify::classify_point(
+            topo,
+            solid,
+            Point3::new(x, y, z),
+            &ClassifyOptions::default(),
+        )
+        .unwrap();
+        let want = if inside {
+            CheckClass::Inside
+        } else {
+            CheckClass::Outside
+        };
+        if got != want {
+            wrong.push(((x, y, z), want, got));
+        }
+    }
+    assert!(wrong.is_empty(), "{tag}: misclassified probes {wrong:?}");
+}
+
 /// Composite Simpson rule on `[a, b]` with `n` (even) intervals.
 fn simpson(f: impl Fn(f64) -> f64, a: f64, b: f64, n: usize) -> f64 {
     let h = (b - a) / n as f64;
@@ -337,10 +351,58 @@ fn control_split_loops_pair_by_position() {
     );
 }
 
-/// Raw GFA today: 4 edges used once (by id and by position), volume 319.757
+/// The engine's own classifier must read the step-2 operand as its
+/// primitives do: every later cut classifies the other operand's pieces
+/// against it. Before the chart-outline wall model the bore void read as
+/// material.
+#[test]
+fn operand_with_a_holed_and_a_bayed_wall_classifies_like_its_primitives() {
+    let mut topo = Topology::new();
+    let solid = plate_bore_tunnel(&mut topo);
+    let geoms = remus_algo::classifier::RayCastGeoms::new(&topo, solid).unwrap();
+    let mut wrong = Vec::new();
+    let mut total = 0_usize;
+    for i in 0..20 {
+        for j in 0..20 {
+            for k in 0..8 {
+                let (x, y, z) = (
+                    0.137 + 0.5 * f64::from(i),
+                    0.113 + 0.5 * f64::from(j),
+                    0.129 + 0.5 * f64::from(k),
+                );
+                // Stay clear of the two curved walls; the planar ones are
+                // at least 0.1 away on this grid.
+                let d_bore = ((x - 5.0).powi(2) + (y - 5.0).powi(2)).sqrt() - 2.0;
+                let d_tunnel = ((y - 6.0).powi(2) + (z - 2.0).powi(2)).sqrt() - 1.2;
+                if d_bore.abs() < 0.02 || d_tunnel.abs() < 0.02 {
+                    continue;
+                }
+                let material = !in_bore(x, y) && !in_tunnel(y, z);
+                let got = remus_algo::classifier::classify_point_cached(
+                    &topo,
+                    solid,
+                    Some(&geoms),
+                    Point3::new(x, y, z),
+                );
+                total += 1;
+                if matches!(got, Ok(remus_algo::FaceClass::Inside)) != material {
+                    wrong.push(((x, y, z), material, got));
+                }
+            }
+        }
+    }
+    assert!(total > 3000, "grid too sparse: {total}");
+    assert!(
+        wrong.is_empty(),
+        "{} of {total} grid points misclassified, first {:?}",
+        wrong.len(),
+        wrong.first()
+    );
+}
+
+/// Before the fix: 4 edges used once (by id and by position), volume 319.757
 /// (above the 318.49 of the step-2 body it cut). Oracle 308.387.
 #[test]
-#[ignore = "open: sections through an operand hole never get the EF paves that split them (B7)"]
 fn coaxial_wider_half_tunnel() {
     let mut topo = Topology::new();
     let third = make_cylinder(&mut topo, 1.5, 7.0).unwrap();
@@ -362,14 +424,32 @@ fn coaxial_wider_half_tunnel() {
         ],
         "coaxial wider half tunnel",
     );
+    assert_material(
+        &topo,
+        result,
+        &[
+            // In the wider cutter (1.35 from its axis) but outside the old
+            // tunnel (r 1.2), before its end at x = 6: carved now.
+            ((2.0, 6.0, 3.35), false),
+            // The same ring past the cutter's end: still material.
+            ((8.0, 6.0, 3.35), true),
+            // Either side of the end cap, beside the bore (y = 7.3).
+            ((5.9, 7.3, 2.0), false),
+            ((6.1, 7.3, 2.0), true),
+            // The bore and the old tunnel are still void, the plate solid.
+            ((5.0, 4.0, 1.0), false),
+            ((8.5, 6.0, 2.0), false),
+            ((1.0, 1.0, 2.0), true),
+        ],
+        "coaxial wider half tunnel",
+    );
 }
 
-/// Raw GFA today: 7 edges not used twice (by id and by position): the exit
+/// Before the fix: 7 edges not used twice (by id and by position): the exit
 /// loop used once on the bore wall, the old loop used three times, and the
 /// rim arc plus two marched sections at the x = 10 exit used once each.
 /// Volume 294.378. Oracle 307.568.
 #[test]
-#[ignore = "open: in-hole section kept and exit sections unshared on curved faces (B7)"]
 fn oblique_tunnel_crossing() {
     let mut topo = Topology::new();
     let third = oblique_cutter(&mut topo);
@@ -382,6 +462,32 @@ fn oblique_tunnel_crossing() {
             // On the cutter's axis, clear of the bore and the tunnel.
             ([1.969, 3.25, 2.3], PointClassification::Outside),
             ([2.0, 8.0, 1.0], PointClassification::Inside),
+        ],
+        "oblique tunnel crossing",
+    );
+    // The cutter's axis is (5, 5, 2.3) + s·(cos 30°, sin 30°, 0).
+    let axis = |s: f64, dz: f64| {
+        (
+            5.0 + s * FRAC_PI_6.cos(),
+            5.0 + s * FRAC_PI_6.sin(),
+            2.3 + dz,
+        )
+    };
+    assert_material(
+        &topo,
+        result,
+        &[
+            // On the axis before the bore, and 1.0 above it (r 0.8 cutter).
+            (axis(-3.0, 0.0), false),
+            (axis(-3.0, 1.0), true),
+            // On the axis past the old tunnel (0.4 outside its wall there),
+            // and 1.0 above it.
+            (axis(4.5, 0.0), false),
+            (axis(4.5, 1.0), true),
+            // The bore and the old tunnel are still void, the plate solid.
+            ((5.0, 4.0, 1.0), false),
+            ((1.0, 6.0, 2.0), false),
+            ((1.0, 1.0, 2.0), true),
         ],
         "oblique tunnel crossing",
     );

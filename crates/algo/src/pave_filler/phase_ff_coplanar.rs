@@ -1041,6 +1041,7 @@ fn create_section_edge(
         bbox,
         pave_blocks: vec![pb_id],
         t_range: (0.0, 1.0),
+        paved: false,
     });
 
     arena.interference.ff.push(Interference::FF {
@@ -1494,6 +1495,7 @@ mod tests {
             bbox: boundary.aabb(),
             pave_blocks: vec![],
             t_range: (0.0, 1.0),
+            paved: false,
         });
         assert!(
             matching_boundary_section_exists(

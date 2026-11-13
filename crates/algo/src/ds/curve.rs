@@ -26,4 +26,9 @@ pub struct IntersectionCurveDS {
     pub pave_blocks: Vec<PaveBlockId>,
     /// Parameter range on the curve.
     pub t_range: (f64, f64),
+    /// Set by the section-pave pass when it split this curve's block or
+    /// dropped part of it: `pave_blocks` then lists the surviving LEAF
+    /// blocks (possibly none), and the builder feeds one section per leaf
+    /// instead of the whole curve.
+    pub paved: bool,
 }

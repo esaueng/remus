@@ -78,11 +78,11 @@ const SEAM_GRAZE: f64 = 2e-3;
 /// Samples per section along its whole trim before refinement.
 const SECTION_SAMPLES: usize = 512;
 /// Samples per emitted piece's chart polyline.
-const PIECE_SAMPLES: usize = 96;
+pub(super) const PIECE_SAMPLES: usize = 96;
 /// Chart distance separating two copies of one 3D point.
-const CHART_COPY: f64 = 0.5;
+pub(super) const CHART_COPY: f64 = 0.5;
 /// Chart distance within which a node is snapped onto a side.
-const NODE_SNAP: f64 = 2e-6;
+pub(super) const NODE_SNAP: f64 = 2e-6;
 
 /// Lift the face's outer boundary (as the splitter received it) and
 /// recognise the chart rectangle.
@@ -145,24 +145,61 @@ fn lift_boundary(
     Some((chart, orientation, pieces))
 }
 
+/// One span of an exact curve to be placed in a chart: a section, or a
+/// boundary edge that does not run along a side of the chart.
+pub(super) struct CurveSpan<'a> {
+    pub(super) curve: &'a EdgeCurve,
+    /// Native parameters at the span's start and end.
+    pub(super) t0: f64,
+    pub(super) t1: f64,
+    pub(super) start: Point3,
+    pub(super) end: Point3,
+    pub(super) pave_block_id: Option<usize>,
+}
+
 /// Cut one section at its seam crossings and place every piece in the chart.
-#[allow(clippy::too_many_lines)]
 fn section_pieces(
     carrier: &ChartCarrier,
     chart: &PeriodicChart,
     section: &SectionEdge,
     tol: f64,
 ) -> Option<Vec<Piece>> {
-    if matches!(section.curve_3d, EdgeCurve::Line) {
+    let (t0, t1) = section.domain();
+    curve_pieces(
+        carrier,
+        chart,
+        &CurveSpan {
+            curve: &section.curve_3d,
+            t0,
+            t1,
+            start: section.start,
+            end: section.end,
+            pave_block_id: section.pave_block_id,
+        },
+        tol,
+    )
+}
+
+/// Cut one curve span at its seam crossings and place every piece in the
+/// chart. The pieces are section pieces; a caller placing a boundary edge
+/// marks them so itself.
+#[allow(clippy::too_many_lines)]
+pub(super) fn curve_pieces(
+    carrier: &ChartCarrier,
+    chart: &PeriodicChart,
+    section: &CurveSpan<'_>,
+    tol: f64,
+) -> Option<Vec<Piece>> {
+    if matches!(section.curve, EdgeCurve::Line) {
         decline!();
     }
-    let (t0, t1) = section.domain();
+    let (t0, t1) = (section.t0, section.t1);
     if !(t0.is_finite() && t1.is_finite()) || (t1 - t0).abs() <= 1e-12 {
         decline!();
     }
     let at = |t: f64| {
         section
-            .curve_3d
+            .curve
             .evaluate_with_endpoints(t, section.start, section.end)
     };
     #[allow(clippy::cast_precision_loss)]
@@ -309,7 +346,7 @@ fn section_pieces(
             decline!();
         }
         out.push(Piece {
-            curve: section.curve_3d.clone(),
+            curve: section.curve.clone(),
             t_a: ta,
             t_b: tb,
             p3_a,

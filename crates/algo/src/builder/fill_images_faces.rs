@@ -1417,6 +1417,11 @@ fn compute_seam_anchors(topo: &Topology, arena: &GfaArena) -> BTreeMap<usize, Po
 
     let mut anchors = BTreeMap::new();
     for (idx, curve_ds) in arena.curves.iter().enumerate() {
+        // A curve the section-pave pass split or dropped is fed as its leaf
+        // pieces, never as the whole circle an anchor re-seams.
+        if curve_ds.paved {
+            continue;
+        }
         let EdgeCurve::Circle(circle) = &curve_ds.curve else {
             continue;
         };
@@ -1587,6 +1592,10 @@ fn compute_winding_loop_cuts(topo: &Topology, arena: &GfaArena, tol: Tolerance) 
 
     let mut by_face: BTreeMap<FaceId, Vec<usize>> = BTreeMap::new();
     for (idx, curve_ds) in arena.curves.iter().enumerate() {
+        // A curve the section-pave pass dropped whole is no section at all.
+        if curve_ds.paved && curve_ds.pave_blocks.is_empty() {
+            continue;
+        }
         for fid in [curve_ds.face_a, curve_ds.face_b] {
             by_face.entry(fid).or_default().push(idx);
         }
@@ -1616,6 +1625,12 @@ fn compute_winding_loop_cuts(topo: &Topology, arena: &GfaArena, tol: Tolerance) 
                 loops.clear();
                 break;
             };
+            if curve_ds.paved {
+                // Split into open pieces by the section-pave pass: it has
+                // real endpoints already, like any open curve below.
+                loops.clear();
+                break;
+            }
             if equal_radius_cylinder_pair(topo, curve_ds.face_a, curve_ds.face_b) {
                 // EQUAL-radius cylinders are the degenerate case: their
                 // intersection is not a quartic space curve but a pair of
@@ -2162,13 +2177,34 @@ fn build_section_map(
     // so the face splitter gets the complete geometric loop instead of fragments.
     // For Line curves: use individual PaveBlocks (the old approach) since
     // line segments work correctly with the face splitter.
+    // Faces carrying a curved (non-Line) FF curve: their IN blocks are
+    // redundant (see below). Read from the curves rather than from the
+    // sources, so a curve the section-pave pass split or dropped still counts.
+    let mut faces_with_curved_ff: DetHashSet<usize> = DetHashSet::default();
     for (idx, curve) in arena.curves.iter().enumerate() {
+        let is_line = matches!(&curve.curve, remus_topology::edge::EdgeCurve::Line);
+        if !is_line && (curve.paved || !curve.pave_blocks.is_empty()) {
+            faces_with_curved_ff.insert(curve.face_a.index());
+            faces_with_curved_ff.insert(curve.face_b.index());
+        }
         if curve.pave_blocks.is_empty() {
             continue;
         }
-        let is_line = matches!(&curve.curve, remus_topology::edge::EdgeCurve::Line);
         if is_line {
             // Feed individual PaveBlocks — works correctly for Lines.
+            for &pb_id in &curve.pave_blocks {
+                map.entry(curve.face_a)
+                    .or_default()
+                    .push(SectionSource::PaveBlock(pb_id, Some(curve.face_b)));
+                map.entry(curve.face_b)
+                    .or_default()
+                    .push(SectionSource::PaveBlock(pb_id, Some(curve.face_a)));
+            }
+        } else if curve.paved {
+            // The section-pave pass split this curve at the paves on it and
+            // dropped the pieces off the faces: feed one section per
+            // surviving leaf block, each carrying its pave-block id, so both
+            // faces receive the identical pieces.
             for &pb_id in &curve.pave_blocks {
                 map.entry(curve.face_a)
                     .or_default()
@@ -2192,15 +2228,6 @@ fn build_section_map(
     // IN PBs — the complete FF curve already captures the same geometry.
     // This prevents 28 arc fragments from being added alongside the single
     // complete circle intersection curve.
-    let faces_with_curved_ff: DetHashSet<usize> = map
-        .iter()
-        .filter_map(|(fid, sources)| {
-            sources
-                .iter()
-                .any(|s| matches!(s, SectionSource::Curve(_)))
-                .then_some(fid.index())
-        })
-        .collect();
     for (&face_id, fi) in &arena.face_info {
         if faces_with_curved_ff.contains(&face_id.index()) {
             continue; // Face has curved FF curve — IN PBs are redundant.
@@ -3329,6 +3356,16 @@ fn dedup_collinear_sections(sections: &mut Vec<SectionEdge>, tol: f64) {
 
             let si = &sections[i];
             let sj = &sections[j];
+
+            // The test below reads each section as its CHORD. A straight
+            // section and a curved one whose chord happens to lie along it
+            // are different curves: a marched arc from one end of a ruling
+            // to the other is not a longer copy of the ruling's pieces, and
+            // reading it as one deleted both pieces of a ruling the
+            // section-pave pass had split (B7).
+            if matches!(si.curve_3d, EdgeCurve::Line) != matches!(sj.curve_3d, EdgeCurve::Line) {
+                continue;
+            }
 
             // Check collinearity: direction vectors must be parallel
             let di = sj.end - sj.start;
