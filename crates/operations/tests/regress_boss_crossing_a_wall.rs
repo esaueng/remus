@@ -362,15 +362,18 @@ fn cut_and_fuse_account_for_the_same_material() {
     }
 }
 
-/// B62: the fuse at `d = -1e-7` must close. It used to leave the vertex
-/// where the boss's bottom and top arcs meet the plate's `x = 0` wall at
-/// `y = 20.0014144`, while the arcs' own trims end at the exact crossing
-/// `y = 20 + sqrt(2e-6 - 1e-14) = 20.0014142`: a 1.9e-7 gap, over the 8 mm
-/// wall, that no face covered, so the body's vector area was 7.5e-7 in x
-/// where a closed boundary has none. Along the wall the crossing is
-/// ill-conditioned (the arc runs nearly parallel to `y` there), so a point
-/// 1.9e-7 off in `y` sat within 3e-11 of both the arc and the wall; only a
-/// closed-form root puts the vertex where the trims end.
+/// B62: the fuse at `d = -1e-7` must close. It used to put the vertex where
+/// the plate's top edge (`x = 0`, `z = 8`) crosses the boss wall at
+/// `y = 20.0014144`, while the boss's top arc trims end at the exact crossing
+/// `y = 20 + sqrt(2e-6 - 1e-14) = 20.0014142`: a 1.9e-7 gap that no face
+/// covered. With #1461's closed-form settle turned off (2026-11-12) only
+/// that `z = 8` vertex moves (the `z = 0` one stays on the exact root), and
+/// the gap comes back as the 1.9e-7 × 8 mm strip: a vector area of 1.5e-6
+/// in x where a closed boundary has none. (B62 was filed on 2026-09-25 at
+/// 7.5e-7; that reading is historical.) The edge runs nearly tangent to the
+/// wall, so the crossing is ill-conditioned along it: a point 1.9e-7 off in
+/// `y` sat within 3e-11 of both the wall and the arc, and only a closed-form
+/// root puts the vertex where the trims end.
 #[test]
 fn b62_wall_crossing_sliver_fuse_closes() {
     let mut topo = Topology::new();
@@ -379,7 +382,7 @@ fn b62_wall_crossing_sliver_fuse_closes() {
     let area = vector_area(&topo, fused);
     assert!(
         // The trimmed walls' chord-sampled outlines leave ~1e-9 on bodies
-        // that do close; the gap is 7.5e-7.
+        // that do close; the open fuse read 1.5e-6.
         area.iter().all(|a| a.abs() < 1e-8),
         "the fuse's boundary does not close: vector area {area:?}"
     );
