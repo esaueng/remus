@@ -32,6 +32,12 @@ impl += ''.join(f'            {f}: self.{f}.clone(),\n' for f in fields)
 impl += '        };\n        crate::transaction_probe::record_clone(before);\n        result\n    }\n}\n'
 p.write_text(s + impl)
 (root / 'crates/topology/src/transaction_probe.rs').write_text((here / 'allocator.rs').read_text())
+# The workspace forbids unsafe_code, which no #[allow] can override; the probe
+# allocator needs it, so this disposable checkout drops back to deny.
+p = root / 'Cargo.toml'
+s = p.read_text()
+assert s.count('unsafe_code = "forbid"') == 1, 'workspace unsafe_code lint changed'
+p.write_text(s.replace('unsafe_code = "forbid"', 'unsafe_code = "deny"'))
 p = root / 'crates/topology/src/lib.rs'
 p.write_text(p.read_text() + '\n#[doc(hidden)]\npub mod transaction_probe;\n')
 p = root / 'crates/wasm/src/lib.rs'

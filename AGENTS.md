@@ -1208,7 +1208,7 @@ cargo flamegraph --profile profiling \     # Flamegraph a single benchmark
 ## Lints
 
 Workspace-level strict lints:
-- `unsafe_code = "deny"` — no unsafe
+- `unsafe_code = "forbid"` — no unsafe, and no local `#[allow(unsafe_code)]` can re-enable it
 - `unwrap_used = "deny"` — no unwrap
 - `panic = "deny"` — no panic
 - `clippy::pedantic`, `clippy::nursery` = warn
