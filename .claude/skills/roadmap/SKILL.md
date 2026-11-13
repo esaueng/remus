@@ -152,11 +152,12 @@ that does not exist yet; without it, stop.
 
 ## Open items with a repro
 
-The `#[ignore]` inventory (regenerated 2026-11-13 on `1ef72bfa` with B62's
-witness un-ignored: 54 actual attributes in 31 files, all in `operations`,
-`io`, `heal`, `math`, `wasm` and `remus`) splits by the ignore reason as
-written. Listed, not re-run, except B265, B266 and B272 (failed 3/3 as
-pinned). **26 open engine witnesses**, each with an owner row:
+The `#[ignore]` inventory (regenerated 2026-11-13 on `f01921d7` with B62's
+witness un-ignored, plus the two B7 witnesses: 56 actual attributes in 32
+files, all in `operations`, `io`, `heal`, `math`, `wasm` and `remus`) splits
+by the ignore reason as written. Listed, not re-run, except B265, B266, B272
+and the two B7 witnesses (failed 3/3 as pinned). **28 open engine
+witnesses**, each with an owner row:
 - seven B26 property ready-repros in `operations/tests/prop_boolean_invariants.rs`:
   finding 13 sphere–torus ×3 (B38), finding 20 sphere–cone (B33), torus–cone ×3 (B51);
 - `regress_b52_box_cylinder_rim_notch.rs` (B270) and
@@ -174,6 +175,8 @@ pinned). **26 open engine witnesses**, each with an owner row:
   `wasm/src/bindings/gecko_edit_tests.rs` unequal-group re-edit (B274);
 - STEP audit repros `io/tests/step_roundtrip_mambo_b1_repro.rs` (O1.1d) and
   `step_roundtrip_hammer_holder_repro.rs` (O1.4a);
+- `regress_b7_section_pave_attachment.rs` ×2 (B7: coaxial wider half tunnel,
+  oblique tunnel crossing);
 - `regress_offset_cylinder_pass_through.rs` (O4.4, pending fragment).
 
 **28 manual runs:**
