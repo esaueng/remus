@@ -107,7 +107,8 @@
 //!
 //! Refusals carry a `thread:<reason>` code (see
 //! [`ThreadRefusal::code`]) and leave the session unchanged. End finishes
-//! that reach past each other refuse with `thread:ends-overlap`.
+//! that reach past each other refuse with `thread:ends-overlap`, a single
+//! finish longer than the thread with `thread:finish-too-long`.
 
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -316,7 +317,9 @@ fn thread_failure(error: ThreadError) -> StructuredWasmError {
     match error {
         ThreadError::Refused { code, reason } => {
             let argument = match code {
-                ThreadRefusal::SpanOutsideFace | ThreadRefusal::EndsOverlap => Some("length"),
+                ThreadRefusal::SpanOutsideFace
+                | ThreadRefusal::EndsOverlap
+                | ThreadRefusal::FinishTooLong => Some("length"),
                 ThreadRefusal::CylinderTooSmall | ThreadRefusal::BoreTooLarge => {
                     Some("majorDiameter")
                 }

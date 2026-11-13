@@ -709,18 +709,26 @@ fn role_faces(outcome: &ThreadOutcome, role: ThreadFaceRole) -> Vec<FaceId> {
         .collect()
 }
 
-/// Every role names a distinct face of the solid, lands are on cylinders
-/// (cones on a tapered thread), flanks are swept and end cones are cones.
+/// Every role names a distinct face of the solid, lands are on cylinders at
+/// their radius about the `z` axis (cones on a tapered thread), flanks are
+/// swept and end cones are cones.
 fn assert_roles_are_faces_of(topo: &Topology, outcome: &ThreadOutcome) {
     assert_roles(topo, outcome, false);
 }
 
 /// As [`assert_roles_are_faces_of`]. `long_finish` allows swept lands: the
 /// zone of an end finish is one segment whatever its height, and a land
-/// whose strip passes a full turn there is swept like a flank.
+/// whose strip passes a full turn there is swept like a flank (on a straight
+/// thread, still at its radius).
 fn assert_roles(topo: &Topology, outcome: &ThreadOutcome, long_finish: bool) {
     let tapered = outcome.geometry.taper_angle > 0.0;
     let faces = solid_faces(topo, outcome.solid).unwrap();
+    let geometry = &outcome.geometry;
+    let (major, minor) = (0.5 * geometry.major_diameter, 0.5 * geometry.minor_diameter);
+    let (crest, root) = match geometry.kind {
+        ThreadKind::External => (major, minor),
+        ThreadKind::Internal => (minor, major),
+    };
     let mut seen = std::collections::BTreeSet::new();
     for &(face, role) in &outcome.face_roles {
         assert!(faces.contains(&face), "{} is not a face", role.name());
@@ -728,13 +736,33 @@ fn assert_roles(topo: &Topology, outcome: &ThreadOutcome, long_finish: bool) {
         let surface = topo.face(face).unwrap().surface();
         match role {
             ThreadFaceRole::Crest | ThreadFaceRole::Root => {
-                let land = if tapered {
-                    matches!(surface, FaceSurface::Cone(_))
+                let radius = if role == ThreadFaceRole::Crest {
+                    crest
                 } else {
-                    matches!(surface, FaceSurface::Cylinder(_))
+                    root
                 };
-                let swept = long_finish && matches!(surface, FaceSurface::Nurbs(_));
-                assert!(land || swept, "{}", role.name());
+                match surface {
+                    FaceSurface::Cone(_) if tapered => {}
+                    FaceSurface::Cylinder(c) if !tapered => {
+                        assert!((c.radius() - radius).abs() < 1e-9, "{}", role.name());
+                    }
+                    FaceSurface::Nurbs(n) if long_finish => {
+                        if tapered {
+                            continue;
+                        }
+                        let ((u0, u1), (v0, v1)) = (n.domain_u(), n.domain_v());
+                        for (a, b) in [(0.1, 0.3), (0.5, 0.5), (0.9, 0.7)] {
+                            let p = n.evaluate(u0 + a * (u1 - u0), v0 + b * (v1 - v0));
+                            let off = p.x().hypot(p.y()) - radius;
+                            assert!(
+                                off.abs() < outcome.deviation_bound + 1e-9,
+                                "{} off its radius by {off}",
+                                role.name()
+                            );
+                        }
+                    }
+                    other => panic!("{} on {other:?}", role.name()),
+                }
             }
             ThreadFaceRole::UpperFlank | ThreadFaceRole::LowerFlank => {
                 assert!(matches!(surface, FaceSurface::Nurbs(_)), "{}", role.name());
@@ -1027,14 +1055,13 @@ fn explicit_runout_at_a_shoulder_with_a_chamfered_free_end() {
     let expected = PI * flange * flange * thick + thread;
     let got = volume(&topo, outcome.solid);
     assert!(rel(got, expected) < 2e-4, "{got} vs {expected}");
-    if outcome.glued {
-        assert_roles_are_faces_of(&topo, &outcome);
-        assert!(!role_faces(&outcome, ThreadFaceRole::Runout(ThreadEndSide::Start)).is_empty());
-        assert_eq!(
-            role_faces(&outcome, ThreadFaceRole::Chamfer(ThreadEndSide::End)).len(),
-            1
-        );
-    }
+    assert!(outcome.glued, "a runout at a shoulder glues on");
+    assert_roles_are_faces_of(&topo, &outcome);
+    assert!(!role_faces(&outcome, ThreadFaceRole::Runout(ThreadEndSide::Start)).is_empty());
+    assert_eq!(
+        role_faces(&outcome, ThreadFaceRole::Chamfer(ThreadEndSide::End)).len(),
+        1
+    );
     // No undercut at the shoulder.
     for k in 0..8 {
         let theta = TAU * f64::from(k) / 8.0;
@@ -1984,6 +2011,236 @@ fn chamfer_on_a_flank_wider_than_half_a_turn() {
     });
     let got = volume(&topo, outcome.solid);
     assert!(rel(got, expected) < 2e-4, "{got} vs {expected}");
+}
+
+/// A thread run to the end of its face with no `length`: the span snaps to
+/// the face's end, and whether that end stops short is read off the snapped
+/// bound. Recomputing it as `offset + (faceLength - offset)` rounds a ulp
+/// either side of the face length for some inputs: below it a chamfer there
+/// became a runout, above it the thread was refused as reaching past the
+/// face. Heights and offsets that hit both, including the review's
+/// reproducer (30.3, 10.37).
+#[test]
+fn thread_run_to_the_face_end_keeps_its_chamfer_whatever_the_rounding() {
+    // (radius, height, offset, pitch): the first two round below the face
+    // length, the third above it.
+    for (r, h, offset, pitch) in [
+        (10.0, 30.3, 10.37, 2.5),
+        (3.0, 2.6, 0.47, 1.0),
+        (3.0, 2.6, 0.49, 1.0),
+    ] {
+        #[allow(clippy::float_cmp)]
+        let rounds_off = offset + (h - offset) != h;
+        assert!(rounds_off, "h={h} offset={offset} does not round off");
+        let label = format!("h={h} offset={offset}");
+        let mut topo = Topology::new();
+        let (body, face) = boss(&mut topo, r, h);
+        let form = ThreadForm::iso_metric(pitch, ThreadKind::External);
+        let angle = PI / 4.0;
+        let options = CylinderThreadOptions {
+            offset,
+            end: ThreadEnd::Chamfer { angle },
+            ..CylinderThreadOptions::default()
+        };
+        let outcome = cut_thread(&mut topo, body, face, &form, &options)
+            .unwrap_or_else(|error| panic!("{label}: {error}"));
+        assert_eq!(outcome.geometry.start, ThreadEndGeometry::Plain, "{label}");
+        let ThreadEndGeometry::Chamfer { length: reach } = outcome.geometry.end else {
+            panic!(
+                "{label}: the face end keeps its chamfer: {:?}",
+                outcome.geometry.end
+            );
+        };
+        assert!(reach > 0.0, "{label}");
+        assert!(
+            (outcome.geometry.length - (h - offset)).abs() < 1e-12,
+            "{label}"
+        );
+        assert_valid_and_watertight(&topo, outcome.solid);
+    }
+}
+
+/// The fuse fallback, forced: plain threads (on a whole boss, and on a
+/// turned-down band between collars) through the exact fuse instead of the
+/// glue. The volume is the closed form either way, and the faces the fuse
+/// carries over one to one keep their roles.
+#[test]
+fn fused_plain_threads_match_the_glued_ones() {
+    let form = ThreadForm::iso_metric(1.0, ThreadKind::External);
+    let (r, h) = (3.0, 4.0);
+    let root = r - form.depth;
+    let whole = (tight(&form), outline_area(&form, r, root) * h);
+    let (offset, length) = (1.0, 2.0);
+    let band = (
+        CylinderThreadOptions {
+            offset,
+            length: Some(length),
+            ..tight(&form)
+        },
+        outline_area(&form, r, root) * length + PI * r * r * (h - length),
+    );
+    for (options, expected) in [whole, band] {
+        let mut volumes = Vec::new();
+        for try_glue in [true, false] {
+            let label = format!("offset={} glue={try_glue}", options.offset);
+            let mut topo = Topology::new();
+            let (body, face) = boss(&mut topo, r, h);
+            let outcome = cut_thread_joined(&mut topo, body, face, &form, &options, try_glue)
+                .unwrap_or_else(|error| panic!("{label}: {error}"));
+            assert_eq!(outcome.glued, try_glue, "{label}");
+            assert_valid_and_watertight(&topo, outcome.solid);
+            let got = volume(&topo, outcome.solid);
+            assert!(rel(got, expected) < 1e-6, "{label}: {got} vs {expected}");
+            volumes.push(got);
+            assert_roles_are_faces_of(&topo, &outcome);
+            for role in [
+                ThreadFaceRole::Crest,
+                ThreadFaceRole::Root,
+                ThreadFaceRole::UpperFlank,
+                ThreadFaceRole::LowerFlank,
+            ] {
+                assert!(
+                    !role_faces(&outcome, role).is_empty(),
+                    "{label}: no {} face",
+                    role.name()
+                );
+            }
+        }
+        assert!(rel(volumes[0], volumes[1]) < 1e-9, "{volumes:?}");
+    }
+}
+
+/// A sharp root (no root flat): the runout patch's bottom is a point, not
+/// an arc. Runouts at both ends of a band, against the closed form.
+#[test]
+fn runouts_of_a_sharp_rooted_thread() {
+    let mut topo = Topology::new();
+    let (r, h) = (4.0, 9.0);
+    let (body, face) = boss(&mut topo, r, h);
+    let form = ThreadForm {
+        pitch: 2.0,
+        depth: 0.8,
+        crest_width: 1.2,
+        upper_flank_angle: 0.0,
+        lower_flank_angle: PI / 4.0,
+        starts: 1,
+        hand: ThreadHand::Right,
+    };
+    assert!(form.root_width().abs() < 1e-12);
+    let (offset, length) = (1.5, 5.0);
+    let angle = PI / 4.0;
+    let chamfer = ThreadEnd::Chamfer { angle };
+    let options = CylinderThreadOptions {
+        offset,
+        length: Some(length),
+        start: chamfer,
+        end: chamfer,
+        ..tight(&form)
+    };
+    let outcome = cut_thread(&mut topo, body, face, &form, &options).unwrap();
+    assert!(outcome.glued);
+    assert_valid_and_watertight(&topo, outcome.solid);
+    let root = r - form.depth;
+    let reach = form.depth / angle.tan();
+    for end in [outcome.geometry.start, outcome.geometry.end] {
+        assert!(matches!(end, ThreadEndGeometry::Runout { .. }), "{end:?}");
+    }
+    let expected = PI * r * r * (h - length)
+        + outline_area(&form, r, root) * 2.0f64.mul_add(-reach, length)
+        + 2.0 * runout_volume(&form, r, root, angle);
+    let got = volume(&topo, outcome.solid);
+    assert!(rel(got, expected) < 1e-6, "{got} vs {expected}");
+    // The wide crest's strip passes a full turn across a runout zone, so
+    // its lands there are swept (still at the crest radius).
+    assert_roles(&topo, &outcome, true);
+    for side in [ThreadEndSide::Start, ThreadEndSide::End] {
+        assert!(!role_faces(&outcome, ThreadFaceRole::Runout(side)).is_empty());
+    }
+}
+
+/// A runout at a small angle reaches several turns into the thread: its
+/// zone's lands sweep more than a full turn.
+#[test]
+fn small_angle_runout_turns_several_times() {
+    let mut topo = Topology::new();
+    let (r, h, length) = (3.0, 10.0, 6.0);
+    let (body, face) = boss(&mut topo, r, h);
+    let form = ThreadForm::iso_metric(1.0, ThreadKind::External);
+    let angle = 10.0_f64.to_radians();
+    let options = CylinderThreadOptions {
+        length: Some(length),
+        end: ThreadEnd::Chamfer { angle },
+        ..CylinderThreadOptions::default()
+    };
+    let outcome = cut_thread(&mut topo, body, face, &form, &options).unwrap();
+    assert_valid_and_watertight(&topo, outcome.solid);
+    let root = r - form.depth;
+    let reach = form.depth / angle.tan();
+    assert!(reach > 2.0 * form.lead());
+    let expected = outline_area(&form, r, root) * (length - reach)
+        + runout_volume(&form, r, root, angle)
+        + PI * r * r * (h - length);
+    let got = volume(&topo, outcome.solid);
+    assert!(rel(got, expected) < 2e-4, "{got} vs {expected}");
+    assert_roles(&topo, &outcome, true);
+}
+
+/// One finish longer than the thread, beside a plain end, is not two ends
+/// overlapping: it refuses as a finish too long for the thread, naming it.
+#[test]
+fn a_finish_longer_than_the_thread_refuses_on_its_own() {
+    let mut topo = Topology::new();
+    let (body, face) = boss(&mut topo, 3.0, 10.0);
+    let before = topo.num_faces();
+    let form = ThreadForm::iso_metric(1.0, ThreadKind::External);
+    for (start, end) in [
+        (ThreadEnd::Runout { angle: PI / 12.0 }, ThreadEnd::Plain),
+        (ThreadEnd::Plain, ThreadEnd::Runout { angle: PI / 12.0 }),
+    ] {
+        let options = CylinderThreadOptions {
+            offset: 2.0,
+            length: Some(1.5),
+            start,
+            end,
+            ..CylinderThreadOptions::default()
+        };
+        let result = cut_thread(&mut topo, body, face, &form, &options);
+        let Err(error) = &result else {
+            panic!("expected a refusal");
+        };
+        let message = error.to_string();
+        assert!(message.starts_with("thread:finish-too-long:"), "{message}");
+        assert!(message.contains("runout"), "{message}");
+        assert_eq!(refusal(result), ThreadRefusal::FinishTooLong);
+    }
+    assert_eq!(before, topo.num_faces());
+}
+
+/// A conical-helix trim that needs more spans than allowed refuses with
+/// `thread:tolerance-too-tight`, like the flanks themselves, rather than a
+/// bare resource error.
+#[test]
+fn a_trim_past_the_span_limit_refuses_as_too_tight() {
+    let frame = Frame::new(
+        Point3::new(0.0, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, 1.0),
+        Vec3::new(1.0, 0.0, 0.0),
+    )
+    .unwrap();
+    let (pa, pc) = (Point3::new(3.0, 0.0, 0.0), Point3::new(2.4, 0.0, 30.0));
+    // Thirty turns at a nanometre.
+    let result = chamfer::conical_helix(&frame, pa, pc, 30.0 * TAU, 1e-9);
+    match result {
+        Err(ThreadError::Refused { code, .. }) => {
+            assert_eq!(code, ThreadRefusal::ToleranceTooTight);
+        }
+        Err(other) => panic!("expected tolerance-too-tight: {other}"),
+        Ok(_) => panic!("expected tolerance-too-tight"),
+    }
+    // A single turn fits.
+    let (_, bound) =
+        chamfer::conical_helix(&frame, pa, Point3::new(2.4, 0.0, 1.0), TAU, 1e-6).unwrap();
+    assert!(bound <= 1e-6 * (1.0 + 1e-9), "{bound}");
 }
 
 /// The largest distance from a cone land's boundary (its vertices and the

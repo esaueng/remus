@@ -522,6 +522,9 @@ pub enum ThreadRefusal {
     FeaturesInThreadRegion,
     /// The chamfers or runouts of the two ends reach past each other.
     EndsOverlap,
+    /// One end's chamfer or runout reaches past the other, plain, end of
+    /// the thread.
+    FinishTooLong,
     /// The taper ratio is outside `[MIN_TAPER_RATIO, MAX_TAPER_RATIO]`.
     TaperOutOfRange,
 }
@@ -542,6 +545,7 @@ impl ThreadRefusal {
             Self::ToleranceTooTight => "tolerance-too-tight",
             Self::FeaturesInThreadRegion => "features-in-thread-region",
             Self::EndsOverlap => "ends-overlap",
+            Self::FinishTooLong => "finish-too-long",
             Self::TaperOutOfRange => "taper-out-of-range",
         }
     }
@@ -660,17 +664,31 @@ fn validate_form(form: &ThreadForm) -> Result<(), ThreadError> {
 /// [`ThreadError::Refused`] for an out-of-range parameter, a face that is
 /// not a full-turn cylinder of `solid`, a thread larger than the boss (or
 /// smaller than the bore) at either end of a taper, a span reaching past
-/// either end of the face,
-/// end finishes that reach past each other, or features crossing the thread
-/// band; [`ThreadError::Operations`] when a boolean fails. Refusals and
+/// either end of the face, end finishes that reach past each other or past
+/// a plain end, or features crossing the thread band;
+/// [`ThreadError::Operations`] when a boolean fails. Refusals and
 /// failures leave the topology unchanged.
-#[allow(clippy::too_many_lines)]
 pub fn cut_thread(
     topo: &mut Topology,
     solid: SolidId,
     face: FaceId,
     form: &ThreadForm,
     options: &CylinderThreadOptions,
+) -> Result<ThreadOutcome, ThreadError> {
+    cut_thread_joined(topo, solid, face, form, options, true)
+}
+
+/// [`cut_thread`], putting the ring on by the glue where it applies
+/// (`try_glue`) or always by the fuse, which the tests use to reach the
+/// fuse fallback.
+#[allow(clippy::too_many_lines)]
+fn cut_thread_joined(
+    topo: &mut Topology,
+    solid: SolidId,
+    face: FaceId,
+    form: &ThreadForm,
+    options: &CylinderThreadOptions,
+    try_glue: bool,
 ) -> Result<ThreadOutcome, ThreadError> {
     validate_form(form)?;
     require(options.phase.is_finite(), || {
@@ -718,24 +736,22 @@ pub fn cut_thread(
     // A span within rounding of an end of the face snaps to it, so a
     // whole-face request never leaves a sliver collar.
     let snap = 1e-9 * face_length.max(radius);
-    let (offset, length) = {
-        let lo = if offset.abs() <= snap { 0.0 } else { offset };
-        let hi = if (offset + length - face_length).abs() <= snap {
-            face_length
-        } else {
-            offset + length
-        };
-        (lo, hi - lo)
+    let lo = if offset.abs() <= snap { 0.0 } else { offset };
+    let hi = if (offset + length - face_length).abs() <= snap {
+        face_length
+    } else {
+        offset + length
     };
-    if offset < 0.0 || offset + length > face_length {
+    // Decided on the snapped bounds themselves: `lo + (hi - lo)` can round
+    // a ulp either side of `hi`, which would refuse a thread run to the end
+    // of the face or turn its chamfer there into a runout.
+    if lo < 0.0 || hi > face_length {
         return Err(ThreadError::refused(
             ThreadRefusal::SpanOutsideFace,
-            format!(
-                "the thread spans {offset}..{} along the face, which is {face_length} long",
-                offset + length
-            ),
+            format!("the thread spans {lo}..{hi} along the face, which is {face_length} long"),
         ));
     }
+    let (offset, length) = (lo, hi - lo);
     // A chamfer's cone starts inside the root, which would undercut the
     // collar beyond an end that stops short of the face's end: that end
     // takes the runout of the same angle.
@@ -744,8 +760,8 @@ pub fn cut_thread(
         other => other,
     };
     let ends = (
-        finish(options.start, offset > 0.0),
-        finish(options.end, offset + length < face_length),
+        finish(options.start, lo > 0.0),
+        finish(options.end, hi < face_length),
     );
     let start = v0 + offset;
 
@@ -1012,17 +1028,21 @@ pub fn cut_thread(
         let ring = ring.solid;
         // Glue the ring on where the faces it meets are recognized; the fuse
         // is the general fallback.
-        let glued = glue(
-            topo,
-            kept,
-            ring,
-            &frame,
-            kind,
-            band,
-            [crest + offset_at(0.0), crest + offset_at(length)],
-            length,
-            Glue::Simplest,
-        )?;
+        let glued = if try_glue {
+            glue(
+                topo,
+                kept,
+                ring,
+                &frame,
+                kind,
+                band,
+                [crest + offset_at(0.0), crest + offset_at(length)],
+                length,
+                Glue::Simplest,
+            )?
+        } else {
+            None
+        };
         let (result, face_roles, glued) = if let Some(result) = glued {
             // Every ring face but its seam wall and the caps the glue merges
             // is a face of the result under its own id.
@@ -1292,15 +1312,29 @@ fn thread_ring(
     let lower = start_cone.as_ref().map_or(0.0, whole_from);
     let upper = end_cone.as_ref().map_or(length, whole_from);
     if upper < lower - 1e-12 * length {
-        return Err(ThreadError::refused(
-            ThreadRefusal::EndsOverlap,
-            format!(
-                "the end finishes reach {} and {} into a thread {length} long; shorten them \
-                 or lengthen the thread",
-                lower,
-                length - upper
+        let one = |cone: &chamfer::Cone, side: &str, reach: f64| {
+            let finish = if cone.runout { "runout" } else { "chamfer" };
+            ThreadError::refused(
+                ThreadRefusal::FinishTooLong,
+                format!(
+                    "the {side} {finish} reaches {reach} into a thread {length} long; steepen \
+                     it or lengthen the thread"
+                ),
+            )
+        };
+        return Err(match (start_cone.as_ref(), end_cone.as_ref()) {
+            (Some(cone), None) => one(cone, "start", lower),
+            (None, Some(cone)) => one(cone, "end", length - upper),
+            _ => ThreadError::refused(
+                ThreadRefusal::EndsOverlap,
+                format!(
+                    "the end finishes reach {} and {} into a thread {length} long; shorten \
+                     them or lengthen the thread",
+                    lower,
+                    length - upper
+                ),
             ),
-        ));
+        });
     }
     let reaches = (lower, length - upper);
     // End finishes that meet (to rounding) leave no full-depth thread

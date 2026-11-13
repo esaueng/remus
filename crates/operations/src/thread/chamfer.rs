@@ -685,7 +685,17 @@ pub(super) fn conical_helix(
         bound,
         tolerance,
         MAX_TRIM_SPANS,
-    )?;
+    )
+    .map_err(|error| match error {
+        remus_math::MathError::ResourceLimitExceeded { .. } => ThreadError::refused(
+            super::ThreadRefusal::ToleranceTooTight,
+            format!(
+                "an end finish's flank trim needs more than {MAX_TRIM_SPANS} spans for a \
+                 tolerance of {tolerance}"
+            ),
+        ),
+        other => other.into(),
+    })?;
     let mut points = fit.curve.control_points().to_vec();
     let last = points.len() - 1;
     points[0] = pa;

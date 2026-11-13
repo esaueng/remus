@@ -286,6 +286,15 @@ fn refusals_are_typed_and_atomic() {
         ),
         (
             face,
+            with(json!({
+                "offset": 1.0, "length": 2.0,
+                "start": { "kind": "runout", "angle": 15.0 },
+                "end": { "kind": "plain" }
+            })),
+            "thread:finish-too-long",
+        ),
+        (
+            face,
             with(json!({ "end": { "kind": "runout", "angle": 90.0 } })),
             "thread:invalid-parameter",
         ),
