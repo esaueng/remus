@@ -92,5 +92,9 @@ name = "fillet_perf"
 harness = false
 name = "prepared_group_edit"
 
+[[bench]]
+harness = false
+name = "generated_volume"
+
 [lints]
 workspace = true
