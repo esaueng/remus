@@ -453,6 +453,37 @@ fn chamfered_volume(
     total
 }
 
+/// As [`chamfered_volume`] for any end finishes: `clip(r, z)` is the radius
+/// of the material's boundary where the thread's own is `r` at height `z`.
+fn finished_volume(
+    form: &ThreadForm,
+    kind: ThreadKind,
+    crest: f64,
+    root: f64,
+    bound: f64,
+    length: f64,
+    clip: impl Fn(f64, f64) -> f64,
+) -> f64 {
+    let (nz, nt) = (4000_usize, 4000_usize);
+    let dz = length / nz as f64;
+    let dt = TAU / nt as f64;
+    let mut total = 0.0;
+    for iz in 0..nz {
+        let z = (iz as f64 + 0.5) * dz;
+        let mut area = 0.0;
+        for it in 0..nt {
+            let theta = (it as f64 + 0.5) * dt;
+            let r = clip(thread_radius(form, crest, root, theta, z), z);
+            area += match kind {
+                ThreadKind::External => 0.5 * (r * r - bound * bound),
+                ThreadKind::Internal => 0.5 * (bound * bound - r * r),
+            } * dt;
+        }
+        total += area * dz;
+    }
+    total
+}
+
 fn both_chamfers(angle: f64) -> CylinderThreadOptions {
     let chamfer = ThreadEnd::Chamfer { angle };
     CylinderThreadOptions {
@@ -604,7 +635,7 @@ fn chamfer_cones_integrate_their_own_region() {
 }
 
 #[test]
-fn print_form_takes_a_start_chamfer_and_refuses_misplaced_ones() {
+fn print_form_takes_a_start_chamfer_and_refuses_overlapping_ones() {
     let mut topo = Topology::new();
     let (r, h) = (4.0, 6.0);
     let (body, face) = boss(&mut topo, r, h);
@@ -632,22 +663,511 @@ fn print_form_takes_a_start_chamfer_and_refuses_misplaced_ones() {
     let got = volume(&topo, outcome.solid);
     assert!(rel(got, expected) < 2e-4, "{got} vs {expected}");
 
-    // A chamfer on an end that stops short of the face's end refuses, and
-    // so do chamfers longer than the thread.
-    let banded = CylinderThreadOptions {
-        offset: 1.0,
-        ..options
+    let ThreadEndGeometry::Chamfer { length: reach } = outcome.geometry.start else {
+        panic!("a chamfer: {:?}", outcome.geometry.start);
     };
-    assert_eq!(
-        refusal(cut_thread(&mut topo, body, face, &form, &banded)),
-        ThreadRefusal::InvalidParameter
-    );
+    // From just inside the root (a twentieth of the depth) to the crest.
+    assert!((reach - 1.05 * form.depth / slope).abs() < 1e-12);
+    assert_eq!(outcome.geometry.end, ThreadEndGeometry::Plain);
+
+    // Chamfers longer than the thread refuse with their own code.
     let steep = CylinderThreadOptions {
         length: Some(1.5),
         ..both_chamfers(PI / 12.0)
     };
     assert_eq!(
         refusal(cut_thread(&mut topo, body, face, &form, &steep)),
+        ThreadRefusal::EndsOverlap
+    );
+}
+
+/// Volume of a runout zone's section from the axis, in closed form. At cone
+/// radius `c` the section is the outline of the same form with its root
+/// raised to `c`, whose area is a cubic in `c`; `c` is linear along the
+/// zone, so Simpson's rule integrates it exactly. For an internal thread
+/// that section is the air inside the thread.
+fn runout_volume(form: &ThreadForm, crest: f64, root: f64, angle: f64) -> f64 {
+    let height = (crest - root).abs() / angle.tan();
+    let area = |c: f64| {
+        let raised = ThreadForm {
+            depth: (crest - c).abs(),
+            ..form.clone()
+        };
+        outline_area(&raised, crest, c)
+    };
+    height / 6.0 * (4.0f64.mul_add(area(0.5 * (root + crest)), area(root)) + area(crest))
+}
+
+fn role_faces(outcome: &ThreadOutcome, role: ThreadFaceRole) -> Vec<FaceId> {
+    outcome
+        .face_roles
+        .iter()
+        .filter(|(_, r)| *r == role)
+        .map(|(face, _)| *face)
+        .collect()
+}
+
+/// Every role names a distinct face of the solid, lands are on cylinders,
+/// flanks are swept and end cones are cones.
+fn assert_roles_are_faces_of(topo: &Topology, outcome: &ThreadOutcome) {
+    let faces = solid_faces(topo, outcome.solid).unwrap();
+    let mut seen = std::collections::BTreeSet::new();
+    for &(face, role) in &outcome.face_roles {
+        assert!(faces.contains(&face), "{} is not a face", role.name());
+        assert!(seen.insert(face.index()), "{} twice", role.name());
+        let surface = topo.face(face).unwrap().surface();
+        match role {
+            ThreadFaceRole::Crest | ThreadFaceRole::Root => {
+                assert!(
+                    matches!(surface, FaceSurface::Cylinder(_)),
+                    "{}",
+                    role.name()
+                );
+            }
+            ThreadFaceRole::UpperFlank | ThreadFaceRole::LowerFlank => {
+                assert!(matches!(surface, FaceSurface::Nurbs(_)), "{}", role.name());
+            }
+            ThreadFaceRole::Chamfer(_) | ThreadFaceRole::Runout(_) => {
+                assert!(matches!(surface, FaceSurface::Cone(_)), "{}", role.name());
+            }
+        }
+    }
+}
+
+fn inside(topo: &Topology, solid: SolidId, point: Point3) -> bool {
+    classify_point(topo, solid, point, 0.01, 1e-6).unwrap() == PointClassification::Inside
+}
+
+#[test]
+fn plain_thread_reports_a_role_for_every_land_and_flank() {
+    let mut topo = Topology::new();
+    let (body, face) = boss(&mut topo, 3.0, 4.0);
+    let form = ThreadForm {
+        starts: 2,
+        ..ThreadForm::iso_metric(1.0, ThreadKind::External)
+    };
+    let outcome = cut_thread(
+        &mut topo,
+        body,
+        face,
+        &form,
+        &CylinderThreadOptions::default(),
+    )
+    .unwrap();
+    assert!(outcome.glued);
+    assert_roles_are_faces_of(&topo, &outcome);
+    // Two turns of a two-start thread in half-turn segments: four segments
+    // of two lobes each.
+    for role in [
+        ThreadFaceRole::Crest,
+        ThreadFaceRole::Root,
+        ThreadFaceRole::UpperFlank,
+        ThreadFaceRole::LowerFlank,
+    ] {
+        assert_eq!(role_faces(&outcome, role).len(), 8, "{}", role.name());
+    }
+    assert_eq!(outcome.face_roles.len(), 32);
+    // The upper flank faces the end of the thread: its outward normal has a
+    // positive axial part, the lower flank's a negative one.
+    for (role, sign) in [
+        (ThreadFaceRole::UpperFlank, 1.0),
+        (ThreadFaceRole::LowerFlank, -1.0),
+    ] {
+        for flank in role_faces(&outcome, role) {
+            let data = topo.face(flank).unwrap();
+            let FaceSurface::Nurbs(surface) = data.surface() else {
+                panic!("flank is not swept");
+            };
+            let ((u0, u1), (v0, v1)) = (surface.domain_u(), surface.domain_v());
+            let normal = surface.normal(0.5 * (u0 + u1), 0.5 * (v0 + v1)).unwrap();
+            let outward = if data.is_reversed() { -normal } else { normal };
+            assert!(sign * outward.z() > 0.1, "{}: {outward:?}", role.name());
+        }
+    }
+}
+
+/// A bolt: the thread stops short of the head end of the shank, which stays
+/// at the major diameter. The chamfer asked for there is a runout.
+#[test]
+fn runout_fades_an_external_thread_into_a_flush_collar() {
+    let mut topo = Topology::new();
+    let (r, h, length) = (3.0, 10.0, 6.0);
+    let (body, face) = boss(&mut topo, r, h);
+    let form = ThreadForm::iso_metric(1.0, ThreadKind::External);
+    let angle = PI / 4.0;
+    let options = CylinderThreadOptions {
+        length: Some(length),
+        end: ThreadEnd::Chamfer { angle },
+        ..tight(&form)
+    };
+    let outcome = cut_thread(&mut topo, body, face, &form, &options).unwrap();
+    assert!(outcome.glued);
+    assert_valid_and_watertight(&topo, outcome.solid);
+    let root = r - form.depth;
+    let reach = form.depth / angle.tan();
+    assert_eq!(outcome.geometry.start, ThreadEndGeometry::Plain);
+    let ThreadEndGeometry::Runout { length: reported } = outcome.geometry.end else {
+        panic!(
+            "the stopped-short end is a runout: {:?}",
+            outcome.geometry.end
+        );
+    };
+    assert!((reported - reach).abs() < 1e-12);
+    let expected = outline_area(&form, r, root) * (length - reach)
+        + runout_volume(&form, r, root, angle)
+        + PI * r * r * (h - length);
+    let got = volume(&topo, outcome.solid);
+    assert!(rel(got, expected) < 1e-6, "{got} vs {expected}");
+    // The runout puts back material the plain thread cuts away.
+    assert!(got - (outline_area(&form, r, root) * length + PI * r * r * (h - length)) > 0.5);
+
+    assert_roles_are_faces_of(&topo, &outcome);
+    let pieces = role_faces(&outcome, ThreadFaceRole::Runout(ThreadEndSide::End));
+    // The groove's patch turns 1.1 times about the axis: three pieces of at
+    // most half a turn.
+    assert!(pieces.len() >= 3, "{} pieces", pieces.len());
+    assert!(role_faces(&outcome, ThreadFaceRole::Runout(ThreadEndSide::Start)).is_empty());
+    assert!(role_faces(&outcome, ThreadFaceRole::Chamfer(ThreadEndSide::End)).is_empty());
+
+    // No undercut: just under the end plane the groove is gone all the way
+    // round, and the cone's line holds at every height of the zone.
+    for k in 0..12 {
+        let theta = TAU * f64::from(k) / 12.0 + 0.1;
+        let at = |radius: f64, z: f64| Point3::new(radius * theta.cos(), radius * theta.sin(), z);
+        assert!(inside(&topo, outcome.solid, at(r - 0.01, length - 2e-3)));
+        for step in 1..4 {
+            let z = length - reach * f64::from(step) / 4.0;
+            let cone = r - (length - z);
+            assert!(
+                inside(&topo, outcome.solid, at(cone - 0.01, z)),
+                "{theta} {z}"
+            );
+        }
+    }
+    // Below the zone the groove is at full depth somewhere round the axis.
+    let z = length - reach - 0.3;
+    let grooved = (0..24).any(|k| {
+        let theta = TAU * f64::from(k) / 24.0;
+        let radius = root + 0.02;
+        !inside(
+            &topo,
+            outcome.solid,
+            Point3::new(radius * theta.cos(), radius * theta.sin(), z),
+        )
+    });
+    assert!(grooved);
+}
+
+/// A turned-down band between two collars, left hand and two starts, with
+/// a runout at each end.
+#[test]
+fn runouts_at_both_ends_of_a_turned_down_band() {
+    let mut topo = Topology::new();
+    let (r, h) = (5.0, 12.0);
+    let (body, face) = boss(&mut topo, r, h);
+    let form = ThreadForm {
+        starts: 2,
+        hand: ThreadHand::Left,
+        ..ThreadForm::iso_metric(1.5, ThreadKind::External)
+    };
+    let (offset, length, major) = (2.0, 7.0, 9.6);
+    let angle = PI / 6.0;
+    let chamfer = ThreadEnd::Chamfer { angle };
+    let options = CylinderThreadOptions {
+        major_diameter: Some(major),
+        offset,
+        length: Some(length),
+        start: chamfer,
+        end: chamfer,
+        ..tight(&form)
+    };
+    let outcome = cut_thread(&mut topo, body, face, &form, &options).unwrap();
+    assert!(outcome.glued);
+    assert_valid_and_watertight(&topo, outcome.solid);
+    let crest = 0.5 * major;
+    let root = crest - form.depth;
+    let reach = form.depth / angle.tan();
+    for end in [outcome.geometry.start, outcome.geometry.end] {
+        let ThreadEndGeometry::Runout { length: reported } = end else {
+            panic!("a runout: {end:?}");
+        };
+        assert!((reported - reach).abs() < 1e-12);
+    }
+    let expected = PI * r * r * (h - length)
+        + outline_area(&form, crest, root) * 2.0f64.mul_add(-reach, length)
+        + 2.0 * runout_volume(&form, crest, root, angle);
+    let got = volume(&topo, outcome.solid);
+    assert!(rel(got, expected) < 1e-6, "{got} vs {expected}");
+    assert_roles_are_faces_of(&topo, &outcome);
+    for side in [ThreadEndSide::Start, ThreadEndSide::End] {
+        // One patch per start.
+        assert!(role_faces(&outcome, ThreadFaceRole::Runout(side)).len() >= 2);
+    }
+    // The groove is gone on both end planes, where the body steps up from
+    // the crest to the collar.
+    for z in [offset + 2e-3, offset + length - 2e-3] {
+        for k in 0..8 {
+            let theta = TAU * f64::from(k) / 8.0;
+            let radius = crest - 0.01;
+            assert!(inside(
+                &topo,
+                outcome.solid,
+                Point3::new(radius * theta.cos(), radius * theta.sin(), z)
+            ));
+        }
+    }
+}
+
+/// A tapped band in a bore that continues past it on both sides: once at
+/// the thread's minor diameter (flush collars), once narrower.
+#[test]
+fn runouts_at_both_ends_of_an_internal_band() {
+    for flush in [true, false] {
+        let mut topo = Topology::new();
+        let form = ThreadForm::iso_metric(1.25, ThreadKind::Internal);
+        let (outer, h) = (8.0, 12.0);
+        let bore = 3.5;
+        let (body, face) = bored(&mut topo, outer, bore, h);
+        let minor = if flush { bore } else { bore + 0.05 };
+        let major = minor + form.depth;
+        let (offset, length) = (3.0, 6.0);
+        let angle = PI / 4.0;
+        let chamfer = ThreadEnd::Chamfer { angle };
+        let options = CylinderThreadOptions {
+            major_diameter: Some(2.0 * major),
+            offset,
+            length: Some(length),
+            start: chamfer,
+            end: chamfer,
+            ..tight(&form)
+        };
+        let outcome = cut_thread(&mut topo, body, face, &form, &options).unwrap();
+        assert!(outcome.glued, "flush={flush}");
+        assert_valid_and_watertight(&topo, outcome.solid);
+        let reach = form.depth / angle.tan();
+        // The air inside the band, less the bore that was there before.
+        let air = outline_area(&form, minor, major) * 2.0f64.mul_add(-reach, length)
+            + 2.0 * runout_volume(&form, minor, major, angle);
+        let expected = PI * (outer * outer - bore * bore) * h - (air - PI * bore * bore * length);
+        let got = volume(&topo, outcome.solid);
+        assert!(
+            rel(got, expected) < 1e-6,
+            "flush={flush}: {got} vs {expected}"
+        );
+        assert_roles_are_faces_of(&topo, &outcome);
+        for side in [ThreadEndSide::Start, ThreadEndSide::End] {
+            assert!(!role_faces(&outcome, ThreadFaceRole::Runout(side)).is_empty());
+        }
+        // On each end plane the groove is gone: material right outside the
+        // minor diameter all the way round.
+        for z in [offset + 2e-3, offset + length - 2e-3] {
+            for k in 0..8 {
+                let theta = TAU * f64::from(k) / 8.0 + 0.2;
+                let radius = minor + 0.01;
+                assert!(
+                    inside(
+                        &topo,
+                        outcome.solid,
+                        Point3::new(radius * theta.cos(), radius * theta.sin(), z)
+                    ),
+                    "flush={flush} z={z} theta={theta}"
+                );
+            }
+        }
+    }
+}
+
+/// A stud on a flange: the thread runs out against the shoulder at the
+/// start of the face, which only an explicit runout can ask for, and is
+/// chamfered at its free end. The whole body against a quadrature of the
+/// exact thread under both cones.
+#[test]
+fn explicit_runout_at_a_shoulder_with_a_chamfered_free_end() {
+    let mut topo = Topology::new();
+    let (flange, thick) = (6.0, 2.0);
+    let (r, h) = (3.0, 7.0);
+    let base = make_cylinder(&mut topo, flange, thick).unwrap();
+    let stud = make_cylinder(&mut topo, r, thick + h).unwrap();
+    let body = boolean(&mut topo, BooleanOp::Fuse, base, stud).unwrap();
+    let face = cylinder_face(&topo, body, r);
+    let form = ThreadForm::iso_metric(1.0, ThreadKind::External);
+    let angle = PI / 4.0;
+    let options = CylinderThreadOptions {
+        start: ThreadEnd::Runout { angle },
+        end: ThreadEnd::Chamfer { angle },
+        ..CylinderThreadOptions::default()
+    };
+    let outcome = cut_thread(&mut topo, body, face, &form, &options).unwrap();
+    assert_valid_and_watertight(&topo, outcome.solid);
+    assert!(matches!(
+        outcome.geometry.start,
+        ThreadEndGeometry::Runout { .. }
+    ));
+    assert!(matches!(
+        outcome.geometry.end,
+        ThreadEndGeometry::Chamfer { .. }
+    ));
+    let root = r - form.depth;
+    let at_end = root - 0.05 * form.depth;
+    let thread = finished_volume(&form, ThreadKind::External, r, root, 0.0, h, |radius, z| {
+        radius.min(at_end + (h - z)).max(r - z)
+    });
+    let expected = PI * flange * flange * thick + thread;
+    let got = volume(&topo, outcome.solid);
+    assert!(rel(got, expected) < 2e-4, "{got} vs {expected}");
+    if outcome.glued {
+        assert_roles_are_faces_of(&topo, &outcome);
+        assert!(!role_faces(&outcome, ThreadFaceRole::Runout(ThreadEndSide::Start)).is_empty());
+        assert_eq!(
+            role_faces(&outcome, ThreadFaceRole::Chamfer(ThreadEndSide::End)).len(),
+            1
+        );
+    }
+    // No undercut at the shoulder.
+    for k in 0..8 {
+        let theta = TAU * f64::from(k) / 8.0;
+        let radius = r - 0.01;
+        assert!(inside(
+            &topo,
+            outcome.solid,
+            Point3::new(radius * theta.cos(), radius * theta.sin(), thick + 2e-3)
+        ));
+    }
+}
+
+/// A sharp crest and a square flank: the patch's arc on the end plane is
+/// the whole crest circle, and one of its sides is a helix about the axis.
+#[test]
+fn runout_of_a_sharp_crested_square_flanked_thread() {
+    let mut topo = Topology::new();
+    let (r, h, length) = (4.0, 9.0, 6.0);
+    let (body, face) = boss(&mut topo, r, h);
+    let form = ThreadForm {
+        pitch: 2.0,
+        depth: 0.8,
+        crest_width: 0.0,
+        upper_flank_angle: 0.0,
+        lower_flank_angle: PI / 4.0,
+        starts: 1,
+        hand: ThreadHand::Right,
+    };
+    let angle = PI / 3.0;
+    let options = CylinderThreadOptions {
+        length: Some(length),
+        end: ThreadEnd::Chamfer { angle },
+        ..CylinderThreadOptions::default()
+    };
+    let outcome = cut_thread(&mut topo, body, face, &form, &options).unwrap();
+    assert_valid_and_watertight(&topo, outcome.solid);
+    let root = r - form.depth;
+    let reach = form.depth / angle.tan();
+    let expected = outline_area(&form, r, root) * (length - reach)
+        + runout_volume(&form, r, root, angle)
+        + PI * r * r * (h - length);
+    let got = volume(&topo, outcome.solid);
+    assert!(rel(got, expected) < 2e-4, "{got} vs {expected}");
+}
+
+#[test]
+fn runouts_that_reach_past_each_other_refuse() {
+    let mut topo = Topology::new();
+    let (body, face) = boss(&mut topo, 3.0, 10.0);
+    let before = topo.num_faces();
+    let form = ThreadForm::iso_metric(1.0, ThreadKind::External);
+    // Each runout reaches depth / tan 15° = 2.02 into a band 3 long.
+    let chamfer = ThreadEnd::Chamfer { angle: PI / 12.0 };
+    let options = CylinderThreadOptions {
+        offset: 2.0,
+        length: Some(3.0),
+        start: chamfer,
+        end: chamfer,
+        ..CylinderThreadOptions::default()
+    };
+    let result = cut_thread(&mut topo, body, face, &form, &options);
+    let Err(error) = &result else {
+        panic!("expected a refusal");
+    };
+    assert!(
+        error.to_string().starts_with("thread:ends-overlap:"),
+        "{error}"
+    );
+    assert_eq!(refusal(result), ThreadRefusal::EndsOverlap);
+    // A chamfer and a runout overlap the same way.
+    let mixed = CylinderThreadOptions {
+        offset: 0.0,
+        ..options.clone()
+    };
+    assert_eq!(
+        refusal(cut_thread(&mut topo, body, face, &form, &mixed)),
+        ThreadRefusal::EndsOverlap
+    );
+    let flat = CylinderThreadOptions {
+        end: ThreadEnd::Runout { angle: 0.5 * PI },
+        ..CylinderThreadOptions::default()
+    };
+    assert_eq!(
+        refusal(cut_thread(&mut topo, body, face, &form, &flat)),
         ThreadRefusal::InvalidParameter
     );
+    assert_eq!(before, topo.num_faces());
+    // Runouts that meet exactly, with no full-depth thread between, build.
+    let reach = form.depth / (PI / 4.0).tan();
+    let chamfer = ThreadEnd::Chamfer { angle: PI / 4.0 };
+    let touching = CylinderThreadOptions {
+        offset: 2.0,
+        length: Some(2.0 * reach),
+        start: chamfer,
+        end: chamfer,
+        ..CylinderThreadOptions::default()
+    };
+    let outcome = cut_thread(&mut topo, body, face, &form, &touching).unwrap();
+    assert_valid_and_watertight(&topo, outcome.solid);
+    let expected = PI * 9.0 * 2.0f64.mul_add(-reach, 10.0)
+        + 2.0 * runout_volume(&form, 3.0, 3.0 - form.depth, PI / 4.0);
+    let got = volume(&topo, outcome.solid);
+    assert!(rel(got, expected) < 2e-4, "{got} vs {expected}");
+}
+
+/// The generators that cut a runout patch never split its root arc, keep
+/// clear of its corners and leave no piece wider than the limit plus the
+/// root arc.
+#[test]
+fn runout_cut_angles_keep_clear_of_the_patch_corners() {
+    let max_width = PI;
+    let mut cases = 0;
+    for bottom in [0.0, 0.3, 1.5, 3.0, 5.5] {
+        for lean in [-9.0, -4.1, -1.0, -0.2, -1e-3, 0.0, 1e-3, 0.2, 1.0, 4.1, 9.0] {
+            for widening in [0.0, 1e-3, 0.4, 2.0] {
+                for shift in [0.0, 0.31, 0.77] {
+                    let t1: f64 = lean - shift * widening;
+                    let t2 = t1 + bottom + widening;
+                    if t2 - t1 > TAU || t2 <= t1 {
+                        continue;
+                    }
+                    cases += 1;
+                    let cuts = runout::cut_angles(bottom, (t1, t2), max_width);
+                    let (lo, hi) = (t1.min(0.0), t2.max(bottom));
+                    let label = format!("bottom={bottom} top=({t1}, {t2}): {cuts:?}");
+                    #[allow(clippy::float_cmp)]
+                    for &cut in &cuts {
+                        assert!(cut > lo && cut < hi, "{label}");
+                        assert!(!(cut > 0.0 && cut < bottom), "{label}");
+                        let through = cut == 0.0 || cut == bottom;
+                        for corner in [0.0, bottom, t1, t2] {
+                            let clear = (cut - corner).abs() > 1e-3 * max_width;
+                            assert!(clear || (through && cut == corner), "{label}");
+                        }
+                    }
+                    let mut bounds = vec![lo];
+                    bounds.extend(&cuts);
+                    bounds.push(hi);
+                    for pair in bounds.windows(2) {
+                        assert!(pair[1] > pair[0], "{label}");
+                        assert!(pair[1] - pair[0] <= bottom + 1.25 * max_width, "{label}");
+                    }
+                }
+            }
+        }
+    }
+    assert!(cases > 300, "{cases}");
 }

@@ -310,6 +310,24 @@ historical predecessor-line records, retained for provenance. The
   result, so a resize of a boss on a sphere or a blind bore in one is told
   apart from other failures without parsing the message. Adding the field
   breaks native code that constructs the variant or matches it without `..`.
+* **operations,wasm:** a thread that stops short of the end of its face can
+  run out against the collar. The existing `start` / `end`
+  `{ "kind": "chamfer", "angle": 45 }` used to refuse there
+  (`thread:invalid-parameter`); it now builds a runout: a cone that sits on
+  the crest at the end plane and falls to the root `depth / tan(angle)` into
+  the thread, so the groove fades out with no undercut. `ThreadEnd::Runout` /
+  `{ "kind": "runout", "angle": 45 }` asks for that finish by name at either
+  kind of end, for a thread that ends at the end of its face against a
+  shoulder. The runout is built into the thread without a boolean: the cone
+  over each groove is cut along its generators into pieces of at most half a
+  turn. `details.geometry.start` / `.end` report the finish built and its
+  axial reach, and `details.faceRoles` names every thread face (`crest`,
+  `root`, `flank.upper`, `flank.lower`, `chamfer.start|end`,
+  `runout.start|end`; `ThreadOutcome::face_roles`). Chamfers or runouts that
+  reach past each other now refuse with `thread:ends-overlap` instead of
+  `thread:invalid-parameter`; finishes that meet exactly build. Native
+  `ThreadGeometry` and `ThreadOutcome` gain fields, which breaks code that
+  builds them with a struct literal.
 * **operations,wasm:** thread ends can be chamfered (`ThreadEnd::Chamfer`,
   spec `start` / `end` `{ "kind": "chamfer", "angle": 45 }`): a cone from just
   inside the root on the end plane tapers the first turn out instead of ending

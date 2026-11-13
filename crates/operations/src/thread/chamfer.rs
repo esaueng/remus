@@ -38,8 +38,10 @@ use remus_topology::face::{Face, FaceId, FaceSurface};
 use remus_topology::vertex::VertexId;
 use remus_topology::wire::{OrientedEdge, Wire};
 
-use super::{Frame, ThreadError, ThreadKind};
+use super::profile::PieceRole;
+use super::{Frame, ThreadEndSide, ThreadError, ThreadFaceRole, ThreadKind};
 use crate::extrude::twist::TwistedExtrusion;
+use crate::extrude::{ExtrudeConstruction, ExtrudedWire};
 
 /// Hermite spans allowed for one flank–cone curve.
 const MAX_TRIM_SPANS: usize = 512;
@@ -53,7 +55,7 @@ pub(super) enum RootSide {
     Top,
 }
 
-/// The cone of a chamfer, in the thread's frame.
+/// The cone of a chamfer or a runout, in the thread's frame.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Cone {
     pub(super) kind: ThreadKind,
@@ -69,6 +71,10 @@ pub(super) struct Cone {
     /// `+1` when the thread runs up the axis from the end plane (a start
     /// chamfer), `-1` when it runs down to it (an end chamfer).
     pub(super) inward: f64,
+    /// A runout: the cone sits on the crest at the end plane and falls to
+    /// the root going into the thread, where a chamfer's rises from inside
+    /// the root to the crest.
+    pub(super) runout: bool,
 }
 
 impl Cone {
@@ -84,34 +90,44 @@ impl Cone {
             .mul_add((self.crest - self.at_end).abs() / self.slope, self.end_z)
     }
 
-    /// The cone surface, its axis pointing the way it widens.
-    fn surface(&self, frame: &Frame) -> Result<ConicalSurface, ThreadError> {
-        // Radius grows `slope` per unit height toward the thread for an
-        // external chamfer and shrinks for an internal one.
+    /// `+1` when the cone widens up the frame axis, `-1` when down it.
+    fn widening(&self) -> f64 {
+        // A chamfer's radius moves from the root side to the crest side
+        // going into the thread, a runout's the other way; the crest side
+        // is the larger radius outside (external) and the smaller inside.
         let grows = if self.kind == ThreadKind::External {
             1.0
         } else {
             -1.0
         };
-        let widening = frame.axis * (self.inward * grows);
+        let rising = if self.runout { -1.0 } else { 1.0 };
+        self.inward * grows * rising
+    }
+
+    /// The cone surface, its axis pointing the way it widens.
+    pub(super) fn surface(&self, frame: &Frame) -> Result<ConicalSurface, ThreadError> {
+        // Radius grows `slope` per unit height toward the thread for an
+        // external chamfer and shrinks for an internal one.
+        let widening = frame.axis * self.widening();
         let apex = frame.origin + frame.axis * self.end_z - widening * (self.at_end / self.slope);
         let half_angle = FRAC_PI_2 - self.slope.atan();
         Ok(ConicalSurface::new(apex, widening, half_angle)?)
     }
 
     /// The outward normal of the chamfered material on the cone at `p`.
-    fn outward(&self, frame: &Frame, p: Point3) -> Result<Vec3, ThreadError> {
+    pub(super) fn outward(&self, frame: &Frame, p: Point3) -> Result<Vec3, ThreadError> {
         let offset = p - frame.origin;
         let radial = (offset - frame.axis * offset.dot(frame.axis)).normalize()?;
-        // Material lies inside the cone (external) or outside it (internal);
-        // the cone moves away from the end as it widens.
-        let (radial_sign, grows) = if self.kind == ThreadKind::External {
-            (1.0, 1.0)
+        // Material lies inside the cone (external) or outside it (internal),
+        // for a chamfer (the thread clipped by the cone) and a runout (the
+        // thread filled up to the cone) alike.
+        let radial_sign = if self.kind == ThreadKind::External {
+            1.0
         } else {
-            (-1.0, -1.0)
+            -1.0
         };
         Ok(
-            (radial * radial_sign - frame.axis * (self.inward * grows * radial_sign * self.slope))
+            (radial * radial_sign - frame.axis * (self.widening() * radial_sign * self.slope))
                 .normalize()?,
         )
     }
@@ -125,6 +141,8 @@ pub(super) struct Zone {
     pub(super) walls: Vec<FaceId>,
     /// Proven bound on the trim curves' distance from the exact ones.
     pub(super) trim_bound: f64,
+    /// The role of every thread face among `faces`.
+    pub(super) roles: Vec<(FaceId, ThreadFaceRole)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -141,7 +159,11 @@ struct LoopEdge {
     effective: bool,
 }
 
-fn effective_use(topo: &Topology, face: FaceId, edge: EdgeId) -> Result<Option<bool>, ThreadError> {
+pub(super) fn effective_use(
+    topo: &Topology,
+    face: FaceId,
+    edge: EdgeId,
+) -> Result<Option<bool>, ThreadError> {
     let data = topo.face(face)?;
     for wire in std::iter::once(data.outer_wire()).chain(data.inner_wires().iter().copied()) {
         if let Some(oe) = topo.wire(wire)?.edges().iter().find(|oe| oe.edge() == edge) {
@@ -151,13 +173,105 @@ fn effective_use(topo: &Topology, face: FaceId, edge: EdgeId) -> Result<Option<b
     Ok(None)
 }
 
-fn oriented_ends(topo: &Topology, oe: OrientedEdge) -> Result<(VertexId, VertexId), ThreadError> {
+pub(super) fn oriented_ends(
+    topo: &Topology,
+    oe: OrientedEdge,
+) -> Result<(VertexId, VertexId), ThreadError> {
     let e = topo.edge(oe.edge())?;
     Ok(if oe.is_forward() {
         (e.start(), e.end())
     } else {
         (e.end(), e.start())
     })
+}
+
+/// The thread wire of a ring segment's construction record, the side faces
+/// along it and the segment's seam wall.
+pub(super) fn thread_wire(
+    c: &ExtrudeConstruction,
+    kind: ThreadKind,
+) -> Result<(&ExtrudedWire, &[FaceId], FaceId), ThreadError> {
+    let invalid = |what: &str| ThreadError::invalid(format!("thread end construction: {what}"));
+    match kind {
+        ThreadKind::External => Ok((
+            &c.outer,
+            &c.outer_sides,
+            c.holes
+                .first()
+                .and_then(|h| h.sides.first())
+                .copied()
+                .ok_or_else(|| invalid("no seam wall"))?,
+        )),
+        ThreadKind::Internal => {
+            let hole = c.holes.first().ok_or_else(|| invalid("no thread wire"))?;
+            Ok((
+                &hole.inner,
+                &hole.sides,
+                c.outer_sides
+                    .first()
+                    .copied()
+                    .ok_or_else(|| invalid("no seam wall"))?,
+            ))
+        }
+    }
+}
+
+/// Rebuild the flank face `side` with the two consecutive edges `removed`
+/// replaced by `chain`, the trim edges in order from the corner `a` to the
+/// corner `cv`. Returns the new face and the trim's effective direction in
+/// it: `true` when the face runs it from `a` to `cv`.
+pub(super) fn retrim_flank(
+    topo: &mut Topology,
+    side: FaceId,
+    removed: [EdgeId; 2],
+    (a, cv): (VertexId, VertexId),
+    chain: &[EdgeId],
+) -> Result<(FaceId, bool), ThreadError> {
+    let invalid = |what: &str| ThreadError::invalid(format!("thread end construction: {what}"));
+    let data = topo.face(side)?.clone();
+    let old = topo.wire(data.outer_wire())?.edges().to_vec();
+    let m = old.len();
+    let Some(first) = (0..m)
+        .find(|&k| removed.contains(&old[k].edge()) && removed.contains(&old[(k + 1) % m].edge()))
+    else {
+        return Err(invalid(
+            "flank wire does not hold the removed pair together",
+        ));
+    };
+    let (from, _) = oriented_ends(topo, old[first])?;
+    let (_, to) = oriented_ends(topo, old[(first + 1) % m])?;
+    let forward = if from == a && to == cv {
+        true
+    } else if from == cv && to == a {
+        false
+    } else {
+        return Err(invalid("flank corners do not match the trim"));
+    };
+    let mut rebuilt = Vec::with_capacity(m + chain.len());
+    for k in 0..m {
+        if k == first {
+            if forward {
+                rebuilt.extend(chain.iter().map(|&edge| OrientedEdge::new(edge, true)));
+            } else {
+                rebuilt.extend(
+                    chain
+                        .iter()
+                        .rev()
+                        .map(|&edge| OrientedEdge::new(edge, false)),
+                );
+            }
+        } else if k != (first + 1) % m {
+            rebuilt.push(old[k]);
+        }
+    }
+    let wire_id = topo.add_wire(Wire::new(rebuilt, true)?);
+    let surface = data.surface().clone();
+    let face = topo.add_face(if data.is_reversed() {
+        Face::new_reversed(wire_id, vec![], surface)
+    } else {
+        Face::new(wire_id, vec![], surface)
+    });
+    Ok((face, forward != data.is_reversed()))
 }
 
 /// Cut the chamfer into `e`, the twisted extrusion across the zone where the
@@ -175,34 +289,15 @@ pub(super) fn chamfer_zone(
     seam: f64,
     rate: f64,
     tolerance: f64,
+    piece_roles: &[PieceRole],
+    side_of_thread: ThreadEndSide,
 ) -> Result<Zone, ThreadError> {
     let tol = Tolerance::new().linear;
     let scale = cone.crest.max(cone.root).max(1.0);
     let near = (1e-9 * scale).max(tol);
     let invalid = |what: &str| ThreadError::invalid(format!("chamfer construction: {what}"));
     let c = &e.construction;
-    let (wire, sides, seam_wall) = match cone.kind {
-        ThreadKind::External => (
-            &c.outer,
-            &c.outer_sides,
-            c.holes
-                .first()
-                .and_then(|h| h.sides.first())
-                .copied()
-                .ok_or_else(|| invalid("no seam wall"))?,
-        ),
-        ThreadKind::Internal => {
-            let hole = c.holes.first().ok_or_else(|| invalid("no thread wire"))?;
-            (
-                &hole.inner,
-                &hole.sides,
-                c.outer_sides
-                    .first()
-                    .copied()
-                    .ok_or_else(|| invalid("no seam wall"))?,
-            )
-        }
-    };
+    let (wire, sides, seam_wall) = thread_wire(c, cone.kind)?;
     let n = sides.len();
     let (root_verts, full_verts, root_edges, full_edges) = match root_side {
         RootSide::Bottom => (
@@ -219,7 +314,11 @@ pub(super) fn chamfer_zone(
         ),
     };
     let vertical = wire.vertical_edge_ids();
-    if root_verts.len() != n || full_verts.len() != n || vertical.len() != n {
+    if root_verts.len() != n
+        || full_verts.len() != n
+        || vertical.len() != n
+        || piece_roles.len() != n
+    {
         return Err(invalid("mismatched construction record"));
     }
     let radius_of = |topo: &Topology, v: VertexId| -> Result<f64, ThreadError> {
@@ -233,6 +332,7 @@ pub(super) fn chamfer_zone(
     let height_of = |p: Point3| (p - frame.origin).dot(frame.axis);
 
     let mut faces = Vec::new();
+    let mut roles = Vec::new();
     let mut zigzag: Vec<LoopEdge> = Vec::new();
     let mut trim_bound: f64 = 0.0;
     for i in 0..n {
@@ -253,6 +353,7 @@ pub(super) fn chamfer_zone(
         match role {
             Role::Root => {
                 faces.push(side);
+                roles.push((side, ThreadFaceRole::Root));
                 let used = effective_use(topo, side, root_edges[i])?
                     .ok_or_else(|| invalid("root face misses its arc"))?;
                 zigzag.push(LoopEdge {
@@ -302,43 +403,9 @@ pub(super) fn chamfer_zone(
                 // Replace the two consecutive edges the cone removes (the
                 // root-plane edge and the crest-side vertical) by the trim.
                 let removed = [root_edges[i], vertical[crest_at]];
-                let data = topo.face(side)?.clone();
-                let old = topo.wire(data.outer_wire())?.edges().to_vec();
-                let m = old.len();
-                let Some(first) = (0..m).find(|&k| {
-                    removed.contains(&old[k].edge()) && removed.contains(&old[(k + 1) % m].edge())
-                }) else {
-                    return Err(invalid(
-                        "flank wire does not hold the removed pair together",
-                    ));
-                };
-                let (from, _) = oriented_ends(topo, old[first])?;
-                let (_, to) = oriented_ends(topo, old[(first + 1) % m])?;
-                let forward = if from == a && to == cv {
-                    true
-                } else if from == cv && to == a {
-                    false
-                } else {
-                    return Err(invalid("flank corners do not match the trim"));
-                };
-                let mut rebuilt = Vec::with_capacity(m - 1);
-                for k in 0..m {
-                    if k == first {
-                        rebuilt.push(OrientedEdge::new(trim, forward));
-                    } else if k != (first + 1) % m {
-                        rebuilt.push(old[k]);
-                    }
-                }
-                // Keep the cyclic order starting after the inserted edge.
-                let wire_id = topo.add_wire(Wire::new(rebuilt, true)?);
-                let surface = data.surface().clone();
-                let face = topo.add_face(if data.is_reversed() {
-                    Face::new_reversed(wire_id, vec![], surface)
-                } else {
-                    Face::new(wire_id, vec![], surface)
-                });
+                let (face, used) = retrim_flank(topo, side, removed, (a, cv), &[trim])?;
                 faces.push(face);
-                let used = forward != data.is_reversed();
+                roles.push((face, piece_roles[i].into()));
                 zigzag.push(LoopEdge {
                     edge: trim,
                     effective: !used,
@@ -429,6 +496,7 @@ pub(super) fn chamfer_zone(
         Face::new(cone_wire, vec![], cone_surface)
     });
     faces.push(cone_face);
+    roles.push((cone_face, ThreadFaceRole::Chamfer(side_of_thread)));
     let end_circle_effective = zigzag_ccw == reversed;
 
     // The frustum's seam wall between the end plane and `e`'s seam circle on
@@ -506,10 +574,11 @@ pub(super) fn chamfer_zone(
         faces,
         walls,
         trim_bound,
+        roles,
     })
 }
 
-fn sample_mid(topo: &Topology, oe: OrientedEdge) -> Result<Point3, ThreadError> {
+pub(super) fn sample_mid(topo: &Topology, oe: OrientedEdge) -> Result<Point3, ThreadError> {
     let e = topo.edge(oe.edge())?;
     let (sp, ep) = (
         topo.vertex(e.start())?.point(),
@@ -525,7 +594,7 @@ fn sample_mid(topo: &Topology, oe: OrientedEdge) -> Result<Point3, ThreadError> 
 /// `turn` radians about the frame axis: radius, height and angle linear in
 /// `λ ∈ [0, 1]`. Returns the curve, its ends snapped to `pa` and `pc`, and
 /// its proven bound (with a rounding allowance).
-fn conical_helix(
+pub(super) fn conical_helix(
     frame: &Frame,
     pa: Point3,
     pc: Point3,

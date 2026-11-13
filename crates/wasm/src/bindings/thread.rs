@@ -23,15 +23,24 @@
 //!   "length": 8,                      // optional; default to the face end
 //!   "xDirection": [1, 0, 0], "phase": 0,
 //!   "tolerance": 1e-4,                // default 1e-4 · pitch
-//!   "start": { "kind": "plain" } | { "kind": "chamfer", "angle": 45 },
-//!   "end":   { "kind": "plain" } | { "kind": "chamfer", "angle": 45 }
+//!   "start": { "kind": "plain" } | { "kind": "chamfer", "angle": 45 }
+//!            | { "kind": "runout", "angle": 45 },
+//!   "end":   the same
 //! }
 //! ```
 //!
-//! A `chamfer` end cuts the thread with a cone from just inside the root on
-//! the end plane, `angle` degrees from the axis, so the first turn tapers out
-//! instead of ending in a full-depth wedge; a chamfered end must be the end
-//! of the face.
+//! A `chamfer` end at the end of the face cuts the thread with a cone from
+//! just inside the root on the end plane, `angle` degrees from the axis, so
+//! the first turn tapers out instead of ending in a full-depth wedge.
+//!
+//! At an end that stops short of the face's end (`offset > 0`, or
+//! `offset + length` less than the face's length) the same `chamfer` builds a
+//! runout instead: the cone sits on the crest at the end plane and falls to
+//! the root `depth / tan(angle)` into the thread, so the groove fades out
+//! against the collar with no undercut. `runout` asks for that finish by
+//! name, at either kind of end: use it where the thread ends at the end of
+//! the face against a shoulder. `details.geometry.start` / `.end` report
+//! what was built.
 //!
 //! The root flat is what the crest and flanks leave of the pitch. An
 //! external thread's crest is its major diameter, an internal thread's its
@@ -41,11 +50,23 @@
 //!
 //! Details on success: `quality` (`"approximate"`, `approximated`
 //! `"helical thread surfaces"`), `deviationBound`, `spansAlongAxis`,
-//! `spansPerFlank` and
+//! `spansPerFlank`,
 //! `geometry` (`kind`, `majorDiameter`, `minorDiameter`, `pitch`, `lead`,
-//! `crestWidth`, `rootWidth`, `leadAngle` in degrees, `length`, `turns`).
+//! `crestWidth`, `rootWidth`, `leadAngle` in degrees, `length`, `turns`, and
+//! `start` / `end`: `{ "kind": "plain" }` or
+//! `{ "kind": "chamfer" | "runout", "length": <axial reach> }`) and
+//! `faceRoles`, a `{face, role}` entry per thread face of the result. Roles
+//! are `crest`, `root`, `flank.upper` (facing the thread's end),
+//! `flank.lower`, `chamfer.start` / `chamfer.end` (the chamfer's cone) and
+//! `runout.start` / `runout.end` (the pieces of the runout's cone). A thread
+//! is a stack of half-turn segments, so many faces share a role. The list is
+//! complete when the thread is glued on, which every supported end
+//! configuration is; a thread that had to be fused keeps only the faces the
+//! fuse carried over one to one.
+//!
 //! Refusals carry a `thread:<reason>` code (see
-//! [`ThreadRefusal::code`]) and leave the session unchanged.
+//! [`ThreadRefusal::code`]) and leave the session unchanged. End finishes
+//! that reach past each other refuse with `thread:ends-overlap`.
 
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -54,12 +75,12 @@ use wasm_bindgen::prelude::*;
 
 use remus_math::vec::Vec3;
 use remus_operations::thread::{
-    CylinderThreadOptions, ThreadEnd, ThreadError, ThreadForm, ThreadGeometry, ThreadHand,
-    ThreadKind, ThreadOutcome, ThreadRefusal, cut_thread,
+    CylinderThreadOptions, ThreadEnd, ThreadEndGeometry, ThreadError, ThreadForm, ThreadGeometry,
+    ThreadHand, ThreadKind, ThreadOutcome, ThreadRefusal, cut_thread,
 };
 
 use crate::error::StructuredWasmError;
-use crate::handles::solid_id_to_u32;
+use crate::handles::{face_id_to_u32, solid_id_to_u32};
 use crate::kernel::RemusKernel;
 use crate::types::SolidOperationDetailedResult;
 
@@ -79,6 +100,9 @@ enum EndSpec {
     Chamfer {
         angle: f64,
     },
+    Runout {
+        angle: f64,
+    },
 }
 
 impl From<EndSpec> for ThreadEnd {
@@ -86,6 +110,9 @@ impl From<EndSpec> for ThreadEnd {
         match end {
             EndSpec::Plain => Self::Plain,
             EndSpec::Chamfer { angle } => Self::Chamfer {
+                angle: angle.to_radians(),
+            },
+            EndSpec::Runout { angle } => Self::Runout {
                 angle: angle.to_radians(),
             },
         }
@@ -151,6 +178,14 @@ impl ThreadSpec {
     }
 }
 
+fn end_json(end: ThreadEndGeometry) -> Value {
+    match end {
+        ThreadEndGeometry::Plain => json!({ "kind": "plain" }),
+        ThreadEndGeometry::Chamfer { length } => json!({ "kind": "chamfer", "length": length }),
+        ThreadEndGeometry::Runout { length } => json!({ "kind": "runout", "length": length }),
+    }
+}
+
 fn geometry_json(geometry: &ThreadGeometry) -> Value {
     json!({
         "kind": match geometry.kind {
@@ -166,6 +201,8 @@ fn geometry_json(geometry: &ThreadGeometry) -> Value {
         "leadAngle": geometry.lead_angle.to_degrees(),
         "length": geometry.length,
         "turns": geometry.turns,
+        "start": end_json(geometry.start),
+        "end": end_json(geometry.end),
     })
 }
 
@@ -186,6 +223,16 @@ fn outcome_details(outcome: &ThreadOutcome) -> Map<String, Value> {
     );
     details.insert("spansPerFlank".into(), Value::from(outcome.spans_per_flank));
     details.insert("geometry".into(), geometry_json(&outcome.geometry));
+    details.insert(
+        "faceRoles".into(),
+        Value::Array(
+            outcome
+                .face_roles
+                .iter()
+                .map(|(face, role)| json!({ "face": face_id_to_u32(*face), "role": role.name() }))
+                .collect(),
+        ),
+    );
     details
 }
 
@@ -193,7 +240,7 @@ fn thread_failure(error: ThreadError) -> StructuredWasmError {
     match error {
         ThreadError::Refused { code, reason } => {
             let argument = match code {
-                ThreadRefusal::SpanOutsideFace => Some("length"),
+                ThreadRefusal::SpanOutsideFace | ThreadRefusal::EndsOverlap => Some("length"),
                 ThreadRefusal::CylinderTooSmall | ThreadRefusal::BoreTooLarge => {
                     Some("majorDiameter")
                 }
