@@ -69,7 +69,14 @@ jobs:
             echo 'Commit metadata range is unavailable.' >&2
             exit 1
           fi
-          python3 scripts/check_public_commit_metadata.py --base "$base" --head "$head"
+          checker=scripts/check_public_commit_metadata.py
+          if [[ "$EVENT_NAME" == pull_request ]]; then
+            # A PR could relax the checker in the diff it checks, so run the
+            # base commit's copy. The tests below still exercise this one.
+            checker="$RUNNER_TEMP/check_public_commit_metadata.py"
+            git show "$base:scripts/check_public_commit_metadata.py" > "$checker"
+          fi
+          python3 "$checker" --base "$base" --head "$head"
       - name: Test metadata policy with synthetic identities
         run: python3 -m unittest discover -s scripts -p 'test_check_public_commit_metadata.py'
 

@@ -1,6 +1,9 @@
+import os
+import subprocess
+import tempfile
 import unittest
 
-from check_public_commit_metadata import validate_commits, validate_identity
+from check_public_commit_metadata import read_commits, validate_commits, validate_identity
 
 
 class PublicCommitMetadataTests(unittest.TestCase):
@@ -80,6 +83,90 @@ class PublicCommitMetadataTests(unittest.TestCase):
         self.assertEqual(findings[0], "0123456789ab: author email must use a GitHub noreply domain or an approved public bot identity")
         self.assertEqual(findings[1], "0123456789ab: committer email must use a GitHub noreply domain or an approved public bot identity")
         self.assertNotIn("private@example.com", "\n".join(findings))
+
+    def commit(self, message):
+        return {
+            "hash": "0123456789abcdef",
+            "author_name": "Ada Lovelace", "author_email": "123+ada@users.noreply.github.com",
+            "committer_name": "GitHub", "committer_email": "noreply@github.com",
+            "message": message,
+        }
+
+    def test_accepts_public_identity_trailers(self):
+        message = (
+            "feat: subject\n\nBody.\n\n"
+            "Co-authored-by: Ada Lovelace <123+ada@users.noreply.github.com>\n"
+            "co-authored-by: Claude <noreply@anthropic.com>\n"
+            "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n"
+            "Co-authored-by: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>\n"
+            "Signed-off-by: Ada Lovelace <123+ada@users.noreply.github.com>\n"
+            "Signed-off-by: dependabot[bot] <support@github.com>\n"
+        )
+        self.assertEqual(validate_commits([self.commit(message)]), [])
+        # A message without trailers, or a commit read without one, still passes.
+        self.assertEqual(validate_commits([self.commit("fix: no trailers")]), [])
+        commit = self.commit("")
+        del commit["message"]
+        self.assertEqual(validate_commits([commit]), [])
+
+    def test_rejects_private_trailer_identities_without_disclosing_them(self):
+        for trailer, problem in (
+            ("Co-authored-by: Ada Lovelace <private@example.com>", "co-authored-by trailer email must use "),
+            ("Signed-off-by: Ada Lovelace <private@example.com>", "signed-off-by trailer email must use "),
+            ("CO-AUTHORED-BY:Ada Lovelace <private@example.com>", "co-authored-by trailer email must use "),
+            ("  Co-authored-by: Ada Lovelace <private@example.com>", "co-authored-by trailer email must use "),
+            ("Co-authored-by: Example Person <noreply@anthropic.com>", "co-authored-by trailer email must use "),
+            ("Co-authored-by: Claude Opus 5.5 extra <noreply@anthropic.com>", "co-authored-by trailer email must use "),
+            ("Signed-off-by: Example Person <support@github.com>", "signed-off-by trailer email must use "),
+            ("Co-authored-by: Your Name <123+ada@users.noreply.github.com>", "co-authored-by trailer name is an obvious placeholder"),
+            ("Co-authored-by: Ada Lovelace private@example.com", "co-authored-by trailer is not of the form"),
+            ("Signed-off-by: <123+ada@users.noreply.github.com>", "signed-off-by trailer name is blank"),
+        ):
+            with self.subTest(trailer=trailer):
+                # A trailer outside the final paragraph is still checked.
+                findings = validate_commits([self.commit(f"feat: subject\n\n{trailer}\n\nMore body.")])
+                self.assertEqual(len(findings), 1, findings)
+                self.assertTrue(findings[0].startswith("0123456789ab: " + problem), findings[0])
+                self.assertNotIn("private@example.com", "\n".join(findings))
+
+    def test_reports_each_bad_trailer_alongside_author_findings(self):
+        commit = self.commit(
+            "feat: subject\n\n"
+            "Co-authored-by: One <one@example.com>\n"
+            "Signed-off-by: Two <two@example.com>\n"
+        )
+        commit["author_email"] = "author@example.com"
+        findings = validate_commits([commit])
+        self.assertEqual([finding.split(": ", 1)[1].split(" ", 2)[:2] for finding in findings],
+                         [["author", "email"], ["co-authored-by", "trailer"], ["signed-off-by", "trailer"]])
+
+    def test_reads_messages_from_git(self):
+        with tempfile.TemporaryDirectory() as directory:
+            def git(*args):
+                return subprocess.run(["git", "-C", directory, *args], check=True,
+                                      capture_output=True, text=True).stdout.strip()
+
+            env = dict(os.environ, GIT_AUTHOR_NAME="Ada Lovelace",
+                       GIT_AUTHOR_EMAIL="123+ada@users.noreply.github.com",
+                       GIT_COMMITTER_NAME="Ada Lovelace",
+                       GIT_COMMITTER_EMAIL="123+ada@users.noreply.github.com")
+            git("init", "-q")
+            # commit-tree writes commits without running any hook.
+            tree = git("write-tree")
+            base = subprocess.run(["git", "-C", directory, "commit-tree", tree, "-m", "chore: base"],
+                                  check=True, env=env, capture_output=True, text=True).stdout.strip()
+            head = subprocess.run(["git", "-C", directory, "commit-tree", tree, "-p", base, "-m",
+                                   "feat: change\n\nCo-authored-by: One <one@example.com>"],
+                                  check=True, env=env, capture_output=True, text=True).stdout.strip()
+            cwd = os.getcwd()
+            os.chdir(directory)
+            try:
+                commits = read_commits(base, head)
+            finally:
+                os.chdir(cwd)
+        self.assertEqual(len(commits), 1)
+        self.assertIn("Co-authored-by: One <one@example.com>", commits[0]["message"])
+        self.assertEqual(len(validate_commits(commits)), 1)
 
 
 if __name__ == "__main__":
