@@ -8,6 +8,15 @@ historical predecessor-line records, retained for provenance. The
 
 ### Fixed
 
+* **operations:** a chamfered thread end is valid on deep forms and wide
+  flanks. The chamfer's cone loop read its winding off the midpoint of each
+  flank trim, which loses a whole turn once a trim turns more than once
+  about the axis (a form `0.8·P` deep under a 45° chamfer, as on a pipe
+  thread): the cone's end circle came out wound the wrong way, which put a
+  boss's volume 1.1% off on a body that still validated. A flank covering
+  more than half a lead had its own angular run read the shorter way round,
+  and its chamfered body did not mesh watertight. Both are now read from the
+  trims' own turns and along the flank's edge.
 * **operations:** a unified torus intersection can retain band boundaries
   and seam slits as closed wires touching at vertices. Display, grouped and
   per-face tessellation now join those cycles into the same boundary walk
@@ -310,6 +319,33 @@ historical predecessor-line records, retained for provenance. The
   result, so a resize of a boss on a sphere or a blind bore in one is told
   apart from other failures without parsing the message. Adding the field
   breaks native code that constructs the variant or matches it without `..`.
+* **operations,math,wasm:** `cut_thread` / `cutThreadDetailed` cut tapered
+  (pipe) threads: `CylinderThreadOptions::taper` / spec
+  `taper: { ratio, smallEnd: "start" | "end", gaugeOffset? }`, with
+  `majorDiameter` the major diameter on the gauge plane. The thread is cut
+  from a cylindrical face (a male taper on a boss, a female one in a bore; a
+  cone face still refuses with `thread:not-a-cylinder`), so the band proof
+  stays exact and the kernel cuts the taper with the thread. Crest and root
+  lands are exact cones; flanks are conical screw surfaces, certified fits
+  of the sweep that carries every flank point along its own radius
+  (`nurbs::conical_screw`, `extrude::conical_twist`). Flank angles are those
+  of the axial section and the pitch is along the axis, as NPT (60°, 1:16)
+  and BSPT R/Rc (55°, 1:16) measure them; `ThreadForm::npt` and
+  `ThreadForm::bspt` give those forms. **The BSPT profile is approximate:**
+  the standard's rounded crests and roots are flats at the standard's major
+  and minor diameters (up to `0.024·P` off inside those arcs). A tapered
+  thread takes chamfered and runout ends like a cylindrical one.
+  `details.geometry` gains `taperAngle` (half-angle, degrees) and
+  `majorDiameterAtStart|AtEnd`, `minorDiameterAtStart|AtEnd`. A ratio outside
+  `[0.001, 0.25]` refuses with `thread:taper-out-of-range` (below 1 in 1000
+  the lands' cone faces are too slender to evaluate to the reported bound);
+  `thread:cylinder-too-small` is decided at an external thread's large end
+  and `thread:bore-too-large` and `thread:too-deep` at the small end. Not
+  covered: a pipe thread carried past where its major cone meets the pipe
+  (the standard's imperfect threads), which refuses with
+  `thread:cylinder-too-small`; parallel Rp / NPS threads are ordinary
+  cylindrical threads. Native `CylinderThreadOptions` and `ThreadGeometry`
+  gain fields.
 * **operations,wasm:** a thread that stops short of the end of its face can
   run out against the collar. The existing `start` / `end`
   `{ "kind": "chamfer", "angle": 45 }` used to refuse there

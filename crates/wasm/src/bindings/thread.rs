@@ -25,7 +25,12 @@
 //!   "tolerance": 1e-4,                // default 1e-4 · pitch
 //!   "start": { "kind": "plain" } | { "kind": "chamfer", "angle": 45 }
 //!            | { "kind": "runout", "angle": 45 },
-//!   "end":   the same
+//!   "end":   the same,
+//!   "taper": {                        // optional: a pipe thread
+//!     "ratio": 0.0625,                // diameter per unit length (1:16)
+//!     "smallEnd": "start" | "end",
+//!     "gaugeOffset": 5.79             // optional; from the small end
+//!   }
 //! }
 //! ```
 //!
@@ -48,15 +53,51 @@
 //! (external crest, internal root). Without it an external crest sits on the
 //! boss and an internal crest on the bore.
 //!
+//! `taper` cuts a tapered (pipe) thread from the same cylindrical face: a
+//! male taper on a boss, a female one in a bore (a cone face still refuses
+//! with `thread:not-a-cylinder`). Every diameter grows `ratio` per unit of
+//! length from the `smallEnd` (`start` is the thread's end nearer the face's
+//! lower end, like `offset`); crest and root lands are exact cones.
+//! `majorDiameter` is then the major diameter on the gauge plane,
+//! `gaugeOffset` from the small end toward the large end (default 0: at the
+//! small end; it may lie outside the thread). Without `majorDiameter` an
+//! external crest sits on the boss at the large end and an internal crest on
+//! the bore at the small end. Flank angles are those of the axial section,
+//! from the plane across the axis, and `pitch` is along the axis, as NPT and
+//! BSPT measure them. The thread must fit the cylinder at both ends:
+//! `thread:cylinder-too-small` is decided at an external thread's large end,
+//! `thread:bore-too-large` and `thread:too-deep` at the small end. A ratio
+//! outside `[0.001, 0.25]` refuses with `thread:taper-out-of-range`: below
+//! 1 in 1000 the lands' cones are too slender to evaluate to the reported
+//! bound, and such a thread is cylindrical to any tolerance that matters.
+//!
+//! Pipe-thread forms, with `P` the pitch (`25.4 / tpi` in millimetres) and
+//! `ratio: 0.0625`:
+//!
+//! - NPT (ASME B1.20.1): `depth: 0.8·P`, `crestWidth: 0.03812·P`, both flank
+//!   angles 30.
+//! - BSPT (ISO 7-1, R and Rc): `depth: 0.640327·P`, `crestWidth: P/6`, both
+//!   flank angles 27.5. This profile is approximate: the standard's rounded
+//!   crests and roots are flats here, at the standard's major and minor
+//!   diameters, so it differs from the standard only inside those arcs (by
+//!   up to `0.024·P`).
+//!
+//! Parallel pipe threads (Rp, NPS) are ordinary cylindrical threads: leave
+//! `taper` out.
+//!
 //! Details on success: `quality` (`"approximate"`, `approximated`
 //! `"helical thread surfaces"`), `deviationBound`, `spansAlongAxis`,
 //! `spansPerFlank`,
 //! `geometry` (`kind`, `majorDiameter`, `minorDiameter`, `pitch`, `lead`,
-//! `crestWidth`, `rootWidth`, `leadAngle` in degrees, `length`, `turns`, and
+//! `crestWidth`, `rootWidth`, `leadAngle` in degrees, `length`, `turns`,
+//! `taperAngle` (the cones' half-angle in degrees, 0 without a taper),
+//! `majorDiameterAtStart` / `AtEnd` and `minorDiameterAtStart` / `AtEnd`
+//! (`majorDiameter` and `minorDiameter` are those on the gauge plane), and
 //! `start` / `end`: `{ "kind": "plain" }` or
 //! `{ "kind": "chamfer" | "runout", "length": <axial reach> }`) and
 //! `faceRoles`, a `{face, role}` entry per thread face of the result. Roles
-//! are `crest`, `root`, `flank.upper` (facing the thread's end),
+//! are `crest`, `root` (cones on a tapered thread), `flank.upper` (facing
+//! the thread's end),
 //! `flank.lower`, `chamfer.start` / `chamfer.end` (the chamfer's cone) and
 //! `runout.start` / `runout.end` (the pieces of the runout's cone). A thread
 //! is a stack of half-turn segments, so many faces share a role. The list is
@@ -75,8 +116,8 @@ use wasm_bindgen::prelude::*;
 
 use remus_math::vec::Vec3;
 use remus_operations::thread::{
-    CylinderThreadOptions, ThreadEnd, ThreadEndGeometry, ThreadError, ThreadForm, ThreadGeometry,
-    ThreadHand, ThreadKind, ThreadOutcome, ThreadRefusal, cut_thread,
+    CylinderThreadOptions, ThreadEnd, ThreadEndGeometry, ThreadEndSide, ThreadError, ThreadForm,
+    ThreadGeometry, ThreadHand, ThreadKind, ThreadOutcome, ThreadRefusal, ThreadTaper, cut_thread,
 };
 
 use crate::error::StructuredWasmError;
@@ -119,6 +160,34 @@ impl From<EndSpec> for ThreadEnd {
     }
 }
 
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum SmallEndSpec {
+    Start,
+    End,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct TaperSpec {
+    ratio: f64,
+    small_end: SmallEndSpec,
+    gauge_offset: Option<f64>,
+}
+
+impl From<TaperSpec> for ThreadTaper {
+    fn from(taper: TaperSpec) -> Self {
+        Self {
+            ratio: taper.ratio,
+            small_end: match taper.small_end {
+                SmallEndSpec::Start => ThreadEndSide::Start,
+                SmallEndSpec::End => ThreadEndSide::End,
+            },
+            gauge_offset: taper.gauge_offset,
+        }
+    }
+}
+
 const fn default_starts() -> u32 {
     1
 }
@@ -148,6 +217,7 @@ struct ThreadSpec {
     start: EndSpec,
     #[serde(default)]
     end: EndSpec,
+    taper: Option<TaperSpec>,
 }
 
 impl ThreadSpec {
@@ -173,6 +243,7 @@ impl ThreadSpec {
             tolerance: self.tolerance,
             start: self.start.into(),
             end: self.end.into(),
+            taper: self.taper.map(Into::into),
         };
         (form, options)
     }
@@ -201,6 +272,11 @@ fn geometry_json(geometry: &ThreadGeometry) -> Value {
         "leadAngle": geometry.lead_angle.to_degrees(),
         "length": geometry.length,
         "turns": geometry.turns,
+        "taperAngle": geometry.taper_angle.to_degrees(),
+        "majorDiameterAtStart": geometry.start_major_diameter,
+        "majorDiameterAtEnd": geometry.end_major_diameter,
+        "minorDiameterAtStart": geometry.start_minor_diameter,
+        "minorDiameterAtEnd": geometry.end_minor_diameter,
         "start": end_json(geometry.start),
         "end": end_json(geometry.end),
     })
@@ -247,6 +323,7 @@ fn thread_failure(error: ThreadError) -> StructuredWasmError {
                 ThreadRefusal::RootClosed => Some("crestWidth"),
                 ThreadRefusal::TooDeep => Some("depth"),
                 ThreadRefusal::ToleranceTooTight => Some("tolerance"),
+                ThreadRefusal::TaperOutOfRange => Some("taper"),
                 _ => None,
             };
             StructuredWasmError::invalid_argument(

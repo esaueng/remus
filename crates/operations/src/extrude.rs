@@ -1888,6 +1888,7 @@ fn reverse_edge_curve(curve: &EdgeCurve) -> Result<EdgeCurve, crate::OperationsE
     })
 }
 
+pub(crate) mod conical_twist;
 pub(crate) mod nesting;
 use nesting::{orient_profile_wire, profile_regions, region_caps};
 pub(crate) mod taper;

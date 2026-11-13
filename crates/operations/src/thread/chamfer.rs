@@ -59,9 +59,12 @@ pub(super) enum RootSide {
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Cone {
     pub(super) kind: ThreadKind,
-    /// The thread's crest and root radii.
+    /// The thread's crest and root radii on the end plane.
     pub(super) crest: f64,
     pub(super) root: f64,
+    /// What a tapered thread's crest and root radii gain per unit of height
+    /// up the frame axis; zero for a cylindrical thread.
+    pub(super) taper: f64,
     /// Radius of the cone on the end plane: just inside the root.
     pub(super) at_end: f64,
     /// `tan` of the cone's angle from the axis.
@@ -80,14 +83,38 @@ pub(super) struct Cone {
 impl Cone {
     /// Height of the root plane: where the cone reaches the root.
     pub(super) fn root_z(&self) -> f64 {
-        self.inward
-            .mul_add((self.root - self.at_end).abs() / self.slope, self.end_z)
+        self.meets(self.root)
     }
 
     /// Height of the full plane: where the cone clears the crest.
     pub(super) fn full_z(&self) -> f64 {
-        self.inward
-            .mul_add((self.crest - self.at_end).abs() / self.slope, self.end_z)
+        self.meets(self.crest)
+    }
+
+    /// What the cone's radius gains per unit of height up the frame axis.
+    fn rate(&self) -> f64 {
+        self.widening() * self.slope
+    }
+
+    /// Height where the cone meets the thread's line (its crest or its
+    /// root) through `radius` on the end plane. On a tapered thread that
+    /// line climbs with the taper, so the cone closes on it at the
+    /// difference of the two rates.
+    fn meets(&self, radius: f64) -> f64 {
+        #[allow(clippy::float_cmp)]
+        if self.taper == 0.0 {
+            return self
+                .inward
+                .mul_add((radius - self.at_end).abs() / self.slope, self.end_z);
+        }
+        self.end_z + (radius - self.at_end) / (self.rate() - self.taper)
+    }
+
+    /// Whether the cone closes on the thread going into it. A cone no
+    /// steeper than the taper it runs along never crosses the thread.
+    pub(super) fn closes(&self) -> bool {
+        let closing = self.rate() - self.taper;
+        closing * self.rate() > 0.0 && closing.abs() > 1e-6 * self.slope
     }
 
     /// `+1` when the cone widens up the frame axis, `-1` when down it.
@@ -334,20 +361,15 @@ pub(super) fn chamfer_zone(
     let mut faces = Vec::new();
     let mut roles = Vec::new();
     let mut zigzag: Vec<LoopEdge> = Vec::new();
+    // The turn of each trim about the axis from its start to its end.
+    let mut trim_turns: std::collections::BTreeMap<usize, f64> = std::collections::BTreeMap::new();
     let mut trim_bound: f64 = 0.0;
     for i in 0..n {
         let j = (i + 1) % n;
-        let role = match topo.edge(wire.edge_ids()[i])?.curve() {
-            EdgeCurve::Circle(circle) if (circle.radius() - cone.crest).abs() <= near => {
-                Role::Crest
-            }
-            EdgeCurve::Circle(circle) if (circle.radius() - cone.root).abs() <= near => Role::Root,
-            EdgeCurve::Circle(_) => return Err(invalid("an arc off the crest and root")),
-            EdgeCurve::Line
-            | EdgeCurve::NurbsCurve(_)
-            | EdgeCurve::Ellipse(_)
-            | EdgeCurve::Hyperbola(_)
-            | EdgeCurve::Parabola(_) => Role::Flank,
+        let role = match piece_roles[i] {
+            PieceRole::Crest => Role::Crest,
+            PieceRole::Root => Role::Root,
+            PieceRole::UpperFlank | PieceRole::LowerFlank => Role::Flank,
         };
         let side = sides[i];
         match role {
@@ -372,8 +394,10 @@ pub(super) fn chamfer_zone(
                 });
             }
             Role::Flank => {
+                // The root is the smaller radius outside, the larger inside.
                 let ri = radius_of(topo, wire.verts()[i])?;
-                let (root_at, crest_at) = if (ri - cone.root).abs() <= near {
+                let rj = radius_of(topo, wire.verts()[j])?;
+                let (root_at, crest_at) = if (ri < rj) == (cone.kind == ThreadKind::External) {
                     (i, j)
                 } else {
                     (j, i)
@@ -381,14 +405,10 @@ pub(super) fn chamfer_zone(
                 let a = root_verts[root_at];
                 let cv = full_verts[crest_at];
                 let (pa, pc) = (topo.vertex(a)?.point(), topo.vertex(cv)?.point());
-                // The flank's own angular run, measured on one plane (the
-                // vertices below `a` and `cv` on the profile plane), plus the
-                // turn between the two planes.
-                let (pa0, pc0) = (
-                    topo.vertex(wire.verts()[root_at])?.point(),
-                    topo.vertex(wire.verts()[crest_at])?.point(),
-                );
-                let span = (angle_of(pc0) - angle_of(pa0) + PI).rem_euclid(TAU) - PI;
+                // The flank's own angular run, measured on one plane (along
+                // its edge on the profile plane), plus the turn between the
+                // two planes.
+                let span = edge_run(topo, frame, wire.edge_ids()[i], wire.verts()[root_at])?;
                 let rise = height_of(pc) - height_of(pa);
                 let expected = rate.mul_add(rise, span);
                 let raw = angle_of(pc) - angle_of(pa);
@@ -400,6 +420,7 @@ pub(super) fn chamfer_zone(
                     Edge::with_tolerance(a, cv, EdgeCurve::NurbsCurve(fit.clone()), Some(edge_tol));
                 trim.set_trim(Some(fit.domain()));
                 let trim = topo.add_edge(trim);
+                trim_turns.insert(trim.index(), turn);
                 // Replace the two consecutive edges the cone removes (the
                 // root-plane edge and the crest-side vertical) by the trim.
                 let removed = [root_edges[i], vertical[crest_at]];
@@ -459,14 +480,16 @@ pub(super) fn chamfer_zone(
         current = oriented.swap_remove(next);
     }
     // Which way the zigzag turns about the axis.
+    // A trim can turn more than once about the axis (a deep thread under a
+    // shallow cone), which no reading of its midpoint recovers: its turn is
+    // the one it was built with. An arc turns less than once.
     let mut turned = 0.0;
     for oe in &walk {
-        let (s, t) = oriented_ends(topo, *oe)?;
-        let (ps, pt) = (topo.vertex(s)?.point(), topo.vertex(t)?.point());
-        let mid = sample_mid(topo, *oe)?;
-        let d1 = (angle_of(mid) - angle_of(ps) + PI).rem_euclid(TAU) - PI;
-        let d2 = (angle_of(pt) - angle_of(mid) + PI).rem_euclid(TAU) - PI;
-        turned += d1 + d2;
+        turned += match trim_turns.get(&oe.edge().index()) {
+            Some(&turn) if oe.is_forward() => turn,
+            Some(&turn) => -turn,
+            None => edge_run(topo, frame, oe.edge(), oriented_ends(topo, *oe)?.0)?,
+        };
     }
     let zigzag_ccw = turned > 0.0;
 
@@ -576,6 +599,35 @@ pub(super) fn chamfer_zone(
         trim_bound,
         roles,
     })
+}
+
+/// The angle `edge` turns about the frame axis from its vertex `from` to
+/// its other end, read in two half steps so that a run of up to a full turn
+/// keeps its sign.
+pub(super) fn edge_run(
+    topo: &Topology,
+    frame: &Frame,
+    edge: EdgeId,
+    from: VertexId,
+) -> Result<f64, ThreadError> {
+    let angle_of = |p: Point3| {
+        let offset = p - frame.origin;
+        offset.dot(frame.y).atan2(offset.dot(frame.x))
+    };
+    let wrap = |angle: f64| (angle + PI).rem_euclid(TAU) - PI;
+    let data = topo.edge(edge)?;
+    let forward = data.start() == from;
+    let (first, last) = if forward {
+        (data.start(), data.end())
+    } else {
+        (data.end(), data.start())
+    };
+    let (a, b) = (
+        angle_of(topo.vertex(first)?.point()),
+        angle_of(topo.vertex(last)?.point()),
+    );
+    let mid = angle_of(sample_mid(topo, OrientedEdge::new(edge, forward))?);
+    Ok(wrap(mid - a) + wrap(b - mid))
 }
 
 pub(super) fn sample_mid(topo: &Topology, oe: OrientedEdge) -> Result<Point3, ThreadError> {
