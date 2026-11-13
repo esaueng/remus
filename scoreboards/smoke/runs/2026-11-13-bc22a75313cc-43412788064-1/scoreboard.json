@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "models": 50,
+  "passed": 42,
+  "failed": 8,
+  "stages": {
+    "boolean": {
+      "passed": 43,
+      "failed": 7
+    },
+    "read": {
+      "passed": 44,
+      "failed": 6
+    },
+    "round_trip": {
+      "passed": 42,
+      "failed": 8
+    },
+    "tessellate": {
+      "passed": 42,
+      "failed": 8
+    },
+    "validate": {
+      "passed": 44,
+      "failed": 6
+    }
+  },
+  "failure_categories": {
+    "invalid_input": 6,
+    "invalid_topology": 1,
+    "tolerance_violation": 1
+  },
+  "failure_details": {
+    "first_failure_codes": {
+      "boolean": {
+        "operation_invalid_topology": 1
+      },
+      "read": {
+        "step_parse_error": 6
+      },
+      "tessellate": {
+        "tessellation_not_watertight": 1
+      }
+    },
+    "import_families": {
+      "endpoint_authority": 5,
+      "face_boundary": 1
+    }
+  },
+  "boolean_exact": 18,
+  "boolean_approximate": 25
+}
