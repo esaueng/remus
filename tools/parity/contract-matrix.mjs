@@ -800,16 +800,24 @@ function resolveReferences(args, okValues) {
 // binding, in order, on the same kernel, and each item commits or rolls back
 // on its own either way, so splitting changes no per-op semantics. Cells
 // without references stay one call. The native runner resolves the same
-// references in `resolve_ref`. Returns the responses in batch order.
+// references in `resolve_ref`. Returns the responses in batch order, with
+// each error's `details.operationIndex` (which `executeBatchV2` counts from 0
+// in every call) moved back to the op's index in the whole batch, as the
+// native runner reports it.
 export function executeContractBatch(kernel, batch) {
   const responses = [];
   const okValues = [];
   let pending = [];
   const flush = () => {
     if (pending.length === 0) return true;
+    const offset = responses.length;
     const out = JSON.parse(kernel.executeBatchV2(JSON.stringify(pending)));
     const complete = Array.isArray(out) && out.length === pending.length;
     for (const response of Array.isArray(out) ? out : [out]) {
+      const details = response?.error?.details;
+      if (offset > 0 && details && Number.isInteger(details.operationIndex)) {
+        details.operationIndex += offset;
+      }
       responses.push(response);
       okValues.push(response?.ok);
     }

@@ -629,7 +629,9 @@ test('the kernel class resolves from renamed and pre-rename packages', async () 
 // package's arena for the near-tangent fuse (2026.1.135): the rejected exact
 // pass leaves a lone cylinder at handle 2 (3 faces, volume 250π) and the
 // disclosed fallback fuse lands at handle 4 (94 faces). Like the real
-// binding it cannot resolve a `{fromOp}` argument and refuses it.
+// binding it cannot resolve a `{fromOp}` argument and refuses it, and it
+// stamps each error with the op's index within the call
+// (`details.operationIndex`, from 0 in every call).
 function writeArenaKernel(t) {
   const root = mkdtempSync(resolve(tmpdir(), 'remus contract arena '));
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -641,7 +643,13 @@ function writeArenaKernel(t) {
       executeBatchV2(json) {
         const items = JSON.parse(json);
         calls.push(items);
-        return JSON.stringify(items.map((item) => this.run(item)));
+        return JSON.stringify(items.map((item, operationIndex) => {
+          const response = this.run(item);
+          if (response.error) {
+            response.error.details = { ...response.error.details, operationIndex, operation: item.op };
+          }
+          return response;
+        }));
       }
       solid(args) {
         if (!Number.isInteger(args.solid)) {
@@ -734,6 +742,31 @@ test('a refused boolean keeps its queries on the unallocated handle, so diagnost
   assert.deepEqual(
     observation.diagnosticCodes,
     ['operation_failed', 'invalid_handle', 'invalid_handle', 'invalid_handle', 'invalid_handle'],
+  );
+});
+
+test('a split batch reports each error at its index in the whole batch, as the native runner does', (t) => {
+  const { entry, calls } = writeArenaKernel(t);
+  const { RemusKernel } = createRequire(import.meta.url)(entry);
+  const c = expandContractMatrix().find(({ id }) => id === 'contract/exact-only-refusal');
+  calls.length = 0;
+  const kernel = new RemusKernel();
+  const responses = executeContractBatch(kernel, c.batch);
+  // The queries waited for the boolean's answer, so they went out in a
+  // second call whose own indices start again at 0.
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].length, 4);
+  const errors = responses.flatMap((response, index) => (response.error ? [[index, response.error]] : []));
+  assert.deepEqual(errors.map(([, error]) => error.code), [
+    'operation_failed', 'invalid_handle', 'invalid_handle', 'invalid_handle', 'invalid_handle',
+  ]);
+  for (const [index, error] of errors) {
+    assert.equal(error.details.operationIndex, index, `${error.code} at batch index ${index}`);
+    assert.equal(error.details.operation, c.batch[index].op);
+  }
+  assert.deepEqual(
+    errors.slice(1).map(([index]) => index),
+    [c.volumeIndex, c.validationIndex, c.meshQualityIndex, c.facesIndex],
   );
 });
 
