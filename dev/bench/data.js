@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794497960682,
+  "lastUpdate": 1794581781431,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -144109,6 +144109,304 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 80990,
             "range": "± 3117",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Peter",
+            "username": "petertoday",
+            "email": "171875562+petertoday@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "c561c7d9652f159771e008c112cf202adedd8ba8",
+          "message": "perf(check): lay a NURBS face's iso-curve edges down as chords (#1699)\n\n## Change\n\nFollow-up to #1692 and #1694 (roadmap owner row\n[B30](https://github.com/esaueng/remus/blob/main/docs/kernel-maturity/roadmap.md#b30)).\nThe throated worm wheel was the slowest body left in the\ngeometry-generation probe: about 3.1 s to measure, for 7 ms to build.\nThe owner approved the small result changes this brings.\n\n**Cause.** Almost all of that time went into the wheel's 60 tooth\nflanks, at about 28 ms per Gauss order each. A flank is a bicubic\ncarrier that keeps three sides of its rectangle and is cut along the\nfourth at the throat. The trimmed rule outlines a face by sampling every\ncurved edge 128 times, then breaks `u` at every projected sample. Five\nof the six edges are the carrier's own iso curves, straight lines in its\nparameters, so their samples added hundreds of needless Gauss rows, plus\nnear-duplicate slivers from projection noise. That came to about 58,000\nGauss lines per flank at order 5.\n\n**Fix.**\n- `natural_rectangle::outer_iso_edges` finds the outer wire's NURBS\nedges that equal one of the carrier's boundary iso curves, over any\npiece of it, either way round. It compares them as the existing\nwitnesses do: knots and weights bit for bit, control points within the\nwitness tolerance. For each match it returns the carrier parameters the\nedge's two vertices have on that side.\n- `util::wire_polygon_curve_sampled_except` lays those edges down as a\nsingle chord, the way a `Line` is. The polygon bounds the same region\nwith far fewer vertices. `wire_polygon_curve_sampled` delegates with no\nchords, so it is unchanged.\n- In `integrate_face_impl`'s NURBS arm, an edge becomes a chord only if\nall of these hold. Each guard came from a failure found on the way:\n- **The carrier is clamped in both directions.** An unclamped carrier's\nend control rows are not its boundary iso curves.\n- **The side runs along an open direction.** A closed side can span more\nthan half its period, and the shortest-step unwrap would read its ends\nthe wrong way round.\n- **The carrier has no boundary side collapsed to a point.** A collapsed\nfillet corner lost a 0.73 sliver through a chord to it.\n- **The wire chains by vertex at the edge's end.** The outline is\nhalf-open; across a gap, as in a partial revolve's band, a chord lost\nthe edge's far end and read 12 low.\n- **Both vertices project to the parameters their side gives them.** A\nvertex on a pole projects anywhere along it; on `(u v, v)` at `v = 0`, a\nchord from it read ⅓ instead of ½.\n\nThe last guard and the clamping guard come from an independent review of\nthe first commit, which found those two failures. Both are now tests.\n\n## Results\n\nCriterion: `main` saved as a baseline, then this change against it, run\nback to back on an otherwise idle machine. These numbers are for the\nfirst commit; the review fixes leave every probe digest unchanged.\n\n| bench | `main` | this PR | change |\n|---|---|---|---|\n| volume throated worm wheel z30 | 3.105 s | 681.2 ms | −78.1% |\n| volume helical gear z20 | 126.5 ms | 126.5 ms | no change (p = 0.42) |\n| volume M6 external thread | 185.5 ms | 184.0 ms | −0.8% |\n| volume in-place coil 5 turns | 20.55 ms | 20.90 ms | +1.7% |\n| `nurbs_properties` mass_properties (hammer holder) | 779.8 ms | 769.3\nms | −1.3% |\n| `nurbs_properties` validate_solid strict (hammer holder) | 336.7 ms |\n337.8 ms | no change (p = 0.52) |\n| `new_edit_orientation` (hammer holder) | 4.889 ms | 4.844 ms | −1.6% |\n\nThe coil's +1.7% is not this change: its band integrates as a whole\nrectangle and never reaches the chord path. It is the difference between\nseparately built binaries, as in #1692's control run.\n\nThe projection guard adds about 1,200 point projections to a wheel's\nvolume. I could not time it cleanly: other work had the machine at a\nload average of 50 by then. By count it is a few percent of the 681 ms.\n\nGeometry-generation probe (`profiling` profile, `solid_volume` median).\nOnly these four scenarios change:\n\n| scenario | before | after | volume change |\n|---|---|---|---|\n| gear/worm wheel throated z30 | 3050 ms | 668 ms | +7.1e-11 |\n| gear/enveloping wheel | 1160 ms | 535 ms | +1.1e-10 |\n| gear/enveloping worm | 85 ms | 55 ms | +1.4e-9 |\n| gear/worm 1-start | 64.5 ms | 50.4 ms | +2.3e-12 |\n\nThe other 42 scenarios keep bit-identical volumes, and every mesh in all\n46 is byte-identical.\n\n**One pinned value is re-recorded.** The hammer holder's probe volume in\n`b28_probe_memo_identity` moves 4.1e-11 relative, against its 1e-12\nidentity bound. Three of its 42 NURBS faces lose the projection noise of\ntheir dense outlines; one changes by 1e-13, one by 1.7e-7 of its volume,\nand face 100 by 6e-7 of its area. Face 100's mesh area, taken at\ndeflections 2e-3 down to 1.25e-4, converges towards about 0.53859330.\nThe new reading is 0.5385933338, about 4e-8 from that; the old reading\nwas 0.5385936606, about 4e-7 off. Face 123 (1.7e-7) is too close to call\nwithin the extrapolation's uncertainty. The test's doc comment records\nthe re-record and why, as it does for the B131 one.\n\n## Verification\n\n- `cargo nextest run -p remus-math -p remus-check -p remus-operations -p\nremus-io --cargo-profile ci-test` on the rebased head: 6848 passed.\n- `cargo nextest run -p remus-operations --features perf-counters\n--cargo-profile ci-test -E 'test(scaling_)'`: 23 passed.\n- `cargo test -p remus-wasm --no-default-features --profile ci-test`:\n904 passed. This ran before the rebase onto #1694, which touches a\ndifferent function.\n- `python3 scripts/ci_preflight.py`: passed. `cargo clippy -p\nremus-check -p remus-operations -p remus-io --all-targets -- -D\nwarnings`: clean.\n- New tests:\n- `scaling_throated_wheel_flanks_break_only_along_the_throat`\n(perf-counters): at most 20,000 Gauss lines per flank; measured about\n16,200. With chords disabled it fails at 5,394,480 lines over 60 flanks.\n- `outer_iso_edges_finds_whole_and_partial_sides_either_way_round`: a\nwhole and a partial side, stored either way round. It checks that each\nreturned vertex parameter evaluates to the vertex, and that a moved\ncarrier drops its edge.\n- `unclamped_rows_are_not_chords`: the reviewer's unclamped carrier,\narea against `½ − k/3`.\n- `a_chord_needs_both_vertices_where_its_side_puts_them`: the reviewer's\ninterior pole, area against ½. Without its fix it reads exactly ⅓.\n- The collapsed-corner and gap guards are covered by the existing\n`collapsed_corner_blend_solid_meshes_closed_with_exact_face_areas` and\n`revolve_profile_construction_matches_main`. Both failed on the first\nversion of this change (volume off by 2.1, mass off by 12) and pass now.\n- Independent review: Codex `gpt-6.1-sol` at `xhigh` reviewed the first\ncommit by reading code. It reported the two findings above, both fixed.\nIt retained no findings on reversal matching, trims, periodic\nunwrapping, chaining, holes, prepared-outline reuse, cache keys or WASM\ndispatch.\n\nNot verified locally: the `wasm32` build and the CI-only jobs.\n\n## Compatibility and risks\n\n- **Result change, owner-approved:** trimmed NURBS faces that have edges\nalong their carrier's boundary iso curves integrate over the same region\nwith fewer quadrature breaks and less projection noise. Volumes move by\nat most 1.4e-9 on the probe and 4.1e-11 on the hammer holder.\n- No public API, tolerance, default or refusal change. The new sampler\nvariant is `pub(crate)`.\n\n## WASM module tier\n\nNone. No new capability.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-11-13T12:34:25Z",
+          "url": "https://github.com/esaueng/remus/commit/c561c7d9652f159771e008c112cf202adedd8ba8"
+        },
+        "date": 1794581777678,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1024782,
+            "range": "± 1337",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1067337,
+            "range": "± 4688",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 21776,
+            "range": "± 201",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 6844302,
+            "range": "± 17071",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 6820824,
+            "range": "± 14018",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 6704653,
+            "range": "± 26395",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 21757,
+            "range": "± 64",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 3860901,
+            "range": "± 3933",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 25188647,
+            "range": "± 560300",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 29,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 89,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 66,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 182,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 168,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 681,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 143,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 296,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 199,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 435,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 849,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 2797,
+            "range": "± 195",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 16,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 27,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 74,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 74,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "surface_projection/cached_grid/3",
+            "value": 18366,
+            "range": "± 63",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "surface_projection/cached_grid/9",
+            "value": 115018,
+            "range": "± 1766",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/bilinear_hit",
+            "value": 3158,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_secant",
+            "value": 11838,
+            "range": "± 139",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_miss",
+            "value": 41556,
+            "range": "± 1407",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/quadratic_hit",
+            "value": 4258,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 405823,
+            "range": "± 1417",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 2150972,
+            "range": "± 3077",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 119079,
+            "range": "± 401",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 245940,
+            "range": "± 1285",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/plane_torus_grid",
+            "value": 287079,
+            "range": "± 863",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 51484,
+            "range": "± 916",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/narrow_bump_flank",
+            "value": 26896,
+            "range": "± 58",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_hit",
+            "value": 16220,
+            "range": "± 29",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_miss",
+            "value": 90124,
+            "range": "± 655",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_grid_build",
+            "value": 114067,
+            "range": "± 270",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 528619,
+            "range": "± 41885",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 6752956,
+            "range": "± 123741",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 630966,
+            "range": "± 2549",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 998104,
+            "range": "± 2048",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 85944,
+            "range": "± 6344",
             "unit": "ns/iter"
           }
         ]
