@@ -153,11 +153,11 @@ that does not exist yet; without it, stop.
 ## Open items with a repro
 
 The `#[ignore]` inventory (regenerated 2026-11-13 on `05427d67` with B62's
-witness un-ignored, the two B7 witnesses added and B51's three closed: 54
-actual attributes in 32 files, all in `operations`, `io`, `heal`, `math`,
-`wasm` and `remus`) splits by the ignore reason as written. Listed, not
-re-run, except B265, B266, B272 and the two B7 witnesses (failed 3/3 as
-pinned). **25 open engine witnesses**, each with an owner row:
+witness un-ignored, the two B7 witnesses and B275's added and B51's three
+closed: 55 actual attributes in 33 files, all in `operations`, `io`, `heal`,
+`math`, `wasm` and `remus`) splits by the ignore reason as written. Listed, not
+re-run, except B265, B266, B272, B275 and the two B7 witnesses (failed 3/3 as
+pinned). **26 open engine witnesses**, each with an owner row:
 - four B26 property ready-repros in `operations/tests/prop_boolean_invariants.rs`:
   finding 13 sphere–torus ×3 (B38) and finding 20 sphere–cone (B33);
 - `regress_b52_box_cylinder_rim_notch.rs` (B270) and
@@ -170,6 +170,7 @@ pinned). **25 open engine witnesses**, each with an owner row:
 - `wasm/src/bindings/qualify_edge_relations_tests.rs` torus containment (B269);
 - `regress_shelled_wall_rim_notch.rs` slot below the top face (B265);
 - `regress_torus_contact_windows.rs` shallow torus notch (B266);
+- `regress_split_rim_cone_wall_pierce.rs` bar through a split-rim cone wall (B275);
 - `video_parity_full_order.rs` A4 chamfer 5 (B272),
   `io/tests/video_workflow_baseline.rs` (B273) and
   `wasm/src/bindings/gecko_edit_tests.rs` unequal-group re-edit (B274);
