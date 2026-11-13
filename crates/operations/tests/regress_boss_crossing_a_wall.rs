@@ -352,39 +352,26 @@ fn cut_and_fuse_account_for_the_same_material() {
         let lhs = integrated_volume(&fuse_topo, fused) - integrated_volume(&cut_topo, cut);
         let rhs = PI * R * R * H;
         let rel = (lhs - rhs).abs() / rhs;
-        // B62: this fuse's boundary misses closing by a 1.9e-7 vertex gap in
-        // the x = 0 wall, so its volume is only defined to that gap's vector
-        // area times how far from the wall it is summed. Summed about the
-        // world origin, which lies in that wall, it read exact by accident;
-        // summed about the body (B58) it reads 1.5e-9 off. Every other depth
-        // closes and keeps the 1e-9 bar.
-        let allowed = if d == B62_DEPTH {
-            let gap = vector_area(&fuse_topo, fused)[0].abs();
-            assert!(
-                gap < 1e-6,
-                "B62 gap grew: the fuse's boundary misses closing by {gap:.2e} in x"
-            );
-            1e-9 + gap * PLATE_X / 3.0 / rhs
-        } else {
-            1e-9
-        };
+        // Every depth closes, the B62 sliver at d = -1e-7 included, so the
+        // volume is reference-free and the bar is the same everywhere.
         assert!(
-            rel < allowed,
+            rel < 1e-9,
             "d={d}: (A∪B) - (A-B) = {lhs:.10}, vol(B) = {rhs:.10} ({:.6} %)",
             rel * 100.0
         );
     }
 }
 
-/// B62 ready repro: the fuse at `d = -1e-7` must close. It leaves the vertex
+/// B62: the fuse at `d = -1e-7` must close. It used to leave the vertex
 /// where the boss's bottom and top arcs meet the plate's `x = 0` wall at
-/// `y = 20.0014144`, while the arcs' own trims end at `y = 20.0014142`: a
-/// 1.9e-7 gap, over the 8 mm wall, that no face covers. The body's vector
-/// area is then 7.5e-7 in x where a closed boundary has none. Exit: the gap
-/// closes, this greens, and `cut_and_fuse_account_for_the_same_material`
-/// drops its B62 allowance.
+/// `y = 20.0014144`, while the arcs' own trims end at the exact crossing
+/// `y = 20 + sqrt(2e-6 - 1e-14) = 20.0014142`: a 1.9e-7 gap, over the 8 mm
+/// wall, that no face covered, so the body's vector area was 7.5e-7 in x
+/// where a closed boundary has none. Along the wall the crossing is
+/// ill-conditioned (the arc runs nearly parallel to `y` there), so a point
+/// 1.9e-7 off in `y` sat within 3e-11 of both the arc and the wall; only a
+/// closed-form root puts the vertex where the trims end.
 #[test]
-#[ignore = "B62: the wall-crossing sliver fuse leaves a 1.9e-7 boundary gap"]
 fn b62_wall_crossing_sliver_fuse_closes() {
     let mut topo = Topology::new();
     let (plate, boss) = build(&mut topo, B62_DEPTH);
