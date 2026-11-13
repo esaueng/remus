@@ -572,13 +572,13 @@ fn assert_typed(error: &OperationsError, want: Refusal, d: f64, scale: f64, labe
                 thickness: Some(thickness),
                 ..
             },
-            Refusal::Collapsed(certified),
+            Refusal::Collapsed(unit_thickness),
         ) => {
             assert_eq!(distance.to_bits(), d.to_bits(), "{label}");
+            let want = unit_thickness * scale;
             assert!(
-                (thickness - certified * scale).abs() <= 1e-9 * certified * scale,
-                "{label}: certified thickness {thickness}, want {}",
-                certified * scale
+                (thickness - want).abs() <= 1e-9 * want,
+                "{label}: collapse thickness {thickness}, want {want}"
             );
         }
         (
