@@ -1,3 +1,12 @@
 # Golden files are compared byte-for-byte against generated strings;
 # never let checkout rewrite their line endings.
 *.golden text eol=lf
+
+# Crate test fixtures are read as text (include_str!, read_to_string) and
+# parsed or searched for exact "\n"-delimited sequences (the BREP tests look
+# for "Locations 3\n1\n"); never let checkout rewrite their line endings.
+# STEP and BREP here are always ASCII; the JSON is arena and BOA documents.
+# Scoped to tests/data so binary-capable formats elsewhere are untouched.
+crates/*/tests/data/**/*.step text eol=lf
+crates/*/tests/data/**/*.brep text eol=lf
+crates/*/tests/data/**/*.json text eol=lf
