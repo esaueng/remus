@@ -313,6 +313,7 @@ harness's own option-honoured floor misreading a correct 0.05 fillet on an
   "graze" heuristic keyed to face extent is blind to corner-window exits.
 - **Test a boolean result's VERTICES, never its bounding box:**
   `solid_bounding_box` bounds a trimmed curved patch by its untrimmed surface.
+- **`classify_point` answers `Outside` for three of a plain `make_box`'s eight corners, so a containment gate must decide the boundary by certified distance and only the interior by classification** (`operations/src/boolean/nary.rs::closed_solid_holds`, P-Class 4.8).
 - **A geometrically closed splitter loop can still carry the wrong stored winding;**
   normalize selected cylinder outer/inner loops against the carrier normal before
   duplicate-edge merge (`builder_solid.rs`, B15).
