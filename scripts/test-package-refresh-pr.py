@@ -30,9 +30,15 @@ def commit(sha, subject):
     return {'sha': sha, 'commit': {'message': subject + '\n\nbody'}}
 
 
-def pull(number, merge_sha, body, merged=True, base='main'):
+def pull(number, merge_sha, body, merged=True, base='main', edited=None):
+    # `edited` is the description's last edit time, which GraphQL alone serves.
     return {'number': number, 'merged_at': '2026-10-13T00:00:00Z' if merged else None,
-            'base': {'ref': base}, 'merge_commit_sha': merge_sha, 'body': body}
+            'base': {'ref': base}, 'merge_commit_sha': merge_sha, 'body': body, 'edited': edited}
+
+
+def description_reply(item):
+    return {'data': {'repository': {'pullRequest': {
+        'body': item['body'], 'mergedAt': item['merged_at'], 'lastEditedAt': item['edited']}}}}
 
 
 class PackageRefreshTests(unittest.TestCase):
@@ -71,17 +77,20 @@ class PackageRefreshTests(unittest.TestCase):
         fakebin = self.root / 'bin'
         fakebin.mkdir()
         gh = fakebin / 'gh'
-        # A fake gh: `api` answers from the GH_FIXTURE map (unknown paths fail),
-        # `pr create` records its description, `pr list --head` finds no open PR,
-        # and a plain `pr list` answers GH_OPEN_PRS.
+        # A fake gh: `api` answers from the GH_FIXTURE map (unknown paths fail;
+        # a GraphQL query is keyed `graphql:<PR number>`), `pr create` records
+        # its description, `pr list --head` finds no open PR, and a plain
+        # `pr list` answers GH_OPEN_PRS.
         gh.write_text('#!/usr/bin/env python3\nimport os,sys,json\nfrom pathlib import Path\n'
                       'args=sys.argv[1:]\n'
                       'if "--body-file" in args: args.append(Path(args[args.index("--body-file")+1]).read_text())\n'
                       'with open(os.environ["GH_LOG"],"a") as f: f.write(json.dumps(args)+"\\n")\n'
                       'if args[0]=="api":\n'
                       '    fixture=json.loads(Path(os.environ["GH_FIXTURE"]).read_text())\n'
-                      '    if args[1] not in fixture: sys.exit("gh: Not Found (HTTP 404)")\n'
-                      '    print(json.dumps(fixture[args[1]])); sys.exit()\n'
+                      '    key=args[1]\n'
+                      '    if key=="graphql": key+=":"+next(a for a in args if a.startswith("number="))[7:]\n'
+                      '    if key not in fixture: sys.exit("gh: Not Found (HTTP 404)")\n'
+                      '    print(json.dumps(fixture[key])); sys.exit()\n'
                       'if args[:2]==["pr","list"]: print("[]" if "--head" in args else os.environ.get("GH_OPEN_PRS","[]")); sys.exit()\n'
                       'print("https://example.invalid/pull/1")\n')
         gh.chmod(0o755)
@@ -125,6 +134,8 @@ class PackageRefreshTests(unittest.TestCase):
             api.setdefault(f'repos/{REPO}/commits/{item["sha"]}/pulls', [])
         for sha, items in (commit_pulls or {}).items():
             api[f'repos/{REPO}/commits/{sha}/pulls'] = items
+        for item in [*pulls, *(item for items in (commit_pulls or {}).values() for item in items)]:
+            api[f'graphql:{item["number"]}'] = description_reply(item)
         self.fixture.write_text(json.dumps(api))
 
     def description(self):
@@ -240,6 +251,44 @@ class PackageRefreshTests(unittest.TestCase):
                          [f'{declared} (carried from #20)'])
         calls = self.log.read_text()
         self.assertNotIn('e' * 12, calls)
+
+    def test_declarations_edited_in_after_the_merge_are_not_carried(self):
+        reviewed = 'WASM-Size: +70 KiB raw, curve projection, Tier: core'
+        planted = 'WASM-Size: +4 MiB raw, unreviewed, Tier: core'
+        # #21 was edited before it merged: what merged is what was reviewed.
+        # #22's current description gained a line after the merge.
+        self.history([commit('1' * 40, 'feat(ops): curve projection (#21)'),
+                      commit('2' * 40, 'feat(ops): quiet growth (#22)')],
+                     [pull(21, '1' * 40, reviewed, edited='2026-10-12T23:59:59Z'),
+                      pull(22, '2' * 40, f'Declares nothing at merge.\n{planted}',
+                           edited='2026-10-13T00:00:01Z')])
+        body = self.description()
+        self.assertEqual([line for line in body.splitlines() if line.startswith('WASM-Size:')],
+                         [f'{reviewed} (carried from #21)'])
+        self.assertNotIn(planted, body)
+        self.assertIn('description changed after the PR merged: #22.', body)
+        self.assertEqual(self.gate(body, 70 * KIB), [])
+
+    def test_only_edited_descriptions_leave_nothing_carried(self):
+        self.history([commit('1' * 40, 'feat(ops): quiet growth (#22)')],
+                     [pull(22, '1' * 40, 'WASM-Size: +4 MiB raw, unreviewed, Tier: core',
+                           edited='2026-10-14T00:00:00Z')])
+        body = self.description()
+        self.assertNotIn('\nWASM-Size:', body)
+        self.assertIn('No source PR merged in', body)
+        self.assertIn('description changed after the PR merged: #22.', body)
+        # The edited-in line excuses nothing, so the growth still fails the gate.
+        self.assertEqual(self.gate(body, 80 * KIB), ['growth-undeclared'])
+
+    def test_description_lookup_failure_carries_nothing(self):
+        self.history([commit('1' * 40, 'feat(ops): curve projection (#21)')],
+                     [pull(21, '1' * 40, 'WASM-Size: +70 KiB raw, curve projection, Tier: core')])
+        api = json.loads(self.fixture.read_text())
+        del api['graphql:21']
+        self.fixture.write_text(json.dumps(api))
+        body = self.description()
+        self.assertIn('Could not collect', body)
+        self.assertNotIn('\nWASM-Size:', body)
 
     def test_growth_within_the_threshold_needs_no_carried_line(self):
         self.history([commit('1' * 40, 'fix(ops): small change (#11)')],
