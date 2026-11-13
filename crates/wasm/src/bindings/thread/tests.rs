@@ -83,6 +83,14 @@ fn thread_on_a_boss_matches_between_direct_and_batch() {
     assert!((geometry["turns"].as_f64().unwrap() - 6.0).abs() < 1e-12);
     assert_eq!(geometry["start"], json!({ "kind": "plain" }));
     assert_eq!(geometry["end"]["kind"], "chamfer");
+    // A cylindrical thread: no taper, the same diameters at both ends.
+    assert_eq!(geometry["taperAngle"], json!(0.0));
+    for key in ["majorDiameterAtStart", "majorDiameterAtEnd"] {
+        assert_eq!(geometry[key], geometry["majorDiameter"], "{key}");
+    }
+    for key in ["minorDiameterAtStart", "minorDiameterAtEnd"] {
+        assert_eq!(geometry[key], geometry["minorDiameter"], "{key}");
+    }
     let solid = handle(&direct["value"]);
     assert_ne!(solid, blank, "the input solid is kept");
     let id = direct_kernel.resolve_solid(solid).unwrap();
@@ -104,6 +112,75 @@ fn thread_on_a_boss_matches_between_direct_and_batch() {
 
     let mut batch_kernel = RemusKernel::new();
     let batch_blank = batch_kernel.make_cylinder_solid(3.0, 6.0).unwrap();
+    let batch_face = side_face(&batch_kernel, batch_blank);
+    let batch = cut_batch(&mut batch_kernel, batch_blank, batch_face, &spec);
+    assert_eq!(batch["ok"], direct);
+}
+
+/// NPT 1/4-18 on a 0.540 in pipe, from the pipe's end to the hand-tight
+/// plane, where ASME B1.20.1 gives the pitch diameter `E1`.
+fn npt_quarter() -> Value {
+    let pitch = 25.4 / 18.0;
+    let depth = 0.8 * pitch;
+    let length = 0.2278 * 25.4;
+    json!({
+        "pitch": pitch,
+        "depth": depth,
+        "crestWidth": 0.5 * (pitch - 2.0 * depth * 30.0_f64.to_radians().tan()),
+        "upperFlankAngle": 30.0,
+        "lowerFlankAngle": 30.0,
+        "majorDiameter": 0.49163 * 25.4 + depth,
+        "length": length,
+        "taper": { "ratio": 0.0625, "smallEnd": "start", "gaugeOffset": length }
+    })
+}
+
+#[test]
+fn tapered_pipe_thread_matches_between_direct_and_batch() {
+    let spec = npt_quarter();
+    let radius = 0.5 * 0.540 * 25.4;
+    let mut direct_kernel = RemusKernel::new();
+    let blank = direct_kernel.make_cylinder_solid(radius, 12.0).unwrap();
+    let face = side_face(&direct_kernel, blank);
+    let direct =
+        serde_json::to_value(direct_kernel.cut_thread_detailed_impl(blank, face, &spec)).unwrap();
+    assert_eq!(direct["status"], "ok", "{direct}");
+    let details = &direct["details"];
+    let geometry = &details["geometry"];
+    let number = |key: &str| geometry[key].as_f64().unwrap();
+    // 1 in 16 on the diameter: a half-angle of 1.7899°.
+    assert!((number("taperAngle") - (1.0_f64 / 32.0).atan().to_degrees()).abs() < 1e-12);
+    let depth = 0.8 * 25.4 / 18.0;
+    assert!((number("majorDiameter") - (0.49163 * 25.4 + depth)).abs() < 1e-12);
+    assert!((number("majorDiameterAtEnd") - number("majorDiameter")).abs() < 1e-12);
+    // The pitch diameter at the pipe's end is the standard's E0, to the
+    // table's 1e-5 in.
+    let at_start = 0.5 * (number("majorDiameterAtStart") + number("minorDiameterAtStart"));
+    assert!(
+        (at_start - 0.47739 * 25.4).abs() < 0.6e-5 * 25.4,
+        "{at_start}"
+    );
+    let solid = handle(&direct["value"]);
+    let id = direct_kernel.resolve_solid(solid).unwrap();
+    let report = remus_operations::validate::validate_solid(direct_kernel.topo(), id).unwrap();
+    assert!(report.is_valid(), "{:?}", report.issues);
+    // Crest and root lands are cones.
+    let roles = details["faceRoles"].as_array().unwrap();
+    let mut lands = 0;
+    for entry in roles {
+        if entry["role"] == "crest" || entry["role"] == "root" {
+            lands += 1;
+            let id = direct_kernel.resolve_face(handle(&entry["face"])).unwrap();
+            assert!(matches!(
+                direct_kernel.topo().face(id).unwrap().surface(),
+                remus_topology::face::FaceSurface::Cone(_)
+            ));
+        }
+    }
+    assert!(lands >= 8, "{lands}");
+
+    let mut batch_kernel = RemusKernel::new();
+    let batch_blank = batch_kernel.make_cylinder_solid(radius, 12.0).unwrap();
     let batch_face = side_face(&batch_kernel, batch_blank);
     let batch = cut_batch(&mut batch_kernel, batch_blank, batch_face, &spec);
     assert_eq!(batch["ok"], direct);
@@ -215,6 +292,36 @@ fn refusals_are_typed_and_atomic() {
         (
             face,
             with(json!({ "end": { "kind": "relief", "angle": 45.0 } })),
+            "invalid_argument",
+        ),
+        (
+            face,
+            with(json!({ "taper": { "ratio": 0.5, "smallEnd": "start" } })),
+            "thread:taper-out-of-range",
+        ),
+        (
+            face,
+            with(json!({ "taper": { "ratio": 0.0, "smallEnd": "end" } })),
+            "thread:taper-out-of-range",
+        ),
+        // The major diameter on a gauge plane below the top passes the boss
+        // at the large end.
+        (
+            face,
+            with(json!({
+                "majorDiameter": 6.0,
+                "taper": { "ratio": 0.0625, "smallEnd": "start" }
+            })),
+            "thread:cylinder-too-small",
+        ),
+        (
+            face,
+            with(json!({ "taper": { "ratio": 0.0625, "smallEnd": "top" } })),
+            "invalid_argument",
+        ),
+        (
+            face,
+            with(json!({ "taper": { "ratio": 0.0625 } })),
             "invalid_argument",
         ),
         (

@@ -6,6 +6,7 @@
 pub(crate) mod banded;
 pub mod basis;
 pub mod bezier_clip;
+pub mod conical_screw;
 pub mod cubic_fit;
 pub mod curvature;
 pub mod curve;

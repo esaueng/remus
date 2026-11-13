@@ -28,7 +28,7 @@
 //! On the end plane the ring's cap is the whole annulus out to the crest
 //! circle, bounded by the crest arcs and the patches' arcs.
 
-use std::f64::consts::{PI, TAU};
+use std::f64::consts::TAU;
 
 use remus_math::compact_sort::CompactSort;
 use remus_math::curves::Circle3D;
@@ -41,11 +41,11 @@ use remus_topology::vertex::{Vertex, VertexId};
 use remus_topology::wire::{OrientedEdge, Wire};
 
 use super::chamfer::{
-    Cone, RootSide, Zone, conical_helix, effective_use, oriented_ends, retrim_flank, sample_mid,
+    Cone, RootSide, Zone, conical_helix, edge_run, effective_use, oriented_ends, retrim_flank,
     thread_wire,
 };
 use super::profile::PieceRole;
-use super::{Frame, ThreadEndSide, ThreadError, ThreadFaceRole};
+use super::{Frame, ThreadEndSide, ThreadError, ThreadFaceRole, ThreadKind};
 use crate::extrude::twist::TwistedExtrusion;
 
 /// Largest turn of one cone piece about the axis, in turns, where the root
@@ -210,10 +210,6 @@ struct Patch {
     second: usize,
 }
 
-fn wrap(angle: f64) -> f64 {
-    (angle + PI).rem_euclid(TAU) - PI
-}
-
 /// Fill the thread up to the runout cone in `e`, the twisted extrusion
 /// across the zone between the cone's root plane and the end plane. `e`'s
 /// root faces and its cap on the end plane are replaced; its cap on the root
@@ -281,28 +277,15 @@ pub(super) fn runout_zone(
         let j = (i + 1) % n;
         let ri = local(topo.vertex(wire.verts()[i])?.point()).0;
         let rj = local(topo.vertex(wire.verts()[j])?.point()).0;
-        Ok(if (ri - cone.root).abs() < (rj - cone.root).abs() {
+        // The root is the smaller radius outside, the larger inside.
+        Ok(if (ri < rj) == (cone.kind == ThreadKind::External) {
             (i, j)
         } else {
             (j, i)
         })
     };
-    // The angle an edge turns about the axis from its vertex `from`, read in
-    // two half steps so that a run of up to a full turn keeps its sign.
     let run_from = |topo: &Topology, edge: EdgeId, from: VertexId| -> Result<f64, ThreadError> {
-        let data = topo.edge(edge)?;
-        let forward = data.start() == from;
-        let (first, last) = if forward {
-            (data.start(), data.end())
-        } else {
-            (data.end(), data.start())
-        };
-        let (a, b) = (
-            local(topo.vertex(first)?.point()).1,
-            local(topo.vertex(last)?.point()).1,
-        );
-        let mid = local(sample_mid(topo, OrientedEdge::new(edge, forward))?).1;
-        Ok(wrap(mid - a) + wrap(b - mid))
+        edge_run(topo, frame, edge, from)
     };
 
     let mut patches = Vec::new();

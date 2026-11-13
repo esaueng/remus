@@ -14,6 +14,18 @@
 //! axis. A flank is linear in `u`, so its piece is an Archimedean spiral
 //! `r = r₀ + (r₁ − r₀)·(θ − θ₀)/(θ₁ − θ₀)`, fitted with certified cubic
 //! Hermite spans; a flank at zero angle (a square thread) is a radial line.
+//!
+//! A tapered thread adds `τ·z` to that radius, `R(θ, z) = f(z − θ/k) + τ·z`:
+//! its crest and root lands lie on cones and every point of the form runs a
+//! conical helix. Its section at height `z` is the same outline with every
+//! radius moved by `τ·z`, an arc still an arc and a spiral still the same
+//! spiral, which is not a screw motion of the outline. The sweep carries each
+//! flank with the unit radial direction of its points (`radial_nets`): the
+//! unit circle over the flank's angles, fitted on the flank's own knots, so
+//! that the flank's control net moved along that net is the certified
+//! Hermite fit of the moved spiral at every height. The flanks' angles are
+//! those of the axial section, where the taper tilts the profile: a flank of
+//! angle `α` covers `depth·tan α / (1 ± τ·tan α)` of the pitch.
 
 use std::f64::consts::TAU;
 
@@ -22,6 +34,46 @@ use remus_math::nurbs::hermite_fit::fit_cubic_hermite;
 use remus_math::vec::{Point3, Vec3};
 
 use super::{ThreadError, ThreadForm, ThreadHand};
+
+/// The axial widths of a thread form's pieces along one pitch; the lower
+/// flank takes what the others leave.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct Widths {
+    pub(super) crest: f64,
+    pub(super) upper: f64,
+    pub(super) root: f64,
+}
+
+impl Widths {
+    /// The widths of `form` cut `depth` deep on a thread whose flanks climb
+    /// `flank_rate` per unit of height with the taper: the taper's radial
+    /// rate up the axis for an external thread, its negative for an internal
+    /// one (zero for a cylindrical thread).
+    ///
+    /// In the axial section the upper flank falls from crest to root at
+    /// `cot α` against the height; on the tapered form that is
+    /// `cot α + flank_rate` against the profile, and the lower flank's
+    /// `cot α − flank_rate`.
+    pub(super) fn new(form: &ThreadForm, depth: f64, flank_rate: f64) -> Self {
+        let upper_tan = form.upper_flank_angle.tan();
+        #[allow(clippy::float_cmp)]
+        if flank_rate == 0.0 {
+            return Self {
+                crest: form.crest_width,
+                upper: depth * upper_tan,
+                root: form.root_width(),
+            };
+        }
+        let lower_tan = form.lower_flank_angle.tan();
+        let upper = depth * upper_tan / flank_rate.mul_add(upper_tan, 1.0);
+        let lower = depth * lower_tan / (-flank_rate).mul_add(lower_tan, 1.0);
+        Self {
+            crest: form.crest_width,
+            upper,
+            root: form.pitch - form.crest_width - upper - lower,
+        }
+    }
+}
 
 /// Hermite spans allowed per flank across the profile.
 const MAX_SPANS_PER_FLANK: usize = 512;
@@ -67,6 +119,9 @@ pub(super) struct Outline {
     pub(super) segments: Vec<Segment>,
     /// The role of each entry of `segments`.
     pub(super) roles: Vec<PieceRole>,
+    /// For each flank entry of `segments`, the unit radial direction of the
+    /// flank as a net on its control points (see the module docs).
+    pub(super) radial_nets: Vec<Option<Vec<Vec3>>>,
     /// Proven bound on any flank piece's distance from its exact spiral.
     pub(super) remainder_bound: f64,
     /// Most Hermite spans used by one flank piece.
@@ -91,14 +146,18 @@ struct Piece {
 
 /// The axial profile over one lead, from the start of a crest flat, in
 /// increasing `u`. Zero-width pieces are kept as steps (a square flank).
-fn axial_pieces(form: &ThreadForm, crest_radius: f64, root_radius: f64) -> Vec<Piece> {
-    let depth = (crest_radius - root_radius).abs();
-    let upper = depth * form.upper_flank_angle.tan();
-    let root = form.root_width();
+fn axial_pieces(
+    form: &ThreadForm,
+    widths: &Widths,
+    crest_radius: f64,
+    root_radius: f64,
+) -> Vec<Piece> {
+    let upper = widths.upper;
+    let root = widths.root;
     let mut pieces = Vec::new();
     for start in 0..form.starts {
         let u = f64::from(start) * form.pitch;
-        let crest_end = u + form.crest_width;
+        let crest_end = u + widths.crest;
         let upper_end = crest_end + upper;
         let root_end = upper_end + root;
         // The lower flank fills the rest of the pitch: the root width is the
@@ -140,20 +199,24 @@ fn axial_pieces(form: &ThreadForm, crest_radius: f64, root_radius: f64) -> Vec<P
 /// `crest_radius` and its root at `root_radius`, turned by `phase`
 /// radians, for a screw motion of the form's hand and lead.
 ///
-/// `tolerance` bounds every flank fit's distance from its exact spiral.
+/// `tolerance` bounds every flank fit's distance from its exact spiral, for
+/// this outline and for it moved out to any radius up to `reach` (a tapered
+/// thread's largest; `None` for a cylindrical thread).
 pub(super) fn outline(
     form: &ThreadForm,
+    widths: &Widths,
     crest_radius: f64,
     root_radius: f64,
     phase: f64,
     tolerance: f64,
+    reach: Option<f64>,
 ) -> Result<Outline, ThreadError> {
     let lead = form.lead();
     // `θ = −k·u` with `k = ±2π/lead`: a right hand runs the axial profile
     // backwards as the outline turns counter-clockwise.
     let scale = TAU / lead;
     let reversed = form.hand == ThreadHand::Right;
-    let mut pieces = axial_pieces(form, crest_radius, root_radius);
+    let mut pieces = axial_pieces(form, widths, crest_radius, root_radius);
     if reversed {
         pieces.reverse();
     }
@@ -166,6 +229,7 @@ pub(super) fn outline(
     };
     let mut segments = Vec::with_capacity(pieces.len());
     let mut roles = Vec::with_capacity(pieces.len());
+    let mut radial_nets = Vec::with_capacity(pieces.len());
     let mut remainder_bound: f64 = 0.0;
     let mut spans_per_flank = 0;
     let width_tol = 1e-12 * lead;
@@ -185,6 +249,7 @@ pub(super) fn outline(
                     start: polar(r_from, from),
                 });
                 roles.push(piece.role);
+                radial_nets.push(None);
             }
             continue;
         }
@@ -196,12 +261,13 @@ pub(super) fn outline(
                 to,
             });
             roles.push(piece.role);
+            radial_nets.push(None);
             continue;
         }
         let slope = (r_to - r_from) / (to - from);
         let radius = move |t: f64| slope.mul_add(t - from, r_from);
         // ‖g''''‖ = √(r² + 16 r'²) for g = r·e^{iθ} with r linear in θ.
-        let r_max = r_from.max(r_to);
+        let r_max = reach.unwrap_or(0.0).max(r_from.max(r_to));
         let bound = r_max.hypot(4.0 * slope);
         let fit = fit_cubic_hermite(
             |t| {
@@ -246,11 +312,47 @@ pub(super) fn outline(
         spans_per_flank = spans_per_flank.max(fit.spans);
         segments.push(Segment::Flank(curve));
         roles.push(piece.role);
+        radial_nets.push(Some(unit_circle_net(from, to, fit.spans)));
     }
     Ok(Outline {
         segments,
         roles,
+        radial_nets,
         remainder_bound,
         spans_per_flank,
     })
+}
+
+/// The control net of the cubic Hermite fit of the unit circle over
+/// `[from, to]` on `spans` uniform spans: the knots and layout
+/// [`fit_cubic_hermite`] gives a flank fitted over the same angles, with its
+/// ends exactly on the circle.
+fn unit_circle_net(from: f64, to: f64, spans: usize) -> Vec<Vec3> {
+    let width = to - from;
+    #[allow(clippy::cast_precision_loss)]
+    let knot = |i: usize| {
+        if i == spans {
+            to
+        } else {
+            from + width * (i as f64 / spans as f64)
+        }
+    };
+    let at = |t: f64| {
+        let (sin, cos) = t.sin_cos();
+        (Vec3::new(cos, sin, 0.0), Vec3::new(-sin, cos, 0.0))
+    };
+    let mut net = Vec::with_capacity(2 * spans + 2);
+    let (mut point, mut derivative) = at(from);
+    net.push(point);
+    for i in 0..spans {
+        let (a, b) = (knot(i), knot(i + 1));
+        let third = (b - a) / 3.0;
+        let (next_point, next_derivative) = at(b);
+        net.push(point + derivative * third);
+        net.push(next_point - next_derivative * third);
+        point = next_point;
+        derivative = next_derivative;
+    }
+    net.push(point);
+    net
 }

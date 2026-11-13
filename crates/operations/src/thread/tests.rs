@@ -1,5 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use std::f64::consts::FRAC_PI_2;
+
 use remus_math::mat::Mat4;
 
 use super::*;
@@ -707,9 +709,17 @@ fn role_faces(outcome: &ThreadOutcome, role: ThreadFaceRole) -> Vec<FaceId> {
         .collect()
 }
 
-/// Every role names a distinct face of the solid, lands are on cylinders,
-/// flanks are swept and end cones are cones.
+/// Every role names a distinct face of the solid, lands are on cylinders
+/// (cones on a tapered thread), flanks are swept and end cones are cones.
 fn assert_roles_are_faces_of(topo: &Topology, outcome: &ThreadOutcome) {
+    assert_roles(topo, outcome, false);
+}
+
+/// As [`assert_roles_are_faces_of`]. `long_finish` allows swept lands: the
+/// zone of an end finish is one segment whatever its height, and a land
+/// whose strip passes a full turn there is swept like a flank.
+fn assert_roles(topo: &Topology, outcome: &ThreadOutcome, long_finish: bool) {
+    let tapered = outcome.geometry.taper_angle > 0.0;
     let faces = solid_faces(topo, outcome.solid).unwrap();
     let mut seen = std::collections::BTreeSet::new();
     for &(face, role) in &outcome.face_roles {
@@ -718,11 +728,13 @@ fn assert_roles_are_faces_of(topo: &Topology, outcome: &ThreadOutcome) {
         let surface = topo.face(face).unwrap().surface();
         match role {
             ThreadFaceRole::Crest | ThreadFaceRole::Root => {
-                assert!(
-                    matches!(surface, FaceSurface::Cylinder(_)),
-                    "{}",
-                    role.name()
-                );
+                let land = if tapered {
+                    matches!(surface, FaceSurface::Cone(_))
+                } else {
+                    matches!(surface, FaceSurface::Cylinder(_))
+                };
+                let swept = long_finish && matches!(surface, FaceSurface::Nurbs(_));
+                assert!(land || swept, "{}", role.name());
             }
             ThreadFaceRole::UpperFlank | ThreadFaceRole::LowerFlank => {
                 assert!(matches!(surface, FaceSurface::Nurbs(_)), "{}", role.name());
@@ -1232,4 +1244,744 @@ fn runout_that_takes_the_whole_thread_keeps_the_plain_end_cap() {
             assert!(grooved, "{label}");
         }
     }
+}
+
+/// The axial widths `(upper flank, lower flank, root)` of a tapered form,
+/// from the axial section alone: a flank at angle `α` from the plane across
+/// the axis falls `cot α` per unit of height, and the crest and root lines
+/// climb `rate` (toward the thread's material for `flank_rate > 0`), so the
+/// flank closes the depth at `cot α ± flank_rate`.
+fn taper_widths(form: &ThreadForm, flank_rate: f64) -> (f64, f64, f64) {
+    let upper = form.depth / (1.0 / form.upper_flank_angle.tan() + flank_rate);
+    let lower = form.depth / (1.0 / form.lower_flank_angle.tan() - flank_rate);
+    (upper, lower, form.pitch - form.crest_width - upper - lower)
+}
+
+/// Area enclosed by a tapered thread's transverse outline with its crest at
+/// `crest` and its root `form.depth` from it: as [`outline_area`], with the
+/// tapered widths.
+fn tapered_outline_area(form: &ThreadForm, flank_rate: f64, crest: f64, root: f64) -> f64 {
+    let (upper, lower, root_width) = taper_widths(form, flank_rate);
+    let angle = |w: f64| TAU * w / form.lead();
+    let flank = |w: f64| angle(w) / 6.0 * root.mul_add(root, crest.mul_add(crest, crest * root));
+    let per_pitch = 0.5 * crest * crest * angle(form.crest_width)
+        + 0.5 * root * root * angle(root_width)
+        + flank(upper)
+        + flank(lower);
+    f64::from(form.starts) * per_pitch
+}
+
+/// Volume from the axis under a tapered thread over `length`, its crest at
+/// `crest` on the start plane and moving `rate` per unit of height. The
+/// section area is a quadratic in the height, so Simpson's rule is exact.
+fn tapered_volume(form: &ThreadForm, kind: ThreadKind, crest: f64, rate: f64, length: f64) -> f64 {
+    let (flank_rate, depth) = match kind {
+        ThreadKind::External => (rate, -form.depth),
+        ThreadKind::Internal => (-rate, form.depth),
+    };
+    let area = |z: f64| {
+        let c = rate.mul_add(z, crest);
+        tapered_outline_area(form, flank_rate, c, c + depth)
+    };
+    length / 6.0 * (4.0f64.mul_add(area(0.5 * length), area(0.0)) + area(length))
+}
+
+const INCH: f64 = 25.4;
+
+/// The largest and smallest radius of the body's boundary on the plane at
+/// height `z`, over 36 angles, each bisected between `inner` (material) and
+/// `outer` (air) to `1e-5`. Ten degrees apart is finer than any land here.
+fn radial_extent(topo: &Topology, solid: SolidId, z: f64, inner: f64, outer: f64) -> (f64, f64) {
+    let steps = 36;
+    let at = |k: usize, radius: f64| {
+        let theta = TAU * k as f64 / f64::from(steps) + 0.013;
+        Point3::new(radius * theta.cos(), radius * theta.sin(), z)
+    };
+    let classify = |radii: &[f64]| -> Vec<bool> {
+        let points: Vec<Point3> = radii.iter().enumerate().map(|(k, &r)| at(k, r)).collect();
+        crate::classify::classify_points(topo, solid, &points, 0.01, 1e-6)
+            .unwrap()
+            .into_iter()
+            .map(|class| class == PointClassification::Inside)
+            .collect()
+    };
+    let mut lo = vec![inner; steps as usize];
+    let mut hi = vec![outer; steps as usize];
+    assert!(
+        classify(&lo).iter().all(|&material| material),
+        "inner bound"
+    );
+    assert!(
+        classify(&hi).iter().all(|&material| !material),
+        "outer bound"
+    );
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let halvings = ((outer - inner) / 1e-5).log2().ceil() as usize;
+    for _ in 0..halvings {
+        let mid: Vec<f64> = lo.iter().zip(&hi).map(|(a, b)| 0.5 * (a + b)).collect();
+        for (k, material) in classify(&mid).into_iter().enumerate() {
+            if material {
+                lo[k] = mid[k];
+            } else {
+                hi[k] = mid[k];
+            }
+        }
+    }
+    (
+        lo.iter().copied().fold(f64::INFINITY, f64::min),
+        hi.iter().copied().fold(0.0, f64::max),
+    )
+}
+
+/// ASME B1.20.1 NPT: threads per inch, pitch diameter at the small end
+/// `E0`, hand-tight length `L1` (the gauge plane, where the pitch diameter
+/// is `E1`), effective length `L2` (pitch diameter `E2`) and the pipe's
+/// outside diameter, in inches.
+struct Npt {
+    name: &'static str,
+    tpi: f64,
+    e0: f64,
+    l1: f64,
+    e1: f64,
+    l2: f64,
+    e2: f64,
+    od: f64,
+}
+
+const NPT_SIZES: [Npt; 2] = [
+    Npt {
+        name: "1/4-18",
+        tpi: 18.0,
+        e0: 0.47739,
+        l1: 0.2278,
+        e1: 0.49163,
+        l2: 0.4018,
+        e2: 0.50250,
+        od: 0.540,
+    },
+    Npt {
+        name: "1/2-14",
+        tpi: 14.0,
+        e0: 0.75843,
+        l1: 0.3200,
+        e1: 0.77843,
+        l2: 0.5337,
+        e2: 0.79179,
+        od: 0.840,
+    },
+];
+
+/// A male NPT thread cut on a boss of the pipe's outside diameter, from the
+/// pipe end up to the gauge plane, against the standard's table.
+#[test]
+fn npt_external_threads_match_the_standard() {
+    for size in &NPT_SIZES {
+        let pitch = INCH / size.tpi;
+        let form = ThreadForm::npt(pitch);
+        // Thread height 0.8·P; the truncations leave equal flats.
+        let h = 0.8 * pitch;
+        assert!((form.depth - h).abs() < 1e-12);
+        let mut topo = Topology::new();
+        let (r, height) = (0.5 * size.od * INCH, size.l2 * INCH + 6.0);
+        let (body, face) = boss(&mut topo, r, height);
+        let length = size.l1 * INCH;
+        let options = CylinderThreadOptions {
+            major_diameter: Some(size.e1 * INCH + h),
+            length: Some(length),
+            taper: Some(ThreadTaper {
+                gauge_offset: Some(length),
+                ..ThreadTaper::pipe(ThreadEndSide::Start)
+            }),
+            ..tight(&form)
+        };
+        let outcome = cut_thread(&mut topo, body, face, &form, &options).unwrap();
+        assert!(outcome.glued, "{}", size.name);
+        assert_valid_and_watertight(&topo, outcome.solid);
+        let g = &outcome.geometry;
+        // 1 in 16 on the diameter: a half-angle of 1°47'24".
+        let half_angle = (1.0_f64 / 32.0).atan();
+        assert!((g.taper_angle - half_angle).abs() < 1e-15);
+        assert!((g.taper_angle.to_degrees() - (1.0 + 47.0 / 60.0 + 24.0 / 3600.0)).abs() < 1e-4);
+        // The table's diameters are rounded to 1e-5 in.
+        let table = 0.6e-5 * INCH;
+        let pitch_diameter = |major: f64, minor: f64| 0.5 * (major + minor);
+        assert!((g.major_diameter - (size.e1 * INCH + h)).abs() < 1e-12);
+        assert!((g.major_diameter - g.minor_diameter - 2.0 * h).abs() < 1e-12);
+        let at_start = pitch_diameter(g.start_major_diameter, g.start_minor_diameter);
+        let at_end = pitch_diameter(g.end_major_diameter, g.end_minor_diameter);
+        assert!(
+            (at_start - size.e0 * INCH).abs() < table,
+            "{}: E0",
+            size.name
+        );
+        assert!((at_end - size.e1 * INCH).abs() < 1e-9, "{}: E1", size.name);
+        // The same cone carried on to the effective length reaches E2.
+        let e2 = at_start + size.l2 * INCH / 16.0;
+        assert!((e2 - size.e2 * INCH).abs() < table, "{}: E2", size.name);
+
+        // The body itself: on a plane across the axis the crest is the
+        // largest radius of the boundary and the root the smallest, and both
+        // climb 1 in 32.
+        for fraction in [0.25, 0.5, 0.75] {
+            let z = fraction * length;
+            let major = 0.5 * g.start_major_diameter + z / 32.0;
+            let (least, most) = radial_extent(&topo, outcome.solid, z, major - h - 0.2, r + 0.1);
+            assert!(
+                (most - major).abs() < 2e-5,
+                "{}: crest {most} vs {major}",
+                size.name
+            );
+            assert!(
+                (least - (major - h)).abs() < 2e-5,
+                "{}: root {least} vs {}",
+                size.name,
+                major - h
+            );
+        }
+        // Crest and root lands are cones of that taper; flanks are swept.
+        assert_roles_are_faces_of(&topo, &outcome);
+        for role in [ThreadFaceRole::Crest, ThreadFaceRole::Root] {
+            let lands = role_faces(&outcome, role);
+            assert!(!lands.is_empty());
+            for land in lands {
+                let FaceSurface::Cone(cone) = topo.face(land).unwrap().surface() else {
+                    panic!("{}: a {} that is not a cone", size.name, role.name());
+                };
+                // The cone's angle is measured from the plane across the axis.
+                assert!((cone.half_angle() - (FRAC_PI_2 - half_angle)).abs() < 1e-12);
+            }
+        }
+        let crest = 0.5 * g.start_major_diameter;
+        let expected = tapered_volume(&form, ThreadKind::External, crest, 1.0 / 32.0, length)
+            + PI * r * r * (height - length);
+        let got = volume(&topo, outcome.solid);
+        assert!(
+            rel(got, expected) < 1e-6,
+            "{}: {got} vs {expected}",
+            size.name
+        );
+    }
+}
+
+/// ISO 7-1 / BS 21 R (BSPT): threads per inch, the major, pitch and minor
+/// diameters on the gauge plane, the gauge length from the small end and
+/// the pipe's outside diameter, in millimetres.
+struct Bspt {
+    name: &'static str,
+    tpi: f64,
+    major: f64,
+    pitch_diameter: f64,
+    minor: f64,
+    gauge_length: f64,
+    od: f64,
+}
+
+const BSPT_SIZES: [Bspt; 2] = [
+    Bspt {
+        name: "R 1/4-19",
+        tpi: 19.0,
+        major: 13.157,
+        pitch_diameter: 12.301,
+        minor: 11.445,
+        gauge_length: 6.0,
+        od: 13.5,
+    },
+    Bspt {
+        name: "R 1/2-14",
+        tpi: 14.0,
+        major: 20.955,
+        pitch_diameter: 19.793,
+        minor: 18.631,
+        gauge_length: 8.2,
+        od: 21.3,
+    },
+];
+
+/// A male BSPT thread on a boss of the pipe's outside diameter, running
+/// two pitches past the gauge plane and out against the pipe.
+#[test]
+fn bspt_external_threads_match_the_standard_and_run_out() {
+    for size in &BSPT_SIZES {
+        let pitch = INCH / size.tpi;
+        let form = ThreadForm::bspt(pitch);
+        // Whitworth: thread height 0.640327·P, 55° included angle. The
+        // standard's rounded crests and roots are flats of P/6 here.
+        assert!((form.depth - 0.640_327 * pitch).abs() < 1e-12);
+        assert!((form.upper_flank_angle.to_degrees() - 27.5).abs() < 1e-12);
+        assert!((form.crest_width - pitch / 6.0).abs() < 1e-12);
+        let mut topo = Topology::new();
+        let (r, height) = (0.5 * size.od, 24.0);
+        let (body, face) = boss(&mut topo, r, height);
+        let length = 2.0f64.mul_add(pitch, size.gauge_length);
+        let angle = PI / 6.0;
+        let options = CylinderThreadOptions {
+            major_diameter: Some(size.major),
+            length: Some(length),
+            taper: Some(ThreadTaper {
+                gauge_offset: Some(size.gauge_length),
+                ..ThreadTaper::pipe(ThreadEndSide::Start)
+            }),
+            end: ThreadEnd::Chamfer { angle },
+            ..tight(&form)
+        };
+        let outcome = cut_thread(&mut topo, body, face, &form, &options).unwrap();
+        assert!(outcome.glued, "{}", size.name);
+        assert_valid_and_watertight(&topo, outcome.solid);
+        let g = &outcome.geometry;
+        // The table's diameters are rounded to 1e-3 mm.
+        let table = 0.6e-3;
+        assert!((g.major_diameter - size.major).abs() < 1e-12);
+        assert!(
+            (g.minor_diameter - size.minor).abs() < table,
+            "{}: minor",
+            size.name
+        );
+        let pitch_diameter = 0.5 * (g.major_diameter + g.minor_diameter);
+        assert!(
+            (pitch_diameter - size.pitch_diameter).abs() < table,
+            "{}: pitch diameter",
+            size.name
+        );
+        assert!((g.start_major_diameter - (size.major - size.gauge_length / 16.0)).abs() < 1e-12);
+        assert!((g.end_major_diameter - (size.major + 2.0 * pitch / 16.0)).abs() < 1e-12);
+        assert!((g.taper_angle - (1.0_f64 / 32.0).atan()).abs() < 1e-15);
+
+        // On the gauge plane the body's crest and root are the table's.
+        let (least, most) = radial_extent(
+            &topo,
+            outcome.solid,
+            size.gauge_length,
+            0.5 * size.minor - 0.2,
+            r + 0.1,
+        );
+        assert!(
+            (most - 0.5 * size.major).abs() < 2e-5,
+            "{}: {most}",
+            size.name
+        );
+        assert!(
+            (least - 0.5 * size.minor).abs() < 0.5 * table + 2e-5,
+            "{}: {least}",
+            size.name
+        );
+
+        // The stopped-short end is a runout: its cone falls from the crest
+        // on the end plane to the root cone, which climbs toward it.
+        let ThreadEndGeometry::Runout { length: reach } = g.end else {
+            panic!("{}: a runout, got {:?}", size.name, g.end);
+        };
+        let closing = angle.tan() - 1.0 / 32.0;
+        assert!((reach - form.depth / closing).abs() < 1e-12);
+        // The runout turns 1.2 times about the axis: its crest lands are
+        // swept; the full thread's are cones.
+        assert_roles(&topo, &outcome, true);
+        let cone_lands = role_faces(&outcome, ThreadFaceRole::Crest)
+            .into_iter()
+            .filter(|&land| matches!(topo.face(land).unwrap().surface(), FaceSurface::Cone(_)))
+            .count();
+        assert!(cone_lands >= 8, "{}: {cone_lands} cone crests", size.name);
+        assert!(!role_faces(&outcome, ThreadFaceRole::Runout(ThreadEndSide::End)).is_empty());
+        // The whole body against a quadrature of the exact tapered thread
+        // under the runout cone.
+        let crest = 0.5 * g.start_major_diameter;
+        let crest_end = 0.5 * g.end_major_diameter;
+        let thread = tapered_finished_volume(
+            &form,
+            ThreadKind::External,
+            crest,
+            1.0 / 32.0,
+            length,
+            |radius, z| radius.max(crest_end - (length - z) * angle.tan()),
+        );
+        let expected = thread + PI * r * r * (height - length);
+        let got = volume(&topo, outcome.solid);
+        assert!(
+            rel(got, expected) < 2e-5,
+            "{}: {got} vs {expected}",
+            size.name
+        );
+    }
+}
+
+/// The radius of a tapered thread's surface at `(θ, z)` for phase 0: the
+/// axial profile with the tapered widths at `z − θ/k`, plus the taper.
+fn tapered_thread_radius(
+    form: &ThreadForm,
+    kind: ThreadKind,
+    crest: f64,
+    rate: f64,
+    theta: f64,
+    z: f64,
+) -> f64 {
+    let (flank_rate, depth) = match kind {
+        ThreadKind::External => (rate, -form.depth),
+        ThreadKind::Internal => (-rate, form.depth),
+    };
+    let (upper, lower, root_width) = taper_widths(form, flank_rate);
+    let k = match form.hand {
+        ThreadHand::Right => TAU / form.lead(),
+        ThreadHand::Left => -TAU / form.lead(),
+    };
+    let u = (z - theta / k).rem_euclid(form.pitch);
+    let a = form.crest_width;
+    let b = a + upper;
+    let c = b + root_width;
+    let profile = if u < a {
+        0.0
+    } else if u < b {
+        depth * (u - a) / upper
+    } else if u < c {
+        depth
+    } else {
+        depth * (1.0 - (u - c) / lower)
+    };
+    rate.mul_add(z, crest) + profile
+}
+
+/// As [`finished_volume`] for a tapered thread, measured from the axis.
+fn tapered_finished_volume(
+    form: &ThreadForm,
+    kind: ThreadKind,
+    crest: f64,
+    rate: f64,
+    length: f64,
+    clip: impl Fn(f64, f64) -> f64,
+) -> f64 {
+    let (nz, nt) = (4000_usize, 4000_usize);
+    let dz = length / nz as f64;
+    let dt = TAU / nt as f64;
+    let mut total = 0.0;
+    for iz in 0..nz {
+        let z = (iz as f64 + 0.5) * dz;
+        let mut area = 0.0;
+        for it in 0..nt {
+            let theta = (it as f64 + 0.5) * dt;
+            let r = clip(tapered_thread_radius(form, kind, crest, rate, theta, z), z);
+            area += 0.5 * r * r * dt;
+        }
+        total += area * dz;
+    }
+    total
+}
+
+/// A female NPT thread tapped into a bore from its mouth, the large end,
+/// where the standard's gauge plane is: pitch diameter `E1` on the face.
+#[test]
+fn npt_internal_thread_opens_toward_the_mouth() {
+    let size = &NPT_SIZES[0];
+    let pitch = INCH / size.tpi;
+    let form = ThreadForm::npt(pitch);
+    let h = form.depth;
+    let mut topo = Topology::new();
+    let (outer, height) = (12.0, 14.0);
+    let length = size.l2 * INCH;
+    let minor_at_mouth = 0.5 * (size.e1 * INCH - h);
+    let minor_small = minor_at_mouth - length / 32.0;
+    // A bore a little under the thread's smallest minor diameter.
+    let bore = minor_small - 0.1;
+    let (body, face) = bored(&mut topo, outer, bore, height);
+    let options = CylinderThreadOptions {
+        major_diameter: Some(size.e1 * INCH + h),
+        length: Some(length),
+        taper: Some(ThreadTaper {
+            gauge_offset: Some(length),
+            ..ThreadTaper::pipe(ThreadEndSide::End)
+        }),
+        start: ThreadEnd::Chamfer { angle: PI / 4.0 },
+        ..tight(&form)
+    };
+    let outcome = cut_thread(&mut topo, body, face, &form, &options).unwrap();
+    assert!(outcome.glued);
+    assert_valid_and_watertight(&topo, outcome.solid);
+    let g = &outcome.geometry;
+    assert_eq!(g.kind, ThreadKind::Internal);
+    assert!((g.start_minor_diameter - 2.0 * minor_at_mouth).abs() < 1e-9);
+    assert!((g.end_minor_diameter - 2.0 * minor_small).abs() < 1e-9);
+    assert!(
+        (0.5 * (g.start_major_diameter + g.start_minor_diameter) - size.e1 * INCH).abs() < 1e-9
+    );
+    assert!(matches!(g.start, ThreadEndGeometry::Chamfer { .. }));
+    assert_roles_are_faces_of(&topo, &outcome);
+    for land in role_faces(&outcome, ThreadFaceRole::Crest) {
+        assert!(matches!(
+            topo.face(land).unwrap().surface(),
+            FaceSurface::Cone(_)
+        ));
+    }
+    // The air inside the thread, countersunk at the mouth, against a
+    // quadrature of the exact tapered thread over the chamfer cone.
+    let root_at_mouth = minor_at_mouth + h;
+    let at_end = root_at_mouth + 0.05 * h;
+    let air = tapered_finished_volume(
+        &form,
+        ThreadKind::Internal,
+        minor_at_mouth,
+        -1.0 / 32.0,
+        length,
+        |radius, z| radius.max(at_end - z),
+    );
+    let expected = PI * outer * outer * height - air - PI * bore * bore * (height - length);
+    let got = volume(&topo, outcome.solid);
+    assert!(rel(got, expected) < 2e-5, "{got} vs {expected}");
+}
+
+/// A taper with a square lower flank, two starts and the left hand, small
+/// end up, turned down from the boss: closed-form volume and the flank
+/// widths the taper leaves.
+#[test]
+fn tapered_square_flanked_two_start_thread_small_end_up() {
+    let mut topo = Topology::new();
+    let (r, h) = (6.0, 10.0);
+    let (body, face) = boss(&mut topo, r, h);
+    let form = ThreadForm {
+        pitch: 2.0,
+        depth: 0.8,
+        crest_width: 0.5,
+        upper_flank_angle: PI / 4.0,
+        lower_flank_angle: 0.0,
+        starts: 2,
+        hand: ThreadHand::Left,
+    };
+    let ratio = 0.125;
+    let (offset, length) = (1.0, 7.0);
+    let options = CylinderThreadOptions {
+        offset,
+        length: Some(length),
+        taper: Some(ThreadTaper {
+            ratio,
+            small_end: ThreadEndSide::End,
+            gauge_offset: None,
+        }),
+        ..tight(&form)
+    };
+    let outcome = cut_thread(&mut topo, body, face, &form, &options).unwrap();
+    assert!(outcome.glued);
+    assert_valid_and_watertight(&topo, outcome.solid);
+    let g = &outcome.geometry;
+    // Fitted to the boss: the crest is flush with it at the large end.
+    assert!((g.start_major_diameter - 2.0 * r).abs() < 1e-12);
+    assert!((g.end_major_diameter - ratio.mul_add(-length, 2.0 * r)).abs() < 1e-12);
+    // The gauge plane defaults to the small end.
+    assert!((g.major_diameter - g.end_major_diameter).abs() < 1e-12);
+    // The radius falls 1/16 per unit up the axis: the upper flank, which
+    // falls with it, is steeper against the profile and so narrower.
+    let (upper, lower, root_width) = taper_widths(&form, -0.5 * ratio);
+    assert!((upper - 0.8 / (1.0 - 0.0625)).abs() < 1e-12);
+    assert!(lower.abs() < 1e-12);
+    assert!((g.root_width - root_width).abs() < 1e-12);
+    let expected = PI * r * r * (h - length)
+        + tapered_volume(&form, ThreadKind::External, r, -0.5 * ratio, length);
+    let got = volume(&topo, outcome.solid);
+    assert!(rel(got, expected) < 1e-6, "{got} vs {expected}");
+    assert_roles_are_faces_of(&topo, &outcome);
+}
+
+#[test]
+fn taper_refusals() {
+    let mut topo = Topology::new();
+    let size = &NPT_SIZES[0];
+    let pitch = INCH / size.tpi;
+    let form = ThreadForm::npt(pitch);
+    let h = form.depth;
+    let r = 0.5 * size.od * INCH;
+    let (body, face) = boss(&mut topo, r, 20.0);
+    let before = topo.num_faces();
+    let pipe = ThreadTaper::pipe(ThreadEndSide::Start);
+    let with = |taper: ThreadTaper, major: Option<f64>, length: f64| CylinderThreadOptions {
+        major_diameter: major,
+        length: Some(length),
+        taper: Some(taper),
+        ..CylinderThreadOptions::default()
+    };
+    for ratio in [0.0, -0.0625, 0.3, f64::NAN] {
+        let taper = ThreadTaper { ratio, ..pipe };
+        assert_eq!(
+            refusal(cut_thread(
+                &mut topo,
+                body,
+                face,
+                &form,
+                &with(taper, None, 6.0)
+            )),
+            ThreadRefusal::TaperOutOfRange,
+            "ratio {ratio}"
+        );
+    }
+    // The standard thread carried to its effective length passes the pipe's
+    // outside diameter before it gets there: the large end decides.
+    let gauged = ThreadTaper {
+        gauge_offset: Some(size.l1 * INCH),
+        ..pipe
+    };
+    let major = Some(size.e1 * INCH + h);
+    assert_eq!(
+        refusal(cut_thread(
+            &mut topo,
+            body,
+            face,
+            &form,
+            &with(gauged, major, size.l2 * INCH)
+        )),
+        ThreadRefusal::CylinderTooSmall
+    );
+    // A long taper on a small major diameter runs its root into the axis at
+    // the small end.
+    let deep = ThreadTaper {
+        ratio: 0.25,
+        small_end: ThreadEndSide::Start,
+        gauge_offset: Some(19.0),
+    };
+    assert_eq!(
+        refusal(cut_thread(
+            &mut topo,
+            body,
+            face,
+            &form,
+            &with(deep, Some(6.0), 19.0)
+        )),
+        ThreadRefusal::TooDeep
+    );
+    // A chamfer shallower than the taper never clears the crest.
+    let shallow = CylinderThreadOptions {
+        start: ThreadEnd::Chamfer {
+            angle: 1.0_f64.to_radians(),
+        },
+        ..with(pipe, None, 6.0)
+    };
+    assert_eq!(
+        refusal(cut_thread(&mut topo, body, face, &form, &shallow)),
+        ThreadRefusal::InvalidParameter
+    );
+    let nowhere = ThreadTaper {
+        gauge_offset: Some(f64::INFINITY),
+        ..pipe
+    };
+    assert_eq!(
+        refusal(cut_thread(
+            &mut topo,
+            body,
+            face,
+            &form,
+            &with(nowhere, None, 6.0)
+        )),
+        ThreadRefusal::InvalidParameter
+    );
+    assert_eq!(before, topo.num_faces());
+
+    // In a bore, the small end decides: the bore must not be wider than the
+    // thread's minor diameter there.
+    let (outer, height) = (12.0, 14.0);
+    let minor_at_mouth = 0.5 * (size.e1 * INCH - h);
+    let (body, face) = bored(&mut topo, outer, minor_at_mouth - 0.05, height);
+    let female = ThreadTaper {
+        gauge_offset: Some(10.0),
+        ..ThreadTaper::pipe(ThreadEndSide::End)
+    };
+    assert_eq!(
+        refusal(cut_thread(
+            &mut topo,
+            body,
+            face,
+            &form,
+            &with(female, Some(size.e1 * INCH + h), 10.0)
+        )),
+        ThreadRefusal::BoreTooLarge
+    );
+    // A cone face is not a cylinder.
+    let cone = crate::primitives::make_cone(&mut topo, 4.0, 3.0, 8.0).unwrap();
+    let side = solid_faces(&topo, cone)
+        .unwrap()
+        .into_iter()
+        .find(|&f| matches!(topo.face(f).unwrap().surface(), FaceSurface::Cone(_)))
+        .unwrap();
+    assert_eq!(
+        refusal(cut_thread(
+            &mut topo,
+            cone,
+            side,
+            &form,
+            &with(pipe, None, 6.0)
+        )),
+        ThreadRefusal::NotACylinder
+    );
+}
+
+/// A deep form under a 45° chamfer: on the NPT form (0.8·P deep) one flank's
+/// trim turns 1.3 times about the axis between the cone's root and crest
+/// crossings. The cone loop's winding was read off each trim's midpoint,
+/// which loses a whole turn there: the cone's end circle came out wound
+/// with the face it bounds, and the body failed validation.
+#[test]
+fn chamfer_trims_that_turn_more_than_once_keep_the_cone_loop_wound() {
+    let pitch = 1.5;
+    let form = ThreadForm::npt(pitch);
+    for internal in [false, true] {
+        let mut topo = Topology::new();
+        let h = 8.0;
+        let (body, face) = if internal {
+            bored(&mut topo, 9.0, 4.0, h)
+        } else {
+            boss(&mut topo, 4.0 + form.depth, h)
+        };
+        let outcome = cut_thread(&mut topo, body, face, &form, &both_chamfers(PI / 4.0)).unwrap();
+        assert!(outcome.glued, "internal={internal}");
+        assert_valid_and_watertight(&topo, outcome.solid);
+        let (crest, root) = if internal {
+            (4.0, 4.0 + form.depth)
+        } else {
+            (4.0 + form.depth, 4.0)
+        };
+        let kind = if internal {
+            ThreadKind::Internal
+        } else {
+            ThreadKind::External
+        };
+        let sign = if internal { 1.0 } else { -1.0 };
+        let at_end = root + sign * 0.05 * form.depth;
+        let bound = if internal { 9.0 } else { 0.0 };
+        let expected = chamfered_volume(&form, kind, crest, root, bound, h, |z| {
+            at_end - sign * z.min(h - z)
+        });
+        let got = volume(&topo, outcome.solid);
+        assert!(
+            rel(got, expected) < 2e-5,
+            "internal={internal}: {got} vs {expected}"
+        );
+    }
+}
+
+/// A flank that covers more than half a turn of the outline (a 50° flank
+/// on a deep single-start form): its own angular run was read as the
+/// shorter way round, which sent its chamfer trim round the axis backwards.
+#[test]
+fn chamfer_on_a_flank_wider_than_half_a_turn() {
+    let mut topo = Topology::new();
+    let (r, h) = (5.0, 7.0);
+    let (body, face) = boss(&mut topo, r, h);
+    let form = ThreadForm {
+        pitch: 2.0,
+        depth: 1.0,
+        crest_width: 0.05,
+        upper_flank_angle: 50.0_f64.to_radians(),
+        lower_flank_angle: 0.0,
+        starts: 1,
+        hand: ThreadHand::Right,
+    };
+    // The upper flank takes 0.596 of the lead.
+    assert!(form.depth * form.upper_flank_angle.tan() > 0.5 * form.lead());
+    let options = CylinderThreadOptions {
+        start: ThreadEnd::Chamfer { angle: PI / 3.0 },
+        end: ThreadEnd::Chamfer { angle: PI / 3.0 },
+        ..CylinderThreadOptions::default()
+    };
+    let outcome = cut_thread(&mut topo, body, face, &form, &options).unwrap();
+    assert_valid_and_watertight(&topo, outcome.solid);
+    let root = r - form.depth;
+    let at_end = root - 0.05 * form.depth;
+    let slope = (PI / 3.0).tan();
+    let expected = chamfered_volume(&form, ThreadKind::External, r, root, 0.0, h, |z| {
+        slope.mul_add(z.min(h - z), at_end)
+    });
+    let got = volume(&topo, outcome.solid);
+    assert!(rel(got, expected) < 2e-4, "{got} vs {expected}");
 }

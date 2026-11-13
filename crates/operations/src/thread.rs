@@ -38,7 +38,19 @@
 //! the wrong turn), which drops faces from the fuse. Under half a turn also
 //! keeps crest and root lands exact cylinders.
 //!
-//! Not covered: tapered (pipe) threads and rounded crests and roots.
+//! A tapered (pipe) thread ([`ThreadTaper`]) is cut from the same cylinder:
+//! its crest and root lands are cones and its flanks conical screw surfaces
+//! (`R(θ, z) = f(z − θ/k) + τ·z`, see `profile`), each segment a conical
+//! twisted extrusion (`extrude::conical_twist`). The tube cut and
+//! the band proof are unchanged: the seam stays one coaxial cylinder, inside
+//! the root at the small end (external) or outside it at the large end
+//! (internal), so the kernel cuts the taper along with the thread and the
+//! thread must fit the cylinder at both ends.
+//!
+//! Not covered: rounded crests and roots (BSPT's are flats, see
+//! [`ThreadForm::bspt`]), and a tapered thread whose crest runs out through
+//! the cylinder it is cut from (the imperfect threads of a pipe thread past
+//! where its major cone meets the pipe).
 
 mod chamfer;
 pub(crate) mod profile;
@@ -61,6 +73,7 @@ use remus_topology::wire::{OrientedEdge, Wire, WireId};
 use crate::OperationsError;
 use crate::boolean::{BooleanOp, boolean, boolean_with_evolution};
 use crate::classify::{PointClassification, classify_point};
+use crate::extrude::conical_twist::RadialNets;
 use profile::{PieceRole, Segment};
 
 /// Default thread tolerance as a fraction of the pitch.
@@ -71,6 +84,10 @@ pub const MAX_THREAD_STARTS: u32 = 16;
 
 /// Largest supported flank angle from the plane across the axis, degrees.
 pub const MAX_FLANK_ANGLE_DEG: f64 = 75.0;
+
+/// Largest supported taper: diameter change per unit of length. Pipe
+/// threads are `1/16`.
+pub const MAX_TAPER_RATIO: f64 = 0.25;
 
 /// Uniform Hermite spans allowed along the axis of one ring segment.
 const MAX_THREAD_SPANS: usize = 4096;
@@ -161,6 +178,47 @@ impl ThreadForm {
         }
     }
 
+    /// The NPT form (ASME B1.20.1) for `pitch`: 60° included angle, thread
+    /// height `0.8·P`, equal crest and root flats (`0.038·P`, the standard's
+    /// minimum truncation), one right-hand start. Cut it with
+    /// [`ThreadTaper::pipe`].
+    #[must_use]
+    pub fn npt(pitch: f64) -> Self {
+        let depth = 0.8 * pitch;
+        let flank = PI / 6.0;
+        Self {
+            pitch,
+            depth,
+            crest_width: 0.5 * (2.0 * depth).mul_add(-flank.tan(), pitch),
+            upper_flank_angle: flank,
+            lower_flank_angle: flank,
+            starts: 1,
+            hand: ThreadHand::Right,
+        }
+    }
+
+    /// An approximation of the BSPT form (ISO 7-1 / BS 21, R and Rc) for
+    /// `pitch`: the Whitworth 55° included angle and thread height
+    /// `0.640327·P`, with the standard's rounded crests and roots (radius
+    /// `0.137329·P`) replaced by flats of `P/6` at the same heights. The
+    /// profile is approximate: it matches the standard's major, pitch and
+    /// minor diameters and its flanks, and differs from it only inside the
+    /// crest and root arcs, by up to `0.024·P` at the corners of the flats.
+    /// Cut it with [`ThreadTaper::pipe`].
+    #[must_use]
+    pub fn bspt(pitch: f64) -> Self {
+        let flank = 27.5_f64.to_radians();
+        Self {
+            pitch,
+            depth: 0.640_327 * pitch,
+            crest_width: pitch / 6.0,
+            upper_flank_angle: flank,
+            lower_flank_angle: flank,
+            starts: 1,
+            hand: ThreadHand::Right,
+        }
+    }
+
     /// The thread's lead: axial advance per turn.
     #[must_use]
     pub fn lead(&self) -> f64 {
@@ -202,6 +260,40 @@ pub enum ThreadEnd {
         /// Cone angle from the axis, radians, in `(0, π/2)`.
         angle: f64,
     },
+}
+
+/// The taper of a pipe thread.
+///
+/// Every diameter of the thread grows linearly along the axis from the small
+/// end. The flank angles stay those of the axial section, measured from the
+/// plane across the axis (not across the cone), and the pitch is measured
+/// along the axis, as NPT and BSPT do.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ThreadTaper {
+    /// Change of diameter per unit of length along the axis, in
+    /// `(0, MAX_TAPER_RATIO]`; `1/16` for NPT and BSPT.
+    pub ratio: f64,
+    /// The end of the thread with the smaller diameters.
+    pub small_end: ThreadEndSide,
+    /// Axial distance of the gauge plane from the small end, toward the
+    /// large end: the plane where
+    /// [`CylinderThreadOptions::major_diameter`] is the thread's major
+    /// diameter. `None` gauges at the small end. It may lie outside the
+    /// thread.
+    pub gauge_offset: Option<f64>,
+}
+
+impl ThreadTaper {
+    /// The pipe-thread taper, 1 in 16 on the diameter (NPT, BSPT), gauged
+    /// at the small end.
+    #[must_use]
+    pub const fn pipe(small_end: ThreadEndSide) -> Self {
+        Self {
+            ratio: 1.0 / 16.0,
+            small_end,
+            gauge_offset: None,
+        }
+    }
 }
 
 /// How an end of a built thread was finished.
@@ -283,9 +375,10 @@ impl From<PieceRole> for ThreadFaceRole {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CylinderThreadOptions {
     /// Diameter of the thread's outer surface: an external thread's crest
-    /// (major) diameter, an internal thread's root (major) diameter. `None`
-    /// fits the thread to the cylinder: an external crest on the boss, an
-    /// internal crest on the bore.
+    /// (major) diameter, an internal thread's root (major) diameter; on a
+    /// tapered thread, at the gauge plane. `None` fits the thread to the
+    /// cylinder: an external crest on the boss (at the large end of a
+    /// taper), an internal crest on the bore (at the small end).
     pub major_diameter: Option<f64>,
     /// Axial distance from the start of the face (its lower end along the
     /// cylinder's axis) to the start of the thread.
@@ -308,6 +401,8 @@ pub struct CylinderThreadOptions {
     /// Finish of the thread's other end. A [`ThreadEnd::Chamfer`] becomes a
     /// runout when the thread stops short of the face's end.
     pub end: ThreadEnd,
+    /// A pipe thread's taper; `None` cuts a cylindrical thread.
+    pub taper: Option<ThreadTaper>,
 }
 
 impl Default for CylinderThreadOptions {
@@ -321,6 +416,7 @@ impl Default for CylinderThreadOptions {
             tolerance: None,
             start: ThreadEnd::Plain,
             end: ThreadEnd::Plain,
+            taper: None,
         }
     }
 }
@@ -330,10 +426,23 @@ impl Default for CylinderThreadOptions {
 pub struct ThreadGeometry {
     /// Boss or bore.
     pub kind: ThreadKind,
-    /// Diameter of the thread's outer surface.
+    /// Diameter of the thread's outer surface; on a tapered thread, at the
+    /// gauge plane.
     pub major_diameter: f64,
-    /// Diameter of the thread's inner surface.
+    /// Diameter of the thread's inner surface; on a tapered thread, at the
+    /// gauge plane.
     pub minor_diameter: f64,
+    /// Half-angle of a tapered thread's cones, radians: `atan(ratio / 2)`;
+    /// zero for a cylindrical thread.
+    pub taper_angle: f64,
+    /// Major diameter on the thread's start plane.
+    pub start_major_diameter: f64,
+    /// Major diameter on the thread's end plane.
+    pub end_major_diameter: f64,
+    /// Minor diameter on the thread's start plane.
+    pub start_minor_diameter: f64,
+    /// Minor diameter on the thread's end plane.
+    pub end_minor_diameter: f64,
     /// Axial pitch.
     pub pitch: f64,
     /// Axial advance per turn.
@@ -401,6 +510,8 @@ pub enum ThreadRefusal {
     FeaturesInThreadRegion,
     /// The chamfers or runouts of the two ends reach past each other.
     EndsOverlap,
+    /// The taper ratio is outside `(0, MAX_TAPER_RATIO]`.
+    TaperOutOfRange,
 }
 
 impl ThreadRefusal {
@@ -419,6 +530,7 @@ impl ThreadRefusal {
             Self::ToleranceTooTight => "tolerance-too-tight",
             Self::FeaturesInThreadRegion => "features-in-thread-region",
             Self::EndsOverlap => "ends-overlap",
+            Self::TaperOutOfRange => "taper-out-of-range",
         }
     }
 }
@@ -535,7 +647,8 @@ fn validate_form(form: &ThreadForm) -> Result<(), ThreadError> {
 ///
 /// [`ThreadError::Refused`] for an out-of-range parameter, a face that is
 /// not a full-turn cylinder of `solid`, a thread larger than the boss (or
-/// smaller than the bore), a span reaching past either end of the face,
+/// smaller than the bore) at either end of a taper, a span reaching past
+/// either end of the face,
 /// end finishes that reach past each other, or features crossing the thread
 /// band; [`ThreadError::Operations`] when a boolean fails. Refusals and
 /// failures leave the topology unchanged.
@@ -643,66 +756,158 @@ pub fn cut_thread(
     };
 
     let fit_tol = 1e-9 * radius;
+    // A tapered thread's radii gain `radial_rate` per unit of height above
+    // the thread's start; `offset_at` is what they gain from the gauge
+    // plane, where the major diameter is given.
+    let radial_rate = match options.taper {
+        None => 0.0,
+        Some(taper) => {
+            let in_range =
+                taper.ratio.is_finite() && taper.ratio > 0.0 && taper.ratio <= MAX_TAPER_RATIO;
+            if !in_range {
+                return Err(ThreadError::refused(
+                    ThreadRefusal::TaperOutOfRange,
+                    format!(
+                        "the taper ratio must be in (0, {MAX_TAPER_RATIO}] of diameter per unit \
+                         length, got {}",
+                        taper.ratio
+                    ),
+                ));
+            }
+            match taper.small_end {
+                ThreadEndSide::Start => 0.5 * taper.ratio,
+                ThreadEndSide::End => -0.5 * taper.ratio,
+            }
+        }
+    };
+    let gauge = match options.taper {
+        None => 0.0,
+        Some(taper) => {
+            let from_small_end = taper.gauge_offset.unwrap_or(0.0);
+            require(from_small_end.is_finite(), || {
+                format!("gauge offset must be finite, got {from_small_end}")
+            })?;
+            match taper.small_end {
+                ThreadEndSide::Start => from_small_end,
+                ThreadEndSide::End => length - from_small_end,
+            }
+        }
+    };
+    let tapered = options.taper.is_some();
+    let offset_at = |z: f64| radial_rate * (z - gauge);
+    // What the radii gain at the large end and at the small end.
+    let (grown, shrunk) = (
+        offset_at(0.0).max(offset_at(length)),
+        offset_at(0.0).min(offset_at(length)),
+    );
+    let at_the = |end: &str| {
+        if tapered {
+            format!(" at its {end} end")
+        } else {
+            String::new()
+        }
+    };
+    // The flanks take more or less of the pitch with the taper.
+    let root_width = profile::Widths::new(
+        form,
+        form.depth,
+        if kind == ThreadKind::External {
+            radial_rate
+        } else {
+            -radial_rate
+        },
+    )
+    .root;
+    if root_width < -1e-12 * form.pitch {
+        return Err(ThreadError::refused(
+            ThreadRefusal::RootClosed,
+            format!(
+                "on this taper the crest and flanks take {} of the {} pitch, leaving no root",
+                form.pitch - root_width,
+                form.pitch
+            ),
+        ));
+    }
     let major = match options.major_diameter {
         Some(diameter) => {
             positive(diameter, "major diameter")?;
             0.5 * diameter
         }
+        // The crest on the boss at the large end, on the bore at the small
+        // end.
         None => match kind {
-            ThreadKind::External => radius,
-            ThreadKind::Internal => radius + form.depth,
+            ThreadKind::External => radius - grown,
+            ThreadKind::Internal => radius + form.depth - shrunk,
         },
     };
     let minor = major - form.depth;
-    if minor <= 0.0 {
+    if minor + shrunk <= 0.0 {
         return Err(ThreadError::refused(
             ThreadRefusal::TooDeep,
             format!(
-                "a depth of {} reaches the axis of a {} major diameter",
+                "a depth of {} reaches the axis of a {} major diameter{}",
                 form.depth,
-                2.0 * major
+                2.0 * (major + shrunk),
+                at_the("small")
             ),
         ));
     }
     let seam_gap = SEAM_DEPTH * form.depth;
-    // (crest, root) radii and the band the tube rebuilds.
+    // (crest, root) radii on the gauge plane and the band the tube rebuilds.
+    // The thread must fit the cylinder where it comes nearest to it: an
+    // external thread at its large end, an internal one at its small end.
     let (crest, root, band) = match kind {
         ThreadKind::External => {
-            if major > radius + fit_tol {
+            if major + grown > radius + fit_tol {
                 return Err(ThreadError::refused(
                     ThreadRefusal::CylinderTooSmall,
                     format!(
-                        "the thread's major diameter {} exceeds the boss diameter {}",
-                        2.0 * major,
+                        "the thread's major diameter {}{} exceeds the boss diameter {}",
+                        2.0 * (major + grown),
+                        at_the("large"),
                         2.0 * radius
                     ),
                 ));
             }
-            let major = major.min(radius);
+            let major = if major + grown > radius {
+                radius - grown
+            } else {
+                major
+            };
             let minor = major - form.depth;
-            let seam = minor - seam_gap;
+            // The seam cylinder lies inside the root at the small end.
+            let seam = minor + shrunk - seam_gap;
             if seam <= 0.0 {
                 return Err(ThreadError::refused(
                     ThreadRefusal::TooDeep,
-                    "the thread's root is too close to the axis to rebuild the thread",
+                    format!(
+                        "the thread's root is too close to the axis{} to rebuild the thread",
+                        at_the("small")
+                    ),
                 ));
             }
             (major, minor, (seam, radius))
         }
         ThreadKind::Internal => {
-            if minor < radius - fit_tol {
+            if minor + shrunk < radius - fit_tol {
                 return Err(ThreadError::refused(
                     ThreadRefusal::BoreTooLarge,
                     format!(
-                        "the bore diameter {} exceeds the thread's minor diameter {}",
+                        "the bore diameter {} exceeds the thread's minor diameter {}{}",
                         2.0 * radius,
-                        2.0 * minor
+                        2.0 * (minor + shrunk),
+                        at_the("small")
                     ),
                 ));
             }
-            let minor = minor.max(radius);
+            let minor = if minor + shrunk < radius {
+                radius - shrunk
+            } else {
+                minor
+            };
             let major = minor + form.depth;
-            (minor, major, (radius, major + seam_gap))
+            // The seam cylinder lies outside the root at the large end.
+            (minor, major, (radius, major + grown + seam_gap))
         }
     };
     let (major_r, minor_r) = (crest.max(root), crest.min(root));
@@ -712,10 +917,15 @@ pub fn cut_thread(
         kind,
         major_diameter: 2.0 * major_r,
         minor_diameter: 2.0 * minor_r,
+        taper_angle: radial_rate.abs().atan(),
+        start_major_diameter: 2.0 * (major_r + offset_at(0.0)),
+        end_major_diameter: 2.0 * (major_r + offset_at(length)),
+        start_minor_diameter: 2.0 * (minor_r + offset_at(0.0)),
+        end_minor_diameter: 2.0 * (minor_r + offset_at(length)),
         pitch: form.pitch,
         lead,
         crest_width: form.crest_width,
-        root_width: form.root_width().max(0.0),
+        root_width: root_width.max(0.0),
         lead_angle: (lead / (PI * mean)).atan(),
         length,
         turns: length / lead,
@@ -764,8 +974,9 @@ pub fn cut_thread(
             topo,
             &frame,
             form,
-            crest,
-            root,
+            crest + offset_at(0.0),
+            root + offset_at(0.0),
+            radial_rate,
             options.phase,
             kind,
             if kind == ThreadKind::External {
@@ -797,7 +1008,7 @@ pub fn cut_thread(
             &frame,
             kind,
             band,
-            crest,
+            [crest + offset_at(0.0), crest + offset_at(length)],
             length,
             Glue::Simplest,
         )?;
@@ -855,7 +1066,8 @@ pub fn cut_thread(
 /// The swept thread ring: the outline twisted along the axis, with its
 /// seam cylinder as a bore (external) or rim (internal), and a cone chamfer
 /// or runout built into either end that asks for one (see `chamfer` and
-/// `runout`).
+/// `runout`). `crest` and `root` are the radii on the start plane; on a
+/// tapered thread they gain `radial_rate` per unit of height.
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn thread_ring(
     topo: &mut Topology,
@@ -863,6 +1075,7 @@ fn thread_ring(
     form: &ThreadForm,
     crest: f64,
     root: f64,
+    radial_rate: f64,
     phase: f64,
     kind: ThreadKind,
     seam: f64,
@@ -875,6 +1088,28 @@ fn thread_ring(
         ThreadHand::Left => -1.0,
     };
     let rate = sign * TAU / form.lead();
+    #[allow(clippy::float_cmp)]
+    let tapered = radial_rate != 0.0;
+    let crest_at = |z: f64| radial_rate.mul_add(z, crest);
+    let root_at = |z: f64| radial_rate.mul_add(z, root);
+    let widths = profile::Widths::new(
+        form,
+        (crest - root).abs(),
+        if kind == ThreadKind::External {
+            radial_rate
+        } else {
+            -radial_rate
+        },
+    );
+    // A tapered thread's flank fits must hold out to its largest radius:
+    // every section is the first outline moved along its radial nets.
+    let reach = tapered.then(|| {
+        crest_at(0.0)
+            .max(root_at(0.0))
+            .max(crest_at(length).max(root_at(length)))
+    });
+    // The radial nets of the flank edges, for the conical sweep.
+    let mut nets = RadialNets::new();
     let mut outline_bound: f64 = 0.0;
     let mut spans_per_flank = 0;
     // The role of every thread-wire edge on a segment plane, by edge index:
@@ -885,9 +1120,18 @@ fn thread_ring(
     // turned by the twist up to `z`.
     let mut profile_at = |topo: &mut Topology,
                           edge_roles: &mut std::collections::BTreeMap<usize, PieceRole>,
+                          nets: &mut RadialNets,
                           z: f64|
      -> Result<FaceId, ThreadError> {
-        let outline = profile::outline(form, crest, root, rate.mul_add(z, phase), tolerance)?;
+        let outline = profile::outline(
+            form,
+            &widths,
+            crest_at(z),
+            root_at(z),
+            rate.mul_add(z, phase),
+            tolerance,
+            reach,
+        )?;
         outline_bound = outline_bound.max(outline.remainder_bound);
         spans_per_flank = spans_per_flank.max(outline.spans_per_flank);
         let at = Frame {
@@ -904,6 +1148,14 @@ fn thread_ring(
         )?;
         for (edge, &role) in edges.iter().zip(&outline.roles) {
             edge_roles.insert(edge.index(), role);
+        }
+        if tapered {
+            for (edge, net) in edges.iter().zip(&outline.radial_nets) {
+                if let Some(net) = net {
+                    let placed = net.iter().map(|d| at.x * d.x() + at.y * d.y()).collect();
+                    nets.insert(edge.index(), placed);
+                }
+            }
         }
         let circle = make_circle_edge_with_ref(
             topo,
@@ -924,18 +1176,33 @@ fn thread_ring(
         };
         Ok(topo.add_face(Face::new(outer, vec![inner], at.plane())))
     };
-    let extrude = |topo: &mut Topology, face: FaceId, height: f64| {
-        crate::extrude::twist::twisted_extrude_impl(
-            topo,
-            face,
-            frame.origin,
-            frame.axis,
-            height,
-            rate,
-            tolerance,
-            MAX_THREAD_SPANS,
-        )
-        .map_err(|error| match error {
+    let extrude = |topo: &mut Topology, nets: &mut RadialNets, face: FaceId, height: f64| {
+        let swept = if tapered {
+            crate::extrude::conical_twist::conical_twisted_extrude_impl(
+                topo,
+                face,
+                frame.origin,
+                frame.axis,
+                height,
+                rate,
+                radial_rate,
+                tolerance,
+                MAX_THREAD_SPANS,
+                nets,
+            )
+        } else {
+            crate::extrude::twist::twisted_extrude_impl(
+                topo,
+                face,
+                frame.origin,
+                frame.axis,
+                height,
+                rate,
+                tolerance,
+                MAX_THREAD_SPANS,
+            )
+        };
+        swept.map_err(|error| match error {
             OperationsError::Math(remus_math::MathError::ResourceLimitExceeded { .. }) => {
                 ThreadError::refused(
                     ThreadRefusal::ToleranceTooTight,
@@ -956,34 +1223,52 @@ fn thread_ring(
         .copied()
         .ok_or_else(|| ThreadError::invalid("thread ring segment has no seam wall"))
     };
-    // A chamfer's cone crosses the end plane halfway between the root and
-    // the seam cylinder, so it touches neither.
-    let gap = (seam - root).abs();
-    let at_end = if kind == ThreadKind::External {
-        root - 0.5 * gap
-    } else {
-        root + 0.5 * gap
-    };
-    // A runout's cone sits on the crest on the end plane.
+    // A chamfer's cone crosses the end plane half the seam gap inside the
+    // root there, so it touches neither the root nor the seam cylinder (the
+    // gap is the root's distance from the seam where a taper brings them
+    // closest). A runout's cone sits on the crest on the end plane.
+    let gap = (seam - root_at(0.0))
+        .abs()
+        .min((seam - root_at(length)).abs());
     let cone_for = |end: ThreadEnd, at_start: bool| {
         let (angle, runout) = match end {
             ThreadEnd::Plain => return None,
             ThreadEnd::Chamfer { angle } => (angle, false),
             ThreadEnd::Runout { angle } => (angle, true),
         };
+        let end_z = if at_start { 0.0 } else { length };
+        let (crest, root) = (crest_at(end_z), root_at(end_z));
+        let at_end = if runout {
+            crest
+        } else if kind == ThreadKind::External {
+            root - 0.5 * gap
+        } else {
+            root + 0.5 * gap
+        };
         Some(chamfer::Cone {
             kind,
             crest,
             root,
-            at_end: if runout { crest } else { at_end },
+            taper: radial_rate,
+            at_end,
             slope: angle.tan(),
-            end_z: if at_start { 0.0 } else { length },
+            end_z,
             inward: if at_start { 1.0 } else { -1.0 },
             runout,
         })
     };
     let start_cone = cone_for(ends.0, true);
     let end_cone = cone_for(ends.1, false);
+    for (cone, name) in [(&start_cone, "start"), (&end_cone, "end")] {
+        if let Some(cone) = cone
+            && !cone.closes()
+        {
+            return Err(ThreadError::invalid(format!(
+                "the {name} {} must be steeper than the taper",
+                if cone.runout { "runout" } else { "chamfer" }
+            )));
+        }
+    }
     // Where the thread is whole: past a chamfer's crest crossing, past a
     // runout's root crossing.
     let whole_from = |cone: &chamfer::Cone| {
@@ -1051,8 +1336,8 @@ fn thread_ring(
     // the ring (true only for the bare start).
     let (mut current, mut current_is_cap) = if let Some(cone) = start_cone {
         let from = if cone.runout { 0.0 } else { cone.root_z() };
-        let profile = profile_at(topo, &mut edge_roles, from)?;
-        let zone_ring = extrude(topo, profile, lower - from)?;
+        let profile = profile_at(topo, &mut edge_roles, &mut nets, from)?;
+        let zone_ring = extrude(topo, &mut nets, profile, lower - from)?;
         let piece_roles = carry_roles(&mut edge_roles, &zone_ring.construction)?;
         let zone = if cone.runout {
             runout::runout_zone(
@@ -1088,7 +1373,7 @@ fn thread_ring(
         spans += zone_ring.spans;
         (zone_ring.construction.top, false)
     } else {
-        (profile_at(topo, &mut edge_roles, 0.0)?, true)
+        (profile_at(topo, &mut edge_roles, &mut nets, 0.0)?, true)
     };
 
     // Stack segments of at most `MAX_SEGMENT_TURN` turns, each the twisted
@@ -1110,7 +1395,7 @@ fn thread_ring(
     #[allow(clippy::cast_precision_loss)]
     let height = middle / segments.max(1) as f64;
     for index in 0..segments {
-        let twisted = extrude(topo, current, height)?;
+        let twisted = extrude(topo, &mut nets, current, height)?;
         let construction = &twisted.construction;
         let seam_face = seam_face_of(construction)?;
         seam_faces.push(seam_face);
@@ -1143,7 +1428,7 @@ fn thread_ring(
     }
     if let Some(cone) = end_cone {
         let to = if cone.runout { length } else { cone.root_z() };
-        let zone_ring = extrude(topo, current, to - upper)?;
+        let zone_ring = extrude(topo, &mut nets, current, to - upper)?;
         // Likewise an end finish that starts on the plain start plane: the
         // zone leaves that cap to the segment below it, and there is none.
         if current_is_cap {
@@ -1267,7 +1552,7 @@ pub(crate) fn glue_coaxial_ring(
         &frame,
         kind,
         band,
-        crest,
+        [crest, crest],
         length,
         Glue::AsFused,
     );
@@ -1306,7 +1591,7 @@ fn glue(
     frame: &Frame,
     kind: ThreadKind,
     band: (f64, f64),
-    crest: f64,
+    crest: [f64; 2],
     length: f64,
     mode: Glue,
 ) -> Result<Option<SolidId>, ThreadError> {
@@ -1393,7 +1678,7 @@ fn glue(
 
     let mut removed = vec![kept_wall, ring_wall];
     let mut merged = Vec::with_capacity(2);
-    for origin in planes {
+    for (origin, crest) in planes.into_iter().zip(crest) {
         // The kept face and the ring cap on this plane that hold a seam
         // circle loop.
         let find = |topo: &Topology, faces: &[FaceId]| -> Result<Option<FaceId>, ThreadError> {
