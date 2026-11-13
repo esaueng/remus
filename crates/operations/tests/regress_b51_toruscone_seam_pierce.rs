@@ -390,9 +390,25 @@ fn mesh_volume(mesh: &TriangleMesh) -> f64 {
         .sum()
 }
 
+/// Area of a mesh's triangles.
+fn mesh_area(mesh: &TriangleMesh) -> f64 {
+    mesh.indices
+        .chunks(3)
+        .map(|t| {
+            let [a, b, c] = [0, 1, 2].map(|k| mesh.positions[t[k] as usize]);
+            (b - a).cross(c - a).length() / 2.0
+        })
+        .sum()
+}
+
+/// Largest chord-shell bound, as a fraction of the volume, at which a mesh
+/// volume is still compared with the oracle (see `assert_closed_mesh`).
+const MAX_MEANINGFUL_SHELL: f64 = 0.05;
+
 /// Closed by index (every half-edge has its twin), closed by position after
-/// welding, and enclosing the independent volume: an inscribed mesh may
-/// undercount by its chord slab, never by a missing or doubled sheet.
+/// welding, and, wherever the chord shell is small enough to tell, enclosing
+/// the independent volume: an inscribed mesh may be off by its chord shell,
+/// never by a missing or doubled sheet.
 fn assert_closed_mesh(cell: Cell, op: BooleanOp, topo: &Topology, solid: SolidId, what: &str) {
     let expected = cell.expected_volume(op);
     for d in deflections(cell, topo, solid) {
@@ -408,14 +424,25 @@ fn assert_closed_mesh(cell: Cell, op: BooleanOp, topo: &Topology, solid: SolidId
             (0, 0),
             "{what}: position-welded mesh at deflection {d:e} is not closed"
         );
+        // Every chord sags at most d, so the mesh lies within d of the true
+        // boundary and the enclosed volume can differ from the solid's by at
+        // most the shell d · A (A the boundary area, read off the mesh: an
+        // inscribed mesh never overstates it). The oracle adds its own 1e-4
+        // (`independent_integral_is_converged`).
+        let bound = d * mesh_area(&mesh) / expected.abs() + 2e-4;
         let volume = mesh_volume(&mesh);
-        // A chord of sag d over a tube of radius r loses about d/r of the
-        // cross-section; 6 d / minor covers every curved wall here.
-        let slab = 6.0 * d / cell.torus_dims().1;
+        // Measured: the error is at most 0.23 of the shell over every cell,
+        // op and deflection here. At the 0.1 preview deflection the shell is
+        // 0.22–0.35 of the volume, more than a missing or doubled sheet need
+        // change it, so those meshes are checked for closure only (above);
+        // from 0.01 down it is under 0.036 and the volume is compared.
+        if bound > MAX_MEANINGFUL_SHELL {
+            continue;
+        }
         assert!(
-            rel_err(volume, expected) <= slab.max(5e-4),
+            rel_err(volume, expected) <= bound,
             "{what}: mesh volume {volume:.6e} at deflection {d:e} vs independent oracle \
-             {expected:.6e}"
+             {expected:.6e} (chord-shell bound {bound:.3e})"
         );
     }
 }

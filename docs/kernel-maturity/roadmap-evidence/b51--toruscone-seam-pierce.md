@@ -1,7 +1,7 @@
 ---
 row: B51
 ---
-**Done (2026-11-12, this PR):** the three sweep repros are un-ignored and green, the deterministic 60-draw torus–cone sweep is clean, and `is_torus_cone_pair` is lifted from `arb_bool_pair_slow`. Not measured: the criterion benches. One third of the sweep's draws answer with typed refusals on every leg. Closure note. The two open-mesh draws are one tessellation
+**Done (2026-11-12, #1696):** the three sweep repros are un-ignored and green, the deterministic 60-draw torus–cone sweep is clean, and `is_torus_cone_pair` is lifted from `arb_bool_pair_slow`. Not measured: the criterion benches. One third of the sweep's draws answer with typed refusals on every leg. Closure note. The two open-mesh draws are one tessellation
 defect on an exact, strictly valid 4-face B-Rep, not a boolean defect: a torus
 tube that runs through a frustum wall leaves the wall two pierce holes, each
 one closed marched torus × cone curve, and a hole that straddles the wall's

@@ -11,9 +11,9 @@
 //!
 //! **Witness.** Roadmap row B51's torus–cone slow-lattice draws #5 and #19
 //! (the deterministic B26 sweep in the B39 work): exact, fully valid fuses and
-//! cuts whose whole-solid mesh has 6 open edges at every deflection from the
-//! clamp down. Traced on `main` at `2a735434` (with this change's
-//! `BK_VOL_TRACE` output patched in; main's own trace never emits): the torus
+//! cuts whose whole-solid mesh had 6 open edges at every deflection from the
+//! clamp down until B51 closed it. Traced on `main` at `2a735434` (with this
+//! change's `BK_VOL_TRACE` output patched in; main's own trace never emits): the torus
 //! notch band declines its band integral on the cone wall, its mesh is open,
 //! the direct gate (NURBS-trimmed quadric wall) finds the same open mesh, and
 //! the direct face route returned, as `Ok`:
@@ -31,14 +31,24 @@
 //!
 //! **Contract asserted.** At every deflection, `solid_volume` returns a volume
 //! within [`REL_TOL`] of an independent oracle, or a typed
-//! `OperationsError::Unsupported` from `solid_volume`. These meshes stay open
-//! at the clamp retry too, and every face is one the boundary-trimmed Gauss
-//! fallback measures, so today the answer is that integral: within 1e-4 of
-//! the oracle (measured 8e-6 – 7e-5). B51 has since closed these meshes (the
-//! cone wall's pierce loops are pre-split at its seam), so the closed mesh
-//! measures them and the contract still holds. The open-mesh order
-//! itself (exact integral, then the clamp retry, then a typed refusal) is
-//! pinned geometry-independently by the unit tests in `measure/volume.rs`.
+//! `OperationsError::Unsupported` from `solid_volume`. When this file landed
+//! the meshes stayed open at the clamp retry too and the answer was the
+//! boundary-trimmed Gauss integral (8e-6 – 7e-5 from the oracle).
+//!
+//! **This file no longer reaches the open-mesh route.** B51 (#1696) closed
+//! these meshes by pre-splitting the cone wall's pierce loops at its seam, so
+//! every reading here now comes from the closed whole-solid mesh, and the file
+//! guards only that the same draws still measure right. No fixture in the
+//! tree is known to mesh open on these routes any more, so coverage of the
+//! open-mesh order itself (exact integral, then the clamp retry, then a typed
+//! refusal) moved to the unit tests in `measure/volume.rs`, which open a mesh
+//! by hand:
+//! `open_required_mesh_takes_the_exact_integral_not_the_rectangle`,
+//! `open_fine_mesh_is_retried_at_the_clamp`,
+//! `open_mesh_takes_the_exact_integral_before_the_clamp_retry`,
+//! `unqualified_open_mesh_takes_the_closed_clamp_mesh_before_refusing` and
+//! `open_required_mesh_refuses_an_unqualified_collar`. Repoint this file at a
+//! body whose mesh opens if one turns up.
 //!
 //! **Oracle.** torus + frustum − I (fuse) or frustum − I (cut), where I is the
 //! torus ∩ frustum volume by the midpoint rule over the frustum's local

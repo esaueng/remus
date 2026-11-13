@@ -152,14 +152,14 @@ that does not exist yet; without it, stop.
 
 ## Open items with a repro
 
-The `#[ignore]` inventory (regenerated 2026-11-13 on `f01921d7` with B62's
-witness un-ignored, plus the two B7 witnesses: 56 actual attributes in 32
-files, all in `operations`, `io`, `heal`, `math`, `wasm` and `remus`) splits
-by the ignore reason as written. Listed, not re-run, except B265, B266, B272
-and the two B7 witnesses (failed 3/3 as pinned). **28 open engine
-witnesses**, each with an owner row:
-- seven B26 property ready-repros in `operations/tests/prop_boolean_invariants.rs`:
-  finding 13 sphere–torus ×3 (B38), finding 20 sphere–cone (B33), torus–cone ×3 (B51);
+The `#[ignore]` inventory (regenerated 2026-11-13 on `05427d67` with B62's
+witness un-ignored, the two B7 witnesses added and B51's three closed: 54
+actual attributes in 32 files, all in `operations`, `io`, `heal`, `math`,
+`wasm` and `remus`) splits by the ignore reason as written. Listed, not
+re-run, except B265, B266, B272 and the two B7 witnesses (failed 3/3 as
+pinned). **25 open engine witnesses**, each with an owner row:
+- four B26 property ready-repros in `operations/tests/prop_boolean_invariants.rs`:
+  finding 13 sphere–torus ×3 (B38) and finding 20 sphere–cone (B33);
 - `regress_b52_box_cylinder_rim_notch.rs` (B270) and
   `regress_b53_finding17_neighborhood.rs` (B271), the B52/B53 remainders;
 - `qualify_boolean_anisotropic.rs` (P-Class 2.6);
@@ -179,9 +179,9 @@ witnesses**, each with an owner row:
   oblique tunnel crossing);
 - `regress_offset_cylinder_pass_through.rs` (O4.4, pending fragment).
 
-**28 manual runs:**
-- slow, exhaustive or differential (10): `boolean/tests.rs::staircase_fuse_with_cylinders`,
-  the B53 17,150-input sweep, `math/src/fma.rs::long_random_differential`,
+**29 manual runs:**
+- slow, exhaustive or differential (11): `boolean/tests.rs::staircase_fuse_with_cylinders`,
+  the B53 17,150-input sweep, the B51 60-draw torus–cone sweep, `math/src/fma.rs::long_random_differential`,
   `io/tests/classify_engine_oracle.rs`, `math/tests/differential_line_torus.rs`
   soak, the two `gear/hindley_wheel/hob_oracle_tests.rs` verbatim searches,
   and `sweep_shelled_wall_rim_notch.rs` ×3 (two-revision sweeps);
@@ -194,7 +194,7 @@ witnesses**, each with an owner row:
   (`REMUS_VIDEO_FIXTURES`) and the cumulative Gecko document writer in
   `wasm/src/bindings/prepared_group_edit/tests.rs` (`REMUS_CUMULATIVE_GECKO_DOC`).
 
-The B10, B55, B61, B62, B64–B67, B69–B71 and B79 witnesses that earlier
+The B10, B51, B55, B61, B62, B64–B67, B69–B71 and B79 witnesses that earlier
 snapshots listed as failing are no longer ignored, and their rows record Done
 (B79 in source). Re-run landscape diagnostics with `--ignored --nocapture` before
 re-opening a case, and re-run a witness 3× before quoting it as still failing.
