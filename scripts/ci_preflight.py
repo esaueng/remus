@@ -30,6 +30,8 @@ CHECKS = (
     Check("Deterministic hashing ratchet", ("./scripts/check-det-hash.sh",)),
     Check("Wildcard-arm ratchet", ("./scripts/check-wildcard-arms.sh",)),
     Check("Wildcard ratchet tests", ("python3", "scripts/test-wildcard-arms.py")),
+    Check("Splitter special-case ratchet", ("python3", "scripts/check-splitter-ratchet.py")),
+    Check("Splitter ratchet tests", ("python3", "scripts/test-splitter-ratchet.py")),
     Check("O4.7 twin coverage", ("python3", "scripts/check-wasm-o47-coverage.py")),
     Check("O4.7 coverage fixtures", ("python3", "scripts/test-wasm-o47-coverage.py")),
     Check("Edge-domain authority", ("./scripts/check-edge-domain-authority.py",)),
