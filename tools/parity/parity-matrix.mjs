@@ -202,7 +202,14 @@ function makeCase(manifest, family, operation, scale, placement) {
       solidA: 0,
       solidB: 1,
     });
-    handle = 2;
+    // Measure the solid the boolean RETURNED, never a positional guess: a
+    // rejected exact pass can leave its intermediate at arena handle 2 while
+    // the disclosed fallback lands at 3 or 4, and querying 2 then measures
+    // the discarded body (B57: the cone-torus rigid fuse read an open,
+    // per-target GFA intermediate as a native refusal). A refused boolean
+    // returns no solid; `orHandle` keeps the queries on the unallocated
+    // positional handle so both surfaces still report `invalid_handle`.
+    handle = { fromOp: opIndex, pick: 'solid', orHandle: 2 };
     return finishCase(manifest, family, operation, scale, placement, batch, handle, opIndex);
   }
 
@@ -557,6 +564,15 @@ function expectedResultHandle(c, opResult) {
   return c.result.handle;
 }
 
+// `{fromOp, pick: 'solid'}` reads the handle out of a `{solid, quality}`
+// boolean response (the native runner's `resolve_ref` does the same). A
+// refused producer has no ok-value; `orHandle` then stands in.
+export function resolveSolidPick(reference, source) {
+  if (source && typeof source === 'object' && Number.isInteger(source.solid)) return source.solid;
+  assert.ok(Number.isInteger(reference.orHandle), 'pick solid: producer has no solid and no orHandle');
+  return reference.orHandle;
+}
+
 // Sequential chunked driver shared by both targets: ops whose serialized
 // args reference an earlier response ({fromOp}) run after their sources
 // complete. `execOne` dispatches one plain batch; `direct` exposes the
@@ -604,7 +620,9 @@ async function driveBatch(c, execOne, direct) {
           }
           if (value && typeof value === 'object' && !Array.isArray(value) && 'fromOp' in value) {
             const source = okValues[value.fromOp];
-            if (value.pick === 'first') {
+            if (value.pick === 'solid') {
+              args[key] = resolveSolidPick(value, source);
+            } else if (value.pick === 'first') {
               assert.ok(Array.isArray(source), 'fromOp source must be a handle list');
               assert.ok(source.length > 0, 'empty handle list');
               args[key] = [source[0]];

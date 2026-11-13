@@ -463,10 +463,14 @@ fn resolve_ref(value: &Value, ok_values: &[Value]) -> Result<Value, RunnerError>
     if let Some(pick) = value.get("pick").and_then(Value::as_str) {
         // `pick: solid` reads the handle out of a `{solid, quality}` boolean
         // response, so a fixture cell can chain exact-only booleans the way
-        // the WASM direct calls do (`out.solid`).
+        // the WASM direct calls do (`out.solid`). A refused producer leaves
+        // a null ok-value; `orHandle` then stands in, so measurement ops
+        // after a refused boolean still report `invalid_handle` (B57; the
+        // JS twin is `resolveSolidPick` in `parity-matrix.mjs`).
         if pick == "solid" {
             return source
                 .get("solid")
+                .or_else(|| value.get("orHandle"))
                 .cloned()
                 .ok_or_else(|| err("pick source has no solid handle"));
         }
@@ -1800,4 +1804,32 @@ fn main() -> Result<(), Box<dyn Error>> {
     let observation = observe(case)?;
     serde_json::to_writer(io::stdout(), &observation)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::resolve_ref;
+    use serde_json::json;
+
+    /// B57: measurement ops must follow the solid a boolean returned. A
+    /// disclosed fallback lands past the positional handle 2, where a
+    /// rejected exact-pass intermediate can still sit.
+    #[test]
+    fn pick_solid_follows_the_returned_boolean_handle() {
+        let reference = json!({"fromOp": 0, "pick": "solid", "orHandle": 2});
+        let returned = [json!({"solid": 4, "quality": "approximate"})];
+        assert_eq!(resolve_ref(&reference, &returned).unwrap(), json!(4));
+    }
+
+    /// A refused boolean leaves a null ok-value: the positional `orHandle`
+    /// stands in so later queries report `invalid_handle` on both surfaces.
+    #[test]
+    fn pick_solid_after_a_refusal_uses_or_handle() {
+        let reference = json!({"fromOp": 0, "pick": "solid", "orHandle": 2});
+        assert_eq!(resolve_ref(&reference, &[json!(null)]).unwrap(), json!(2));
+        let bare = json!({"fromOp": 0, "pick": "solid"});
+        assert!(resolve_ref(&bare, &[json!(null)]).is_err());
+    }
 }
