@@ -1,20 +1,20 @@
-//! Open finding (found while qualifying the planar collapse refusal, PR
-//! #1545): an inward offset that carries a cylinder's caps through each other
-//! returns `Ok`.
+//! Finding from qualifying the planar collapse refusal (PR #1545): an inward
+//! offset that carries a cylinder's caps through each other returned `Ok`.
 //!
 //! `make_cylinder(r = 5, h = 2)` offset by -1.5 should leave nothing: the caps
-//! are 2 apart, so both pass the mid-plane. The engine instead returns a solid
-//! of volume `pi * 3.5^2 * 1` (about 38.48): the radius shrinks correctly, and
-//! the height comes out as `|2 - 3| = 1`, the caps having swapped sides. The
-//! radius guard in `crates/offset/src/offset.rs` only checks `r + d > 0`, and
-//! the planar collapse certificate in `crates/operations/src/offset_v2.rs`
-//! deliberately covers only all-planar, straight-edged bodies. The P-Class 8.1
-//! generator keeps cylinder offsets out of generation (cell X8), so the
-//! campaign does not reach this yet.
+//! are 2 apart, so both pass the mid-plane. The engine instead returned a
+//! solid of volume `pi * 3.5^2 * 1` (about 38.48): the radius shrank
+//! correctly, and the height came out as `|2 - 3| = 1`, the caps having
+//! swapped sides. The radius guard in `crates/offset/src/offset.rs` only
+//! checks `r + d > 0`, and the planar collapse certificate in
+//! `crates/operations/src/offset_v2.rs` covers only all-planar, straight-edged
+//! bodies.
 //!
-//! The assertions are the acceptance target for the eventual fix: a typed
-//! refusal (no `Ok`), with the live model untouched. Remove the `#[ignore]`
-//! in the PR that fixes it.
+//! Fixed in P-Class 5.7b's first slice: the slab certificate
+//! (`remus_offset::shell_slab_thickness`) bounds a capped cylinder or cone
+//! along its cap normal, so the same typed half-thickness refusal now covers
+//! it before construction. `qualify_offset_interference.rs` holds the full
+//! matrix; this file keeps the original repro.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use remus_operations::measure::solid_volume;
@@ -37,7 +37,6 @@ fn live_state(t: &Topology) -> String {
 }
 
 #[test]
-#[ignore = "open: an inward offset past a cylinder's half-height returns Ok with the caps swapped (vol pi*3.5^2*1 for r5 h2 d-1.5)"]
 fn cylinder_offset_past_half_height_is_refused() {
     for scale in [1.0, 1000.0] {
         // Zero height (d = -h/2) and pass-through (d > h/2), both with the

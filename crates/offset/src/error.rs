@@ -97,6 +97,11 @@ pub enum OffsetError {
         reason: String,
     },
 
+    /// The offset would carry two shells of the solid through each other, or
+    /// a cavity through itself, and no qualified removal exists for it.
+    #[error("shell interference: {0}")]
+    ShellInterference(crate::interference::ShellInterference),
+
     /// Final shell assembly failed.
     #[error("assembly failed: {reason}")]
     AssemblyFailed {

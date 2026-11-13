@@ -3498,6 +3498,246 @@ mod tests {
         assert!((volume - 0.2_f64.powi(3)).abs() < 1e-9, "{volume}");
     }
 
+    /// P-Class 5.7b: a fold no removal is qualified for answers alike on
+    /// every surface. Native typed `OffsetInterference` (or `OffsetCollapsed`
+    /// for a capped cylinder shrunk past half its height); legacy direct and
+    /// batch v1 by message; batch v2 `invalid_argument` with the stable
+    /// `kernelCode`; detailed the code itself. None of them changes the
+    /// session.
+    #[test]
+    fn offset_fold_refusal_agrees_across_native_direct_and_batch() {
+        let mut kernel = RemusKernel::new();
+        let hollow = {
+            let topo = kernel.topo_mut();
+            let mut body = remus_operations::primitives::make_box(topo, 20.0, 10.0, 10.0).unwrap();
+            for x in [7.0, 11.0] {
+                let void = remus_operations::primitives::make_box(topo, 2.0, 2.0, 2.0).unwrap();
+                remus_operations::transform::transform_solid(
+                    topo,
+                    void,
+                    &Mat4::translation(x, 4.0, 4.0),
+                )
+                .unwrap();
+                body = remus_operations::boolean::boolean(
+                    topo,
+                    remus_operations::boolean::BooleanOp::Cut,
+                    body,
+                    void,
+                )
+                .unwrap();
+            }
+            solid_id_to_u32(body)
+        };
+        let cylinder = kernel.make_cylinder_solid(5.0, 2.0).unwrap();
+        let before = topology_counts(kernel.topo());
+        let journal = kernel.topo().journal().snapshot();
+        let unchanged = |kernel: &RemusKernel, label: &str| {
+            assert_eq!(topology_counts(kernel.topo()), before, "{label}");
+            assert_eq!(kernel.topo().journal().snapshot(), journal, "{label}");
+            assert!(kernel.resolve_solid(hollow).is_ok(), "{label}");
+            assert!(kernel.resolve_solid(cylinder).is_ok(), "{label}");
+        };
+
+        for (solid, distance, code, kind) in [
+            (
+                hollow,
+                -1.2,
+                "offset_fold_unresolved",
+                Some("cavity_cavity"),
+            ),
+            (
+                hollow,
+                1.2,
+                "offset_fold_unresolved",
+                Some("cavity_collapse"),
+            ),
+            (cylinder, -1.5, "offset_collapsed", None),
+        ] {
+            let solid_id = kernel.resolve_solid(solid).unwrap();
+            let mut native = kernel.topo().clone();
+            let error =
+                remus_operations::offset_v2::offset_solid_v2(&mut native, solid_id, distance)
+                    .unwrap_err();
+            match (&error, kind) {
+                (
+                    remus_operations::OperationsError::OffsetInterference { interference, .. },
+                    Some(kind),
+                ) => assert_eq!(interference.kind.code(), kind),
+                (
+                    remus_operations::OperationsError::OffsetCollapsed {
+                        thickness: Some(t), ..
+                    },
+                    None,
+                ) => assert!((t - 2.0).abs() < 1e-12, "{t}"),
+                _ => panic!("mistyped native refusal {error:?}"),
+            }
+            let message = error.to_string();
+
+            let direct = kernel.offset_solid_impl(solid, distance).unwrap_err();
+            assert_eq!(direct.to_string(), message, "legacy direct");
+            unchanged(&kernel, "legacy direct");
+
+            let detailed =
+                serde_json::to_value(kernel.offset_detailed_impl(solid, distance, false)).unwrap();
+            assert_eq!(detailed["status"], "error", "{detailed}");
+            assert_eq!(detailed["code"], code, "{detailed}");
+            assert_eq!(detailed["category"], "invalid_input", "{detailed}");
+            assert_eq!(detailed["details"]["distance"], distance, "{detailed}");
+            assert_eq!(
+                detailed["details"]["message"],
+                message.as_str(),
+                "{detailed}"
+            );
+            if let Some(kind) = kind {
+                assert_eq!(detailed["details"]["kind"], kind, "{detailed}");
+                assert!(detailed["details"]["shell"].is_u64(), "{detailed}");
+                assert_eq!(detailed["details"]["required"], 2.4, "{detailed}");
+            }
+            unchanged(&kernel, "detailed");
+
+            for operation in ["offsetSolidV2", "offsetDetailed"] {
+                let request = serde_json::json!([{
+                    "op": operation,
+                    "args": { "solid": solid, "distance": distance }
+                }])
+                .to_string();
+                let v1: serde_json::Value =
+                    serde_json::from_str(&kernel.execute_batch(&request)).unwrap();
+                let v2: serde_json::Value =
+                    serde_json::from_str(&kernel.execute_batch_v2(&request)).unwrap();
+                unchanged(&kernel, operation);
+                if operation == "offsetDetailed" {
+                    for row in [&v1[0]["ok"], &v2[0]["ok"]] {
+                        assert_eq!(row["status"], "error", "{row}");
+                        assert_eq!(row["code"], code, "{row}");
+                        assert_eq!(row["category"], "invalid_input", "{row}");
+                        assert_eq!(row["details"]["message"], message.as_str(), "{row}");
+                    }
+                } else {
+                    assert_eq!(v1[0]["error"], message.as_str(), "{v1}");
+                    let error = &v2[0]["error"];
+                    assert_eq!(error["code"], "invalid_argument", "{error}");
+                    assert_eq!(error["category"], "invalid_input", "{error}");
+                    assert_eq!(error["details"]["kernelCode"], code, "{error}");
+                    assert_eq!(error["details"]["argument"], "distance", "{error}");
+                    if let Some(kind) = kind {
+                        assert_eq!(error["details"]["kind"], kind, "{error}");
+                    }
+                    assert_eq!(error["message"], message.as_str(), "{error}");
+                }
+            }
+        }
+
+        // Short of the fold both bodies still offset to their closed forms.
+        let result = kernel.offset_solid_impl(hollow, -0.5).unwrap();
+        let result = kernel.resolve_solid(result).unwrap();
+        let volume = remus_operations::measure::solid_volume(kernel.topo(), result, 0.001).unwrap();
+        assert!((volume - (19.0 * 81.0 - 54.0)).abs() < 1e-9, "{volume}");
+        let result = kernel.offset_solid_impl(cylinder, -0.5).unwrap();
+        let result = kernel.resolve_solid(result).unwrap();
+        let volume = remus_operations::measure::solid_volume(kernel.topo(), result, 0.001).unwrap();
+        assert!(
+            (volume - std::f64::consts::PI * 4.5 * 4.5).abs() < 1e-9,
+            "{volume}"
+        );
+    }
+
+    /// P-Class 5.7b: a separation the certificate cannot prove (a void in a
+    /// cone frustum, offset inward to a legal distance) is the certificate's
+    /// boundary, not a fold the distance caused. It answers `unsupported`
+    /// with its own `kernelCode`, names no argument, and reports no
+    /// `required` room; the session is unchanged on every surface.
+    #[test]
+    fn unproven_offset_separation_is_unsupported_not_invalid_input() {
+        let mut kernel = RemusKernel::new();
+        let hollow = {
+            let topo = kernel.topo_mut();
+            let body = remus_operations::primitives::make_cone(topo, 5.0, 3.0, 10.0).unwrap();
+            let void = remus_operations::primitives::make_box(topo, 2.0, 2.0, 2.0).unwrap();
+            remus_operations::transform::transform_solid(
+                topo,
+                void,
+                &Mat4::translation(-1.0, -1.0, 4.0),
+            )
+            .unwrap();
+            let body = remus_operations::boolean::boolean(
+                topo,
+                remus_operations::boolean::BooleanOp::Cut,
+                body,
+                void,
+            )
+            .unwrap();
+            solid_id_to_u32(body)
+        };
+        let before = topology_counts(kernel.topo());
+        let journal = kernel.topo().journal().snapshot();
+        let unchanged = |kernel: &RemusKernel, label: &str| {
+            assert_eq!(topology_counts(kernel.topo()), before, "{label}");
+            assert_eq!(kernel.topo().journal().snapshot(), journal, "{label}");
+            assert!(kernel.resolve_solid(hollow).is_ok(), "{label}");
+        };
+        let distance = -0.5;
+
+        let solid_id = kernel.resolve_solid(hollow).unwrap();
+        let mut native = kernel.topo().clone();
+        let error = remus_operations::offset_v2::offset_solid_v2(&mut native, solid_id, distance)
+            .unwrap_err();
+        let remus_operations::OperationsError::OffsetInterference { interference, .. } = &error
+        else {
+            panic!("mistyped native refusal {error:?}");
+        };
+        assert_eq!(interference.kind.code(), "separation_unproven");
+        let message = error.to_string();
+        assert!(!message.contains("needs more than"), "{message}");
+
+        let direct = kernel.offset_solid_impl(hollow, distance).unwrap_err();
+        assert_eq!(direct.to_string(), message, "legacy direct");
+        unchanged(&kernel, "legacy direct");
+
+        let detailed =
+            serde_json::to_value(kernel.offset_detailed_impl(hollow, distance, false)).unwrap();
+        assert_eq!(detailed["status"], "error", "{detailed}");
+        assert_eq!(detailed["code"], "offset_separation_unproven", "{detailed}");
+        assert_eq!(detailed["category"], "unsupported", "{detailed}");
+        assert_eq!(
+            detailed["details"]["kind"], "separation_unproven",
+            "{detailed}"
+        );
+        assert!(detailed["details"].get("required").is_none(), "{detailed}");
+        assert!(detailed["details"].get("argument").is_none(), "{detailed}");
+        unchanged(&kernel, "detailed");
+
+        let request = serde_json::json!([{
+            "op": "offsetSolidV2",
+            "args": { "solid": hollow, "distance": distance }
+        }])
+        .to_string();
+        let v2: serde_json::Value =
+            serde_json::from_str(&kernel.execute_batch_v2(&request)).unwrap();
+        unchanged(&kernel, "batch v2");
+        let error = &v2[0]["error"];
+        assert_eq!(error["code"], "operation_failed", "{error}");
+        assert_eq!(error["category"], "unsupported", "{error}");
+        assert_eq!(
+            error["details"]["kernelCode"], "offset_separation_unproven",
+            "{error}"
+        );
+        assert_eq!(error["details"]["kind"], "separation_unproven", "{error}");
+        assert!(error["details"].get("argument").is_none(), "{error}");
+        assert!(error["details"].get("required").is_none(), "{error}");
+        // The shell named is the constructed result's, so its index depends
+        // on what the arena held when that attempt ran; the rest is fixed.
+        let text = error["message"].as_str().unwrap();
+        assert!(
+            text.starts_with("offset by -0.5 is refused: cavity shell ")
+                && text.ends_with(
+                    "cannot be proven to stay inside the outer boundary \
+                     (no separation certificate covers this body; the offset may be valid)"
+                ),
+            "{error}"
+        );
+    }
+
     #[test]
     fn folded_l_bracket_shell_has_direct_batch_parity() {
         let mut direct = RemusKernel::new();

@@ -31,6 +31,7 @@ You are working on `offset_solid`, `thick_solid`, arc-joint offsets, `move_faces
 - `assemble.rs`: shells rebuilt preserving the source partition (outer plus one inner shell per cavity); every shell must validate closed.
 - `self_int.rs`: fail-closed fold detector; only the proven uniform-L cell excises (roadmap 5.7 Merged; 5.7b general removal Pending).
 - `cavity.rs`: same signed distance along each shell's own outward normal (+ grows body, shrinks cavity); extent and survival checks refuse crossings.
+- `interference.rs`: fold certificates, no removal: slab thickness along planar face normals (planes/cylinders/cones, Line/Circle edges), predicted cavity clearances, and the convex-carrier proof that a result's cavities sit inside its outer shell (5.7b slice 1).
 - `arc_joint.rs`: separate Minkowski-ball construction for all-convex polyhedra, not a post-pass (refuses curved/concave/holed/cavity/excluded/inward).
 - `move_faces.rs` (+`quarter_cylinder.rs`): topology-preserving planar moves and plane/coaxial-cylinder surface replacement; failures roll back transactionally.
 
@@ -44,6 +45,9 @@ You are working on `offset_solid`, `thick_solid`, arc-joint offsets, `move_faces
 | `offsetSolidV2` volume off on planar bodies | Plane-plane joints used a 1% margin instead of exact endpoints | `be4dd757` (item #493) |
 | Intermittent free edges / wrong volume across runs | HashMap iteration mixed direct and trimmed loop paths; pinned by a 64× repeat-volume regression | `88b25106` (`offset_box_rebuilds_are_manifold_and_exact`) |
 | Non-closed or partial result returned as success | Now refused: `validate_offset_result` gates every shell on closed; cavity inputs were refused outright at the time | `f300a5a4` |
+| Capped cylinder/frustum inward past half its height returns `Ok` with the caps swapped (r5 h2 d-1.5: `pi*3.5^2*1`) | Radius guard reads `r + d > 0` only and the planar collapse certificate skipped curved bodies; now `OffsetCollapsed` from `shell_slab_thickness` | `qualify_offset_interference.rs` (5.7b slice 1, #1545) |
+| Cylindrical or tilted-slab cavity outward past half its thickness returns `Ok` (caps swapped, or cavity inside out) | Survival check read a box extent: padded by the radius along the cylinder's own axis, blind to a tilted slab; now typed `cavity_collapse` | same |
+| Cavity grown through a curved or slanted outer wall returns `Ok` while its box extent stays inside the outer one | Box containment is only a necessary condition; inward results now pass `verify_cavities_inside_outer` or refuse (`cavity_outer` / `separation_unproven`) | same |
 
 ## Traps
 
@@ -52,6 +56,10 @@ You are working on `offset_solid`, `thick_solid`, arc-joint offsets, `move_faces
 - `offset_solid_with_face_map` is total-or-refusal: Arc joints and SI removal synthesize/replace faces, so they return `InvalidInput`, never a partial map (`face_map_refuses_non_one_to_one_options_without_mutation`, roadmap B5 Done).
 - Arc-joint inputs outside all-convex-planar (cylinder face, concave edge, holed face, cavity, excluded face, inward distance) refuse — do not "fall back" to mitre; the rounded body is strictly smaller (`a_curved_source_face_refuses_rather_than_mitres`, `an_inward_rounded_offset_refuses`).
 - `thick_solid` on a body that already has a cavity refuses: the wall builder only knows the outer shell (`hollowing_a_solid_that_already_has_a_cavity_is_refused`).
+- Typed folds come from the operations adapter, not the engine's older checks: `offset_v2::refuse_certified_interference` runs first and returns `OffsetCollapsed` / `OffsetInterference` (wasm `kernelCode` `offset_collapsed` / `offset_fold_unresolved`, category `invalid_input`; `separation_unproven` is `offset_separation_unproven`, category `unsupported`, with no `required`); a direct `remus_offset::offset_solid` caller still gets the untyped `InvalidInput` naming cavity shells, plus `OffsetError::ShellInterference` for the new findings.
+- An inward offset of a cavity-bearing solid refuses `separation_unproven` even when the result would be fine unless its outer shell is convex planes plus complete cylinders: each cylinder carrier must contain the whole shell, so a partial convex cylinder (a fillet band, a D-flat's round) is never covered, nor is a cone, sphere, torus, NURBS face, bore, or any non-convex outer. Outward offsets are not judged (the shells only move apart). Open repro: `a_void_in_a_frustum_offsets_inward_exactly`.
+- Inside that class a straight-edged polyhedral cavity is judged exactly by its vertices (`cavity_outer` is a certified crossing); a curved cavity is bounded by its face supports and rim reach (planes, cylinders, cones on lines and circles) or by its box corners, and a bound that does not clear the carriers is `separation_unproven`, never `cavity_outer` (`a_diagonal_cylindrical_void_refuses_unproven_once_its_rims_reach_the_wall`).
+- A concave straight-edged prism (L, slot, fin) has no plain-offset construction at any distance: `offset_solid_v2` fails in the wire-loop walk even well short of a fold. The 5.7 L-bracket cell is `shell`, a different construction (`same_shell_nonlocal_prisms_offset_exactly_short_of_the_fold`).
 - `remove_self_intersections` (the general entry) authorizes no deletion: any detected fold without L-prism provenance is a typed error, and `OffsetOptions` defaults it off (`self_int.rs`, roadmap 5.7 vs 5.7b).
 - `move_faces` keeps the adjacency graph fixed: a move that collapses, splits, or rewires a face/wire/edge is `TopologyChange` with pre-call topology restored (`move_faces.rs`, `collapsed_or_intersecting_bore_moves_restore_every_temporary_entity`).
 - Both wasm bindings (`offsetSolid`, `offsetSolidV2`) route to `offset_v2::offset_solid_v2`; the v1 engine was deleted (`f0a363b3`, fork #850). `shell` is exact-only with disclosed quality; the sampled `offset_face` `samples` knob is deprecated (roadmap B25 Done).
@@ -64,6 +72,8 @@ You are working on `offset_solid`, `thick_solid`, arc-joint offsets, `move_faces
 - "Retry an inward arc offset with mitre options." Different construction, different volume — pick the joint the drawing needs.
 - "A refused offset mutated the solid." The public `thick_solid` boundary (also reached by `offset_solid`) now opens its own transaction; caller wrappers alone previously left lower native refusals unprotected (F7, `regress_opseq_offset_refusal.rs`). Every entry point rolls back (`run_transacted` / snapshot restore); assert arena counts before/after as the face-map test does.
 - "Widen the general validator to catch orientation." Rejected in #86: per-op signed-volume postcondition instead, to avoid false refusals on curved offsets.
+- "The cavity's box is inside the outer box, so the shells are apart." Only for an axis-aligned box outer; a watertight result with a plausible volume came back with the cavity outside a cylinder wall. Use the carrier proof or refuse.
+- "A signed-volume flip catches every collapse." Not a capped cylinder: the wall keeps its sign and outweighs the swapped caps (`V/3` stays positive), so only the slab certificate sees it.
 
 - Internal `OffsetError::AssemblyFailed` must survive the operations adapter as `OperationsError::Offset`; its former wildcard-to-`InvalidInput` conversion blamed callers for wire-loop construction failures (F7, `offset_v2.rs`).
 

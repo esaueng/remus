@@ -231,7 +231,7 @@ fn format_extent(b: Aabb3) -> String {
 }
 
 /// An over-approximating axis-aligned extent for every face of a shell.
-fn shell_extent(topo: &Topology, shell: ShellId, stage: Stage) -> Result<Aabb3, OffsetError> {
+pub fn shell_extent(topo: &Topology, shell: ShellId, stage: Stage) -> Result<Aabb3, OffsetError> {
     let faces = topo.shell(shell)?.faces().to_vec();
     let mut extent: Option<Aabb3> = None;
     for face_id in faces {
@@ -271,6 +271,14 @@ fn merge(a: Aabb3, b: Aabb3) -> Aabb3 {
 /// surface bulges between them; each arm widens the vertex hull by a bound on
 /// that bulge, or replaces it with a bound on the whole surface.
 fn face_extent(topo: &Topology, face_id: FaceId) -> Result<Aabb3, OffsetError> {
+    // A plane, cylinder or cone trimmed by straight and circular edges has a
+    // sound box that is also tight along its own axis. The widened vertex
+    // hull below pads a cylinder by its radius in every direction, including
+    // along the axis, and that padding hid a cavity shorter than twice the
+    // offset from the survival check (P-Class 5.7b).
+    if let Some(extent) = crate::interference::face_support_extent(topo, face_id)? {
+        return Ok(extent);
+    }
     let hull = vertex_hull(topo, face_id)?;
     let face = topo.face(face_id)?;
     Ok(match face.surface() {

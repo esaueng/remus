@@ -685,6 +685,59 @@ impl From<remus_operations::OperationsError> for StructuredWasmError {
                 }
                 structured
             }
+            // P-Class 5.7b: a fold no qualified removal exists for. Same wire
+            // code as the untyped cavity refusals it replaces, with the
+            // stable native code and the shells it names beside it. A
+            // separation the certificate could not prove is not a fold the
+            // distance caused: it is the certificate's own boundary, so it is
+            // `unsupported` and carries no `required` room (the value there is
+            // only the proof's clearance).
+            remus_operations::OperationsError::OffsetInterference {
+                distance,
+                interference,
+                ..
+            } => {
+                let unproven =
+                    interference.kind == remus_offset::ShellInterferenceKind::SeparationUnproven;
+                let mut structured = if unproven {
+                    Self::unsupported(message)
+                } else {
+                    Self::invalid_argument(message, Some("distance"))
+                };
+                structured.details.insert(
+                    "kernelCode".to_string(),
+                    Value::from(if unproven {
+                        "offset_separation_unproven"
+                    } else {
+                        "offset_fold_unresolved"
+                    }),
+                );
+                structured
+                    .details
+                    .insert("kind".to_string(), Value::from(interference.kind.code()));
+                structured
+                    .details
+                    .insert("distance".to_string(), Value::from(distance));
+                structured
+                    .details
+                    .insert("shell".to_string(), Value::from(interference.shell));
+                if let Some(other) = interference.other_shell {
+                    structured
+                        .details
+                        .insert("otherShell".to_string(), Value::from(other));
+                }
+                if let Some(available) = interference.available {
+                    structured
+                        .details
+                        .insert("available".to_string(), Value::from(available));
+                }
+                if !unproven {
+                    structured
+                        .details
+                        .insert("required".to_string(), Value::from(interference.required));
+                }
+                structured
+            }
             // A declared move-face / replace-surface capability boundary
             // (capability matrix, "Direct edits"): category `unsupported`
             // with a stable native code and the typed cause as `reason`.
