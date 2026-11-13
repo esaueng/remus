@@ -21,23 +21,7 @@ use remus_topology::{BodyClass, BodyId, Topology};
 
 mod common;
 
-fn assert_untouched(topo: &Topology, path: &str) {
-    assert_eq!(
-        (
-            topo.num_vertices(),
-            topo.num_edges(),
-            topo.num_wires(),
-            topo.num_faces(),
-            topo.num_shells(),
-            topo.num_solids(),
-            topo.num_loops(),
-            topo.num_coedges(),
-            topo.num_pcurves(),
-        ),
-        (0, 0, 0, 0, 0, 0, 0, 0, 0),
-        "a refused {path} import left live entities behind"
-    );
-}
+use common::assert_untouched;
 
 fuzz_target!(|data: &[u8]| {
     let Ok(input) = std::str::from_utf8(data) else {

@@ -168,3 +168,24 @@ doc = false
 name = "persistent_ref"
 path = "fuzz_targets/persistent_ref.rs"
 test = false
+
+[[bin]]
+bench = false
+doc = false
+name = "step_assembly"
+path = "fuzz_targets/step_assembly.rs"
+test = false
+
+[[bin]]
+bench = false
+doc = false
+name = "brep_reader"
+path = "fuzz_targets/brep_reader.rs"
+test = false
+
+[[bin]]
+bench = false
+doc = false
+name = "threemf_xml"
+path = "fuzz_targets/threemf_xml.rs"
+test = false

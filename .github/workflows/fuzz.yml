@@ -56,6 +56,9 @@ jobs:
           - ply_reader
           - glb_reader
           - threemf_reader
+          - threemf_xml
+          - brep_reader
+          - step_assembly
           - boolean_tree
           - modifier_ops
           - nurbs_surface
@@ -85,7 +88,7 @@ jobs:
           chmod +x "$RUNNER_TEMP/cargo-fuzz/cargo-fuzz"
           echo "$RUNNER_TEMP/cargo-fuzz" >> "$GITHUB_PATH"
       - name: Run bounded smoke fuzzing
-        run: cargo +nightly fuzz run ${{ matrix.target }} -- -max_total_time=120 -rss_limit_mb=2048
+        run: cargo +nightly fuzz run ${{ matrix.target }} -- -max_total_time=120 -timeout=10 -rss_limit_mb=2048
       # libFuzzer writes the crashing input under fuzz/artifacts/<target>/;
       # without this upload the only trace of a finding is the panic line in
       # the log, and the input itself is lost with the runner.
