@@ -8,6 +8,7 @@ import { dirname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { kernelClass } from '../../scripts/kernel-class.cjs';
 import { runNpm } from './npm-cli.mjs';
+import { resolveSolidPick } from './parity-matrix.mjs';
 import { performance } from 'node:perf_hooks';
 import {
   collectCommittedProvenance,
@@ -33,6 +34,17 @@ function relativeError(actual, expected) {
   return Math.abs(actual - expected) / Math.max(Math.abs(expected), 1);
 }
 
+// Follow-on queries measure the solid the boolean RETURNED, never a
+// positional guess (B57's contract-slice twin). A rejected exact pass can
+// leave its intermediate at arena handle 2 while the disclosed fallback
+// lands further on: `contract/disclosed-approximation` returns its fuse at 4
+// and used to measure the lone cylinder at 2. A refused boolean returns no
+// solid; `orHandle` keeps the queries on the unallocated positional handle so
+// every surface still reports `invalid_handle` exactly as before.
+function returnedSolid(booleanIndex) {
+  return { fromOp: booleanIndex, pick: 'solid', orHandle: 2 };
+}
+
 // Two overlapping 2x2x2 boxes offset by (1,1,1): union volume is exactly 15.
 // The trailing validate/mesh/faces ops mirror the geometric harness shape
 // so the same native facade runner serves contract success cases.
@@ -45,10 +57,10 @@ function overlappingBoxesBatch({ exactOnly = false } = {}) {
       op: 'booleanWithQuality',
       args: { operation: 'fuse', solidA: 0, solidB: 1, ...(exactOnly ? { exactOnly: true } : {}) },
     },
-    { op: 'volume', args: { solid: 2, deflection: 0.05 } },
-    { op: 'validateSolid', args: { solid: 2 } },
-    { op: 'meshQuality', args: { solid: 2, deflection: 0.05 } },
-    { op: 'getSolidFaces', args: { solid: 2 } },
+    { op: 'volume', args: { solid: returnedSolid(3), deflection: 0.05 } },
+    { op: 'validateSolid', args: { solid: returnedSolid(3) } },
+    { op: 'meshQuality', args: { solid: returnedSolid(3), deflection: 0.05 } },
+    { op: 'getSolidFaces', args: { solid: returnedSolid(3) } },
   ];
   return { batch, booleanIndex: 3, volumeIndex: 4, validationIndex: 5, meshQualityIndex: 6, facesIndex: 7 };
 }
@@ -66,10 +78,10 @@ function nearTangentBatch({ exactOnly = false } = {}) {
       op: 'booleanWithQuality',
       args: { operation: 'fuse', solidA: 0, solidB: 1, ...(exactOnly ? { exactOnly: true } : {}) },
     },
-    { op: 'volume', args: { solid: 2, deflection: 0.05 } },
-    { op: 'validateSolid', args: { solid: 2 } },
-    { op: 'meshQuality', args: { solid: 2, deflection: 0.05 } },
-    { op: 'getSolidFaces', args: { solid: 2 } },
+    { op: 'volume', args: { solid: returnedSolid(3), deflection: 0.05 } },
+    { op: 'validateSolid', args: { solid: returnedSolid(3) } },
+    { op: 'meshQuality', args: { solid: returnedSolid(3), deflection: 0.05 } },
+    { op: 'getSolidFaces', args: { solid: returnedSolid(3) } },
   ];
   return { batch, booleanIndex: 3, volumeIndex: 4, validationIndex: 5, meshQualityIndex: 6, facesIndex: 7 };
 }
@@ -84,10 +96,10 @@ function evolutionBoxesBatch(op) {
     { op: 'makeBox', args: { width: 2, height: 2, depth: 2 } },
     { op: 'transform', args: { solid: 1, matrix: translationMatrix([1, 1, 1]) } },
     { op, args: { solidA: 0, solidB: 1 } },
-    { op: 'volume', args: { solid: 2, deflection: 0.05 } },
-    { op: 'validateSolid', args: { solid: 2 } },
-    { op: 'meshQuality', args: { solid: 2, deflection: 0.05 } },
-    { op: 'getSolidFaces', args: { solid: 2 } },
+    { op: 'volume', args: { solid: returnedSolid(3), deflection: 0.05 } },
+    { op: 'validateSolid', args: { solid: returnedSolid(3) } },
+    { op: 'meshQuality', args: { solid: returnedSolid(3), deflection: 0.05 } },
+    { op: 'getSolidFaces', args: { solid: returnedSolid(3) } },
   ];
   return {
     batch,
@@ -437,10 +449,10 @@ export function expandContractMatrix() {
         { op: 'makeBox', args: { width: 2, height: 2, depth: 2 } },
         { op: 'transform', args: { solid: 1, matrix: translationMatrix([10, 10, 10]) } },
         { op: 'booleanWithQuality', args: { operation: 'intersect', solidA: 0, solidB: 1 } },
-        { op: 'volume', args: { solid: 2, deflection: 0.05 } },
-        { op: 'validateSolid', args: { solid: 2 } },
-        { op: 'meshQuality', args: { solid: 2, deflection: 0.05 } },
-        { op: 'getSolidFaces', args: { solid: 2 } },
+        { op: 'volume', args: { solid: returnedSolid(3), deflection: 0.05 } },
+        { op: 'validateSolid', args: { solid: returnedSolid(3) } },
+        { op: 'meshQuality', args: { solid: returnedSolid(3), deflection: 0.05 } },
+        { op: 'getSolidFaces', args: { solid: returnedSolid(3) } },
         { op: 'volume', args: { solid: 0, deflection: 0.05 } },
       ],
       booleanIndex: 3,
@@ -764,14 +776,69 @@ export function installPackage(packageDir, temporaryRoot, label) {
   return { entry, installedDir, tarballPath };
 }
 
-function batchObservation(c, modulePath) {
+function referencedOps(args) {
+  return Object.values(args ?? {})
+    .filter((value) => value && typeof value === 'object' && !Array.isArray(value) && 'fromOp' in value)
+    .map(({ fromOp }) => fromOp);
+}
+
+function resolveReferences(args, okValues) {
+  const resolved = { ...args };
+  for (const [key, value] of Object.entries(args)) {
+    if (!value || typeof value !== 'object' || Array.isArray(value) || !('fromOp' in value)) continue;
+    assert.equal(value.pick, 'solid', `contract batch: unsupported reference pick ${value.pick}`);
+    resolved[key] = resolveSolidPick(value, okValues[value.fromOp]);
+  }
+  return resolved;
+}
+
+// `executeBatchV2` on one kernel, split only where an item references the
+// answer of an op still waiting in the current call: the WASM batch cannot
+// resolve `{fromOp}` itself, so the referencing items go out in the next
+// call with the returned handle substituted (`resolveSolidPick`, shared with
+// the extended matrix). Every op still runs through the installed batch
+// binding, in order, on the same kernel, and each item commits or rolls back
+// on its own either way, so splitting changes no per-op semantics. Cells
+// without references stay one call. The native runner resolves the same
+// references in `resolve_ref`. Returns the responses in batch order.
+export function executeContractBatch(kernel, batch) {
+  const responses = [];
+  const okValues = [];
+  let pending = [];
+  const flush = () => {
+    if (pending.length === 0) return true;
+    const out = JSON.parse(kernel.executeBatchV2(JSON.stringify(pending)));
+    const complete = Array.isArray(out) && out.length === pending.length;
+    for (const response of Array.isArray(out) ? out : [out]) {
+      responses.push(response);
+      okValues.push(response?.ok);
+    }
+    pending = [];
+    // A whole-call refusal (JSON or limit) answers one error for the call;
+    // stop there, as the single-call batch would have.
+    return complete;
+  };
+  for (const item of batch) {
+    const references = referencedOps(item.args);
+    if (references.some((index) => index >= responses.length) && !flush()) return responses;
+    assert.ok(
+      references.every((index) => Number.isInteger(index) && index < responses.length),
+      'contract batch: a reference must name an earlier op',
+    );
+    pending.push(references.length === 0 ? item : { ...item, args: resolveReferences(item.args, okValues) });
+  }
+  flush();
+  return responses;
+}
+
+export function batchObservation(c, modulePath) {
   const RemusKernel = kernelClass(createRequire(import.meta.url)(modulePath));
   const initStarted = performance.now();
   const kernel = new RemusKernel();
   const coldInitMs = performance.now() - initStarted;
   try {
     const batchStarted = performance.now();
-    const responses = JSON.parse(kernel.executeBatchV2(JSON.stringify(c.batch)));
+    const responses = executeContractBatch(kernel, c.batch);
     const batchDurationMs = performance.now() - batchStarted;
     return finalizeBatchObservation(c, responses, coldInitMs, batchDurationMs);
   } finally {

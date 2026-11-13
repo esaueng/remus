@@ -9,8 +9,10 @@ import {
   FAILURE_CLASSES,
   HAMMER_HOLDER_FIXTURE,
   HAMMER_SHIFTED_INTERSECT_ID,
+  batchObservation,
   classifyFailures,
   directObservation,
+  executeContractBatch,
   expandContractMatrix,
   installPackage,
   resolveFixtures,
@@ -621,4 +623,136 @@ test('the kernel class resolves from renamed and pre-rename packages', async () 
   assert.equal(kernelClass({ RemusKernel: Renamed, [predecessorName]: Predecessor }), Renamed);
   assert.equal(kernelClass({ [predecessorName]: Predecessor }), Predecessor);
   assert.throws(() => kernelClass({}), /exports no kernel class/);
+});
+
+// A fake installed kernel whose `executeBatchV2` reproduces the committed
+// package's arena for the near-tangent fuse (2026.1.135): the rejected exact
+// pass leaves a lone cylinder at handle 2 (3 faces, volume 250π) and the
+// disclosed fallback fuse lands at handle 4 (94 faces). Like the real
+// binding it cannot resolve a `{fromOp}` argument and refuses it.
+function writeArenaKernel(t) {
+  const root = mkdtempSync(resolve(tmpdir(), 'remus contract arena '));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const entry = resolve(root, 'kernel.cjs');
+  writeFileSync(entry, `
+    const calls = [];
+    class RemusKernel {
+      constructor() { this.solids = []; }
+      executeBatchV2(json) {
+        const items = JSON.parse(json);
+        calls.push(items);
+        return JSON.stringify(items.map((item) => this.run(item)));
+      }
+      solid(args) {
+        if (!Number.isInteger(args.solid)) {
+          return { error: { code: 'invalid_argument', message: 'solid must be an integer handle', details: {} } };
+        }
+        const solid = this.solids[args.solid];
+        return solid ? { solid } : { error: { code: 'invalid_handle', message: 'invalid solid id', details: {} } };
+      }
+      run({ op, args }) {
+        if (op === 'makeCylinder') {
+          this.solids.push({ volume: 250 * Math.PI, faces: 3 });
+          return { ok: this.solids.length - 1 };
+        }
+        if (op === 'transform') return { ok: null };
+        if (op === 'booleanWithQuality') {
+          if (args.exactOnly) {
+            return { error: { code: 'operation_failed', message: 'exact-only refusal', details: {} } };
+          }
+          this.solids.push({ volume: 250 * Math.PI, faces: 3 }, null, { volume: 1565.6973858007339, faces: 94 });
+          return { ok: { solid: 4, quality: 'approximate', deflection: 0.1 } };
+        }
+        const found = this.solid(args);
+        if (found.error) return { error: found.error };
+        if (op === 'volume') return { ok: found.solid.volume };
+        if (op === 'validateSolid') return { ok: 0 };
+        if (op === 'meshQuality') return { ok: { isWatertight: true, boundaryEdges: 0, nonManifoldEdges: 0 } };
+        if (op === 'getSolidFaces') return { ok: Array.from({ length: found.solid.faces }, (_, i) => 100 + i) };
+        return { error: { code: 'unknown_operation', message: op, details: {} } };
+      }
+      free() {}
+    }
+    module.exports = { RemusKernel, calls };
+  `);
+  return { entry, calls: createRequire(import.meta.url)(entry).calls };
+}
+
+const RESULT_QUERY_OPS = new Set(['volume', 'validateSolid', 'meshQuality', 'getSolidFaces']);
+
+test('boolean result queries reference the solid the boolean returned, never handle 2', () => {
+  const measured = [
+    'contract/exact-fuse',
+    'contract/exact-only-refusal',
+    'contract/disclosed-approximation',
+    'contract/evolution-fuse',
+    'contract/evolution-cut',
+    'contract/empty-intersect-sentinel',
+  ];
+  for (const c of expandContractMatrix()) {
+    for (const item of c.batch) {
+      if (RESULT_QUERY_OPS.has(item.op)) assert.notEqual(item.args.solid, 2, `${c.id}: ${item.op} pins handle 2`);
+    }
+    if (!measured.includes(c.id)) continue;
+    const reference = { fromOp: c.booleanIndex, pick: 'solid', orHandle: 2 };
+    for (const index of [c.volumeIndex, c.validationIndex, c.meshQualityIndex, c.facesIndex]) {
+      assert.deepEqual(c.batch[index].args.solid, reference, `${c.id}: op ${index} targets the returned solid`);
+    }
+  }
+});
+
+test('a disclosed fallback past handle 2 is measured at its returned handle on the batch surface', (t) => {
+  const { entry, calls } = writeArenaKernel(t);
+  const c = expandContractMatrix().find(({ id }) => id === 'contract/disclosed-approximation');
+  calls.length = 0;
+  const observation = batchObservation(c, entry);
+  assert.equal(observation.outcome, 'success');
+  assert.deepEqual(observation.diagnosticCodes, []);
+  assert.equal(observation.quality, 'approximate');
+  assert.equal(observation.volume, 1565.6973858007339);
+  assert.equal(observation.faceCount, 94);
+  // Two installed batch calls: the construction through the boolean, then the
+  // queries with the returned handle substituted.
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[1].map(({ args }) => args.solid), [4, 4, 4, 4]);
+
+  // The old positional pin read the discarded intermediate instead.
+  const pinned = {
+    ...c,
+    batch: c.batch.map((item) => (RESULT_QUERY_OPS.has(item.op) ? { ...item, args: { ...item.args, solid: 2 } } : item)),
+  };
+  const stale = batchObservation(pinned, entry);
+  assert.equal(stale.volume, 250 * Math.PI);
+  assert.equal(stale.faceCount, 3);
+});
+
+test('a refused boolean keeps its queries on the unallocated handle, so diagnostics are unchanged', (t) => {
+  const { entry } = writeArenaKernel(t);
+  const c = expandContractMatrix().find(({ id }) => id === 'contract/exact-only-refusal');
+  const observation = batchObservation(c, entry);
+  assert.equal(observation.outcome, 'batch_error');
+  assert.deepEqual(
+    observation.diagnosticCodes,
+    ['operation_failed', 'invalid_handle', 'invalid_handle', 'invalid_handle', 'invalid_handle'],
+  );
+});
+
+test('reference-free contract batches stay one executeBatchV2 call', () => {
+  const calls = [];
+  const kernel = {
+    executeBatchV2(json) {
+      const items = JSON.parse(json);
+      calls.push(items.length);
+      return JSON.stringify(items.map(() => ({ ok: null })));
+    },
+  };
+  for (const c of expandContractMatrix().filter(({ batch }) => !JSON.stringify(batch).includes('"fromOp"'))) {
+    calls.length = 0;
+    assert.equal(executeContractBatch(kernel, c.batch).length, c.batch.length);
+    assert.deepEqual(calls, [c.batch.length], `${c.id}: one call`);
+  }
+  // A whole-call refusal answers one error for the call and stops there.
+  const refusing = { executeBatchV2: () => JSON.stringify([{ error: { code: 'invalid_json' } }]) };
+  const c = expandContractMatrix().find(({ id }) => id === 'contract/exact-fuse');
+  assert.deepEqual(executeContractBatch(refusing, c.batch), [{ error: { code: 'invalid_json' } }]);
 });
