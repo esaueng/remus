@@ -19,6 +19,7 @@
 //! | Pass-through | r5 h2 cylinder, 5-to-3 frustum, placed or not | exact; `OffsetCollapsed` from contact on | exact |
 //! | Pass-through | r2 h1 cylindrical void in a 12-cube, placed or not | exact | exact; `cavity_collapse` from contact on |
 //! | Nonlocal | box void near the wall of an r5 h10 cylinder | exact; `cavity_outer` once the corner reaches the wall | exact |
+//! | Nonlocal | r1 h2 cylindrical void near the wall of an r5 h10 cylinder | exact to a 0.006 wall; `separation_unproven` past it | exact |
 //! | Nonlocal | cube void in a 5-to-3 frustum | `separation_unproven`; open | exact |
 //! | Nonlocal | slotted and finned prisms (same shell) | untyped refusal; open | untyped refusal; open |
 //!
@@ -1013,6 +1014,69 @@ fn a_void_near_a_curved_wall_outward_is_exact() {
     });
 }
 
+/// An r1 h2 cylindrical void with its axis `centre` from the axis of an r5
+/// h10 cylinder, both upright.
+fn cylinder_void_near_a_curved_wall(centre: [f64; 2]) -> Body {
+    let mut void = Part::cylinder(1.0, 2.0);
+    void.origin = [centre[0], centre[1], 4.0];
+    Body::hollow(Part::cylinder(5.0, 10.0), &[void])
+}
+
+/// A curved cavity near a curved wall (review of the 5.7b slice). Inward by
+/// `|d|` the void's wall reaches `c + 1 + |d|` from the outer axis and the
+/// outer wall comes in to `5 - |d|`. At `c = 3.3`, `d = -0.3` a 0.1 wall is
+/// left; the void's box corner `(4.6, 1.3)` is already outside the moved
+/// wall, and that corner used to be reported as a certified `cavity_outer`
+/// with `available = -0.08`. The bound now comes from the void's own rims.
+#[test]
+fn a_cylindrical_void_near_a_curved_wall_offsets_inward_exactly() {
+    for c in [3.0, 3.3] {
+        let body = cylinder_void_near_a_curved_wall([c, 0.0]);
+        for d in [0.05_f64, 0.3] {
+            let (box_corner, wall) = ((c + 1.0 + d).hypot(1.0 + d), 5.0 - d);
+            assert!(c + 1.0 + d < wall, "witness: c={c} d={d} keeps a wall");
+            if c > 3.2 && d > 0.2 {
+                assert!(
+                    box_corner > wall,
+                    "witness: the box corner crosses the wall"
+                );
+            }
+        }
+        run_column(&Column {
+            name: "cylindrical void near a curved wall",
+            body: &body,
+            exact: &[-0.05, -0.3],
+            refused: &[],
+            refusal: None,
+            before_construction: true,
+        });
+    }
+}
+
+/// The same void placed diagonally, so its box clears the outer box long
+/// after the walls meet (at `|d| = (5 - 1 - 2.4 sqrt 2) / 2 = 0.303`). Up to
+/// there the rim bound proves the wall; past it nothing certifies the
+/// crossing either (the bound over-approximates a curved cavity), so the
+/// refusal says the separation is unproven rather than claiming a fold.
+#[test]
+fn a_diagonal_cylindrical_void_refuses_unproven_once_its_rims_reach_the_wall() {
+    let body = cylinder_void_near_a_curved_wall([2.4, 2.4]);
+    let centre = 2.4 * std::f64::consts::SQRT_2;
+    assert!(centre + 1.25 < 4.75, "witness: d=0.25 keeps a wall");
+    assert!(
+        centre + 1.4 > 4.6 && 3.4 + 0.4 < 4.6,
+        "witness: d=0.4 crosses inside the box"
+    );
+    run_column(&Column {
+        name: "diagonal cylindrical void near a curved wall",
+        body: &body,
+        exact: &[-0.05, -0.25],
+        refused: &[-0.4],
+        refusal: Some(Refusal::Fold(ShellInterferenceKind::SeparationUnproven)),
+        before_construction: false,
+    });
+}
+
 /// A cube void on the axis of a 5-to-3 frustum ten units tall, two units
 /// clear of everything.
 fn void_in_a_frustum() -> Body {
@@ -1214,6 +1278,12 @@ fn closed_forms_match_hand_arithmetic() {
     assert!(close(
         cylinder_void(true).offset(0.4).volume(),
         12.8_f64.powi(3) - PI * 1.6 * 1.6 * 0.2
+    ));
+    assert!(close(
+        cylinder_void_near_a_curved_wall([3.3, 0.0])
+            .offset(-0.3)
+            .volume(),
+        PI * 4.7 * 4.7 * 9.4 - PI * 1.3 * 1.3 * 2.6
     ));
     assert!(close(
         box_void_near_a_curved_wall().offset(-0.05).volume(),

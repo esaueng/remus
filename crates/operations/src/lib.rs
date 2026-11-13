@@ -114,6 +114,16 @@ pub mod test_utils;
 ///
 /// Equivalent to the dot product `n.x*p.x + n.y*p.y + n.z*p.z`, used
 /// for the plane equation `n · point = d`.
+/// How [`OperationsError::OffsetInterference`] describes its finding: a fold
+/// for every kind but one the separation certificate could not decide.
+fn offset_interference_outcome(interference: &remus_offset::ShellInterference) -> &'static str {
+    if interference.kind == remus_offset::ShellInterferenceKind::SeparationUnproven {
+        "is refused"
+    } else {
+        "would fold the body"
+    }
+}
+
 fn dot_normal_point(n: Vec3, p: Point3) -> f64 {
     n.dot(Vec3::new(p.x(), p.y(), p.z()))
 }
@@ -558,9 +568,13 @@ pub enum OperationsError {
     /// and on the constructed result when shell separation cannot be proven
     /// (see `remus_offset::interference`). Either way the topology, journal
     /// and handles are rolled back. A geometric condition of this body and
-    /// distance, not a malformed argument: a smaller `|distance|` succeeds
-    /// unless the finding is `SeparationUnproven`.
-    #[error("{operation} by {distance} would fold the body: {interference}")]
+    /// distance, not a malformed argument: a smaller `|distance|` succeeds.
+    /// The exception is `SeparationUnproven`, which certifies no fold at
+    /// all: the offset may be valid, and no certificate covers the body.
+    #[error(
+        "{operation} by {distance} {}: {interference}",
+        offset_interference_outcome(interference)
+    )]
     OffsetInterference {
         /// Name of the offset operation (`"offset"`, `"arc offset"` or
         /// `"shell"`).

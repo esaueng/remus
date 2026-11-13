@@ -3642,6 +3642,102 @@ mod tests {
         );
     }
 
+    /// P-Class 5.7b: a separation the certificate cannot prove (a void in a
+    /// cone frustum, offset inward to a legal distance) is the certificate's
+    /// boundary, not a fold the distance caused. It answers `unsupported`
+    /// with its own `kernelCode`, names no argument, and reports no
+    /// `required` room; the session is unchanged on every surface.
+    #[test]
+    fn unproven_offset_separation_is_unsupported_not_invalid_input() {
+        let mut kernel = RemusKernel::new();
+        let hollow = {
+            let topo = kernel.topo_mut();
+            let body = remus_operations::primitives::make_cone(topo, 5.0, 3.0, 10.0).unwrap();
+            let void = remus_operations::primitives::make_box(topo, 2.0, 2.0, 2.0).unwrap();
+            remus_operations::transform::transform_solid(
+                topo,
+                void,
+                &Mat4::translation(-1.0, -1.0, 4.0),
+            )
+            .unwrap();
+            let body = remus_operations::boolean::boolean(
+                topo,
+                remus_operations::boolean::BooleanOp::Cut,
+                body,
+                void,
+            )
+            .unwrap();
+            solid_id_to_u32(body)
+        };
+        let before = topology_counts(kernel.topo());
+        let journal = kernel.topo().journal().snapshot();
+        let unchanged = |kernel: &RemusKernel, label: &str| {
+            assert_eq!(topology_counts(kernel.topo()), before, "{label}");
+            assert_eq!(kernel.topo().journal().snapshot(), journal, "{label}");
+            assert!(kernel.resolve_solid(hollow).is_ok(), "{label}");
+        };
+        let distance = -0.5;
+
+        let solid_id = kernel.resolve_solid(hollow).unwrap();
+        let mut native = kernel.topo().clone();
+        let error = remus_operations::offset_v2::offset_solid_v2(&mut native, solid_id, distance)
+            .unwrap_err();
+        let remus_operations::OperationsError::OffsetInterference { interference, .. } = &error
+        else {
+            panic!("mistyped native refusal {error:?}");
+        };
+        assert_eq!(interference.kind.code(), "separation_unproven");
+        let message = error.to_string();
+        assert!(!message.contains("needs more than"), "{message}");
+
+        let direct = kernel.offset_solid_impl(hollow, distance).unwrap_err();
+        assert_eq!(direct.to_string(), message, "legacy direct");
+        unchanged(&kernel, "legacy direct");
+
+        let detailed =
+            serde_json::to_value(kernel.offset_detailed_impl(hollow, distance, false)).unwrap();
+        assert_eq!(detailed["status"], "error", "{detailed}");
+        assert_eq!(detailed["code"], "offset_separation_unproven", "{detailed}");
+        assert_eq!(detailed["category"], "unsupported", "{detailed}");
+        assert_eq!(
+            detailed["details"]["kind"], "separation_unproven",
+            "{detailed}"
+        );
+        assert!(detailed["details"].get("required").is_none(), "{detailed}");
+        assert!(detailed["details"].get("argument").is_none(), "{detailed}");
+        unchanged(&kernel, "detailed");
+
+        let request = serde_json::json!([{
+            "op": "offsetSolidV2",
+            "args": { "solid": hollow, "distance": distance }
+        }])
+        .to_string();
+        let v2: serde_json::Value =
+            serde_json::from_str(&kernel.execute_batch_v2(&request)).unwrap();
+        unchanged(&kernel, "batch v2");
+        let error = &v2[0]["error"];
+        assert_eq!(error["code"], "operation_failed", "{error}");
+        assert_eq!(error["category"], "unsupported", "{error}");
+        assert_eq!(
+            error["details"]["kernelCode"], "offset_separation_unproven",
+            "{error}"
+        );
+        assert_eq!(error["details"]["kind"], "separation_unproven", "{error}");
+        assert!(error["details"].get("argument").is_none(), "{error}");
+        assert!(error["details"].get("required").is_none(), "{error}");
+        // The shell named is the constructed result's, so its index depends
+        // on what the arena held when that attempt ran; the rest is fixed.
+        let text = error["message"].as_str().unwrap();
+        assert!(
+            text.starts_with("offset by -0.5 is refused: cavity shell ")
+                && text.ends_with(
+                    "cannot be proven to stay inside the outer boundary \
+                     (no separation certificate covers this body; the offset may be valid)"
+                ),
+            "{error}"
+        );
+    }
+
     #[test]
     fn folded_l_bracket_shell_has_direct_batch_parity() {
         let mut direct = RemusKernel::new();

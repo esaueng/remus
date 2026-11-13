@@ -34,6 +34,11 @@
 //! so `K` lies inside the body whatever the body's shape. When the outer
 //! shell is itself inside `K` the two are equal, and a cavity is inside the
 //! body exactly when a set of points whose hull contains it is inside `K`.
+//!
+//! A straight-edged polyhedral cavity is its vertices' hull, so a vertex
+//! outside `K` certifies a crossing. A curved cavity is only bounded from
+//! above (its face supports and rim reach, or its box corners), and a bound
+//! that does not clear `K` leaves the separation unproven, not refuted.
 
 use remus_math::aabb::Aabb3;
 use remus_math::vec::{Point3, Vec3};
@@ -70,7 +75,9 @@ pub enum ShellInterferenceKind {
     /// boundary.
     CavityOuter,
     /// The offset result could not be proven free of shell interference: the
-    /// outer shell is outside the class the carrier argument covers.
+    /// outer shell is outside the class the carrier argument covers, or a
+    /// curved cavity's certified bound does not clear the outer carriers.
+    /// Nothing is known to interfere; the offset may well be valid.
     SeparationUnproven,
 }
 
@@ -118,10 +125,15 @@ impl std::fmt::Display for ShellInterference {
             ShellInterferenceKind::CavityOuter => {
                 write!(f, "cavity shell {shell} would reach the outer boundary")?;
             }
-            ShellInterferenceKind::SeparationUnproven => write!(
-                f,
-                "cavity shell {shell} cannot be proven to stay inside the outer boundary"
-            )?,
+            ShellInterferenceKind::SeparationUnproven => {
+                // `required` is only the proof's clearance here, not room the
+                // offset is known to need, so it is not reported as such.
+                return write!(
+                    f,
+                    "cavity shell {shell} cannot be proven to stay inside the outer boundary \
+                     (no separation certificate covers this body; the offset may be valid)"
+                );
+            }
         }
         match self.available {
             Some(available) => write!(
@@ -161,6 +173,16 @@ fn face_edges(topo: &Topology, face_id: FaceId) -> Result<Vec<EdgeId>, OffsetErr
         );
     }
     Ok(edges)
+}
+
+/// The smaller margin, with a NaN on either side kept (`f64::min` would drop
+/// it and let an undefined margin pass as separation).
+fn least(a: f64, b: f64) -> f64 {
+    if a.is_nan() || b.is_nan() {
+        f64::NAN
+    } else {
+        a.min(b)
+    }
 }
 
 fn widen(interval: &mut Option<(f64, f64)>, lo: f64, hi: f64) {
@@ -613,31 +635,33 @@ fn convex_outer_carriers(
     Ok(Some(carriers))
 }
 
-/// Points whose convex hull contains a cavity shell: its vertices when the
-/// cavity is a straight-edged polyhedron, otherwise the corners of its
-/// extent.
-fn cavity_hull_points(topo: &Topology, shell: ShellId) -> Result<Vec<Point3>, OffsetError> {
-    let faces = topo.shell(shell)?.faces().to_vec();
+/// A cavity shell's vertices when it is a straight-edged polyhedron (their
+/// hull is the cavity's hull, so a vertex margin is exact); `None` otherwise.
+fn polyhedral_vertices(
+    topo: &Topology,
+    shell: ShellId,
+) -> Result<Option<Vec<Point3>>, OffsetError> {
     let mut points = Vec::new();
-    let mut polyhedral = true;
-    'faces: for &face_id in &faces {
+    for &face_id in topo.shell(shell)?.faces() {
         if !matches!(topo.face(face_id)?.surface(), FaceSurface::Plane { .. }) {
-            polyhedral = false;
-            break;
+            return Ok(None);
         }
         for edge_id in face_edges(topo, face_id)? {
             let edge = topo.edge(edge_id)?;
             if !matches!(edge.curve(), EdgeCurve::Line) {
-                polyhedral = false;
-                break 'faces;
+                return Ok(None);
             }
             points.push(topo.vertex(edge.start())?.point());
             points.push(topo.vertex(edge.end())?.point());
         }
     }
-    if polyhedral && !points.is_empty() {
-        return Ok(points);
-    }
+    Ok((!points.is_empty()).then_some(points))
+}
+
+/// The corners of a shell's over-approximating extent. Their hull contains
+/// the shell, so a margin they clear is sound, but a corner that does not
+/// clear a carrier says nothing about the shell itself.
+fn extent_corners(topo: &Topology, shell: ShellId) -> Result<Vec<Point3>, OffsetError> {
     let extent = cavity::shell_extent(topo, shell, cavity::Stage::Result)?;
     let (lo, hi) = (extent.min, extent.max);
     Ok(vec![
@@ -652,16 +676,58 @@ fn cavity_hull_points(topo: &Topology, shell: ShellId) -> Result<Vec<Point3>, Of
     ])
 }
 
+/// A lower bound on how far inside `carrier` every point of a cavity shell
+/// lies, from the shell's own faces; `None` when a face is outside the
+/// bounded class (a plane, cylinder or cone trimmed by straight and circular
+/// edges).
+///
+/// For a half-space this is the face support along its normal. For a
+/// cylinder it is the largest axis distance any face boundary reaches: a
+/// planar patch lies in the hull of its boundary, and a cylinder or cone
+/// patch on ruling segments that end on it, and the axis distance is convex,
+/// so no point of a face is farther out than its boundary.
+fn cavity_carrier_margin(
+    topo: &Topology,
+    shell: ShellId,
+    carrier: &Carrier,
+) -> Result<Option<f64>, OffsetError> {
+    let mut worst = f64::NEG_INFINITY;
+    for &face_id in topo.shell(shell)?.faces() {
+        let reach = match *carrier {
+            Carrier::HalfSpace { normal, .. } => {
+                face_support(topo, face_id, normal)?.map(|(_, hi)| hi)
+            }
+            Carrier::Cylinder { origin, axis, .. } => match topo.face(face_id)?.surface() {
+                FaceSurface::Plane { .. } | FaceSurface::Cylinder(_) | FaceSurface::Cone(_) => {
+                    boundary_about_axis(topo, face_id, origin, axis)?.map(|(_, _, reach)| reach)
+                }
+                FaceSurface::Sphere(_) | FaceSurface::Torus(_) | FaceSurface::Nurbs(_) => None,
+            },
+        };
+        let Some(reach) = reach else {
+            return Ok(None);
+        };
+        worst = -least(-worst, -reach);
+    }
+    Ok(match *carrier {
+        Carrier::HalfSpace { offset, .. } => Some(offset - worst),
+        Carrier::Cylinder { radius, .. } => Some(radius - worst),
+    })
+}
+
 /// Verify, on an offset result, that every cavity lies inside the outer
 /// shell with more than `clearance` to spare (the carrier argument in the
 /// module notes).
 ///
-/// Returns `None` when separation is proven. A cavity that reaches or
-/// leaves a carrier is [`ShellInterferenceKind::CavityOuter`]; an outer
-/// shell outside the convex-carrier class is
-/// [`ShellInterferenceKind::SeparationUnproven`], because a box-extent
-/// comparison alone cannot tell a cavity inside the body from one that has
-/// crossed a slanted or curved wall.
+/// Returns `None` when separation is proven. A straight-edged polyhedral
+/// cavity is judged exactly by its vertices: one that reaches or leaves a
+/// carrier is [`ShellInterferenceKind::CavityOuter`]. Any other cavity is
+/// bounded from above (its face supports, or its extent's corners), and a
+/// bound that does not clear the carriers is
+/// [`ShellInterferenceKind::SeparationUnproven`], as is an outer shell
+/// outside the convex-carrier class: a box or support bound alone cannot
+/// tell a cavity inside the body from one that has crossed a slanted or
+/// curved wall.
 ///
 /// # Errors
 ///
@@ -688,19 +754,48 @@ pub fn verify_cavities_inside_outer(
     };
     for shell in cavities {
         let mut margin = f64::INFINITY;
-        for point in cavity_hull_points(topo, shell)? {
-            for carrier in &carriers {
-                margin = margin.min(carrier.margin(point));
+        let certified = if let Some(vertices) = polyhedral_vertices(topo, shell)? {
+            for point in vertices {
+                for carrier in &carriers {
+                    margin = least(margin, carrier.margin(point));
+                }
             }
-        }
+            true
+        } else {
+            let corners = extent_corners(topo, shell)?;
+            for carrier in &carriers {
+                // Both are lower bounds on this carrier's true margin, so
+                // the larger one is too.
+                let boxed = corners
+                    .iter()
+                    .map(|&point| carrier.margin(point))
+                    .fold(f64::INFINITY, least);
+                let bound = match cavity_carrier_margin(topo, shell, carrier)? {
+                    Some(faces) if !faces.is_nan() => boxed.max(faces),
+                    _ => boxed,
+                };
+                margin = least(margin, bound);
+            }
+            false
+        };
         // A NaN margin must not pass as separation.
         if margin.is_nan() || margin <= clearance {
-            return Ok(Some(ShellInterference {
-                kind: ShellInterferenceKind::CavityOuter,
-                shell: shell.index(),
-                other_shell: Some(outer_shell.index()),
-                available: Some(margin),
-                required: clearance,
+            return Ok(Some(if certified {
+                ShellInterference {
+                    kind: ShellInterferenceKind::CavityOuter,
+                    shell: shell.index(),
+                    other_shell: Some(outer_shell.index()),
+                    available: Some(margin),
+                    required: clearance,
+                }
+            } else {
+                ShellInterference {
+                    kind: ShellInterferenceKind::SeparationUnproven,
+                    shell: shell.index(),
+                    other_shell: Some(outer_shell.index()),
+                    available: None,
+                    required: clearance,
+                }
             }));
         }
     }
@@ -709,7 +804,7 @@ pub fn verify_cavities_inside_outer(
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
 
     #[test]
@@ -734,6 +829,249 @@ mod tests {
         assert!((sine_between(a, b) - 1e-9).abs() < 1e-18);
         assert!(sine_between(a, a) == 0.0);
         assert!((sine_between(a, Vec3::new(1.0, 0.0, 0.0)) - 1.0).abs() < 1e-15);
+    }
+
+    /// Directions spread over the sphere, some nearly along a world axis.
+    fn directions() -> Vec<Vec3> {
+        [
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 1.0, 0.0],
+            [1.0, -2.0, 3.0],
+            [-0.3, 0.7, 0.2],
+            [0.05, 0.0, 1.0],
+            [-1.0, -1.0, -1.0],
+        ]
+        .into_iter()
+        .map(|[x, y, z]| unit(Vec3::new(x, y, z)).unwrap())
+        .collect()
+    }
+
+    /// Assert every bound this module takes from a face contains points
+    /// sampled on that face from its closed form: the support along each
+    /// direction, and the axial range and axis distance about skew axes.
+    fn assert_bounds_contain(topo: &Topology, face: FaceId, samples: &[Point3], label: &str) {
+        assert!(samples.len() > 8, "{label}: no samples");
+        for n in directions() {
+            let (lo, hi) = face_support(topo, face, n)
+                .unwrap()
+                .unwrap_or_else(|| panic!("{label}: face left unbounded"));
+            let (s_lo, s_hi) =
+                samples
+                    .iter()
+                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), p| {
+                        let t = n.dot(vec(*p));
+                        (a.min(t), b.max(t))
+                    });
+            assert!(
+                lo <= s_lo + 1e-12 && hi >= s_hi - 1e-12,
+                "{label}: support [{lo}, {hi}] along {n:?} misses samples [{s_lo}, {s_hi}]"
+            );
+        }
+        for (axis, origin) in directions().into_iter().zip(
+            [Point3::new(0.4, -0.7, 1.1), Point3::new(-2.0, 3.0, 0.5)]
+                .into_iter()
+                .cycle(),
+        ) {
+            let (t_lo, t_hi, reach) = boundary_about_axis(topo, face, origin, axis)
+                .unwrap()
+                .unwrap_or_else(|| panic!("{label}: boundary left unbounded"));
+            for &p in samples {
+                let offset = p - origin;
+                let t = offset.dot(axis);
+                let radial = (offset - axis * t).length();
+                assert!(
+                    t >= t_lo - 1e-12 && t <= t_hi + 1e-12 && radial <= reach + 1e-12,
+                    "{label}: {p:?} at t = {t}, radius {radial} outside \
+                     [{t_lo}, {t_hi}] x {reach} about {axis:?}"
+                );
+            }
+        }
+    }
+
+    /// A rigid placement that tilts every axis and moves off the origin.
+    fn placement() -> remus_math::mat::Mat4 {
+        remus_math::mat::Mat4::translation(1.0, -2.0, 3.0)
+            * remus_math::mat::Mat4::rotation_z(0.6)
+            * remus_math::mat::Mat4::rotation_x(0.4)
+    }
+
+    /// Hand each face of a placed solid the samples of its closed form:
+    /// planar faces by their local outward normal, the one curved face by
+    /// `curved`.
+    fn check_faces(
+        topo: &Topology,
+        solid: SolidId,
+        planar: &[([f64; 3], Vec<Point3>)],
+        curved: &[Point3],
+        label: &str,
+    ) -> usize {
+        let frame = placement();
+        let to_world = |p: &Point3| frame.mul_point(*p);
+        let back = frame.transpose();
+        let mut checked = 0;
+        for face in remus_topology::explorer::solid_faces(topo, solid).unwrap() {
+            let samples: Vec<Point3> = if let Some((normal, _)) = outward_plane(topo, face).unwrap()
+            {
+                let local = back.mul_point(Point3::new(normal.x(), normal.y(), normal.z()))
+                    - back.mul_point(Point3::new(0.0, 0.0, 0.0));
+                let (_, points) = planar
+                    .iter()
+                    .find(|(n, _)| local.dot(Vec3::new(n[0], n[1], n[2])) > 0.999)
+                    .unwrap_or_else(|| panic!("{label}: unexpected plane {local:?}"));
+                points.iter().map(to_world).collect()
+            } else {
+                curved.iter().map(to_world).collect()
+            };
+            assert_bounds_contain(
+                topo,
+                face,
+                &samples,
+                &format!("{label} face {}", face.index()),
+            );
+            checked += 1;
+        }
+        checked
+    }
+
+    /// A cone frustum, tilted: its rims are tilted circles, its wall a cone
+    /// patch whose support the boundary's widest circle bounds.
+    #[test]
+    fn a_tilted_cone_frustum_is_bounded_by_its_rims() {
+        let mut topo = Topology::new();
+        let (bottom, top, height) = (3.0, 1.0, 4.0);
+        let solid =
+            remus_operations::primitives::make_cone(&mut topo, bottom, top, height).unwrap();
+        // Untilted, the wall's support along its own axis is exactly its
+        // height: the bound adds nothing along the axis.
+        for face in remus_topology::explorer::solid_faces(&topo, solid).unwrap() {
+            if matches!(topo.face(face).unwrap().surface(), FaceSurface::Cone(_)) {
+                let (lo, hi) = face_support(&topo, face, Vec3::new(0.0, 0.0, 1.0))
+                    .unwrap()
+                    .unwrap();
+                assert!(
+                    lo.abs() < 1e-12 && (hi - height).abs() < 1e-12,
+                    "[{lo}, {hi}]"
+                );
+            }
+        }
+        remus_operations::transform::transform_solid(&mut topo, solid, &placement()).unwrap();
+
+        let ring = |radius: f64, z: f64| -> Vec<Point3> {
+            let mut points = Vec::new();
+            for k in 0..=4 {
+                let rho = radius * f64::from(k) / 4.0;
+                for i in 0..96 {
+                    let (sin, cos) = (f64::from(i) * std::f64::consts::TAU / 96.0).sin_cos();
+                    points.push(Point3::new(rho * cos, rho * sin, z));
+                }
+            }
+            points
+        };
+        let mut wall = Vec::new();
+        for k in 0..=16 {
+            let s = f64::from(k) / 16.0;
+            let radius = bottom + (top - bottom) * s;
+            for i in 0..96 {
+                let (sin, cos) = (f64::from(i) * std::f64::consts::TAU / 96.0).sin_cos();
+                wall.push(Point3::new(radius * cos, radius * sin, height * s));
+            }
+        }
+        let checked = check_faces(
+            &topo,
+            solid,
+            &[
+                ([0.0, 0.0, -1.0], ring(bottom, 0.0)),
+                ([0.0, 0.0, 1.0], ring(top, height)),
+            ],
+            &wall,
+            "tilted frustum",
+        );
+        assert_eq!(checked, 3);
+    }
+
+    /// A plate with a round hole, tilted: its two large faces carry the hole
+    /// as an inner wire, which neither widens their support nor escapes the
+    /// axis bounds; the bore is a reversed cylinder patch.
+    #[test]
+    fn a_tilted_plate_with_a_hole_is_bounded_with_its_inner_wires() {
+        let mut topo = Topology::new();
+        let plate = remus_operations::primitives::make_box(&mut topo, 6.0, 6.0, 2.0).unwrap();
+        remus_operations::transform::transform_solid(
+            &mut topo,
+            plate,
+            &remus_math::mat::Mat4::translation(-3.0, -3.0, 0.0),
+        )
+        .unwrap();
+        let tool = remus_operations::primitives::make_cylinder(&mut topo, 1.0, 4.0).unwrap();
+        remus_operations::transform::transform_solid(
+            &mut topo,
+            tool,
+            &remus_math::mat::Mat4::translation(0.0, 0.0, -1.0),
+        )
+        .unwrap();
+        let solid = remus_operations::boolean::boolean(
+            &mut topo,
+            remus_operations::boolean::BooleanOp::Cut,
+            plate,
+            tool,
+        )
+        .unwrap();
+        remus_operations::transform::transform_solid(&mut topo, solid, &placement()).unwrap();
+        let holed = remus_topology::explorer::solid_faces(&topo, solid)
+            .unwrap()
+            .into_iter()
+            .filter(|&face| !topo.face(face).unwrap().inner_wires().is_empty())
+            .count();
+        assert_eq!(holed, 2, "the hole is an inner wire of both large faces");
+
+        let grid = |fixed: usize, value: f64, spans: [(f64, f64); 2]| -> Vec<Point3> {
+            let mut points = Vec::new();
+            for i in 0..=24 {
+                for j in 0..=24 {
+                    let a = spans[0].0 + (spans[0].1 - spans[0].0) * f64::from(i) / 24.0;
+                    let b = spans[1].0 + (spans[1].1 - spans[1].0) * f64::from(j) / 24.0;
+                    let mut q = [0.0; 3];
+                    let mut free = [a, b].into_iter();
+                    for (axis, slot) in q.iter_mut().enumerate() {
+                        *slot = if axis == fixed {
+                            value
+                        } else {
+                            free.next().unwrap()
+                        };
+                    }
+                    if fixed == 2 && q[0].hypot(q[1]) < 1.0 {
+                        continue;
+                    }
+                    points.push(Point3::new(q[0], q[1], q[2]));
+                }
+            }
+            points
+        };
+        let (xy, z) = ((-3.0, 3.0), (0.0, 2.0));
+        let mut bore = Vec::new();
+        for k in 0..=8 {
+            for i in 0..96 {
+                let (sin, cos) = (f64::from(i) * std::f64::consts::TAU / 96.0).sin_cos();
+                bore.push(Point3::new(cos, sin, 2.0 * f64::from(k) / 8.0));
+            }
+        }
+        let checked = check_faces(
+            &topo,
+            solid,
+            &[
+                ([-1.0, 0.0, 0.0], grid(0, -3.0, [xy, z])),
+                ([1.0, 0.0, 0.0], grid(0, 3.0, [xy, z])),
+                ([0.0, -1.0, 0.0], grid(1, -3.0, [xy, z])),
+                ([0.0, 1.0, 0.0], grid(1, 3.0, [xy, z])),
+                ([0.0, 0.0, -1.0], grid(2, 0.0, [xy, xy])),
+                ([0.0, 0.0, 1.0], grid(2, 2.0, [xy, xy])),
+            ],
+            &bore,
+            "holed plate",
+        );
+        assert_eq!(checked, 7);
     }
 
     #[test]

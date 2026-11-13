@@ -687,16 +687,30 @@ impl From<remus_operations::OperationsError> for StructuredWasmError {
             }
             // P-Class 5.7b: a fold no qualified removal exists for. Same wire
             // code as the untyped cavity refusals it replaces, with the
-            // stable native code and the shells it names beside it.
+            // stable native code and the shells it names beside it. A
+            // separation the certificate could not prove is not a fold the
+            // distance caused: it is the certificate's own boundary, so it is
+            // `unsupported` and carries no `required` room (the value there is
+            // only the proof's clearance).
             remus_operations::OperationsError::OffsetInterference {
                 distance,
                 interference,
                 ..
             } => {
-                let mut structured = Self::invalid_argument(message, Some("distance"));
+                let unproven =
+                    interference.kind == remus_offset::ShellInterferenceKind::SeparationUnproven;
+                let mut structured = if unproven {
+                    Self::unsupported(message)
+                } else {
+                    Self::invalid_argument(message, Some("distance"))
+                };
                 structured.details.insert(
                     "kernelCode".to_string(),
-                    Value::from("offset_fold_unresolved"),
+                    Value::from(if unproven {
+                        "offset_separation_unproven"
+                    } else {
+                        "offset_fold_unresolved"
+                    }),
                 );
                 structured
                     .details
@@ -717,9 +731,11 @@ impl From<remus_operations::OperationsError> for StructuredWasmError {
                         .details
                         .insert("available".to_string(), Value::from(available));
                 }
-                structured
-                    .details
-                    .insert("required".to_string(), Value::from(interference.required));
+                if !unproven {
+                    structured
+                        .details
+                        .insert("required".to_string(), Value::from(interference.required));
+                }
                 structured
             }
             // A declared move-face / replace-surface capability boundary
