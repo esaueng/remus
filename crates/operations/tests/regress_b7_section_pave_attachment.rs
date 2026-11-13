@@ -149,7 +149,11 @@ fn arc_length_midpoint(topo: &Topology, edge: EdgeId) -> Point3 {
     let e = topo.edge(edge).unwrap();
     let a = topo.vertex(e.start()).unwrap().point();
     let b = topo.vertex(e.end()).unwrap().point();
-    let (t0, t1) = e.domain_with_endpoints(a, b);
+    // Stored parameter authority first; edges without it fall back to the
+    // named endpoint-reconstruction adapter (RFC 0002).
+    let (t0, t1) = e
+        .strict_domain()
+        .unwrap_or_else(|_| e.curve().reconstruct_domain_from_endpoints(a, b));
     let pts: Vec<Point3> = (0..=N)
         .map(|i| {
             e.curve()
