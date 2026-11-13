@@ -1136,9 +1136,19 @@ fn thread_ring(
         current = construction.top;
         current_is_cap = false;
     }
+    // A start finish that takes the whole thread, with a plain end after
+    // it, ends on its own far plane: no segment follows to carry that cap.
+    if segments == 0 && end_cone.is_none() && !current_is_cap {
+        faces.push(current);
+    }
     if let Some(cone) = end_cone {
         let to = if cone.runout { length } else { cone.root_z() };
         let zone_ring = extrude(topo, current, to - upper)?;
+        // Likewise an end finish that starts on the plain start plane: the
+        // zone leaves that cap to the segment below it, and there is none.
+        if current_is_cap {
+            faces.push(zone_ring.construction.bottom);
+        }
         let piece_roles = carry_roles(&mut edge_roles, &zone_ring.construction)?;
         let zone = if cone.runout {
             runout::runout_zone(

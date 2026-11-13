@@ -1171,3 +1171,65 @@ fn runout_cut_angles_keep_clear_of_the_patch_corners() {
     }
     assert!(cases > 300, "{cases}");
 }
+
+/// A runout that takes the whole thread, beside a plain end: there is no
+/// full-depth segment, so the plain end's cap is the runout zone's own far
+/// plane. The ring used to be left open there and the build failed with
+/// `ExactOnlyUnattainable`. Both ends, and both spellings of the finish.
+#[test]
+fn runout_that_takes_the_whole_thread_keeps_the_plain_end_cap() {
+    let form = ThreadForm::iso_metric(1.0, ThreadKind::External);
+    let angle = PI / 4.0;
+    let (r, h, offset) = (3.0, 8.0, 2.0);
+    let length = form.depth / angle.tan();
+    for at_start in [true, false] {
+        for finish in [ThreadEnd::Chamfer { angle }, ThreadEnd::Runout { angle }] {
+            let mut topo = Topology::new();
+            let (body, face) = boss(&mut topo, r, h);
+            let (start, end) = if at_start {
+                (finish, ThreadEnd::Plain)
+            } else {
+                (ThreadEnd::Plain, finish)
+            };
+            let options = CylinderThreadOptions {
+                offset,
+                length: Some(length),
+                start,
+                end,
+                ..tight(&form)
+            };
+            let label = format!("at_start={at_start} {finish:?}");
+            let outcome = cut_thread(&mut topo, body, face, &form, &options)
+                .unwrap_or_else(|error| panic!("{label}: {error}"));
+            assert_valid_and_watertight(&topo, outcome.solid);
+            let (built, plain) = if at_start {
+                (outcome.geometry.start, outcome.geometry.end)
+            } else {
+                (outcome.geometry.end, outcome.geometry.start)
+            };
+            assert!(matches!(built, ThreadEndGeometry::Runout { .. }), "{label}");
+            assert_eq!(plain, ThreadEndGeometry::Plain, "{label}");
+            let expected =
+                PI * r * r * (h - length) + runout_volume(&form, r, r - form.depth, angle);
+            let got = volume(&topo, outcome.solid);
+            assert!(rel(got, expected) < 1e-6, "{label}: {got} vs {expected}");
+            // The plain end is a full-depth wedge: just inside the zone's
+            // plain plane the groove is open somewhere round the axis.
+            let z = if at_start {
+                offset + length - 2e-3
+            } else {
+                offset + 2e-3
+            };
+            let grooved = (0..24).any(|k| {
+                let theta = TAU * f64::from(k) / 24.0;
+                let radius = r - form.depth + 0.02;
+                !inside(
+                    &topo,
+                    outcome.solid,
+                    Point3::new(radius * theta.cos(), radius * theta.sin(), z),
+                )
+            });
+            assert!(grooved, "{label}");
+        }
+    }
+}
