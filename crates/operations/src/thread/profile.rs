@@ -50,9 +50,23 @@ impl Segment {
     }
 }
 
+/// Which part of the thread form an outline piece (and the face it sweeps)
+/// belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PieceRole {
+    Crest,
+    /// The flank facing the end of the thread.
+    UpperFlank,
+    Root,
+    /// The flank facing the start of the thread.
+    LowerFlank,
+}
+
 /// The outline and its certified fit report.
 pub(super) struct Outline {
     pub(super) segments: Vec<Segment>,
+    /// The role of each entry of `segments`.
+    pub(super) roles: Vec<PieceRole>,
     /// Proven bound on any flank piece's distance from its exact spiral.
     pub(super) remainder_bound: f64,
     /// Most Hermite spans used by one flank piece.
@@ -72,6 +86,7 @@ struct Piece {
     u1: f64,
     r0: f64,
     r1: f64,
+    role: PieceRole,
 }
 
 /// The axial profile over one lead, from the start of a crest flat, in
@@ -94,24 +109,28 @@ fn axial_pieces(form: &ThreadForm, crest_radius: f64, root_radius: f64) -> Vec<P
             u1: crest_end,
             r0: crest_radius,
             r1: crest_radius,
+            role: PieceRole::Crest,
         });
         pieces.push(Piece {
             u0: crest_end,
             u1: upper_end,
             r0: crest_radius,
             r1: root_radius,
+            role: PieceRole::UpperFlank,
         });
         pieces.push(Piece {
             u0: upper_end,
             u1: root_end,
             r0: root_radius,
             r1: root_radius,
+            role: PieceRole::Root,
         });
         pieces.push(Piece {
             u0: root_end,
             u1: next,
             r0: root_radius,
             r1: crest_radius,
+            role: PieceRole::LowerFlank,
         });
     }
     pieces
@@ -146,6 +165,7 @@ pub(super) fn outline(
         }
     };
     let mut segments = Vec::with_capacity(pieces.len());
+    let mut roles = Vec::with_capacity(pieces.len());
     let mut remainder_bound: f64 = 0.0;
     let mut spans_per_flank = 0;
     let width_tol = 1e-12 * lead;
@@ -164,6 +184,7 @@ pub(super) fn outline(
                 segments.push(Segment::Line {
                     start: polar(r_from, from),
                 });
+                roles.push(piece.role);
             }
             continue;
         }
@@ -174,6 +195,7 @@ pub(super) fn outline(
                 from,
                 to,
             });
+            roles.push(piece.role);
             continue;
         }
         let slope = (r_to - r_from) / (to - from);
@@ -223,9 +245,11 @@ pub(super) fn outline(
         remainder_bound = remainder_bound.max(fit.remainder_bound);
         spans_per_flank = spans_per_flank.max(fit.spans);
         segments.push(Segment::Flank(curve));
+        roles.push(piece.role);
     }
     Ok(Outline {
         segments,
+        roles,
         remainder_bound,
         spans_per_flank,
     })

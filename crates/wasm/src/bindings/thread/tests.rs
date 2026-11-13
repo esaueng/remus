@@ -81,17 +81,82 @@ fn thread_on_a_boss_matches_between_direct_and_batch() {
     assert!((geometry["majorDiameter"].as_f64().unwrap() - 6.0).abs() < 1e-12);
     assert!((geometry["rootWidth"].as_f64().unwrap() - 0.25).abs() < 1e-12);
     assert!((geometry["turns"].as_f64().unwrap() - 6.0).abs() < 1e-12);
+    assert_eq!(geometry["start"], json!({ "kind": "plain" }));
+    assert_eq!(geometry["end"]["kind"], "chamfer");
     let solid = handle(&direct["value"]);
     assert_ne!(solid, blank, "the input solid is kept");
     let id = direct_kernel.resolve_solid(solid).unwrap();
     let report = remus_operations::validate::validate_solid(direct_kernel.topo(), id).unwrap();
     assert!(report.is_valid(), "{:?}", report.issues);
 
+    // Every role names a face of the result; one cone closes the chamfer.
+    let faces = faces_of(&direct_kernel, solid);
+    let roles = details["faceRoles"].as_array().unwrap();
+    let count = |name: &str| roles.iter().filter(|entry| entry["role"] == name).count();
+    for entry in roles {
+        assert!(faces.contains(&handle(&entry["face"])), "{entry}");
+    }
+    assert_eq!(count("chamfer.end"), 1);
+    assert_eq!(count("runout.end"), 0);
+    for name in ["crest", "root", "flank.upper", "flank.lower"] {
+        assert!(count(name) >= 11, "{name}: {}", count(name));
+    }
+
     let mut batch_kernel = RemusKernel::new();
     let batch_blank = batch_kernel.make_cylinder_solid(3.0, 6.0).unwrap();
     let batch_face = side_face(&batch_kernel, batch_blank);
     let batch = cut_batch(&mut batch_kernel, batch_blank, batch_face, &spec);
     assert_eq!(batch["ok"], direct);
+}
+
+/// The same `chamfer` end on a thread that stops short of the face's end
+/// builds a runout, and `runout` asks for one by name.
+#[test]
+fn chamfer_short_of_the_face_end_is_a_runout_direct_and_batch() {
+    for end in ["chamfer", "runout"] {
+        let mut spec = m6();
+        spec["length"] = json!(4.0);
+        spec["end"] = json!({ "kind": end, "angle": 45.0 });
+        let mut direct_kernel = RemusKernel::new();
+        let blank = direct_kernel.make_cylinder_solid(3.0, 6.0).unwrap();
+        let face = side_face(&direct_kernel, blank);
+        let direct =
+            serde_json::to_value(direct_kernel.cut_thread_detailed_impl(blank, face, &spec))
+                .unwrap();
+        assert_eq!(direct["status"], "ok", "{direct}");
+        let details = &direct["details"];
+        let finish = &details["geometry"]["end"];
+        assert_eq!(finish["kind"], "runout", "{end}");
+        // 45°: the runout reaches one thread depth into the thread.
+        assert!((finish["length"].as_f64().unwrap() - 0.541_265_877_365_273_1).abs() < 1e-12);
+        let solid = handle(&direct["value"]);
+        let id = direct_kernel.resolve_solid(solid).unwrap();
+        let report = remus_operations::validate::validate_solid(direct_kernel.topo(), id).unwrap();
+        assert!(report.is_valid(), "{:?}", report.issues);
+        let faces = faces_of(&direct_kernel, solid);
+        let roles = details["faceRoles"].as_array().unwrap();
+        let pieces: Vec<_> = roles
+            .iter()
+            .filter(|entry| entry["role"] == "runout.end")
+            .collect();
+        assert!(pieces.len() >= 3, "{}", pieces.len());
+        for entry in &pieces {
+            let face = handle(&entry["face"]);
+            assert!(faces.contains(&face));
+            let id = direct_kernel.resolve_face(face).unwrap();
+            assert!(matches!(
+                direct_kernel.topo().face(id).unwrap().surface(),
+                remus_topology::face::FaceSurface::Cone(_)
+            ));
+        }
+        assert!(roles.iter().all(|entry| entry["role"] != "chamfer.end"));
+
+        let mut batch_kernel = RemusKernel::new();
+        let batch_blank = batch_kernel.make_cylinder_solid(3.0, 6.0).unwrap();
+        let batch_face = side_face(&batch_kernel, batch_blank);
+        let batch = cut_batch(&mut batch_kernel, batch_blank, batch_face, &spec);
+        assert_eq!(batch["ok"], direct, "{end}");
+    }
 }
 
 #[test]
@@ -132,6 +197,25 @@ fn refusals_are_typed_and_atomic() {
             face,
             with(json!({ "starts": 0 })),
             "thread:invalid-parameter",
+        ),
+        (
+            face,
+            with(json!({
+                "offset": 1.0, "length": 2.0,
+                "start": { "kind": "chamfer", "angle": 15.0 },
+                "end": { "kind": "chamfer", "angle": 15.0 }
+            })),
+            "thread:ends-overlap",
+        ),
+        (
+            face,
+            with(json!({ "end": { "kind": "runout", "angle": 90.0 } })),
+            "thread:invalid-parameter",
+        ),
+        (
+            face,
+            with(json!({ "end": { "kind": "relief", "angle": 45.0 } })),
+            "invalid_argument",
         ),
         (
             face,

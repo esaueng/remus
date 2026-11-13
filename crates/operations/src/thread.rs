@@ -26,9 +26,11 @@
 //! [`ThreadRefusal::FeaturesInThreadRegion`] rather than being filled in.
 //!
 //! An end of the thread that stops short of the face's end meets a collar of
-//! the original cylinder; an end at the face's end runs out on its end plane,
-//! plainly or through a [`ThreadEnd::Chamfer`] cone built into the ring
-//! (`chamfer`).
+//! the original cylinder; an end at the face's end runs out on its end plane.
+//! Either is plain (the groove ends in a full-depth wedge) or finished by a
+//! cone built into the ring: a [`ThreadEnd::Chamfer`] through the thread at a
+//! free end (`chamfer`), a [`ThreadEnd::Runout`] that fades the groove out
+//! against the material beyond a stopped-short end (`runout`).
 //!
 //! The ring is a stack of segments of at most half a turn, glued at shared
 //! planes like the halves of a herringbone gear: a swept face that winds
@@ -36,11 +38,11 @@
 //! the wrong turn), which drops faces from the fuse. Under half a turn also
 //! keeps crest and root lands exact cylinders.
 //!
-//! Not covered: tapered (pipe) threads, rounded crests and roots, and a
-//! chamfer at an end that stops short of the face's end.
+//! Not covered: tapered (pipe) threads and rounded crests and roots.
 
 mod chamfer;
 pub(crate) mod profile;
+mod runout;
 
 use std::f64::consts::{PI, TAU};
 
@@ -57,9 +59,9 @@ use remus_topology::vertex::Vertex;
 use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
 use crate::OperationsError;
-use crate::boolean::{BooleanOp, boolean};
+use crate::boolean::{BooleanOp, boolean, boolean_with_evolution};
 use crate::classify::{PointClassification, classify_point};
-use profile::Segment;
+use profile::{PieceRole, Segment};
 
 /// Default thread tolerance as a fraction of the pitch.
 pub const DEFAULT_TOLERANCE_PER_PITCH: f64 = 1e-4;
@@ -183,11 +185,98 @@ pub enum ThreadEnd {
     /// A cone through the thread from just inside the root on the end plane,
     /// opening `angle` from the axis into the thread: the first turn tapers
     /// to nothing instead of ending in a full-depth wedge, which prints
-    /// cleanly and starts a mating part. The end must be the end of the face.
+    /// cleanly and starts a mating part.
+    ///
+    /// That is the finish of an end at the end of the face. At an end that
+    /// stops short of it the cone would undercut the collar beyond, so there
+    /// this builds the [`ThreadEnd::Runout`] of the same angle instead.
     Chamfer {
         /// Cone angle from the axis, radians, in `(0, π/2)`; 45° is usual.
         angle: f64,
     },
+    /// A cone that sits on the crest at the end plane and falls to the root
+    /// `depth / tan(angle)` into the thread: the groove fills up to it and
+    /// fades out on the end plane, with no undercut against the collar or
+    /// shoulder beyond. Allowed at either kind of end.
+    Runout {
+        /// Cone angle from the axis, radians, in `(0, π/2)`.
+        angle: f64,
+    },
+}
+
+/// How an end of a built thread was finished.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ThreadEndGeometry {
+    /// The thread runs at full depth up to the end plane.
+    Plain,
+    /// A chamfer cone through the thread.
+    Chamfer {
+        /// Axial distance from the end plane to where the thread is whole.
+        length: f64,
+    },
+    /// A runout cone filling the groove.
+    Runout {
+        /// Axial distance from the end plane to where the groove is at full
+        /// depth.
+        length: f64,
+    },
+}
+
+/// An end of a thread.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ThreadEndSide {
+    /// The end nearer the start of the face.
+    Start,
+    /// The other end.
+    End,
+}
+
+/// What a face of a threaded solid is on the thread. Every face of that
+/// role carries it: a thread is a stack of segments, each with its own
+/// lands and flanks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ThreadFaceRole {
+    /// A crest land.
+    Crest,
+    /// A root land.
+    Root,
+    /// A flank facing the end of the thread.
+    UpperFlank,
+    /// A flank facing the start of the thread.
+    LowerFlank,
+    /// The cone of a chamfered end.
+    Chamfer(ThreadEndSide),
+    /// A piece of the cone of a runout.
+    Runout(ThreadEndSide),
+}
+
+impl ThreadFaceRole {
+    /// Stable name: `crest`, `root`, `flank.upper`, `flank.lower`,
+    /// `chamfer.start`, `chamfer.end`, `runout.start`, `runout.end`.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Crest => "crest",
+            Self::Root => "root",
+            Self::UpperFlank => "flank.upper",
+            Self::LowerFlank => "flank.lower",
+            Self::Chamfer(ThreadEndSide::Start) => "chamfer.start",
+            Self::Chamfer(ThreadEndSide::End) => "chamfer.end",
+            Self::Runout(ThreadEndSide::Start) => "runout.start",
+            Self::Runout(ThreadEndSide::End) => "runout.end",
+        }
+    }
+}
+
+impl From<PieceRole> for ThreadFaceRole {
+    fn from(role: PieceRole) -> Self {
+        match role {
+            PieceRole::Crest => Self::Crest,
+            PieceRole::UpperFlank => Self::UpperFlank,
+            PieceRole::Root => Self::Root,
+            PieceRole::LowerFlank => Self::LowerFlank,
+        }
+    }
 }
 
 /// Placement and sizing of a thread on a cylinder.
@@ -212,9 +301,12 @@ pub struct CylinderThreadOptions {
     /// Bound on the swept surfaces' distance from the exact thread; `None`
     /// uses [`DEFAULT_TOLERANCE_PER_PITCH`] of the pitch.
     pub tolerance: Option<f64>,
-    /// Finish of the thread's start (the end nearer the face's start).
+    /// Finish of the thread's start (the end nearer the face's start). A
+    /// [`ThreadEnd::Chamfer`] becomes a runout when `offset` leaves a collar
+    /// before the thread.
     pub start: ThreadEnd,
-    /// Finish of the thread's other end.
+    /// Finish of the thread's other end. A [`ThreadEnd::Chamfer`] becomes a
+    /// runout when the thread stops short of the face's end.
     pub end: ThreadEnd,
 }
 
@@ -256,6 +348,10 @@ pub struct ThreadGeometry {
     pub length: f64,
     /// Turns of each start along the length.
     pub turns: f64,
+    /// How the thread's start was finished.
+    pub start: ThreadEndGeometry,
+    /// How the thread's other end was finished.
+    pub end: ThreadEndGeometry,
 }
 
 /// A built thread.
@@ -272,6 +368,10 @@ pub struct ThreadOutcome {
     pub spans_along_axis: usize,
     /// Most Hermite spans across the profile in one flank.
     pub spans_per_flank: usize,
+    /// The thread's faces of the solid and what each is. Complete when the
+    /// ring is glued on; where it had to be fused, only the faces the fuse
+    /// carried over one to one.
+    pub face_roles: Vec<(FaceId, ThreadFaceRole)>,
     /// The ring was glued on directly rather than fused.
     pub(crate) glued: bool,
 }
@@ -299,6 +399,8 @@ pub enum ThreadRefusal {
     ToleranceTooTight,
     /// A hole, slot or other feature crosses the band the thread rebuilds.
     FeaturesInThreadRegion,
+    /// The chamfers or runouts of the two ends reach past each other.
+    EndsOverlap,
 }
 
 impl ThreadRefusal {
@@ -316,6 +418,7 @@ impl ThreadRefusal {
             Self::TooDeep => "too-deep",
             Self::ToleranceTooTight => "tolerance-too-tight",
             Self::FeaturesInThreadRegion => "features-in-thread-region",
+            Self::EndsOverlap => "ends-overlap",
         }
     }
 }
@@ -432,9 +535,10 @@ fn validate_form(form: &ThreadForm) -> Result<(), ThreadError> {
 ///
 /// [`ThreadError::Refused`] for an out-of-range parameter, a face that is
 /// not a full-turn cylinder of `solid`, a thread larger than the boss (or
-/// smaller than the bore), a span reaching past either end of the face, or
-/// features crossing the thread band; [`ThreadError::Operations`] when a
-/// boolean fails. Refusals and failures leave the topology unchanged.
+/// smaller than the bore), a span reaching past either end of the face,
+/// end finishes that reach past each other, or features crossing the thread
+/// band; [`ThreadError::Operations`] when a boolean fails. Refusals and
+/// failures leave the topology unchanged.
 #[allow(clippy::too_many_lines)]
 pub fn cut_thread(
     topo: &mut Topology,
@@ -451,14 +555,17 @@ pub fn cut_thread(
         positive(tolerance, "tolerance")?;
     }
     for (end, name) in [(options.start, "start"), (options.end, "end")] {
-        if let ThreadEnd::Chamfer { angle } = end {
-            require(angle.is_finite() && angle > 0.0 && angle < 0.5 * PI, || {
-                format!(
-                    "the {name} chamfer angle must be in (0°, 90°), got {}°",
-                    angle.to_degrees()
-                )
-            })?;
-        }
+        let (angle, finish) = match end {
+            ThreadEnd::Plain => continue,
+            ThreadEnd::Chamfer { angle } => (angle, "chamfer"),
+            ThreadEnd::Runout { angle } => (angle, "runout"),
+        };
+        require(angle.is_finite() && angle > 0.0 && angle < 0.5 * PI, || {
+            format!(
+                "the {name} {finish} angle must be in (0°, 90°), got {}°",
+                angle.to_degrees()
+            )
+        })?;
     }
     if !solid_faces(topo, solid)?.contains(&face) {
         return Err(ThreadError::invalid(
@@ -504,13 +611,17 @@ pub fn cut_thread(
             ),
         ));
     }
-    let chamfer_short_of_end = (matches!(options.start, ThreadEnd::Chamfer { .. }) && offset > 0.0)
-        || (matches!(options.end, ThreadEnd::Chamfer { .. }) && offset + length < face_length);
-    if chamfer_short_of_end {
-        return Err(ThreadError::invalid(
-            "a chamfered end must run to that end of the face",
-        ));
-    }
+    // A chamfer's cone starts inside the root, which would undercut the
+    // collar beyond an end that stops short of the face's end: that end
+    // takes the runout of the same angle.
+    let finish = |end: ThreadEnd, short: bool| match end {
+        ThreadEnd::Chamfer { angle } if short => ThreadEnd::Runout { angle },
+        other => other,
+    };
+    let ends = (
+        finish(options.start, offset > 0.0),
+        finish(options.end, offset + length < face_length),
+    );
     let start = v0 + offset;
 
     // Boss or bore, from which side of the face is material.
@@ -608,6 +719,8 @@ pub fn cut_thread(
         lead_angle: (lead / (PI * mean)).atan(),
         length,
         turns: length / lead,
+        start: ThreadEndGeometry::Plain,
+        end: ThreadEndGeometry::Plain,
     };
 
     let reference = match options.x_direction {
@@ -662,12 +775,18 @@ pub fn cut_thread(
             },
             length,
             0.5 * tolerance,
-            (options.start, options.end),
+            ends,
         )?;
         let twist = ring.spans;
         let ring_bound = ring.deviation_bound;
         let outline_bound = ring.outline_bound;
         let spans_per_flank = ring.spans_per_flank;
+        let ring_roles = ring.face_roles;
+        let geometry = ThreadGeometry {
+            start: ring.finishes.0,
+            end: ring.finishes.1,
+            ..geometry.clone()
+        };
         let ring = ring.solid;
         // Glue the ring on where the faces it meets are recognized; the fuse
         // is the general fallback.
@@ -682,17 +801,52 @@ pub fn cut_thread(
             length,
             Glue::Simplest,
         )?;
-        let (result, glued) = match glued {
-            Some(result) => (result, true),
-            None => (boolean(topo, BooleanOp::Fuse, kept, ring)?, false),
+        let (result, face_roles, glued) = if let Some(result) = glued {
+            // Every ring face but its seam wall and the caps the glue merges
+            // is a face of the result under its own id.
+            let result_faces = solid_faces(topo, result)?;
+            let face_roles = ring_roles
+                .into_iter()
+                .filter(|(face, _)| result_faces.contains(face))
+                .collect();
+            (result, face_roles, true)
+        } else {
+            let (result, map) = boolean_with_evolution(topo, BooleanOp::Fuse, kept, ring)?;
+            // A ring face keeps its role only when the fuse maps it to
+            // exactly one result face that no other input face also produced.
+            let mut face_roles = Vec::new();
+            if map.origin.is_exact() {
+                let result_faces = solid_faces(topo, result)?;
+                let sources = |output: usize| {
+                    map.modified
+                        .iter()
+                        .chain(&map.generated)
+                        .filter(|(_, outputs)| outputs.contains(&output))
+                        .map(|(&input, _)| input)
+                        .collect::<Vec<_>>()
+                };
+                for (ring_face, role) in ring_roles {
+                    let Some(outputs) = map.modified.get(&ring_face.index()) else {
+                        continue;
+                    };
+                    if let [output] = outputs.as_slice()
+                        && sources(*output) == [ring_face.index()]
+                        && let Some(&face) = result_faces.iter().find(|f| f.index() == *output)
+                    {
+                        face_roles.push((face, role));
+                    }
+                }
+            }
+            (result, face_roles, false)
         };
         let scale = band.1.max(length);
         Ok(ThreadOutcome {
             solid: result,
-            geometry: geometry.clone(),
+            geometry,
             deviation_bound: (64.0 * f64::EPSILON).mul_add(scale, outline_bound + ring_bound),
             spans_along_axis: twist,
             spans_per_flank,
+            face_roles,
             glued,
         })
     })
@@ -700,7 +854,8 @@ pub fn cut_thread(
 
 /// The swept thread ring: the outline twisted along the axis, with its
 /// seam cylinder as a bore (external) or rim (internal), and a cone chamfer
-/// built into either end that asks for one (see `chamfer`).
+/// or runout built into either end that asks for one (see `chamfer` and
+/// `runout`).
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn thread_ring(
     topo: &mut Topology,
@@ -722,9 +877,16 @@ fn thread_ring(
     let rate = sign * TAU / form.lead();
     let mut outline_bound: f64 = 0.0;
     let mut spans_per_flank = 0;
+    // The role of every thread-wire edge on a segment plane, by edge index:
+    // the profile's edges, then each segment's top edges from its bottom's.
+    let mut edge_roles: std::collections::BTreeMap<usize, PieceRole> =
+        std::collections::BTreeMap::new();
     // The thread's transverse section at height `z`: the outline at `z = 0`
     // turned by the twist up to `z`.
-    let mut profile_at = |topo: &mut Topology, z: f64| -> Result<FaceId, ThreadError> {
+    let mut profile_at = |topo: &mut Topology,
+                          edge_roles: &mut std::collections::BTreeMap<usize, PieceRole>,
+                          z: f64|
+     -> Result<FaceId, ThreadError> {
         let outline = profile::outline(form, crest, root, rate.mul_add(z, phase), tolerance)?;
         outline_bound = outline_bound.max(outline.remainder_bound);
         spans_per_flank = spans_per_flank.max(outline.spans_per_flank);
@@ -733,13 +895,16 @@ fn thread_ring(
             ..*frame
         };
         let vertex_tol = Tolerance::new().linear;
-        let thread = build_wire(
+        let (thread, edges) = build_wire(
             topo,
             &outline.segments,
             &at,
             vertex_tol,
             kind == ThreadKind::Internal,
         )?;
+        for (edge, &role) in edges.iter().zip(&outline.roles) {
+            edge_roles.insert(edge.index(), role);
+        }
         let circle = make_circle_edge_with_ref(
             topo,
             at.origin,
@@ -799,64 +964,131 @@ fn thread_ring(
     } else {
         root + 0.5 * gap
     };
-    let cone_for = |angle: f64, at_start: bool| chamfer::Cone {
-        kind,
-        crest,
-        root,
-        at_end,
-        slope: angle.tan(),
-        end_z: if at_start { 0.0 } else { length },
-        inward: if at_start { 1.0 } else { -1.0 },
+    // A runout's cone sits on the crest on the end plane.
+    let cone_for = |end: ThreadEnd, at_start: bool| {
+        let (angle, runout) = match end {
+            ThreadEnd::Plain => return None,
+            ThreadEnd::Chamfer { angle } => (angle, false),
+            ThreadEnd::Runout { angle } => (angle, true),
+        };
+        Some(chamfer::Cone {
+            kind,
+            crest,
+            root,
+            at_end: if runout { crest } else { at_end },
+            slope: angle.tan(),
+            end_z: if at_start { 0.0 } else { length },
+            inward: if at_start { 1.0 } else { -1.0 },
+            runout,
+        })
     };
-    let start_cone = match ends.0 {
-        ThreadEnd::Chamfer { angle } => Some(cone_for(angle, true)),
-        ThreadEnd::Plain => None,
+    let start_cone = cone_for(ends.0, true);
+    let end_cone = cone_for(ends.1, false);
+    // Where the thread is whole: past a chamfer's crest crossing, past a
+    // runout's root crossing.
+    let whole_from = |cone: &chamfer::Cone| {
+        if cone.runout {
+            cone.root_z()
+        } else {
+            cone.full_z()
+        }
     };
-    let end_cone = match ends.1 {
-        ThreadEnd::Chamfer { angle } => Some(cone_for(angle, false)),
-        ThreadEnd::Plain => None,
-    };
-    let lower = start_cone.map_or(0.0, |cone| cone.full_z());
-    let upper = end_cone.map_or(length, |cone| cone.full_z());
+    let lower = start_cone.as_ref().map_or(0.0, whole_from);
+    let upper = end_cone.as_ref().map_or(length, whole_from);
     if upper < lower - 1e-12 * length {
-        return Err(ThreadError::invalid(format!(
-            "the chamfers reach {} and {} into a thread {length} long; shorten them or \
-             lengthen the thread",
-            lower,
-            length - upper
-        )));
+        return Err(ThreadError::refused(
+            ThreadRefusal::EndsOverlap,
+            format!(
+                "the end finishes reach {} and {} into a thread {length} long; shorten them \
+                 or lengthen the thread",
+                lower,
+                length - upper
+            ),
+        ));
     }
-    let middle = (upper - lower).max(0.0);
+    let reaches = (lower, length - upper);
+    // End finishes that meet (to rounding) leave no full-depth thread
+    // between them: the second zone starts on the first one's plane.
+    let upper = if upper - lower <= 1e-9 * length {
+        lower
+    } else {
+        upper
+    };
+    let middle = upper - lower;
+    let finish_of = |cone: Option<&chamfer::Cone>, reach: f64| match cone {
+        None => ThreadEndGeometry::Plain,
+        Some(cone) if cone.runout => ThreadEndGeometry::Runout { length: reach },
+        Some(_) => ThreadEndGeometry::Chamfer { length: reach },
+    };
+    let finishes = (
+        finish_of(start_cone.as_ref(), reaches.0),
+        finish_of(end_cone.as_ref(), reaches.1),
+    );
 
     let mut faces = Vec::new();
+    let mut face_roles = Vec::new();
     let mut seam_faces = Vec::new();
     let mut deviation_bound: f64 = 0.0;
     let mut spans = 0;
     let mut trim_bound: f64 = 0.0;
+    // The roles of a segment's thread-wire positions, from its bottom edges;
+    // its top edges take them over for the segment extruded from them.
+    let carry_roles = |edge_roles: &mut std::collections::BTreeMap<usize, PieceRole>,
+                       c: &crate::extrude::ExtrudeConstruction|
+     -> Result<Vec<PieceRole>, ThreadError> {
+        let (wire, _, _) = chamfer::thread_wire(c, kind)?;
+        let mut roles = Vec::with_capacity(wire.edge_ids().len());
+        for (bottom, top) in wire.edge_ids().iter().zip(wire.top_edge_ids()) {
+            let role = *edge_roles
+                .get(&bottom.index())
+                .ok_or_else(|| ThreadError::invalid("thread ring segment lost its profile"))?;
+            edge_roles.insert(top.index(), role);
+            roles.push(role);
+        }
+        Ok(roles)
+    };
     // The face the next segment extrudes from, and whether it is a cap of
     // the ring (true only for the bare start).
     let (mut current, mut current_is_cap) = if let Some(cone) = start_cone {
-        let root_z = cone.root_z();
-        let profile = profile_at(topo, root_z)?;
-        let zone_ring = extrude(topo, profile, cone.full_z() - root_z)?;
-        let zone = chamfer::chamfer_zone(
-            topo,
-            frame,
-            &zone_ring,
-            &cone,
-            chamfer::RootSide::Bottom,
-            seam,
-            rate,
-            tolerance,
-        )?;
+        let from = if cone.runout { 0.0 } else { cone.root_z() };
+        let profile = profile_at(topo, &mut edge_roles, from)?;
+        let zone_ring = extrude(topo, profile, lower - from)?;
+        let piece_roles = carry_roles(&mut edge_roles, &zone_ring.construction)?;
+        let zone = if cone.runout {
+            runout::runout_zone(
+                topo,
+                frame,
+                &zone_ring,
+                &cone,
+                chamfer::RootSide::Top,
+                rate,
+                tolerance,
+                &piece_roles,
+                ThreadEndSide::Start,
+            )?
+        } else {
+            chamfer::chamfer_zone(
+                topo,
+                frame,
+                &zone_ring,
+                &cone,
+                chamfer::RootSide::Bottom,
+                seam,
+                rate,
+                tolerance,
+                &piece_roles,
+                ThreadEndSide::Start,
+            )?
+        };
         faces.extend(zone.faces);
+        face_roles.extend(zone.roles);
         seam_faces.extend(zone.walls);
         deviation_bound = deviation_bound.max(zone_ring.deviation_bound);
         trim_bound = trim_bound.max(zone.trim_bound);
         spans += zone_ring.spans;
         (zone_ring.construction.top, false)
     } else {
-        (profile_at(topo, 0.0)?, true)
+        (profile_at(topo, &mut edge_roles, 0.0)?, true)
     };
 
     // Stack segments of at most `MAX_SEGMENT_TURN` turns, each the twisted
@@ -882,6 +1114,14 @@ fn thread_ring(
         let construction = &twisted.construction;
         let seam_face = seam_face_of(construction)?;
         seam_faces.push(seam_face);
+        let piece_roles = carry_roles(&mut edge_roles, construction)?;
+        let (_, sides, _) = chamfer::thread_wire(construction, kind)?;
+        face_roles.extend(
+            sides
+                .iter()
+                .zip(&piece_roles)
+                .map(|(&side, &role)| (side, ThreadFaceRole::from(role))),
+        );
         let last = index + 1 == segments && end_cone.is_none();
         for face in solid_faces(topo, twisted.solid)? {
             let dropped = (face == construction.bottom && !current_is_cap)
@@ -896,19 +1136,48 @@ fn thread_ring(
         current = construction.top;
         current_is_cap = false;
     }
+    // A start finish that takes the whole thread, with a plain end after
+    // it, ends on its own far plane: no segment follows to carry that cap.
+    if segments == 0 && end_cone.is_none() && !current_is_cap {
+        faces.push(current);
+    }
     if let Some(cone) = end_cone {
-        let zone_ring = extrude(topo, current, cone.root_z() - upper)?;
-        let zone = chamfer::chamfer_zone(
-            topo,
-            frame,
-            &zone_ring,
-            &cone,
-            chamfer::RootSide::Top,
-            seam,
-            rate,
-            tolerance,
-        )?;
+        let to = if cone.runout { length } else { cone.root_z() };
+        let zone_ring = extrude(topo, current, to - upper)?;
+        // Likewise an end finish that starts on the plain start plane: the
+        // zone leaves that cap to the segment below it, and there is none.
+        if current_is_cap {
+            faces.push(zone_ring.construction.bottom);
+        }
+        let piece_roles = carry_roles(&mut edge_roles, &zone_ring.construction)?;
+        let zone = if cone.runout {
+            runout::runout_zone(
+                topo,
+                frame,
+                &zone_ring,
+                &cone,
+                chamfer::RootSide::Bottom,
+                rate,
+                tolerance,
+                &piece_roles,
+                ThreadEndSide::End,
+            )?
+        } else {
+            chamfer::chamfer_zone(
+                topo,
+                frame,
+                &zone_ring,
+                &cone,
+                chamfer::RootSide::Top,
+                seam,
+                rate,
+                tolerance,
+                &piece_roles,
+                ThreadEndSide::End,
+            )?
+        };
         faces.extend(zone.faces);
+        face_roles.extend(zone.roles);
         seam_faces.extend(zone.walls);
         deviation_bound = deviation_bound.max(zone_ring.deviation_bound);
         trim_bound = trim_bound.max(zone.trim_bound);
@@ -923,12 +1192,18 @@ fn thread_ring(
         outline_bound,
         spans,
         spans_per_flank,
+        face_roles,
+        finishes,
     })
 }
 
 /// A built thread ring and its fit report.
 struct Ring {
     solid: SolidId,
+    /// The role of every thread face of the ring.
+    face_roles: Vec<(FaceId, ThreadFaceRole)>,
+    /// How the start and the end were finished.
+    finishes: (ThreadEndGeometry, ThreadEndGeometry),
     /// Proven bound of the screw fits and chamfer trims.
     deviation_bound: f64,
     /// Proven bound of the outline's flank fits.
@@ -1385,7 +1660,9 @@ struct FlushSplit {
 /// circle and runs inside it (an internal thread: outside it). Each run and
 /// the rim arc across it bound one crescent of the step face; the crest arcs
 /// are shared directly between the ring's crest faces and the collar face,
-/// whose rim becomes the chain of crest and crescent arcs. The collar rim's
+/// whose rim becomes the chain of crest and crescent arcs. An outline that
+/// lies on the rim all the way round (a runout's cap) leaves no crescent:
+/// its arcs become the collar's rim as they are. The collar rim's
 /// own vertex is kept: a ring vertex at the same point is replaced by it, and
 /// an arc across it (a crest arc, in its crest face too) is split there.
 /// Returns `None` for any configuration outside that pattern.
@@ -1665,7 +1942,9 @@ fn flush_end(topo: &mut Topology, end: &FlushEnd<'_>) -> Result<Option<FlushSpli
             crescent_loops.push(lp);
         }
     }
-    if !run.is_empty() || !anchor_placed || crescent_loops.is_empty() {
+    // A runout's cap lies on the rim all the way round: it leaves no
+    // crescent, and the step face is covered whole.
+    if !run.is_empty() || !anchor_placed {
         return Ok(None);
     }
 
@@ -1879,14 +2158,15 @@ fn merge_seam_walls(topo: &mut Topology, walls: &[FaceId]) -> Result<FaceId, Thr
 }
 
 /// Turn a closed counter-clockwise local outline into a wire with shared
-/// vertices; `hole` winds it clockwise.
+/// vertices; `hole` winds it clockwise. Also returns the edge built from
+/// each segment.
 fn build_wire(
     topo: &mut Topology,
     segments: &[Segment],
     frame: &Frame,
     tolerance: f64,
     hole: bool,
-) -> Result<WireId, ThreadError> {
+) -> Result<(WireId, Vec<EdgeId>), ThreadError> {
     let vertices: Vec<_> = segments
         .iter()
         .map(|segment| topo.add_vertex(Vertex::new(frame.point(segment.start()), tolerance)))
@@ -1938,7 +2218,7 @@ fn build_wire(
             .map(|&edge| OrientedEdge::new(edge, true))
             .collect()
     };
-    Ok(topo.add_wire(Wire::new(oriented, true)?))
+    Ok((topo.add_wire(Wire::new(oriented, true)?), edges))
 }
 
 /// Radial direction of the picked face's seam: the start of its first
