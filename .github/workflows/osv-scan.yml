@@ -2,11 +2,15 @@ name: OSV Scan
 
 # Complements the Dependabot cooldown: cooldown blocks fresh-but-untrusted,
 # OSV blocks old-but-known-bad. Covers both Cargo and npm lockfiles.
-# PRs are report-only; main + weekly schedule fail closed.
+# PRs and merge-queue entries fail when their lockfiles add a vulnerability
+# relative to the base commit; main pushes and the weekly schedule fail on any
+# detected vulnerability. The check blocks merges only while "OSV Scan" is a
+# required status check (a repository setting, not configured here).
 
 on:
   pull_request:
     branches: [main]
+  merge_group:
   push:
     branches: [main]
   schedule:
@@ -37,12 +41,12 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
       - name: Select PR base for comparison
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
         run: git checkout --detach "$BASE_SHA"
       - name: Scan PR base
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         continue-on-error: true
         run: |
           docker run --rm \
@@ -71,7 +75,7 @@ jobs:
             --lockfile=Cargo.lock \
             --lockfile=package-lock.json
       - name: Report new PR vulnerabilities
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         run: |
           docker run --rm \
             --volume "$GITHUB_WORKSPACE:/github/workspace" --volume "$RUNNER_TEMP:/github/temp" --workdir /github/workspace \
@@ -85,7 +89,7 @@ jobs:
             --gh-annotations=true \
             --fail-on-vuln=true
       - name: Report main vulnerabilities
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && github.event_name != 'merge_group'
         run: |
           docker run --rm \
             --volume "$GITHUB_WORKSPACE:/github/workspace" --volume "$RUNNER_TEMP:/github/temp" --workdir /github/workspace \

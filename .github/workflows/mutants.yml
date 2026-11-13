@@ -135,7 +135,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
         with:
-          tool: nextest,cargo-mutants@27.0.0
+          tool: nextest@0.9.150,cargo-mutants@27.0.0
       - name: Recreate the planned diff
         env:
           SINCE: ${{ needs.plan.outputs.since }}

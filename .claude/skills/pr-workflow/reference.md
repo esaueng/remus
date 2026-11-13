@@ -40,7 +40,7 @@ Outside the fan-in: the `wasm-size` comment job and `public-commit-metadata` in 
 
 There are no separate Format, Layer Boundaries, Unused Dependencies, TOML Format, Apache Lineage or Doc Paths jobs: those checks run inside Repository Policy, so a failure in one shows up as that job failing. In CI an integration test is reported under a generated harness binary, e.g. `remus-operations::ci_harness_3 foo::test_name` for a test in `crates/operations/tests/<foo>.rs`; locally `cargo test -p remus-operations --test foo` is unchanged (`docs/ci-cadence.md`, "Native tests in CI"). A merge-group run executes only the light gates (Repository Policy, Secrets Scan, Documentation).
 
-`benchmark.yml` contributes `Kernel perf` and `Publish benchmark` (PR runs only with the `ci:benchmark` label); neither is in `CI Pass`. `blacksmith-sh` posts a `[code]smith` entry that reports SKIPPED — it is a runner-provider App that no workflow here uses, not a reviewer or a quality check.
+`benchmark.yml` contributes `Kernel perf` plus `Publish benchmark` (main baseline runs) or `Compare benchmark` (PR runs, only with the `ci:benchmark` label); none is in `CI Pass`. `blacksmith-sh` posts a `[code]smith` entry that reports SKIPPED — it is a runner-provider App that no workflow here uses, not a reviewer or a quality check.
 
 The size jobs check out `ref: ${{ github.event.pull_request.base.sha }}` (your PR's real base) and compare the PR build with the package COMMITTED there, not with a build of the base source. If a kernel change merged into the base and its package refresh has not landed yet, its growth shows up in your delta (and can trip the 64 KiB `WASM-Size:` rule); wait for the refresh or declare it. The refresh PR itself carries the `WASM-Size:` lines of the source PRs merged since the previous refresh (`scripts/publish-wasm-package-pr.py`) when it can collect them; when collection fails the description says so and the declaration has to be added by hand (as on #1208); a refresh that still fails the gate packages growth no source PR declared, so review those PRs and declare it in the refresh PR. Otherwise a nonzero delta on a change that cannot reach the binary (a `#[cfg(test)]`-only or docs-only diff) deserves a second look. `Cargo.lock` is committed, so both builds resolve from their checked-in locks; if your diff does not touch the lockfile, resolution is identical on both sides and a delta on a test-only diff is genuinely unexplained — investigate rather than blaming dependency drift.
 
@@ -136,7 +136,7 @@ Supply-chain jobs can fail on a PR that never touched dependencies. `Cargo.lock`
 
 ### cargo-deny / audit / OSV advisories
 
-The `deny` job runs cargo-deny-action against `deny.toml`; the `audit` job runs `cargo audit` on a freshly generated lockfile. Both gate PRs through `CI Pass`. OSV lives in its own workflow (`.github/workflows/osv-scan.yml`): on PRs it is report-only and does not gate; pushes to `main` and the Monday 06:00 UTC schedule fail closed.
+The `deny` job runs cargo-deny-action against `deny.toml`; the `audit` job runs `cargo audit` on a freshly generated lockfile. Both gate PRs through `CI Pass`. OSV lives in its own workflow (`.github/workflows/osv-scan.yml`): on PRs and merge-queue entries its `OSV Scan` check fails when the lockfiles add a vulnerability relative to the base commit, and it blocks a merge only while it is a required status check (a repository setting); pushes to `main` and the Monday 06:00 UTC schedule fail on any detected vulnerability.
 
 Policy: do NOT widen the `deny.toml` license allowlist and do NOT add blanket ignore entries to get green. Current state to preserve: `licenses.allow` has eight permissive entries, the four non-obvious ones (CC0-1.0, ISC, BSD-2-Clause, BSD-3-Clause) carrying a provenance comment that names the dependency tree pulling them in, and there is no `[advisories] ignore` list at all (`[advisories]` sets only `unmaintained` and `yanked`).
 
@@ -163,7 +163,7 @@ Bumping wasm-bindgen is its own change with its own PR. Never bump it as a drive
 ### Scheduled workflows
 
 - `.github/workflows/mutants.yml` (Mutation Testing): Sundays 02:00 UTC plus manual dispatch. Runs cargo-mutants on `remus-math` and `remus-algo` and uploads a report artifact. It never runs on PRs and never gates them; a red scheduled run is a signal to improve tests, not a merge blocker.
-- `.github/workflows/osv-scan.yml`: Mondays 06:00 UTC plus main pushes, fail-closed there; report-only on PRs (see above).
+- `.github/workflows/osv-scan.yml`: Mondays 06:00 UTC plus main pushes, fail-closed there; on PRs and merge-queue entries it fails only on newly introduced vulnerabilities (see above).
 - `benchmark.yml` runs daily (06:29 UTC), on manual dispatch and on PRs labelled `ci:benchmark`; it is not part of `CI Pass`.
 - `daily-validation.yml` (Daily dependency validation): daily 06:43 UTC, Cargo Deny, the advisory audit and MSRV on protected `main`. The full schedule list is in `docs/ci-cadence.md`, "Schedules".
 

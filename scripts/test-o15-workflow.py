@@ -106,8 +106,8 @@ def validate_policy(text: str) -> None:
             "Windows ARM must bind the selected native rustup host")
     require("if: matrix.os == 'windows-11-arm'\n        with:\n          tool: wasm-pack@0.15.0,wasm-bindgen@0.2.126\n          checksum: true\n          fallback: none" in text,
             "Windows ARM requires the qualified pinned checksum-verified x64 helper recipe")
-    require("if: matrix.os != 'windows-11-arm'\n        with:\n          tool: wasm-pack\n" in text,
-            "the five existing helper recipes must remain unchanged")
+    require("if: matrix.os != 'windows-11-arm'\n        with:\n          tool: wasm-pack@0.15.0\n" in text,
+            "the other five hosts must install the pinned wasm-pack helper")
     require("shell: bash" in job, "the proof runner requires bash")
     job_budget = re.findall(r"(?m)^    timeout-minutes: (\d+)$", job)
     require(len(job_budget) == 1 and 1 <= int(job_budget[0]) <= 120,
@@ -266,8 +266,9 @@ class ParityWorkflowTests(unittest.TestCase):
         self.reject_edit("checksum: true", "checksum: false", "x64 helper recipe")
         self.reject_edit("fallback: none", "fallback: cargo-install", "x64 helper recipe")
 
-    def test_existing_five_helper_recipes_do_not_change(self) -> None:
-        self.reject_edit("tool: wasm-pack\n", "tool: wasm-pack@0.15.0\n", "five existing helper recipes")
+    def test_other_five_hosts_keep_the_pinned_helper(self) -> None:
+        self.reject_edit("tool: wasm-pack@0.15.0\n", "tool: wasm-pack\n", "pinned wasm-pack helper")
+        self.reject_edit("tool: wasm-pack@0.15.0\n", "tool: wasm-pack@0.14.0\n", "pinned wasm-pack helper")
 
     def test_geometry_proof_does_not_run_in_each_merge_group(self) -> None:
         self.reject_edit("  workflow_dispatch:\n", "  workflow_dispatch:\n  merge_group:\n", "merge-group")
