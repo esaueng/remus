@@ -303,8 +303,28 @@ pub(super) fn iso_bounded_is_complete(
     {
         return Ok(false);
     }
-    let weights = s.weights();
     let (m, n) = (points.len(), points[0].len());
+    // Before any iso curve is built: every edge must be of a kind and size
+    // that some side could be. A side along `v` has `degree_v` and `n`
+    // control points, one along `u` has `degree_u` and `m`; a line traces
+    // only a two-point degree-one side and a circle only a three-point
+    // quadratic one.
+    let side_shapes = [(s.degree_v(), n), (s.degree_u(), m)];
+    let wire = topo.wire(f.outer_wire())?;
+    for oe in wire.edges() {
+        let fits = match topo.edge(oe.edge())?.curve() {
+            EdgeCurve::NurbsCurve(c) => {
+                side_shapes.contains(&(c.degree(), c.control_points().len()))
+            }
+            EdgeCurve::Line => side_shapes.contains(&(1, 2)),
+            EdgeCurve::Circle(_) => side_shapes.contains(&(2, 3)),
+            EdgeCurve::Ellipse(_) | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => false,
+        };
+        if !fits {
+            return Ok(false);
+        }
+    }
+    let weights = s.weights();
     let magnitude = points
         .iter()
         .flatten()
@@ -337,7 +357,6 @@ pub(super) fn iso_bounded_is_complete(
             weights.iter().map(|r| r[n - 1]).collect(),
         )?,
     ];
-    let wire = topo.wire(f.outer_wire())?;
     if remus_topology::validation::validate_wire_closed(wire, topo).is_err() {
         return Ok(false);
     }
@@ -519,8 +538,41 @@ pub(super) fn periodic_band_is_complete(
     {
         return Ok(false);
     }
-    let weights = s.weights();
     let (m, n) = (points.len(), points[0].len());
+    // Before any rim or seam is built: two rims and the seam twice make four
+    // edge uses, each of a kind and size its part could be. Closed in `u`,
+    // a rim runs along `u` (`degree_u`, `m` control points) and the seam
+    // along `v` (`degree_v`, `n`); closed in `v`, the other way round. A line
+    // can only be a two-point degree-one seam, a circle only a quadratic rim.
+    let (rim_shape, seam_shape) = if closed_u {
+        ((s.degree_u(), m), (s.degree_v(), n))
+    } else {
+        ((s.degree_v(), n), (s.degree_u(), m))
+    };
+    let wire = topo.wire(f.outer_wire())?;
+    if wire.edges().len() != 4 {
+        return Ok(false);
+    }
+    for oe in wire.edges() {
+        let e = topo.edge(oe.edge())?;
+        let fits = match e.curve() {
+            EdgeCurve::NurbsCurve(c) => {
+                let shape = (c.degree(), c.control_points().len());
+                if e.start() == e.end() {
+                    shape == rim_shape
+                } else {
+                    shape == seam_shape
+                }
+            }
+            EdgeCurve::Line => seam_shape == (1, 2),
+            EdgeCurve::Circle(_) => rim_shape.0 == 2,
+            EdgeCurve::Ellipse(_) | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => false,
+        };
+        if !fits {
+            return Ok(false);
+        }
+    }
+    let weights = s.weights();
     let magnitude = points
         .iter()
         .flatten()
@@ -550,7 +602,6 @@ pub(super) fn periodic_band_is_complete(
     } else {
         ([row(0)?, row(m - 1)?], column(0)?)
     };
-    let wire = topo.wire(f.outer_wire())?;
     if remus_topology::validation::validate_wire_closed(wire, topo).is_err() {
         return Ok(false);
     }
