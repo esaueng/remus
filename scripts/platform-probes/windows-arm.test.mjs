@@ -246,6 +246,7 @@ test('preflight failure retains an explicit failed receipt without invoking buil
 test('workflow stays isolated, native ARM, pinned, bounded and read-only', () => {
   const text = readFileSync(join(here, '../../.github/workflows/windows-arm-tooling.yml'), 'utf8');
   validateWorkflowPolicy(text);
+  assert.ok(text.includes(`uses: ${BINDGEN_INSTALLATION.action} `), 'proof installer action must match the workflow');
   for (const mutate of [
     (s) => s.replace('windows-11-arm', 'windows-2025'), (s) => s.replace('architecture: arm64', 'architecture: x64'),
     (s) => s.replace('contents: read', 'contents: write'), (s) => s.replace('1.96.0-aarch64-pc-windows-msvc', '1.96.0-x86_64-pc-windows-msvc'),
@@ -254,6 +255,7 @@ test('workflow stays isolated, native ARM, pinned, bounded and read-only', () =>
     (s) => s.replace('persist-credentials: false', 'persist-credentials: true'),
     (s) => s.replace(',wasm-bindgen@0.2.126', ''), (s) => s.replace('wasm-bindgen@0.2.126', 'wasm-bindgen@0.2.100'),
     (s) => s.replace('checksum: true', 'checksum: false'), (s) => s.replace('fallback: none', 'fallback: cargo-install'),
-    (s) => s.replace('1e29709c0ec63babbe8f266397a465f29a825f91', '0'.repeat(40)),
+    (s) => s.replace('c509219cf42fba86913069efd0ade2458c59337b', '0'.repeat(40)),
+    (s) => s.replace('c509219cf42fba86913069efd0ade2458c59337b', '1e29709c0ec63babbe8f266397a465f29a825f91'),
   ]) assert.throws(() => validateWorkflowPolicy(mutate(text)));
 });

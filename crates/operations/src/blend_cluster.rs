@@ -630,8 +630,8 @@ impl<'a> Recognizer<'a> {
         let data = self.topo.face(face).ok()?;
         if let FaceSurface::Nurbs(surface) = data.surface()
             && let Ok(carrier) = self.carrier(face)
-            && let (u, v) = carrier.project(point)
         {
+            let (u, v) = carrier.project(point);
             let normal = surface.normal(u, v).ok()?;
             let normal = if data.is_reversed() { -normal } else { normal };
             return normal.normalize().ok();
