@@ -111,6 +111,60 @@ pub enum AlgoError {
         /// Stable, actionable explanation of the refused configuration.
         reason: String,
     },
+
+    /// The N-ary region fuse cannot return this operand list as exact
+    /// regions with total lineage in its currently qualified subset.
+    #[error("unsupported N-ary fuse ({}): {reason}", cause.code())]
+    UnsupportedNaryFuse {
+        /// Which qualification the operand list or its result failed.
+        cause: NaryFuseRefusal,
+        /// Actionable explanation naming the operand or region involved.
+        reason: String,
+    },
+}
+
+/// Why an N-ary region fuse was refused. Each cause has a stable
+/// [`code`](Self::code), reported as the `reason` detail of the
+/// `unsupported_nary_fuse` diagnostic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NaryFuseRefusal {
+    /// Fewer than two operands were supplied.
+    TooFewOperands,
+    /// The same solid handle appears twice in the operand list.
+    DuplicateOperand,
+    /// An operand that may touch another carries a non-planar face or a
+    /// non-line edge.
+    CurvedCluster,
+    /// More operand pairs may interact than one arrangement accepts.
+    PairBudgetExceeded,
+    /// A face could not be placed inside or outside another operand, or lies
+    /// on one outside a resolved coincident group.
+    ClassificationUnresolved,
+    /// A result face or edge has no construction record to an operand.
+    LineageUnresolved,
+    /// The union touches itself along an edge or at a vertex only, or a
+    /// region is not a closed two-manifold.
+    NonManifoldContact,
+    /// A result region failed validation, or the result does not account for
+    /// an operand's material.
+    ResultUnqualified,
+}
+
+impl NaryFuseRefusal {
+    /// Stable machine-readable code of this cause.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::TooFewOperands => "too_few_operands",
+            Self::DuplicateOperand => "duplicate_operand",
+            Self::CurvedCluster => "curved_cluster",
+            Self::PairBudgetExceeded => "pair_budget_exceeded",
+            Self::ClassificationUnresolved => "classification_unresolved",
+            Self::LineageUnresolved => "lineage_unresolved",
+            Self::NonManifoldContact => "non_manifold_contact",
+            Self::ResultUnqualified => "result_unqualified",
+        }
+    }
 }
 
 impl remus_math::diagnostic::ToDiagnostic for AlgoError {
@@ -194,6 +248,12 @@ impl remus_math::diagnostic::ToDiagnostic for AlgoError {
                 self.to_string(),
             )
             .with_detail("reason", reason.as_str()),
+            Self::UnsupportedNaryFuse { cause, .. } => Diagnostic::new(
+                FailureCategory::Unsupported,
+                "unsupported_nary_fuse",
+                self.to_string(),
+            )
+            .with_detail("reason", cause.code()),
         }
     }
 }
@@ -268,6 +328,39 @@ mod diagnostic_registry_tests {
         .diagnostic();
         assert_eq!(d.category(), FailureCategory::Unsupported);
         assert_eq!(d.code(), "unsupported_imprint");
+    }
+
+    #[test]
+    fn nary_fuse_refusal_codes_are_pinned() {
+        // The cause codes are a wire contract: they reach JS as the `reason`
+        // detail of `unsupported_nary_fuse`.
+        let pinned = [
+            (NaryFuseRefusal::TooFewOperands, "too_few_operands"),
+            (NaryFuseRefusal::DuplicateOperand, "duplicate_operand"),
+            (NaryFuseRefusal::CurvedCluster, "curved_cluster"),
+            (NaryFuseRefusal::PairBudgetExceeded, "pair_budget_exceeded"),
+            (
+                NaryFuseRefusal::ClassificationUnresolved,
+                "classification_unresolved",
+            ),
+            (NaryFuseRefusal::LineageUnresolved, "lineage_unresolved"),
+            (NaryFuseRefusal::NonManifoldContact, "non_manifold_contact"),
+            (NaryFuseRefusal::ResultUnqualified, "result_unqualified"),
+        ];
+        for (cause, code) in pinned {
+            assert_eq!(cause.code(), code);
+            let error = AlgoError::UnsupportedNaryFuse {
+                cause,
+                reason: "operand 2".into(),
+            };
+            let d = error.diagnostic();
+            assert_eq!(d.category(), FailureCategory::Unsupported);
+            assert_eq!(d.code(), "unsupported_nary_fuse");
+            assert_eq!(
+                error.to_string(),
+                format!("unsupported N-ary fuse ({code}): operand 2")
+            );
+        }
     }
 
     #[test]
