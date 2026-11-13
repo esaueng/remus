@@ -1,0 +1,12 @@
+# Paths that can change what CI trusts or what consumers install: the
+# committed WASM packages, the scripts and xtask that build and check them,
+# the workflows and Cargo configuration, and any build script. These rules
+# request the maintainer's review; they block a merge only while the main
+# branch ruleset requires code owner review.
+/crates/wasm/pkg/ @petertoday
+/crates/wasm-io/pkg/ @petertoday
+/scripts/ @petertoday
+/xtask/ @petertoday
+/.github/ @petertoday
+/.cargo/ @petertoday
+**/build.rs @petertoday

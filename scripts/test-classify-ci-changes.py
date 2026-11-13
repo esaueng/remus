@@ -271,7 +271,7 @@ class ClassifyCiChangesTests(unittest.TestCase):
         self.assertIn("if: steps.packages.outputs.changed == 'true'", rebuild)
         self.assertIn("rm -rf -- crates/wasm/pkg crates/wasm-io/pkg", rebuild)
         self.assertIn("cargo xtask wasm-build", rebuild)
-        self.assertIn("python3 scripts/check-wasm-package-integrity.py --revision HEAD", rebuild)
+        self.assertIn("python3 \"$CHECKERS/scripts/check-wasm-package-integrity.py\" --revision HEAD", rebuild)
         # CI's WASM Size Gate skips a package-only PR, so this job applies it,
         # with the base commit's scripts, to the modules it just verified.
         gate = rebuild.split("name: Enforce the kernel size policy and growth review", 1)[1]

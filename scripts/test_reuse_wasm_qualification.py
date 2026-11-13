@@ -177,7 +177,7 @@ class QualificationTests(unittest.TestCase):
         for error, expected in ((RuntimeError(private), "proof_unavailable"),
                                 (malformed, "proof_unavailable"),
                                 (checker["PackageIntegrityError"]("provenance_mismatch", private), "provenance_mismatch")):
-            def unavailable(trace):
+            def unavailable(trace, checkout):
                 trace.stage = "package_integrity"
                 raise error
 
@@ -186,7 +186,7 @@ class QualificationTests(unittest.TestCase):
                 with mock.patch.dict(subject["main"].__globals__, reuse=unavailable), \
                         mock.patch.dict(os.environ, GITHUB_OUTPUT=str(output), GITHUB_STEP_SUMMARY=str(summary)), \
                         redirect_stdout(io.StringIO()) as captured:
-                    subject["main"]()
+                    subject["main"]([])
                 self.assertEqual(output.read_text(), "reused=false\n")
                 self.assertIn(expected, captured.getvalue())
                 self.assertIn("package_integrity", summary.read_text())
@@ -197,7 +197,7 @@ class QualificationTests(unittest.TestCase):
         self.assertIn("steps.qualification.outputs.reused != 'true'", workflow)
         self.assertIn("rm -rf -- crates/wasm/pkg crates/wasm-io/pkg", workflow)
         self.assertIn("cargo xtask wasm-build", workflow)
-        self.assertIn("python3 scripts/check-wasm-package-integrity.py --revision HEAD", workflow)
+        self.assertIn("python3 \"$CHECKERS/scripts/check-wasm-package-integrity.py\" --revision HEAD", workflow)
         self.assertIn("node \"$base/scripts/wasm-size-gate.mjs\"", workflow)
         self.assertNotIn("contents: write", workflow)
         self.assertNotIn("secrets.", workflow)
@@ -208,8 +208,62 @@ class QualificationTests(unittest.TestCase):
             output = Path(temporary) / "outputs"
             with mock.patch.dict(namespace, reuse=mock.Mock(side_effect=RuntimeError("unavailable"))), \
                     mock.patch.dict(os.environ, GITHUB_OUTPUT=str(output), GITHUB_STEP_SUMMARY=""):
-                subject["main"]()
+                subject["main"]([])
             self.assertEqual(output.read_text(), "reused=false\n")
+
+    def test_a_named_checkout_is_qualified_with_this_trees_scripts(self):
+        # CI runs the base commit's copy against the PR checkout: git reads,
+        # the integrity comparison and the final install target the checkout,
+        # while the installer and checker come from the script's own tree.
+        payload, digest = self.archive()
+        artifact = dict(self.artifact, **digest, id=7, name="committed-wasm-package")
+        run = dict(self.run, html_url="https://example.invalid/qualified-run")
+        replies = [{"protected": True}, {"workflow_runs": [run]},
+                   {"total_count": 1, "artifacts": [artifact]}, self.jobs, payload]
+        checkout = Path(tempfile.gettempdir()) / "pull-request-checkout"
+        checker = mock.Mock()
+        inputs = mock.Mock(return_value=True)
+        with mock.patch.dict(subject["reuse"].__globals__, api=mock.Mock(side_effect=replies),
+                             identical_inputs=inputs), \
+                mock.patch("runpy.run_path", return_value={"check": checker}) as loaded, \
+                mock.patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0)) as ran, \
+                mock.patch.dict(os.environ, GITHUB_REPOSITORY=subject["REPOSITORY"]):
+            self.assertIsNotNone(subject["reuse"](subject["QualificationTrace"](), checkout))
+        inputs.assert_called_once_with(run["head_sha"], checkout)
+        checker.assert_called_once_with("HEAD", checkout, rebuilt_directory=mock.ANY)
+        loaded.assert_called_once_with(str(subject["SCRIPTS"] / "check-wasm-package-integrity.py"))
+        installer = str(subject["SCRIPTS"] / "install-wasm-package-archive.py")
+        self.assertEqual([call.args[0][1] for call in ran.call_args_list], [installer, installer])
+        self.assertEqual(ran.call_args_list[-1].kwargs["cwd"], checkout)
+
+    def test_identical_inputs_runs_git_in_the_named_checkout(self):
+        checkout = Path(tempfile.gettempdir()) / "pull-request-checkout"
+        with mock.patch("subprocess.run") as run:
+            run.return_value.returncode = 0
+            self.assertTrue(subject["identical_inputs"]("a" * 40, checkout))
+        self.assertEqual({call.kwargs["cwd"] for call in run.call_args_list}, {checkout})
+
+    def test_main_passes_the_checkout_option_to_reuse(self):
+        checkout = Path(tempfile.gettempdir()) / "pull-request-checkout"
+        reuse = mock.Mock(return_value=None)
+        with mock.patch.dict(subject["main"].__globals__, reuse=reuse), \
+                mock.patch.dict(os.environ, GITHUB_OUTPUT="", GITHUB_STEP_SUMMARY=""), \
+                redirect_stdout(io.StringIO()):
+            subject["main"](["--checkout", str(checkout)])
+            subject["main"]([])
+        self.assertEqual(reuse.call_args_list[0].args[1], checkout.resolve())
+        self.assertEqual(reuse.call_args_list[1].args[1], subject["ROOT"].resolve())
+
+    def test_workflow_runs_the_base_commits_checkers_against_this_checkout(self):
+        workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/wasm-version.yml").read_text()
+        self.assertIn('base="$RUNNER_TEMP/checker-base"\n          git worktree add --detach "$base" "$BASE_SHA"',
+                      workflow)
+        self.assertIn('python3 "$CHECKERS/scripts/reuse-wasm-qualification.py" --checkout "$GITHUB_WORKSPACE"',
+                      workflow)
+        # Bootstrap: a base script without --checkout falls back to the rebuild.
+        self.assertIn("grep -qs -- '--checkout' \"$CHECKERS/scripts/reuse-wasm-qualification.py\"", workflow)
+        self.assertNotIn("python3 scripts/reuse-wasm-qualification.py", workflow)
+        self.assertNotIn("python3 scripts/check-wasm-package-integrity.py", workflow)
 
 
 if __name__ == "__main__":
