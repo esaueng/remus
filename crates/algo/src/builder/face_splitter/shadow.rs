@@ -523,7 +523,11 @@ fn seg(edge: &OrientedPCurveEdge) -> Seg<'_> {
 fn span_tolerance(curve: &EdgeCurve, tol: f64) -> f64 {
     match curve {
         EdgeCurve::Circle(circle) => (tol / circle.radius().max(f64::MIN_POSITIVE)).max(1e-9),
-        _ => 1e-7,
+        EdgeCurve::Line
+        | EdgeCurve::NurbsCurve(_)
+        | EdgeCurve::Ellipse(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => 1e-7,
     }
 }
 
