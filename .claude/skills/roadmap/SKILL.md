@@ -152,40 +152,45 @@ that does not exist yet; without it, stop.
 
 ## Open items with a repro
 
-The `#[ignore]` inventory (regenerated 2026-11-05 on `cc3bcc44` plus the B38
-chart-orientation branch: 38 actual attributes in 19 files, all in
-`operations`, `io`, `heal`, `math`, `wasm` and `remus`) splits by the ignore
-reason as written. The tests were listed, not re-run, for this count, except
-the two B38/B264 witnesses, which fail as pinned. **22
-open engine witnesses:**
+The `#[ignore]` inventory (regenerated 2026-11-12 on `24040dda`: 55 actual
+attributes in 32 files, all in `operations`, `io`, `heal`, `math`, `wasm` and
+`remus`) splits by the ignore reason as written. Listed, not re-run, except
+B265, B266 and B272 (failed 3/3 as pinned). **27 open engine witnesses**,
+each with an owner row:
 - seven B26 property ready-repros in `operations/tests/prop_boolean_invariants.rs`:
-  finding 13 sphere–torus ×3 (owner B38), finding 20 sphere–cone (B33), and
-  B51 torus–cone ×3;
-- `regress_boss_crossing_a_wall.rs` (B62), and the residual witnesses that
-  B52 and B53 left behind: `regress_b52_box_cylinder_rim_notch.rs` (a cone seam
-  crossing a slanted notch side) and `regress_b53_finding17_neighborhood.rs`
-  (sparse cone wall below d = 8e-5);
+  finding 13 sphere–torus ×3 (B38), finding 20 sphere–cone (B33), torus–cone ×3 (B51);
+- `regress_boss_crossing_a_wall.rs` (B62);
+- `regress_b52_box_cylinder_rim_notch.rs` (B270) and
+  `regress_b53_finding17_neighborhood.rs` (B271), the B52/B53 remainders;
 - `qualify_boolean_anisotropic.rs` (P-Class 2.6);
-- `regress_opseq_sphere_box_cut.rs` ×2 (F13 equator coedge sense);
-- `regress_g1_chain_corner_wall_dig.rs`, and `remus/tests/bracket_campaign.rs`
-  ×2 (F6 bands lofted rather than exact tori; every-edge r2 refuses);
-- `wasm/src/bindings/qualify_edge_relations_tests.rs` (trimmed-torus boundary
-  containment);
-- the two STEP audit repros `io/tests/step_roundtrip_{hammer_holder,mambo_b1}_repro.rs`;
-- `regress_opseq_sphere_torus_orientation.rs` ×2: seed 1146 at 1e-3 builds
-  wrong bodies (B38), and the ray vote miscounts on a pole-holding sphere piece
-  (B264);
-- `regress_offset_cylinder_pass_through.rs` (an inward cylinder offset past
-  half-height returns its caps swapped, #1545).
+- `regress_opseq_sphere_box_cut.rs` ×2 (F13 equator coedge sense, P-Class 8.1);
+- `regress_opseq_sphere_torus_orientation.rs` ×2 (B38 seed 1146; B264 pole-piece vote);
+- `regress_g1_chain_corner_wall_dig.rs` and `remus/tests/bracket_campaign.rs`
+  F6 (B267); `bracket_campaign.rs` every-edge r2 (B268);
+- `wasm/src/bindings/qualify_edge_relations_tests.rs` torus containment (B269);
+- `regress_shelled_wall_rim_notch.rs` slot below the top face (B265);
+- `regress_torus_contact_windows.rs` shallow torus notch (B266);
+- `video_parity_full_order.rs` A4 chamfer 5 (B272),
+  `io/tests/video_workflow_baseline.rs` (B273) and
+  `wasm/src/bindings/gecko_edit_tests.rs` unequal-group re-edit (B274);
+- STEP audit repros `io/tests/step_roundtrip_mambo_b1_repro.rs` (O1.1d) and
+  `step_roundtrip_hammer_holder_repro.rs` (O1.4a);
+- `regress_offset_cylinder_pass_through.rs` (O4.4, pending fragment).
 
-**16 manual runs:**
-- slow or exhaustive: `boolean/tests.rs::staircase_fuse_with_cylinders`, the
-  B53 17,150-input sweep, `math/src/fma.rs::long_random_differential`, and
-  `io/tests/classify_engine_oracle.rs`;
-- release-mode measurements: two `regress_unify_scaling.rs` (issue #284) and
-  the PERF-H03 table in `heal/src/fix/duplicate_faces.rs`;
-- print-only diagnostics: `profile_intersect.rs` ×3, the two #696 dovetail
-  probes, and the four `diag_*tangency*` probes.
+**28 manual runs:**
+- slow, exhaustive or differential (10): `boolean/tests.rs::staircase_fuse_with_cylinders`,
+  the B53 17,150-input sweep, `math/src/fma.rs::long_random_differential`,
+  `io/tests/classify_engine_oracle.rs`, `math/tests/differential_line_torus.rs`
+  soak, the two `gear/hindley_wheel/hob_oracle_tests.rs` verbatim searches,
+  and `sweep_shelled_wall_rim_notch.rs` ×3 (two-revision sweeps);
+- measurements and timing (6): `regress_unify_scaling.rs` ×2 (#284), the
+  PERF-H03 table in `heal/src/fix/duplicate_faces.rs`, `axial_replay_perf.rs`,
+  `prepared_group_edit.rs` and `wasm/src/bindings/snapshot_tests.rs`;
+- print-only diagnostics (9): `profile_intersect.rs` ×3, the two #696 dovetail
+  probes, and the four `diag_*tangency*` probes;
+- external fixtures (3): `io/tests/gecko_bottom_chamfer.rs` ×2
+  (`REMUS_VIDEO_FIXTURES`) and the cumulative Gecko document writer in
+  `wasm/src/bindings/prepared_group_edit/tests.rs` (`REMUS_CUMULATIVE_GECKO_DOC`).
 
 The B10, B55, B61, B64–B67, B69–B71 and B79 witnesses that earlier snapshots
 listed as failing are no longer ignored, and their rows record Done (B79 in
