@@ -173,9 +173,9 @@ Bumping wasm-bindgen is its own change with its own PR. Never bump it as a drive
 |---------|-------|--------|
 | `git push` hangs or is rejected | Not the historical SSH problem: `origin` is HTTPS with no rewrite. Suspect expired keychain credentials or a network block | `git ls-remote origin` to isolate auth from the push itself |
 | `origin/<branch>` does not match what you pushed | You pushed via an explicit URL; those do not update tracking refs | Verify with `gh pr view <N> --json headRefOid` or `git ls-remote` |
-| commitlint prints `✖ found N problems` yet the commit succeeded | The commit-msg hook swallows commitlint failures and exits 0 by design of its fallback | Treat as a rejection: `git commit --amend` to `type(scope): subject` form |
+| commitlint prints `✖ found N problems` and the commit is rejected | The message is not a conventional commit | Rewrite it in `type(scope): subject` form and commit again |
 | pre-commit fails on clippy warnings you did not write | Pre-existing breakage on the branch base | Stop and report; never `--no-verify` |
-| `⚠️ commitlint not available` warning on commit | `node_modules` missing, but only if no `✖` lines print above it; the same warning also follows a real lint failure (see the `✖` row) because the hook's fallback fires on any nonzero commitlint exit | If `✖` lines precede it, fix the message; otherwise `npm install` at repo root. Either way the commit went through unchecked, re-verify the message manually |
+| `⚠️ commitlint not available` warning on commit | `node_modules` is missing, so the hook found no `commitlint` binary | `npm ci --ignore-scripts` at repo root; the commit went through unchecked, so verify the message by hand |
 | PR shows mergeable with nothing green yet | `mergeable` only means conflict-free; `mergeStateStatus` carries the check state | Read `mergeStateStatus`: `BLOCKED` waits on `CI Pass` or an open review thread |
 | A review check never appears, however long you poll | No reviewer app is installed on this repo; the check does not exist | Stop waiting. Self-review the diff and report that no reviewer ran |
 | Enqueued PR left the queue without merging | Its merge-group run (`gh-readonly-queue/main/pr-<N>-*`) failed or timed out, tested against current `main` | Read that `merge_group` run, fix on the branch, enqueue again |
@@ -206,4 +206,4 @@ Bumping wasm-bindgen is its own change with its own PR. Never bump it as a drive
 - "gh pr view showed no comments, so there are no findings": inline findings live on `pulls/<N>/comments` (the API), check both surfaces.
 - "Branch protection will catch it": protection checks only `CI Pass`, freshness and resolved threads, admins bypass it, and three checks sit outside it. It catches a red `CI Pass` or an open thread, nothing else.
 - "The plan doc helps reviewers, commit it": working plans and specs never get committed.
-- "The commit went through, so the message passed commitlint": the commit-msg hook never blocks. Check the hook output for `✖` lines and amend if any appeared.
+- "The commit went through, so the message passed commitlint": only when commitlint was installed. A `commitlint not available` warning means nothing checked the message.
