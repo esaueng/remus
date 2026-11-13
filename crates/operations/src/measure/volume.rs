@@ -842,9 +842,18 @@ fn qualified_shell_volume(
         };
         // Gauss orders are not nested, so a lower one is an independent
         // reading: the two agree only where both have converged on the face.
-        let Ok(coarse) = super::guard_readings::integrate(topo, fid, CONVERGENCE_ORDER, reference)
-        else {
-            return Ok(None);
+        // A planar face has no quadrature: its term is its boundary's exact
+        // integral (or its polygon's closed form) at any order, so the lower
+        // order would repeat the same computation.
+        let coarse = if matches!(topo.face(fid)?.surface(), FaceSurface::Plane { .. }) {
+            term
+        } else {
+            let Ok(coarse) =
+                super::guard_readings::integrate(topo, fid, CONVERGENCE_ORDER, reference)
+            else {
+                return Ok(None);
+            };
+            coarse
         };
         area += term.area;
         vector_area += n;
@@ -6520,6 +6529,42 @@ mod regression_tests {
                 "scale {scale:e}: clamp mesh read {retried:?}, expected {expected:e}"
             );
         }
+    }
+}
+
+/// Deterministic work of the face-integral route on a spur gear: planar
+/// faces integrate once, and no knot-aligned face needs its counting pass.
+#[cfg(all(test, feature = "perf-counters"))]
+mod face_integral_work_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+    use crate::gear::{GearKind, GearParams, GearPlacement, make_gear};
+
+    #[test]
+    fn scaling_spur_gear_volume_integrates_each_planar_face_once() {
+        let mut topo = Topology::new();
+        let params = GearParams::standard(GearKind::External, 2.0, 20, 5.0);
+        let solid = make_gear(&mut topo, &params, &GearPlacement::default())
+            .unwrap()
+            .solid;
+        let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
+        let planar = faces
+            .iter()
+            .filter(|&&f| matches!(topo.face(f).unwrap().surface(), FaceSurface::Plane { .. }))
+            .count() as u64;
+        assert!(planar >= 2);
+
+        remus_check::perf::reset_integration();
+        let volume = qualified_face_integral_volume(&topo, solid).unwrap();
+        let work = remus_check::perf::integration_snapshot();
+        assert!(volume.is_some(), "the gear measures by its face integrals");
+        // One reading per planar face: the convergence order reuses it.
+        assert_eq!(work.planar_faces, planar);
+        // Every flank is far inside the knot-aligned work cap, so none walks
+        // its trim spans twice.
+        assert!(work.knot_aligned_lines > 0);
+        assert_eq!(work.knot_aligned_preflights, 0);
     }
 }
 

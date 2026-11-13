@@ -79,9 +79,7 @@ mod sharp;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use remus_blend::cap_reblend::{
-    SampledCanal, sampled_canal_measured, sampled_project_measured, sampled_section_centre_measured,
-};
+use remus_blend::cap_reblend::{MeasuredCarrier, SampledCanal};
 use remus_math::compact_sort::CompactSort;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
@@ -411,6 +409,7 @@ pub fn recognize_blend_cluster(
         topo,
         adjacency: &adjacency,
         facts: BTreeMap::new(),
+        carriers: std::cell::RefCell::new(BTreeMap::new()),
     };
     let start = recognizer.start(seed)?;
     let members = recognizer.close(start)?;
@@ -600,17 +599,39 @@ struct Recognizer<'a> {
     topo: &'a Topology,
     adjacency: &'a AdjacencyIndex,
     facts: BTreeMap<FaceId, Entry>,
+    /// Each sampled carrier's measured read, made once per recognition (or
+    /// why it does not read): the section probes query one carrier
+    /// thousands of times, and re-reading it for each query was most of a
+    /// recognition's time.
+    carriers: std::cell::RefCell<BTreeMap<FaceId, CarrierRead<'a>>>,
 }
 
-impl Recognizer<'_> {
+/// A face's measured carrier read, or why it does not read.
+type CarrierRead<'a> = Result<std::rc::Rc<MeasuredCarrier<'a>>, String>;
+
+impl<'a> Recognizer<'a> {
+    /// The measured read of `face`'s carrier, or why it does not read.
+    fn carrier(&self, face: FaceId) -> CarrierRead<'a> {
+        if let Some(known) = self.carriers.borrow().get(&face) {
+            return known.clone();
+        }
+        let data = self.topo.face(face).map_err(|error| error.to_string())?;
+        let read = MeasuredCarrier::read(data)
+            .map(std::rc::Rc::new)
+            .map_err(|error| error.to_string());
+        self.carriers.borrow_mut().insert(face, read.clone());
+        read
+    }
+
     /// Outward normal of `face` at `point`. A sampled carrier is projected
     /// from its nearest station: the generic projection's coarse seed misses
     /// the span of a carrier with a hundred stations.
     fn normal_at(&self, face: FaceId, point: Point3) -> Option<Vec3> {
         let data = self.topo.face(face).ok()?;
         if let FaceSurface::Nurbs(surface) = data.surface()
-            && let Ok((u, v)) = sampled_project_measured(data, point)
+            && let Ok(carrier) = self.carrier(face)
         {
+            let (u, v) = carrier.project(point);
             let normal = surface.normal(u, v).ok()?;
             let normal = if data.is_reversed() { -normal } else { normal };
             return normal.normalize().ok();
@@ -720,7 +741,10 @@ impl Recognizer<'_> {
                 center: sphere.center(),
                 radius: sphere.radius(),
             }),
-            FaceSurface::Nurbs(_) => match sampled_canal_measured(data) {
+            FaceSurface::Nurbs(_) => match self
+                .carrier(face)
+                .and_then(|carrier| carrier.canal().map_err(|error| error.to_string()))
+            {
                 Ok(canal) => {
                     let angle_tolerance = station_turn(&canal).mul_add(2.0, EXACT_ANGLE);
                     Ok(Form::Sampled {
@@ -728,7 +752,7 @@ impl Recognizer<'_> {
                         angle_tolerance,
                     })
                 }
-                Err(error) => Err(Some(error.to_string())),
+                Err(error) => Err(Some(error)),
             },
             // Planes and cones carry no rolling-ball radius; a future
             // variant declines explicitly rather than by a wildcard.
@@ -994,10 +1018,7 @@ impl Recognizer<'_> {
                 (length > EXACT_DISTANCE).then(|| *center + planar * (*major / length))
             }
             Form::Sphere { center, .. } => Some(*center),
-            Form::Sampled { .. } => {
-                let data = self.topo.face(face).ok()?;
-                sampled_section_centre_measured(data, point).ok()
-            }
+            Form::Sampled { .. } => self.carrier(face).ok()?.section_centre(point).ok(),
             // A chamfer has no rolling ball.
             Form::Chamfer { .. } => None,
         }
@@ -1039,10 +1060,10 @@ impl Recognizer<'_> {
     /// Which `U` boundary (`false` = 0, `true` = 1) of a sampled carrier the
     /// points lie on.
     fn rail_side(&self, face: FaceId, points: &[Point3]) -> Option<bool> {
-        let data = self.topo.face(face).ok()?;
+        let carrier = self.carrier(face).ok()?;
         let mut side = None;
         for point in points {
-            let (u, _) = sampled_project_measured(data, *point).ok()?;
+            let (u, _) = carrier.project(*point);
             let this = if u.abs() <= RAIL_PARAMETER {
                 false
             } else if (u - 1.0).abs() <= RAIL_PARAMETER {
@@ -1129,8 +1150,7 @@ impl Recognizer<'_> {
         {
             return Some(canal.radius);
         }
-        let data = self.topo.face(face).ok()?;
-        let (_, v) = sampled_project_measured(data, point).ok()?;
+        let (_, v) = self.carrier(face).ok()?.project(point);
         let after = sections.partition_point(|section| section.v < v);
         Some(match (after.checked_sub(1), sections.get(after)) {
             (Some(before), Some(next)) => {
@@ -1393,8 +1413,10 @@ impl Recognizer<'_> {
             let v = 0.5 * (pair[0].v + pair[1].v);
             let radius = 0.5 * (pair[0].radius + pair[1].radius);
             let probe = surface.evaluate(0.5, v);
-            let centre =
-                sampled_section_centre_measured(data, probe).map_err(|error| error.to_string())?;
+            let centre = self
+                .carrier(face)?
+                .section_centre(probe)
+                .map_err(|error| error.to_string())?;
             for side in 0..2 {
                 let value = residual(centre, signed(radius), None, side)
                     .ok_or_else(|| "a section's support has no closed form".to_string())?;

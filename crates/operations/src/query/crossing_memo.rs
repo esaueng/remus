@@ -365,6 +365,123 @@ impl remus_check::classify::FaceCrossingMemo for SolidCrossingMemo {
     }
 }
 
+/// Crossing counts shared by the two classification passes of one material
+/// guard: the pristine input's pass and the result's.
+///
+/// A blend leaves most faces of the input as they were, and the result pass
+/// casts the same rays the input pass cast from the same points. A face of
+/// the result whose content (see the module docs) equals a face of the input
+/// therefore meets the very rays it met there, and the count the input pass
+/// stored is the count the result pass would compute. Only faces whose
+/// content both solids carry are stored, so the store is bounded by the
+/// passes' own ray-face tests and is dropped with the guard. Like the
+/// scope's memo, planar faces are never stored and errors never recorded.
+///
+/// The guard's memo is private on purpose: its tens of thousands of one-off
+/// rays would otherwise pass through the session memo (paying for its lock
+/// and FIFO on every test) and push out the edge-concavity counts that memo
+/// keeps for later edits.
+#[derive(Debug, Clone)]
+pub struct SharedPassCrossings {
+    counts: Arc<Mutex<DetHashMap<CountKey, u32>>>,
+}
+
+impl SharedPassCrossings {
+    /// The two passes' memos: one keyed on `first`'s faces, one on
+    /// `second`'s, sharing a store for the faces whose content both carry.
+    pub fn for_solids(
+        first: (&Topology, SolidId),
+        second: (&Topology, SolidId),
+    ) -> Result<(PassCrossingMemo, PassCrossingMemo), crate::OperationsError> {
+        let words = |(topo, solid): (&Topology, SolidId)| -> Result<Vec<(FaceId, Vec<u64>)>, crate::OperationsError> {
+            let mut out = Vec::new();
+            for face in remus_topology::explorer::solid_faces(topo, solid)? {
+                if matches!(topo.face(face)?.surface(), FaceSurface::Plane { .. }) {
+                    continue;
+                }
+                if let Some(words) = face_content_words(topo, face) {
+                    out.push((face, words));
+                }
+            }
+            Ok(out)
+        };
+        let (first_words, second_words) = (words(first)?, words(second)?);
+        let mut contents: DetHashMap<&[u64], u64> = DetHashMap::default();
+        for (_, words) in &first_words {
+            let next = contents.len() as u64;
+            contents.entry(words.as_slice()).or_insert(next);
+        }
+        let mut second_ids = DetHashMap::default();
+        let mut shared = remus_math::det_hash::DetHashSet::default();
+        for (face, words) in &second_words {
+            if let Some(&id) = contents.get(words.as_slice()) {
+                second_ids.insert(*face, id);
+                shared.insert(id);
+            }
+        }
+        let first_ids = first_words
+            .iter()
+            .filter_map(|(face, words)| {
+                let id = *contents.get(words.as_slice())?;
+                shared.contains(&id).then_some((*face, id))
+            })
+            .collect();
+        let store = Self {
+            counts: Arc::new(Mutex::new(DetHashMap::default())),
+        };
+        Ok((
+            PassCrossingMemo {
+                store: store.clone(),
+                ids: first_ids,
+            },
+            PassCrossingMemo {
+                store,
+                ids: second_ids,
+            },
+        ))
+    }
+}
+
+/// One pass's view of [`SharedPassCrossings`].
+#[derive(Debug)]
+pub struct PassCrossingMemo {
+    store: SharedPassCrossings,
+    ids: DetHashMap<FaceId, u64>,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Counts a pass answered from the other pass's store, for tests.
+    pub(crate) static PASS_HITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+impl remus_check::classify::FaceCrossingMemo for PassCrossingMemo {
+    fn crossings(&self, face: FaceId, origin: Point3, direction: Vec3) -> Option<u32> {
+        let &id = self.ids.get(&face)?;
+        let count = self
+            .store
+            .counts
+            .lock()
+            .ok()?
+            .get(&CountKey::new(id, origin, direction))
+            .copied();
+        #[cfg(test)]
+        if count.is_some() {
+            PASS_HITS.with(|hits| hits.set(hits.get() + 1));
+        }
+        count
+    }
+
+    fn record(&self, face: FaceId, origin: Point3, direction: Vec3, crossings: u32) {
+        let Some(&id) = self.ids.get(&face) else {
+            return;
+        };
+        if let Ok(mut counts) = self.store.counts.lock() {
+            counts.insert(CountKey::new(id, origin, direction), crossings);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]

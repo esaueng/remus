@@ -4,7 +4,10 @@
 //! versions walking the same segments as pairs. Containment and clearance
 //! must agree on every probe of polygons with collinear, duplicate,
 //! horizontal and degenerate edges, both orientations, and points on and
-//! around their vertices and edges.
+//! around their vertices and edges. The legacy classification also keeps
+//! every segment's distance test, which the current one skips for segments
+//! whose box the candidate is certainly clear of: probes at the clearance
+//! distance, far from the origin and at small scales pin that skip.
 
 #![allow(clippy::cast_precision_loss, clippy::float_cmp)]
 
@@ -190,6 +193,71 @@ fn segment_pairs_scan_like_the_indexed_loops() {
                     );
                 }
                 compared += 1;
+            }
+        }
+    }
+    assert!(compared > 10_000, "{compared} probes");
+}
+
+/// Candidates at the clearance distance from a segment, and a few ulps
+/// either side of it, on polygons scaled by 1e-6 to 1e3 and moved 1e9 away:
+/// where a segment's box skip could disagree with the full distance test if
+/// its margin were too thin.
+#[test]
+fn clearance_box_skips_agree_at_the_clearance_distance() {
+    let mut rng = Lcg(23);
+    let mut compared = 0;
+    for polygon in polygons().into_iter().filter(|polygon| polygon.len() >= 3) {
+        for (scale, shift) in [(1e-6, 0.0), (1.0, 0.0), (1e3, 0.0), (1.0, 1e9), (1e-3, 1e6)] {
+            let moved: Vec<(f64, f64)> = polygon
+                .iter()
+                .map(|&(u, v)| (u.mul_add(scale, shift), v.mul_add(scale, -shift)))
+                .collect();
+            let boundary_cdt: Vec<Point2> = moved.iter().map(|&(u, v)| Point2::new(u, v)).collect();
+            for clearance in [0.0, 0.01 * scale, 0.2 * scale] {
+                for pair in moved.windows(2) {
+                    let ((x0, y0), (x1, y1)) = (pair[0], pair[1]);
+                    let (dx, dy) = (x1 - x0, y1 - y0);
+                    let length = dx.hypot(dy);
+                    if length == 0.0 {
+                        continue;
+                    }
+                    let (nx, ny) = (-dy / length, dx / length);
+                    for along in [-0.25, 0.0, rng.next(), 1.0, 1.25] {
+                        let (bx, by) = (dx.mul_add(along, x0), dy.mul_add(along, y0));
+                        for side in [-1.0, 1.0] {
+                            for ulps in [-4.0, -1.0, 0.0, 1.0, 4.0] {
+                                let reach = clearance
+                                    + bx.abs().max(by.abs()).max(1.0) * f64::EPSILON * ulps;
+                                let (u, v) = (
+                                    (side * reach).mul_add(nx, bx),
+                                    (side * reach).mul_add(ny, by),
+                                );
+                                let point = Point2::new(u, v);
+                                assert_eq!(
+                                    classify_dense_candidate(
+                                        &moved,
+                                        &boundary_cdt,
+                                        u,
+                                        v,
+                                        point,
+                                        clearance
+                                    ),
+                                    legacy_classify_dense_candidate(
+                                        &moved,
+                                        &boundary_cdt,
+                                        u,
+                                        v,
+                                        point,
+                                        clearance
+                                    ),
+                                    "({u}, {v}) at clearance {clearance} from {pair:?}"
+                                );
+                                compared += 1;
+                            }
+                        }
+                    }
+                }
             }
         }
     }

@@ -62,6 +62,16 @@ impl<T> Id<T> {
     pub const fn index(self) -> usize {
         self.index
     }
+
+    /// A handle naming slot `index`, live or not. Crate-private: only the
+    /// session-image import builds handles this way, after checking each
+    /// against its arena's slot count.
+    pub(crate) const fn from_raw_index(index: usize) -> Self {
+        Self {
+            index,
+            _marker: PhantomData,
+        }
+    }
 }
 
 /// A typed arena allocator.
@@ -225,6 +235,23 @@ impl<T> Arena<T> {
 
     pub(crate) fn retained_items(&self) -> impl Iterator<Item = &T> {
         self.items.iter()
+    }
+
+    /// Every allocated slot's value and liveness, retired tombstones
+    /// included, in slot order: what a session image copies verbatim.
+    pub(crate) fn raw_slots(&self) -> (&[T], &[bool]) {
+        (&self.items, &self.live)
+    }
+
+    /// Rebuilds an arena from [`Self::raw_slots`]. The caller has checked
+    /// that both vectors have one entry per slot.
+    pub(crate) fn from_raw_slots(items: Vec<T>, live: Vec<bool>) -> Self {
+        let live_len = live.iter().filter(|is_live| **is_live).count();
+        Self {
+            items,
+            live,
+            live_len,
+        }
     }
 
     /// Returns `true` if the arena contains no entries.

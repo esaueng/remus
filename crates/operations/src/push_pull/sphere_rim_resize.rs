@@ -148,7 +148,7 @@ pub(super) fn resize_sphere_rimmed_wall(
     };
     prove_clearance(topo, solid, face, &plan, new_radius)?;
     let delta_volume = swept_volume(&plan, new_radius)?;
-    let before = crate::measure::solid_volume(topo, solid, super::verify_deflection(topo, solid))?;
+    let before = super::oracle_volume(topo, solid)?;
     let source_faces = solid_faces(topo, solid)?;
     remus_topology::transaction::run_transacted(topo, |topo| {
         let copied = crate::copy::copy_solid_with_entity_map(topo, solid)?;
@@ -169,7 +169,7 @@ pub(super) fn resize_sphere_rimmed_wall(
         super::ensure_volume(
             topo,
             result,
-            before + delta_volume,
+            before.map(|before| before + delta_volume),
             "sphere-rimmed cylindrical resize",
         )?;
         let evolution = super::exact_face_evolution(

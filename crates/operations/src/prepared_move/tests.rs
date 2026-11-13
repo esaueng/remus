@@ -470,3 +470,149 @@ fn journaled_moves_match_and_a_changed_source_is_refused() {
 }
 
 mod scaling;
+
+/// A cube with one edge blended, and one of the band's planar supports
+/// (a blend-aware move: the band is removed, the sharp face moved and the
+/// band rebuilt).
+fn banded_cube() -> (Topology, SolidId, FaceId) {
+    let mut topo = Topology::new();
+    let sharp = primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+    let edge = solid_edges(&topo, sharp).unwrap()[0];
+    let body = blend_ops::fillet_v2(&mut topo, sharp, &[edge], 1.0)
+        .unwrap()
+        .solid;
+    let band = solid_faces(&topo, body)
+        .unwrap()
+        .into_iter()
+        .find(|&face| topo.face(face).unwrap().surface().type_tag() == "cylinder")
+        .unwrap();
+    // The band's planar neighbours are its two supports and its two end
+    // caps; a support is the one the band meets tangentially.
+    let band_axis = match topo.face(band).unwrap().surface() {
+        remus_topology::face::FaceSurface::Cylinder(cylinder) => cylinder.axis(),
+        _ => unreachable!(),
+    };
+    let adjacency = topo.build_adjacency(body).unwrap();
+    let support = adjacency
+        .neighbors_of_face(band)
+        .iter()
+        .copied()
+        .find(|&face| {
+            topo.face(face)
+                .unwrap()
+                .effective_plane_normal()
+                .is_some_and(|normal| normal.dot(band_axis).abs() < 1e-9)
+        })
+        .unwrap();
+    (topo, body, support)
+}
+
+/// Resets the display-only switch however a test ends.
+struct DisplayOnly;
+
+impl Drop for DisplayOnly {
+    fn drop(&mut self) {
+        blend_ops::set_display_only_blends(false);
+    }
+}
+
+/// The phases of one prepared journaled move of `faces` by `distance`, and
+/// its outcome by [`signature`].
+fn traced_move(
+    topo: &mut Topology,
+    prepared: &mut PreparedFaceMove,
+    distance: f64,
+) -> (Vec<&'static str>, Result<(SolidId, String), String>) {
+    fn clock() -> f64 {
+        0.0
+    }
+    crate::performance::configure(Some(clock));
+    let moved = prepared.move_faces_journaled_with_quality(topo, distance, None);
+    let phases = crate::performance::drain()
+        .into_iter()
+        .map(|phase| phase.name)
+        .collect();
+    crate::performance::configure(None);
+    (
+        phases,
+        moved
+            .map(|(op, _)| {
+                let outcome = format!(
+                    "{}\n{}",
+                    signature(topo, op.solid),
+                    signature_history(topo, &op.map)
+                );
+                (op.solid, outcome)
+            })
+            .map_err(|error| error.to_string()),
+    )
+}
+
+/// Display-only frames ([`blend_ops::set_display_only_blends`]) of a
+/// prepared move build exactly the checked move's body and history, and
+/// skip its final measuring checks: strict validation of the result and the
+/// prismatic volume oracle. (Checks that choose between a blend move's
+/// routes still run; the translation route's own skips are tested with it.)
+/// The body still passes strict validation when it is checked afterwards.
+#[test]
+fn display_only_moves_build_the_checked_body_without_measuring_it() {
+    const MEASURING: [&str; 2] = ["move_faces.validate", "move_faces.prismatic_volume"];
+    let (banded, banded_body, support) = banded_cube();
+    let (pocketed, pocketed_body) = pocketed_block();
+    let pocketed_top = top_face(&pocketed, pocketed_body);
+    let cases = [
+        (
+            "banded cube",
+            banded,
+            banded_body,
+            support,
+            [1.0, 0.25, -0.5],
+        ),
+        (
+            "pocketed block",
+            pocketed,
+            pocketed_body,
+            pocketed_top,
+            [1.0, -2.0, 3.75],
+        ),
+    ];
+    for (label, topo, body, face, distances) in cases {
+        let checkpoint = topo.clone();
+        let mut checked_topo = topo.clone();
+        let mut display_topo = topo;
+        let mut checked = PreparedFaceMove::prepare(&checked_topo, body, &[face]).unwrap();
+        let mut display = PreparedFaceMove::prepare(&display_topo, body, &[face]).unwrap();
+        for distance in distances {
+            checked_topo.restore_preserving_handle_slots(&checkpoint);
+            display_topo.restore_preserving_handle_slots(&checkpoint);
+            let (checked_phases, expected) = traced_move(&mut checked_topo, &mut checked, distance);
+            let (display_phases, actual) = {
+                let _reset = DisplayOnly;
+                blend_ops::set_display_only_blends(true);
+                traced_move(&mut display_topo, &mut display, distance)
+            };
+            let what = format!("{label} at {distance}");
+            let (_, expected) = expected.unwrap_or_else(|error| panic!("{what}: {error}"));
+            let (result, actual) = actual.unwrap_or_else(|error| panic!("{what}: {error}"));
+            assert_eq!(actual, expected, "{what}");
+            assert!(
+                checked_phases.contains(&"move_faces.validate"),
+                "{what}: {checked_phases:?}"
+            );
+            if label == "pocketed block" {
+                assert!(
+                    checked_phases.contains(&"move_faces.prismatic_volume"),
+                    "{what}: {checked_phases:?}"
+                );
+            }
+            for phase in MEASURING {
+                assert!(
+                    !display_phases.contains(&phase),
+                    "{what}: a display-only frame ran {phase}: {display_phases:?}"
+                );
+            }
+            let report = crate::validate::validate_solid(&display_topo, result).unwrap();
+            assert!(report.is_valid(), "{what}: {report:?}");
+        }
+    }
+}

@@ -182,7 +182,7 @@ pub(crate) fn move_faces_with_entity_evolution(
             })?;
 
             boundary_pairs = boundary_entity_pairs(&moved);
-            if move_is_prismatic(topo, solid, faces)? {
+            if !crate::blend_ops::display_only_blends() && move_is_prismatic(topo, solid, faces)? {
                 let _volume = crate::performance::span("move_faces.prismatic_volume");
                 let deflection = verify_deflection(topo, solid);
                 let before = solid_volume(topo, solid, deflection)?;
@@ -208,11 +208,25 @@ pub(crate) fn move_faces_with_entity_evolution(
 }
 
 /// The strict validation every face move's result must pass.
+///
+/// A display-only frame ([`crate::blend_ops::set_display_only_blends`])
+/// checks only that every shell of the result is closed: the structure a
+/// display mesh needs. A kept result is built with the switch off.
 pub(crate) fn validate_moved_solid(
     topo: &Topology,
     faces: &[FaceId],
     result: SolidId,
 ) -> Result<(), crate::OperationsError> {
+    if crate::blend_ops::display_only_blends() {
+        return require_closed_shells(topo, result, "display-only face move").map_err(|error| {
+            remus_offset::OffsetError::TopologyChange {
+                face: faces.first().copied(),
+                edge: None,
+                reason: error.to_string(),
+            }
+            .into()
+        });
+    }
     let report = crate::performance::timed("move_faces.validate", || {
         crate::validate::validate_solid(topo, result)
     })?;
@@ -234,6 +248,28 @@ pub(crate) fn validate_moved_solid(
             ),
         }
         .into());
+    }
+    Ok(())
+}
+
+/// Refuses `solid` unless each of its shells is closed: every edge bounds
+/// exactly two face uses.
+///
+/// The structural check a display-only frame keeps in place of strict
+/// validation; it reads topology only.
+pub(crate) fn require_closed_shells(
+    topo: &Topology,
+    solid: SolidId,
+    what: &str,
+) -> Result<(), crate::OperationsError> {
+    let data = topo.solid(solid)?;
+    for shell in std::iter::once(data.outer_shell()).chain(data.inner_shells().iter().copied()) {
+        let shell = topo.shell(shell)?;
+        if let Err(error) = remus_topology::validation::validate_shell_closed(shell, topo) {
+            return Err(crate::OperationsError::InvalidInput {
+                reason: format!("{what} left an open shell: {error}"),
+            });
+        }
     }
     Ok(())
 }
@@ -332,7 +368,9 @@ impl PreparedPlanarMove {
                     remus_offset::move_faces_with_entity_map(topo, solid, faces, distance)
                 })?;
                 boundary_pairs = boundary_entity_pairs(&moved);
-                if let Some((before, area)) = self.prismatic {
+                if let Some((before, area)) = self.prismatic
+                    && !crate::blend_ops::display_only_blends()
+                {
                     let _volume = crate::performance::span("move_faces.prismatic_volume");
                     check_prismatic_volume(topo, faces, before, area, distance, moved.solid)?;
                 }
@@ -853,9 +891,13 @@ pub fn push_pull_face(
     // what stops a silently-degraded result reaching the caller: a face whose
     // hole walls must merge with a coaxial wall already in the solid can come
     // back closed, correctly shaped at a glance, and short a bore.
-    let area = crate::measure::face_area(topo, face, verify_deflection(topo, solid))?;
-    let before = solid_volume(topo, solid, verify_deflection(topo, solid))?;
-    let expected = distance.mul_add(area, before);
+    let expected = match oracle_volume(topo, solid)? {
+        Some(before) => {
+            let area = crate::measure::face_area(topo, face, verify_deflection(topo, solid))?;
+            Some(distance.mul_add(area, before))
+        }
+        None => None,
+    };
 
     let result = boolean(topo, op, solid, tool)?;
     unify_faces(topo, result)?;
@@ -1198,7 +1240,7 @@ pub(crate) fn resize_cylindrical_face_with_entity_evolution(
     }
     if !full_turn || (reversed && replacement_carriers) {
         let (base, height) = axial_extent(topo, face, &cylinder)?;
-        let before = solid_volume(topo, solid, verify_deflection(topo, solid))?;
+        let before = oracle_volume(topo, solid)?;
         let replacement = CylindricalSurface::with_ref_dir(
             cylinder.origin(),
             cylinder.axis(),
@@ -1214,15 +1256,20 @@ pub(crate) fn resize_cylindrical_face_with_entity_evolution(
         // A full turn sweeps a whole annulus; a partial wall sweeps one over
         // its exact (angle, height) footprint, read from the untouched source.
         let radius_change = new_radius * new_radius - cylinder.radius() * cylinder.radius();
-        let sleeve = if full_turn {
-            PI * radius_change * height
-        } else {
-            0.5 * radius_change * cylinder_wall_footprint(topo, face, &cylinder)?
-        };
-        let expected = if reversed {
-            before - sleeve
-        } else {
-            before + sleeve
+        let expected = match before {
+            Some(before) => {
+                let sleeve = if full_turn {
+                    PI * radius_change * height
+                } else {
+                    0.5 * radius_change * cylinder_wall_footprint(topo, face, &cylinder)?
+                };
+                Some(if reversed {
+                    before - sleeve
+                } else {
+                    before + sleeve
+                })
+            }
+            None => None,
         };
         ensure_closed_shell(topo, result.solid, "journaled cylindrical resize")?;
         ensure_volume(topo, result.solid, expected, "journaled cylindrical resize")?;
@@ -1483,7 +1530,7 @@ fn resize_partial_cylindrical_face(
         }.into());
     }
     let (base, height) = axial_extent(topo, face, cylinder)?;
-    let before = solid_volume(topo, solid, verify_deflection(topo, solid))?;
+    let before = oracle_volume(topo, solid)?;
     let replacement = remus_math::surfaces::CylindricalSurface::with_ref_dir(
         cylinder.origin(),
         cylinder.axis(),
@@ -1500,12 +1547,21 @@ fn resize_partial_cylindrical_face(
             FaceSurface::Cylinder(replacement),
         )?
         .solid;
-        let footprint = cylinder_wall_footprint(topo, face, cylinder)?;
         // The wall sweeps an annular prism over its exact (angle, height)
         // footprint, so the volume changes by half the radius-squared change
         // times that footprint's area.
-        let expected = before
-            + 0.5 * (new_radius * new_radius - cylinder.radius() * cylinder.radius()) * footprint;
+        let expected = match before {
+            Some(before) => {
+                let footprint = cylinder_wall_footprint(topo, face, cylinder)?;
+                Some(
+                    before
+                        + 0.5
+                            * (new_radius * new_radius - cylinder.radius() * cylinder.radius())
+                            * footprint,
+                )
+            }
+            None => None,
+        };
         ensure_closed_shell(topo, result, "partial cylindrical resize")?;
         ensure_volume(topo, result, expected, "partial cylindrical resize")?;
         ensure_resized_cylinder(
@@ -1579,16 +1635,18 @@ fn resize_cylindrical_face_aligned(
     let axis = unit(cyl.axis())?;
     let seam_direction = cylinder_seam_direction(topo, face, &cyl)?;
     let grows = new_radius > old_radius;
-    let before = solid_volume(topo, solid, verify_deflection(topo, solid))?;
+    let before = oracle_volume(topo, solid)?;
     // Sweeping the wall outward adds material on a boss and removes it from a
     // bore; inward does the reverse. The magnitude is the annular sleeve
     // between the two radii over the face's own extent.
     let sleeve = PI * (new_radius * new_radius - old_radius * old_radius) * height;
-    let expected = if concavity == Concavity::Boss {
-        before + sleeve
-    } else {
-        before - sleeve
-    };
+    let expected = before.map(|before| {
+        if concavity == Concavity::Boss {
+            before + sleeve
+        } else {
+            before - sleeve
+        }
+    });
 
     // Growing the wall sweeps it into open space, shrinking it sweeps back
     // through material already there. Either way the material that moves is the
@@ -2465,12 +2523,32 @@ fn repair_resized_cylinder_rim_orientation(
 /// that makes it trustworthy: a tool that reached material it should not have,
 /// or a boolean that silently dropped it, moves the volume off the analytic
 /// target and the attempt is rejected instead of returned.
+/// The source volume an edit's volume oracle ([`ensure_volume`]) compares
+/// against, or `None` on a display-only frame
+/// ([`crate::blend_ops::set_display_only_blends`]), which skips that oracle.
+fn oracle_volume(topo: &Topology, solid: SolidId) -> Result<Option<f64>, crate::OperationsError> {
+    if crate::blend_ops::display_only_blends() {
+        return Ok(None);
+    }
+    Ok(Some(solid_volume(
+        topo,
+        solid,
+        verify_deflection(topo, solid),
+    )?))
+}
+
+/// Refuses `solid` unless its volume is `expected`, within the volume API's
+/// discretisation. `None` (a display-only frame, see [`oracle_volume`])
+/// skips the measuring check.
 fn ensure_volume(
     topo: &Topology,
     solid: SolidId,
-    expected: f64,
+    expected: Option<f64>,
     what: &str,
 ) -> Result<(), crate::OperationsError> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
     let actual = solid_volume(topo, solid, verify_deflection(topo, solid))?;
     // Volume is measured from a tessellation, so allow its discretisation
     // error — wide enough for a curved wall, far tighter than any real defect.
@@ -2574,6 +2652,11 @@ fn ensure_closed_shell(
     use remus_check::validate::checks::{CheckId, Severity};
     use remus_check::validate::{ValidateOptions, validate_solid};
 
+    // A display-only frame reads the same closure off the topology alone,
+    // without the rest of the strict validation it is filtered from here.
+    if crate::blend_ops::display_only_blends() {
+        return require_closed_shells(topo, solid, what);
+    }
     let report = validate_solid(topo, solid, &ValidateOptions::default())?;
     let open: Vec<&str> = report
         .issues

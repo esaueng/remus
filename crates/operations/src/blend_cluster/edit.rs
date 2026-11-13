@@ -60,9 +60,10 @@ use super::reblend::{
     Gate, ReblendStage, compose_evolution, plan_reblend, reblend_restoration,
     reblend_restoration_gated,
 };
+use super::remove::remove_freshly_recognized_cluster;
 use super::{
     BlendCluster, BlendClusterError, BlendMemberKind, Convexity, SharpRestoration, StageBlend,
-    recognize_blend_cluster, remove_blend_cluster,
+    recognize_blend_cluster,
 };
 use crate::OperationsError;
 use crate::copy::{CopiedSolidEntities, copy_solid_between_with_entity_map};
@@ -215,7 +216,7 @@ pub(super) fn band_group(
     }
     // A group that cannot be removed to sharp is not this route's to
     // answer: the caller keeps its own refusal.
-    let Ok(restoration) = remove_blend_cluster(&mut work, solid, &cluster) else {
+    let Ok(restoration) = remove_freshly_recognized_cluster(&mut work, solid, &cluster) else {
         return Ok(None);
     };
     Ok(Some((
@@ -266,7 +267,7 @@ pub(super) fn cylinder_group(
     }
     // A group that cannot be removed to sharp is not this route's to
     // answer: the caller keeps its own refusal.
-    let Ok(restoration) = remove_blend_cluster(&mut work, solid, &cluster) else {
+    let Ok(restoration) = remove_freshly_recognized_cluster(&mut work, solid, &cluster) else {
         return Ok(None);
     };
     let wall = restoration
@@ -404,8 +405,9 @@ pub fn resize_band_through_group(
         return Ok(None);
     };
     let work = std::mem::take(&mut group.work);
-    let (work, built) = build_band(&group, work, member, new_radius, Gate::Full)?;
-    let edit = copy_out(topo, solid, &work, &group.inputs, &built, None)?;
+    let (work, built) = build_band(&group, work, member, new_radius, Gate::current())?;
+    let before = source_cluster(topo, &group);
+    let edit = copy_out(topo, solid, &work, &group.inputs, &built, before.as_ref())?;
     Ok(Some(ResizeBlendResult {
         solid: edit.solid,
         evolution: edit.evolution,
@@ -435,8 +437,9 @@ pub fn resize_cylinder_through_group(
         return Ok(None);
     };
     let work = std::mem::take(&mut group.work);
-    let (work, built) = build_cylinder(&group, work, wall, new_radius, Gate::Full)?;
-    copy_out(topo, solid, &work, &group.inputs, &built, None).map(Some)
+    let (work, built) = build_cylinder(&group, work, wall, new_radius, Gate::current())?;
+    let before = source_cluster(topo, &group);
+    copy_out(topo, solid, &work, &group.inputs, &built, before.as_ref()).map(Some)
 }
 
 thread_local! {
@@ -601,7 +604,7 @@ fn group_fillet_as_is(
             return Ok(None);
         }
     }
-    let Ok(restoration) = remove_blend_cluster(work, solid, &cluster) else {
+    let Ok(restoration) = remove_freshly_recognized_cluster(work, solid, &cluster) else {
         return Ok(None);
     };
     // The selected edges on the sharp body, through the removal's history.
@@ -720,6 +723,93 @@ fn run_private(
     };
     copy_out(topo, solid, &work, &inputs, &built, None).map(Some)
 }
+
+thread_local! {
+    /// Test hook: re-recognize the group on the caller's solid in
+    /// [`copy_out`] instead of carrying the group the route recognized on
+    /// its private copy (the differential oracle for [`source_cluster`]).
+    #[cfg(test)]
+    pub(super) static RECOGNIZE_IN_COPY_OUT: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The group `group` was recognized as on its private copy, with every face
+/// handle carried back to the caller's solid in `topo` through
+/// `group.inputs`.
+///
+/// [`copy_out`] needs the group on the caller's solid to carry member
+/// identities. The copy is the same content as the caller's solid, so the
+/// group recognized there is the one a second recognition of the caller's
+/// solid finds; carrying it back saves that recognition. Identity carrying
+/// reads the group as sets (member faces, kinds and supports), so the order
+/// of the carried lists does not matter. `None` when the group was
+/// recognized with a joined cap lifted (that body is not the caller's) or a
+/// face has no source, and [`copy_out`] recognizes the caller's solid as
+/// before.
+pub(super) fn source_cluster(topo: &Topology, group: &SharpGroup) -> Option<BlendCluster> {
+    #[cfg(test)]
+    if RECOGNIZE_IN_COPY_OUT.with(Cell::get) {
+        return None;
+    }
+    if group.lift.is_some() {
+        return None;
+    }
+    let source = |face: FaceId| -> Option<FaceId> {
+        let at = group
+            .inputs
+            .binary_search_by_key(&face.index(), |&(work, _)| work)
+            .ok()?;
+        topo.face_id_from_index(group.inputs[at].1)
+    };
+    let faces = |faces: &[FaceId]| -> Option<Vec<FaceId>> {
+        let mut mapped = faces
+            .iter()
+            .map(|&face| source(face))
+            .collect::<Option<Vec<_>>>()?;
+        mapped.compact_sort_unstable_by_key(|face| face.index());
+        Some(mapped)
+    };
+    let cluster = &group.cluster;
+    let mut members = Vec::with_capacity(cluster.members.len());
+    for member in &cluster.members {
+        let mut carried = member.clone();
+        carried.faces = faces(&member.faces)?;
+        carried.supports = faces(&member.supports)?;
+        carried.root_supports = faces(&member.root_supports)?;
+        members.push(carried);
+    }
+    let mut sharp_edges = Vec::with_capacity(cluster.sharp_edges.len());
+    for edge in &cluster.sharp_edges {
+        let mut carried = edge.clone();
+        let [a, b] = edge.supports;
+        let (a, b) = (source(a)?, source(b)?);
+        carried.supports = if a.index() <= b.index() {
+            [a, b]
+        } else {
+            [b, a]
+        };
+        sharp_edges.push(carried);
+    }
+    let mut sharp_vertices = Vec::with_capacity(cluster.sharp_vertices.len());
+    for vertex in &cluster.sharp_vertices {
+        let mut carried = vertex.clone();
+        carried.faces = faces(&vertex.faces)?;
+        sharp_vertices.push(carried);
+    }
+    Some(BlendCluster {
+        seed: source(cluster.seed)?,
+        seed_is_member: cluster.seed_is_member,
+        members,
+        supports: faces(&cluster.supports)?,
+        boundary_faces: faces(&cluster.boundary_faces)?,
+        sharp_edges,
+        sharp_vertices,
+        reblend_order: cluster.reblend_order.clone(),
+    })
+}
+
+#[cfg(test)]
+#[path = "edit/source_cluster_tests.rs"]
+mod source_cluster_tests;
 
 /// Copy `built` from `work` into `topo` (inside a transaction), translating
 /// its face evolution from copy indices to the caller's through `inputs`

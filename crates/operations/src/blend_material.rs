@@ -51,7 +51,10 @@
 //! # Cost
 //!
 //! The work is bounded: `N` fixed samples, two batched prepared
-//! classifications. Analytic inputs classify in bulk in well under a second;
+//! classifications. The result pass casts the input pass's rays from the
+//! input pass's points, so it takes the crossing counts of every face the
+//! blend left unchanged from the input pass (a store private to the guard:
+//! the same counts, computed once, and none of the session memo's traffic). Analytic inputs classify in bulk in well under a second;
 //! a result carrying a NURBS band costs ray-vs-NURBS intersections per sample
 //! (the earlier B71 sampler measured ~1 ms/sample, ~7 s total in release;
 //! the revised sampler and protected rebuild remain unmeasured). The check runs only for the
@@ -67,7 +70,9 @@ use remus_topology::edge::{EdgeCurve, EdgeId};
 use remus_topology::solid::SolidId;
 
 use crate::OperationsError;
-use crate::classify::{PointClassification, classify_points};
+use crate::classify::PointClassification;
+#[cfg(any(doc, test))]
+use crate::classify::classify_points;
 
 /// Monte Carlo samples in the reach tube. Calibrated so B71's `0.037` of
 /// added material in a 14-unit tube reads ~16 counts (`±4`, lower-3σ bound
@@ -200,6 +205,54 @@ impl ReachBox {
     fn contains(&self, p: Point3) -> bool {
         let offset = p - self.center;
         (0..3).all(|k| offset.dot(self.axes[k]).abs() <= self.half[k])
+    }
+
+    /// [`Self::contains`] at `p`, decided with plain products and sums where
+    /// they are certain, instead of its fused dot products (which cost a
+    /// software emulation on `wasm32`).
+    ///
+    /// The plain dot and the fused one each lie within a few units in the
+    /// last place of `Σ|offset_i · axis_i|` of the exact dot, so a plain
+    /// reading beyond `half` by a millionth of a millionth of that sum cannot
+    /// be a fused reading within `half`, and a plain reading inside `half` by
+    /// that margin on every axis cannot be a fused reading outside it. Any
+    /// other reading (non-finite input included) asks [`Self::contains`].
+    fn contains_filtered(&self, p: Point3) -> bool {
+        match self.plain_membership(p) {
+            Some(inside) => inside,
+            None => self.contains(p),
+        }
+    }
+
+    /// `Some(false)` when `p` is certainly outside, `Some(true)` when it is
+    /// certainly inside, `None` when only the fused test can tell. See
+    /// [`Self::contains_filtered`].
+    fn plain_membership(&self, p: Point3) -> Option<bool> {
+        let offset = p - self.center;
+        let o = [offset.x(), offset.y(), offset.z()];
+        let mut inside = true;
+        for k in 0..3 {
+            let a = [self.axes[k].x(), self.axes[k].y(), self.axes[k].z()];
+            let terms = [o[0] * a[0], o[1] * a[1], o[2] * a[2]];
+            let dot = terms[0] + terms[1] + terms[2];
+            let scale = terms[0].abs() + terms[1].abs() + terms[2].abs();
+            // Plain on purpose: a fused multiply-add is the cost this
+            // avoids. The margin is far above the two dots' difference, and
+            // where it is below an ulp of `half` the dot is far inside.
+            let margin = 1e-12 * scale;
+            if dot.abs() > self.half[k] + margin {
+                return Some(false);
+            }
+            inside &= dot.abs() < self.half[k] - margin;
+        }
+        inside.then_some(true)
+    }
+
+    /// Whether [`Self::contains`] is certainly false at `p` (the plain
+    /// reading of [`Self::plain_membership`]).
+    #[cfg(test)]
+    fn surely_excludes(&self, p: Point3) -> bool {
+        self.plain_membership(p) == Some(false)
     }
 
     fn draw(&self, rng: &mut TubeRng) -> Point3 {
@@ -346,7 +399,7 @@ pub fn sample_reach_tube(
         let p = local.draw(&mut rng);
         let multiplicity = boxes
             .iter()
-            .filter(|local| local.contains(p))
+            .filter(|local| local.contains_filtered(p))
             .count()
             .max(1);
         #[allow(clippy::cast_precision_loss)]
@@ -377,8 +430,12 @@ pub fn estimate_added_material(
     result: SolidId,
     tube: &ReachTube,
 ) -> Result<AddedEstimate, OperationsError> {
+    // The result pass asks about the very points and rays the input pass
+    // cast, so faces the blend left as they were answer from the input pass.
+    let (input_crossings, result_crossings) =
+        crate::query::SharedPassCrossings::for_solids((pristine, input), (live, result))?;
     let before = crate::performance::timed("blend.material.input", || {
-        classify_points(pristine, input, &tube.points, 0.01, MATERIAL_RAY_TOLERANCE)
+        classify_with_memo(pristine, input, &tube.points, input_crossings)
     })?;
     // Only a point outside the input can count as added, so the result is
     // asked about those alone; every other point keeps its input verdict,
@@ -391,7 +448,7 @@ pub fn estimate_added_material(
     let probes: Vec<Point3> = outside.iter().map(|&i| tube.points[i]).collect();
     let mut after = before.clone();
     let classes = crate::performance::timed("blend.material.result", || {
-        classify_points(live, result, &probes, 0.01, MATERIAL_RAY_TOLERANCE)
+        classify_with_memo(live, result, &probes, result_crossings)
     })?;
     for (&i, c) in outside.iter().zip(classes) {
         after[i] = c;
@@ -422,6 +479,27 @@ pub fn estimate_added_material(
         se: tube.proposal_volume * variance.sqrt(),
         added_counts,
     })
+}
+
+/// [`classify_points`] at the material ray tolerance, consulting `memo` for
+/// per-face crossing counts instead of the session's memo.
+fn classify_with_memo(
+    topo: &Topology,
+    solid: SolidId,
+    points: &[Point3],
+    memo: crate::query::PassCrossingMemo,
+) -> Result<Vec<PointClassification>, OperationsError> {
+    let options = remus_check::classify::ClassifyOptions {
+        tolerance: MATERIAL_RAY_TOLERANCE,
+        ..Default::default()
+    };
+    let prepared = remus_check::classify::PreparedSolid::prepare(topo, solid)?
+        .with_crossing_memo(std::sync::Arc::new(memo));
+    Ok(prepared
+        .classify_points(points, &options)?
+        .into_iter()
+        .map(PointClassification::from)
+        .collect())
 }
 
 /// Refuse a convex blend on positive evidence of added material.
@@ -633,6 +711,115 @@ mod tests {
             refusal.to_string().contains("convex edges added"),
             "{refusal}"
         );
+    }
+
+    /// The result pass answers faces the result shares with the input from
+    /// the input pass, and the estimate keeps its bits: a far boss the cut
+    /// never touches meets the same rays in both passes.
+    #[test]
+    fn result_pass_reuses_unchanged_faces_without_changing_the_estimate() {
+        use remus_math::mat::Mat4;
+        let mut topo = Topology::new();
+        let block = make_box(&mut topo, 60.0, 60.0, 10.0).unwrap();
+        let near = make_cylinder(&mut topo, 3.0, 10.0).unwrap();
+        transform_solid(&mut topo, near, &Mat4::translation(10.0, 10.0, 10.0)).unwrap();
+        // Along the classifier's first ray direction from the near boss, and
+        // tall, so rays from its rim tube pass through it.
+        let far = make_cylinder(&mut topo, 4.0, 40.0).unwrap();
+        transform_solid(&mut topo, far, &Mat4::translation(20.5, 23.5, 10.0)).unwrap();
+        let body = boolean(&mut topo, BooleanOp::Fuse, block, near).unwrap();
+        let body = boolean(&mut topo, BooleanOp::Fuse, body, far).unwrap();
+        let notch = make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
+        transform_solid(&mut topo, notch, &Mat4::translation(11.0, 6.0, 19.0)).unwrap();
+        let cut = boolean(&mut topo, BooleanOp::Cut, body, notch).unwrap();
+        let rim = remus_topology::explorer::solid_edges(&topo, body)
+            .unwrap()
+            .into_iter()
+            .find(|&id| {
+                let edge = topo.edge(id).unwrap();
+                matches!(edge.curve(), EdgeCurve::Circle(c)
+                    if (c.radius() - 3.0).abs() < 1e-9 && (c.center().z() - 20.0).abs() < 1e-9)
+            })
+            .expect("the near boss has a top rim");
+        let tube = sample_reach_tube(&topo, &[vec![rim]], 0.5)
+            .unwrap()
+            .unwrap();
+        crate::query::PASS_HITS.with(|hits| hits.set(0));
+        assert_exhaustive_estimate(&topo, body, cut, &tube);
+        let hits = crate::query::PASS_HITS.with(std::cell::Cell::get);
+        assert!(hits > 0, "the far boss answers from the input pass");
+    }
+
+    /// The plain pre-reject never rejects a point the fused test accepts:
+    /// boxes along tilted chords at scales 1e-6 to 1e6, probed at random,
+    /// exactly on each face and an ulp either side, so the overlap counts
+    /// (and every tube's weights) are the full scan's.
+    #[test]
+    fn plain_membership_agrees_with_the_fused_test() {
+        let mut rng = TubeRng(0x5EED);
+        let (mut accepted, mut surely_in, mut undecided) = (0usize, 0usize, 0usize);
+        for scale in [1e-6, 1e-3, 1.0, 1e3, 1e6] {
+            for _ in 0..64 {
+                let mut coordinate = || (2.0 * rng.next_unit() - 1.0) * scale;
+                let a = Point3::new(coordinate(), coordinate(), coordinate());
+                let b = Point3::new(coordinate(), coordinate(), coordinate());
+                let offset = Point3::new(1e3 * scale, -7e2 * scale, 3e2 * scale);
+                let (a, b) = (
+                    a + (offset - Point3::new(0.0, 0.0, 0.0)),
+                    b + (offset - Point3::new(0.0, 0.0, 0.0)),
+                );
+                let Some(local) = ReachBox::around(a, b, 0.25 * scale, 0.01 * scale) else {
+                    continue;
+                };
+                let mut probes = Vec::new();
+                for _ in 0..64 {
+                    probes.push(local.draw(&mut rng));
+                    let mut p = local.center;
+                    for k in 0..3 {
+                        p = p + local.axes[k] * ((2.5 * rng.next_unit() - 1.25) * local.half[k]);
+                    }
+                    probes.push(p);
+                }
+                for k in 0..3 {
+                    for sign in [-1.0, 1.0] {
+                        let face = local.center + local.axes[k] * (sign * local.half[k]);
+                        for step in [-2.0, -1.0, 0.0, 1.0, 2.0] {
+                            let nudge = face.x().abs().max(1.0) * f64::EPSILON * step;
+                            probes.push(Point3::new(face.x() + nudge, face.y(), face.z()));
+                            probes.push(Point3::new(face.x(), face.y() + nudge, face.z() - nudge));
+                        }
+                    }
+                }
+                for p in probes {
+                    let contained = local.contains(p);
+                    assert_eq!(
+                        local.contains_filtered(p),
+                        contained,
+                        "{p:?} at scale {scale}"
+                    );
+                    match local.plain_membership(p) {
+                        Some(true) => {
+                            assert!(contained, "{p:?} at scale {scale}");
+                            surely_in += 1;
+                        }
+                        Some(false) => assert!(!contained, "{p:?} at scale {scale}"),
+                        None => undecided += 1,
+                    }
+                    if contained {
+                        accepted += 1;
+                        assert!(!local.surely_excludes(p), "{p:?} at scale {scale}");
+                    }
+                }
+            }
+        }
+        assert!(
+            accepted > 10_000,
+            "the probes reach inside the boxes: {accepted}"
+        );
+        // The plain reading decides nearly every probe; the ulp-nudged probes
+        // on the box faces are the ones left to the fused test.
+        assert!(surely_in > 9_000, "{surely_in} certainly inside");
+        assert!(undecided > 0, "the face probes reach the fused test");
     }
 
     /// Degenerate reach refuses to sample rather than guessing.

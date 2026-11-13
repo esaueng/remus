@@ -26,9 +26,9 @@
 //! material as wheel and worm turn together ([`HobSweep`]): a point is cut
 //! when some wheel angle puts it inside the worm.
 
+use std::cmp::Ordering;
 use std::f64::consts::{PI, TAU};
 
-use remus_math::compact_sort::CompactSort;
 use remus_math::curves::Circle3D;
 use remus_math::nurbs::NurbsSurface;
 use remus_math::nurbs::hermite_fit::{HermiteFit, fit_cubic_hermite};
@@ -63,6 +63,23 @@ pub(super) struct HobSweep {
     density: f64,
 }
 
+/// Every how many wheel-angle samples a sweep's first, coarse pass takes
+/// one.
+const COARSE_STRIDE: usize = 16;
+
+#[cfg(test)]
+thread_local! {
+    /// Material margins evaluated in full on this thread.
+    static MARGIN_EVALS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Counts one full material margin evaluation (tests only).
+#[inline]
+fn count_margin() {
+    #[cfg(test)]
+    MARGIN_EVALS.with(|evals| evals.set(evals.get() + 1));
+}
+
 impl HobSweep {
     pub(super) fn new(worm: &EnvelopingWormParams) -> Self {
         let hindley = Hindley::new(worm, 0.0);
@@ -95,57 +112,128 @@ impl HobSweep {
 
     /// How deep the hob reaches into a wheel point: the largest material
     /// margin over every wheel angle. Positive where the hob cuts.
+    #[cfg(test)]
     pub(super) fn depth(&self, w: Point3) -> f64 {
         let theta = w.z().atan2(w.y()).rem_euclid(2.0 * PI);
         let center = PI - theta;
         let (lo, hi) = (center - self.reach, center + self.reach);
         let count = ((hi - lo) * self.density).ceil().max(8.0) as usize;
         let step = (hi - lo) / count as f64;
-        let margin = |phi: f64| self.hindley.material_margin(self.to_worm(w, phi));
-        let mut samples: Vec<(f64, f64)> = (0..=count)
-            .map(|i| {
-                let phi = lo + step * i as f64;
-                (phi, margin(phi))
-            })
-            .collect();
+        let mut top = TopSamples::default();
+        for i in coarse_first(count) {
+            let p = self.to_worm(w, lo + step * i as f64);
+            let (blank, section) = self.hindley.blank_margin(p);
+            if top.rules_out(blank) {
+                continue;
+            }
+            count_margin();
+            top.offer(i, blank.min(self.hindley.groove_margin(p, section)));
+        }
         // Refine around the best few samples by golden-section search: the
         // margin is piecewise smooth, so the maximum sits near one of them.
-        samples.compact_sort_by(|a, b| b.1.total_cmp(&a.1));
-        let mut best = samples[0].1;
-        for &(phi, _) in samples.iter().take(4) {
-            let (mut a, mut b) = (phi - step, phi + step);
-            let ratio = 0.5 * (5.0_f64.sqrt() - 1.0);
-            let mut c = b - ratio * (b - a);
-            let mut d = a + ratio * (b - a);
-            let (mut fc, mut fd) = (margin(c), margin(d));
-            for _ in 0..40 {
-                if fc > fd {
-                    b = d;
-                    d = c;
-                    fd = fc;
-                    c = b - ratio * (b - a);
-                    fc = margin(c);
-                } else {
-                    a = c;
-                    c = d;
-                    fc = fd;
-                    d = a + ratio * (b - a);
-                    fd = margin(d);
-                }
-            }
+        let mut best = top.kept()[0].1;
+        for &(i, _) in top.kept() {
+            let (fc, fd) = self.refine(w, lo + step * i as f64, step, false);
             best = best.max(fc).max(fd);
         }
         best
+    }
+
+    /// The hob's sweep past the wheel points at height `s` and radius
+    /// `rho`, tabulated once for every polar angle of the point.
+    ///
+    /// A point at the polar angle `θ` turned by the wheel angle `φ` stands
+    /// at `ψ = θ + φ`, and the sweep covers `ψ ∈ [π − reach, π + reach]`
+    /// whatever `θ` is. Turning the worm with the wheel leaves the point's
+    /// distances from the worm axis and from the wheel center as they are
+    /// and moves its place along the thread by `φ` tooth pitches' worth of
+    /// wheel angle, so its margin depends on `θ` only through the lead
+    /// `lead(ψ) + θ` of [`Hindley::groove_depth`]. Each sample keeps the
+    /// rest.
+    ///
+    /// The samples are the ones a sweep of one point takes: `count` steps
+    /// of `(hi − lo)·density`, rounded up, across `[lo, hi]`. Here `lo` and
+    /// `hi` are `π ∓ reach`; for one point they are `(π − θ) ∓ reach`,
+    /// which rounds differently, so its angles `θ + (lo + step·i)` differ
+    /// from these in their last bits (and by one step in `count` should
+    /// `2·reach·density` lie within that rounding of a whole number).
+    fn tabulate(&self, s: f64, rho: f64) -> EdgeSweep<'_> {
+        let h = &self.hindley;
+        let (lo, hi) = (PI - self.reach, PI + self.reach);
+        let count = ((hi - lo) * self.density).ceil().max(8.0) as usize;
+        let step = (hi - lo) / count as f64;
+        let samples = (0..=count)
+            .map(|i| {
+                let psi = lo + step * i as f64;
+                let (sin, cos) = psi.sin_cos();
+                // The point in the worm's frame before the worm's own turn.
+                let p = Point3::new(s, rho.mul_add(cos, h.a), rho * sin);
+                count_margin();
+                let (blank, section) = h.blank_margin(p);
+                let (lead, width) = h.groove_window(p, section);
+                SweepSample {
+                    blank,
+                    lead: lead - psi,
+                    width,
+                    rho: section[2],
+                }
+            })
+            .collect();
+        EdgeSweep {
+            hob: self,
+            s,
+            rho,
+            lo,
+            step,
+            samples,
+        }
+    }
+
+    /// The last two margins of a golden-section search for the largest
+    /// margin within `step` of the wheel angle `phi`; or, with `sign_only`,
+    /// the first two that are not both non-positive. Every round keeps the
+    /// larger of its two, so the last two are no smaller than any before.
+    fn refine(&self, w: Point3, phi: f64, step: f64, sign_only: bool) -> (f64, f64) {
+        let margin = |phi: f64| {
+            count_margin();
+            self.hindley.material_margin(self.to_worm(w, phi))
+        };
+        let (mut a, mut b) = (phi - step, phi + step);
+        let ratio = 0.5 * (5.0_f64.sqrt() - 1.0);
+        let mut c = b - ratio * (b - a);
+        let mut d = a + ratio * (b - a);
+        let (mut fc, mut fd) = (margin(c), margin(d));
+        for _ in 0..40 {
+            if sign_only && (fc > 0.0 || fd > 0.0) {
+                break;
+            }
+            if fc > fd {
+                b = d;
+                d = c;
+                fd = fc;
+                c = b - ratio * (b - a);
+                fc = margin(c);
+            } else {
+                a = c;
+                c = d;
+                fc = fd;
+                d = a + ratio * (b - a);
+                fd = margin(d);
+            }
+        }
+        (fc, fd)
     }
 
     /// The polar angle of the hobbed tooth 0's `side` edge at height `s`
     /// and radius `rho`: where the hob's depth crosses zero next to the
     /// straight flank line.
     pub(super) fn edge(&self, side: ToothSide, s: f64, rho: f64) -> HobEdge {
-        let at = |theta: f64| {
-            let (sin, cos) = theta.sin_cos();
-            self.depth(Point3::new(s, rho * cos, rho * sin))
-        };
+        #[cfg(test)]
+        if hob_oracle_tests::verbatim_sweep() {
+            return hob_oracle_tests::old_edge(self, side, s, rho);
+        }
+        let sweep = self.tabulate(s, rho);
+        let at = |theta: f64| sweep.cuts(theta);
         // Bracket between the tooth's center (θ = π), which the hob must
         // leave, and the center of the space beside this flank, which it
         // cuts wherever it reaches at all.
@@ -154,21 +242,130 @@ impl HobSweep {
             ToothSide::Minus => (PI - 0.5 * pitch, PI),
             ToothSide::Plus => (PI + 0.5 * pitch, PI),
         };
-        if at(kept) > 0.0 {
+        if at(kept) {
             return HobEdge::Blocked;
         }
-        if at(cut) <= 0.0 {
+        if !at(cut) {
             return HobEdge::Clear;
         }
         for _ in 0..50 {
             let mid = 0.5 * (cut + kept);
-            if at(mid) > 0.0 {
+            // A midpoint that is one of the ends repeats that end's answer,
+            // this round and every later one.
+            if mid.to_bits() == cut.to_bits() || mid.to_bits() == kept.to_bits() {
+                break;
+            }
+            if at(mid) {
                 cut = mid;
             } else {
                 kept = mid;
             }
         }
         HobEdge::At(0.5 * (cut + kept))
+    }
+}
+
+/// One wheel angle of an [`EdgeSweep`]: what the margin of the point
+/// standing at `ψ` keeps whatever its polar angle `θ` was.
+struct SweepSample {
+    /// Its blank margin.
+    blank: f64,
+    /// Its lead ahead of the cutting tooth's minus flank, less `θ`.
+    lead: f64,
+    /// That tooth's angular width at the point.
+    width: f64,
+    /// The point's distance from the wheel center in the worm's frame.
+    rho: f64,
+}
+
+/// [`HobSweep::tabulate`]'s table for one height and radius.
+struct EdgeSweep<'a> {
+    hob: &'a HobSweep,
+    s: f64,
+    rho: f64,
+    /// The first sample's `ψ` and the spacing.
+    lo: f64,
+    step: f64,
+    samples: Vec<SweepSample>,
+}
+
+impl EdgeSweep<'_> {
+    /// Whether the hob cuts the point at the polar angle `theta`: whether
+    /// its depth, the largest margin over every wheel angle, is positive.
+    ///
+    /// The margin of a finite point is never NaN (`min` and `max` drop a NaN
+    /// operand, and the blank's axial margin is finite), so the depth is at
+    /// least every margin evaluated and one positive margin settles it.
+    fn cuts(&self, theta: f64) -> bool {
+        let h = &self.hob.hindley;
+        let mut top = TopSamples::default();
+        for i in coarse_first(self.samples.len() - 1) {
+            let sample = &self.samples[i];
+            if top.rules_out(sample.blank) {
+                continue;
+            }
+            let groove = h.groove_depth(sample.lead + theta, sample.width, sample.rho);
+            let margin = sample.blank.min(groove);
+            if margin > 0.0 {
+                return true;
+            }
+            top.offer(i, margin);
+        }
+        // Refine around the best few samples by golden-section search: the
+        // margin is piecewise smooth, so the maximum sits near one of them.
+        let (sin, cos) = theta.sin_cos();
+        let w = Point3::new(self.s, self.rho * cos, self.rho * sin);
+        top.kept().iter().any(|&(i, _)| {
+            let phi = (self.lo + self.step * i as f64) - theta;
+            let (fc, fd) = self.hob.refine(w, phi, self.step, true);
+            fc > 0.0 || fd > 0.0
+        })
+    }
+}
+
+/// The sample indices `0..=count`, every [`COARSE_STRIDE`]th first: a cut
+/// shows early, and so does a high fourth-largest margin.
+fn coarse_first(count: usize) -> impl Iterator<Item = usize> {
+    (0..=count)
+        .step_by(COARSE_STRIDE)
+        .chain((0..=count).filter(|i| i % COARSE_STRIDE != 0))
+}
+
+/// The four largest margins offered, as (sample index, margin), largest
+/// first and equal ones in sample order: the head of a stable descending
+/// sort of them all.
+#[derive(Default)]
+struct TopSamples {
+    top: [(usize, f64); 4],
+    found: usize,
+}
+
+impl TopSamples {
+    /// Whether a sample with this upper bound on its margin is neither
+    /// positive nor among the four: it is strictly under the fourth.
+    fn rules_out(&self, bound: f64) -> bool {
+        self.found == 4 && bound < self.top[3].1
+    }
+
+    fn offer(&mut self, index: usize, margin: f64) {
+        let ahead = |other: (usize, f64)| match margin.total_cmp(&other.1) {
+            Ordering::Greater => true,
+            Ordering::Equal => index < other.0,
+            Ordering::Less => false,
+        };
+        let mut slot = self.found;
+        while slot > 0 && ahead(self.top[slot - 1]) {
+            slot -= 1;
+        }
+        if slot < 4 {
+            self.found = (self.found + 1).min(4);
+            self.top.copy_within(slot..self.found - 1, slot + 1);
+            self.top[slot] = (index, margin);
+        }
+    }
+
+    fn kept(&self) -> &[(usize, f64)] {
+        &self.top[..self.found]
     }
 }
 
@@ -1418,6 +1615,9 @@ fn build_wheel(
     let solid = topo.add_solid(Solid::new(shell, vec![]));
     Ok((solid, roles, deviation))
 }
+
+#[cfg(test)]
+mod hob_oracle_tests;
 
 #[cfg(test)]
 mod tests {

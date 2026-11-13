@@ -31,6 +31,14 @@ thread_local! {
 /// The structural checks still run: the result covers every named edge, has
 /// a closed outer shell and no validation error the input did not have.
 ///
+/// Face moves and cylinder resizes (`push_pull`, `prepared_move`, the
+/// blend-aware translation and the blend-group resize routes) follow the
+/// same switch: they keep their analytic refusals and structural checks
+/// (swept-region and clearance bounds, unchanged entity counts, closed
+/// shells) and skip strict validation, their volume oracles and the
+/// whole-body mesh closure. A blend-group resize re-fillets as a preview
+/// frame does (`Gate::Preview`).
+///
 /// A result built this way is for display only. Keeping it requires a rebuild
 /// with the switch off, or completion of the exact deferred guards on a private
 /// candidate (prepared group edits), since an unchecked band can look plausible.

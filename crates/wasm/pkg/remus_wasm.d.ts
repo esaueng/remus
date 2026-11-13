@@ -2363,6 +2363,20 @@ export class RemusKernel {
      */
     fromBREP(data: string): number;
     /**
+     * Restore a session from `snapshot()` bytes into a new kernel.
+     *
+     * The new kernel answers every handle, journal and evolution query as
+     * the snapshotted one did, and allocates the same next handles. It has
+     * no checkpoints (earlier checkpoint IDs stay stale), prepared drags or
+     * warm per-session caches. All or nothing: a refusal builds no kernel.
+     * Throws `snapshot:<code>: ...` with code `not_a_snapshot`,
+     * `unsupported_format`, `build_mismatch` (written by another build),
+     * `corrupt` (truncated, extended, digest mismatch, undecodable),
+     * `invalid` (inconsistent topology) or `limit_exceeded`. On any of
+     * them, rebuild from the modeling history instead.
+     */
+    static fromSnapshot(bytes: Uint8Array): RemusKernel;
+    /**
      * Fuse (union) two solids into one.
      *
      * Returns a new solid handle (`u32`).
@@ -4587,6 +4601,14 @@ export class RemusKernel {
      * still run: every named edge is blended, the outer shell is closed and
      * the result carries no validation error the input did not.
      *
+     * Face moves and cylinder resizes (`moveFaces*`, prepared moves
+     * included, and `resizeCylindricalFace*`) follow the same switch: they
+     * keep their analytic refusals (swept-region and clearance bounds,
+     * unchanged entity counts) and a closed-shell check, and skip strict
+     * validation, their volume oracles and the whole-body mesh closure. A
+     * cylinder resize through a blend group re-fillets it as a preview
+     * frame does (`previewPreparedGroupEdit`).
+     *
      * A result built this way is for display only. Turn the switch off and
      * rebuild before keeping a result: a band those checks would refuse can
      * look plausible on screen.
@@ -4774,6 +4796,34 @@ export class RemusKernel {
      * positions, and arc definitions.
      */
     sketchSolve(sketch: number, max_iterations: number, tolerance: number): string;
+    /**
+     * Snapshot the whole session for a later `RemusKernel.fromSnapshot`.
+     *
+     * Take it after a successful rebuild. The bytes carry the topology
+     * verbatim (retired handles included), the attributes, the whole
+     * journal and the handle counters, stamped with this build's identity
+     * (`RemusKernel.snapshotBuildId()`) and a content digest
+     * (`RemusKernel.snapshotDigest(bytes)`). Checkpoints, prepared drags
+     * and caches are not carried.
+     *
+     * Read-only. Throws `snapshot:poisoned` on a poisoned kernel,
+     * `snapshot:transient_state` while an assembly, legacy sketch or GCS
+     * sketch is live, and `snapshot:limit_exceeded` past the import limits
+     * (256 MiB of bytes or of decoded pcurve copies, 3,000,000 arena slots)
+     * that `fromSnapshot` would refuse.
+     */
+    snapshot(): Uint8Array;
+    /**
+     * The build identity this kernel stamps into snapshots and requires
+     * of the snapshots it restores.
+     */
+    static snapshotBuildId(): string;
+    /**
+     * The verified 128-bit content digest of snapshot bytes, as 32 hex
+     * characters, from any build. Store it beside the bytes to detect
+     * storage corruption before loading them.
+     */
+    static snapshotDigest(bytes: Uint8Array): string;
     /**
      * Classify every edge of a solid in one pass.
      *

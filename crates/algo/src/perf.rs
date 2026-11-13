@@ -64,6 +64,13 @@
 //! naming its face pair; scanning every curve in the arena made the count
 //! grow with the square of an N-way fuse's body count.
 //!
+//! `ff_cylinder_nurbs_marches` counts the cylinder x NURBS face pairs phase
+//! FF hands to the surface marcher, and `ff_cylinder_nurbs_cleared` those
+//! whose NURBS control net lies clear of the cylinder's carrier, so the pair
+//! has no section and the marcher (whose seed search then falls through to
+//! an all-pairs grid scan) is not run. Gear flanks against a coaxial wall
+//! are all of the second kind.
+//!
 //! The counters are gated behind the `perf-counters` feature. With the feature
 //! off (every normal and release build) the `bump_*` calls are empty `#[inline]`
 //! functions that compile to nothing, so the instrumented hot loops pay zero
@@ -324,6 +331,8 @@ std::thread_local! {
     static STORE_FACES_COPIED: Cell<u64> = const { Cell::new(0) };
     static JUNCTION_CELLS_COPIED: Cell<u64> = const { Cell::new(0) };
     static COPLANAR_SECTION_PROBES: Cell<u64> = const { Cell::new(0) };
+    static FF_CYLINDER_NURBS_MARCHES: Cell<u64> = const { Cell::new(0) };
+    static FF_CYLINDER_NURBS_CLEARED: Cell<u64> = const { Cell::new(0) };
     static VE_PAIRS_VISITED: Cell<u64> = const { Cell::new(0) };
     static EE_PAIRS_VISITED: Cell<u64> = const { Cell::new(0) };
     static EE_PAIRS_SURVIVING: Cell<u64> = const { Cell::new(0) };
@@ -620,6 +629,22 @@ pub(crate) fn bump_coplanar_section_probe() {
     increment(&COPLANAR_SECTION_PROBES);
 }
 
+/// Count one cylinder x NURBS face pair handed to the surface marcher.
+/// Crate-internal.
+#[inline]
+pub(crate) fn bump_ff_cylinder_nurbs_march() {
+    #[cfg(feature = "perf-counters")]
+    increment(&FF_CYLINDER_NURBS_MARCHES);
+}
+
+/// Count one cylinder x NURBS face pair whose NURBS control net is clear of
+/// the cylinder's carrier, skipped before the marcher. Crate-internal.
+#[inline]
+pub(crate) fn bump_ff_cylinder_nurbs_cleared() {
+    #[cfg(feature = "perf-counters")]
+    increment(&FF_CYLINDER_NURBS_CLEARED);
+}
+
 /// Count `cells` junction-registry cells copied when a phase-FF solid pair
 /// first writes the shared seeded cells. Crate-internal.
 #[inline]
@@ -727,6 +752,10 @@ pub struct PerfSnapshot {
     pub coplanar_section_probes: u64,
     /// Seeded junction cells copied by phase-FF solid pairs that wrote them.
     pub junction_cells_copied: u64,
+    /// Cylinder x NURBS face pairs phase FF handed to the surface marcher.
+    pub ff_cylinder_nurbs_marches: u64,
+    /// Cylinder x NURBS face pairs skipped as clear of the carrier.
+    pub ff_cylinder_nurbs_cleared: u64,
 }
 
 /// Reset all counters to zero. Only available with `perf-counters`.
@@ -760,6 +789,8 @@ pub fn reset() {
     STORE_FACES_COPIED.set(0);
     COPLANAR_SECTION_PROBES.set(0);
     JUNCTION_CELLS_COPIED.set(0);
+    FF_CYLINDER_NURBS_MARCHES.set(0);
+    FF_CYLINDER_NURBS_CLEARED.set(0);
 }
 
 /// Every work counter since the last [`reset`]. Only available with
@@ -795,6 +826,8 @@ pub fn snapshot() -> PerfSnapshot {
         store_faces_copied: STORE_FACES_COPIED.get(),
         coplanar_section_probes: COPLANAR_SECTION_PROBES.get(),
         junction_cells_copied: JUNCTION_CELLS_COPIED.get(),
+        ff_cylinder_nurbs_marches: FF_CYLINDER_NURBS_MARCHES.get(),
+        ff_cylinder_nurbs_cleared: FF_CYLINDER_NURBS_CLEARED.get(),
     }
 }
 

@@ -608,6 +608,7 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
 
     match face.surface() {
         FaceSurface::Plane { normal, .. } => {
+            crate::perf::bump_planar_face_integration();
             let effective_normal = if reversed { -*normal } else { *normal };
             let contribution =
                 integrate_planar_face(topo, face_id, effective_normal, rule.reference)?;
@@ -636,29 +637,20 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
                 false,
                 true,
             )?;
+            // Every rule (fixed or adaptive, full, volume-only or area-only)
+            // takes the row-normal sampler: it keeps every sample, and every
+            // contribution and flux bit (see `cylinder_row_tests`).
             #[cfg(target_arch = "wasm32")]
-            let sampled = if !AREA_ONLY && rule.volume_only {
-                integrate_cylinder_with_trimming::<_, AREA_ONLY>(
-                    s,
-                    u_range,
-                    v_range,
-                    rule,
-                    sign,
-                    &uv,
-                    PatchScale::ANGULAR,
-                    None,
-                )
-            } else {
-                integrate_with_trimming::<_, AREA_ONLY>(
-                    s,
-                    u_range,
-                    v_range,
-                    rule,
-                    sign,
-                    &uv,
-                    PatchScale::ANGULAR,
-                )
-            };
+            let sampled = integrate_cylinder_with_trimming::<_, AREA_ONLY>(
+                s,
+                u_range,
+                v_range,
+                rule,
+                sign,
+                &uv,
+                PatchScale::ANGULAR,
+                None,
+            );
             #[cfg(not(target_arch = "wasm32"))]
             let sampled = integrate_with_trimming::<_, AREA_ONLY>(
                 s,
@@ -2253,6 +2245,16 @@ impl<'a> UvTrim<'a> {
         }
     }
 
+    /// Points of every loop: each one starts at most one segment a
+    /// vertical line can cut.
+    fn point_count(&self) -> usize {
+        self.outer
+            .into_iter()
+            .chain(self.pockets)
+            .chain(self.bands)
+            .fold(0usize, |n, l| n.saturating_add(l.points.len()))
+    }
+
     /// Keep the whole domain but remove `uv`'s holes.
     fn holes_of(uv: &'a FaceUv) -> Self {
         Self::new(None, &uv.pockets, &uv.bands, uv.u_periodic)
@@ -3404,17 +3406,7 @@ fn green_cell_moments<F>(
 where
     F: Fn(f64) -> (Point3, Vec3),
 {
-    let mut value = [0.0; 10];
-    accumulate_green_segment(
-        &mut value,
-        range,
-        ADAPTIVE_GREEN_ORDER,
-        1.0,
-        eval,
-        origin,
-        e1,
-        e2,
-    );
+    let value = green_cell_value(range, eval, origin, e1, e2);
     let mut magnitude = [0.0; 10];
     let scale = (range.1 - range.0).abs() / 2.0;
     let mid = f64::midpoint(range.0, range.1);
@@ -3442,6 +3434,27 @@ where
     (value, magnitude)
 }
 
+/// The moments of [`green_cell_moments`] alone, for a cell whose magnitudes
+/// nothing reads: the bisection compares and keeps only these, and the
+/// magnitudes cost a second evaluation of the curve at every abscissa.
+fn green_cell_value<F>(range: (f64, f64), eval: &F, origin: Point3, e1: Vec3, e2: Vec3) -> [f64; 10]
+where
+    F: Fn(f64) -> (Point3, Vec3),
+{
+    let mut value = [0.0; 10];
+    accumulate_green_segment(
+        &mut value,
+        range,
+        ADAPTIVE_GREEN_ORDER,
+        1.0,
+        eval,
+        origin,
+        e1,
+        e2,
+    );
+    value
+}
+
 /// Shared state of one edge's adaptive Green integration.
 struct AdaptiveGreen<'a, F> {
     eval: &'a F,
@@ -3466,21 +3479,20 @@ impl<F: Fn(f64) -> (Point3, Vec3)> AdaptiveGreen<'_, F> {
         depth: u32,
     ) -> bool {
         let mid = f64::midpoint(range.0, range.1);
-        let left = green_cell_moments((range.0, mid), self.eval, self.origin, self.e1, self.e2);
-        let right = green_cell_moments((mid, range.1), self.eval, self.origin, self.e1, self.e2);
+        let left = green_cell_value((range.0, mid), self.eval, self.origin, self.e1, self.e2);
+        let right = green_cell_value((mid, range.1), self.eval, self.origin, self.e1, self.e2);
         // A non-finite moment never compares as converged.
-        let converged =
-            (0..10).all(|k| (left.0[k] + right.0[k] - whole[k]).abs() <= self.allowance[k]);
+        let converged = (0..10).all(|k| (left[k] + right[k] - whole[k]).abs() <= self.allowance[k]);
         if converged {
             self.cells += 1;
             for k in 0..10 {
-                out[k] += left.0[k] + right.0[k];
+                out[k] += left[k] + right[k];
             }
             return self.cells <= ADAPTIVE_GREEN_MAX_CELLS;
         }
         depth < ADAPTIVE_GREEN_MAX_DEPTH
-            && self.cell(out, (range.0, mid), &left.0, depth + 1)
-            && self.cell(out, (mid, range.1), &right.0, depth + 1)
+            && self.cell(out, (range.0, mid), &left, depth + 1)
+            && self.cell(out, (mid, range.1), &right, depth + 1)
     }
 }
 
@@ -5215,6 +5227,14 @@ fn integrate_knot_aligned<S: ParametricSurface, const AREA_ONLY: bool>(
             (params, axis)
         });
     let (mut cuts, mut spans) = (Vec::new(), Vec::new());
+    let count_first = knot_aligned_lines_may_pass(
+        &breaks,
+        (cell_u, cell_v),
+        gauss_pts.len(),
+        (v_range, knots_v.len()),
+        splits.then(|| trim.point_count()),
+        budget,
+    );
     // Gauss lines integrated so far, each one `v` sub-cell at one `u`
     // abscissa: `order` of them make one tensor cell.
     // Every interval is integrated, however narrow: no width floor is safe,
@@ -5226,6 +5246,14 @@ fn integrate_knot_aligned<S: ParametricSurface, const AREA_ONLY: bool>(
     // Both passes use identical abscissas, trim spans and budget arithmetic;
     // the admitted pass retains its original sample/accumulation order.
     for preflight in [true, false] {
+        // The counting pass only decides the refusal; a face whose lines
+        // are bounded under the budget cannot be refused.
+        if preflight {
+            if !count_first {
+                continue;
+            }
+            crate::perf::bump_knot_aligned_preflight();
+        }
         let mut lines = 0usize;
         for w in breaks.windows(2) {
             let (u0, u1) = (w[0], w[1]);
@@ -5328,11 +5356,70 @@ fn integrate_knot_aligned<S: ParametricSurface, const AREA_ONLY: bool>(
                 }
             }
         }
+        if !preflight {
+            crate::perf::add_knot_aligned_lines(lines);
+        }
     }
     if !AREA_ONLY {
         rule.record_flux(acc.flux(sign));
     }
     Ok(Some(acc.finish(sign)))
+}
+
+/// Whether [`integrate_knot_aligned`] could count more than `budget` Gauss
+/// lines, from a bound that needs no trim span: `false` proves it cannot.
+///
+/// Per `u` abscissa the accepted `v` spans are disjoint pieces of `v_range`
+/// between consecutive cuts, and each trim segment cuts a vertical line at
+/// most once, so there are at most `trim_points + 1` of them (one for an
+/// untrimmed domain, `trim_points == None`). The interior `v` knots split
+/// them into at most `spans + knots_v` pieces, and a piece of length `l` is
+/// at most `l / cell_v + 1` lines ([`knot_aligned_cells`]), so a row is at most
+/// `|v_range| / cell_v + spans + knots_v` lines, plus one for rounding in
+/// the pieces' lengths.
+///
+/// With `FORCE_KNOT_ALIGNED_PREFLIGHT` set (tests), always `true`.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn knot_aligned_lines_may_pass(
+    breaks: &[f64],
+    (cell_u, cell_v): (f64, f64),
+    order: usize,
+    (v_range, knots_v): ((f64, f64), usize),
+    trim_points: Option<usize>,
+    budget: usize,
+) -> bool {
+    #[cfg(test)]
+    if FORCE_KNOT_ALIGNED_PREFLIGHT.get() {
+        return true;
+    }
+    let v_cells = (v_range.1 - v_range.0).abs() / cell_v;
+    let v_cells = if cell_v.is_nan() || cell_v <= 0.0 {
+        // A degenerate `v` axis tiles each piece as one cell.
+        0
+    } else if v_cells.is_finite() {
+        // Saturates for a quotient past `usize::MAX`.
+        v_cells.ceil() as usize
+    } else {
+        return true;
+    };
+    let spans = trim_points.map_or(1, |points| points.saturating_add(1));
+    let row = v_cells
+        .saturating_add(1)
+        .saturating_add(spans)
+        .saturating_add(knots_v);
+    let rows = breaks
+        .windows(2)
+        .fold(0usize, |rows, w| {
+            rows.saturating_add(knot_aligned_cells(w[1] - w[0], cell_u))
+        })
+        .saturating_mul(order);
+    rows.saturating_mul(row) > budget
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Run [`integrate_knot_aligned`]'s counting pass whatever its bound says.
+    static FORCE_KNOT_ALIGNED_PREFLIGHT: Cell<bool> = const { Cell::new(false) };
 }
 
 type GeneratorAxes<'a, 's> = (&'a FirstOrderAxis<'s>, &'a [f64], &'a FirstOrderAxis<'s>);
@@ -7024,6 +7111,190 @@ mod tests {
         ));
     }
 
+    /// The bisection reads only a cell's moments, so it evaluates the curve
+    /// once per abscissa of each half, and keeps the sums the full cell
+    /// reading (moments and magnitudes) gives.
+    #[test]
+    fn adaptive_green_cells_evaluate_each_abscissa_once() {
+        let (origin, e1, e2) = (
+            Point3::new(0.2, -0.1, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+        );
+        let evaluations = Cell::new(0usize);
+        // A quarter turn in a rational parameter: no fixed rule is exact.
+        let eval = |u: f64| {
+            evaluations.set(evaluations.get() + 1);
+            let w = 1.0 + u * u;
+            let (x, y) = ((1.0 - u * u) / w, 2.0 * u / w);
+            let (dx, dy) = (-4.0 * u / (w * w), 2.0 * (1.0 - u * u) / (w * w));
+            (Point3::new(x, y, 0.0), Vec3::new(dx, dy, 0.0))
+        };
+        let range = (0.0, 1.0);
+        let (whole, magnitude) = green_cell_moments(range, &eval, origin, e1, e2);
+        for (loose, expected_cells) in [(true, 1), (false, 0)] {
+            let mut adaptive = AdaptiveGreen {
+                eval: &eval,
+                origin,
+                e1,
+                e2,
+                allowance: magnitude.map(|m| if loose { m } else { 1e-13 * m }),
+                cells: 0,
+            };
+            let mut out = [0.0; 10];
+            evaluations.set(0);
+            assert!(adaptive.cell(&mut out, range, &whole, 0));
+            let used = evaluations.get();
+            if loose {
+                assert_eq!(adaptive.cells, expected_cells);
+                assert_eq!(used, 2 * ADAPTIVE_GREEN_ORDER);
+                let left = green_cell_moments((0.0, 0.5), &eval, origin, e1, e2).0;
+                let right = green_cell_moments((0.5, 1.0), &eval, origin, e1, e2).0;
+                for k in 0..10 {
+                    assert_eq!(out[k].to_bits(), (left[k] + right[k]).to_bits());
+                }
+            } else {
+                // Every visited cell reads its two halves, nothing else.
+                assert!(adaptive.cells > expected_cells);
+                assert_eq!(used % (2 * ADAPTIVE_GREEN_ORDER), 0);
+                assert!(used >= 2 * ADAPTIVE_GREEN_ORDER * adaptive.cells);
+                assert!(used < 4 * ADAPTIVE_GREEN_ORDER * adaptive.cells);
+            }
+        }
+    }
+
+    #[test]
+    fn knot_aligned_line_bound_decides_the_counting_pass() {
+        // Two u cells at order 5 are ten rows; a row is at most two v cells,
+        // one for rounding, one span and no knot: forty lines.
+        let bound = |trim_points, knots_v, budget| {
+            knot_aligned_lines_may_pass(
+                &[0.0, 1.0],
+                (0.5, 0.5),
+                5,
+                ((0.0, 1.0), knots_v),
+                trim_points,
+                budget,
+            )
+        };
+        assert!(!bound(None, 0, 40));
+        assert!(bound(None, 0, 39));
+        // Each trim point may start a segment that cuts the row once more,
+        // and each interior v knot splits one piece.
+        assert!(!bound(Some(7), 3, 40 + 10 * (7 + 3)));
+        assert!(bound(Some(7), 3, 40 + 10 * (7 + 3) - 1));
+        // A degenerate v axis is one cell per piece; an unbounded one counts.
+        assert!(!knot_aligned_lines_may_pass(
+            &[0.0, 1.0],
+            (0.5, f64::NAN),
+            5,
+            ((0.0, 1.0), 0),
+            None,
+            20
+        ));
+        assert!(knot_aligned_lines_may_pass(
+            &[0.0, 1.0],
+            (0.5, 0.5),
+            5,
+            ((0.0, f64::INFINITY), 0),
+            None,
+            usize::MAX
+        ));
+    }
+
+    /// The counting pass only decides the refusal, so running it whatever
+    /// the bound says (the rule before the bound) must give the same answer:
+    /// the same refusal, or the same sums bit for bit.
+    #[test]
+    fn knot_aligned_rule_matches_its_always_counted_form() {
+        let z = Vec3::new(0.0, 0.0, 1.0);
+        let cylinder =
+            remus_math::surfaces::CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), z, 2.0)
+                .expect("cylinder");
+        // Segments that each span the whole u window: every row cuts all of
+        // them, so a row holds about half as many spans as the loop has points.
+        let zigzag = |points: u32| {
+            UvLoop::new(
+                (0..points)
+                    .map(|i| Point2::new(f64::from(i % 2), f64::from(i) / f64::from(points)))
+                    .collect(),
+                false,
+                false,
+            )
+        };
+        let grid = |n: u32| -> Vec<f64> { (1..n).map(|i| f64::from(i) / f64::from(n)).collect() };
+        let run = |outer: Option<&UvLoop>, knots: (&[f64], &[f64]), order: usize, forced: bool| {
+            let trim = UvTrim::new(outer, &[], &[], false);
+            let rule = IntegrationRule {
+                order,
+                adaptive: None,
+                knots: Some(knots),
+                reference: Point3::new(0.3, -0.2, 0.1),
+                volume_only: false,
+                ruled_guard: false,
+                flux: None,
+                cone_apex: None,
+            };
+            FORCE_KNOT_ALIGNED_PREFLIGHT.set(forced);
+            NORMAL_EVALUATIONS.with(|count| count.set(0));
+            let result = integrate_knot_aligned::<_, false>(
+                &cylinder,
+                (0.0, 1.0),
+                (0.0, 1.0),
+                rule,
+                1.0,
+                &trim,
+                PatchScale::ANGULAR,
+                knots,
+            );
+            FORCE_KNOT_ALIGNED_PREFLIGHT.set(false);
+            (result, NORMAL_EVALUATIONS.with(Cell::get))
+        };
+        let mut refused = 0;
+        let mut integrated = 0;
+        // (trim points, u knots, v knots, order): untrimmed and trimmed, well
+        // inside the cap, close under it, and past it.
+        for (points, nu, nv, order) in [
+            (0, 7, 5, 5),
+            (0, 400, 400, 1),
+            (0, 600, 600, 1),
+            (9, 3, 4, 5),
+            (40, 6, 9, 3),
+            (300, 200, 2, 1),
+            (1200, 300, 2, 1),
+            (1200, 600, 2, 1),
+        ] {
+            let outer = (points > 0).then(|| zigzag(points));
+            let (ku, kv) = (grid(nu + 1), grid(nv + 1));
+            let (bounded, bounded_work) = run(outer.as_ref(), (&ku, &kv), order, false);
+            let (counted, counted_work) = run(outer.as_ref(), (&ku, &kv), order, true);
+            assert_eq!(
+                bounded_work, counted_work,
+                "{points} points, {nu} x {nv} knots"
+            );
+            match (bounded, counted) {
+                (Ok(Some(bounded)), Ok(Some(counted))) => {
+                    integrated += 1;
+                    assert_eq!(
+                        fields(&bounded).map(f64::to_bits),
+                        fields(&counted).map(f64::to_bits),
+                        "{points} points, {nu} x {nv} knots"
+                    );
+                }
+                (Err(CheckError::IntegrationFailed(_)), Err(CheckError::IntegrationFailed(_))) => {
+                    refused += 1;
+                    assert_eq!(bounded_work, 0);
+                }
+                (bounded, counted) => {
+                    unreachable!(
+                        "{points} points, {nu} x {nv} knots: {bounded:?} against {counted:?}"
+                    )
+                }
+            }
+        }
+        assert!(refused >= 2 && integrated >= 5, "{refused} / {integrated}");
+    }
+
     /// `(x(u), v, 0)` with `x' = STEEP` on the knot span `[0.5, 0.5 + NARROW]`
     /// and `x' = 1` elsewhere: the narrow span carries one unit of area.
     struct NarrowSpan;
@@ -7394,6 +7665,67 @@ mod cylinder_row_tests {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    /// The adaptive full rule (`integrate_face_about`) also keeps its bits on
+    /// the row-normal sampler, trimmed (tiled) and untrimmed (adaptive).
+    #[test]
+    fn cylinder_rows_preserve_adaptive_full_rule_bits() {
+        let outer = UvLoop::new(
+            vec![
+                Point2::new(0.0, -1.0),
+                Point2::new(1.0, -0.8),
+                Point2::new(1.0, 8.0),
+                Point2::new(0.0, 7.7),
+            ],
+            false,
+            false,
+        );
+        let options = PropertiesOptions::default();
+        for axis in [Vec3::new(0.0, 0.0, 1.0), Vec3::new(0.3, -0.4, 0.8)] {
+            let surface = CylindricalSurface::new(Point3::new(13.0, -7.0, 5.0), axis, 3.0).unwrap();
+            for trim in [
+                UvTrim::new(None, &[], &[], false),
+                UvTrim::new(Some(&outer), &[], &[], false),
+            ] {
+                let rule = |flux| IntegrationRule {
+                    order: options.gauss_order,
+                    adaptive: Some(&options),
+                    knots: None,
+                    reference: Point3::new(0.2, -0.3, 0.4),
+                    volume_only: false,
+                    ruled_guard: false,
+                    flux,
+                    cone_apex: None,
+                };
+                let (fresh_flux, reused_flux) = (Cell::new(None), Cell::new(None));
+                let fresh = integrate_parametric::<_, false>(
+                    &surface,
+                    (0.0, 1.0),
+                    (-1.0, 8.0),
+                    rule(Some(&fresh_flux)),
+                    1.0,
+                    &trim,
+                    PatchScale::ANGULAR,
+                )
+                .unwrap();
+                let reused = integrate_cylinder_parametric::<_, false>(
+                    &surface,
+                    (0.0, 1.0),
+                    (-1.0, 8.0),
+                    rule(Some(&reused_flux)),
+                    1.0,
+                    &trim,
+                    PatchScale::ANGULAR,
+                )
+                .unwrap();
+                assert_eq!(bits(&fresh), bits(&reused));
+                assert_eq!(
+                    fresh_flux.get().map(|f| f.0.map(f64::to_bits)),
+                    reused_flux.get().map(|f| f.0.map(f64::to_bits))
+                );
             }
         }
     }

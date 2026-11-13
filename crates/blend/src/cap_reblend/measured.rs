@@ -77,20 +77,28 @@ impl<'a> Measured<'a> {
         }
     }
 
-    /// Seed stations: `(v, start, end)` of every resolved section.
-    fn seeds(&self) -> Vec<(f64, Point3, Point3)> {
+    /// Seed stations: `(v, start, end, middle)` of every resolved section,
+    /// `middle` the carrier at `(0.5, v)`.
+    fn seeds(&self) -> Vec<Seed> {
+        let surface = self.surface();
+        let seed = |v: f64, start: Point3, end: Point3| Seed {
+            v,
+            start,
+            end,
+            middle: surface.evaluate(0.5, v),
+        };
         match self {
             Self::Stations(field) => {
                 let rows = field.surface.control_points();
                 let knots = field.surface.knots_v();
                 (0..rows[0].len())
-                    .map(|index| (knots[index + 1], rows[0][index], rows[2][index]))
+                    .map(|index| seed(knots[index + 1], rows[0][index], rows[2][index]))
                     .collect()
             }
             Self::Loft(loft) => loft
                 .sections
                 .iter()
-                .map(|section| (section.v, section.start, section.end))
+                .map(|section| seed(section.v, section.start, section.end))
                 .collect(),
         }
     }
@@ -106,23 +114,23 @@ impl<'a> Measured<'a> {
         }
     }
 
+    /// The carrier point closest to `point`, from `seeds` ([`Self::seeds`]).
     #[allow(clippy::cast_precision_loss)]
-    fn project(&self, point: Point3) -> (f64, f64) {
+    fn project(&self, seeds: &[Seed], point: Point3) -> (f64, f64) {
         let surface = self.surface();
-        let seeds = self.seeds();
         let mut nearest = (f64::INFINITY, 0_usize);
-        for (index, &(v, start, end)) in seeds.iter().enumerate() {
-            let distance = (point - start)
+        for (index, seed) in seeds.iter().enumerate() {
+            let distance = (point - seed.start)
                 .length()
-                .min((point - end).length())
-                .min((point - surface.evaluate(0.5, v)).length());
+                .min((point - seed.end).length())
+                .min((point - seed.middle).length());
             if distance < nearest.0 {
                 nearest = (distance, index);
             }
         }
-        let low = seeds[nearest.1.saturating_sub(1)].0;
-        let high = seeds[(nearest.1 + 1).min(seeds.len() - 1)].0;
-        let mut seed = (f64::INFINITY, 0.5, seeds[nearest.1].0);
+        let low = seeds[nearest.1.saturating_sub(1)].v;
+        let high = seeds[(nearest.1 + 1).min(seeds.len() - 1)].v;
+        let mut seed = (f64::INFINITY, 0.5, seeds[nearest.1].v);
         for i in 0..=SEED_STEPS {
             let u = i as f64 / SEED_STEPS as f64;
             for j in 0..=SEED_STEPS {
@@ -144,6 +152,66 @@ impl<'a> Measured<'a> {
             // neighbourhood, and the best there is.
             Ok(_) | Err(_) => (seed.1, seed.2),
         }
+    }
+}
+
+/// A projection seed: one resolved section's parameter, its two ends and
+/// the carrier's middle at it.
+struct Seed {
+    v: f64,
+    start: Point3,
+    end: Point3,
+    middle: Point3,
+}
+
+/// One measured read of a circular-section carrier, kept for repeated
+/// queries.
+///
+/// [`sampled_canal_measured`], [`sampled_project_measured`] and
+/// [`sampled_section_centre_measured`] each read the carrier again (its
+/// stations' radii and centres, or a loft's sections) before answering. A
+/// caller that queries one face many times (recognition probes every
+/// section) reads it once here; every answer is bit-identical to the free
+/// function's on the same face.
+pub struct MeasuredCarrier<'a> {
+    measured: Measured<'a>,
+    seeds: std::cell::OnceCell<Vec<Seed>>,
+}
+
+impl<'a> MeasuredCarrier<'a> {
+    /// Read `face`'s carrier.
+    ///
+    /// # Errors
+    /// Refuses an unqualified carrier, as [`sampled_canal_measured`] does.
+    pub fn read(face: &'a Face) -> Result<Self, BlendError> {
+        Ok(Self {
+            measured: Measured::read(face)?,
+            seeds: std::cell::OnceCell::new(),
+        })
+    }
+
+    /// [`sampled_canal_measured`] of the face.
+    ///
+    /// # Errors
+    /// As [`sampled_canal_measured`].
+    pub fn canal(&self) -> Result<SampledCanal, BlendError> {
+        self.measured.canal()
+    }
+
+    /// [`sampled_project_measured`] of `point`.
+    #[must_use]
+    pub fn project(&self, point: Point3) -> (f64, f64) {
+        let seeds = self.seeds.get_or_init(|| self.measured.seeds());
+        self.measured.project(seeds, point)
+    }
+
+    /// [`sampled_section_centre_measured`] of `point`.
+    ///
+    /// # Errors
+    /// Refuses a point in a collapsed span.
+    pub fn section_centre(&self, point: Point3) -> Result<Point3, BlendError> {
+        let (_, v) = self.project(point);
+        self.measured.centre(v)
     }
 }
 
@@ -258,7 +326,7 @@ fn circumcentre(a: Point3, b: Point3, c: Point3) -> Option<Point3> {
 /// carrier's radius evolves smoothly from station to station (then each
 /// [`SampledSection::radius`] is that station's own).
 pub fn sampled_canal_measured(face: &Face) -> Result<SampledCanal, BlendError> {
-    Measured::read(face)?.canal()
+    MeasuredCarrier::read(face)?.canal()
 }
 
 /// [`sampled_section_centre`](super::sampled_section_centre) on a
@@ -268,9 +336,7 @@ pub fn sampled_canal_measured(face: &Face) -> Result<SampledCanal, BlendError> {
 /// # Errors
 /// Refuses an unqualified carrier or a point in a collapsed span.
 pub fn sampled_section_centre_measured(face: &Face, point: Point3) -> Result<Point3, BlendError> {
-    let measured = Measured::read(face)?;
-    let (_, v) = measured.project(point);
-    measured.centre(v)
+    MeasuredCarrier::read(face)?.section_centre(point)
 }
 
 /// Parameters of the point of a [`sampled_canal_measured`] carrier closest to
@@ -280,5 +346,5 @@ pub fn sampled_section_centre_measured(face: &Face, point: Point3) -> Result<Poi
 /// # Errors
 /// Refuses an unqualified carrier.
 pub fn sampled_project_measured(face: &Face, point: Point3) -> Result<(f64, f64), BlendError> {
-    Ok(Measured::read(face)?.project(point))
+    Ok(MeasuredCarrier::read(face)?.project(point))
 }

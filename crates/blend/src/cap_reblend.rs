@@ -9,7 +9,8 @@
 
 mod measured;
 pub use measured::{
-    sampled_canal_measured, sampled_project_measured, sampled_section_centre_measured,
+    MeasuredCarrier, sampled_canal_measured, sampled_project_measured,
+    sampled_section_centre_measured,
 };
 mod restore;
 pub use restore::{SupportExtension, restore_joined_support_limits_in_place};

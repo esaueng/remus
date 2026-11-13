@@ -70,6 +70,9 @@ pub fn fma(a: f64, b: f64, c: f64) -> f64 {
 #[allow(clippy::suboptimal_flops)]
 fn wasm_fma(a: f64, b: f64, c: f64) -> f64 {
     if in_emulated_range(a, b, c) {
+        if let Some(fused) = exact_product_fma(a, b, c) {
+            return fused;
+        }
         emulated_fma(a, b, c)
     } else if is_zero_product(a, b, c) {
         // `a·b` is an exact signed zero, so the one rounding is the sum's,
@@ -112,6 +115,34 @@ impl FusedMulAdd for f64 {
 fn in_emulated_range(a: f64, b: f64, c: f64) -> bool {
     const FACTORS: std::ops::RangeInclusive<f64> = FACTOR_MIN..=FACTOR_MAX;
     FACTORS.contains(&a.abs()) && FACTORS.contains(&b.abs()) && c.abs() <= ADDEND_MAX
+}
+
+/// The fused result of operands accepted by `in_emulated_range` whose product
+/// needs no error term, read with one or two plain operations:
+///
+/// - a zero addend: the product of factors in `[2^-450, 2^450]` is a normal
+///   number, so `RN(a·b ± 0) = RN(a·b)` (the zero cannot change a nonzero
+///   sum, nor its sign);
+/// - a factor that is a power of two: the product is exact (it stays far
+///   inside the normal range), so `RN(a·b + c)` is the one rounding of the
+///   plain sum.
+///
+/// Axis-aligned vectors make zero addends common (the inner term of a dot
+/// product with a zero component). `None` leaves the case to the emulation.
+#[inline]
+#[must_use]
+#[cfg_attr(not(any(target_arch = "wasm32", test)), allow(dead_code))]
+fn exact_product_fma(a: f64, b: f64, c: f64) -> Option<f64> {
+    const FRACTION: u64 = (1 << 52) - 1;
+    if c == 0.0 {
+        return Some(a * b);
+    }
+    if a.to_bits() & FRACTION == 0 || b.to_bits() & FRACTION == 0 {
+        // Plain on purpose: the product is exact, so this is one rounding.
+        #[allow(clippy::suboptimal_flops)]
+        return Some(a * b + c);
+    }
+    None
 }
 
 /// Knuth's TwoSum: `s = RN(a + b)` and the exact error `e = a + b − s`.
@@ -397,6 +428,50 @@ mod tests {
             assert!(!in_emulated_range(1.0, 1.0, c));
             assert_same(1.5, 3.0, c);
         }
+    }
+
+    #[test]
+    fn exact_product_shortcuts_match_native_fma() {
+        // Zero addends of either sign and power-of-two factors against every
+        // addend shape, over the whole accepted range.
+        let mut rng = Rng(0x2E80_ADD5);
+        let (mut zero, mut power) = (0_u32, 0_u32);
+        for _ in 0..400_000 {
+            let span = if rng.below(4) == 0 { 450 } else { 40 };
+            let bits = if rng.below(2) == 0 {
+                0
+            } else {
+                rng.fraction_bits()
+            };
+            let a = rng.normal_in(-span, span, bits);
+            let bits_b = rng.fraction_bits();
+            let b = rng.normal_in(-span, span, bits_b);
+            let c = if rng.below(4) == 0 {
+                rng.sign() * 0.0
+            } else {
+                addend(&mut rng, a, b)
+            };
+            for (x, y) in [(a, b), (b, a)] {
+                if !in_emulated_range(x, y, c) {
+                    continue;
+                }
+                if let Some(fused) = exact_product_fma(x, y, c) {
+                    *(if c == 0.0 { &mut zero } else { &mut power }) += 1;
+                    let expected = x.mul_add(y, c);
+                    assert_eq!(
+                        fused.to_bits(),
+                        expected.to_bits(),
+                        "fma({x:e}, {y:e}, {c:e})"
+                    );
+                    assert_eq!(fused.to_bits(), emulated_fma(x, y, c).to_bits());
+                }
+                assert_same(x, y, c);
+            }
+        }
+        assert!(
+            zero > 100_000 && power > 100_000,
+            "{zero} zero, {power} power"
+        );
     }
 
     #[test]

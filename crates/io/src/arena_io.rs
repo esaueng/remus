@@ -59,7 +59,7 @@ use crate::IoError;
 use crate::limits::ensure_input_size;
 use crate::limits::{ImportLimits, ensure_limit};
 
-mod codec;
+pub(crate) mod codec;
 #[cfg(test)]
 mod codec_oracle_tests;
 

@@ -9978,7 +9978,13 @@ fn analytic_nurbs_intersection(
     let converted = match analytic {
         FaceSurface::Cylinder(c) => {
             let (v0, v1) = bounded("cylinder")?;
-            c.to_nurbs(v0, v1)?
+            let converted = c.to_nurbs(v0, v1)?;
+            if nurbs_net_clear_of_cylinder(c, nurbs) {
+                crate::perf::bump_ff_cylinder_nurbs_cleared();
+                return Ok(Vec::new());
+            }
+            crate::perf::bump_ff_cylinder_nurbs_march();
+            converted
         }
         FaceSurface::Cone(c) => {
             let (v0, v1) = bounded("cone")?;
@@ -9995,6 +10001,78 @@ fn analytic_nurbs_intersection(
         }
     };
     nurbs_nurbs_intersection(&converted, nurbs, context)
+}
+
+/// Distance from a cylinder's carrier past which a NURBS control net is
+/// taken to be clear of it.
+///
+/// The marcher reports a section only from a seed where the two surfaces
+/// come within `1e-5` of each other (its Newton refinement accepts a
+/// residual under `1e-6`, or ten times that after its last iteration) and
+/// merges seeds closer than `1e-4`; this is a hundred and ten times those.
+/// Its grid search's `0.1` proximity threshold only picks Newton starts and
+/// accepts nothing.
+const CARRIER_CLEARANCE: f64 = 1e-3;
+
+/// Whether every point of `nurbs` lies more than [`CARRIER_CLEARANCE`] from
+/// the infinite cylinder `cylinder`, so no face on either carrier can meet a
+/// face on the other and the marcher would return no curve.
+///
+/// A surface with positive weights lies in the convex hull of its control
+/// net, so a convex region clear of the carrier that holds the whole net
+/// holds the surface: the coaxial solid cylinder of radius
+/// `r - clearance`, or a half-space whose boundary plane is parallel to the
+/// axis and `r + clearance` from it. Anything else (a net wrapping the
+/// axis, a non-positive weight, a non-finite point) is not cleared and the
+/// pair runs the marcher as before.
+fn nurbs_net_clear_of_cylinder(
+    cylinder: &remus_math::surfaces::CylindricalSurface,
+    nurbs: &remus_math::nurbs::surface::NurbsSurface,
+) -> bool {
+    let (origin, axis, radius) = (cylinder.origin(), cylinder.axis(), cylinder.radius());
+    if nurbs
+        .weights()
+        .iter()
+        .flatten()
+        .any(|&w| !(w.is_finite() && w > 0.0))
+        || (axis.length() - 1.0).abs() > 1e-12
+    {
+        return false;
+    }
+    // Radial offsets of the net from the axis, with their largest length
+    // and the largest coordinate magnitude involved.
+    let world = Point3::new(0.0, 0.0, 0.0);
+    let mut radials = Vec::new();
+    let mut farthest = 0.0_f64;
+    let mut magnitude = (origin - world).length() + radius;
+    let mut sum = Vec3::new(0.0, 0.0, 0.0);
+    for &point in nurbs.control_points().iter().flatten() {
+        let offset = point - origin;
+        let radial = offset - axis * offset.dot(axis);
+        let distance = (point - world).length();
+        if !distance.is_finite() {
+            return false;
+        }
+        farthest = farthest.max(radial.length());
+        magnitude = magnitude.max(distance);
+        sum += radial;
+        radials.push(radial);
+    }
+    if radials.is_empty() || !magnitude.is_finite() {
+        return false;
+    }
+    // The relative term keeps rounding in the offsets (a few ulps of the
+    // coordinates) far below the clearance at any distance from the origin.
+    let clearance = CARRIER_CLEARANCE.max(1e-9 * magnitude);
+    if farthest <= radius - clearance {
+        return true;
+    }
+    let Ok(direction) = sum.normalize() else {
+        return false;
+    };
+    radials
+        .iter()
+        .all(|radial| radial.dot(direction) >= radius + clearance)
 }
 
 fn nurbs_nurbs_intersection(
@@ -14018,6 +14096,9 @@ mod face_bbox_conic_tests {
 
 #[cfg(test)]
 mod helper_oracle_tests;
+
+#[cfg(test)]
+mod carrier_clearance_oracle_tests;
 
 #[cfg(test)]
 mod ruled_plane_tests;
