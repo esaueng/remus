@@ -156,6 +156,25 @@ pub fn wire_polygon_curve_sampled(
     closed_samples: usize,
     open_samples: usize,
 ) -> Result<Vec<Point3>, CheckError> {
+    wire_polygon_curve_sampled_except(topo, wire_id, closed_samples, open_samples, &[])
+}
+
+/// [`wire_polygon_curve_sampled`] with the OPEN edges in `chords` laid down
+/// as a single chord, the way a `Line` is: the caller knows they map to
+/// straight segments in the chart the polygon is projected into (an iso curve
+/// of the face's own carrier), so their intermediate samples add vertices
+/// and nothing else.
+///
+/// # Errors
+///
+/// Returns an error if any topology entity referenced by the wire is missing.
+pub(crate) fn wire_polygon_curve_sampled_except(
+    topo: &Topology,
+    wire_id: remus_topology::wire::WireId,
+    closed_samples: usize,
+    open_samples: usize,
+    chords: &[remus_topology::edge::EdgeId],
+) -> Result<Vec<Point3>, CheckError> {
     let wire = topo.wire(wire_id)?;
     let mut pts: Vec<Point3> = Vec::new();
     let mut prev_end: Option<remus_topology::vertex::VertexId> = None;
@@ -254,7 +273,9 @@ pub fn wire_polygon_curve_sampled(
             } else {
                 (end_vid, start_vid)
             };
-            let is_open_curve = open_samples > 1 && !matches!(curve, EdgeCurve::Line);
+            let is_open_curve = open_samples > 1
+                && !matches!(curve, EdgeCurve::Line)
+                && !chords.contains(&oe.edge());
             if is_open_curve {
                 // Walk the edge's own span, half-open so the next edge
                 // supplies the closing point — the same convention the closed
