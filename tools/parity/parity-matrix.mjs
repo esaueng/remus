@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { isDeepStrictEqual } from 'node:util';
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -13,6 +13,7 @@ import {
   collectSourceProvenance,
   validateInstalledEntry,
 } from './provenance.mjs';
+import { runNpm } from './npm-cli.mjs';
 
 const self = fileURLToPath(import.meta.url);
 const scriptDir = dirname(self);
@@ -401,6 +402,7 @@ function finishCase(manifest, family, operation, scale, placement, batch, handle
     volume_relative_tolerance: manifest.volume_relative_tolerance,
     oracle_relative_tolerance: Math.max(family.volume_oracle?.relative_tolerance ?? manifest.volume_relative_tolerance, oracleFloor),
     surface_volume_relative_tolerance: manifest.surface_volume_relative_tolerance,
+    volume_floor: volumeFloor(scale),
     allowed_surface_types: family.allowed_surface_types,
     required_surface_types: family.required_surface_types,
     disclosure: family.disclosure ?? 'either',
@@ -433,8 +435,26 @@ export function expandMatrix(manifest) {
   });
 }
 
-function relativeError(actual, expected) {
-  return Math.abs(actual - expected) / Math.max(Math.abs(expected), 1);
+// The denominator floor of every volume comparison: the cell's
+// characteristic volume, scale^3 (the unit-scale fixtures are O(1)-O(10)
+// units across). A fixed floor of 1 made both bounds absolute below unit
+// volume, so at scale 1e-3 (volumes ~1e-7..1e-6) a "5e-8 relative" agreement
+// bound admitted 5-50% disagreement and the 1e-3 oracle bound admitted any
+// answer at all (B36). Scaling the floor keeps every bound invariant under
+// uniform scaling and leaves scale-1 cells exactly as before; it still
+// guards near-empty results against a zero denominator.
+export function volumeFloor(scale) {
+  return scale ** 3;
+}
+
+export function relativeError(actual, expected, floor) {
+  assert.ok(floor > 0, 'volume comparison needs a positive floor');
+  return Math.abs(actual - expected) / Math.max(Math.abs(expected), floor);
+}
+
+// Cross-surface agreement is symmetric: neither surface is the reference.
+export function surfaceVolumeError(native, wasm, floor) {
+  return relativeError(native, wasm, Math.max(Math.abs(native), floor));
 }
 
 function analyticCarriersPass(c, observation) {
@@ -511,7 +531,7 @@ export function scoreCase(c, observations) {
     add(surface, 'disclosure_match', disclosurePass(c, observation));
     if (succeeded && c.expected_volume != null) {
       add(surface, 'oracle_volume', Number.isFinite(observation.volume)
-        && relativeError(observation.volume, c.expected_volume) <= c.oracle_relative_tolerance);
+        && relativeError(observation.volume, c.expected_volume, c.volume_floor) <= c.oracle_relative_tolerance);
     } else if (!succeeded && c.expected_volume != null) {
       add(surface, 'oracle_volume', false);
     } else {
@@ -537,7 +557,7 @@ export function scoreCase(c, observations) {
   add('native/wasm', 'diagnostics_agreement', isDeepStrictEqual(native.diagnosticCodes, wasm.diagnosticCodes));
   add('native/wasm', 'quality_agreement', nullNormalized(native.quality) === nullNormalized(wasm.quality));
   add('native/wasm', 'volume_agreement', bothVolumes
-    && relativeError(native.volume, wasm.volume) <= c.surface_volume_relative_tolerance);
+    && surfaceVolumeError(native.volume, wasm.volume, c.volume_floor) <= c.surface_volume_relative_tolerance);
   add('native/wasm', 'census_agreement', isDeepStrictEqual(nullNormalized(native.census), nullNormalized(wasm.census)));
   add('native/wasm', 'carrier_agreement', isDeepStrictEqual(nullNormalized(native.surfaceTypes), nullNormalized(wasm.surfaceTypes)));
   add('native/wasm', 'mesh_quality_agreement', isDeepStrictEqual(nullNormalized(native.meshQuality), nullNormalized(wasm.meshQuality)));
@@ -840,14 +860,15 @@ function installPackage(packageDir, temporaryRoot) {
     ...process.env,
     npm_config_cache: resolve(temporaryRoot, 'npm-cache'),
   };
-  const packed = JSON.parse(execFileSync(
-    'npm',
+  // `runNpm` executes npm's CLI through Node on Windows, where the bare
+  // `npm` command is a .cmd shim that execFileSync cannot spawn.
+  const packed = JSON.parse(runNpm(
     ['pack', packageDir, '--json', '--pack-destination', temporaryRoot],
     { encoding: 'utf8', env: npmEnvironment },
   ));
   assert.equal(packed.length, 1, 'npm pack must produce exactly one tarball');
   const tarballPath = resolve(temporaryRoot, packed[0].filename);
-  execFileSync('npm', [
+  runNpm([
     'install',
     '--prefix', consumerDir,
     '--no-save',
