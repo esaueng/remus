@@ -1781,14 +1781,14 @@ fn assert_oblique_circle_loft(
             properties.center
         );
     }
-    // `solid_volume` measures NURBS bodies on the whole-solid mesh, an
-    // inscribed chord approximation (1.6e-4 low here, converging as the
-    // deflection shrinks). It must sit on the exact side of the old
-    // 32-facet loft's 6.4e-3 shortfall.
-    let meshed = crate::measure::solid_volume(topo, solid, scale * 1e-4).unwrap();
+    // `solid_volume` reads a body of planar caps and whole full-turn bands
+    // off the same face integrals, so it too reads the Cavalieri volume. It
+    // used to chord the bands on the whole-solid mesh, 1.6e-4 low here.
+    let measured = crate::measure::solid_volume(topo, solid, scale * 1e-4).unwrap();
+    let relative = (measured - expected_volume).abs() / expected_volume;
     assert!(
-        meshed <= expected_volume && (expected_volume - meshed) / expected_volume < 1e-3,
-        "meshed volume {meshed} vs exact {expected_volume}"
+        relative < 1e-9,
+        "solid_volume {measured} vs exact {expected_volume} (relative {relative:e})"
     );
 
     let mesh = crate::tessellate::tessellate_solid(topo, solid, scale * 2e-3).unwrap();

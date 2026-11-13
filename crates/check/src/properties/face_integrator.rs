@@ -284,6 +284,26 @@ pub(crate) fn integrate_face_fixed_volume_flux_about(
     integrate_face_fixed_flux_impl(topo, face_id, gauss_order, reference, true)
 }
 
+/// Whether a NURBS face is a whole full-turn band: closed in one parameter
+/// direction, bounded by two whole rims and one seam used each way.
+///
+/// Such a face (an in-place helical sweep's wall, an oblique circle loft's
+/// band) is its carrier's whole parameter rectangle, which the fixed rule
+/// integrates with no trim. `false` for any other face, NURBS or not.
+///
+/// # Errors
+///
+/// Topology lookups, and an iso curve the carrier's own data cannot form.
+pub fn nurbs_face_is_full_turn_band(topo: &Topology, face: FaceId) -> Result<bool, CheckError> {
+    let FaceSurface::Nurbs(s) = topo.face(face)?.surface() else {
+        return Ok(false);
+    };
+    Ok(
+        natural_rectangle::ruled_full_turn_is_complete(topo, face, s)?
+            || natural_rectangle::periodic_band_is_complete(topo, face, s)?,
+    )
+}
+
 /// A ruled face's acceptance terms, separate from surface-area properties.
 pub struct RuledGuardVolumeTerm {
     /// Signed divergence-theorem volume contribution.
@@ -1050,6 +1070,38 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
                     rule,
                     sign,
                     &UvTrim::new(None, &[], &[], true),
+                    PatchScale {
+                        u: knot_axis_patch_scale(s.knots_u(), full.0),
+                        v: knot_axis_patch_scale(s.knots_v(), full.1),
+                    },
+                );
+            }
+            // A face whose outer wire runs exactly along its carrier's four
+            // iso sides (a gear or thread flank, a twisted or tapered
+            // extrusion's side), or a band closed in one direction between
+            // two whole rims and one seam (an in-place helical sweep), is its
+            // whole parameter rectangle too. The trimmed rule below would
+            // break `u` at every vertex of the projected outline instead,
+            // most of them slivers where the projected rails repeat one `u`:
+            // 77 breaks on a spur flank, up to 544 on a twisted one.
+            // Integrate the rectangle with no trim, keeping at least the `u`
+            // resolution the outline gave (see
+            // [`ISO_BOUNDED_U_CELLS_PER_SPAN`]).
+            if natural_rectangle::iso_bounded_is_complete(topo, face_id, s)?
+                || natural_rectangle::periodic_band_is_complete(topo, face_id, s)?
+            {
+                let spans_u = interior_knots(s.knots_u(), full.0).len() + 1;
+                return integrate_parametric::<_, AREA_ONLY>(
+                    s,
+                    full.0,
+                    full.1,
+                    rule,
+                    sign,
+                    &UvTrim::new(None, &[], &[], true).with_min_u_cells(
+                        spans_u
+                            .saturating_mul(ISO_BOUNDED_U_CELLS_PER_SPAN)
+                            .min(TRIM_SAMPLES),
+                    ),
                     PatchScale {
                         u: knot_axis_patch_scale(s.knots_u(), full.0),
                         v: knot_axis_patch_scale(s.knots_v(), full.1),
@@ -2187,6 +2239,9 @@ struct UvTrim<'a> {
     u_periodic: bool,
     /// Segment indexes for the loops above, built once per trim (O06).
     index: TrimIndex,
+    /// For an untrimmed knot-aligned domain: the fewest `u` cells it is cut
+    /// into, 0 for no floor (see [`Self::with_min_u_cells`]).
+    min_u_cells: usize,
 }
 
 /// [`IntervalIndex`]es for one loop: crossing segments by `u` and winding
@@ -2242,7 +2297,17 @@ impl<'a> UvTrim<'a> {
             bands,
             u_periodic,
             index,
+            min_u_cells: 0,
         }
+    }
+
+    /// This trim with the knot-aligned fixed rule cutting `u` into at least
+    /// `cells` cells when nothing splits the domain: an iso-bounded NURBS
+    /// face integrated as its rectangle keeps the `u` resolution its outline
+    /// gave the trimmed rule. Other rules ignore it.
+    const fn with_min_u_cells(mut self, cells: usize) -> Self {
+        self.min_u_cells = cells;
+        self
     }
 
     /// Points of every loop: each one starts at most one segment a
@@ -4533,6 +4598,20 @@ impl Accumulator {
 /// axes never exceed 2*PI (= 8 patches), well under the cap.
 const MAX_PATCHES: usize = 16;
 
+/// `u` cells per knot span, up to [`TRIM_SAMPLES`] in all, that an
+/// iso-bounded NURBS face or full-turn band integrated as its whole rectangle
+/// is cut into at least.
+///
+/// The trimmed rule it replaces broke `u` at each of the outline's
+/// [`TRIM_SAMPLES`] samples per curved side, which cut a carrier of up to 32
+/// spans several times per span. The fixed tiling alone holds an axis to
+/// [`MAX_PATCHES`] cells, one per span past 16: on the 37-span zigzag wall of
+/// `regress_nurbs_knot_aligned_quadrature` that read the area 9.9e-9 off its
+/// closed form, 3.7e-12 at two cells per span, inside its 1e-12 bound from
+/// three. Four keeps a margin; the cap keeps a carrier of many short spans
+/// (a worm's 176-span flank) at one cell per span, as its outline did.
+const ISO_BOUNDED_U_CELLS_PER_SPAN: usize = 4;
+
 /// Patches per knot span on a NURBS axis.
 ///
 /// A knot span is one polynomial (here rational) piece of the surface, so it is
@@ -5202,7 +5281,10 @@ fn integrate_knot_aligned<S: ParametricSurface, const AREA_ONLY: bool>(
     breaks.compact_sort_by(f64::total_cmp);
     breaks.dedup();
 
-    let cell_u = knot_aligned_cell(u_range, scale.u);
+    let mut cell_u = knot_aligned_cell(u_range, scale.u);
+    if !splits && trim.min_u_cells > 0 {
+        cell_u = cell_u.min((u_range.1 - u_range.0).abs() / trim.min_u_cells as f64);
+    }
     let cell_v = knot_aligned_cell(v_range, scale.v);
     let gauss_pts = gauss_legendre_points(rule.order);
     let budget = MAX_KNOT_ALIGNED_CELLS.saturating_mul(gauss_pts.len());

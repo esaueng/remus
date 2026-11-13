@@ -1024,6 +1024,34 @@ fn boundary_lies_on_faces(
     Ok(true)
 }
 
+/// Whether every face of `solid` is planar or a whole full-turn NURBS band,
+/// with at least one band, so the face integrals measure the body with no
+/// trim to sample.
+fn solid_is_caps_and_full_turn_bands(
+    topo: &Topology,
+    solid: SolidId,
+) -> Result<bool, crate::OperationsError> {
+    let mut curved = false;
+    for face in remus_topology::explorer::solid_faces(topo, solid)? {
+        match topo.face(face)?.surface() {
+            FaceSurface::Plane { .. } => {}
+            FaceSurface::Nurbs(_) => {
+                if !remus_check::properties::face_integrator::nurbs_face_is_full_turn_band(
+                    topo, face,
+                )? {
+                    return Ok(false);
+                }
+                curved = true;
+            }
+            FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_) => return Ok(false),
+        }
+    }
+    Ok(curved)
+}
+
 /// Distance from `p` to `surface` (infinite when it cannot be measured);
 /// `grid` is a NURBS surface's projection seed grid.
 fn surface_gap(
@@ -3096,6 +3124,24 @@ fn solid_volume_uncached(
         && let Some(volume) = exact_analytic_face_volume(topo, solid, deflection, true)
     {
         vol_trace(|| format!("plane/cylinder exact faces -> {volume}"));
+        return Ok(volume);
+    }
+
+    // A body of planar caps and whole full-turn NURBS bands (an in-place
+    // helical sweep of a circle, an oblique circle loft) integrates exactly,
+    // face by face, with nothing to trim. The mesh below chords every band at
+    // the clamp instead: the 5-turn r1.5 coil about r12 read 2.4e-4 under its
+    // closed form 270π² there and took a second, against 2e-14 in tens of
+    // milliseconds here. Bodies of many small faces (a path sweep's pieces)
+    // keep the mesh, which costs them less than per-face integration. The
+    // certified reading stands only when every guard of
+    // [`qualified_face_integral_volume`] holds; a declined one keeps the mesh.
+    if solid_is_caps_and_full_turn_bands(topo, solid)?
+        && let Some(volume) = crate::performance::timed("volume.face-integrals", || {
+            qualified_face_integral_volume(topo, solid)
+        })?
+    {
+        vol_trace(|| format!("caps and full-turn bands: qualified face integrals -> {volume}"));
         return Ok(volume);
     }
 
@@ -6564,6 +6610,41 @@ mod face_integral_work_tests {
         // Every flank is far inside the knot-aligned work cap, so none walks
         // its trim spans twice.
         assert!(work.knot_aligned_lines > 0);
+        assert_eq!(work.knot_aligned_preflights, 0);
+    }
+    /// A helical gear's flanks and lands are each their carrier's whole
+    /// parameter rectangle, at most 16 knot spans an axis, so the knot-aligned
+    /// rule cuts each into 16 `u` cells and 16 `v` lines per abscissa. Read at
+    /// orders 5 and 3 that is at most `(5 + 3) · 16 · 16 = 2048` Gauss lines a
+    /// face. The trimmed rule they took before broke `u` at every vertex of a
+    /// 128-sample projected outline, 77 to 544 breaks a face.
+    #[test]
+    fn scaling_helical_gear_volume_integrates_each_face_as_its_rectangle() {
+        let mut topo = Topology::new();
+        let params = GearParams {
+            helix_angle: 20.0_f64.to_radians(),
+            ..GearParams::standard(GearKind::External, 2.0, 20, 10.0)
+        };
+        let solid = make_gear(&mut topo, &params, &GearPlacement::default())
+            .unwrap()
+            .solid;
+        let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
+        let nurbs = faces
+            .iter()
+            .filter(|&&f| matches!(topo.face(f).unwrap().surface(), FaceSurface::Nurbs(_)))
+            .count() as u64;
+        assert!(nurbs >= 80, "{nurbs} NURBS faces");
+
+        remus_check::perf::reset_integration();
+        let volume = qualified_face_integral_volume(&topo, solid).unwrap();
+        let work = remus_check::perf::integration_snapshot();
+        assert!(volume.is_some(), "the gear measures by its face integrals");
+        assert!(work.knot_aligned_lines > 0);
+        assert!(
+            work.knot_aligned_lines <= 2048 * nurbs,
+            "{} Gauss lines over {nurbs} NURBS faces",
+            work.knot_aligned_lines
+        );
         assert_eq!(work.knot_aligned_preflights, 0);
     }
 }

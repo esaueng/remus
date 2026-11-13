@@ -472,7 +472,7 @@ Quick reference — find the right file for any task:
 | Face Gauss integration, with area/volume/vector-flux-only orientation accumulation | `properties/face_integrator.rs` |
 | Recover a knot-budget refusal by sweeping a nonperiodic trim the other way | `properties/face_integrator/knot_axis.rs` |
 | Independent planar oracles for a trim crossing many spline knot spans (tests) | `properties/face_integrator/anisotropic_tests.rs` |
-| Complete degree-(2,1) natural NURBS rectangles certified from iso-row and circular-section boundary images, and ruled degree-(1, q) full-turn bands whose rows are whole circle edges closed on one straight seam | `properties/face_integrator/natural_rectangle.rs` |
+| NURBS faces certified as their carrier's whole parameter rectangle, so the fixed rule integrates them untrimmed: complete degree-(2,1) rectangles from iso-row and circular-section boundary images; ruled degree-(1, q) full-turn bands whose rows are whole circle edges closed on one straight seam; any clamped carrier whose wire runs along its four iso sides (NURBS edges either way round, lines, circles; gear and thread flanks); and bands closed in one direction between two whole rims and one seam (in-place helical sweeps) | `properties/face_integrator/natural_rectangle.rs` |
 | Bounded native Circle latitude domains, independent of trim sampling | `properties/face_integrator/sphere_latitude.rs` |
 | Bounded sampling of native-contiguous exact equator runs | `properties/face_integrator/sphere_latitude/partition_sampling.rs` |
 | Bounded h-refinement on an already resolved rectangular analytic domain | `properties/face_integrator/adaptive.rs` |
