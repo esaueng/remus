@@ -49,10 +49,13 @@
 //! partition, so a hollow part stays hollow.
 //!
 //! Whether the shells still avoid one another afterwards is a global
-//! property this engine does not compute. A necessary condition — each
-//! cavity's spatial extent staying strictly inside the outer shell's, before
-//! and after — is checked, and a solid that fails it is refused rather than
-//! offset into a well-formed answer with the wrong volume.
+//! property this engine does not compute in general. A necessary condition —
+//! each cavity's spatial extent staying strictly inside the outer shell's,
+//! before and after — is checked, and a solid that fails it is refused rather
+//! than offset into a well-formed answer with the wrong volume. An inward
+//! offset is the sign that closes the wall, so its result must also pass the
+//! carrier argument in [`interference`]: every cavity is proven inside a
+//! convex outer shell, or the offset is refused.
 
 // Unit tests may use `sort_by`: test binaries never ship, so the per-call-site
 // sort copies that `clippy.toml` disallows in production code do not matter there.
@@ -66,6 +69,7 @@ pub(crate) mod data;
 pub mod error;
 pub(crate) mod inter2d;
 pub(crate) mod inter3d;
+pub mod interference;
 pub(crate) mod loops;
 mod move_faces;
 pub(crate) mod offset;
@@ -73,6 +77,10 @@ pub(crate) mod self_int;
 
 pub use data::{JointType, OffsetOptions};
 pub use error::{OffsetError, UnsupportedMoveCause};
+pub use interference::{
+    ShellInterference, ShellInterferenceKind, predict_shell_interference, shell_slab_thickness,
+    verify_cavities_inside_outer,
+};
 pub use move_faces::{
     MoveFacesEntityResult, MoveFacesResult, move_faces, move_faces_with_entity_map,
     move_faces_with_face_map, replace_surface_with_entity_map, replace_surface_with_face_map,
@@ -231,6 +239,14 @@ fn thick_solid_impl(
         cavity::check_cavity_extents(topo, solid, clearance, cavity::Stage::Input)?;
         let clearance_floor = options.tolerance.linear.max(scale * 1e-9);
         cavity::check_cavity_survival(topo, solid, distance, clearance_floor)?;
+        // The extent check above only sees a cavity that is thin along a
+        // world axis. A tilted slab or cylinder is thin along its own face
+        // normal, and its caps would pass through each other unnoticed.
+        if let Some(found) =
+            interference::certified_cavity_collapse(topo, solid, distance, clearance_floor)?
+        {
+            return Err(OffsetError::ShellInterference(found));
+        }
     }
 
     let linear_tol = options.tolerance.linear;
@@ -277,6 +293,16 @@ fn thick_solid_impl(
         let scale = cavity::solid_extent_scale(topo, result)?;
         let clearance = linear_tol.max(scale * 1e-9);
         cavity::check_cavity_extents(topo, result, clearance, cavity::Stage::Result)?;
+        // An inward offset grows every cavity toward a shrinking outer
+        // boundary. Staying inside the outer shell's box does not keep a
+        // cavity inside a slanted or curved wall, so prove the separation on
+        // the result or refuse. An outward offset only moves the two apart.
+        if distance < 0.0
+            && let Some(found) =
+                interference::verify_cavities_inside_outer(topo, result, clearance)?
+        {
+            return Err(OffsetError::ShellInterference(found));
+        }
     }
     Ok(ThickSolidResult {
         solid: result,

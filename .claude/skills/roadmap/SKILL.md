@@ -152,12 +152,14 @@ that does not exist yet; without it, stop.
 
 ## Open items with a repro
 
-The `#[ignore]` inventory (regenerated 2026-11-13 on `05427d67` with B62's
-witness un-ignored, the two B7 witnesses and B275's added and B51's three
-closed: 55 actual attributes in 33 files, all in `operations`, `io`, `heal`,
-`math`, `wasm` and `remus`) splits by the ignore reason as written. Listed, not
-re-run, except B265, B266, B272, B275 and the two B7 witnesses (failed 3/3 as
-pinned). **26 open engine witnesses**, each with an owner row:
+The `#[ignore]` inventory (regenerated 2026-11-13 on `56754bc2` with B62's
+witness un-ignored, the two B7 witnesses and B275's added, B51's three
+closed, and the 5.7b slice's O4.4 pass-through un-ignored with its three
+witnesses added: 57 actual attributes in 33 files, all in `operations`, `io`,
+`heal`, `math`, `wasm` and `remus`) splits by the ignore reason as written.
+Listed, not re-run, except B265, B266, B272, B275, the two B7 witnesses and
+the three 5.7b witnesses (failed as pinned). **28 open engine witnesses**,
+each with an owner row:
 - four B26 property ready-repros in `operations/tests/prop_boolean_invariants.rs`:
   finding 13 sphere–torus ×3 (B38) and finding 20 sphere–cone (B33);
 - `regress_b52_box_cylinder_rim_notch.rs` (B270) and
@@ -178,7 +180,11 @@ pinned). **26 open engine witnesses**, each with an owner row:
   `step_roundtrip_hammer_holder_repro.rs` (O1.4a);
 - `regress_b7_section_pave_attachment.rs` ×2 (B7: coaxial wider half tunnel,
   oblique tunnel crossing);
-- `regress_offset_cylinder_pass_through.rs` (O4.4, pending fragment).
+- `qualify_offset_interference.rs` ×3 (5.7b): slotted and finned prisms have
+  no plain-offset construction at a legal distance and refuse their folds
+  untyped; a hollow frustum refuses a legal inward offset
+  (`separation_unproven`). The #1545 cylinder pass-through (O4.4) is closed
+  there.
 
 **29 manual runs:**
 - slow, exhaustive or differential (11): `boolean/tests.rs::staircase_fuse_with_cylinders`,

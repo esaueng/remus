@@ -551,6 +551,26 @@ pub enum OperationsError {
         thickness: Option<f64>,
     },
 
+    /// An offset would carry two shells of the body through each other, or
+    /// a cavity through itself, and no qualified removal exists for the fold.
+    ///
+    /// Refused before construction when the body's own extents certify it,
+    /// and on the constructed result when shell separation cannot be proven
+    /// (see `remus_offset::interference`). Either way the topology, journal
+    /// and handles are rolled back. A geometric condition of this body and
+    /// distance, not a malformed argument: a smaller `|distance|` succeeds
+    /// unless the finding is `SeparationUnproven`.
+    #[error("{operation} by {distance} would fold the body: {interference}")]
+    OffsetInterference {
+        /// Name of the offset operation (`"offset"`, `"arc offset"` or
+        /// `"shell"`).
+        operation: &'static str,
+        /// The requested signed offset distance.
+        distance: f64,
+        /// The shells involved and the room the offset needed.
+        interference: remus_offset::ShellInterference,
+    },
+
     /// An operation completed only a subset of the requested items.
     #[error("{operation} produced a partial result: {succeeded} succeeded, {failed} failed")]
     PartialResult {

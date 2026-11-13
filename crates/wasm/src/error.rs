@@ -685,6 +685,43 @@ impl From<remus_operations::OperationsError> for StructuredWasmError {
                 }
                 structured
             }
+            // P-Class 5.7b: a fold no qualified removal exists for. Same wire
+            // code as the untyped cavity refusals it replaces, with the
+            // stable native code and the shells it names beside it.
+            remus_operations::OperationsError::OffsetInterference {
+                distance,
+                interference,
+                ..
+            } => {
+                let mut structured = Self::invalid_argument(message, Some("distance"));
+                structured.details.insert(
+                    "kernelCode".to_string(),
+                    Value::from("offset_fold_unresolved"),
+                );
+                structured
+                    .details
+                    .insert("kind".to_string(), Value::from(interference.kind.code()));
+                structured
+                    .details
+                    .insert("distance".to_string(), Value::from(distance));
+                structured
+                    .details
+                    .insert("shell".to_string(), Value::from(interference.shell));
+                if let Some(other) = interference.other_shell {
+                    structured
+                        .details
+                        .insert("otherShell".to_string(), Value::from(other));
+                }
+                if let Some(available) = interference.available {
+                    structured
+                        .details
+                        .insert("available".to_string(), Value::from(available));
+                }
+                structured
+                    .details
+                    .insert("required".to_string(), Value::from(interference.required));
+                structured
+            }
             // A declared move-face / replace-surface capability boundary
             // (capability matrix, "Direct edits"): category `unsupported`
             // with a stable native code and the typed cause as `reason`.

@@ -10,10 +10,15 @@ use crate::evolution::EvolutionMap;
 
 /// Map an `OffsetError` to the most appropriate `OperationsError` variant,
 /// preserving structured error information where possible.
-fn map_offset_error(e: OffsetError) -> OperationsError {
+fn map_offset_error(e: OffsetError, operation: &'static str, distance: f64) -> OperationsError {
     match e {
         OffsetError::Topology(t) => OperationsError::Topology(t),
         OffsetError::Math(m) => OperationsError::Math(m),
+        OffsetError::ShellInterference(interference) => OperationsError::OffsetInterference {
+            operation,
+            distance,
+            interference,
+        },
         // Construction has already accepted the arguments. Preserve the
         // producer's typed assembly failure instead of blaming caller input.
         error @ OffsetError::AssemblyFailed { .. } => OperationsError::Offset(error),
@@ -32,6 +37,7 @@ fn validate_offset_postcondition(
     operation: &'static str,
     solid: SolidId,
     distance: Option<f64>,
+    source: Option<SolidId>,
 ) -> Result<SolidId, OperationsError> {
     let report = remus_check::validate::validate_solid(
         topo,
@@ -55,7 +61,149 @@ fn validate_offset_postcondition(
         });
     }
     ensure_not_collapsed(topo, operation, solid, distance)?;
+    if let (Some(source), Some(distance)) = (source, distance) {
+        ensure_cavities_not_inverted(topo, operation, source, solid, distance)?;
+    }
     Ok(solid)
+}
+
+/// Reject an offset that turned a cavity inside out.
+///
+/// [`ensure_not_collapsed`] reads the outer shell only. A cavity whose
+/// opposite walls passed through each other is the same defect one shell
+/// further in: still closed, still valid, and bounding a region whose sign
+/// has flipped. The engine keeps one result shell per source shell in the
+/// same order, so each cavity is compared against its own source rather
+/// than against a convention, which leaves an input with unusually wound
+/// cavities alone.
+///
+/// The slab certificate in [`refuse_certified_interference`] refuses the
+/// bounded class before construction; this is the backstop for cavities it
+/// does not judge.
+fn ensure_cavities_not_inverted(
+    topo: &Topology,
+    operation: &'static str,
+    source: SolidId,
+    result: SolidId,
+    distance: f64,
+) -> Result<(), OperationsError> {
+    let gauss_order = remus_check::properties::PropertiesOptions::default().gauss_order;
+    let Some(floor) = crate::measure::negligible_volume(topo, result) else {
+        return Ok(());
+    };
+    let before = topo.solid(source)?.inner_shells().to_vec();
+    let after = topo.solid(result)?.inner_shells().to_vec();
+    if before.len() != after.len() {
+        return Ok(());
+    }
+    for (source_shell, result_shell) in before.into_iter().zip(after) {
+        let (Some(was), Some(now)) = (
+            crate::measure::shell_signed_volume(topo, source_shell, gauss_order),
+            crate::measure::shell_signed_volume(topo, result_shell, gauss_order),
+        ) else {
+            continue;
+        };
+        if was.abs() > floor && now.abs() > floor && (was > 0.0) != (now > 0.0) {
+            return Err(OperationsError::OffsetInterference {
+                operation,
+                distance,
+                interference: remus_offset::ShellInterference {
+                    kind: remus_offset::ShellInterferenceKind::CavityCollapse,
+                    shell: source_shell.index(),
+                    other_shell: None,
+                    available: None,
+                    required: 2.0 * distance.abs(),
+                },
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Refuse, before construction, an offset the body's own extents certify
+/// would fold it (P-Class 5.7b, first slice).
+///
+/// Two certificates, both from `remus_offset::interference`:
+///
+/// - **Capped curved bodies.** [`refuse_certified_collapse`] judges only
+///   all-planar, straight-edged solids, so a cylinder or cone frustum shrunk
+///   past half its height reached the engine, whose radius guard looks at
+///   the radius alone. The caps swapped sides and the result came back `Ok`
+///   with the volume of the overlap (`pi * 3.5^2 * 1` for `r = 5`, `h = 2`,
+///   `d = -1.5`). The slab thickness bounds the outer shell along each
+///   planar face normal with planes, cylinders and cones accounted for, so
+///   the same half-thickness refusal now covers them.
+/// - **Cavities.** An outward offset that reaches a cavity's half-thickness,
+///   or an inward one that closes the wall between two cavities or between
+///   a cavity and the outer extent, is the typed interference rather than
+///   the engine's untyped input refusal.
+///
+/// A helper that cannot bound the body says nothing; the engine and the
+/// postcondition still apply. A distance the engine's own radius guard
+/// already refuses keeps that established refusal: the slab certificate
+/// only speaks where the guard is silent.
+fn refuse_certified_interference(
+    topo: &Topology,
+    operation: &'static str,
+    solid: SolidId,
+    distance: f64,
+) -> Result<(), OperationsError> {
+    if !distance.is_finite() {
+        return Ok(());
+    }
+    let linear = remus_math::tolerance::Tolerance::default().linear;
+    if distance < 0.0 && !radius_guard_refuses(topo, solid, distance)? {
+        let outer = topo.solid(solid)?.outer_shell();
+        if let Ok(Some(thickness)) = remus_offset::shell_slab_thickness(topo, outer) {
+            let tolerance = linear.max(thickness * 1e-12);
+            if 2.0 * distance.abs() >= thickness - tolerance {
+                return Err(OperationsError::OffsetCollapsed {
+                    operation,
+                    distance,
+                    thickness: Some(thickness),
+                });
+            }
+        }
+    }
+    if let Ok(Some(interference)) =
+        remus_offset::predict_shell_interference(topo, solid, distance, linear)
+    {
+        return Err(OperationsError::OffsetInterference {
+            operation,
+            distance,
+            interference,
+        });
+    }
+    Ok(())
+}
+
+/// Whether the engine's per-face radius guard refuses this distance: a
+/// cylinder, sphere or torus face whose radius the offset takes to zero or
+/// below (`crates/offset/src/offset.rs`).
+fn radius_guard_refuses(
+    topo: &Topology,
+    solid: SolidId,
+    distance: f64,
+) -> Result<bool, OperationsError> {
+    use remus_topology::face::FaceSurface;
+    for face_id in remus_topology::explorer::solid_faces(topo, solid)? {
+        let face = topo.face(face_id)?;
+        let effective = if face.is_reversed() {
+            -distance
+        } else {
+            distance
+        };
+        let radius = match face.surface() {
+            FaceSurface::Cylinder(cylinder) => cylinder.radius(),
+            FaceSurface::Sphere(sphere) => sphere.radius(),
+            FaceSurface::Torus(torus) => torus.minor_radius(),
+            FaceSurface::Plane { .. } | FaceSurface::Cone(_) | FaceSurface::Nurbs(_) => continue,
+        };
+        if radius + effective <= 0.0 {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Reject an offset that pushed the boundary through itself.
@@ -222,10 +370,11 @@ pub fn offset_solid_v2(
     distance: f64,
 ) -> Result<SolidId, OperationsError> {
     refuse_certified_collapse(topo, "offset", solid, distance)?;
+    refuse_certified_interference(topo, "offset", solid, distance)?;
     remus_topology::transaction::run_transacted(topo, |topo| {
         let result = remus_offset::offset_solid(topo, solid, distance, OffsetOptions::default())
-            .map_err(map_offset_error)?;
-        validate_offset_postcondition(topo, "offset", result, Some(distance))
+            .map_err(|error| map_offset_error(error, "offset", distance))?;
+        validate_offset_postcondition(topo, "offset", result, Some(distance), Some(solid))
     })
 }
 
@@ -245,6 +394,7 @@ pub fn offset_solid_v2_with_evolution(
     distance: f64,
 ) -> Result<(SolidId, EvolutionMap), OperationsError> {
     refuse_certified_collapse(topo, "offset", solid, distance)?;
+    refuse_certified_interference(topo, "offset", solid, distance)?;
     remus_topology::transaction::run_transacted(topo, |topo| {
         let result = remus_offset::offset_solid_with_face_map(
             topo,
@@ -252,8 +402,14 @@ pub fn offset_solid_v2_with_evolution(
             distance,
             OffsetOptions::default(),
         )
-        .map_err(map_offset_error)?;
-        let solid = validate_offset_postcondition(topo, "offset", result.solid, Some(distance))?;
+        .map_err(|error| map_offset_error(error, "offset", distance))?;
+        let solid = validate_offset_postcondition(
+            topo,
+            "offset",
+            result.solid,
+            Some(distance),
+            Some(solid),
+        )?;
         let mut evolution = EvolutionMap::exact();
         for (source, result_face) in result.face_map {
             evolution.add_modified(source, result_face.index());
@@ -328,8 +484,8 @@ pub fn shell_v2(
     remus_topology::transaction::run_transacted(topo, |topo| {
         let result =
             remus_offset::thick_solid(topo, solid, thickness, exclude, OffsetOptions::default())
-                .map_err(map_offset_error)?;
-        validate_offset_postcondition(topo, "shell", result, None)
+                .map_err(|error| map_offset_error(error, "shell", thickness))?;
+        validate_offset_postcondition(topo, "shell", result, None, None)
     })
 }
 
@@ -348,10 +504,11 @@ pub fn offset_solid_arc_v2(
         ..Default::default()
     };
     refuse_certified_collapse(topo, "arc offset", solid, distance)?;
+    refuse_certified_interference(topo, "arc offset", solid, distance)?;
     remus_topology::transaction::run_transacted(topo, |topo| {
-        let result =
-            remus_offset::offset_solid(topo, solid, distance, options).map_err(map_offset_error)?;
-        validate_offset_postcondition(topo, "arc offset", result, Some(distance))
+        let result = remus_offset::offset_solid(topo, solid, distance, options)
+            .map_err(|error| map_offset_error(error, "arc offset", distance))?;
+        validate_offset_postcondition(topo, "arc offset", result, Some(distance), Some(solid))
     })
 }
 
@@ -375,7 +532,8 @@ mod tests {
             let reversed = topo.face(face).unwrap().is_reversed();
             topo.face_mut(face).unwrap().set_reversed(!reversed);
         }
-        let error = validate_offset_postcondition(&topo, "offset", solid, Some(-0.5)).unwrap_err();
+        let error =
+            validate_offset_postcondition(&topo, "offset", solid, Some(-0.5), None).unwrap_err();
         assert!(
             matches!(
                 error,
@@ -389,7 +547,8 @@ mod tests {
         );
         assert!(error.to_string().contains("inside out"), "{error}");
         for distance in [Some(0.5), None] {
-            let error = validate_offset_postcondition(&topo, "shell", solid, distance).unwrap_err();
+            let error =
+                validate_offset_postcondition(&topo, "shell", solid, distance, None).unwrap_err();
             assert!(
                 matches!(error, OperationsError::InvalidInput { ref reason } if reason.contains("collapsed")),
                 "{distance:?}: {error:?}"
@@ -413,6 +572,106 @@ mod tests {
             refuse_certified_collapse(&topo, "offset", solid, -0.5),
             Err(OperationsError::OffsetCollapsed { .. })
         ));
+    }
+
+    /// A 6-cube with a concentric 2-cube void, cut with the boolean engine
+    /// so the cavity carries the orientation the rest of the kit produces.
+    fn hollow_cube(topo: &mut Topology) -> SolidId {
+        let outer = crate::primitives::make_box(topo, 6.0, 6.0, 6.0).unwrap();
+        let void = crate::primitives::make_box(topo, 2.0, 2.0, 2.0).unwrap();
+        let shift = remus_math::mat::Mat4::translation(2.0, 2.0, 2.0);
+        crate::transform::transform_solid(topo, void, &shift).unwrap();
+        let hollow =
+            crate::boolean::boolean(topo, crate::boolean::BooleanOp::Cut, outer, void).unwrap();
+        assert_eq!(topo.solid(hollow).unwrap().inner_shells().len(), 1);
+        hollow
+    }
+
+    /// The postcondition's cavity check, reached directly: a result whose
+    /// cavity is wound against its source's is the typed fold, and one
+    /// wound with it passes. Validation alone accepts both.
+    #[test]
+    fn an_inverted_cavity_is_a_typed_fold() {
+        let mut topo = Topology::new();
+        let source = hollow_cube(&mut topo);
+        let result = hollow_cube(&mut topo);
+        assert!(
+            validate_offset_postcondition(&topo, "offset", result, Some(0.5), Some(source)).is_ok()
+        );
+
+        let cavity = topo.solid(result).unwrap().inner_shells()[0];
+        for face in topo.shell(cavity).unwrap().faces().to_vec() {
+            let reversed = topo.face(face).unwrap().is_reversed();
+            topo.face_mut(face).unwrap().set_reversed(!reversed);
+        }
+        let source_cavity = topo.solid(source).unwrap().inner_shells()[0];
+        let error = validate_offset_postcondition(&topo, "offset", result, Some(0.5), Some(source))
+            .unwrap_err();
+        let OperationsError::OffsetInterference {
+            operation: "offset",
+            distance,
+            interference,
+        } = error
+        else {
+            panic!("mistyped: {error:?}");
+        };
+        assert!((distance - 0.5).abs() < 1e-15);
+        assert_eq!(
+            interference.kind,
+            remus_offset::ShellInterferenceKind::CavityCollapse
+        );
+        assert_eq!(interference.shell, source_cavity.index());
+        assert!((interference.required - 1.0).abs() < 1e-15);
+        // Without a source to compare against (a shell), nothing is judged.
+        assert!(validate_offset_postcondition(&topo, "shell", result, None, None).is_ok());
+    }
+
+    /// The slab certificate judges a capped cylinder along its cap normal
+    /// and leaves a tall one to the engine's radius guard.
+    #[test]
+    fn a_capped_cylinder_is_certified_along_its_axis_only() {
+        let mut topo = Topology::new();
+        let squat = crate::primitives::make_cylinder(&mut topo, 5.0, 2.0).unwrap();
+        let outer = topo.solid(squat).unwrap().outer_shell();
+        let thickness = remus_offset::shell_slab_thickness(&topo, outer)
+            .unwrap()
+            .unwrap();
+        assert!((thickness - 2.0).abs() < 1e-12, "{thickness}");
+        assert!(refuse_certified_interference(&topo, "offset", squat, -0.99).is_ok());
+        assert!(refuse_certified_interference(&topo, "offset", squat, 3.0).is_ok());
+        for distance in [-1.0, -1.5] {
+            assert!(matches!(
+                refuse_certified_interference(&topo, "offset", squat, distance),
+                Err(OperationsError::OffsetCollapsed {
+                    thickness: Some(t),
+                    ..
+                }) if (t - 2.0).abs() < 1e-12
+            ));
+        }
+        // Ten tall, radius one: the axis says nothing about d = -1, which
+        // is the radius guard's to refuse.
+        let tall = crate::primitives::make_cylinder(&mut topo, 1.0, 10.0).unwrap();
+        assert!(refuse_certified_interference(&topo, "offset", tall, -1.0).is_ok());
+        // Where both would speak the guard keeps its established refusal:
+        // radius one, height two, d = -1.5 is past both.
+        let both = crate::primitives::make_cylinder(&mut topo, 1.0, 2.0).unwrap();
+        assert!(radius_guard_refuses(&topo, both, -1.5).unwrap());
+        assert!(!radius_guard_refuses(&topo, both, -0.9).unwrap());
+        assert!(!radius_guard_refuses(&topo, both, 5.0).unwrap());
+        assert!(refuse_certified_interference(&topo, "offset", both, -1.5).is_ok());
+        let error = offset_solid_v2(&mut topo, both, -1.5).unwrap_err();
+        assert!(
+            matches!(error, OperationsError::InvalidInput { ref reason } if reason.contains("cylinder offset collapses")),
+            "{error:?}"
+        );
+        // A sphere has no planar face to measure along.
+        let sphere = crate::primitives::make_sphere(&mut topo, 1.0, 16).unwrap();
+        let shell = topo.solid(sphere).unwrap().outer_shell();
+        assert!(
+            remus_offset::shell_slab_thickness(&topo, shell)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
