@@ -250,6 +250,22 @@ batch where the API exists:
   the harness must not extend the WASM API, so the cell is direct-only on the
   installed surfaces (`directOnly`), like the cancellation cell.
 
+Boolean cells measure the solid the boolean returned, as the extended matrix
+does since B57: their `volume`/`validateSolid`/`meshQuality`/`getSolidFaces`
+queries carry `{fromOp, pick: 'solid', orHandle: 2}`. A disclosed fallback
+can land past a rejected exact-pass intermediate at handle 2
+(`contract/disclosed-approximation` returns its fuse at handle 4), and a
+refused boolean keeps the queries on the unallocated handle 2, so refusal
+diagnostics are unchanged. `orHandle` stands in only for a refusal (no
+ok-value); an answer without an integer `solid` is an error on both runners.
+The native runner resolves the reference in `resolve_ref`; the WASM batch
+binding cannot, so the batch evidence mode (`executeContractBatch`) sends the
+construction through the boolean as one `executeBatchV2` call and the
+referencing queries, with the returned handle substituted, as a second call
+on the same kernel, and moves each error's `details.operationIndex` back to
+its whole-batch index. Cells without a reference stay one call. Gates and
+their counts are unchanged.
+
 The failure-class cells assert the same coarse wire `code` on every surface
 (the native runner mirrors `StructuredWasmError`'s `From<OperationsError>`
 mapping); the empty-result refusal maps through that mapping's catch-all

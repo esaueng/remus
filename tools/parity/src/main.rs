@@ -463,16 +463,33 @@ fn resolve_ref(value: &Value, ok_values: &[Value]) -> Result<Value, RunnerError>
     if let Some(pick) = value.get("pick").and_then(Value::as_str) {
         // `pick: solid` reads the handle out of a `{solid, quality}` boolean
         // response, so a fixture cell can chain exact-only booleans the way
-        // the WASM direct calls do (`out.solid`). A refused producer leaves
-        // a null ok-value; `orHandle` then stands in, so measurement ops
-        // after a refused boolean still report `invalid_handle` (B57; the
-        // JS twin is `resolveSolidPick` in `parity-matrix.mjs`).
+        // the WASM direct calls do (`out.solid`). Only a refused producer,
+        // which leaves a null ok-value, falls back to `orHandle`, so
+        // measurement ops after a refused boolean still report
+        // `invalid_handle`. Any other answer without an integer `solid` (a
+        // bare handle, `{solid: null}`, an object without `solid`) is a hard
+        // error: falling back there would quietly measure the positional
+        // handle again (B57; the JS twin is `resolveSolidPick` in
+        // `parity-matrix.mjs`, which must agree case for case).
         if pick == "solid" {
+            if source.is_null() {
+                return value
+                    .get("orHandle")
+                    .filter(|handle| handle.is_u64())
+                    .cloned()
+                    .ok_or_else(|| {
+                        err("pick solid: producer refused and the reference has no orHandle")
+                    });
+            }
             return source
                 .get("solid")
-                .or_else(|| value.get("orHandle"))
+                .filter(|handle| handle.is_u64())
                 .cloned()
-                .ok_or_else(|| err("pick source has no solid handle"));
+                .ok_or_else(|| {
+                    err(format!(
+                        "pick solid: producer answered without an integer solid handle: {source}"
+                    ))
+                });
         }
         let list = source
             .as_array()
@@ -1815,12 +1832,16 @@ mod tests {
 
     /// B57: measurement ops must follow the solid a boolean returned. A
     /// disclosed fallback lands past the positional handle 2, where a
-    /// rejected exact-pass intermediate can still sit.
+    /// rejected exact-pass intermediate can still sit. The returned handle
+    /// differs from `orHandle`, so an implementation that preferred the
+    /// positional fallback over the answer fails here.
     #[test]
     fn pick_solid_follows_the_returned_boolean_handle() {
         let reference = json!({"fromOp": 0, "pick": "solid", "orHandle": 2});
         let returned = [json!({"solid": 4, "quality": "approximate"})];
         assert_eq!(resolve_ref(&reference, &returned).unwrap(), json!(4));
+        let exact_at_zero = [json!({"solid": 0, "quality": "exact"})];
+        assert_eq!(resolve_ref(&reference, &exact_at_zero).unwrap(), json!(0));
     }
 
     /// A refused boolean leaves a null ok-value: the positional `orHandle`
@@ -1831,5 +1852,32 @@ mod tests {
         assert_eq!(resolve_ref(&reference, &[json!(null)]).unwrap(), json!(2));
         let bare = json!({"fromOp": 0, "pick": "solid"});
         assert!(resolve_ref(&bare, &[json!(null)]).is_err());
+    }
+
+    /// Only a refusal falls back. An answer without an integer `solid` is
+    /// malformed and must not quietly measure the positional handle; the JS
+    /// `resolveSolidPick` throws on the same inputs.
+    #[test]
+    fn pick_solid_refuses_an_answer_without_an_integer_solid() {
+        let reference = json!({"fromOp": 0, "pick": "solid", "orHandle": 2});
+        for malformed in [
+            json!(3),
+            json!(0),
+            json!({"solid": null}),
+            json!({"quality": "exact"}),
+            json!({}),
+            json!([4]),
+            json!({"solid": "4"}),
+            json!({"solid": 1.5}),
+        ] {
+            let error = resolve_ref(&reference, std::slice::from_ref(&malformed))
+                .expect_err(&format!("malformed answer {malformed} must be refused"));
+            assert!(
+                error
+                    .to_string()
+                    .contains("without an integer solid handle"),
+                "{malformed}: {error}"
+            );
+        }
     }
 }
