@@ -872,6 +872,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Sphere-boss seam fillet through the batch ops (esaueng/remus#1561): closed display mesh at the consumer's settings, contacts on their supports within their recorded tolerance (contract test) | `bindings/sphere_boss_seam_fillet_tests.rs` |
 | Direct and both batch WASM qualification of the B38 sphere–torus orientation repair (P-Class 8.1 seeds 5201 and 1146): exact, validator-clean, slice-integral volumes, watertight meshes, refusal rollback | `bindings/sphere_torus_orientation_tests.rs` |
 | Entity-evolution and journal bindings | `bindings/evolution.rs` |
+| N-ary region-fuse binding (`fuseRegions`) with its direct and batch contract tests | `bindings/fuse_regions.rs` |
 | Typed persistent GCS sketch bindings | `bindings/gcs_sketch.rs` |
 | Linked planar GCS attachment and fixed external lines | `bindings/linked_sketch.rs` |
 | Faces with inner (hole) wires — validation & construction | `holed_face.rs` |

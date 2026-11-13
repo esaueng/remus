@@ -23,7 +23,7 @@ fn index_u32(index: usize) -> u32 {
 }
 
 /// The stable JSON encoding of an Issue 12 entity-evolution payload.
-fn entity_evolution_json(evolution: &EntityEvolution) -> serde_json::Value {
+pub(super) fn entity_evolution_json(evolution: &EntityEvolution) -> serde_json::Value {
     let faces: Vec<serde_json::Value> = evolution
         .faces
         .iter()
