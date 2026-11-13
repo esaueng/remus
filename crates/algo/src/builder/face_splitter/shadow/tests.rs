@@ -597,3 +597,208 @@ fn a_ruling_shadows_the_sector_emitter() {
     assert_eq!(default, seen(counts(0, 0, 0, 1), "work-budget"));
     assert_eq!(raised, seen(counts(0, 1, 0, 0), "span-direction"));
 }
+
+// ---------------------------------------------------------------------------
+// Work probe (budget-policy research): what each fixture needs
+// ---------------------------------------------------------------------------
+
+/// The work record of one fixture face, printed so a run can read it.
+#[allow(clippy::print_stderr)]
+fn work_of(topo: &Topology, face: FaceId, sections: &[SectionEdge]) -> super::work::Record {
+    use super::work::{Adapter, Probe, measure};
+    let frame = super::super::super::plane_frame::PlaneFrame::from_normal_and_point(
+        Vec3::new(0.0, 0.0, 1.0),
+        Point3::new(0.0, 0.0, 0.0),
+    );
+    let tol = Tolerance::default();
+    let context = OperationContext::new();
+    let cylinder = topo
+        .face(face)
+        .is_ok_and(|f| matches!(f.surface(), FaceSurface::Cylinder(_)));
+    let record = measure(&Probe {
+        topo,
+        face_id: face,
+        sections,
+        rank: Rank::A,
+        tol: &tol,
+        context: &context,
+        adapter: if cylinder {
+            Adapter::Cylinder
+        } else {
+            Adapter::Plane(&frame)
+        },
+    });
+    eprintln!("{record:#?}");
+    record
+}
+
+#[test]
+fn work_of_the_minimal_fixtures() {
+    let (topo, face) = square_face(2.0);
+    // X: two full crossing sections, four regions.
+    let x = work_of(
+        &topo,
+        face,
+        &[
+            line_section(Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 2.0, 0.0), 7),
+            line_section(Point3::new(0.0, 1.0, 0.0), Point3::new(2.0, 1.0, 0.0), 8),
+        ],
+    );
+    // T: a full divider and a second section ending on it, three regions.
+    let t = work_of(
+        &topo,
+        face,
+        &[
+            line_section(Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 2.0, 0.0), 7),
+            line_section(Point3::new(0.0, 1.0, 0.0), Point3::new(1.0, 1.0, 0.0), 8),
+        ],
+    );
+    let (disc, disc_face_id) = disc_face(8.0);
+    let y = 8.0 * (PI / 4.0).sin();
+    let apex = Point3::new(8.0, 0.0, 0.0);
+    let chords = work_of(
+        &disc,
+        disc_face_id,
+        &[
+            line_section(apex, Point3::new(-y, y, 0.0), 7),
+            line_section(apex, Point3::new(-y, -y, 0.0), 8),
+        ],
+    );
+    let (lateral, lateral_face_id) = lateral_face(2.0, 3.0);
+    let bands = work_of(
+        &lateral,
+        lateral_face_id,
+        &[
+            latitude_section(2.0, 0.9, 100),
+            latitude_section(2.0, 2.1, 101),
+        ],
+    );
+    let sectors = work_of(
+        &lateral,
+        lateral_face_id,
+        &[ruling_section(2.0, 2.0, 3.0, 200)],
+    );
+    for record in [&x, &t, &chords, &bands, &sectors] {
+        assert!(matches!(record.raised, super::work::Outcome::Split(_)));
+        assert_eq!(record.default, super::work::Outcome::Budget);
+    }
+}
+
+/// Where each wire edge's `traversal_domain` starts and ends on its carrier,
+/// against the edge's own traversal endpoints, and whether the carrier
+/// tangent at the traversal start points the way the wire goes.
+///
+/// `OrientedPCurveEdge::trim` is native-direction: `traversal_domain` swaps
+/// it for a reversed use. A trim stored in traversal order on a reversed use
+/// is swapped once too often, so its traversal interval runs backwards: an
+/// open arc starts at its end point, and a closed rim (whose endpoints
+/// coincide) is walked the wrong way round.
+fn trim_misreads(parts: &[SplitSubFace]) -> Vec<String> {
+    let mut out = Vec::new();
+    for (r, part) in parts.iter().enumerate() {
+        for (i, e) in part.outer_wire.iter().enumerate() {
+            let EdgeCurve::Circle(circle) = &e.curve_3d else {
+                continue;
+            };
+            let (t0, t1) = e.traversal_domain();
+            let start_off = (circle.evaluate(t0) - e.start_3d).length();
+            let end_off = (circle.evaluate(t1) - e.end_3d).length();
+            // The wire's next edge starts where this one ends; its traversal
+            // direction near the start is (end of a short step) - start.
+            let step = (t1 - t0) * 1e-3;
+            let ahead = circle.evaluate(t0 + step) - circle.evaluate(t0);
+            // Reference direction: the arc swept with `forward`'s sense from
+            // start to end (the convention every emitter's polyline uses).
+            let sense = if e.forward { 1.0 } else { -1.0 };
+            let tangent = circle.tangent(circle.project(e.start_3d)) * sense;
+            let backwards = ahead.dot(tangent) < 0.0;
+            if start_off > 1e-7 || end_off > 1e-7 || backwards {
+                out.push(format!(
+                    "region {r} edge {i}: forward={} trim={:?} traversal=({t0:.4},{t1:.4}) \
+                     start_off={start_off:.3e} end_off={end_off:.3e} backwards={backwards}",
+                    e.forward, e.trim
+                ));
+            }
+        }
+    }
+    out
+}
+
+#[test]
+#[allow(clippy::print_stderr)]
+fn reversed_rim_trims_misread_through_traversal_domain() {
+    use super::super::arrangement_cyl::try_split_cylinder_face_by_provenance_arrangement;
+    let (topo, face) = lateral_face(2.0, 3.0);
+    let raised = OperationContext::new().with_budgets(super::RAISED_BUDGETS);
+    let tol = Tolerance::default();
+    for (label, sections) in [
+        (
+            "bands",
+            vec![
+                latitude_section(2.0, 0.9, 100),
+                latitude_section(2.0, 2.1, 101),
+            ],
+        ),
+        ("sectors", vec![ruling_section(2.0, 2.0, 3.0, 200)]),
+    ] {
+        let (legacy, _, _) = split(None, &topo, face, &sections);
+        let adapter = try_split_cylinder_face_by_provenance_arrangement(
+            &topo,
+            face,
+            &sections,
+            Rank::A,
+            &tol,
+            &raised,
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        let legacy_misreads = trim_misreads(&legacy);
+        let adapter_misreads = trim_misreads(&adapter);
+        eprintln!("{label}: legacy {legacy_misreads:#?}\n{label}: adapter {adapter_misreads:#?}");
+        assert!(legacy_misreads.is_empty(), "{label}: legacy misread");
+        assert!(
+            !adapter_misreads.is_empty(),
+            "{label}: adapter read correctly"
+        );
+    }
+}
+
+/// Work and time of a `k` x `k` grid of full-width sections on a square:
+/// how the planar adapter's march steps grow with the input, and what one
+/// step costs. `k = 10` passes `MAX_ARRANGEMENT_USES` and declines.
+#[test]
+#[ignore = "O2.3d budget-policy research probe (about 10 s); run with --ignored --nocapture"]
+#[allow(clippy::print_stderr, clippy::cast_precision_loss)]
+fn work_of_a_section_grid() {
+    for k in [1usize, 2, 3, 4, 6, 8, 9, 10] {
+        let size = (k + 1) as f64;
+        let (topo, face) = square_face(size);
+        let mut sections = Vec::new();
+        for i in 1..=k {
+            let at = i as f64;
+            sections.push(line_section(
+                Point3::new(at, 0.0, 0.0),
+                Point3::new(at, size, 0.0),
+                2 * i,
+            ));
+            sections.push(line_section(
+                Point3::new(0.0, at, 0.0),
+                Point3::new(size, at, 0.0),
+                2 * i + 1,
+            ));
+        }
+        let record = work_of(&topo, face, &sections);
+        eprintln!(
+            "GRID k={k} sections={} uses={} march={:?} queue={:?} segments={:?} regions={} ns={:?} raised={:?}",
+            sections.len(),
+            record.uses,
+            record.march,
+            record.queue,
+            record.segments,
+            record.regions,
+            record.adapter_ns,
+            record.raised
+        );
+    }
+}

@@ -7193,6 +7193,28 @@ fn split_face_2d_impl(
     // while claimed-domain refusals (`Err`) propagate. Cone, torus, oblique
     // traces and unsupported contacts remain on the established paths. No
     // emitter deleted in this slice; bands/sectors remain as fallbacks.
+    #[cfg(any(test, feature = "perf-counters"))]
+    if u_periodic
+        && !is_plane
+        && original_inner_wires.is_empty()
+        && !sections.is_empty()
+        && matches!(&surface, FaceSurface::Cylinder(_))
+    {
+        shadow::work::probe(
+            shadow::work::Site::EarlyCylinder,
+            &shadow::work::Probe {
+                topo,
+                face_id,
+                sections,
+                rank,
+                tol,
+                context,
+                adapter: shadow::work::Adapter::Cylinder,
+            },
+            "cylinder",
+            None,
+        );
+    }
     if u_periodic
         && !is_plane
         && original_inner_wires.is_empty()
@@ -7239,6 +7261,17 @@ fn split_face_2d_impl(
             tol,
             context,
             &bands,
+            &|| {
+                let _ = split_periodic_face_into_bands(
+                    &surface,
+                    &boundary_edges,
+                    sections,
+                    rank,
+                    reversed,
+                    face_id,
+                    tol.linear,
+                );
+            },
         );
         return Ok(bands);
     }
@@ -8859,6 +8892,11 @@ fn split_face_2d_impl(
             tol,
             context,
             &result,
+            &|| {
+                let _ = try_split_crossing_plane_face(
+                    &surface, boundary, sections, rank, reversed, face_id, frame, tol,
+                );
+            },
         );
         return Ok(result);
     }
@@ -8919,6 +8957,11 @@ fn split_face_2d_impl(
                 tol,
                 context,
                 &result,
+                &|| {
+                    let _ = try_split_disk_by_chords(
+                        &surface, boundary, sections, rank, reversed, face_id, frame, tol.linear,
+                    );
+                },
             );
             return Ok(result);
         }
@@ -8990,6 +9033,24 @@ fn split_face_2d_impl(
         // arrangement is adopted. Recording a discarded arrangement would
         // hand curved neighbors splits the plane side never took.
         let mut staged_breaks = remus_math::det_hash::DetHashMap::default();
+        #[cfg(any(test, feature = "perf-counters"))]
+        shadow::work::probe(
+            shadow::work::Site::LastResortPlane {
+                greedy_regions: loops.len(),
+                greedy_broken: greedy_broken_here,
+            },
+            &shadow::work::Probe {
+                topo,
+                face_id,
+                sections,
+                rank,
+                tol,
+                context,
+                adapter: shadow::work::Adapter::Plane(frame),
+            },
+            "plane",
+            None,
+        );
         match arrangement_prod::try_split_plane_face_by_provenance_arrangement(
             topo,
             face_id,
@@ -9058,6 +9119,11 @@ fn split_face_2d_impl(
             tol,
             context,
             &sectors,
+            &|| {
+                let _ = split_periodic_face_into_sectors(
+                    &surface, boundary, sections, rank, reversed, face_id, tol.linear,
+                );
+            },
         );
         return Ok(sectors);
     }

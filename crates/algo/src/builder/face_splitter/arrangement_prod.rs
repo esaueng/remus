@@ -77,6 +77,15 @@ const END_MARGIN: f64 = 1e-9;
 /// quadratically; larger faces stay on the established chord path.
 const MAX_ARRANGEMENT_USES: usize = 256;
 
+/// Work-probe phase mark (`shadow::work`); a no-op outside test and
+/// `perf-counters` builds.
+#[cfg(any(test, feature = "perf-counters"))]
+fn work_mark(phase: &'static str, value: usize) {
+    super::shadow::work::mark(phase, value);
+}
+#[cfg(not(any(test, feature = "perf-counters")))]
+const fn work_mark(_phase: &'static str, _value: usize) {}
+
 fn budget_decline(context: &OperationContext) -> Result<bool, AlgoError> {
     if context.budgets == remus_math::context::WorkBudgets::new() {
         Ok(false)
@@ -233,12 +242,14 @@ pub(super) fn collect_planar_uses(
     if !collector.resolve_line_concurrency(context, &mut pair_steps)? {
         return Ok(None);
     }
+    work_mark("collect-concurrency", pair_steps);
     if collector.uses.len() > context.budgets.queue_size {
         return budget_decline(context).map(|_| None);
     }
     if !collector.prejoin_endpoints(context, &mut pair_steps)? {
         return Ok(None);
     }
+    work_mark("collect-prejoin", pair_steps);
     if collector.uses.len() > MAX_ARRANGEMENT_USES {
         return Ok(None);
     }
@@ -528,6 +539,7 @@ pub(super) fn try_split_plane_face_by_provenance_arrangement(
         None => return Ok(None),
         Some(false) => {}
     }
+    work_mark("scan", inputs.collection_steps);
     match run_planar_arrangement(&inputs, context) {
         Err(ArrangementError::WorkBudgetExceeded)
             if context.budgets == remus_math::context::WorkBudgets::new() =>

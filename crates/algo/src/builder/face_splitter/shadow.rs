@@ -47,6 +47,8 @@ use crate::ds::Rank;
 use crate::error::AlgoError;
 use crate::gfa::{SplitterShadowEntry, SplitterShadowOutcome, note_splitter_shadow};
 
+pub(super) mod work;
+
 /// Environment variable selecting the shadow budgets (`default` or `raised`).
 const MODE_VAR: &str = "REMUS_SPLITTER_SHADOW";
 /// Environment variable naming the file shadow events are appended to.
@@ -165,7 +167,22 @@ pub(super) fn plane(
     tol: &Tolerance,
     context: &OperationContext,
     legacy: &[SplitSubFace],
+    legacy_rerun: &dyn Fn(),
 ) {
+    work::probe(
+        work::Site::Legacy(entry.name()),
+        &work::Probe {
+            topo,
+            face_id,
+            sections,
+            rank,
+            tol,
+            context,
+            adapter: work::Adapter::Plane(frame),
+        },
+        "plane",
+        Some((legacy_rerun, legacy.len())),
+    );
     let Some(budgets) = mode() else {
         return;
     };
@@ -193,16 +210,31 @@ pub(super) fn cylinder(
     tol: &Tolerance,
     context: &OperationContext,
     legacy: &[SplitSubFace],
+    legacy_rerun: &dyn Fn(),
 ) {
-    let Some(budgets) = mode() else {
-        return;
-    };
     if !topo
         .face(face_id)
         .is_ok_and(|face| matches!(face.surface(), FaceSurface::Cylinder(_)))
     {
         return;
     }
+    work::probe(
+        work::Site::Legacy(entry.name()),
+        &work::Probe {
+            topo,
+            face_id,
+            sections,
+            rank,
+            tol,
+            context,
+            adapter: work::Adapter::Cylinder,
+        },
+        "cylinder",
+        Some((legacy_rerun, legacy.len())),
+    );
+    let Some(budgets) = mode() else {
+        return;
+    };
     let context = shadow_context(context, budgets);
     let shadow = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         arrangement_cyl::try_split_cylinder_face_by_provenance_arrangement(

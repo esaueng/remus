@@ -53,6 +53,15 @@ pub(super) enum ArrangementError {
 }
 type Result<T> = std::result::Result<T, ArrangementError>;
 
+/// Work-probe phase mark (`shadow::work`); a no-op outside test and
+/// `perf-counters` builds.
+#[cfg(any(test, feature = "perf-counters"))]
+fn mark(phase: &'static str, value: usize) {
+    super::shadow::work::mark(phase, value);
+}
+#[cfg(not(any(test, feature = "perf-counters")))]
+const fn mark(_phase: &'static str, _value: usize) {}
+
 /// Boundary identity is the coedge use, not just its underlying edge.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct BoundarySource {
@@ -276,6 +285,7 @@ impl Events {
 #[allow(clippy::too_many_lines)]
 pub(super) fn build_arrangement(input: &ArrangementInput<'_>) -> Result<Arrangement> {
     let mut work = Work::new(input.context);
+    mark("core-budget", work.remaining);
     if let ParamDomain::CylinderStrip { radius, .. } = input.domain {
         if !radius.is_finite() || radius <= 0.0 {
             return Err(ArrangementError::UnsupportedDomain);
@@ -307,7 +317,9 @@ pub(super) fn build_arrangement(input: &ArrangementInput<'_>) -> Result<Arrangem
             uses[i].endpoints_3d.swap(0, 1);
         }
     }
+    mark("validate", work.remaining);
     validate_boundaries(&uses, &mut work)?;
+    mark("boundaries", work.remaining);
     let mut events = Events { parent: Vec::new() };
     let mut cuts = vec![Vec::<Cut>::new(); uses.len()];
     let mut endpoints = BTreeMap::<u64, (usize, Point2, Point3)>::new();
@@ -345,6 +357,7 @@ pub(super) fn build_arrangement(input: &ArrangementInput<'_>) -> Result<Arrangem
             }
         }
     }
+    mark("endpoints", work.remaining);
     for i in 0..uses.len() {
         for j in i + 1..uses.len() {
             work.step()?;
@@ -361,6 +374,8 @@ pub(super) fn build_arrangement(input: &ArrangementInput<'_>) -> Result<Arrangem
             }
         }
     }
+    mark("pairs", work.remaining);
+    mark("#events", events.parent.len());
     for (i, list) in cuts.iter_mut().enumerate() {
         list.compact_sort_by(|a, b| a.parameter.total_cmp(&b.parameter));
         for pair in 0..list.len().saturating_sub(1) {
@@ -399,6 +414,7 @@ pub(super) fn build_arrangement(input: &ArrangementInput<'_>) -> Result<Arrangem
         }
         list.dedup_by(|a, b| same(a.parameter, b.parameter));
     }
+    mark("cuts", work.remaining);
     let mut vertices = Vec::<ArrangementVertex>::new();
     let mut roots = BTreeMap::new();
     for (i, list) in cuts.iter_mut().enumerate() {
@@ -430,6 +446,7 @@ pub(super) fn build_arrangement(input: &ArrangementInput<'_>) -> Result<Arrangem
             cut.event = id;
         }
     }
+    mark("vertices", work.remaining);
     // Distinct pair roots may round to the same source parameter. A multiway
     // junction needs an additional common-endpoint or exact line-incidence
     // certificate; residual proximity alone cannot erase a tiny cell.
@@ -485,6 +502,7 @@ pub(super) fn build_arrangement(input: &ArrangementInput<'_>) -> Result<Arrangem
             }
         }
     }
+    mark("junctions", work.remaining);
     let mut halves = Vec::new();
     let mut rotations = vec![Vec::new(); vertices.len()];
     for (i, list) in cuts.iter().enumerate() {
@@ -522,6 +540,7 @@ pub(super) fn build_arrangement(input: &ArrangementInput<'_>) -> Result<Arrangem
             }
         }
     }
+    mark("halves", work.remaining);
     let lookup: BTreeMap<_, _> = uses.iter().map(|u| (u.source.use_id, u)).collect();
     for rotation in &mut rotations {
         // Charge the comparison bound before the non-fallible standard sort.
@@ -535,6 +554,7 @@ pub(super) fn build_arrangement(input: &ArrangementInput<'_>) -> Result<Arrangem
             }
         }
     }
+    mark("rotations", work.remaining);
     let twins: Vec<_> = halves.iter().map(|h| h.twin).collect();
     let next =
         crate::builder::rotation_system::successors(&rotations, &twins, &mut || work.step())?
@@ -542,6 +562,7 @@ pub(super) fn build_arrangement(input: &ArrangementInput<'_>) -> Result<Arrangem
     for (h, n) in halves.iter_mut().zip(next) {
         h.next = n;
     }
+    mark("successors", work.remaining);
     let mut result = Arrangement {
         sources: uses.clone(),
         vertices,
@@ -553,8 +574,10 @@ pub(super) fn build_arrangement(input: &ArrangementInput<'_>) -> Result<Arrangem
         periodic_regions: Vec::new(),
     };
     regions::extract(&mut result, &lookup, &mut work)?;
+    mark("regions", work.remaining);
     periodic::quotient(&mut result, &lookup, input.domain, &mut work)?;
     work.step()?;
+    mark("quotient", work.remaining);
     Ok(result)
 }
 
