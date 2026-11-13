@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { expandMatrix, readManifest, scoreCase } from './parity-matrix.mjs';
+import { expandMatrix, readManifest, resolveSolidPick, scoreCase } from './parity-matrix.mjs';
 
 test('extended parity matrix covers every family, scale, and placement', () => {
   const { manifest } = readManifest();
@@ -166,4 +166,24 @@ test('rigid oracle cells carry the FP-rotation floor', () => {
       }
     }
   }
+});
+
+test('boolean cells measure the solid the boolean returned (B57)', () => {
+  const { manifest } = readManifest();
+  const cells = expandMatrix(manifest).filter(({ kind }) => kind === 'boolean');
+  assert.ok(cells.length > 0);
+  for (const c of cells) {
+    const reference = { fromOp: c.result.opIndex, pick: 'solid', orHandle: 2 };
+    assert.deepEqual(c.result.handle, reference, `${c.id}: symbolic result handle`);
+    for (const index of [
+      c.result.volumeIndex, c.result.validationIndex, c.result.meshQualityIndex, c.result.facesIndex,
+    ]) {
+      assert.deepEqual(c.batch[index].args.solid, reference, `${c.id}: op ${index} targets the returned solid`);
+    }
+  }
+  // A disclosed fallback lands past the rejected exact intermediate at 2.
+  assert.equal(resolveSolidPick({ fromOp: 5, pick: 'solid', orHandle: 2 }, { solid: 4, quality: 'approximate' }), 4);
+  // A refused boolean has no ok-value: the unallocated positional handle stands in.
+  assert.equal(resolveSolidPick({ fromOp: 5, pick: 'solid', orHandle: 2 }, undefined), 2);
+  assert.throws(() => resolveSolidPick({ fromOp: 5, pick: 'solid' }, undefined));
 });
