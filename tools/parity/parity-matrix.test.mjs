@@ -187,3 +187,21 @@ test('boolean cells measure the solid the boolean returned (B57)', () => {
   assert.equal(resolveSolidPick({ fromOp: 5, pick: 'solid', orHandle: 2 }, undefined), 2);
   assert.throws(() => resolveSolidPick({ fromOp: 5, pick: 'solid' }, undefined));
 });
+
+test('resolveSolidPick falls back to orHandle only for a refused producer', () => {
+  const reference = { fromOp: 5, pick: 'solid', orHandle: 2 };
+  // Refusal: no ok-value at all, on either runner's encoding.
+  assert.equal(resolveSolidPick(reference, undefined), 2);
+  assert.equal(resolveSolidPick(reference, null), 2);
+  // An answer with a solid is followed, including one other than orHandle.
+  assert.equal(resolveSolidPick(reference, { solid: 7, quality: 'exact' }), 7);
+  assert.equal(resolveSolidPick(reference, { solid: 0, quality: 'exact' }), 0);
+  // Any other answer is malformed, never a cue to measure the positional handle.
+  for (const malformed of [3, 0, { solid: null }, { quality: 'exact' }, {}, [4], { solid: '4' }, { solid: 1.5 }]) {
+    assert.throws(
+      () => resolveSolidPick(reference, malformed),
+      /without an integer solid handle/,
+      `malformed answer ${JSON.stringify(malformed)}`,
+    );
+  }
+});

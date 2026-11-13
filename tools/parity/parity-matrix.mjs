@@ -565,12 +565,21 @@ function expectedResultHandle(c, opResult) {
 }
 
 // `{fromOp, pick: 'solid'}` reads the handle out of a `{solid, quality}`
-// boolean response (the native runner's `resolve_ref` does the same). A
-// refused producer has no ok-value; `orHandle` then stands in.
+// boolean response (the native runner's `resolve_ref` does the same). Only a
+// refused producer, which leaves no ok-value (null or undefined), falls back
+// to `orHandle`. Any other answer without an integer `solid` (a bare handle,
+// `{solid: null}`, an object without `solid`) is a hard error: falling back
+// there would quietly measure the positional handle again (B57).
 export function resolveSolidPick(reference, source) {
-  if (source && typeof source === 'object' && Number.isInteger(source.solid)) return source.solid;
-  assert.ok(Number.isInteger(reference.orHandle), 'pick solid: producer has no solid and no orHandle');
-  return reference.orHandle;
+  if (source === null || source === undefined) {
+    assert.ok(Number.isInteger(reference.orHandle), 'pick solid: producer refused and the reference has no orHandle');
+    return reference.orHandle;
+  }
+  assert.ok(
+    typeof source === 'object' && !Array.isArray(source) && Number.isInteger(source.solid),
+    `pick solid: producer answered without an integer solid handle: ${JSON.stringify(source)}`,
+  );
+  return source.solid;
 }
 
 // Sequential chunked driver shared by both targets: ops whose serialized
