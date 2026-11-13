@@ -9,6 +9,10 @@ production is early-path with budget-gated fallback (declines on default
 budgets, preserving legacy). No emitter deleted in the cylinder slice; the
 rest of O2.3b-d migration and the three-entry-point deletion floor remain
 staged. Shared-file ownership was rechecked before each runtime slice.
+O2.3d step 0 (2026-11-12) added the special-case ratchet and a shadow
+differential that measures the arrangement adapters against the legacy
+emitters on real faces; it migrated and deleted nothing (see
+[O2.3d step 0](#o23d-step-0-ratchet-and-shadow-differential-2026-11-12)).
 
 - Measured baseline: `main` at `fc4b55a1855514a6cbe206d86572cf9b3ee362e2`.
 - Retirement target:
@@ -25,8 +29,10 @@ that the greedy wire walk cannot represent reliably. They are valuable,
 fixture-backed repairs, but each separately owns some combination of crossing
 detection, edge splitting, loop tracing, periodic unwrapping, hole attachment,
 and interior-point selection. The target file is 4,368 lines at the measured
-baseline: 3,651 production lines and 717 test lines. It exposes ten callable
-entry points and contains eighteen private production helpers.
+baseline: 3,651 production lines and 717 test lines. It exposed ten callable
+entry points and contained eighteen private production helpers there. On
+2026-11-12 it is 7,960 lines: 6,566 production lines and sixteen callable
+entry points, the counts `scripts/check-splitter-ratchet.py` now pins.
 
 O2.3 does not replace analytic intersection or invent new surface geometry.
 It consumes the boundary and section curves already produced for one face and
@@ -36,11 +42,12 @@ index for finding candidate crossings and ordering the embedded graph.
 
 ## Current entry-point inventory
 
-The table inventories every callable entry point in `special_cases.rs`.
-"Direct pin" means a test asserts the geometric contract of that path. A foil
-asserts that its gate does not steal a configuration owned elsewhere. Where no
-positive isolated pin exists, that is recorded as a coverage gap O2.3b must
-close before migration.
+The table inventories every callable entry point in `special_cases.rs`: the
+ten of the O2.3a baseline first, then the six added since (inventoried
+2026-11-12). "Direct pin" means a test asserts the geometric contract of that
+path. A foil asserts that its gate does not steal a configuration owned
+elsewhere. Where no positive isolated pin exists, that is recorded as a
+coverage gap to close before migration.
 
 | Entry point | Current gate and geometric patch | Pinning fixtures | Arrangement responsibility that replaces it |
 |---|---|---|---|
@@ -54,12 +61,22 @@ close before migration.
 | `chain_boundary_edges` | Greedily reorders and reverses split plane-boundary edges before the crossing-plane emitter consumes them. | Transitive only through the crossing-plane fixtures; there is no isolated permutation or refusal contract. | DCEL half-edge ordering replaces greedy chaining. O2.3b must pin permutation invariance and typed refusal of a non-closing boundary before deletion. |
 | `try_split_crossing_plane_face` | Direct construction for two crossing sections (`X`), a two-section `T`, or four rays meeting as two opposing pairs. Splits the outer boundary at ray endpoints and emits three or four regions. | Direct historical contract: `crates/algo/src/pave_filler/tests.rs::gfa_intersect_overlapping_boxes`; foils include `gfa_cut_touching_boxes`. The later three-plus-line wall family is owned by the existing general planar arrangement, not this helper. | Ordinary segment insertion and region extraction; no arity-specific construction. |
 | `try_split_disk_by_chords` | A plane disc with a single analytic circle boundary cut by line chords. It preserves major arcs, uses tangent-aware turns, and midpoint-splits a co-endpoint lens arc so the shared merge cannot collapse it. | Direct in-file: `disk_cut_by_corner_chords_yields_two_analytic_regions`, `disk_cut_by_diameter_yields_two_half_discs`, `disk_lens_arc_is_split_to_break_coendpoint_collision`, `non_disc_boundary_defers`, and `circle_section_defers`; wider canaries: `crates/io/tests/socket_junction_disc_inmem.rs` and `crates/io/tests/gridfinity_honeycomb_cut_inmem.rs`. | Insert analytic arc uses with exact tangent ordering and refined chord crossings. Preserve source sub-spans so a major arc and its chord remain distinct. |
+| `is_sphere_equator_partition` | Gate, not an emitter: recognises a sphere hemisphere boundary made of circle pieces on one stored frame, one direction, whose native spans join into exactly one turn. `split_face_2d_impl` then treats that analytic rim as seam-free and routes the face to `split_noseam_face_direct`. | Direct: `crates/algo/src/builder/face_splitter/special_cases/equator_partition_tests.rs::{complete_equators_admit_both_directions_scales_and_wire_starts,incomplete_retraced_and_malformed_partitions_decline,a_common_circle_that_is_not_the_sphere_equator_declines}`. | A pole-aware sphere chart makes the equator an ordinary boundary cycle; no boundary-shape gate selects an emitter. |
+| `sphere_closed_loop_interior` | Interior point of a contractible closed loop on a sphere, in a chart whose pole is placed away from the cap so concave caps stay inside. Used by the noseam emitter and by `interior_point_3d` for all-NURBS sphere loops. | Transitive only, through the sphere collar and cap fixtures of `split_noseam_face_direct`; no isolated contract. | Every extracted region carries a certified seed; no post-hoc sphere search. |
+| `split_converted_wall_into_bands` | The band shortcut for a NURBS face the exact-rational wall recognizer accepts (closed NURBS rims plus seam lines) cut by closed transverse rings at distinct chart `v`. Emits `N+1` stacked bands. | Direct in-file: `converted_wall_with_one_transverse_ring_splits_into_two_bands`. | The periodic strip arrangement on the wall chart, once exact-rational carriers are admitted as uses. |
+| `converted_wall_remainder_interior` | Classification point on a converted-wall remainder carrying a curved hole loop, by a chart-grid search for the point farthest from every hole. Called only inside `special_cases.rs` despite its `pub` visibility. | Direct in-file: `converted_wall_remainder_interior_lands_below_a_transverse_section_ring`. | Certified region seeds, as for `cylinder_cone_remainder_interior`. |
+| `cylinder_cone_loop_interior` | Interior point of a cylinder or cone sub-face bounded by one contractible window loop: the 3D centroid of the loop lies off the wall, so the wall point inside the loop farthest from it is searched in the chart extent of the loop. Called only by the internal-loops emitter. | Transitive only, through the internal-loops fixtures (`fuse_perpendicular_cylinders_is_analytic_watertight`, `crates/io/tests/snapclip_slot_cut_inmem.rs`). | Certified region seeds. |
+| `relocate_clear_seam` (`cylinder_seam`) | Pre-pass, not an emitter: moves the artificial seam of a complete cylinder or cone band to the antipodal meridian when whole-carrier bounds prove a mixed ellipse/NURBS section chain clear of it, preserving rim carriers, trims and source lineage. | Direct in-file: `cylinder_seam::tests::{cylinder_seam_relocation_preserves_carriers_trims_orientation_and_rim_lineage,cone_seam_relocation_preserves_native_rim_winding_and_carriers}` and their refusal cases; integration: `crates/operations/tests/regress_opseq_rotated_cylinder_cut.rs`. | Automatic periodic lifting chooses the working window from the boundary and section uses, so no seam has to be moved before the split. |
 
 `chain_boundary_edges` is callable only inside `special_cases.rs`, but it is
 listed because its `pub(super)` visibility makes it part of the measured
-retirement surface. `cylinder_cone_remainder_interior` is also consumed by
-`fill_images_faces.rs`, so migrating the splitter alone is insufficient to
-delete it until the arrangement supplies certified region seeds.
+retirement surface; the same holds for `converted_wall_remainder_interior`
+and `cylinder_cone_loop_interior`. `cylinder_cone_remainder_interior` is also
+consumed by `fill_images_faces.rs`, so migrating the splitter alone is
+insufficient to delete it until the arrangement supplies certified region
+seeds. Three of the six later entries are not emitters at all (a boundary
+gate, a seam pre-pass and an interior search): the file grew by accreting
+support code around the emitters as well as by adding them.
 
 ## Adjacent arrangement-shaped code
 
@@ -377,9 +394,12 @@ engine before deleting the old code:
 
 The first two migrations deliberately establish at least three deleted entry
 points (`try_split_crossing_plane_face`, `chain_boundary_edges`, and
-`try_split_disk_by_chords`) before the periodic cases. A CI ratchet introduced
-with the first deletion records production lines and callable entry points in
-`special_cases.rs`; neither count may rise without an explicit ledger update.
+`try_split_disk_by_chords`) before the periodic cases. The CI ratchet
+(`scripts/check-splitter-ratchet.py`, introduced ahead of the first deletion
+in O2.3d step 0) records production lines and callable entry points in
+`special_cases.rs`, the named emitters in `face_splitter/mod.rs` and the
+early returns of the dispatch chain; no count may rise without a ledger line
+naming a roadmap row.
 
 Every boolean-adjacent migration runs `approx_census`, the full workspace,
 `remus-wasm` Gridfinity contracts, the affected criterion benches, and the
@@ -458,6 +478,73 @@ Out of scope (remain explicitly outside unless independently qualified):
 oblique traces, unsupported contacts/overlaps, cone poles, sphere poles,
 double-periodic torus charts. Terminal equal-radius perpendicular-cylinder
 render work is not reopened (needs face-split-at-pinch primitive).
+
+## O2.3d step 0: ratchet and shadow differential (2026-11-12)
+
+Step 0 is measurement infrastructure. It changes no dispatch order, adoption
+gate, budget or emitted geometry, and migrates and deletes nothing.
+
+**Ratchet.** `scripts/check-splitter-ratchet.py` (Repository Policy job)
+pins, in `scripts/splitter-ratchet-baseline.txt`: 6,566 production lines,
+16 entry points and 34 `pub` functions in `special_cases.rs`; the line counts
+of `split_periodic_face_by_winding_chain` (305),
+`split_periodic_face_by_rim_chains` (496),
+`arrangement_regions_from_combined` (36) with its worker
+`arrangement_regions_from_inputs` (1,228), `split_plane_face_by_arrangement`
+(83) and `split_cylinder_band_by_arrangement` (610); and the 19 early-return
+dispatch sites of `split_face_2d_impl`. A rise needs a ledger line naming a
+roadmap row; a reduction must be banked in the same change.
+
+**Shadow differential.** `face_splitter/shadow.rs` exists only under
+`cfg(any(test, feature = "perf-counters"))` and is inert until
+`REMUS_SPLITTER_SHADOW` (or a test) opts in. Where `split_face_2d_impl`
+adopts the result of `try_split_crossing_plane_face` (with its only-caller
+helper `chain_boundary_edges`), `try_split_disk_by_chords`,
+`split_periodic_face_into_sectors` or the cylinder arm of
+`split_periodic_face_into_bands`, it hands the same face to the planar or
+cylinder arrangement adapter with no split registry and compares: region
+count, carrier kinds per wire up to rotation, vertices within the linear
+tolerance, and each arc's native carrier and signed sub-span. The legacy
+result is always returned. Counts per entry point sit in
+`gfa::SectionDropScope::splitter_shadow`.
+
+**Engagement census** (`python3 scripts/splitter-shadow-census.py`; the
+seven foil families of the roadmap skill, twelve test targets, measured
+2026-11-13). Default budgets are `WorkBudgets::new()`; raised budgets are
+march steps 2,000,000, queue 20,000, segments 10,000.
+
+| Legacy entry point | Budgets | fired | agreed | disagreed | declined | declined on budget | refused |
+|---|---|---:|---:|---:|---:|---:|---:|
+| `try_split_crossing_plane_face` | default | 6 | 0 | 0 | 0 | 6 | 0 |
+| `try_split_crossing_plane_face` | raised | 6 | 6 | 0 | 0 | 0 | 0 |
+| `try_split_disk_by_chords` | either | 0 | 0 | 0 | 0 | 0 | 0 |
+| `split_periodic_face_into_sectors` | either | 0 | 0 | 0 | 0 | 0 | 0 |
+| `split_periodic_face_into_bands` (cylinder) | either | 0 | 0 | 0 | 0 | 0 | 0 |
+
+What the table says:
+
+- The six crossing faces are two-section `T` splits into three regions: two
+  in d4 (`d4_shelled_box_fuse_lip`) and two in each of two honeycomb tests.
+  Under raised budgets the arrangement reproduces all six exactly. Under
+  default budgets it produces none of them: every one exhausts the work
+  budget. The planar adapter's budget, not its domain, is what keeps it from
+  these faces today.
+- The foil corpus never reaches the disc, sector or cylinder-band emitters
+  (nor does the wasm d4 bin reach any of the four). The foils therefore
+  carry no evidence for or against migrating those three; their evidence is
+  the unit fixtures in `shadow/tests.rs`.
+- On those unit fixtures, raised budgets give: disc with two rim chords,
+  same three regions but the rim broken at different angles
+  (`segmentation-only`); cylinder bands and sectors, same regions, wires,
+  vertices and carriers, but `span-direction`: `arrangement_cyl` stores the
+  `trim` of a reversed rim use in traversal order, where
+  `OrientedPCurveEdge::trim` is documented native-direction and the legacy
+  emitters keep it so. That convention has to be reconciled before a
+  cylinder face is routed through the adapter. All of them decline on budget
+  at default budgets.
+- With non-default budgets the adapters report their fixed use caps
+  (`MAX_CYL_USES`, 256) as `WorkBudgetExceeded` too, so "declined on budget"
+  under raised budgets can also mean the structural cap. No foil face hit it.
 
 ## Non-goals
 
