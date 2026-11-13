@@ -152,14 +152,13 @@ that does not exist yet; without it, stop.
 
 ## Open items with a repro
 
-The `#[ignore]` inventory (regenerated 2026-11-12 on `24040dda`: 55 actual
-attributes in 32 files, all in `operations`, `io`, `heal`, `math`, `wasm` and
-`remus`) splits by the ignore reason as written. Listed, not re-run, except
-B265, B266 and B272 (failed 3/3 as pinned). **27 open engine witnesses**,
-each with an owner row:
+The `#[ignore]` inventory (regenerated 2026-11-13 on `1ef72bfa` with B62's
+witness un-ignored: 54 actual attributes in 31 files, all in `operations`,
+`io`, `heal`, `math`, `wasm` and `remus`) splits by the ignore reason as
+written. Listed, not re-run, except B265, B266 and B272 (failed 3/3 as
+pinned). **26 open engine witnesses**, each with an owner row:
 - seven B26 property ready-repros in `operations/tests/prop_boolean_invariants.rs`:
   finding 13 sphere–torus ×3 (B38), finding 20 sphere–cone (B33), torus–cone ×3 (B51);
-- `regress_boss_crossing_a_wall.rs` (B62);
 - `regress_b52_box_cylinder_rim_notch.rs` (B270) and
   `regress_b53_finding17_neighborhood.rs` (B271), the B52/B53 remainders;
 - `qualify_boolean_anisotropic.rs` (P-Class 2.6);
@@ -192,9 +191,9 @@ each with an owner row:
   (`REMUS_VIDEO_FIXTURES`) and the cumulative Gecko document writer in
   `wasm/src/bindings/prepared_group_edit/tests.rs` (`REMUS_CUMULATIVE_GECKO_DOC`).
 
-The B10, B55, B61, B64–B67, B69–B71 and B79 witnesses that earlier snapshots
-listed as failing are no longer ignored, and their rows record Done (B79 in
-source). Re-run landscape diagnostics with `--ignored --nocapture` before
+The B10, B55, B61, B62, B64–B67, B69–B71 and B79 witnesses that earlier
+snapshots listed as failing are no longer ignored, and their rows record Done
+(B79 in source). Re-run landscape diagnostics with `--ignored --nocapture` before
 re-opening a case, and re-run a witness 3× before quoting it as still failing.
 Current work lives in the master roadmap; closed narratives live in
 `campaign-history.md`.
