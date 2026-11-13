@@ -21,7 +21,12 @@
 //! `libm` may move the last bits of the analytic faces). The hammer holder's
 //! was re-recorded when the fixed rule was aligned to NURBS knot spans
 //! (B131): 50 245.521 289 691 05 before, 2.2e-7 off the converged adaptive
-//! volume 50 245.532 161 522 77 that it now meets to 4e-17.
+//! volume 50 245.532 161 522 77 that it now meets to 4e-17. It was
+//! re-recorded again (50 245.219 468 574 97 before, 4.1e-11 lower) when the
+//! trimmed rule began laying NURBS edges along a carrier's own iso curves as
+//! chords: three faces' outlines lost the projection noise of 128 dense
+//! samples, and the one that moved most (6e-7 of its area) now sits about
+//! ten times closer to the limit of its ever finer meshes.
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
@@ -42,7 +47,7 @@ const FIXTURES: [(&str, &str, usize, f64); 4] = [
         "hammer holder",
         include_str!("data/shapr3d_hammer_holder.step"),
         160,
-        50_245.219_468_574_97,
+        50_245.219_470_636_635,
     ),
     (
         "bored plate",

@@ -278,6 +278,115 @@ fn line_traces_iso(iso: &NurbsCurve, start: Point3, end: Point3, tolerance: f64)
             || (close_point(start, points[1], tolerance) && close_point(end, points[0], tolerance)))
 }
 
+/// The outer wire's NURBS edges that lie along one of the carrier's four
+/// boundary iso curves over some piece of it, forwards or reversed: each is a
+/// straight, axis-parallel segment of the carrier's parameter rectangle, so
+/// its projected outline needs only its ends. Compared as the witnesses
+/// compare (knots and weights bit for bit, control points within the witness
+/// tolerance); an edge of another degree or size is never built against.
+pub(super) fn outer_iso_edges(
+    topo: &Topology,
+    face: FaceId,
+    s: &NurbsSurface,
+) -> Result<Vec<remus_topology::edge::EdgeId>, CheckError> {
+    let points = s.control_points();
+    if points.len() < 2 || points[0].len() < 2 || s.degree_u() == 0 || s.degree_v() == 0 {
+        return Ok(Vec::new());
+    }
+    let (m, n) = (points.len(), points[0].len());
+    // A side running along a closed direction can cover more than half its
+    // period, and the outline's shortest-step unwrap reads two ends that far
+    // apart the wrong way round; only sides along an open direction are
+    // chords. Rows run along `v`, columns along `u`.
+    let side_shapes = [
+        (!s.is_periodic_v()).then_some((s.degree_v(), n)),
+        (!s.is_periodic_u()).then_some((s.degree_u(), m)),
+    ];
+    let wire = topo.wire(topo.face(face)?.outer_wire())?;
+    let uses = wire.edges();
+    let mut candidates = Vec::new();
+    for (i, oe) in uses.iter().enumerate() {
+        let edge = topo.edge(oe.edge())?;
+        // The outline is half-open: an edge's far end is the next edge's
+        // first point. A chord is laid down only where the wire chains there
+        // by vertex; across a gap the edge keeps its dense samples, which
+        // reach its far end without it.
+        let next = &uses[(i + 1) % uses.len()];
+        let chains = oe.oriented_end(edge) == next.oriented_start(topo.edge(next.edge())?);
+        if chains
+            && let EdgeCurve::NurbsCurve(c) = edge.curve()
+            && side_shapes.contains(&Some((c.degree(), c.control_points().len())))
+        {
+            candidates.push(oe.edge());
+        }
+    }
+    if candidates.is_empty() {
+        return Ok(candidates);
+    }
+    let weights = s.weights();
+    let magnitude = points
+        .iter()
+        .flatten()
+        .map(|p| p.x().abs().max(p.y().abs()).max(p.z().abs()))
+        .fold(1.0_f64, f64::max);
+    let tolerance = (128.0 * f64::EPSILON * magnitude).min(1e-7);
+    let iso = [
+        NurbsCurve::new(
+            s.degree_v(),
+            s.knots_v().to_vec(),
+            points[0].clone(),
+            weights[0].clone(),
+        )?,
+        NurbsCurve::new(
+            s.degree_v(),
+            s.knots_v().to_vec(),
+            points[m - 1].clone(),
+            weights[m - 1].clone(),
+        )?,
+        NurbsCurve::new(
+            s.degree_u(),
+            s.knots_u().to_vec(),
+            points.iter().map(|r| r[0]).collect(),
+            weights.iter().map(|r| r[0]).collect(),
+        )?,
+        NurbsCurve::new(
+            s.degree_u(),
+            s.knots_u().to_vec(),
+            points.iter().map(|r| r[n - 1]).collect(),
+            weights.iter().map(|r| r[n - 1]).collect(),
+        )?,
+    ];
+    // A side collapsed to a point (a blend band running out at a corner)
+    // projects to any `u` there, so an outline vertex on it is arbitrary;
+    // dense samples along the neighbouring sides keep that harmless, a chord
+    // to it does not (a collapsed fillet corner lost a 0.73 sliver). Such a
+    // carrier gets no chords.
+    if iso.iter().any(|side| {
+        let p = side.control_points();
+        p.iter().all(|&q| close_point(q, p[0], tolerance))
+    }) {
+        return Ok(Vec::new());
+    }
+    let mut found = Vec::with_capacity(candidates.len());
+    for edge in candidates {
+        let EdgeCurve::NurbsCurve(c) = topo.edge(edge)?.curve() else {
+            continue;
+        };
+        let open = [
+            !s.is_periodic_v(),
+            !s.is_periodic_v(),
+            !s.is_periodic_u(),
+            !s.is_periodic_u(),
+        ];
+        if iso.iter().zip(open).any(|(side, open)| {
+            open && (same_curve(side, c, tolerance) || same_curve_reversed(side, c, tolerance))
+        }) {
+            found.push(edge);
+        }
+    }
+    Ok(found)
+}
+
 /// Any clamped, non-periodic carrier whose outer wire runs along its four
 /// iso boundaries, each covered once from end to end: every edge is a NURBS
 /// edge equal to a side's iso curve (knots and weights bit for bit, control
@@ -1138,6 +1247,38 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn outer_iso_edges_finds_whole_and_partial_sides_either_way_round() {
+        for top_reversed in [false, true] {
+            // A top edge over part of its side is still straight in the
+            // carrier's rectangle; the two lines are not NURBS edges.
+            let (t, face, s, _) = straight_sheet(7, top_reversed, (0.1, 1.0));
+            let wire = t.wire(t.face(face).unwrap().outer_wire()).unwrap();
+            let nurbs: Vec<_> = wire
+                .edges()
+                .iter()
+                .map(OrientedEdge::edge)
+                .filter(|&e| matches!(t.edge(e).unwrap().curve(), EdgeCurve::NurbsCurve(_)))
+                .collect();
+            assert_eq!(nurbs.len(), 2);
+            assert_eq!(outer_iso_edges(&t, face, &s).unwrap(), nurbs);
+        }
+        // A carrier whose bottom row moved off its edge keeps only the top.
+        let (t, face, s, _) = straight_sheet(7, false, (0.0, 1.0));
+        let mut points = s.control_points().to_vec();
+        points[3][0] = points[3][0] + Vec3::new(0.0, 0.01, 0.0);
+        let moved = NurbsSurface::new(
+            3,
+            1,
+            s.knots_u().to_vec(),
+            s.knots_v().to_vec(),
+            points,
+            s.weights().to_vec(),
+        )
+        .unwrap();
+        assert_eq!(outer_iso_edges(&t, face, &moved).unwrap().len(), 1);
     }
 
     #[test]

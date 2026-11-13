@@ -6618,6 +6618,52 @@ mod face_integral_work_tests {
     /// orders 5 and 3 that is at most `(5 + 3) · 16 · 16 = 2048` Gauss lines a
     /// face. The trimmed rule they took before broke `u` at every vertex of a
     /// 128-sample projected outline, 77 to 544 breaks a face.
+    /// A throated worm wheel's flanks keep three sides of their carrier's
+    /// rectangle and are cut along the fourth at the throat. The sides along
+    /// the carrier's iso curves are laid down as chords, so the trimmed rule
+    /// breaks `u` only along the throat curve: about 16 000 Gauss lines a
+    /// flank over orders 5 and 3 (lands included), where the 128 samples of
+    /// every side took about 92 000.
+    #[test]
+    fn scaling_throated_wheel_flanks_break_only_along_the_throat() {
+        use crate::gear::{ThroatedWheelOptions, WormParams, make_throated_worm_wheel};
+        let mut topo = Topology::new();
+        let worm = WormParams::standard(2.0, 1, 10.0, 20.0);
+        let solid = make_throated_worm_wheel(
+            &mut topo,
+            &worm,
+            30,
+            14.0,
+            &ThroatedWheelOptions::default(),
+            &GearPlacement::default(),
+        )
+        .unwrap()
+        .gear
+        .solid;
+        let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
+        // The flanks are the NURBS faces with more than four edges: the
+        // throat cut adds two.
+        let flanks = faces
+            .iter()
+            .filter(|&&f| {
+                let face = topo.face(f).unwrap();
+                matches!(face.surface(), FaceSurface::Nurbs(_))
+                    && topo.wire(face.outer_wire()).unwrap().edges().len() > 4
+            })
+            .count() as u64;
+        assert_eq!(flanks, 60);
+        remus_check::perf::reset_integration();
+        let volume = qualified_face_integral_volume(&topo, solid).unwrap();
+        let work = remus_check::perf::integration_snapshot();
+        assert!(volume.is_some(), "the wheel measures by its face integrals");
+        assert!(
+            work.knot_aligned_lines <= 20_000 * flanks,
+            "{} Gauss lines over {flanks} flanks",
+            work.knot_aligned_lines
+        );
+        assert_eq!(work.knot_aligned_preflights, 0);
+    }
+
     #[test]
     fn scaling_helical_gear_volume_integrates_each_face_as_its_rectangle() {
         let mut topo = Topology::new();

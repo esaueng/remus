@@ -1159,8 +1159,33 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
                     (u, v)
                 }
             };
-            let ((u_range, v_range), outline) =
-                face_uv_bounds(topo, face_id, &project, periodic_u, periodic_v, full)?;
+            // Edges along the carrier's own boundary iso curves (a throated
+            // worm wheel's flank keeps three of its four sides and is cut
+            // along the fourth) are straight in the carrier's rectangle. Laid
+            // down as chords, they add no vertices to the projected outline,
+            // so no `u` break the trimmed rule must integrate a Gauss row on,
+            // and no projection noise either.
+            let iso_edges = natural_rectangle::outer_iso_edges(topo, face_id, s)?;
+            let prepared = if iso_edges.is_empty() {
+                None
+            } else {
+                Some(crate::util::wire_polygon_curve_sampled_except(
+                    topo,
+                    face.outer_wire(),
+                    TRIM_SAMPLES,
+                    TRIM_SAMPLES,
+                    &iso_edges,
+                )?)
+            };
+            let ((u_range, v_range), outline) = face_uv_bounds_with_outline(
+                topo,
+                face_id,
+                &project,
+                periodic_u,
+                periodic_v,
+                full,
+                prepared.as_deref(),
+            )?;
             let uv = build_face_uv(topo, face_id, project, outline, periodic_u, false, false)?;
             integrate_with_trimming::<_, AREA_ONLY>(
                 s,
