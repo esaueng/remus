@@ -2060,6 +2060,46 @@ fn thread_run_to_the_face_end_keeps_its_chamfer_whatever_the_rounding() {
     }
 }
 
+/// B276 ready-repro: the M6-sized boss of the rounding test above with a
+/// pitch-0.5 thread, a 0.5 start collar and a 45° chamfer at the face end.
+/// The body is valid, and its mesh is watertight at deflection 0.005 but
+/// not at 0.01 (the deflection `assert_valid_and_watertight` uses). Offset
+/// 0.5 does not round off, so the snapped-span fix does not bear on it.
+#[test]
+#[ignore = "open: a pitch-0.5 thread with a start collar on an r3 h2.6 boss meshes open at deflection 0.01 (B276)"]
+fn fine_pitch_thread_with_a_start_collar_meshes_closed() {
+    use crate::tessellate::{boundary_edge_count, non_manifold_edge_count};
+    let (r, h, offset, pitch) = (3.0, 2.6, 0.5, 0.5);
+    let mut topo = Topology::new();
+    let (body, face) = boss(&mut topo, r, h);
+    let form = ThreadForm::iso_metric(pitch, ThreadKind::External);
+    let options = CylinderThreadOptions {
+        offset,
+        end: ThreadEnd::Chamfer { angle: PI / 4.0 },
+        ..CylinderThreadOptions::default()
+    };
+    let outcome = cut_thread(&mut topo, body, face, &form, &options).unwrap();
+    let report = validate_solid(&topo, outcome.solid).unwrap();
+    assert!(report.is_valid(), "{:?}", report.issues);
+    let open: Vec<(f64, usize, usize)> = [0.01, 0.005]
+        .into_iter()
+        .filter_map(|d| {
+            let mesh = tessellate_solid_with_tolerance(&topo, outcome.solid, d, 0.2).unwrap();
+            (!is_watertight(&mesh)).then(|| {
+                (
+                    d,
+                    boundary_edge_count(&mesh),
+                    non_manifold_edge_count(&mesh),
+                )
+            })
+        })
+        .collect();
+    assert!(
+        open.is_empty(),
+        "open meshes [(deflection, boundary, non-manifold)]: {open:?}"
+    );
+}
+
 /// The fuse fallback, forced: plain threads (on a whole boss, and on a
 /// turned-down band between collars) through the exact fuse instead of the
 /// glue. The volume is the closed form either way, and the faces the fuse
