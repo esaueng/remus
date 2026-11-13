@@ -487,6 +487,31 @@ fn spring_tessellates_watertight_and_encloses_its_volume() {
     }
 }
 
+/// `solid_volume` reads a circle spring off its face integrals: two planar
+/// caps and one full-turn band, each integrated over its whole domain. The
+/// whole-solid mesh it read before chorded the band at the clamped
+/// deflection, 2.4e-4 under the closed form at 5 turns and 6.3e-4 at 20,
+/// and at 20 turns the trimmed face rule refused the band outright.
+#[test]
+fn spring_solid_volume_is_its_closed_form() {
+    for turns in [3.0, 20.0] {
+        let mut topo = Topology::new();
+        let profile = circle_face(
+            &mut topo,
+            Point3::new(12.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            1.5,
+        );
+        let solid = helical_sweep_in_place(&mut topo, profile, origin(), Z, 5.0, turns).unwrap();
+        let exact = PI * 1.5 * 1.5 * TAU * 12.0 * turns;
+        let measured = crate::measure::solid_volume(&topo, solid, 0.05).unwrap();
+        assert!(
+            rel(measured, exact) < 1e-10,
+            "{turns} turns: solid_volume {measured} vs {exact}"
+        );
+    }
+}
+
 /// A radius-0.8 post parallel to the axis, a quarter turn round, piercing
 /// the spring's wire twice (near z = 1.25 and z = 6.25).
 fn post(topo: &mut Topology) -> SolidId {
