@@ -53,7 +53,9 @@ committed native unit matrix additionally compares the original full-snapshot
 implementation for caught/propagated failures, outer rollback and validation veto.
 
 Probe-only `unsafe` is confined to `allocator.rs`, a forwarding `System` allocator
-inserted into disposable measurement sources. Production code remains safe Rust;
+inserted into disposable measurement sources. The workspace forbids `unsafe_code`,
+so `instrument.py` relaxes that lint to `deny` in the disposable copy only, where
+the allocator's `#![allow(unsafe_code)]` can take effect. Production code remains safe Rust;
 there is no new runtime feature, dependency, fault switch or JS export.
 
 For uninstrumented timing, start from fresh source archives and run

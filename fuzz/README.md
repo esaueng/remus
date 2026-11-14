@@ -136,6 +136,32 @@ refusals must allocate nothing. `persistent_ref` decodes references the way
 they come back from storage: a decoded reference must re-encode byte-stably to
 itself and resolve, against an empty and a journaled model, without panicking.
 
+The mesh reader targets (`stl_reader`, `obj_reader`, `ply_reader`,
+`glb_reader`, `threemf_reader`, `threemf_xml`) do not stop at parsing: every
+accepted mesh goes through `import_mesh` the way the wasm `import*` bindings
+send it, with the same 1e-7 weld tolerance and generated-entity guard
+(`common::import_meshes`). An accepted import must give one resolvable solid
+with at least one face and no more faces than input triangles.
+
+`threemf_xml` takes the input as the `3D/3dmodel.model` part and wraps it in
+a valid Stored (uncompressed) single-entry ZIP. `threemf_reader` mutates raw
+ZIP bytes, so CRC and deflate checks refuse almost every input before the XML
+parser runs; this target reaches the XML parser, component and build
+resolution, and transform flattening on every input. A ZIP refusal of the
+wrapper's archive is a harness bug and fails the run. `glb_reader` and
+`threemf_reader` each start from one valid container, a 1 x 2 x 3 box, so a
+campaign begins with an input that reaches `import_mesh`;
+`crates/io/tests/fuzz_mesh_seeds.rs` checks both seeds still import.
+
+`brep_reader` drives the ASCII BREP import (`brep::read_brep_with_limits`)
+from the committed `crates/io/tests/data/brep` fixtures. `step_assembly`
+drives `step::read_step_assembly_with_limits`, the product-graph read and
+occurrence expansion that `step_reader` and `step_bodies` never reach; its
+seeds are `write_step_assembly` output (a nested shared box and a two-definition
+assembly). Both imports are atomic: a refusal must leave a fresh topology with
+no live entity. An accepted assembly must place only returned solid
+definitions, with finite transforms, within the entity limit.
+
 Run one target locally with nightly Rust and `cargo-fuzz`:
 
 ```bash
@@ -145,9 +171,13 @@ cargo +nightly fuzz run nurbs_surface -- -max_total_time=60 -rss_limit_mb=2048
 CI's `Fuzz Targets Compile` job compiles every target on every PR and main
 push with a source change (the `heavy` tier, `docs/ci-cadence.md`). The
 scheduled `Fuzz Smoke` workflow runs the
-public model-reader, boolean-tree, modifier, NURBS-surface,
+public model-reader (including `threemf_xml`, `brep_reader` and
+`step_assembly`), boolean-tree, modifier, NURBS-surface,
 topology-mutation, arena-roundtrip, tessellation, curve-intersection,
 offset and GCS campaigns for two minutes each and retains crash artifacts.
+Each run passes `-timeout=10`, so an input that runs for more than ten
+seconds is reported as a hang (libFuzzer's default of 1200 s exceeds the
+whole campaign, so hangs were never reported).
 `arena_reader`, `wasm_batch`, `step_bodies`, `mesh_import` and
 `persistent_ref` are compiled by that job but are not scheduled. To
 schedule a target, add it to the matrix in `fuzz.yml`; the change takes
