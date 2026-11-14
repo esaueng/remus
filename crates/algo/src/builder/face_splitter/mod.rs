@@ -6651,6 +6651,41 @@ fn distribute_cap_circles(
     Ok(result)
 }
 
+/// Which splitter partitions an adapter family's faces (Open Kernel O2.3d).
+///
+/// Each production call site of a UV-arrangement adapter in
+/// [`split_face_2d_impl`] serves one face family, and whether the adapter
+/// runs there is a constant per family, never a property of the caller's
+/// [`OperationContext`]. The adapters used to decline silently only while
+/// the work budgets equalled `WorkBudgets::new()`, so any budget change,
+/// even an unrelated `newton_iterations`, rerouted faces and turned exact
+/// booleans into mesh fallbacks or `ExactOnly` errors. An adapter now
+/// reports exhaustion as a typed refusal wherever it runs.
+///
+/// The crossing-plane and disc-by-chords emitters have no production
+/// adapter site (their adapter runs only in the cfg'd shadow differential),
+/// so they need no route until a migration gives them one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ArrangementRoute {
+    /// The established emitters partition the face; the adapter does not run.
+    Legacy,
+    /// The adapter claims the face at its site, ahead of the legacy emitters.
+    #[allow(dead_code)] // No family is routed to the arrangement yet.
+    Arrangement,
+}
+
+/// Finite cylinder laterals cut by latitude circles and/or axial rulings,
+/// the faces `split_periodic_face_into_bands` and
+/// `split_periodic_face_into_sectors` partition; `arrangement_cyl` claims
+/// them at the early cylinder site. Legacy until the adapter has a work
+/// budget of its own and its refusals are triaged.
+const CYLINDER_LATERAL_ROUTE: ArrangementRoute = ArrangementRoute::Legacy;
+
+/// Planar faces with two or more sections that every established plane path
+/// left to the greedy walk; `arrangement_prod` claims them at the last-resort
+/// planar site. Legacy until the adapter has a work budget of its own.
+const PLANAR_LAST_RESORT_ROUTE: ArrangementRoute = ArrangementRoute::Legacy;
+
 #[allow(clippy::too_many_lines)]
 #[allow(clippy::too_many_arguments)]
 fn split_face_2d_impl(
@@ -7188,11 +7223,14 @@ fn split_face_2d_impl(
     // Provenance-preserving cylinder arrangement (O2.3b/c/d): finite
     // cylindrical laterals with exact latitude circles and/or axial rulings.
     // Fires ahead of the band/sector emitters for qualified cylinder inputs
-    // when budgets allow (declines on default budgets, preserving legacy);
-    // out-of-domain inputs (`None`) fall through to the established paths,
-    // while claimed-domain refusals (`Err`) propagate. Cone, torus, oblique
-    // traces and unsupported contacts remain on the established paths. No
-    // emitter deleted in this slice; bands/sectors remain as fallbacks.
+    // only while `CYLINDER_LATERAL_ROUTE` routes them to the arrangement
+    // (today it does not, whatever the budgets); out-of-domain inputs
+    // (`None`) fall through to the established paths, while claimed-domain
+    // refusals (`Err`), budget exhaustion included, propagate. Cone, torus,
+    // oblique traces and unsupported contacts remain on the established
+    // paths. No emitter deleted in this slice; bands/sectors remain as
+    // fallbacks. The work probe measures every face that qualifies for the
+    // site, whatever the route, since it is the evidence for routing it.
     #[cfg(any(test, feature = "perf-counters"))]
     if u_periodic
         && !is_plane
@@ -7215,7 +7253,8 @@ fn split_face_2d_impl(
             None,
         );
     }
-    if u_periodic
+    if CYLINDER_LATERAL_ROUTE == ArrangementRoute::Arrangement
+        && u_periodic
         && !is_plane
         && original_inner_wires.is_empty()
         && !sections.is_empty()
@@ -9023,21 +9062,23 @@ fn split_face_2d_impl(
     // and propagates — it never degrades into an unsplit face or a
     // fallback. Adoption mirrors the adjacent gates: strictly more
     // regions than the wire builder, or a demonstrably broken greedy
-    // trace.
-    if sections.len() >= 2 && is_plane && !holes_integrated && original_inner_wires.is_empty() {
-        let greedy_broken_here = wire_loops_self_cross(&loops, tol.linear)
+    // trace. Runs only while `PLANAR_LAST_RESORT_ROUTE` routes these faces
+    // to the arrangement (today it does not, whatever the budgets); the
+    // work probe measures every face that qualifies for the site, whatever
+    // the route, since it is the evidence for routing it.
+    let planar_last_resort_site =
+        sections.len() >= 2 && is_plane && !holes_integrated && original_inner_wires.is_empty();
+    let greedy_broken_here = || {
+        wire_loops_self_cross(&loops, tol.linear)
             || greedy_outer_loops_nested(&loops, cw_loops)
-            || wire_loops_have_degenerate_area(&loops, tol.linear);
-        // Section breaks stage locally: the registry promises faces split
-        // at the recorded points, so breaks commit only when this
-        // arrangement is adopted. Recording a discarded arrangement would
-        // hand curved neighbors splits the plane side never took.
-        let mut staged_breaks = remus_math::det_hash::DetHashMap::default();
-        #[cfg(any(test, feature = "perf-counters"))]
+            || wire_loops_have_degenerate_area(&loops, tol.linear)
+    };
+    #[cfg(any(test, feature = "perf-counters"))]
+    if planar_last_resort_site {
         shadow::work::probe(
             shadow::work::Site::LastResortPlane {
                 greedy_regions: loops.len(),
-                greedy_broken: greedy_broken_here,
+                greedy_broken: greedy_broken_here(),
             },
             &shadow::work::Probe {
                 topo,
@@ -9051,6 +9092,14 @@ fn split_face_2d_impl(
             "plane",
             None,
         );
+    }
+    if PLANAR_LAST_RESORT_ROUTE == ArrangementRoute::Arrangement && planar_last_resort_site {
+        let greedy_broken_here = greedy_broken_here();
+        // Section breaks stage locally: the registry promises faces split
+        // at the recorded points, so breaks commit only when this
+        // arrangement is adopted. Recording a discarded arrangement would
+        // hand curved neighbors splits the plane side never took.
+        let mut staged_breaks = remus_math::det_hash::DetHashMap::default();
         match arrangement_prod::try_split_plane_face_by_provenance_arrangement(
             topo,
             face_id,

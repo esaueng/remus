@@ -1,9 +1,13 @@
 //! Research probe (O2.3d budget policy): does a budget knob that has nothing
 //! to do with the face splitter change what the splitter does?
 //!
-//! The arrangement adapters decline on budget only when the context's
-//! budgets equal `WorkBudgets::new()`. Raising `newton_iterations` by one
-//! makes them unequal, so the adapters stop declining.
+//! It measured a defect that is now fixed: the arrangement adapters
+//! declined on budget only when the context's budgets equalled
+//! `WorkBudgets::new()`, so raising `newton_iterations` by one made them
+//! stop declining. Routing is now a per-family constant in the face
+//! splitter, so every budget row printed here should match the default row;
+//! `regress_arrangement_routing_budgets.rs` asserts that. This probe stays
+//! as the record of the measurement (design note, O2.3d budget policy).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::print_stderr)]
 

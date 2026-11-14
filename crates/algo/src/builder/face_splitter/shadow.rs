@@ -138,18 +138,12 @@ fn mode() -> Option<ShadowBudgets> {
 
 /// The context of one shadow run.
 ///
-/// Both adapters turn budget exhaustion into a silent decline only when the
-/// budgets equal [`WorkBudgets::new`], and into a typed
-/// `WorkBudgetExceeded` error otherwise. The shadow needs the typed form to
-/// tell a budget decline from an out-of-domain one, so default budgets are
-/// made unequal in `blend_walk_steps`, a field no arrangement code reads.
-/// The caps the arrangement answers to are unchanged.
+/// Both adapters report budget exhaustion as a typed `WorkBudgetExceeded`
+/// error whatever the budgets, which is how the shadow tells a budget
+/// decline from an out-of-domain one.
 fn shadow_context(context: &OperationContext, budgets: ShadowBudgets) -> OperationContext {
     let budgets = match budgets {
         ShadowBudgets::Raised => RAISED_BUDGETS,
-        ShadowBudgets::Inherit if context.budgets == WorkBudgets::new() => context
-            .budgets
-            .with_blend_walk_steps(context.budgets.blend_walk_steps.saturating_sub(1)),
         ShadowBudgets::Inherit => context.budgets,
     };
     context.clone().with_budgets(budgets)

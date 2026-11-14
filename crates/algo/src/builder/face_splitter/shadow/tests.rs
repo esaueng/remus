@@ -572,11 +572,10 @@ fn rim_chords_shadow_the_disc_emitter() {
     );
 }
 
-/// The cylinder adapter stores a reversed rim use's `trim` in traversal
-/// order, where [`OrientedPCurveEdge::trim`] is native-direction and the
-/// legacy emitters keep it so. Regions, wires, vertices and carriers all
-/// match; only that interval's direction differs. Pinned as measured: an
-/// adapter that adopts the native convention turns both into agreements.
+/// The cylinder adapter stores a reversed rim use's `trim` native-direction,
+/// as [`OrientedPCurveEdge::trim`] documents and the legacy emitters do, so
+/// regions, wires, vertices, carriers and sub-span directions all agree.
+/// (Before the trim fix both of these were `span-direction` disagreements.)
 #[test]
 fn latitude_circles_shadow_the_band_emitter() {
     let (topo, face) = lateral_face(2.0, 3.0);
@@ -586,7 +585,7 @@ fn latitude_circles_shadow_the_band_emitter() {
     ];
     let [default, raised] = shadowed(SplitterShadowEntry::CylinderBands, &topo, face, &sections);
     assert_eq!(default, seen(counts(0, 0, 0, 1), "work-budget"));
-    assert_eq!(raised, seen(counts(0, 1, 0, 0), "span-direction"));
+    assert_eq!(raised, seen(counts(1, 0, 0, 0), "-"));
 }
 
 #[test]
@@ -595,7 +594,7 @@ fn a_ruling_shadows_the_sector_emitter() {
     let sections = [ruling_section(2.0, 2.0, 3.0, 200)];
     let [default, raised] = shadowed(SplitterShadowEntry::PeriodicSectors, &topo, face, &sections);
     assert_eq!(default, seen(counts(0, 0, 0, 1), "work-budget"));
-    assert_eq!(raised, seen(counts(0, 1, 0, 0), "span-direction"));
+    assert_eq!(raised, seen(counts(1, 0, 0, 0), "-"));
 }
 
 // ---------------------------------------------------------------------------
@@ -724,6 +723,9 @@ fn trim_misreads(parts: &[SplitSubFace]) -> Vec<String> {
     out
 }
 
+/// Neither the legacy emitters nor the cylinder adapter misread a reversed
+/// rim through `traversal_domain`. Before the adapter stored native trims,
+/// every reversed band rim and both reversed sector arcs were misread here.
 #[test]
 #[allow(clippy::print_stderr)]
 fn reversed_rim_trims_misread_through_traversal_domain() {
@@ -757,10 +759,7 @@ fn reversed_rim_trims_misread_through_traversal_domain() {
         let adapter_misreads = trim_misreads(&adapter);
         eprintln!("{label}: legacy {legacy_misreads:#?}\n{label}: adapter {adapter_misreads:#?}");
         assert!(legacy_misreads.is_empty(), "{label}: legacy misread");
-        assert!(
-            !adapter_misreads.is_empty(),
-            "{label}: adapter read correctly"
-        );
+        assert!(adapter_misreads.is_empty(), "{label}: adapter misread");
     }
 }
 
