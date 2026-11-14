@@ -96,14 +96,26 @@ struct Trace {
     domain: (f64, f64),
     /// Native start and end points.
     ends: (Point3, Point3),
+    /// A NURBS trace's trimmed span as its own curve: projecting the whole
+    /// carrier finds its global foot, which can lie in the excluded part.
+    span: Option<NurbsCurve>,
 }
 
 impl Trace {
     fn of(topo: &Topology, edge_id: EdgeId) -> Option<Self> {
         let edge = topo.edge(edge_id).ok()?;
+        let domain = edge.strict_domain().ok()?;
         Some(Self {
+            span: match edge.curve() {
+                EdgeCurve::NurbsCurve(n) => crate::chart_trim::nurbs_span(n, domain),
+                EdgeCurve::Line
+                | EdgeCurve::Circle(_)
+                | EdgeCurve::Ellipse(_)
+                | EdgeCurve::Hyperbola(_)
+                | EdgeCurve::Parabola(_) => None,
+            },
             curve: edge.curve().clone(),
-            domain: edge.strict_domain().ok()?,
+            domain,
             ends: (
                 topo.vertex(edge.start()).ok()?.point(),
                 topo.vertex(edge.end()).ok()?.point(),
@@ -124,7 +136,8 @@ impl Trace {
     }
 
     /// Distance from `p` to a point OF the exact trace: the projection's foot
-    /// when it lands in the trace's span, else the nearer end. It never
+    /// on the trace's span (for a NURBS, a projection onto the span itself),
+    /// else the nearer end. It never
     /// understates the distance, so it can witness proximity but not
     /// separation.
     fn witness_distance(&self, p: Point3) -> f64 {
@@ -144,12 +157,13 @@ impl Trace {
             EdgeCurve::Ellipse(e) => Some(lo + (e.project(p) - lo).rem_euclid(TAU))
                 .filter(|&t| in_span(t))
                 .map(|t| self.at(t)),
-            EdgeCurve::NurbsCurve(n) => {
-                remus_math::nurbs::projection::project_point_to_curve(n, p, 1e-12)
+            // The span's own nearest point: the whole carrier's can lie in
+            // the part the trim excludes.
+            EdgeCurve::NurbsCurve(_) => self.span.as_ref().and_then(|span| {
+                remus_math::nurbs::projection::project_point_to_curve(span, p, 1e-12)
                     .ok()
-                    .filter(|hit| in_span(hit.parameter))
-                    .map(|hit| self.at(hit.parameter))
-            }
+                    .map(|hit| hit.point)
+            }),
             EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => None,
         };
         let ends = (p - self.at(t0)).length().min((p - self.at(t1)).length());
@@ -844,10 +858,20 @@ mod tests {
         seam_cut_scaled(bay, 4.0, 3.0)
     }
 
+    /// [`seam_cut_scaled`] with the bay.
+    fn seam_cut_scaled(bay: bool, height: f64, floor_v: f64) -> Fixture {
+        seam_cut_with(bay, height, floor_v, false)
+    }
+
     /// A seam-cut wall `v ∈ [0, height]`, optionally with the bay
     /// `u ∈ [1, 2] × v ∈ [floor, height]` notched into its top rim.
-    #[allow(clippy::useless_let_if_seq)]
-    fn seam_cut_scaled(bay: bool, height: f64, floor_v: f64) -> Fixture {
+    ///
+    /// With `nurbs_left`, the bay's left generator (`u = 1`) is the trimmed
+    /// span `[1, 2]` of a degree-1 NURBS whose control heights run
+    /// `floor + (height - floor) / 4 -> height -> floor`: the excluded part
+    /// of its carrier, `[0, 1]`, retraces the generator's upper part.
+    #[allow(clippy::useless_let_if_seq, clippy::too_many_lines)]
+    fn seam_cut_with(bay: bool, height: f64, floor_v: f64, nurbs_left: bool) -> Fixture {
         let mut topo = Topology::new();
         let mut arena = GfaArena::new();
         let cyl = cylinder();
@@ -869,13 +893,33 @@ mod tests {
             let rim_far = arc(&mut topo, &mut arena, &cyl, height, (c, 2.0), (s1, TAU));
             let right = line(&mut topo, &mut arena, b, c);
             let floor = arc(&mut topo, &mut arena, &cyl, floor_v, (a, 1.0), (b, 2.0));
-            let left = line(&mut topo, &mut arena, a, d);
+            let (left, left_forward) = if nurbs_left {
+                let rise = height - floor_v;
+                let n = NurbsCurve::new(
+                    1,
+                    vec![0.0, 0.0, 1.0, 2.0, 2.0],
+                    vec![
+                        cyl.evaluate(1.0, 0.25f64.mul_add(rise, floor_v)),
+                        cyl.evaluate(1.0, height),
+                        cyl.evaluate(1.0, floor_v),
+                    ],
+                    vec![1.0; 3],
+                )
+                .unwrap();
+                let mut edge = Edge::new(d, a, EdgeCurve::NurbsCurve(n));
+                edge.set_trim(Some((1.0, 2.0)));
+                let edge = topo.add_edge(edge);
+                arena.init_edge_pave_block(edge, d, 1.0, a, 2.0);
+                (edge, false)
+            } else {
+                (line(&mut topo, &mut arena, a, d), true)
+            };
             let rim_near = arc(&mut topo, &mut arena, &cyl, height, (s1, 0.0), (d, 1.0));
             edges.extend([
                 OrientedEdge::new(rim_far, false),
                 OrientedEdge::new(right, false),
                 OrientedEdge::new(floor, false),
-                OrientedEdge::new(left, true),
+                OrientedEdge::new(left, left_forward),
                 OrientedEdge::new(rim_near, false),
             ]);
             trim = vec![floor, right, left];
@@ -1218,6 +1262,23 @@ mod tests {
             assert_ranges(&f.ranges(through), &[(0.0, 0.4 * h)]);
             assert_eq!(f.block(through, 0).end.vertex, at_floor, "h = {h}");
         }
+    }
+
+    /// Review counterexample: the bay's left generator is the trimmed span of
+    /// a NURBS whose excluded part retraces it. A ruling riding that
+    /// generator, through a vertex paved on it at height 3.5, crosses nothing
+    /// there. Its probe at 3.25 lies ON the trimmed span, but the carrier's
+    /// global foot of it is the excluded parameter 0, so the riding test must
+    /// project onto the span itself.
+    #[test]
+    fn a_section_riding_a_trimmed_nurbs_generator_is_not_paved() {
+        let mut f = seam_cut_with(true, 4.0, 3.0, true);
+        let left = f.trim[2];
+        // On the trimmed span (4 -> 3 over [1, 2]), height 3.5 is t = 1.5.
+        f.cross(left, 1.5, f.cyl.evaluate(1.0, 3.5), ZERO);
+        let riding = f.generator(1.0, 3.0, 4.0);
+        f.run();
+        assert!(f.untouched(riding), "{:?}", f.ranges(riding));
     }
 
     /// Control at every height: an arc lying along the bay's floor through a
