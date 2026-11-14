@@ -1220,7 +1220,7 @@ type WindingRing = (LatRing, f64);
 
 /// Relative rounding band, in units of `f64::EPSILON` of the larger
 /// longitude, inside which [`stitch_rings`] treats two ring vertices as one
-/// column: 16 ε is 16–32 ulp, about 1.4e-14 rad at 2π. That covers the 1–4
+/// column: 16 ε is 16–32 ulp, about 2.2e-14 rad at 2π. That covers the 1–4
 /// ulp by which `atan2` differs between libm implementations. Larger gaps keep
 /// their order: rounding accumulated along rings of thousands of vertices
 /// (up to ~1e-12 rad, identical on every target) and near-coincident columns
