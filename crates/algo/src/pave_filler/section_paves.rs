@@ -85,6 +85,76 @@ struct TrimmedFace {
     /// Native trimming traces and their resolved contacts, for one-sided
     /// endpoint exclusion. The sampled outline cannot decide the contact.
     boundaries: Vec<endpoint_certificate::Boundary>,
+    /// Every edge of the outlines in `outer` and `holes` on its exact curve,
+    /// for the boundary-riding test.
+    traces: Vec<Trace>,
+}
+
+/// One trimming edge on its exact curve over its native interval.
+struct Trace {
+    curve: EdgeCurve,
+    domain: (f64, f64),
+    /// Native start and end points.
+    ends: (Point3, Point3),
+}
+
+impl Trace {
+    fn of(topo: &Topology, edge_id: EdgeId) -> Option<Self> {
+        let edge = topo.edge(edge_id).ok()?;
+        Some(Self {
+            curve: edge.curve().clone(),
+            domain: edge.strict_domain().ok()?,
+            ends: (
+                topo.vertex(edge.start()).ok()?.point(),
+                topo.vertex(edge.end()).ok()?.point(),
+            ),
+        })
+    }
+
+    fn at(&self, t: f64) -> Point3 {
+        let (t0, t1) = self.domain;
+        match &self.curve {
+            EdgeCurve::Line => self.ends.0 + (self.ends.1 - self.ends.0) * ((t - t0) / (t1 - t0)),
+            curve @ (EdgeCurve::Circle(_)
+            | EdgeCurve::Ellipse(_)
+            | EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_)) => curve.evaluate_with_endpoints(t, self.ends.0, self.ends.1),
+        }
+    }
+
+    /// Distance from `p` to a point OF the exact trace: the projection's foot
+    /// when it lands in the trace's span, else the nearer end. It never
+    /// understates the distance, so it can witness proximity but not
+    /// separation.
+    fn witness_distance(&self, p: Point3) -> f64 {
+        let (t0, t1) = self.domain;
+        let (lo, hi) = (t0.min(t1), t0.max(t1));
+        let in_span = |t: f64| (lo..=hi).contains(&t);
+        let foot = match &self.curve {
+            EdgeCurve::Line => {
+                let d = self.ends.1 - self.ends.0;
+                let len_sq = d.length_squared();
+                (len_sq > 0.0)
+                    .then(|| self.ends.0 + d * ((p - self.ends.0).dot(d) / len_sq).clamp(0.0, 1.0))
+            }
+            EdgeCurve::Circle(c) => Some(lo + (c.project(p) - lo).rem_euclid(TAU))
+                .filter(|&t| in_span(t))
+                .map(|t| self.at(t)),
+            EdgeCurve::Ellipse(e) => Some(lo + (e.project(p) - lo).rem_euclid(TAU))
+                .filter(|&t| in_span(t))
+                .map(|t| self.at(t)),
+            EdgeCurve::NurbsCurve(n) => {
+                remus_math::nurbs::projection::project_point_to_curve(n, p, 1e-12)
+                    .ok()
+                    .filter(|hit| in_span(hit.parameter))
+                    .map(|hit| self.at(hit.parameter))
+            }
+            EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => None,
+        };
+        let ends = (p - self.at(t0)).length().min((p - self.at(t1)).length());
+        foot.map_or(ends, |q| (p - q).length().min(ends))
+    }
 }
 
 impl TrimmedFace {
@@ -102,14 +172,25 @@ impl TrimmedFace {
             .max_by(f64::total_cmp)
     }
 
-    /// Whether `p` is within `band`, plus the outline's certified continuous
-    /// chord-error bound, of a boundary. An unavailable bound is infinity,
-    /// so it always retains the leaf rather than trusting sampled membership.
+    /// Whether `p` is PROVEN within `band` of the exact boundary: some point
+    /// of a trimming edge's own curve lies that close. A whole-outline chord
+    /// bound cannot stand in for the distance: the coarsest chord anywhere on
+    /// the outline (a rim's, ~0.0086 on a unit wall) would make every point
+    /// of a thin wall "near", and a real crossing would lose its pave.
+    /// Undecided reads as not near, which keeps the pave.
     fn near_boundary(&self, p: Point3, band: f64) -> bool {
-        self.outer
+        // The exact boundary lies within each outline's whole-interval chord
+        // bound of it, so a point that far from every outline is not near.
+        let possible = self
+            .outer
             .iter()
             .chain(self.holes.iter())
-            .any(|outline| outline.distance(p) <= band + 2.0 * outline.sagitta)
+            .any(|outline| outline.distance(p) - outline.sagitta <= band);
+        possible
+            && self
+                .traces
+                .iter()
+                .any(|trace| trace.witness_distance(p) <= band)
     }
 }
 
@@ -167,16 +248,26 @@ fn trimmed_face(
     let surface = face.surface();
     let v_periodic = chart_v_periodic(surface)?;
     let mut vertices: BTreeMap<VertexId, Point3> = BTreeMap::new();
+    let mut traces = Vec::new();
+    let mut add_traces = |wire_id: WireId| -> Option<()> {
+        for oe in topo.wire(wire_id).ok()?.edges() {
+            traces.push(Trace::of(topo, oe.edge())?);
+        }
+        Some(())
+    };
     let outer = chart_loop(topo, surface, face.outer_wire(), tol)
         .filter(|outline| !outline.is_chart_rectangle());
     if outer.is_some() {
         trimming_vertices(topo, arena, face.outer_wire(), &mut vertices);
+        // An edge without a trace only withholds proximity witnesses.
+        let _ = add_traces(face.outer_wire());
     }
     let mut holes = Vec::new();
     for &wire_id in face.inner_wires() {
         if let Some(hole) = chart_loop(topo, surface, wire_id, tol) {
             holes.push(hole);
             trimming_vertices(topo, arena, wire_id, &mut vertices);
+            let _ = add_traces(wire_id);
         }
     }
     if outer.is_none() && holes.is_empty() {
@@ -219,6 +310,7 @@ fn trimmed_face(
         holes,
         vertices: vertices.into_iter().collect(),
         boundaries,
+        traces,
     })
 }
 
@@ -748,13 +840,19 @@ mod tests {
 
     /// A seam-cut wall `v ∈ [0, 4]`, optionally with the bay
     /// `u ∈ [1, 2] × v ∈ [3, 4]` notched into its top rim.
-    #[allow(clippy::useless_let_if_seq)]
     fn seam_cut(bay: bool) -> Fixture {
+        seam_cut_scaled(bay, 4.0, 3.0)
+    }
+
+    /// A seam-cut wall `v ∈ [0, height]`, optionally with the bay
+    /// `u ∈ [1, 2] × v ∈ [floor, height]` notched into its top rim.
+    #[allow(clippy::useless_let_if_seq)]
+    fn seam_cut_scaled(bay: bool, height: f64, floor_v: f64) -> Fixture {
         let mut topo = Topology::new();
         let mut arena = GfaArena::new();
         let cyl = cylinder();
         let s0 = topo.add_vertex(Vertex::new(cyl.evaluate(0.0, 0.0), TOL));
-        let s1 = topo.add_vertex(Vertex::new(cyl.evaluate(0.0, 4.0), TOL));
+        let s1 = topo.add_vertex(Vertex::new(cyl.evaluate(0.0, height), TOL));
         let bottom = arc(&mut topo, &mut arena, &cyl, 0.0, (s0, 0.0), (s0, TAU));
         let seam = line(&mut topo, &mut arena, s0, s1);
         let mut edges = vec![
@@ -763,16 +861,16 @@ mod tests {
         ];
         let mut trim = Vec::new();
         if bay {
-            let a = topo.add_vertex(Vertex::new(cyl.evaluate(1.0, 3.0), TOL));
-            let b = topo.add_vertex(Vertex::new(cyl.evaluate(2.0, 3.0), TOL));
-            let c = topo.add_vertex(Vertex::new(cyl.evaluate(2.0, 4.0), TOL));
-            let d = topo.add_vertex(Vertex::new(cyl.evaluate(1.0, 4.0), TOL));
+            let a = topo.add_vertex(Vertex::new(cyl.evaluate(1.0, floor_v), TOL));
+            let b = topo.add_vertex(Vertex::new(cyl.evaluate(2.0, floor_v), TOL));
+            let c = topo.add_vertex(Vertex::new(cyl.evaluate(2.0, height), TOL));
+            let d = topo.add_vertex(Vertex::new(cyl.evaluate(1.0, height), TOL));
             // Top rim, traversed from the seam at u = 2π back to u = 0.
-            let rim_far = arc(&mut topo, &mut arena, &cyl, 4.0, (c, 2.0), (s1, TAU));
+            let rim_far = arc(&mut topo, &mut arena, &cyl, height, (c, 2.0), (s1, TAU));
             let right = line(&mut topo, &mut arena, b, c);
-            let floor = arc(&mut topo, &mut arena, &cyl, 3.0, (a, 1.0), (b, 2.0));
+            let floor = arc(&mut topo, &mut arena, &cyl, floor_v, (a, 1.0), (b, 2.0));
             let left = line(&mut topo, &mut arena, a, d);
-            let rim_near = arc(&mut topo, &mut arena, &cyl, 4.0, (s1, 0.0), (d, 1.0));
+            let rim_near = arc(&mut topo, &mut arena, &cyl, height, (s1, 0.0), (d, 1.0));
             edges.extend([
                 OrientedEdge::new(rim_far, false),
                 OrientedEdge::new(right, false),
@@ -782,7 +880,7 @@ mod tests {
             ]);
             trim = vec![floor, right, left];
         } else {
-            let top = arc(&mut topo, &mut arena, &cyl, 4.0, (s1, 0.0), (s1, TAU));
+            let top = arc(&mut topo, &mut arena, &cyl, height, (s1, 0.0), (s1, TAU));
             edges.push(OrientedEdge::new(top, false));
         }
         edges.push(OrientedEdge::new(seam, false));
@@ -1092,6 +1190,53 @@ mod tests {
         f.run();
         assert!(f.untouched(riding));
         assert_ranges(&f.ranges(crossing), &[(0.0, 0.5)]);
+    }
+
+    /// Wall heights from the 4-unit fixture down to a 0.01 wall on the unit
+    /// radius: the rim's chords (24 per edge) bow ~0.0086 off the rim, so on
+    /// a thin wall a whole-outline chord bound swallows every probe.
+    const WALL_HEIGHTS: [f64; 4] = [4.0, 0.4, 0.04, 0.01];
+
+    /// A ruling crossing a bay's floor half-way up a wall of height `h`
+    /// (`0.1 h → 0.9 h`, floor at `0.5 h`) is paved at the floor and loses
+    /// its piece in the bay, however thin the wall. Review witness: `h =
+    /// 0.01`, where both midpoint probes are 0.002 from the floor and 0.003
+    /// from a rim, far outside the weld band, yet within the coarse rim
+    /// outline's doubled chord error (0.0171) of it.
+    #[test]
+    fn a_crossing_on_a_thin_wall_is_paved_at_the_bay_floor() {
+        for h in WALL_HEIGHTS {
+            let mut f = seam_cut_scaled(true, h, 0.5 * h);
+            let floor = f.trim[0];
+            let at_floor = f.cross(floor, 1.5, f.cyl.evaluate(1.5, 0.5 * h), ZERO);
+            let through = f.generator(1.5, 0.1 * h, 0.9 * h);
+            f.run();
+            assert!(
+                f.arena.curves[through].paved,
+                "h = {h}: the crossing was not paved"
+            );
+            assert_ranges(&f.ranges(through), &[(0.0, 0.4 * h)]);
+            assert_eq!(f.block(through, 0).end.vertex, at_floor, "h = {h}");
+        }
+    }
+
+    /// Control at every height: an arc lying along the bay's floor through a
+    /// vertex paved on it crosses nothing there and stays whole, while the
+    /// ruling through the same vertex is paved.
+    #[test]
+    fn a_section_riding_a_thin_wall_s_bay_floor_is_not_paved() {
+        for h in WALL_HEIGHTS {
+            let floor_v = 0.5 * h;
+            let mut f = seam_cut_scaled(true, h, floor_v);
+            let floor = f.trim[0];
+            f.cross(floor, 1.5, f.cyl.evaluate(1.5, floor_v), ZERO);
+            let ends = (f.cyl.evaluate(1.2, floor_v), f.cyl.evaluate(1.8, floor_v));
+            let riding = f.section(EdgeCurve::Circle(ring(&f.cyl, floor_v)), (1.2, 1.8), ends);
+            let crossing = f.generator(1.5, 0.25 * h, 0.75 * h);
+            f.run();
+            assert!(f.untouched(riding), "h = {h}: {:?}", f.ranges(riding));
+            assert_ranges(&f.ranges(crossing), &[(0.0, 0.25 * h)]);
+        }
     }
 
     #[test]
