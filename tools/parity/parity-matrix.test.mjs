@@ -1,7 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { expandMatrix, readManifest, resolveSolidPick, scoreCase } from './parity-matrix.mjs';
+import {
+  expandMatrix,
+  readManifest,
+  relativeError,
+  resolveSolidPick,
+  scoreCase,
+  surfaceVolumeError,
+} from './parity-matrix.mjs';
 
 test('extended parity matrix covers every family, scale, and placement', () => {
   const { manifest } = readManifest();
@@ -47,8 +54,6 @@ test('extended parity matrix covers every family, scale, and placement', () => {
 
 test('scorer requires independent geometry oracles and cross-surface identity', () => {
   const { manifest } = readManifest();
-  // Use a scale-1 cell so the 1% oracle perturbation is not absorbed by the
-  // max(|expected|, 1) floor in relativeError at 1e-3 scales.
   const c = expandMatrix(manifest).find(({ family, scale }) => family === 'box-box' && scale === 1);
   const observation = {
     outcome: 'success',
@@ -204,4 +209,46 @@ test('resolveSolidPick falls back to orHandle only for a refused producer', () =
       `malformed answer ${JSON.stringify(malformed)}`,
     );
   }
+});
+
+test('volume bounds are scale-relative, not absolute below unit volume (B36)', () => {
+  const { manifest } = readManifest();
+  const cases = expandMatrix(manifest);
+  for (const c of cases) assert.equal(c.volume_floor, c.scale ** 3, `${c.id}: volume floor`);
+
+  const c = cases.find(({ id }) => id === 'cone-sphere/fuse/scale=0.001/placement=origin');
+  const volume = c.expected_volume;
+  assert.ok(volume > 1e-7 && volume < 1e-6, 'a 1e-3 cell measures sub-micro volumes');
+  const observation = (v) => ({
+    outcome: 'success',
+    diagnosticCodes: [],
+    quality: 'approximate',
+    volume: v,
+    validationErrors: 0,
+    census: { faces: 4, edges: 6, vertices: 4 },
+    surfaceTypes: { plane: 4 },
+    meshQuality: { triangleCount: 4, boundaryEdges: 0, nonManifoldEdges: 0, eulerCharacteristic: 2, isWatertight: true },
+    serializedBytes: 64,
+    serializedSha256: 'ab'.repeat(32),
+  });
+  const stage = (stages, surface, invariant) => stages.find((s) => s.surface === surface && s.invariant === invariant)?.passed;
+
+  // Agreement to 1e-9 relative passes both bounds.
+  const close = scoreCase(c, { native: observation(volume), wasm: observation(volume * (1 + 1e-9)) });
+  assert.equal(stage(close, 'native/wasm', 'volume_agreement'), true);
+  assert.equal(stage(close, 'wasm', 'oracle_volume'), true);
+
+  // A 1% cross-surface disagreement (|delta| ~5e-9, far under an absolute
+  // 5e-8) and a 27% oracle miss both used to pass at this scale; they fail now.
+  const apart = scoreCase(c, { native: observation(volume), wasm: observation(volume * 1.01) });
+  assert.equal(stage(apart, 'native/wasm', 'volume_agreement'), false);
+  const coarse = scoreCase(c, { native: observation(volume * 0.73), wasm: observation(volume * 0.73) });
+  assert.equal(stage(coarse, 'native', 'oracle_volume'), false);
+  assert.equal(stage(coarse, 'native/wasm', 'volume_agreement'), true);
+
+  // Scale 1 keeps the previous unit floor; empty results still compare.
+  assert.equal(relativeError(0.5, 0.25, 1), 0.25);
+  assert.equal(surfaceVolumeError(0, 0, 1e-9), 0);
+  assert.equal(surfaceVolumeError(2, 1, 1), surfaceVolumeError(1, 2, 1));
+  assert.throws(() => relativeError(1, 1, 0));
 });

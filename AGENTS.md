@@ -667,6 +667,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Independent spherical-patch geometry and shared-boundary oracles | `tessellate/nonplanar/sphere_chart_tests.rs` |
 | Row-wise interior-grid containment against the per-point polygon test (tests) | `tessellate/nonplanar/row_containment_tests.rs` |
 | Pre-cache band emitter kept verbatim as a bit-identity oracle for its per-vertex outward reference (tests) | `tessellate/nonplanar/band_emit_oracle_tests.rs` |
+| Sphere-cap ring stitching: longitudes that differ only by `atan2` rounding pick the same quad diagonals on every target (tests) | `tessellate/nonplanar/stitch_tie_tests.rs` |
 | Measurement-only tessellation and cold/warm byte parity tests | `tessellate/measurement_tests.rs` |
 | Whole-mesh passes kept verbatim as byte-identity oracles for the rewritten `mesh_ops` and `pool_index` (PERF-D07, tests) | `tessellate/tests/mesh_passes.rs` |
 | One-pass boundary and non-manifold edge census (`edge_census`) against the hash-set and hash-map counts it replaced, kept verbatim (tests) | `tessellate/mesh_ops/edge_census_oracle_tests.rs` |

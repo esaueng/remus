@@ -181,7 +181,10 @@ dispatch.
 
 Each cell asserts bit-identical or bounded-identical volume (closed-form
 oracle per family where one exists, else the 5e-8 relative cross-target
-bound), exact face census, and disclosure outcome (`exact` vs disclosed
+bound; both relative to the larger compared volume with a floor of the
+cell's characteristic volume, scale^3, so the bounds stay relative at
+scale 1e-3 instead of turning absolute below unit volume), exact face
+census, and disclosure outcome (`exact` vs disclosed
 `approximate`/typed refusal, compared in the WASM wire vocabulary) between
 the native facade and the real WASM batch build. Any divergence is a
 finding: seed plus new §B row. Serialized arena SHA-256 is compared as a

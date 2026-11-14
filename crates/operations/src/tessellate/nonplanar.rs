@@ -1218,6 +1218,26 @@ pub(super) fn tessellate_torus_two_rim_band(
 type LatRing = Vec<(f64, u32)>;
 type WindingRing = (LatRing, f64);
 
+/// Relative rounding band, in units of `f64::EPSILON` of the larger
+/// longitude, inside which [`stitch_rings`] treats two ring vertices as one
+/// column: 16 ε is 16–32 ulp, about 2.2e-14 rad at 2π. That covers the 1–4
+/// ulp by which `atan2` differs between libm implementations. Larger gaps keep
+/// their order: rounding accumulated along rings of thousands of vertices
+/// (up to ~1e-12 rad, identical on every target) and near-coincident columns
+/// of unequal rings (8e-14 rad and up in the workspace suites).
+const STITCH_TIE_EPSILONS: f64 = 16.0;
+
+/// Whether `stitch_rings` advances the lower ring: its next longitude comes
+/// first, or ties the upper ring's within the rounding band.
+fn stitch_advances_lower(lo_next: f64, hi_next: f64) -> bool {
+    // A finished ring's next longitude is +inf: it must never tie.
+    lo_next <= hi_next
+        || (lo_next.is_finite()
+            && hi_next.is_finite()
+            && lo_next - hi_next
+                <= STITCH_TIE_EPSILONS * f64::EPSILON * lo_next.abs().max(hi_next.abs()))
+}
+
 fn single_period_winding(angles: &[f64]) -> Option<f64> {
     use std::f64::consts::{PI, TAU};
 
@@ -2233,6 +2253,13 @@ fn make_band_emit<'a>(
 /// base) and emitting one triangle per advance. Watertight by construction:
 /// every interior quad diagonal is shared by exactly two triangles, and after
 /// `nl + nh` advances each ring has been traversed once back to its start.
+///
+/// Longitudes within a rounding band ([`STITCH_TIE_EPSILONS`]) are a tie,
+/// which advances `lo`. Aligned rings (a cap's interior row against its boundary
+/// ring) tie exactly, but a boundary longitude comes from `project_point`'s
+/// `atan2`, whose last bit differs between the native C runtime and wasm32's
+/// libm; a strict comparison then picked the quad diagonal by that rounding
+/// noise, so the two targets meshed the same sphere differently (B36).
 fn stitch_rings(
     merged: &mut TriangleMesh,
     lo: &LatRing,
@@ -2277,7 +2304,7 @@ fn stitch_rings(
         let hi_next = if j < nh { hi_ang[j + 1] } else { f64::INFINITY };
         // Advance whichever ring's next vertex comes first in longitude; the new
         // triangle's apex stays on the ring that did not advance.
-        if lo_next <= hi_next {
+        if stitch_advances_lower(lo_next, hi_next) {
             let li_next = lo[(i + 1) % nl].1;
             emit(merged, li, li_next, hj);
             i += 1;
@@ -2864,6 +2891,10 @@ mod band_emit_oracle_tests;
 #[cfg(test)]
 #[path = "nonplanar/frame_storage_oracle_tests.rs"]
 mod frame_storage_oracle_tests;
+
+#[cfg(test)]
+#[path = "nonplanar/stitch_tie_tests.rs"]
+mod stitch_tie_tests;
 
 /// CDT-based tessellation for non-planar faces with exact boundary constraints.
 ///
