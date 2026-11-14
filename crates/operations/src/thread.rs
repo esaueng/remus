@@ -101,6 +101,17 @@ pub const MAX_TAPER_RATIO: f64 = 0.25;
 /// slighter taper is a cylindrical thread to any tolerance that matters.
 pub const MIN_TAPER_RATIO: f64 = 1e-3;
 
+/// Farthest a tapered thread's gauge plane may lie from its small end, as a
+/// multiple of the larger of the thread's length and the cylinder's radius.
+///
+/// A thread fitted to its cylinder never reads the gauge plane, but a
+/// [`CylinderThreadOptions::major_diameter`] given there is carried to the
+/// thread across `τ·g`, the taper's gain over the gauge offset `g`, and the
+/// reported gauge-plane diameters gain it too: at `100` times the thread's
+/// scale those keep all but about `7` bits. Standard gauge planes (NPT's
+/// hand-tight length, BSPT's gauge length) lie within the thread.
+pub const MAX_GAUGE_OFFSET_PER_SCALE: f64 = 100.0;
+
 /// Uniform Hermite spans allowed along the axis of one ring segment.
 const MAX_THREAD_SPANS: usize = 4096;
 
@@ -291,7 +302,11 @@ pub struct ThreadTaper {
     /// large end: the plane where
     /// [`CylinderThreadOptions::major_diameter`] is the thread's major
     /// diameter. `None` gauges at the small end. It may lie outside the
-    /// thread.
+    /// thread, up to [`MAX_GAUGE_OFFSET_PER_SCALE`] times the larger of the
+    /// thread's length and the cylinder's radius either way; farther
+    /// refuses as an invalid parameter. Without a major diameter the
+    /// thread is fitted to the cylinder and the gauge plane changes only
+    /// the reported gauge-plane diameters, never the body.
     pub gauge_offset: Option<f64>,
 }
 
@@ -522,6 +537,9 @@ pub enum ThreadRefusal {
     FeaturesInThreadRegion,
     /// The chamfers or runouts of the two ends reach past each other.
     EndsOverlap,
+    /// One end's chamfer or runout reaches past the other, plain, end of
+    /// the thread.
+    FinishTooLong,
     /// The taper ratio is outside `[MIN_TAPER_RATIO, MAX_TAPER_RATIO]`.
     TaperOutOfRange,
 }
@@ -542,6 +560,7 @@ impl ThreadRefusal {
             Self::ToleranceTooTight => "tolerance-too-tight",
             Self::FeaturesInThreadRegion => "features-in-thread-region",
             Self::EndsOverlap => "ends-overlap",
+            Self::FinishTooLong => "finish-too-long",
             Self::TaperOutOfRange => "taper-out-of-range",
         }
     }
@@ -660,17 +679,31 @@ fn validate_form(form: &ThreadForm) -> Result<(), ThreadError> {
 /// [`ThreadError::Refused`] for an out-of-range parameter, a face that is
 /// not a full-turn cylinder of `solid`, a thread larger than the boss (or
 /// smaller than the bore) at either end of a taper, a span reaching past
-/// either end of the face,
-/// end finishes that reach past each other, or features crossing the thread
-/// band; [`ThreadError::Operations`] when a boolean fails. Refusals and
+/// either end of the face, end finishes that reach past each other or past
+/// a plain end, or features crossing the thread band;
+/// [`ThreadError::Operations`] when a boolean fails. Refusals and
 /// failures leave the topology unchanged.
-#[allow(clippy::too_many_lines)]
 pub fn cut_thread(
     topo: &mut Topology,
     solid: SolidId,
     face: FaceId,
     form: &ThreadForm,
     options: &CylinderThreadOptions,
+) -> Result<ThreadOutcome, ThreadError> {
+    cut_thread_joined(topo, solid, face, form, options, true)
+}
+
+/// [`cut_thread`], putting the ring on by the glue where it applies
+/// (`try_glue`) or always by the fuse, which the tests use to reach the
+/// fuse fallback.
+#[allow(clippy::too_many_lines)]
+fn cut_thread_joined(
+    topo: &mut Topology,
+    solid: SolidId,
+    face: FaceId,
+    form: &ThreadForm,
+    options: &CylinderThreadOptions,
+    try_glue: bool,
 ) -> Result<ThreadOutcome, ThreadError> {
     validate_form(form)?;
     require(options.phase.is_finite(), || {
@@ -718,24 +751,22 @@ pub fn cut_thread(
     // A span within rounding of an end of the face snaps to it, so a
     // whole-face request never leaves a sliver collar.
     let snap = 1e-9 * face_length.max(radius);
-    let (offset, length) = {
-        let lo = if offset.abs() <= snap { 0.0 } else { offset };
-        let hi = if (offset + length - face_length).abs() <= snap {
-            face_length
-        } else {
-            offset + length
-        };
-        (lo, hi - lo)
+    let lo = if offset.abs() <= snap { 0.0 } else { offset };
+    let hi = if (offset + length - face_length).abs() <= snap {
+        face_length
+    } else {
+        offset + length
     };
-    if offset < 0.0 || offset + length > face_length {
+    // Decided on the snapped bounds themselves: `lo + (hi - lo)` can round
+    // a ulp either side of `hi`, which would refuse a thread run to the end
+    // of the face or turn its chamfer there into a runout.
+    if lo < 0.0 || hi > face_length {
         return Err(ThreadError::refused(
             ThreadRefusal::SpanOutsideFace,
-            format!(
-                "the thread spans {offset}..{} along the face, which is {face_length} long",
-                offset + length
-            ),
+            format!("the thread spans {lo}..{hi} along the face, which is {face_length} long"),
         ));
     }
+    let (offset, length) = (lo, hi - lo);
     // A chamfer's cone starts inside the root, which would undercut the
     // collar beyond an end that stops short of the face's end: that end
     // takes the runout of the same angle.
@@ -744,8 +775,8 @@ pub fn cut_thread(
         other => other,
     };
     let ends = (
-        finish(options.start, offset > 0.0),
-        finish(options.end, offset + length < face_length),
+        finish(options.start, lo > 0.0),
+        finish(options.end, hi < face_length),
     );
     let start = v0 + offset;
 
@@ -769,8 +800,10 @@ pub fn cut_thread(
 
     let fit_tol = 1e-9 * radius;
     // A tapered thread's radii gain `radial_rate` per unit of height above
-    // the thread's start; `offset_at` is what they gain from the gauge
-    // plane, where the major diameter is given.
+    // the thread's start. Every radius below is on the start plane; the
+    // gauge plane, where a given major diameter applies, enters only to
+    // place that diameter and to report the gauge-plane diameters, so a
+    // thread fitted to the cylinder never sees it.
     let radial_rate = match options.taper {
         None => 0.0,
         Some(taper) => {
@@ -791,13 +824,25 @@ pub fn cut_thread(
             }
         }
     };
+    // Height of the gauge plane above the thread's start.
     let gauge = match options.taper {
         None => 0.0,
         Some(taper) => {
             let from_small_end = taper.gauge_offset.unwrap_or(0.0);
-            require(from_small_end.is_finite(), || {
-                format!("gauge offset must be finite, got {from_small_end}")
-            })?;
+            // A gauge plane far beyond the thread is no gauge at all, and
+            // a diameter given there would be placed on the thread only
+            // across a cancellation of two huge radii.
+            let reach = MAX_GAUGE_OFFSET_PER_SCALE * length.max(radius);
+            require(
+                from_small_end.is_finite() && from_small_end.abs() <= reach,
+                || {
+                    format!(
+                        "gauge offset must be finite and within {MAX_GAUGE_OFFSET_PER_SCALE} times the larger of \
+                     the thread's length and the cylinder's radius ({reach}) of the small end, got \
+                     {from_small_end}"
+                    )
+                },
+            )?;
             match taper.small_end {
                 ThreadEndSide::Start => from_small_end,
                 ThreadEndSide::End => length - from_small_end,
@@ -805,12 +850,10 @@ pub fn cut_thread(
         }
     };
     let tapered = options.taper.is_some();
-    let offset_at = |z: f64| radial_rate * (z - gauge);
-    // What the radii gain at the large end and at the small end.
-    let (grown, shrunk) = (
-        offset_at(0.0).max(offset_at(length)),
-        offset_at(0.0).min(offset_at(length)),
-    );
+    // What the radii gain from the start plane to the end plane, and so at
+    // the large end and at the small end.
+    let rise = radial_rate * length;
+    let (grown, shrunk) = (rise.max(0.0), rise.min(0.0));
     let at_the = |end: &str| {
         if tapered {
             format!(" at its {end} end")
@@ -839,13 +882,14 @@ pub fn cut_thread(
             ),
         ));
     }
+    // The outer surface's radius on the start plane.
     let major = match options.major_diameter {
         Some(diameter) => {
             positive(diameter, "major diameter")?;
-            0.5 * diameter
+            radial_rate.mul_add(-gauge, 0.5 * diameter)
         }
         // The crest on the boss at the large end, on the bore at the small
-        // end.
+        // end, read off the cylinder with no gauge plane in between.
         None => match kind {
             ThreadKind::External => radius - grown,
             ThreadKind::Internal => radius + form.depth - shrunk,
@@ -864,7 +908,7 @@ pub fn cut_thread(
         ));
     }
     let seam_gap = SEAM_DEPTH * form.depth;
-    // (crest, root) radii on the gauge plane and the band the tube rebuilds.
+    // (crest, root) radii on the start plane and the band the tube rebuilds.
     // The thread must fit the cylinder where it comes nearest to it: an
     // external thread at its large end, an internal one at its small end.
     let (crest, root, band) = match kind {
@@ -922,17 +966,20 @@ pub fn cut_thread(
         }
     };
     let (major_r, minor_r) = (crest.max(root), crest.min(root));
+    // The gauge plane's radii, for the report only.
+    let at_gauge = radial_rate * gauge;
+    let (gauge_major, gauge_minor) = (major_r + at_gauge, minor_r + at_gauge);
     let lead = form.lead();
-    let mean = major_r + minor_r;
+    let mean = gauge_major + gauge_minor;
     let geometry = ThreadGeometry {
         kind,
-        major_diameter: 2.0 * major_r,
-        minor_diameter: 2.0 * minor_r,
+        major_diameter: 2.0 * gauge_major,
+        minor_diameter: 2.0 * gauge_minor,
         taper_angle: radial_rate.abs().atan(),
-        start_major_diameter: 2.0 * (major_r + offset_at(0.0)),
-        end_major_diameter: 2.0 * (major_r + offset_at(length)),
-        start_minor_diameter: 2.0 * (minor_r + offset_at(0.0)),
-        end_minor_diameter: 2.0 * (minor_r + offset_at(length)),
+        start_major_diameter: 2.0 * major_r,
+        end_major_diameter: 2.0 * (major_r + rise),
+        start_minor_diameter: 2.0 * minor_r,
+        end_minor_diameter: 2.0 * (minor_r + rise),
         pitch: form.pitch,
         lead,
         crest_width: form.crest_width,
@@ -985,8 +1032,8 @@ pub fn cut_thread(
             topo,
             &frame,
             form,
-            crest + offset_at(0.0),
-            root + offset_at(0.0),
+            crest,
+            root,
             radial_rate,
             options.phase,
             kind,
@@ -1012,17 +1059,21 @@ pub fn cut_thread(
         let ring = ring.solid;
         // Glue the ring on where the faces it meets are recognized; the fuse
         // is the general fallback.
-        let glued = glue(
-            topo,
-            kept,
-            ring,
-            &frame,
-            kind,
-            band,
-            [crest + offset_at(0.0), crest + offset_at(length)],
-            length,
-            Glue::Simplest,
-        )?;
+        let glued = if try_glue {
+            glue(
+                topo,
+                kept,
+                ring,
+                &frame,
+                kind,
+                band,
+                [crest, crest + rise],
+                length,
+                Glue::Simplest,
+            )?
+        } else {
+            None
+        };
         let (result, face_roles, glued) = if let Some(result) = glued {
             // Every ring face but its seam wall and the caps the glue merges
             // is a face of the result under its own id.
@@ -1292,15 +1343,29 @@ fn thread_ring(
     let lower = start_cone.as_ref().map_or(0.0, whole_from);
     let upper = end_cone.as_ref().map_or(length, whole_from);
     if upper < lower - 1e-12 * length {
-        return Err(ThreadError::refused(
-            ThreadRefusal::EndsOverlap,
-            format!(
-                "the end finishes reach {} and {} into a thread {length} long; shorten them \
-                 or lengthen the thread",
-                lower,
-                length - upper
+        let one = |cone: &chamfer::Cone, side: &str, reach: f64| {
+            let finish = if cone.runout { "runout" } else { "chamfer" };
+            ThreadError::refused(
+                ThreadRefusal::FinishTooLong,
+                format!(
+                    "the {side} {finish} reaches {reach} into a thread {length} long; steepen \
+                     it or lengthen the thread"
+                ),
+            )
+        };
+        return Err(match (start_cone.as_ref(), end_cone.as_ref()) {
+            (Some(cone), None) => one(cone, "start", lower),
+            (None, Some(cone)) => one(cone, "end", length - upper),
+            _ => ThreadError::refused(
+                ThreadRefusal::EndsOverlap,
+                format!(
+                    "the end finishes reach {} and {} into a thread {length} long; shorten \
+                     them or lengthen the thread",
+                    lower,
+                    length - upper
+                ),
             ),
-        ));
+        });
     }
     let reaches = (lower, length - upper);
     // End finishes that meet (to rounding) leave no full-depth thread

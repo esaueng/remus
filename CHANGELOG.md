@@ -8,6 +8,26 @@ historical predecessor-line records, retained for provenance. The
 
 ### Fixed
 
+* **operations,wasm:** a tapered thread fitted to its cylinder (no
+  `majorDiameter`) no longer depends on `gaugeOffset`: its radii are taken
+  from the cylinder on the start plane, and the gauge plane changes only the
+  reported gauge-plane `majorDiameter` and `minorDiameter`. A far gauge plane
+  used to cancel two huge radii and build a valid body with the wrong taper
+  (`gaugeOffset: 1e17` on an r6 boss cut a ratio-0.1 taper, 7% light). A
+  `|gaugeOffset|` beyond 100 times the larger of the thread's length and the
+  cylinder's radius now refuses with `thread:invalid-parameter`.
+* **operations,wasm:** a thread run to the end of its face without a
+  `length` decided whether that end stopped short from
+  `offset + (faceLength − offset)`, which rounds a ulp either side of the
+  face length for about 2% of two-decimal inputs: below it the end's
+  `chamfer` was built as a runout (`details.geometry.end.kind` read
+  `"runout"`), above it the thread was refused with
+  `thread:span-outside-face`. Both are now read off the snapped span. A
+  single chamfer or runout longer than the thread beside a plain end
+  refuses with the new `thread:finish-too-long` (argument `length`) instead
+  of `thread:ends-overlap`, and a runout's flank trims that need more spans
+  than allowed refuse with `thread:tolerance-too-tight` instead of a bare
+  resource error.
 * **operations:** a chamfered thread end is valid on deep forms and wide
   flanks. The chamfer's cone loop read its winding off the midpoint of each
   flank trim, which loses a whole turn once a trim turns more than once

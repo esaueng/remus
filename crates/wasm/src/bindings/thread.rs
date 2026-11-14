@@ -60,9 +60,12 @@
 //! lower end, like `offset`); crest and root lands are exact cones.
 //! `majorDiameter` is then the major diameter on the gauge plane,
 //! `gaugeOffset` from the small end toward the large end (default 0: at the
-//! small end; it may lie outside the thread). Without `majorDiameter` an
+//! small end; it may lie outside the thread, up to 100 times the larger of
+//! the thread's length and the cylinder's radius either way, and farther
+//! refuses with `thread:invalid-parameter`). Without `majorDiameter` an
 //! external crest sits on the boss at the large end and an internal crest on
-//! the bore at the small end. Flank angles are those of the axial section,
+//! the bore at the small end, and `gaugeOffset` changes only the reported
+//! gauge-plane diameters. Flank angles are those of the axial section,
 //! from the plane across the axis, and `pitch` is along the axis, as NPT and
 //! BSPT measure them. The thread must fit the cylinder at both ends:
 //! `thread:cylinder-too-small` is decided at an external thread's large end,
@@ -107,7 +110,8 @@
 //!
 //! Refusals carry a `thread:<reason>` code (see
 //! [`ThreadRefusal::code`]) and leave the session unchanged. End finishes
-//! that reach past each other refuse with `thread:ends-overlap`.
+//! that reach past each other refuse with `thread:ends-overlap`, a single
+//! finish longer than the thread with `thread:finish-too-long`.
 
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -316,7 +320,9 @@ fn thread_failure(error: ThreadError) -> StructuredWasmError {
     match error {
         ThreadError::Refused { code, reason } => {
             let argument = match code {
-                ThreadRefusal::SpanOutsideFace | ThreadRefusal::EndsOverlap => Some("length"),
+                ThreadRefusal::SpanOutsideFace
+                | ThreadRefusal::EndsOverlap
+                | ThreadRefusal::FinishTooLong => Some("length"),
                 ThreadRefusal::CylinderTooSmall | ThreadRefusal::BoreTooLarge => {
                     Some("majorDiameter")
                 }
