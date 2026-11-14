@@ -93,10 +93,33 @@ impl RemusKernel {
             fuse_body_regions(self.topo_mut(), &bodies).map_err(StructuredWasmError::from)?;
         Ok(result_json(&result, solids))
     }
+
+    /// The direct binding minus its `JsError` wrapper: the JSON on success,
+    /// and on failure exactly the message the thrown `Error` carries.
+    pub(crate) fn fuse_regions_direct(
+        &mut self,
+        solids: &[u32],
+        sheets: &[u32],
+        wires: &[u32],
+    ) -> Result<String, String> {
+        self.fuse_regions_json(solids, sheets, wires)
+            .map(|value| value.to_string())
+            .map_err(direct_message)
+    }
 }
 
-fn structured_to_js(error: StructuredWasmError) -> JsError {
-    JsError::new(error.message())
+/// A thrown `Error` carries a message only, so a direct method states its
+/// stable code as the message prefix (`<code>: <message>`), as the other
+/// direct bindings do; the structured fields travel through
+/// `executeBatchV2`.
+fn direct_message(error: StructuredWasmError) -> String {
+    let message = error.message().to_owned();
+    let (code, _, _) = error.into_direct_parts();
+    if message.starts_with(&format!("{code}:")) {
+        message
+    } else {
+        format!("{code}: {message}")
+    }
 }
 
 #[wasm_bindgen]
@@ -128,11 +151,19 @@ impl RemusKernel {
     /// # Errors
     ///
     /// Invalid handles; `body_class_operand_unsupported` for a sheet or
-    /// wire; and `unsupported_nary_fuse` with a `reason` detail of
+    /// wire; and `unsupported_nary_fuse` for a refusal, whose cause is one of
     /// `too_few_operands`, `duplicate_operand`, `curved_cluster`,
     /// `pair_budget_exceeded`, `classification_unresolved`,
     /// `lineage_unresolved`, `non_manifold_contact` or `result_unqualified`.
     /// Every refusal leaves the model unchanged.
+    ///
+    /// This method throws an `Error` whose message starts with the stable
+    /// code and names the cause in parentheses, for example
+    /// `unsupported_nary_fuse: unsupported N-ary fuse (duplicate_operand):
+    /// operands 0 and 2 are the same solid`. The structured form — `code`,
+    /// `category` and `details.kernelCode` / `details.reason` — is the
+    /// `fuseRegions` op of `executeBatchV2`; the legacy `executeBatch`
+    /// returns the message text only.
     #[wasm_bindgen(js_name = "fuseRegions")]
     pub fn fuse_regions(
         &mut self,
@@ -140,13 +171,12 @@ impl RemusKernel {
         sheets: Option<Vec<u32>>,
         wires: Option<Vec<u32>>,
     ) -> Result<String, JsError> {
-        self.fuse_regions_json(
+        self.fuse_regions_direct(
             &solids,
             sheets.as_deref().unwrap_or_default(),
             wires.as_deref().unwrap_or_default(),
         )
-        .map(|value| value.to_string())
-        .map_err(structured_to_js)
+        .map_err(|message| JsError::new(&message))
     }
 }
 
@@ -228,7 +258,8 @@ mod tests {
             .iter()
             .map(|&(size, at)| direct_box(&mut direct, size, at))
             .collect();
-        let direct_result = direct.fuse_regions_json(&handles, &[], &[]).unwrap();
+        let direct_result: Value =
+            serde_json::from_str(&direct.fuse_regions_direct(&handles, &[], &[]).unwrap()).unwrap();
 
         let mut batch = RemusKernel::new();
         let mut ops: Vec<Value> = boxes
@@ -298,8 +329,10 @@ mod tests {
         }
     }
 
-    /// One refusal through both routes: the same code and reason, and no
-    /// slot allocated by either.
+    /// One refusal through the public routes: the direct method's message
+    /// (code prefix and cause), `executeBatchV2` (structured code and
+    /// reason) and legacy `executeBatch` (message text), with no slot
+    /// allocated by any of them.
     fn assert_refused_both_ways(
         setup: &[([f64; 3], [f64; 3])],
         extra: &[Value],
@@ -325,7 +358,7 @@ mod tests {
             .collect();
         ops.extend_from_slice(extra);
 
-        // Direct, on a kernel prepared by the same ops.
+        // Direct: the message the thrown `Error` carries.
         let mut direct = RemusKernel::new();
         let prepared = run_batch(&mut direct, &ops);
         assert!(
@@ -333,22 +366,26 @@ mod tests {
             "{prepared:?}"
         );
         let before = direct.topo().allocated_slot_count();
-        let error = direct
-            .fuse_regions_json(&list("solids"), &list("sheets"), &list("wires"))
+        let message = direct
+            .fuse_regions_direct(&list("solids"), &list("sheets"), &list("wires"))
             .unwrap_err();
         assert_eq!(
             direct.topo().allocated_slot_count(),
             before,
             "direct rollback"
         );
-        let (_, category, details) = error.into_direct_parts();
-        assert_eq!(category, "unsupported");
-        assert_eq!(details["kernelCode"], kernel_code);
+        assert!(
+            message.starts_with(&format!("{kernel_code}: ")),
+            "direct message lacks its code: {message}"
+        );
         if let Some(reason) = reason {
-            assert_eq!(details["reason"], reason);
+            assert!(
+                message.contains(&format!("({reason})")),
+                "direct message lacks its cause: {message}"
+            );
         }
 
-        // Batch.
+        // executeBatchV2: the structured envelope.
         let mut batch = RemusKernel::new();
         run_batch(&mut batch, &ops);
         let before = batch.topo().allocated_slot_count();
@@ -356,7 +393,7 @@ mod tests {
         assert_eq!(
             batch.topo().allocated_slot_count(),
             before,
-            "batch rollback"
+            "batch v2 rollback"
         );
         let error = &rows[0]["error"];
         assert_eq!(error["category"], "unsupported", "{rows:?}");
@@ -364,10 +401,30 @@ mod tests {
         if let Some(reason) = reason {
             assert_eq!(error["details"]["reason"], reason);
         }
+
+        // Legacy executeBatch: the message text, cause included.
+        let mut legacy = RemusKernel::new();
+        run_batch(&mut legacy, &ops);
+        let before = legacy.topo().allocated_slot_count();
+        let response = legacy.execute_batch(
+            &Value::Array(vec![json!({"op": "fuseRegions", "args": args})]).to_string(),
+        );
+        let rows: Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(
+            legacy.topo().allocated_slot_count(),
+            before,
+            "legacy batch rollback"
+        );
+        let text = rows[0]["error"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{rows}"));
+        if let Some(reason) = reason {
+            assert!(text.contains(&format!("({reason})")), "{text}");
+        }
     }
 
     #[test]
-    fn refusals_are_typed_and_transactional_through_both_routes() {
+    fn refusals_are_typed_and_transactional_through_every_route() {
         let pair = [([2.0; 3], SHIFTS[0]), ([2.0; 3], SHIFTS[1])];
 
         // An overlapping cylinder (handle 2, at the origin).
