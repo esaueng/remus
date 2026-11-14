@@ -22,10 +22,13 @@
 //! immutably, so a probe leaves no trace in shared state.
 
 use std::cell::RefCell;
+use std::fmt::Write as _;
+use std::hash::Hasher as _;
 use std::time::Instant;
 
 use remus_math::context::{OperationContext, WorkBudgets};
 use remus_math::curves2d::Curve2D;
+use remus_math::det_hash::DetHasher;
 use remus_math::tolerance::Tolerance;
 use remus_topology::Topology;
 use remus_topology::face::FaceId;
@@ -96,7 +99,7 @@ impl Site {
 }
 
 /// Which adapter a probe drives.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub(in crate::builder::face_splitter) enum Adapter<'a> {
     Plane(&'a PlaneFrame),
     Cylinder,
@@ -146,6 +149,34 @@ fn typed(budgets: WorkBudgets) -> WorkBudgets {
 }
 
 impl Probe<'_> {
+    /// Content identity for this diagnostic schema, independent of arena
+    /// lineage and timing. Debug floats round-trip; the exact topology view
+    /// includes every arena slot and pcurve, but no process-local cache IDs.
+    /// Hash the stream directly to avoid allocating a topology-sized string.
+    fn fingerprint(&self, site: Site) -> String {
+        struct Digest(DetHasher);
+        impl std::fmt::Write for Digest {
+            fn write_str(&mut self, text: &str) -> std::fmt::Result {
+                self.0.write(text.as_bytes());
+                Ok(())
+            }
+        }
+        let mut digest = Digest(DetHasher::new());
+        let _ = write!(
+            digest,
+            "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+            self.topo.image_view(),
+            self.face_id,
+            self.sections,
+            self.rank,
+            self.tol,
+            self.context,
+            self.adapter,
+            site,
+        );
+        format!("v1:{:016x}", digest.0.finish())
+    }
+
     fn call(
         &self,
         budgets: WorkBudgets,
@@ -399,6 +430,33 @@ pub(in crate::builder::face_splitter) fn measure(probe: &Probe<'_>) -> Record {
     record
 }
 
+#[cfg(all(test, feature = "perf-counters"))]
+enum SinkOverride {
+    Environment,
+    Forced(Option<std::sync::Mutex<std::fs::File>>),
+}
+
+#[cfg(all(test, feature = "perf-counters"))]
+thread_local! {
+    static TEST_SINK: RefCell<SinkOverride> = const { RefCell::new(SinkOverride::Environment) };
+}
+
+#[cfg(all(test, feature = "perf-counters"))]
+pub(super) fn with_log<R>(file: Option<std::fs::File>, f: impl FnOnce() -> R) -> R {
+    struct Restore(SinkOverride);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            TEST_SINK.with(|sink| {
+                *sink.borrow_mut() = std::mem::replace(&mut self.0, SinkOverride::Environment);
+            });
+        }
+    }
+    let _restore = Restore(
+        TEST_SINK.with(|sink| sink.replace(SinkOverride::Forced(file.map(std::sync::Mutex::new)))),
+    );
+    f()
+}
+
 fn log_sink() -> Option<&'static std::sync::Mutex<std::fs::File>> {
     static SINK: std::sync::OnceLock<Option<std::sync::Mutex<std::fs::File>>> =
         std::sync::OnceLock::new();
@@ -427,12 +485,41 @@ pub(in crate::builder::face_splitter) fn probe(
     surface: &str,
     legacy: Option<(&dyn Fn(), usize)>,
 ) {
+    #[cfg(all(test, feature = "perf-counters"))]
+    {
+        let overridden = TEST_SINK.with(|sink| {
+            let borrowed = sink.borrow();
+            if let SinkOverride::Forced(sink) = &*borrowed {
+                if let Some(sink) = sink {
+                    probe_to_sink(sink, site, probe, surface, legacy);
+                }
+                true
+            } else {
+                false
+            }
+        });
+        if overridden {
+            return;
+        }
+    }
+    if let Some(sink) = log_sink() {
+        probe_to_sink(sink, site, probe, surface, legacy);
+    }
+}
+
+fn probe_to_sink(
+    sink: &std::sync::Mutex<std::fs::File>,
+    site: Site,
+    probe: &Probe<'_>,
+    surface: &str,
+    legacy: Option<(&dyn Fn(), usize)>,
+) {
     use std::io::Write as _;
-    let Some(sink) = log_sink() else {
-        return;
-    };
-    let record = measure(probe);
-    let legacy_ns = legacy.map(|(rerun, _)| min_time(rerun));
+    // Diagnostic reruns must not become production work in the existing
+    // complexity guards. Restore on unwind as well as on normal return.
+    let (record, legacy_ns) = crate::perf::with_preserved_work_counters(|| {
+        (measure(probe), legacy.map(|(rerun, _)| min_time(rerun)))
+    });
     let adopt = match (site, &record.raised) {
         (Site::Legacy(_), _) => "-",
         (Site::EarlyCylinder, Outcome::Split(_)) => "yes",
@@ -482,6 +569,7 @@ pub(in crate::builder::face_splitter) fn probe(
         adopt.to_owned(),
         format!("{:?}", probe.context.budgets == WorkBudgets::new()),
         record.phases.render(),
+        probe.fingerprint(site),
     ];
     let line = fields.join("\t") + "\n";
     if let Ok(mut file) = sink.lock() {

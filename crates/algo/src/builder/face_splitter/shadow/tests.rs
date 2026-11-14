@@ -802,3 +802,137 @@ fn work_of_a_section_grid() {
         );
     }
 }
+
+/// Exercise the actual logging sink through production dispatch, with shadow
+/// work disabled in both runs. Pin the existing counters as well as comparing
+/// every PerfSnapshot field, ray work, winding work and the complete output.
+#[cfg(feature = "perf-counters")]
+#[test]
+#[allow(clippy::too_many_lines)]
+fn work_logging_preserves_output_and_perf_counters() {
+    use std::io::{Read as _, Seek as _};
+
+    let log_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/diag");
+    std::fs::create_dir_all(&log_dir).unwrap();
+    // Retain the log so the census in the design note can be regenerated.
+    let log_path = log_dir.join("splitter-work-fixtures.tsv");
+    let mut log = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .read(true)
+        .write(true)
+        .open(&log_path)
+        .unwrap();
+    let snapshot = || {
+        (
+            crate::perf::snapshot(),
+            crate::perf::take_ray_work(),
+            crate::perf::take_winding_cut_projections(),
+        )
+    };
+    let mut inputs = Vec::new();
+    // Put the 935-step small case first, reproducing the old census failure.
+    for (label, size, x, y) in [
+        ("X-small", 2e-3, 0.7e-3, 0.8e-3),
+        ("X", 2.0, 1.0, 1.0),
+        ("X-offset", 2.0, 0.7, 0.8),
+        ("X-large", 2e3, 700.0, 800.0),
+        ("T", 2.0, 1.0, 1.0),
+    ] {
+        let (topo, face) = square_face(size);
+        let sections = vec![
+            line_section(Point3::new(x, 0.0, 0.0), Point3::new(x, size, 0.0), 7),
+            line_section(
+                Point3::new(0.0, y, 0.0),
+                Point3::new(if label == "T" { x } else { size }, y, 0.0),
+                8,
+            ),
+        ];
+        inputs.push((label, topo, face, sections));
+    }
+    let (topo, face) = lateral_face(2.0, 3.0);
+    inputs.push((
+        "bands",
+        topo,
+        face,
+        vec![
+            latitude_section(2.0, 0.9, 100),
+            latitude_section(2.0, 2.1, 101),
+        ],
+    ));
+    let (topo, face) = lateral_face(2.0, 3.0);
+    inputs.push((
+        "sectors",
+        topo,
+        face,
+        vec![ruling_section(2.0, 2.0, 3.0, 200)],
+    ));
+    let (topo, face) = disc_face(8.0);
+    let y = 8.0 * (PI / 4.0).sin();
+    let apex = Point3::new(8.0, 0.0, 0.0);
+    inputs.push((
+        "disc",
+        topo,
+        face,
+        vec![
+            line_section(apex, Point3::new(-y, y, 0.0), 7),
+            line_section(apex, Point3::new(-y, -y, 0.0), 8),
+        ],
+    ));
+    for (label, topo, face, sections) in &inputs {
+        crate::perf::reset();
+        let _ = crate::perf::take_ray_work();
+        let (off, off_shadow, off_reasons) =
+            super::work::with_log(None, || split(None, topo, *face, sections));
+        let off_work = snapshot();
+        match *label {
+            "T" => assert_eq!(off_work.0.face_split_probes, 79),
+            "X-small" | "X" | "X-offset" | "X-large" => {
+                assert_eq!(off_work.0.face_split_probes, 64);
+            }
+            _ => {}
+        }
+        crate::perf::reset();
+        let (on, on_shadow, on_reasons) =
+            super::work::with_log(Some(log.try_clone().unwrap()), || {
+                split(None, topo, *face, sections)
+            });
+        assert_eq!(snapshot(), off_work, "{label}: diagnostic work leaked");
+        assert_eq!(
+            format!("{on:?}"),
+            format!("{off:?}"),
+            "{label}: output changed"
+        );
+        assert_eq!(on_shadow, off_shadow);
+        assert_eq!(on_reasons, off_reasons);
+    }
+    // Repeating exactly the same input must repeat its content identity.
+    let (_, topo, face, sections) = &inputs[1];
+    super::work::with_log(Some(log.try_clone().unwrap()), || {
+        split(None, topo, *face, sections)
+    });
+    log.rewind().unwrap();
+    let mut text = String::new();
+    log.read_to_string(&mut text).unwrap();
+    let rows: Vec<Vec<_>> = text
+        .lines()
+        .map(|line| line.split('\t').collect())
+        .collect();
+    let crossing: Vec<_> = rows
+        .iter()
+        .filter(|row| row[0] == "try_split_crossing_plane_face")
+        .collect();
+    assert_eq!(crossing.len(), 5);
+    assert_eq!(crossing[0][12], "935");
+    assert!(crossing[1..].iter().all(|row| row[12] == "985"));
+    let fingerprints: std::collections::BTreeSet<_> = crossing.iter().map(|row| row[26]).collect();
+    assert_eq!(
+        fingerprints.len(),
+        4,
+        "equal local IDs must retain distinct inputs"
+    );
+    assert_eq!(
+        crossing[1][26], crossing[4][26],
+        "repeated inputs must fold"
+    );
+}

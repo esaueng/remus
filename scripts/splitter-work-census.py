@@ -6,7 +6,10 @@ It exists only in `perf-counters` builds and appends one line per probed
 face to `REMUS_SPLITTER_WORK_LOG`: wherever a legacy special case fires (the
 shadow differential's sites) and at the two production adapter call sites
 (early cylinder arrangement, last-resort planar arrangement). This script
-reads one or more such logs and prints, per site and adapter:
+reads one or more such logs and prints, per site and adapter. New logs
+append an input content fingerprint, which folds exact repeated inputs;
+old logs are retained without deduplication because local IDs are unsafe.
+The report includes:
 
 - how often the site was reached, and the adapter's outcome under raised
   budgets and under the operation's own budgets;
@@ -29,6 +32,7 @@ from __future__ import annotations
 import argparse
 from collections import Counter, defaultdict
 import math
+import sys
 from pathlib import Path
 
 COLUMNS = (
@@ -36,7 +40,7 @@ COLUMNS = (
     "boundary_uses", "circle_uses", "raised", "default", "trips", "march",
     "queue", "segments", "vertices", "edges", "regions", "max_degree",
     "sum_degree_sq", "adapter_ns", "legacy_ns", "legacy_regions", "adopt",
-    "context_default", "phases",
+    "context_default", "phases", "input",
 )
 INTS = (
     "face", "sections", "loop_edges", "uses", "boundary_uses", "circle_uses",
@@ -50,6 +54,8 @@ def parse(paths: list[Path]) -> list[dict]:
     for path in paths:
         for line in path.read_text(encoding="utf-8").splitlines():
             fields = line.split("\t")
+            if len(fields) == len(COLUMNS) - 1:
+                fields.append(None)  # Old logs cannot safely deduplicate inputs.
             if len(fields) != len(COLUMNS):
                 raise ValueError(f"{path}: malformed work line: {line!r}")
             row = dict(zip(COLUMNS, fields))
@@ -79,12 +85,22 @@ def dist(values: list[int]) -> str:
 
 
 def unique_faces(rows: list[dict]) -> list[dict]:
-    """One row per (site, test, face, sections): parallel shadow logs and
-    repeated runs of one test re-probe the same face."""
+    """Fold repeated content identities, never arena-local face IDs alone.
+
+    Old logs lack content identity: retain every row instead of silently
+    discarding distinct operations with equal local IDs and input sizes.
+    """
     seen = {}
+    unique = []
     for row in rows:
-        seen.setdefault((row["site"], row["test"], row["face"], row["sections"], row["uses"]), row)
-    return list(seen.values())
+        if row.get("input") is None:
+            unique.append(row)
+            continue
+        key = (row["site"], row["test"], row["input"])
+        if key not in seen:
+            seen[key] = row
+            unique.append(row)
+    return unique
 
 
 def fit(rows: list[dict]) -> str:
@@ -130,6 +146,10 @@ def phase_shares(rows: list[dict]) -> str:
 
 
 def report(rows: list[dict], faces: bool) -> None:
+    unidentified = sum(r.get("input") is None for r in rows)
+    if unidentified:
+        print(f"Warning: {unidentified} legacy rows lack input identity; retained without deduplication.",
+              file=sys.stderr)
     rows = unique_faces(rows)
     by_site = defaultdict(list)
     for row in rows:
@@ -164,7 +184,7 @@ def report(rows: list[dict], faces: bool) -> None:
         if faces:
             for r in sorted(group, key=lambda r: -(r["march"] or 0)):
                 print(
-                    f"  - {r['test']} face {r['face']}: sections {r['sections']}, loop edges {r['loop_edges']},"
+                    f"  - {r['test']} face {r['face']} input {r.get('input') or 'unavailable'}: sections {r['sections']}, loop edges {r['loop_edges']},"
                     f" uses {r['uses']}, raised {r['raised']}, default {r['default']}, trips {r['trips']},"
                     f" march {r['march']}, queue {r['queue']}, segments {r['segments']}, V {r['vertices']},"
                     f" E {r['edges']}, adopt {r['adopt']}, adapter {r['adapter_ns']} ns, legacy {r['legacy_ns']} ns"

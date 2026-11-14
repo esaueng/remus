@@ -553,8 +553,16 @@ What the table says:
 
 Research for the maintainer decision that blocks O2.3d: what work budget the
 arrangement adapters answer to. Measurement and design only: no dispatch,
-budget or emitted geometry changed. **M** marks a measured result, **I** an
-inference from code reading or from measurements that do not settle it.
+budget or emitted geometry changed. **R** marks a measurement regenerated
+after review, **H** a historical measurement not regenerated after review,
+and **I** an inference. The full
+operations/io corpus was not rerun under the shared host's memory limits.
+Every corpus count, distribution, maximum, timing and ratio below marked H
+still uses the old, lossy deduplication; these are historical observations,
+**not a corrected census or verified bounds**. This also applies to the
+corpus-derived headroom ratios in the recommendation. The review rerun is
+limited to the fixtures listed below; no corrected full-corpus total is
+available.
 
 ### Instrument
 
@@ -579,39 +587,75 @@ the early cylinder arrangement and the last-resort planar arrangement in
 - at the production sites, records whether the raised-budget result would
   pass that site's adoption gate.
 
-No adapter run passes a split registry, so a probe leaves no trace.
+No adapter run passes a split registry. Diagnostic reruns save and restore
+all existing work counters (including ray and winding counters), also on
+unwind. The logging-off path returns before this guard. The regression
+`work_logging_preserves_output_and_perf_counters` checks the complete output
+and every `PerfSnapshot` field with logging off and on; X stays at 64 probes
+(previous logging-on result: 224), T at 79 in both modes.
 `scripts/splitter-work-census.py` aggregates the logs. Unit fixtures:
 `shadow/tests.rs::{work_of_the_minimal_fixtures,
 reversed_rim_trims_misread_through_traversal_domain}`, plus the ignored
 `work_of_a_section_grid`. End-to-end probe (ignored; run with `--ignored
 --nocapture`): `crates/operations/tests/research_o23d_budget_equality.rs`.
 
-Corpus: every lib and integration test binary of `remus-operations` and
-`remus-io` with `REMUS_SPLITTER_SHADOW=raised`, run one binary at a time
-(the shared disk could not hold every test binary at once). 895 tests reached a probe site, 9,325 distinct faces were probed (deduplicated
-on site, test, face, section count and use count); the four legacy entry
-points fired 1,367 times. Test failures with the probes on were the host's
+Historical corpus (**H, not regenerated**): every lib and integration test
+binary of `remus-operations` and `remus-io` with
+`REMUS_SPLITTER_SHADOW=raised`, run one binary at a time (the shared disk
+could not hold every test binary at once). The old census reported 895 tests,
+9,325 retained rows and 1,367 legacy-entry rows. Its key (site, test,
+arena-local face ID, section count, use count) merged distinct inputs, so
+these must not be called distinct-face counts. New work logs append an
+`input` fingerprint over the exact topology view, face, ordered sections,
+rank, tolerances, context, adapter/frame and site. The script deduplicates
+only on site, test and this content identity. It retains every old-schema
+row, with a warning, because the old logs cannot recover input identity.
+
+Review rerun (**R**, fixture-only, not the full corpus):
+
+```sh
+cargo test -p remus-algo --lib --features perf-counters \
+  shadow::tests::work_logging_preserves_output_and_perf_counters
+python3 scripts/splitter-work-census.py target/diag/splitter-work-fixtures.tsv --faces
+cargo test -p remus-algo --lib shadow::tests::work_of_the_minimal_fixtures -- --nocapture
+cargo test -p remus-algo --lib shadow::tests::work_of_a_section_grid -- --ignored --nocapture
+```
+
+The log has 11 raw rows and 10 retained site/input rows. It covers four X
+inputs (small first, centred, offset, large), T, disc chords, cylinder band
+and sector, plus a repeated centred X. The four
+X inputs have equal local IDs and counts. Previously they retained one row
+and, with small first, reported maximum 935. They now retain four rows,
+with steps 935 / 985 / 985 / 985 and maximum **985**; the exact repeat folds.
+The other fixture steps are T 868, disc 652, band 654 and sector 459.
+The grid rerun covers k = 1, 2, 3, 4, 6, 8, 9, 10, with k = 10 at 64 uses,
+121 regions and 86,683 steps. Fixture timings from this shared host are diagnostic only;
+the historical timing table below was not regenerated.
+
+Test failures reported in that historical run were the host's
 known ones only: `seed1146_closed_disc_rims_oppose_the_band`, five BREP
 fixture tests, and `analytic_face_area_fixtures`, which fails identically
 with the probes off (CRLF fixtures on this host).
 
 ### 1. Why a two-section T exceeds 200 / 100 / 50
 
-**M:** `march_steps` trips first, and on every probed face it is the only
+**H:** `march_steps` trips first, and on every probed face it is the only
 field that trips, except on large planar faces: on 128 of them `queue_size`
 trips as well (six also trip `segments`) and on two only `queue_size` trips.
 The d4 foil faces 13 and 14 (4 loop coedges, 2 sections, 10 uses after collection, 3 regions) need **838** march
 steps, queue 22 and segments 10. The honeycomb foil faces 11 and 21 (11 loop coedges, 2 sections, 14 uses)
 need 1,317 and 1,299 steps, queue 32 and segments 14. A unit square cut into a T needs
 868, an X 985; a cylinder band from two latitudes 654, a single-ruling
-sector 459; a disc cut by two chords 652.
+sector 459; a disc cut by two chords 652 (**R**, fixture steps only).
 
 `march_steps` is documented as "maximum marching steps per traced direction
-of one intersection curve". The arrangement reads it as the total work of
-one face: the collector's pair scans and every inner iteration of the core
-charge one step each. `queue_size` caps the input uses and the event count;
+of one intersection curve". The arrangement reads it as one face's total
+charged work: the collector's concurrency and prejoin scans,
+the degenerate-contact scan and the core's explicit step sites charge it.
+This does not account for all collection or emission work. `queue_size`
+caps the input uses and the event count;
 `segments` caps the undirected edges. Cumulative march steps after each phase
-of the T fixture (**M**; the corpus medians are the same shape):
+of the T fixture (**R**; the corpus-median comparison remains **H**):
 
 | Phase | Work charged | Cumulative | Share |
 |---|---|---:|---:|
@@ -632,8 +676,9 @@ sit far below their caps on such faces.
 
 ### 2. Work across the corpus
 
-**M.** Distinct faces; "fires" is where the site was reached. Work columns
-cover the faces the adapter splits under raised budgets.
+**H, not regenerated.** Rows retained by the old lossy key; "fires" is where
+the site was reached. These are not corrected distinct-face counts. Work
+columns cover the faces the adapter splits under raised budgets.
 
 | Site | Fires (tests) | Raised: split / declined / refused | March: max / p99 / median | Queue max | Segments max |
 |---|---|---|---|---:|---:|
@@ -648,7 +693,7 @@ At the operation's own budgets (`WorkBudgets::new()` on every probed face)
 no site ever split: every face that the raised budgets split exhausted the
 default budget, and the rest declined out-of-domain.
 
-Shadow agreement (`REMUS_SPLITTER_SHADOW=raised`, distinct faces):
+Shadow agreement (`REMUS_SPLITTER_SHADOW=raised`, historical retained rows; not regenerated):
 
 | Legacy entry point | Agreed | Disagreed | Declined | Refused |
 |---|---:|---:|---:|---:|
@@ -669,7 +714,7 @@ quotient removes.
 
 ### 3. Does the work scale with something cheap?
 
-**M:** over every face the adapter splits, march steps against cheap sizes
+**H:** over every face the adapter splits, march steps against cheap sizes
 (n = uses after collection):
 
 | Predictor | Plane: march ÷ predictor, min / median / max | Cylinder |
@@ -692,13 +737,13 @@ cheap pre-collection predictor, (coedges + 3 × sections)², still spreads
 thirty-fold. n itself is not known up front: it is the collector's output, and
 the collector's pair scans are already charged. **I:** an input-scaled budget
 is defensible only as a quadratic with a generous constant *plus* an absolute
-ceiling for dense faces. The ceiling is what bounds anything; the scaled part
+ceiling for dense faces. The ceiling bounds charged work; the scaled part
 only tightens the bound on small faces, which are cheap regardless
 (section 4).
 
 ### 4. Cost, and what bounds a pathological face
 
-**M (time per face, minimum of five runs, shared 12-core host):**
+**H (time per face, minimum of five runs, shared 12-core host):**
 
 | Where | Adapter, median (max) | Legacy emitter, median (max) | Adapter ÷ legacy, median |
 |---|---|---|---|
@@ -712,24 +757,34 @@ only tightens the bound on small faces, which are cheap regardless
 The legacy figure is the emitter call alone; the wire building and
 classification before it in `split_face_2d_impl` are not in it.
 
-One march step costs a median 116 ns on planar faces and 120 ns on cylinder
-faces (p99 148 and 162 ns; one 948 ns outlier on a 7.1 ms face whose other
+**H, not regenerated:** one march step costs a median 116 ns on planar
+faces and 120 ns on cylinder faces (p99 148 and 162 ns; one 948 ns outlier on a 7.1 ms face whose other
 probes measure 200 ns). The largest face, 89,955 steps, takes 11.9 ms
 (133 ns per step). The densest grid costs 273 ns per step (86,683 steps
 in 23.7 ms).
 
-What bounds a long run: every inner loop charges the step counter and polls
-cancellation, so a budget of B steps bounds a face to roughly B × 300 ns plus
-the uncharged emission. The collected use count is capped structurally
-(`MAX_ARRANGEMENT_USES`, `MAX_CYL_USES`, 256). Inside that cap nothing else
-bounds the work: line-concurrency clustering is crossings × clusters and the
-region pass cycles × edges, so a dense 256-use face could need 10⁷–10⁸ steps
-(**I**, extrapolated from the grid). At the raised test budgets (2,000,000
-steps) the worst case is about 0.6 s per face before a typed refusal; a
-budget of 1,048,576 bounds it to about 0.15 s at the measured cost per step
-and 0.3 s at 300 ns.
+The step counter bounds only charged work, and cancellation is polled at
+explicit check sites. Not every inner loop charges or polls: in particular,
+`Collector::push_loop` resolves and collects an entire loop's coedges without
+either. The caller polls before each loop and checks the 256-use cap only
+after `push_loop` returns, so an arbitrarily large loop can already have
+been walked and allocated before rejection. Other collection and emission
+work is uncharged too. The structural caps (`MAX_ARRANGEMENT_USES`,
+`MAX_CYL_USES`, 256) limit accepted collected inputs, not all work preceding
+those checks. Line-concurrency clustering is crossings × clusters and the
+region pass cycles × edges; a dense accepted 256-use face could need
+10⁷–10⁸ charged steps (**I**, extrapolated from the grid).
 
-**M:** the adapter can spend a large budget only to decline. Five io faces
+**I:** B × 300 ns is an extrapolation for the charged portion only, using the
+historical per-step timings. At 2,000,000 steps this gives about 0.6 s;
+1,048,576 gives about 0.15 s at the historical median and 0.3 s at 300 ns.
+These figures **exclude uncharged collection and emission** and are neither
+an end-to-end time bound nor a cancellation-latency guarantee. Follow-up:
+charge/poll the coedge collection loop and enforce predictable caps before
+collection; then measure total refusal time. This measurement/docs PR does
+not change budget, cancellation or dispatch behavior.
+
+**H:** the adapter can spend a large budget only to decline. Five io faces
 with 38–242 sections (Gridfinity sockets and the mitsukude panel) spend
 13,430–149,199 steps and then return out-of-domain. **I:** for the
 242-section face, its 246 input uses can only pass the 256-use cap
@@ -739,7 +794,7 @@ out-of-domain gates should run before the quadratic passes.
 
 ### 5. The cylinder `trim` direction
 
-**M:** the disagreement is real and is an emitter bug, not a comparator
+**H:** the disagreement is real and is an emitter bug, not a comparator
 artefact. `arrangement_cyl::emit_cylinder_run` stores
 `trim = Some((source_span[0], source_span[1]))` in traversal order with
 `forward = source_span[1] >= source_span[0]`. `OrientedPCurveEdge::trim` is
@@ -765,7 +820,7 @@ convention:
   sub_trim_fraction, sub_traversal_domain_fraction}` in
   `builder/split_types.rs`, and through them about 55 call sites in
   `face_splitter/mod.rs`, `special_cases.rs`, `edge_splitting.rs`,
-  `containment.rs`, `sampling.rs` and `conversion.rs`. **M:** misread, as
+  `containment.rs`, `sampling.rs` and `conversion.rs`. **H:** misread, as
   above.
 - `fill_images_faces::preflight_wire_edge` and `instantiate_wire_edge`, which
   turn each sub-face wire edge into a topology `Edge`. **I:** an open arc is
@@ -773,7 +828,7 @@ convention:
   order and `Edge` accepts a descending trim; a closed rim keeps the
   traversal-order trim and takes `forward` from the pcurve edge, so the stored
   edge is walked against the region's sense.
-- **M**, end to end: three booleans routed through the cylinder adapter by
+- **H**, end to end: three booleans routed through the cylinder adapter by
   raised budgets (offset-cylinder intersect and fuse, a coaxial magnet and
   screw fuse) validate and keep the exact volume. The misread did not surface
   there; it is latent for any consumer that reads `traversal_domain()` or
@@ -800,7 +855,7 @@ one unrelated to face splitting, turns the same exhaustion into a typed
 that happens to be large lets the adapters claim faces ahead of the legacy
 emitters.
 
-**M** (`research_o23d_budget_equality.rs`; default fallback policy, then
+**H** (`research_o23d_budget_equality.rs`; default fallback policy, then
 `ExactOnly`):
 
 | Boolean | Default budgets | `newton_iterations` 20 → 21 | Raised march / queue / segments |
@@ -824,7 +879,7 @@ unaffected.
 
 Across the corpus every probed face ran under the default context, and at
 that context neither production site ever produced a split; the adapter
-exhausted the budget or declined on every face (**M**). At default budgets
+exhausted the budget or declined on every face (**H**). At default budgets
 both production call sites are dead code, and their only live effect is the
 defect above.
 
@@ -835,7 +890,7 @@ cannot cover the smallest real face (the corpus minimum is 394). Deleting the
 default-budget decline on its own turns every face that reaches an adapter
 site into a typed error at 200 steps. An input-scaled budget is principled
 only with an absolute ceiling (section 3), and the ceiling is what bounds the
-work.
+charged work (subject to the collection exclusions in section 4).
 
 Recommended, in three separable steps:
 
@@ -846,7 +901,7 @@ Recommended, in three separable steps:
    `face_splitter` (legacy for every family today), not an option on
    `OperationContext`. While a family is routed to legacy, its production
    site skips the adapter before collecting. Production change: none at
-   default budgets (**M**: the sites never split at defaults on the corpus);
+   default budgets (**H**: the sites never split at defaults on the corpus);
    with any non-default budget, the three probed booleans return to their
    exact default results instead of a mesh fallback or an `ExactOnly` error.
    Pin: turn `research_o23d_budget_equality` into an assertion that
@@ -858,13 +913,17 @@ Recommended, in three separable steps:
    largest face the corpus splits (89,955 steps), 7× the most the adapter
    spends on any face before declining (149,199), 12× the densest synthetic
    face (k = 10 grid, 121 regions, 86,683 steps) and 516× the largest
-   cylinder face (2,033); it bounds one face to about 0.15 s at the measured
-   cost per step and 0.3 s at 300 ns. The 262,144 one might pick from the ops
-   corpus alone (7,452 max) would leave under 3× headroom on the io panel
-   face. The collector and the core charge only this field. Drop the arrangement's reads of `queue_size` and `segments`: every
-   event and edge already charges a step, so the step budget bounds memory
-   too, and 130 corpus faces exceed the SSI `queue_size` default of 100 (up to
-   309 events) and six the `segments` default of 50 (up to 148 edges) for no
+   cylinder face (2,033). Those corpus-derived ratios remain **H, not
+   regenerated**. Its charged portion extrapolates to about 0.15 s at the
+   historical median cost per step and 0.3 s at 300 ns, excluding uncharged
+   collection and emission (section 4). This is not a per-face time bound.
+   The 262,144 one might pick from the ops corpus alone (7,452 max) would
+   leave under 3× headroom on the io panel face. The collector and the core
+   would charge only this field. Drop the arrangement's reads of `queue_size`
+   and `segments`: every core event and edge already charges a step, so that
+   bounds core allocation, but not the uncharged collection described in
+   section 4. Historically, 130 corpus faces exceed the SSI `queue_size`
+   default of 100 (up to 309 events) and six the `segments` default of 50 (up to 148 edges) for no
    reason of their own. Run the collector's cheap out-of-domain gates, and the
    256-use cap where it can be predicted, before its quadratic passes
    (section 4). Keep the 256-use structural caps but
@@ -874,12 +933,12 @@ Recommended, in three separable steps:
    Production change: none while routing stays legacy. Pins: the minimal
    fixtures and the foil faces fit the default with at least 16× headroom (a
    `perf-counters` guard driven by the work probe); a grid past the budget
-   refuses typed within the time bound; the existing budget-prefix and
-   cancellation atomicity tests move to the new field.
+   refuses typed, with total refusal time measured separately; the existing
+   budget-prefix and cancellation atomicity tests move to the new field.
 3. **Flip routing per family as each legacy emitter is deleted**, as the
    O2.3d plan already orders. The evidence below says what each flip changes.
 
-Per family, at a sufficient budget (**M**):
+Per family, at a sufficient budget (**H**):
 
 - **Plane crossing (`try_split_crossing_plane_face`)**: 42 faces in 9 tests (d4, honeycomb pcut3, the lip-fuse halfsockets, the
 ray-cast vote workloads, a boss chamfer); 41 agree and one declines as
