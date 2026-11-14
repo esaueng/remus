@@ -1726,7 +1726,7 @@ pub struct NaryFuseRegions {
 /// intersects every pair, `Some` only the listed ones, and the source-pair
 /// budget counts the pairs intersected. At least two sources are required.
 ///
-/// A source with no kept face ([`SourceFaceTally::kept`] zero) had every
+/// A source with no kept face (`SourceFaceTally::kept` zero) had every
 /// sub-face decided as inside or coincident with other sources; whether its
 /// material is in the result is for the caller to check independently.
 ///
@@ -1738,8 +1738,6 @@ pub struct NaryFuseRegions {
 /// An error from it is returned as is. Only a result that passes is
 /// exported, so a refusal allocates nothing in the caller's arena. A caller
 /// with nothing to add passes a gate that returns `Ok(())`.
-///
-/// [`SourceFaceTally::kept`]: crate::builder::SourceFaceTally::kept
 ///
 /// # Errors
 ///
