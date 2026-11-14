@@ -24,8 +24,10 @@
 //!    even when their native parameters differ by less than 1e-10.
 //! 3. A leaf is dropped for BOTH faces only with a whole-interval certificate
 //!    of exclusion. Outward-rounded Bernstein balls cover every knot span;
-//!    each ball is strictly off the face or inside an already resolved end
-//!    vertex's model-space weld ball. Samples can only retain a leaf.
+//!    each ball is strictly off the face or has a one-sided endpoint graph
+//!    certificate. Weld balls alone never authorize a drop. Strict transverse
+//!    flow refuses grazing; contact uncertainty is bounded in arc length at
+//!    the linear tolerance. Samples can only retain a leaf.
 //!    Unavailable bounds, projection singularities and exhausted work keep it.
 //!    Cylinder projection is bounded here; other carriers retain their leaves.
 //!
@@ -55,6 +57,8 @@ use crate::chart_trim::{ChartLoop, chart_loop, chart_v_periodic, exclusion_loop}
 use crate::ds::{GfaArena, IntersectionCurveDS, Pave, PaveBlockId};
 use crate::error::AlgoError;
 
+mod endpoint_certificate;
+
 /// Weld-band multiple of the linear tolerance: a pave vertex minted on a
 /// marched edge sits up to ~1e-6 off the exact section it lies on.
 const WELD_FACTOR: f64 = 100.0;
@@ -78,6 +82,9 @@ struct TrimmedFace {
     exclusion: Vec<(ChartLoop, bool)>,
     /// Resolved pave vertices on the trimming edges, ascending by id.
     vertices: Vec<(VertexId, Point3)>,
+    /// Native trimming traces and their resolved contacts, for one-sided
+    /// endpoint exclusion. The sampled outline cannot decide the contact.
+    boundaries: Vec<endpoint_certificate::Boundary>,
 }
 
 impl TrimmedFace {
@@ -177,6 +184,8 @@ fn trimmed_face(
     }
     let error = tol.linear * WELD_FACTOR / 8.0;
     let mut exclusion = Vec::new();
+    let mut boundaries = Vec::new();
+    let mut complete_boundary = true;
     for (wire, inside) in outer
         .iter()
         .map(|_| (face.outer_wire(), false))
@@ -192,7 +201,15 @@ fn trimmed_face(
         };
         if let Some(outline) = certified {
             exclusion.push((outline, inside));
+            if let Some(traces) = endpoint_certificate::boundaries(topo, arena, wire) {
+                boundaries.extend(traces);
+            } else {
+                complete_boundary = false;
+            }
         }
+    }
+    if !complete_boundary {
+        boundaries.clear();
     }
     Some(TrimmedFace {
         surface: surface.clone(),
@@ -201,6 +218,7 @@ fn trimmed_face(
         outer,
         holes,
         vertices: vertices.into_iter().collect(),
+        boundaries,
     })
 }
 
@@ -480,9 +498,10 @@ fn section_ball(
 }
 
 /// Prove exclusion over a cover of the complete leaf, never from probes.
-/// Every accepted ball is in one off-face component with positive margin or
-/// in a resolved endpoint's existing weld ball. No chord-error enlargement of
-/// that weld is permitted. Exhausting the finite budget means KEEP.
+/// Every accepted ball is in one off-face component with positive margin.
+/// A resolved contact needs a one-sided graph certificate, including strict
+/// transversality; its weld ball alone says nothing about exclusion.
+/// Exhausting either finite budget means KEEP.
 fn leaf_off_face(
     topo: &Topology,
     arena: &GfaArena,
@@ -514,18 +533,8 @@ fn leaf_off_face(
         {
             continue;
         }
-        // A resolved endpoint is already identified with a trimming vertex
-        // within the model-space weld band. Its collar must be enclosed in
-        // that SAME vertex ball, never in a parameter-width or chord-error
-        // band. Everything beyond those weld balls needs strict exclusion.
         let start_id = arena.resolve_vertex(pb.start.vertex);
         let end_id = arena.resolve_vertex(pb.end.vertex);
-        let collars: Vec<_> = face
-            .vertices
-            .iter()
-            .filter(|(id, _)| *id == start_id || *id == end_id)
-            .map(|(_, p)| *p)
-            .collect();
         let mut pending = vec![(ta, tb, 0)];
         let mut certified = true;
         for _ in 0..4096 {
@@ -536,10 +545,23 @@ fn leaf_off_face(
                 certified = false;
                 break;
             };
-            if collars
-                .iter()
-                .any(|p| ((center - *p).length() + radius).next_up() < weld)
-            {
+            if [
+                (start_id, start, (ta, b), false),
+                (end_id, end, (a, tb), true),
+            ]
+            .iter()
+            .any(|&(id, point, range, reverse)| {
+                ((center - point).length() + radius).next_up() < weld
+                    && endpoint_certificate::excludes(
+                        face,
+                        curve,
+                        range,
+                        (at(range.0), at(range.1)),
+                        id,
+                        reverse,
+                        weld / WELD_FACTOR,
+                    )
+            }) {
                 continue;
             }
             // Projection onto a cylinder is Lipschitz on a ball clear of
@@ -1425,5 +1447,213 @@ mod tests {
             "Valid cylinder/plane section contains material at {u}, {z}; got {:?}",
             f.ranges(section)
         );
+    }
+    fn fully_holed() -> Fixture {
+        let mut f = holed(1.);
+        let old_hole = f.topo.face(f.wall).unwrap().inner_wires()[0];
+        let hole_edges = f
+            .topo
+            .wire(old_hole)
+            .unwrap()
+            .edges()
+            .iter()
+            .rev()
+            .map(|oe| OrientedEdge::new(oe.edge(), !oe.is_forward()))
+            .collect();
+        let hole = f.topo.add_wire(Wire::new(hole_edges, true).unwrap());
+        let s0 = f.topo.add_vertex(Vertex::new(f.cyl.evaluate(0., 0.), TOL));
+        let s1 = f.topo.add_vertex(Vertex::new(f.cyl.evaluate(0., 4.), TOL));
+        let bottom = arc(&mut f.topo, &mut f.arena, &f.cyl, 0., (s0, 0.), (s0, TAU));
+        let top = arc(&mut f.topo, &mut f.arena, &f.cyl, 4., (s1, 0.), (s1, TAU));
+        let seam = line(&mut f.topo, &mut f.arena, s0, s1);
+        let outer = f.topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(bottom, true),
+                    OrientedEdge::new(seam, true),
+                    OrientedEdge::new(top, false),
+                    OrientedEdge::new(seam, false),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        f.wall = f.topo.add_face(Face::new(
+            outer,
+            vec![hole],
+            FaceSurface::Cylinder(f.cyl.clone()),
+        ));
+        f
+    }
+
+    // A rational quadratic exact section of a unit cylinder and an oblique plane.
+    fn conic_section(
+        f: &mut Fixture,
+        a: f64,
+        b: f64,
+        center: f64,
+        delta: f64,
+        amplitude: f64,
+        reverse: bool,
+    ) -> (usize, NurbsCurve) {
+        let radial = f.cyl.evaluate(center, 0.) - Point3::new(0., 0., 0.);
+        let height = 1. + amplitude * delta.cos();
+        let z =
+            |p: Point3| 1. + amplitude * (delta.cos() - (p.x() * radial.x() + p.y() * radial.y()));
+        let w = ((b - a) * 0.5).cos();
+        let mid = f.cyl.evaluate(f64::midpoint(a, b), 0.);
+        let mid = Point3::new(mid.x() / w, mid.y() / w, 0.);
+        let points = [f.cyl.evaluate(a, 0.), mid, f.cyl.evaluate(b, 0.)]
+            .map(|p| Point3::new(p.x(), p.y(), z(p)));
+        let mut n = NurbsCurve::new(
+            2,
+            vec![0., 0., 0., 1., 1., 1.],
+            points.to_vec(),
+            vec![1., w, 1.],
+        )
+        .unwrap();
+        if reverse {
+            n = n.reversed();
+        }
+        let normal = Vec3::new(amplitude * radial.x(), amplitude * radial.y(), 1.);
+        let tangent =
+            f.cyl.evaluate(center + std::f64::consts::FRAC_PI_2, 0.) - Point3::new(0., 0., 0.);
+        let corners = [
+            (0.9, (a - center).sin()),
+            (1.1, (a - center).sin()),
+            (1.1, (b - center).sin()),
+            (0.9, (b - center).sin()),
+        ]
+        .map(|(r, t)| {
+            let xy = radial * r + tangent * t;
+            f.topo.add_vertex(Vertex::new(
+                Point3::new(xy.x(), xy.y(), z(Point3::new(xy.x(), xy.y(), 0.))),
+                TOL,
+            ))
+        });
+        let mut edges = Vec::new();
+        for k in 0..4 {
+            edges.push(OrientedEdge::new(
+                line(&mut f.topo, &mut f.arena, corners[k], corners[(k + 1) % 4]),
+                true,
+            ));
+        }
+        let outer = f.topo.add_wire(Wire::new(edges, true).unwrap());
+        f.other = f.topo.add_face(Face::new(
+            outer,
+            vec![],
+            FaceSurface::Plane {
+                normal: normal * normal.length().recip(),
+                d: height / normal.length(),
+            },
+        ));
+        for i in 0..=100 {
+            let p = n.evaluate(f64::from(i) / 100.);
+            let (u, v) = f.cyl.project_point(p);
+            assert!((p - f.cyl.evaluate(u, v)).length() < 1e-10);
+            assert!((p.z() - z(p)).abs() < 1e-9);
+        }
+        let section = f.section(
+            EdgeCurve::NurbsCurve(n.clone()),
+            (0., 1.),
+            (n.evaluate(0.), n.evaluate(1.)),
+        );
+        (section, n)
+    }
+
+    #[test]
+    fn review_near_end_material_within_weld_but_above_tolerance_is_kept() {
+        for reverse in [false, true] {
+            let mut f = fully_holed();
+            let a = 1.3;
+            let delta = 2e-6;
+            let (s, n) = conic_section(&mut f, a, a + 0.0004, a + delta, delta, 2e5, reverse);
+            let bottom = f.trim[0];
+            let p = f.cyl.evaluate(a, 1.);
+            let vid = f.cross(bottom, a, p, ZERO);
+            let root = f.arena.curves[s].pave_blocks[0];
+            let pb = f.arena.pave_blocks.get(root).unwrap();
+            let endpoint = if reverse {
+                pb.end.vertex
+            } else {
+                pb.start.vertex
+            };
+            f.arena.merge_vertices(endpoint, vid);
+            let witness = f.cyl.evaluate(a + delta, 1. + 2e5 * (delta.cos() - 1.));
+            assert!(witness.z() < 1. - TOL);
+            assert!((witness - p).length() > 10. * TOL && (witness - p).length() < TOL * 100.);
+            // Independent conic parameter formula for the point at u=a+delta.
+            let q = (delta * 0.5_f64).tan();
+            let h = 0.0002_f64;
+            let t = q / (h.sin() + q * (1. - h.cos()));
+            let t = if reverse { 1. - t } else { t };
+            let actual = n.evaluate(t);
+            assert!((actual - witness).length() < 1e-9);
+            assert!(actual.z() < 1. - 3. * TOL);
+            f.run();
+            assert!(
+                f.ranges(s).iter().any(|&(a, b)| a <= t && t <= b),
+                "Material deeper than tolerance and over 10 tolerances from the resolved contact was deleted"
+            );
+        }
+    }
+
+    #[test]
+    fn review_grazing_exact_plane_cylinder_section_is_kept() {
+        for (resolved, reverse) in [(false, false), (true, false), (false, true), (true, true)] {
+            let mut f = fully_holed();
+            // Closed form: z(u) = 1 + 1e6(1-cos(u-1.5)) has its
+            // unique minimum z=1 at u=1.5, with zero first derivative.
+            let (s, n) = conic_section(&mut f, 1.4999, 1.5001, 1.5, 0., 1e6, reverse);
+            let p = f.cyl.evaluate(1.5, 1.);
+            assert!((n.evaluate(0.5) - p).length() < TOL * 0.01);
+            if resolved {
+                let bottom = f.trim[0];
+                f.cross(bottom, 1.5, p, ZERO);
+            }
+            f.run();
+            assert!(
+                f.ranges(s).iter().any(|&(a, b)| a <= 0.5 && 0.5 <= b),
+                "An exact tangency must be retained or refused"
+            );
+        }
+    }
+
+    #[test]
+    fn endpoint_collar_drops_a_transverse_leaf_inside_the_hole() {
+        for reverse in [false, true] {
+            let mut f = fully_holed();
+            let a = 1.3;
+            let delta = 2e-6;
+            // z(u) = 1 + A(cos(delta) - cos(u-a+delta)) is strictly
+            // increasing on this arc: it starts on z=1 and stays in the hole.
+            let (s, n) = conic_section(&mut f, a, a + 0.0004, a - delta, delta, 2e5, reverse);
+            let bottom = f.trim[0];
+            let p = f.cyl.evaluate(a, 1.);
+            let vid = f.cross(bottom, a, p, ZERO);
+            let root = f.arena.curves[s].pave_blocks[0];
+            let pb = f.arena.pave_blocks.get(root).unwrap();
+            let endpoint = if reverse {
+                pb.end.vertex
+            } else {
+                pb.start.vertex
+            };
+            f.arena.merge_vertices(endpoint, vid);
+            let h = 0.0002_f64;
+            let q = 0.000_001_f64.tan();
+            let t = q / (h.sin() + q * (1. - h.cos()));
+            let t = if reverse { 1. - t } else { t };
+            let actual = n.evaluate(t);
+            let expected_z = 1. + 2e5 * (delta.cos() - (2. * delta).cos());
+            assert!((actual.z() - expected_z).abs() < 1e-9);
+            assert!(actual.z() > 1. + TOL);
+            assert!((actual - p).length() < WELD_FACTOR * TOL);
+            f.run();
+            assert!(
+                f.ranges(s).is_empty(),
+                "A transverse hole-side leaf must still drop: {:?}",
+                f.ranges(s)
+            );
+        }
     }
 }

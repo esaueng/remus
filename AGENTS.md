@@ -288,6 +288,7 @@ Quick reference — find the right file for any task:
 | Shared PaveFiller phase helpers | `pave_filler/helpers.rs` |
 | Isolated curved NURBS section clipping and whole-span bounds | `pave_filler/curved_section_clip.rs`, `pave_filler/curved_section_clip/bernstein.rs`, `pave_filler/curved_section_clip/tests.rs` |
 | Section-curve paves on trimmed analytic curved faces (B7): pave vertices on a holed or bayed face's trimming edges split the section block, and leaves certified off the face are dropped (uncertain leaves are kept) | `pave_filler/section_paves.rs` |
+| One-sided exclusion at a resolved section endpoint: isolated native trim graphs, whole-interval chart velocity bounds and strict transverse flow; contact uncertainty bounded by arc length at linear tolerance | `pave_filler/section_paves/endpoint_certificate.rs` |
 | Read-only shared ruled-section discovery with original native traces and certified physical trim windows | `pave_filler/curved_section_clip/discovery.rs` |
 | Phases VV/VE/EE/VF/EF/FF | `pave_filler/phase_*.rs` |
 | Bounded algebraic events for an actual Line/Sphere carrier pair | `pave_filler/phase_ef/line_sphere.rs` |
