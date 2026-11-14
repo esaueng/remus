@@ -3363,7 +3363,8 @@ fn dedup_collinear_sections(sections: &mut Vec<SectionEdge>, tol: f64) {
             // to the other is not a longer copy of the ruling's pieces, and
             // reading it as one deleted both pieces of a ruling the
             // section-pave pass had split (B7).
-            if matches!(si.curve_3d, EdgeCurve::Line) != matches!(sj.curve_3d, EdgeCurve::Line) {
+            let lines = matches!(si.curve_3d, EdgeCurve::Line);
+            if lines != matches!(sj.curve_3d, EdgeCurve::Line) {
                 continue;
             }
 
@@ -3425,11 +3426,20 @@ fn dedup_collinear_sections(sections: &mut Vec<SectionEdge>, tol: f64) {
                 continue;
             }
 
-            // Overlapping collinear sections, shorter fully contained — remove it.
+            // Overlapping collinear sections, shorter fully contained — remove
+            // it. For two curved sections the chord test above is only a
+            // prefilter: concentric semicircles share a chord line with the
+            // inner chord nested in the outer one, yet are different curves
+            // (a notched hollow tube's two trimmed walls on one cutter). A
+            // curved section is redundant only when it is certified to lie
+            // on the longer one's own curve, within its span.
+            let redundant = |inner: &SectionEdge, outer: &SectionEdge| {
+                lines || curved_section_within(outer, inner, tol * 10.0)
+            };
             if len_i < len_j - tol {
-                to_remove[i] = true;
+                to_remove[i] |= redundant(si, sj);
             } else if len_j < len_i - tol {
-                to_remove[j] = true;
+                to_remove[j] |= redundant(sj, si);
             }
             // If equal length, keep both (they might be distinct edges)
         }
@@ -3445,6 +3455,43 @@ fn dedup_collinear_sections(sections: &mut Vec<SectionEdge>, tol: f64) {
         });
         log::debug!("dedup_collinear_sections: removed {removed} subset edges");
     }
+}
+
+/// Whether `inner` is CERTIFIED to lie within `2 * band` of `outer`'s own
+/// curve. Only straight NURBS spans qualify: `outer`'s span, cut out of its
+/// carrier, has its whole control polygon within `band` of the line through
+/// its ends, so the span lies along that line and (being continuous) passes
+/// within `band` of every point of its end chord; `inner`'s span has its
+/// whole control polygon within `band` of that chord, so its convex hull, and
+/// the curve with it, does too. Every other pair is kept: no sampling proves
+/// containment (a bump narrower than the samples slips between them), and
+/// the projection of a whole carrier can land outside a trimmed span.
+fn curved_section_within(outer: &SectionEdge, inner: &SectionEdge, band: f64) -> bool {
+    let (EdgeCurve::NurbsCurve(o), EdgeCurve::NurbsCurve(i)) = (&outer.curve_3d, &inner.curve_3d)
+    else {
+        return false;
+    };
+    let (Some(o), Some(i)) = (
+        crate::chart_trim::nurbs_span(o, outer.domain()),
+        crate::chart_trim::nurbs_span(i, inner.domain()),
+    ) else {
+        return false;
+    };
+    let (Some(&a), Some(&b)) = (o.control_points().first(), o.control_points().last()) else {
+        return false;
+    };
+    let d = b - a;
+    let len_sq = d.length_squared();
+    if len_sq.is_nan() || len_sq <= band * band {
+        return false;
+    }
+    let off = |p: Point3, clamp: bool| {
+        let s = (p - a).dot(d) / len_sq;
+        let s = if clamp { s.clamp(0.0, 1.0) } else { s };
+        (p - (a + d * s)).length()
+    };
+    o.control_points().iter().all(|&p| off(p, false) <= band)
+        && i.control_points().iter().all(|&p| off(p, true) <= band)
 }
 
 /// Intersect a section line with a curved boundary edge's TRUE geometry,

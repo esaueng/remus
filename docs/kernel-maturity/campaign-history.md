@@ -480,17 +480,25 @@ nozzle nm 1→15, clip volume 46.78→46.70 vs 46.6±0.05). Dovetail residuals:
   seam lines and oriented against it, rulings as straight chart pieces,
   boundary pieces split at nodes by projection, and the seam's pieces
   inside a seam-straddling hole removed. It runs only where the
-  established partition already failed its own checks, and a failed
-  certificate keeps the old result. Two smaller traps on the way: a node
+  established partition already failed its own checks; a failed
+  certificate keeps the old result but reports the face uncertified, so
+  an exact-only operation refuses it (review: reporting it as outside the
+  family bypassed that gate). Two smaller traps on the way: a node
   computed on a marched hole edge sits ~1e-6 off the exact seam ruling it
   must split (weld band again, the fifth such gap), and
   `dedup_collinear_sections` compares CHORDS, so a marched arc from one end
-  of a ruling to the other deleted both pieces of that ruling as "subsets".
+  of a ruling to the other deleted both pieces of that ruling as "subsets"
+  (review: concentric semicircles share a chord line too, so a curved
+  section is now a subset only on the longer one's own curve).
   One foil caught the pass itself: it paved a cap circle at the vertex
   where two rim arcs of a herringbone tooth patch meet, a section RIDING
   the boundary rather than crossing it, and the internal-herringbone gear
   ring moved 4e-6 in volume while staying valid and watertight; a vertex
   whose two neighbouring pieces both lie on the boundary is not paved.
+  "Lie on" must be measured locally against the exact trimming curves:
+  the first version allowed the whole outline's coarsest chord error
+  (~0.0086 on a unit rim), which on a 0.01 wall swallowed every probe and
+  dropped a real crossing's pave (review).
   REFUTED on the way: that the oblique case's phantom inner wire came from
   the in-hole loop (dropping it left the tunnel wall just as wrong; a third
   loop, on the tunnel wall's carrier inside the bay, was the section

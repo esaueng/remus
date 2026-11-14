@@ -1065,3 +1065,168 @@ fn scaling_winding_cut_projections_stay_linear_in_the_loop_count() {
         );
     }
 }
+
+fn dedup_section(
+    curve: EdgeCurve,
+    trim: Option<(f64, f64)>,
+    ends: (Point3, Point3),
+) -> SectionEdge {
+    use remus_math::curves2d::{Curve2D, Line2D};
+    let line = || {
+        Curve2D::Line(
+            Line2D::new(
+                remus_math::vec::Point2::new(0.0, 0.0),
+                remus_math::vec::Vec2::new(1.0, 0.0),
+            )
+            .unwrap(),
+        )
+    };
+    SectionEdge {
+        curve_3d: curve,
+        trim,
+        pcurve_a: line(),
+        pcurve_b: line(),
+        start: ends.0,
+        end: ends.1,
+        start_uv_a: None,
+        end_uv_a: None,
+        start_uv_b: None,
+        end_uv_b: None,
+        target_face: None,
+        pave_block_id: None,
+    }
+}
+
+/// The arc of the circle about `center` (normal +Z, radius `r`) over `trim`.
+fn dedup_arc(center: Point3, r: f64, trim: (f64, f64)) -> SectionEdge {
+    let circle = Circle3D::new(center, Z, r).unwrap();
+    let ends = (circle.evaluate(trim.0), circle.evaluate(trim.1));
+    dedup_section(EdgeCurve::Circle(circle), Some(trim), ends)
+}
+
+/// Concentric semicircles (a notched hollow tube's two trimmed walls meeting
+/// a planar cutter) share their chord line, and the inner chord lies inside
+/// the outer one. They are different curves: neither may be deleted, in
+/// either order.
+#[test]
+fn concentric_semicircles_sharing_a_chord_line_both_survive_dedup() {
+    let center = Point3::new(0.0, 0.0, 0.0);
+    let inner = dedup_arc(center, 1.0, (0.0, PI));
+    let outer = dedup_arc(center, 2.0, (0.0, PI));
+    // The oracle's premise: the chords are collinear and nested.
+    let (di, dout) = (inner.end - inner.start, outer.end - outer.start);
+    assert!(di.cross(dout).length() < 1e-12);
+    assert!((inner.start - center).cross(dout).length() < 1e-12);
+    for order in [[inner.clone(), outer.clone()], [outer, inner]] {
+        let mut sections = order.to_vec();
+        dedup_collinear_sections(&mut sections, 1e-7);
+        assert_eq!(sections.len(), 2, "a distinct curved section was deleted");
+    }
+}
+
+/// Controls: a segment nested in a longer collinear segment, and a straight
+/// NURBS nested in a longer one, are redundant subsets and go; disjoint arcs
+/// of one circle both stay.
+#[test]
+fn nested_sections_on_one_carrier_still_dedup() {
+    let o = Point3::new(0.0, 0.0, 0.0);
+    let segment = |a: f64, b: f64| {
+        dedup_section(
+            EdgeCurve::Line,
+            None,
+            (Point3::new(a, 0.0, 0.0), Point3::new(b, 0.0, 0.0)),
+        )
+    };
+    let mut lines = vec![segment(1.0, 2.0), segment(0.0, 4.0)];
+    dedup_collinear_sections(&mut lines, 1e-7);
+    assert_eq!(lines.len(), 1);
+    assert!((lines[0].end.x() - 4.0).abs() < 1e-12);
+
+    // A straight degree-1 NURBS nested in a longer one on the same line: a
+    // curved representation of a real subset, still removed.
+    let straight = |a: f64, b: f64| {
+        let n = NurbsCurve::new(
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![Point3::new(a, 1.0, 0.0), Point3::new(b, 1.0, 0.0)],
+            vec![1.0, 1.0],
+        )
+        .unwrap();
+        dedup_section(
+            EdgeCurve::NurbsCurve(n),
+            Some((0.0, 1.0)),
+            (Point3::new(a, 1.0, 0.0), Point3::new(b, 1.0, 0.0)),
+        )
+    };
+    let mut nested = vec![straight(0.0, 4.0), straight(1.0, 2.0)];
+    dedup_collinear_sections(&mut nested, 1e-7);
+    assert_eq!(nested.len(), 1);
+    assert!((nested[0].end.x() - 4.0).abs() < 1e-12);
+
+    let mut disjoint = vec![dedup_arc(o, 2.0, (0.0, 1.0)), dedup_arc(o, 2.0, (PI, 4.0))];
+    dedup_collinear_sections(&mut disjoint, 1e-7);
+    assert_eq!(disjoint.len(), 2);
+}
+
+/// A degree-1 NURBS section with unit weights in the XY plane.
+fn polyline_section(knots: Vec<f64>, points: Vec<Point3>, trim: (f64, f64)) -> SectionEdge {
+    let weights = vec![1.0; points.len()];
+    let n = NurbsCurve::new(1, knots, points, weights).unwrap();
+    let ends = (n.evaluate(trim.0), n.evaluate(trim.1));
+    dedup_section(EdgeCurve::NurbsCurve(n), Some(trim), ends)
+}
+
+/// Review counterexample: a section with a 0.125 bump only 1/32 wide in
+/// parameter, whose chord and every sample at k/16 lie on the longer
+/// straight section. It is a different curve; no sampling density decides
+/// that, so it must survive.
+#[test]
+fn a_narrow_nurbs_bump_on_a_nested_chord_survives_dedup() {
+    let p = |x: f64, y: f64| Point3::new(x, y, 0.0);
+    let outer = polyline_section(
+        vec![0.0, 0.0, 1.0, 1.0],
+        vec![p(0.0, 0.0), p(4.0, 0.0)],
+        (0.0, 1.0),
+    );
+    let inner = polyline_section(
+        vec![0.0, 0.0, 1.0 / 64.0, 1.0 / 32.0, 3.0 / 64.0, 1.0, 1.0],
+        vec![
+            p(1.0, 0.0),
+            p(65.0 / 64.0, 0.0),
+            p(33.0 / 32.0, 1.0 / 8.0),
+            p(67.0 / 64.0, 0.0),
+            p(2.0, 0.0),
+        ],
+        (0.0, 1.0),
+    );
+    // The oracle's premise: the bump peaks 0.125 off the outer line.
+    let EdgeCurve::NurbsCurve(n) = &inner.curve_3d else {
+        unreachable!()
+    };
+    assert!((n.evaluate(1.0 / 32.0).y() - 0.125).abs() < 1e-12);
+    for order in [[inner.clone(), outer.clone()], [outer, inner]] {
+        let mut sections = order.to_vec();
+        dedup_collinear_sections(&mut sections, 1e-7);
+        assert_eq!(sections.len(), 2, "a distinct NURBS section was deleted");
+    }
+}
+
+/// Review counterexample: a straight section lying on the TRIMMED span of a
+/// longer NURBS section (the span runs 4 -> 0 along x; the excluded part of
+/// the carrier runs 1 -> 4) is a genuine subset and is removed, although
+/// the carrier's global foot of its start lies in the excluded part.
+#[test]
+fn a_straight_subset_of_a_trimmed_nurbs_span_is_deduped() {
+    let p = |x: f64| Point3::new(x, 0.0, 0.0);
+    let outer = polyline_section(
+        vec![0.0, 0.0, 1.0, 2.0, 2.0],
+        vec![p(1.0), p(4.0), p(0.0)],
+        (1.0, 2.0),
+    );
+    assert!((outer.start - p(4.0)).length() < 1e-12 && (outer.end - p(0.0)).length() < 1e-12);
+    let inner = polyline_section(vec![0.0, 0.0, 1.0, 1.0], vec![p(1.0), p(2.0)], (0.0, 1.0));
+    let mut sections = vec![outer, inner];
+    dedup_collinear_sections(&mut sections, 1e-7);
+    assert_eq!(sections.len(), 1, "the straight subset survived");
+    assert!((sections[0].start - p(4.0)).length() < 1e-12);
+}

@@ -364,6 +364,41 @@ fn control_split_loops_pair_by_position() {
     );
 }
 
+/// Whether a grid reading is the oracle's answer: exactly `Ok(Inside)` for
+/// material and exactly `Ok(Outside)` for void.
+fn grid_reading_is<E>(got: &Result<remus_algo::FaceClass, E>, material: bool) -> bool {
+    let want = if material {
+        remus_algo::FaceClass::Inside
+    } else {
+        remus_algo::FaceClass::Outside
+    };
+    matches!(got, Ok(class) if *class == want)
+}
+
+/// The grid oracle accepts only a definite answer: an error or an `On`
+/// reading at a point the primitives decide is a misclassification, on
+/// either side.
+#[test]
+fn grid_oracle_rejects_errors_and_boundary_readings() {
+    use remus_algo::FaceClass;
+    for material in [true, false] {
+        let want = if material {
+            FaceClass::Inside
+        } else {
+            FaceClass::Outside
+        };
+        let other = if material {
+            FaceClass::Outside
+        } else {
+            FaceClass::Inside
+        };
+        assert!(grid_reading_is::<()>(&Ok(want), material));
+        assert!(!grid_reading_is::<()>(&Ok(other), material));
+        assert!(!grid_reading_is::<()>(&Ok(FaceClass::On), material));
+        assert!(!grid_reading_is(&Err(()), material));
+    }
+}
+
 /// The engine's own classifier must read the step-2 operand as its
 /// primitives do: every later cut classifies the other operand's pieces
 /// against it. Before the chart-outline wall model the bore void read as
@@ -398,7 +433,7 @@ fn operand_with_a_holed_and_a_bayed_wall_classifies_like_its_primitives() {
                     Point3::new(x, y, z),
                 );
                 total += 1;
-                if matches!(got, Ok(remus_algo::FaceClass::Inside)) != material {
+                if !grid_reading_is(&got, material) {
                     wrong.push(((x, y, z), material, got));
                 }
             }
