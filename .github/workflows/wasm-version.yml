@@ -101,6 +101,10 @@ jobs:
           # Remove committed files first: a build must not inherit extra payload
           # files planted in a package that wasm-pack would otherwise leave alone.
           rm -rf -- crates/wasm/pkg crates/wasm-io/pkg
+          # This build runs the PR's own xtask, build.rs and proc macros on this
+          # runner, so hostile build code could alter $CHECKERS or reproduce
+          # planted bytes. The comparison catches honest drift only; build
+          # tooling changes need human review (SECURITY.md, Supply Chain).
           cargo xtask wasm-build
           python3 "$CHECKERS/scripts/check-wasm-package-integrity.py" --revision HEAD
       # A package-only diff (a refresh PR) runs no heavy CI tier

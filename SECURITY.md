@@ -50,7 +50,16 @@ patterns those attacks exploited:
 | All GitHub Actions pinned to commit SHA                                                                                                    | `.github/workflows/*.yml`            | Tag-retag attacks (tj-actions class).                                                                  |
 | OSV scan against `Cargo.lock` + `package-lock.json` (the check fails on PRs and merge-queue entries that introduce a vulnerability, and on `main` pushes and the weekly schedule for any detected vulnerability) | `.github/workflows/osv-scan.yml`     | Known-CVE versions in either ecosystem. The check blocks a merge only while `OSV Scan` is a required status check, which is configured separately in GitHub. |
 | Dependabot cooldown (7d default across cargo, npm, github-actions; 14d major for cargo and npm)                                            | `.github/dependabot.yml`             | Fresh malicious uploads.                                                                               |
-| Rebuild and compare changed committed WASM packages before the version gate passes                                                         | `.github/workflows/wasm-version.yml` | Substituted binaries, JS glue, or package contracts that do not match source.                          |
+| Rebuild and compare changed committed WASM packages before the version gate passes                                                         | `.github/workflows/wasm-version.yml` | Committed binaries, JS glue, or package contracts that do not match source, from an honest PR. Not a boundary against a hostile PR (see below). |
+
+The package rebuild necessarily executes the PR's own build code (`xtask`,
+`build.rs`, proc macros) on the same runner. The integrity and reuse scripts
+run from the base commit, but a hostile PR that changes build code can still
+tamper with that runner or make its rebuild reproduce planted bytes. Treat the
+rebuild comparison as a consistency check. A PR that touches
+`crates/wasm*/pkg` together with build tooling (`xtask/`, `**/build.rs`,
+`.cargo/`, `scripts/`) needs a human review of that tooling before it merges;
+`.github/CODEOWNERS` routes those paths to the maintainer.
 
 Direct install-time cooldown via `.npmrc` `min-release-age` is not enabled
 here: npm bundled with Node 24 is 11.6.1, which silently ignores the field
