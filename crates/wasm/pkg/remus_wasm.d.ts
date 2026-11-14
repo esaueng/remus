@@ -2425,6 +2425,41 @@ export class RemusKernel {
      */
     fuseJournaled(a: number, b: number): string;
     /**
+     * Fuse a list of solids into the regions of their union, with total
+     * face lineage and a disposition for every operand.
+     *
+     * Returns JSON:
+     *
+     * - `compound`: a Compound of the regions, expandable with
+     *   `getCompoundSolids`;
+     * - `regions`: one entry per region, ordered by the lowest operand
+     *   index contributing a face — `solid`, `operands` (operand indices
+     *   with a face in it), `evolution` (`faces`/`edges`/`vertices` as in
+     *   `fuseWithEntityEvolution`; no face is unsourced and no edge
+     *   unresolved) and `faceOperands`, the operand index of each
+     *   `evolution.faces` entry in the same order;
+     * - `operands`: one entry per input solid, in input order — `solid`,
+     *   `regions` and `disposition`: `preserved` (it can touch no other
+     *   operand; its region is the same handle), `contributes` (a result
+     *   face descends from it) or `absorbed` (none does, because the others
+     *   cover every one of its faces).
+     *
+     * Exact-only and additive: `fuseAll` is unchanged. Operands that may
+     * touch must be all-planar with straight edges. `sheets` and `wires`
+     * exist so a mixed-dimensional list has a typed answer; any entry in
+     * either refuses with `body_class_operand_unsupported`.
+     *
+     * # Errors
+     *
+     * Invalid handles; `body_class_operand_unsupported` for a sheet or
+     * wire; and `unsupported_nary_fuse` with a `reason` detail of
+     * `too_few_operands`, `duplicate_operand`, `curved_cluster`,
+     * `pair_budget_exceeded`, `classification_unresolved`,
+     * `lineage_unresolved`, `non_manifold_contact` or `result_unqualified`.
+     * Every refusal leaves the model unchanged.
+     */
+    fuseRegions(solids: Uint32Array, sheets?: Uint32Array | null, wires?: Uint32Array | null): string;
+    /**
      * Fuse with full construction-derived vertex/edge/face history.
      *
      * Returns JSON `{"solid", "evolution": {"faces", "edges",
