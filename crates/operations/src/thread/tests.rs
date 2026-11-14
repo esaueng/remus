@@ -2551,3 +2551,108 @@ fn a_gauge_plane_far_beyond_the_thread_refuses() {
     }
     assert_eq!(before, topo.num_faces());
 }
+
+/// A start collar flush with the crest is split into crescents between the
+/// thread and the collar's rim (`flush_end`). Here (an r6 h10 boss, the
+/// gauge-review form, a 2 collar, a 6 thread, plain ends) the exact body is
+/// valid but the display mesh is not closed at display deflections: 14, 45
+/// and 198 boundary edges at 0.3, 0.1 and 0.05 on the taper with its large
+/// end at the collar (and one non-manifold edge at 0.05), 14, 45 and 199 on
+/// the untapered thread; both close at 0.02, 0.01 and 1e-3. Each is a mesh
+/// edge whose two uses run the same way, on the shoulder at z = 2 (r 5.08
+/// to 6), whose triangles are reversed. The B-Rep closes at fine
+/// deflections, so the fault is the tessellator's, not the crescents'
+/// winding; it predates tapered threads. Not traced further (B277).
+#[test]
+#[ignore = "open: a flush start collar's crescents mesh with reversed triangles at display deflections (B277)"]
+fn a_flush_start_collar_meshes_closed_at_display_deflections() {
+    use crate::tessellate::edge_census;
+    let form = gauge_review_form();
+    let tapers = [
+        Some(ThreadTaper {
+            ratio: 0.0625,
+            small_end: ThreadEndSide::End,
+            gauge_offset: None,
+        }),
+        None,
+    ];
+    let mut open = Vec::new();
+    for taper in tapers {
+        let mut topo = Topology::new();
+        let (body, face) = boss(&mut topo, 6.0, 10.0);
+        let options = CylinderThreadOptions {
+            offset: 2.0,
+            length: Some(6.0),
+            taper,
+            ..CylinderThreadOptions::default()
+        };
+        let outcome = cut_thread(&mut topo, body, face, &form, &options).unwrap();
+        assert!(outcome.glued);
+        let report = validate_solid(&topo, outcome.solid).unwrap();
+        assert!(report.is_valid(), "{:?}", report.issues);
+        for deflection in [0.3, 0.1, 0.05, 0.02] {
+            let mesh =
+                tessellate_solid_with_tolerance(&topo, outcome.solid, deflection, 0.2).unwrap();
+            let census = edge_census(&mesh);
+            if census.boundary_edges + census.non_manifold_edges > 0 {
+                open.push((
+                    taper.is_some(),
+                    deflection,
+                    census.boundary_edges,
+                    census.non_manifold_edges,
+                ));
+            }
+        }
+    }
+    assert!(
+        open.is_empty(),
+        "open meshes [(tapered, deflection, boundary, non-manifold)]: {open:?}"
+    );
+}
+
+/// `solid_volume` of a long tapered thread with an end runout (an r6 h120
+/// boss, the gauge-review form, a 119 thread from the face's start, small
+/// end at the end, a runout at `atan(0.04)`) depends on the thread's
+/// tolerance although the body does not: the body built at tolerance 1e-6
+/// measures 5625.755231 (right to 7e-8 relative on the review's runs), the
+/// one built at 1e-8 measures 5625.696082, 1.05e-5 relative (0.059) low,
+/// as at 1e-9, while the two bodies' meshes agree to 8e-8. The untapered
+/// body at 1e-8 refuses as a typed `IntegrationFailed` instead (the
+/// knot-aligned quadrature wants more than 262144 cells). Not traced
+/// further (B278).
+#[test]
+#[ignore = "open: solid_volume of a long tapered thread with a runout reads 1.05e-5 low at thread tolerance 1e-8 (B278)"]
+fn a_long_tapered_runout_measures_the_same_at_a_tight_tolerance() {
+    let form = gauge_review_form();
+    let build = |tolerance: f64| {
+        let mut topo = Topology::new();
+        let (body, face) = boss(&mut topo, 6.0, 120.0);
+        let options = CylinderThreadOptions {
+            length: Some(119.0),
+            tolerance: Some(tolerance),
+            end: ThreadEnd::Runout {
+                angle: 0.04f64.atan(),
+            },
+            taper: Some(ThreadTaper {
+                ratio: 0.0625,
+                small_end: ThreadEndSide::End,
+                gauge_offset: None,
+            }),
+            ..CylinderThreadOptions::default()
+        };
+        let outcome = cut_thread(&mut topo, body, face, &form, &options).unwrap();
+        let report = validate_solid(&topo, outcome.solid).unwrap();
+        assert!(report.is_valid(), "{:?}", report.issues);
+        (volume(&topo, outcome.solid), outcome.deviation_bound)
+    };
+    // The body at 1e-6 is the reference: its measured volume is right to
+    // 7e-8 relative, and the tighter body is the same thread within 1e-6.
+    let (reference, _) = build(1e-6);
+    let (tight, bound) = build(1e-8);
+    assert!(bound < 1e-6, "deviation bound {bound}");
+    assert!(
+        rel(tight, reference) < 1e-7,
+        "solid_volume at thread tolerance 1e-8: {tight}, at 1e-6: {reference} (relative {:e})",
+        rel(tight, reference)
+    );
+}

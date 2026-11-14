@@ -152,14 +152,14 @@ that does not exist yet; without it, stop.
 
 ## Open items with a repro
 
-The `#[ignore]` inventory (regenerated 2026-11-13 on `817262a3` with B62's
-witness un-ignored, the two B7 witnesses, B275's and B276's added, B51's
+The `#[ignore]` inventory (regenerated 2026-11-13 on `877d8908` with B62's
+witness un-ignored, the two B7 witnesses and B275's to B278's added, B51's
 three closed, and the 5.7b slice's O4.4 pass-through un-ignored with its three
-witnesses added: 58 actual attributes in 34 files, all in `operations`, `io`,
+witnesses added: 60 actual attributes in 34 files, all in `operations`, `io`,
 `heal`, `math`, `wasm` and `remus`) splits by the ignore reason as written.
-Listed, not re-run, except B265, B266, B272, B275, B276, the two B7 witnesses
-and the three 5.7b witnesses (failed as pinned). **29 open engine witnesses**,
-each with an owner row:
+Listed, not re-run, except B265, B266, B272, B275 to B278, the two B7
+witnesses and the three 5.7b witnesses (failed as pinned). **31 open engine
+witnesses**, each with an owner row:
 - four B26 property ready-repros in `operations/tests/prop_boolean_invariants.rs`:
   finding 13 sphere–torus ×3 (B38) and finding 20 sphere–cone (B33);
 - `regress_b52_box_cylinder_rim_notch.rs` (B270) and
@@ -176,7 +176,9 @@ each with an owner row:
 - `video_parity_full_order.rs` A4 chamfer 5 (B272),
   `io/tests/video_workflow_baseline.rs` (B273) and
   `wasm/src/bindings/gecko_edit_tests.rs` unequal-group re-edit (B274);
-- `operations/src/thread/tests.rs` fine-pitch thread behind a start collar (B276);
+- `operations/src/thread/tests.rs` fine-pitch thread behind a start collar
+  (B276), flush start collar at display deflections (B277) and long tapered
+  runout's `solid_volume` at a tight tolerance (B278);
 - STEP audit repros `io/tests/step_roundtrip_mambo_b1_repro.rs` (O1.1d) and
   `step_roundtrip_hammer_holder_repro.rs` (O1.4a);
 - `regress_b7_section_pave_attachment.rs` ×2 (B7: coaxial wider half tunnel,
