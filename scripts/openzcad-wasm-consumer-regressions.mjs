@@ -371,13 +371,35 @@ const assertFuseRegionsResult = (kernel, handles, result, label) => {
         `${where}: face ${entry.face} must come from a face of operand ${operand}, got ${entry.source}`,
       );
     });
+    // Every source field names a real entity of one of the region's
+    // operands: `from` on preserved/modified edges and preserved vertices,
+    // and `faceA`/`faceB` on generated edges, which meet faces of two
+    // different operands.
+    const owner = (lookup, id) => region.operands.find(operand => Array.from(lookup(handles[operand])).includes(id));
     for (const entry of edges) {
-      assert.ok(['preserved', 'modified', 'generated'].includes(entry.event), `${where}: edge ${JSON.stringify(entry)}`);
+      const text = `${where}: edge ${JSON.stringify(entry)}`;
+      if (entry.event === 'generated') {
+        const sides = [entry.faceA, entry.faceB].map(face => owner(kernel.getSolidFaces.bind(kernel), face));
+        assert.ok(sides.every(side => side !== undefined) && sides[0] !== sides[1], `${text}: faces of two operands`);
+      } else {
+        assert.ok(['preserved', 'modified'].includes(entry.event), text);
+        assert.notEqual(owner(kernel.getSolidEdges.bind(kernel), entry.from), undefined, `${text}: from an operand edge`);
+      }
     }
     for (const entry of vertices) {
-      assert.ok(['preserved', 'created'].includes(entry.event), `${where}: vertex ${JSON.stringify(entry)}`);
+      const text = `${where}: vertex ${JSON.stringify(entry)}`;
+      if (entry.event === 'created') assert.ok(!('from' in entry), text);
+      else {
+        assert.equal(entry.event, 'preserved', text);
+        assert.notEqual(owner(kernel.getSolidVertices.bind(kernel), entry.from), undefined, `${text}: from an operand vertex`);
+      }
     }
   });
+  // The preserved far box keeps its own entities: identity lineage.
+  const { faces: farFaces, edges: farEdges, vertices: farVertices } = result.regions[1].evolution;
+  assert.ok(farFaces.every(entry => entry.source === entry.face), `${label}: preserved faces are their own sources`);
+  assert.ok(farEdges.every(entry => entry.event === 'preserved' && entry.from === entry.edge), `${label}: preserved edges`);
+  assert.ok(farVertices.every(entry => entry.event === 'preserved' && entry.from === entry.vertex), `${label}: preserved vertices`);
   assert.deepEqual(result.operands, [
     { solid: handles[0], disposition: 'contributes', regions: [0] },
     { solid: handles[1], disposition: 'contributes', regions: [0] },
@@ -472,6 +494,10 @@ export const runFuseRegionsRegression = ({ RemusKernel }) => {
         const all = Uint32Array.from(cylinder === undefined ? handles : [...handles, cylinder]);
         const bytes = Uint8Array.from(kernel.serializeSolids(all));
         const journal = kernel.journalSummary();
+        // Every arena counts here, so a stray vertex, edge, face, shell or
+        // compound shows even when no solid handle moves.
+        const slots = () => JSON.parse(kernel.checkpointMemoryStats()).allocatedSlots;
+        const allocated = slots();
         const solids = operands(handles, cylinder);
         if (route === 'direct') {
           assert.throws(() => kernel.fuseRegions(Uint32Array.from(solids)), (error) => {
@@ -496,6 +522,7 @@ export const runFuseRegionsRegression = ({ RemusKernel }) => {
           }
         }
         assert.ok(texts[route].includes(`(${reason})`), `${where}: cause in ${texts[route]}`);
+        assert.equal(slots(), allocated, `${where}: no entity allocated`);
         assert.deepEqual(Uint8Array.from(kernel.serializeSolids(all)), bytes, `${where}: operands unchanged`);
         assert.equal(kernel.journalSummary(), journal, `${where}: journal unchanged`);
         assert.equal(kernel.makeBox(1, 1, 1), nextHandle, `${where}: no handle allocated`);
