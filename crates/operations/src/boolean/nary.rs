@@ -19,7 +19,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use remus_algo::error::{AlgoError, NaryFuseRefusal};
-use remus_algo::gfa::{BooleanRegion, EdgeEvent, EntityEvolution};
+use remus_algo::gfa::{BooleanRegion, EntityEvolution, PreparedNaryFuseRegions};
 use remus_math::aabb::Aabb3;
 use remus_math::compact_sort::CompactSort;
 use remus_math::vec::Point3;
@@ -188,10 +188,14 @@ fn refuse(cause: NaryFuseRefusal, reason: impl Into<String>) -> OperationsError 
 /// indices, and the dispositions that mention it use its position in the
 /// unsorted list.
 struct PendingRegion {
-    solid: SolidId,
-    evolution: EntityEvolution,
     face_operands: Vec<usize>,
     operands: Vec<usize>,
+}
+
+/// Geometry stays isolated until all groups, lineage and dispositions pass.
+enum PendingGroup {
+    Preserved(BooleanRegion),
+    Fused(Box<PreparedNaryFuseRegions>),
 }
 
 /// An operand's disposition against unsorted region positions.
@@ -271,6 +275,7 @@ fn fuse_regions_impl(
     let groups = touching_groups(solids.len(), &pairs);
 
     let mut regions: Vec<PendingRegion> = Vec::new();
+    let mut pending_groups = Vec::with_capacity(groups.len());
     let mut dispositions: Vec<Option<PendingDisposition>> =
         (0..solids.len()).map(|_| None).collect();
     for group in &groups {
@@ -279,14 +284,13 @@ fn fuse_regions_impl(
             let face_operands = vec![*only; identity.evolution.faces.len()];
             dispositions[*only] = Some(PendingDisposition::Preserved(regions.len()));
             regions.push(PendingRegion {
-                solid: identity.solid,
-                evolution: identity.evolution,
                 face_operands,
                 operands: vec![*only],
             });
+            pending_groups.push(PendingGroup::Preserved(identity));
             continue;
         }
-        fuse_group(
+        let fused = fuse_group(
             topo,
             solids,
             group,
@@ -297,6 +301,7 @@ fn fuse_regions_impl(
             &mut regions,
             &mut dispositions,
         )?;
+        pending_groups.push(PendingGroup::Fused(Box::new(fused)));
     }
 
     // Input order: by the lowest contributing operand, ties in arrangement
@@ -344,18 +349,29 @@ fn fuse_regions_impl(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    let mut slots: Vec<Option<PendingRegion>> = regions.into_iter().map(Some).collect();
-    let mut sorted_regions = Vec::with_capacity(slots.len());
-    for &position in &order {
-        if let Some(region) = slots[position].take() {
-            sorted_regions.push(NaryFuseRegion {
-                solid: region.solid,
-                evolution: region.evolution,
-                face_operands: region.face_operands,
-                operands: region.operands,
-            });
-        }
-    }
+    // No qualification or typed refusal remains. Export groups in their
+    // original order, retaining the established handles and lineage order.
+    let exported = pending_groups
+        .into_iter()
+        .map(|group| match group {
+            PendingGroup::Preserved(region) => Ok(vec![region]),
+            PendingGroup::Fused(prepared) => prepared.export(topo).map(|fused| fused.regions),
+        })
+        .collect::<Result<Vec<_>, AlgoError>>()?;
+    let mut sorted_regions: Vec<NaryFuseRegion> = exported
+        .into_iter()
+        .flatten()
+        .zip(regions)
+        .map(|(region, pending)| NaryFuseRegion {
+            solid: region.solid,
+            evolution: region.evolution,
+            face_operands: pending.face_operands,
+            operands: pending.operands,
+        })
+        .collect();
+    // Stable, so ties keep arrangement order, as in `order` above.
+    sorted_regions
+        .compact_sort_by_key(|region| region.operands.first().copied().unwrap_or(usize::MAX));
     let compound = topo.add_compound(Compound::new(
         sorted_regions.iter().map(|region| region.solid).collect(),
     ));
@@ -394,7 +410,7 @@ fn touching_groups(count: usize, pairs: &[(usize, usize)]) -> Vec<Vec<usize>> {
 /// yields and record them and its operands' dispositions.
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn fuse_group(
-    topo: &mut Topology,
+    topo: &Topology,
     solids: &[SolidId],
     group: &[usize],
     pairs: &[(usize, usize)],
@@ -403,7 +419,7 @@ fn fuse_group(
     context: &remus_math::context::OperationContext,
     regions: &mut Vec<PendingRegion>,
     dispositions: &mut [Option<PendingDisposition>],
-) -> Result<(), OperationsError> {
+) -> Result<PreparedNaryFuseRegions, OperationsError> {
     let tolerance = context.tolerance;
     for &operand in group {
         if let Some(tag) = first_curved_entity(topo, solids[operand])? {
@@ -434,7 +450,7 @@ fn fuse_group(
     // dispositions of operands that keep no face.
     let mut vertices_in: Vec<Vec<usize>> = Vec::new();
     let drops = remus_algo::gfa::SectionDropScope::enter();
-    let fused = remus_algo::gfa::fuse_n_regions_with_entity_evolution(
+    let fused = remus_algo::gfa::prepare_fuse_n_regions_with_entity_evolution(
         topo,
         &group_solids,
         Some(&local_pairs),
@@ -488,9 +504,8 @@ fn fuse_group(
     // (Unresolved edges were refused in the store.)
     let base = regions.len();
     let mut contributes: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
-    let mut pending = Vec::with_capacity(fused.regions.len());
-    for (position, region) in fused.regions.iter().enumerate() {
-        let face_operands = region_face_operands(topo, region, face_owner, group, position)?;
+    for (position, sources) in fused.face_sources().iter().enumerate() {
+        let face_operands = region_face_operands(sources, face_owner, group, position)?;
         let mut operands = face_operands.clone();
         operands.compact_sort_unstable();
         operands.dedup();
@@ -500,7 +515,10 @@ fn fuse_group(
                 .or_default()
                 .push(base + position);
         }
-        pending.push((face_operands, operands));
+        regions.push(PendingRegion {
+            face_operands,
+            operands,
+        });
     }
 
     for (position, &operand) in group.iter().enumerate() {
@@ -515,7 +533,7 @@ fn fuse_group(
                     .map(|&region| base + region)
                     .collect(),
             ),
-            // The builder's tally and the exported lineage disagree about
+            // The builder's tally and the prepared lineage disagree about
             // whether this operand has a face in the result.
             _ => {
                 return Err(refuse(
@@ -527,15 +545,7 @@ fn fuse_group(
         dispositions[operand] = Some(disposition);
     }
 
-    for (region, (face_operands, operands)) in fused.regions.into_iter().zip(pending) {
-        regions.push(PendingRegion {
-            solid: region.solid,
-            evolution: region.evolution,
-            face_operands,
-            operands,
-        });
-    }
-    Ok(())
+    Ok(fused)
 }
 
 /// Everything a group's result must satisfy besides its lineage, read in
@@ -752,53 +762,27 @@ fn refuse_touching_regions(
     Ok(())
 }
 
-/// The operand owning each face of `region`, parallel to its
-/// `evolution.faces`, after checking that the lineage is total.
+/// The operand owning each prepared source face, parallel to the eventual
+/// `evolution.faces`. The store has already qualified total face/edge lineage.
 fn region_face_operands(
-    topo: &Topology,
-    region: &BooleanRegion,
+    sources: &[usize],
     face_owner: &BTreeMap<usize, usize>,
     group: &[usize],
     position: usize,
 ) -> Result<Vec<usize>, OperationsError> {
     let unresolved = |what: String| refuse(NaryFuseRefusal::LineageUnresolved, what);
-    let result_faces: BTreeSet<usize> = remus_topology::explorer::solid_faces(topo, region.solid)?
-        .into_iter()
-        .map(remus_topology::FaceId::index)
-        .collect();
-    let claimed: BTreeSet<usize> = region
-        .evolution
-        .faces
-        .iter()
-        .map(|&(face, _)| face)
-        .collect();
-    if claimed != result_faces || claimed.len() != region.evolution.faces.len() {
-        return Err(unresolved(format!(
-            "region {position}: face lineage is not one claim per result face"
-        )));
-    }
-    let mut face_operands = Vec::with_capacity(region.evolution.faces.len());
-    for &(face, source) in &region.evolution.faces {
-        let owner = source
-            .and_then(|source| face_owner.get(&source).copied())
+    let mut face_operands = Vec::with_capacity(sources.len());
+    for source in sources {
+        let owner = face_owner
+            .get(source)
+            .copied()
             .filter(|owner| group.contains(owner))
             .ok_or_else(|| {
                 unresolved(format!(
-                    "region {position}: result face {face} names no operand face"
+                    "region {position}: source face {source} names no group operand"
                 ))
             })?;
         face_operands.push(owner);
-    }
-    // Belt and braces: the store refused unresolved edges before export.
-    if region
-        .evolution
-        .edges
-        .iter()
-        .any(|(_, event)| matches!(event, EdgeEvent::Unresolved))
-    {
-        return Err(unresolved(format!(
-            "region {position}: a result edge has no construction record"
-        )));
     }
     Ok(face_operands)
 }

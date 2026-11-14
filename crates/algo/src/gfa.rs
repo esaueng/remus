@@ -5,7 +5,7 @@
 
 use remus_math::compact_sort::CompactSort;
 use remus_math::context::OperationContext;
-use remus_math::det_hash::DetHashMap;
+use remus_math::det_hash::{DetHashMap, DetHashSet};
 use remus_math::tolerance::Tolerance;
 use remus_topology::BodyClass;
 use remus_topology::Topology;
@@ -1709,6 +1709,66 @@ pub struct NaryFuseRegions {
     pub sources: Vec<crate::builder::SourceFaceTally>,
 }
 
+/// Qualified N-way regions retained in their isolated arrangement store.
+///
+/// Inspect the face sources and source tallies before [`Self::export`] so a
+/// caller combining several arrangements can accept them all before any
+/// result allocation reaches its topology. Dropping this value allocates
+/// nothing in the caller. Source indices refer to the topology passed to
+/// [`prepare_fuse_n_regions_with_entity_evolution`]; export back to that
+/// topology while those source entities remain unchanged.
+pub struct PreparedNaryFuseRegions {
+    store: GfaShapeStoreN,
+    regions: Vec<PreparedNaryFuseRegion>,
+    face_sources: Vec<Vec<usize>>,
+    /// Per-source face tallies, in input order, as in [`NaryFuseRegions`].
+    pub sources: Vec<crate::builder::SourceFaceTally>,
+}
+
+struct PreparedNaryFuseRegion {
+    solid: SolidId,
+    origins: crate::builder::FaceProvenance,
+    edge_events: std::collections::BTreeMap<usize, EdgeEvent>,
+}
+
+impl PreparedNaryFuseRegions {
+    /// Caller source face indices, one per result face, grouped in region
+    /// order and parallel to each exported region's `evolution.faces`.
+    /// Every result face is claimed exactly once, and every source resolves
+    /// to an input face. Result edges also have resolved construction records.
+    #[must_use]
+    pub fn face_sources(&self) -> &[Vec<usize>] {
+        &self.face_sources
+    }
+
+    /// Export the accepted regions and their lineage to the caller topology.
+    ///
+    /// # Errors
+    ///
+    /// Returns a topology or assembly error if copying fails. The transaction
+    /// restores live entities on error; qualification and typed refusals have
+    /// already completed without allocating caller slots.
+    pub fn export(self, topo: &mut Topology) -> Result<NaryFuseRegions, AlgoError> {
+        remus_topology::transaction::run_transacted(topo, |topo| {
+            let mut regions = Vec::with_capacity(self.regions.len());
+            for region in self.regions {
+                let (solid, evolution) = export_with_edge_events(
+                    topo,
+                    &self.store,
+                    region.solid,
+                    region.origins,
+                    &region.edge_events,
+                )?;
+                regions.push(BooleanRegion { solid, evolution });
+            }
+            Ok(NaryFuseRegions {
+                regions,
+                sources: self.sources,
+            })
+        })
+    }
+}
+
 /// Fuse **N** planar solids in one arrangement, keeping every disconnected
 /// region of the union as its own solid and returning construction-derived
 /// face, edge and vertex history in caller indices.
@@ -1753,9 +1813,8 @@ pub fn fuse_n_regions_with_entity_evolution(
     context: &OperationContext,
     gate: &mut NaryRegionGate<'_>,
 ) -> Result<NaryFuseRegions, AlgoError> {
-    remus_topology::transaction::run_transacted(topo, |topo| {
-        fuse_n_regions_with_entity_evolution_impl(topo, sources, candidate_pairs, context, gate)
-    })
+    prepare_fuse_n_regions_with_entity_evolution(topo, sources, candidate_pairs, context, gate)?
+        .export(topo)
 }
 
 /// A caller's pre-export qualification of an N-way region fuse: given the
@@ -1783,17 +1842,24 @@ fn first_curved_entity(topo: &Topology, solid: SolidId) -> Result<Option<&'stati
     Ok(None)
 }
 
-/// [`fuse_n_regions_with_entity_evolution`] without the transaction wrapper.
+/// Prepare [`fuse_n_regions_with_entity_evolution`] without exporting.
 ///
-/// Each region export appends result entities to the caller's arena, so only
-/// the wrapped entry point is safe to call on live topology.
-fn fuse_n_regions_with_entity_evolution_impl(
-    topo: &mut Topology,
+/// The sources, candidate pairs, context and gate follow that entry point's
+/// contract. All geometry and lineage qualification runs in the isolated
+/// store; the caller topology is read-only. This lets callers accept several
+/// groups, including their lineage and dispositions, before exporting any.
+///
+/// # Errors
+///
+/// Returns the preparation and gate errors of
+/// [`fuse_n_regions_with_entity_evolution`], without changing caller slots.
+pub fn prepare_fuse_n_regions_with_entity_evolution(
+    topo: &Topology,
     sources: &[SolidId],
     candidate_pairs: Option<&[(usize, usize)]>,
     context: &OperationContext,
     gate: &mut NaryRegionGate<'_>,
-) -> Result<NaryFuseRegions, AlgoError> {
+) -> Result<PreparedNaryFuseRegions, AlgoError> {
     use crate::error::NaryFuseRefusal;
 
     if sources.len() < 2 {
@@ -1858,12 +1924,36 @@ fn fuse_n_regions_with_entity_evolution_impl(
     // first the lineage of every region, then the caller's gate.
     let origins_by_face: DetHashMap<FaceId, Option<FaceId>> = built.origins.into_iter().collect();
     let mut pending = Vec::with_capacity(built.regions.len());
+    let mut face_sources = Vec::with_capacity(built.regions.len());
     for (position, &store_region) in built.regions.iter().enumerate() {
         let region_origins: crate::builder::FaceProvenance =
             remus_topology::explorer::solid_faces(&store.topo, store_region)?
                 .into_iter()
                 .map(|face| (face, origins_by_face.get(&face).copied().flatten()))
                 .collect();
+        // The provenance above walks every result face. Resolve each claim
+        // now, in the exact order export uses, before any caller allocation.
+        let mut claimed = DetHashSet::default();
+        let caller_sources = region_origins
+            .iter()
+            .map(|&(face, source)| {
+                if !claimed.insert(face) {
+                    return Err(AlgoError::UnsupportedNaryFuse {
+                        cause: NaryFuseRefusal::LineageUnresolved,
+                        reason: format!("region {position}: a result face is claimed twice"),
+                    });
+                }
+                source
+                    .and_then(|source| store.caller_face(source.index()))
+                    .ok_or_else(|| AlgoError::UnsupportedNaryFuse {
+                        cause: NaryFuseRefusal::LineageUnresolved,
+                        reason: format!(
+                            "region {position}: result face {} names no input face",
+                            face.index()
+                        ),
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let edge_events = resolve_edge_events(
             &store,
             store_region,
@@ -1884,18 +1974,19 @@ fn fuse_n_regions_with_entity_evolution_impl(
                 ),
             });
         }
-        pending.push((store_region, region_origins, edge_events));
+        face_sources.push(caller_sources);
+        pending.push(PreparedNaryFuseRegion {
+            solid: store_region,
+            origins: region_origins,
+            edge_events,
+        });
     }
     gate(&store.topo, &store.sources, &built.regions)?;
 
-    let mut regions = Vec::with_capacity(pending.len());
-    for (store_region, region_origins, edge_events) in pending {
-        let (solid, evolution) =
-            export_with_edge_events(topo, &store, store_region, region_origins, &edge_events)?;
-        regions.push(BooleanRegion { solid, evolution });
-    }
-    Ok(NaryFuseRegions {
-        regions,
+    Ok(PreparedNaryFuseRegions {
+        store,
+        regions: pending,
+        face_sources,
         sources: built.tallies,
     })
 }

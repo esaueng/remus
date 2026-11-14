@@ -836,3 +836,41 @@ fn the_gate_runs_in_the_store_before_anything_is_exported() {
     assert_eq!((calls, fused.regions.len()), (1, 2));
     assert!(topo.allocated_slot_count() > before.1);
 }
+
+#[test]
+fn prepared_regions_leave_caller_slots_untouched_until_export() {
+    let mut topo = Topology::new();
+    let sources = cubes(&mut topo, &[[0.0; 3], [5.0; 3], [0.5; 3]]);
+    let before = format!("{:?}", topo.to_image());
+    let mut eager_topo = topo.clone();
+    let eager = fuse(&mut eager_topo, &sources);
+    let prepare = || {
+        prepare_fuse_n_regions_with_entity_evolution(
+            &topo,
+            &sources,
+            None,
+            &OperationContext::new(),
+            &mut |_, _, _| Ok(()),
+        )
+        .unwrap()
+    };
+    let dropped = prepare();
+    assert_eq!(format!("{:?}", topo.to_image()), before);
+    drop(dropped);
+    assert_eq!(format!("{:?}", topo.to_image()), before);
+
+    let prepared = prepare();
+    let face_sources = prepared.face_sources().to_vec();
+    let exported = prepared.export(&mut topo).unwrap();
+    assert_eq!(exported, eager);
+    assert_eq!(
+        format!("{:?}", topo.to_image()),
+        format!("{:?}", eager_topo.to_image())
+    );
+    for (sources, region) in face_sources.iter().zip(&exported.regions) {
+        assert_eq!(sources.len(), region.evolution.faces.len());
+        for (&source, &(_, exported_source)) in sources.iter().zip(&region.evolution.faces) {
+            assert_eq!(exported_source, Some(source));
+        }
+    }
+}

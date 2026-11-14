@@ -1016,6 +1016,8 @@ fn refusal(error: &OperationsError) -> NaryFuseRefusal {
 /// operands included.
 fn assert_refused(topo: &mut Topology, solids: &[SolidId], cause: NaryFuseRefusal) {
     let before = footprint(topo);
+    let image = format!("{:?}", topo.to_image());
+    let next_handles = next_box_handles(topo);
     let volumes: Vec<f64> = solids
         .iter()
         .map(|&solid| solid_volume(topo, solid, 0.01).unwrap())
@@ -1023,10 +1025,151 @@ fn assert_refused(topo: &mut Topology, solids: &[SolidId], cause: NaryFuseRefusa
     let error = fuse_regions(topo, solids).unwrap_err();
     assert_eq!(refusal(&error), cause, "{error}");
     assert_eq!(footprint(topo), before, "refusal changed the topology");
+    assert_eq!(
+        next_box_handles(topo),
+        next_handles,
+        "refusal consumed handles"
+    );
+    assert_eq!(format!("{:?}", topo.to_image()), image);
     for (&solid, &volume) in solids.iter().zip(&volumes) {
         assert_eq!(solid_volume(topo, solid, 0.01).unwrap(), volume);
         assert!(validate_solid(topo, solid).unwrap().is_valid());
     }
+}
+
+/// Actually allocate another box on a copy, so every boundary arena's next
+/// handle is checked without changing the refusal witness.
+fn next_box_handles(topo: &Topology) -> Vec<usize> {
+    let mut copy = topo.clone();
+    let solid = make_box(&mut copy, 1.0, 1.0, 1.0).unwrap();
+    let mut handles = vec![
+        solid.index(),
+        copy.solid(solid).unwrap().outer_shell().index(),
+    ];
+    handles.extend(
+        solid_vertices(&copy, solid)
+            .unwrap()
+            .iter()
+            .map(|id| id.index()),
+    );
+    handles.extend(
+        solid_edges(&copy, solid)
+            .unwrap()
+            .iter()
+            .map(|id| id.index()),
+    );
+    for face in solid_faces(&copy, solid).unwrap() {
+        handles.extend([face.index(), copy.face(face).unwrap().outer_wire().index()]);
+        for &loop_id in copy.loops_of_face(face).unwrap() {
+            handles.push(loop_id.index());
+            handles.extend(
+                copy.face_loop(loop_id)
+                    .unwrap()
+                    .coedges()
+                    .iter()
+                    .map(|id| id.index()),
+            );
+        }
+    }
+    handles
+}
+
+#[test]
+fn a_later_vertex_contact_refuses_without_consuming_slots_or_handles() {
+    let mut topo = Topology::new();
+    let solids: Vec<_> = [
+        A,
+        b(),
+        unit_cube([50.0, 0.0, 0.0]),
+        unit_cube([51.0, 1.0, 1.0]),
+    ]
+    .into_iter()
+    .map(|bx| place(&mut topo, bx, &placements()[0]))
+    .collect();
+    assert_eq!(topo.allocated_slot_count(), 256);
+    assert_refused(&mut topo, &solids, NaryFuseRefusal::NonManifoldContact);
+}
+
+#[test]
+fn a_later_curved_group_refuses_without_consuming_slots_or_handles() {
+    let mut topo = Topology::new();
+    let first = place(&mut topo, A, &placements()[0]);
+    let second = place(&mut topo, b(), &placements()[0]);
+    let block = place(&mut topo, shifted(A, [50.0, 0.0, 0.0]), &placements()[0]);
+    let cylinder = make_cylinder(&mut topo, 1.0, 3.0).unwrap();
+    transform_solid(&mut topo, cylinder, &Mat4::translation(50.0, 0.0, 0.0)).unwrap();
+    assert_eq!(topo.allocated_slot_count(), 214);
+    assert_refused(
+        &mut topo,
+        &[first, second, block, cylinder],
+        NaryFuseRefusal::CurvedCluster,
+    );
+}
+
+/// Separate group calls reproduce the original eager export order. Hold the
+/// combined call to their exact handles and entity evolution as well as the
+/// closed-form volumes and boundary counts.
+#[test]
+fn multiple_accepted_groups_keep_geometry_lineage_and_input_order() {
+    let mut topo = Topology::new();
+    let boxes = [
+        A,
+        FAR,
+        shifted(A, [50.0, 0.0, 0.0]),
+        b(),
+        shifted(b(), [50.0, 0.0, 0.0]),
+        SMALL,
+    ];
+    let solids: Vec<_> = boxes
+        .into_iter()
+        .map(|bx| place(&mut topo, bx, &placements()[0]))
+        .collect();
+    let mut separate = topo.clone();
+    let first = fuse_regions(&mut separate, &[solids[0], solids[3], solids[5]]).unwrap();
+    let second = fuse_regions(&mut separate, &[solids[2], solids[4]]).unwrap();
+    let result = fuse_regions(&mut topo, &solids).unwrap();
+    assert_eq!(result.regions.len(), 3);
+    for (position, expected) in [(0, &first.regions[0]), (2, &second.regions[0])] {
+        let region = &result.regions[position];
+        assert_eq!(region.solid, expected.solid);
+        assert_eq!(region.evolution, expected.evolution);
+        assert!((solid_volume(&topo, region.solid, 0.01).unwrap() - 13.375).abs() < 1e-9);
+        assert_eq!(solid_faces(&topo, region.solid).unwrap().len(), 12);
+        assert_eq!(solid_edges(&topo, region.solid).unwrap().len(), 30);
+    }
+    assert_eq!(result.regions[1].solid, solids[1]);
+    assert!((solid_volume(&topo, solids[1], 0.01).unwrap() - 6.0).abs() < 1e-9);
+    assert_eq!(solid_faces(&topo, solids[1]).unwrap().len(), 6);
+    assert_eq!(solid_edges(&topo, solids[1]).unwrap().len(), 12);
+    assert_eq!(result.regions[0].operands, vec![0, 3]);
+    assert_eq!(result.regions[2].operands, vec![2, 4]);
+    assert_eq!(
+        result.regions[0].face_operands,
+        first.regions[0]
+            .face_operands
+            .iter()
+            .map(|&i| [0, 3, 5][i])
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        result.regions[2].face_operands,
+        second.regions[0]
+            .face_operands
+            .iter()
+            .map(|&i| [2, 4][i])
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        result.operands,
+        vec![
+            OperandDisposition::Contributes { regions: vec![0] },
+            OperandDisposition::Preserved { region: 1 },
+            OperandDisposition::Contributes { regions: vec![2] },
+            OperandDisposition::Contributes { regions: vec![0] },
+            OperandDisposition::Contributes { regions: vec![2] },
+            OperandDisposition::Absorbed { regions: vec![0] },
+        ]
+    );
 }
 
 #[test]
