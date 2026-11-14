@@ -79,6 +79,8 @@ jobs:
           python3 "$checker" --base "$base" --head "$head"
       - name: Test metadata policy with synthetic identities
         run: python3 -m unittest discover -s scripts -p 'test_check_public_commit_metadata.py'
+      - name: Test the package-source boundary
+        run: python3 -m unittest discover -s scripts -p 'test_check_package_source.py'
 
   checks:
     permissions:

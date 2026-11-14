@@ -51,15 +51,21 @@ patterns those attacks exploited:
 | OSV scan against `Cargo.lock` + `package-lock.json` (the check fails on PRs and merge-queue entries that introduce a vulnerability, and on `main` pushes and the weekly schedule for any detected vulnerability) | `.github/workflows/osv-scan.yml`     | Known-CVE versions in either ecosystem. The check blocks a merge only while `OSV Scan` is a required status check, which is configured separately in GitHub. |
 | Dependabot cooldown (7d default across cargo, npm, github-actions; 14d major for cargo and npm)                                            | `.github/dependabot.yml`             | Fresh malicious uploads.                                                                               |
 | Rebuild and compare changed committed WASM packages before the version gate passes                                                         | `.github/workflows/wasm-version.yml` | Committed binaries, JS glue, or package contracts that do not match source, from an honest PR. Not a boundary against a hostile PR (see below). |
+| Only the package bot's refresh PRs may change `crates/wasm*/pkg` (`package-source` commit status, published from base-branch code)        | `.github/workflows/package-source.yml` | Package bytes planted by any other PR, including a fork PR that also controls the build code. Blocks a merge only while `package-source` is a required status check. |
 
 The package rebuild necessarily executes the PR's own build code (`xtask`,
 `build.rs`, proc macros) on the same runner. The integrity and reuse scripts
 run from the base commit, but a hostile PR that changes build code can still
-tamper with that runner or make its rebuild reproduce planted bytes. Treat the
-rebuild comparison as a consistency check. A PR that touches
-`crates/wasm*/pkg` together with build tooling (`xtask/`, `**/build.rs`,
-`.cargo/`, `scripts/`) needs a human review of that tooling before it merges;
-`.github/CODEOWNERS` routes those paths to the maintainer.
+tamper with that runner or make its rebuild reproduce planted bytes, so the
+rebuild comparison is a consistency check. The boundary is `package-source`:
+it runs under `pull_request_target` from the base branch, never executes PR
+content, and passes a package change only when the PR comes from
+`remus-package-bot[bot]` on a `codex/wasm-refresh-*` branch of this repository,
+whose packages `publish.yml` builds from protected `main`. A fork PR's
+read-only token cannot publish that status. Accounts with write access are not
+contained by it (they can also bypass protection as admins), and changes to
+build tooling (`xtask/`, `**/build.rs`, `.cargo/`, `scripts/`) still need a
+human review; `.github/CODEOWNERS` routes those paths to the maintainer.
 
 Direct install-time cooldown via `.npmrc` `min-release-age` is not enabled
 here: npm bundled with Node 24 is 11.6.1, which silently ignores the field

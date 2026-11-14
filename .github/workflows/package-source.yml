@@ -1,0 +1,41 @@
+name: Package source
+
+# Only the package bot's refresh PRs may change the committed WASM packages
+# (SECURITY.md, Supply Chain). Under pull_request_target this definition and
+# scripts/check_package_source.py run from the base branch, never from the PR:
+# nothing here checks out or executes PR content. The script reads the PR's
+# changed files from the API as data and publishes the `package-source` commit
+# status on the PR head, which a fork PR's read-only token cannot forge. The
+# merge_group run re-checks the queued PR so the required status is present on
+# the group head; its copy comes from the group, so the PR run is the boundary.
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+  merge_group:
+
+permissions: {}
+
+concurrency:
+  group: package-source-${{ github.event.pull_request.number || github.event.merge_group.head_sha }}
+  cancel-in-progress: true
+
+jobs:
+  package-source:
+    name: Committed packages come from the package bot
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
+    steps:
+      # The default ref is the base branch under pull_request_target.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/check_package_source.py
+          sparse-checkout-cone-mode: false
+      - name: Publish the package-source status
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/check_package_source.py --publish
