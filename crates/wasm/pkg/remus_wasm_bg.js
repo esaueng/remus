@@ -3453,6 +3453,76 @@ export class RemusKernel {
         }
     }
     /**
+     * Fuse a list of solids into the regions of their union, with total
+     * face lineage and a disposition for every operand.
+     *
+     * Returns JSON:
+     *
+     * - `compound`: a Compound of the regions, expandable with
+     *   `getCompoundSolids`;
+     * - `regions`: one entry per region, ordered by the lowest operand
+     *   index contributing a face — `solid`, `operands` (operand indices
+     *   with a face in it), `evolution` (`faces`/`edges`/`vertices` as in
+     *   `fuseWithEntityEvolution`; no face is unsourced and no edge
+     *   unresolved) and `faceOperands`, the operand index of each
+     *   `evolution.faces` entry in the same order;
+     * - `operands`: one entry per input solid, in input order — `solid`,
+     *   `regions` and `disposition`: `preserved` (it can touch no other
+     *   operand; its region is the same handle), `contributes` (a result
+     *   face descends from it) or `absorbed` (none does, because the others
+     *   cover every one of its faces).
+     *
+     * Exact-only and additive: `fuseAll` is unchanged. Operands that may
+     * touch must be all-planar with straight edges. `sheets` and `wires`
+     * exist so a mixed-dimensional list has a typed answer; any entry in
+     * either refuses with `body_class_operand_unsupported`.
+     *
+     * # Errors
+     *
+     * Invalid handles; `body_class_operand_unsupported` for a sheet or
+     * wire; and `unsupported_nary_fuse` for a refusal, whose cause is one of
+     * `too_few_operands`, `duplicate_operand`, `curved_cluster`,
+     * `pair_budget_exceeded`, `classification_unresolved`,
+     * `lineage_unresolved`, `non_manifold_contact` or `result_unqualified`.
+     * Every refusal leaves the model unchanged.
+     *
+     * This method throws an `Error` whose message starts with the stable
+     * code and names the cause in parentheses, for example
+     * `unsupported_nary_fuse: unsupported N-ary fuse (duplicate_operand):
+     * operands 0 and 2 are the same solid`. The structured form — `code`,
+     * `category` and `details.kernelCode` / `details.reason` — is the
+     * `fuseRegions` op of `executeBatchV2`; the legacy `executeBatch`
+     * returns the message text only.
+     * @param {Uint32Array} solids
+     * @param {Uint32Array | null} [sheets]
+     * @param {Uint32Array | null} [wires]
+     * @returns {string}
+     */
+    fuseRegions(solids, sheets, wires) {
+        let deferred5_0;
+        let deferred5_1;
+        try {
+            const ptr0 = passArray32ToWasm0(solids, wasm.__wbindgen_malloc);
+            const len0 = WASM_VECTOR_LEN;
+            var ptr1 = isLikeNone(sheets) ? 0 : passArray32ToWasm0(sheets, wasm.__wbindgen_malloc);
+            var len1 = WASM_VECTOR_LEN;
+            var ptr2 = isLikeNone(wires) ? 0 : passArray32ToWasm0(wires, wasm.__wbindgen_malloc);
+            var len2 = WASM_VECTOR_LEN;
+            const ret = wasm.remuskernel_fuseRegions(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2);
+            var ptr4 = ret[0];
+            var len4 = ret[1];
+            if (ret[3]) {
+                ptr4 = 0; len4 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred5_0 = ptr4;
+            deferred5_1 = len4;
+            return getStringFromWasm0(ptr4, len4);
+        } finally {
+            wasm.__wbindgen_free(deferred5_0, deferred5_1, 1);
+        }
+    }
+    /**
      * Fuse with full construction-derived vertex/edge/face history.
      *
      * Returns JSON `{"solid", "evolution": {"faces", "edges",
