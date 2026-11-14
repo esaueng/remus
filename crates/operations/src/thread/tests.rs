@@ -2364,3 +2364,190 @@ fn slight_tapers_keep_their_cone_lands_within_the_reported_bound() {
         );
     }
 }
+
+/// The pipe form of the gauge-plane review: pitch 1.5, depth 0.92, crest
+/// 0.1875, 30° flanks.
+fn gauge_review_form() -> ThreadForm {
+    ThreadForm {
+        pitch: 1.5,
+        depth: 0.92,
+        crest_width: 0.1875,
+        upper_flank_angle: PI / 6.0,
+        lower_flank_angle: PI / 6.0,
+        starts: 1,
+        hand: ThreadHand::Right,
+    }
+}
+
+/// A thread fitted to its cylinder (no major diameter) does not read the
+/// gauge plane: far gauge planes, either side, build the body the default
+/// gauge does radius for radius, and its volume is the closed form. Before
+/// the fix the ring was placed at `crest + τ·(0 − g)` from a gauge-plane
+/// crest `radius − τ·(L − g)`, so a far gauge cancelled two huge radii: at
+/// `g = 1e17` an r6 boss came back with a ratio-0.1 taper and 7% less
+/// volume, all of it valid and inside its reported deviation bound.
+#[test]
+fn a_fitted_taper_is_the_same_body_whatever_its_gauge_plane() {
+    let form = gauge_review_form();
+    let ratio = 0.0625;
+    let (offset, length) = (2.0, 6.0);
+    let options = |small_end, gauge_offset| CylinderThreadOptions {
+        offset,
+        length: Some(length),
+        taper: Some(ThreadTaper {
+            ratio,
+            small_end,
+            gauge_offset,
+        }),
+        ..tight(&form)
+    };
+    let rise = 0.5 * ratio * length;
+    // (kind, small end, gauge offsets, crest radius on the start plane)
+    let cases = [
+        (
+            ThreadKind::External,
+            ThreadEndSide::Start,
+            &[3.0, 37.5, -250.0, 599.0][..],
+            6.0 - rise,
+        ),
+        (
+            ThreadKind::External,
+            ThreadEndSide::End,
+            &[-480.0, 450.0][..],
+            6.0,
+        ),
+        (
+            ThreadKind::Internal,
+            ThreadEndSide::Start,
+            &[-599.0, 480.0][..],
+            5.0,
+        ),
+    ];
+    for (kind, small_end, gauges, crest) in cases {
+        let build = |gauge: Option<f64>| {
+            let mut topo = Topology::new();
+            let (body, face) = match kind {
+                ThreadKind::External => boss(&mut topo, 6.0, 10.0),
+                ThreadKind::Internal => bored(&mut topo, 12.0, 5.0, 10.0),
+            };
+            let outcome =
+                cut_thread(&mut topo, body, face, &form, &options(small_end, gauge)).unwrap();
+            let got = volume(&topo, outcome.solid);
+            (outcome.geometry, got)
+        };
+        // Closed form: the collar beyond the thread plus the tapered
+        // thread's section integral (Simpson, exact for its quadratic area).
+        let rate = match small_end {
+            ThreadEndSide::Start => 0.5 * ratio,
+            ThreadEndSide::End => -0.5 * ratio,
+        };
+        let thread = tapered_volume(&form, kind, crest, rate, length);
+        let expected = match kind {
+            ThreadKind::External => PI * 36.0 * (10.0 - length) + thread,
+            ThreadKind::Internal => PI * 144.0 * 10.0 - PI * 25.0 * (10.0 - length) - thread,
+        };
+        let (reference, reference_volume) = build(None);
+        assert!(
+            rel(reference_volume, expected) < 1e-6,
+            "{kind:?} {small_end:?}: {reference_volume} vs {expected}"
+        );
+        let outer = match kind {
+            ThreadKind::External => crest,
+            ThreadKind::Internal => crest + form.depth,
+        };
+        assert!((reference.start_major_diameter - 2.0 * outer).abs() < 1e-12);
+        assert!((reference.end_major_diameter - 2.0 * (outer + rate * length)).abs() < 1e-12);
+        for &gauge in gauges {
+            let (g, got) = build(Some(gauge));
+            for (a, b, name) in [
+                (
+                    g.start_major_diameter,
+                    reference.start_major_diameter,
+                    "start major",
+                ),
+                (
+                    g.end_major_diameter,
+                    reference.end_major_diameter,
+                    "end major",
+                ),
+                (
+                    g.start_minor_diameter,
+                    reference.start_minor_diameter,
+                    "start minor",
+                ),
+                (
+                    g.end_minor_diameter,
+                    reference.end_minor_diameter,
+                    "end minor",
+                ),
+            ] {
+                // Bit for bit: the fitted radii never pass through the
+                // gauge plane.
+                assert_eq!(
+                    a.to_bits(),
+                    b.to_bits(),
+                    "{kind:?} {small_end:?} gauge {gauge}: {name} {a} vs {b}"
+                );
+            }
+            assert!(
+                rel(got, reference_volume) < 1e-12,
+                "{kind:?} {small_end:?} gauge {gauge}: {got} vs {reference_volume}"
+            );
+            // The gauge plane moves only the reported gauge-plane diameter,
+            // by the taper over the gauge offset from the small end.
+            let small = match small_end {
+                ThreadEndSide::Start => g.start_major_diameter,
+                ThreadEndSide::End => g.end_major_diameter,
+            };
+            assert!(
+                (g.major_diameter - ratio.mul_add(gauge, small)).abs()
+                    < 1e-11 * gauge.abs().max(1.0),
+                "{kind:?} {small_end:?} gauge {gauge}: {} vs {}",
+                g.major_diameter,
+                ratio.mul_add(gauge, small)
+            );
+        }
+    }
+}
+
+/// A gauge plane more than `MAX_GAUGE_OFFSET_PER_SCALE` times the larger of
+/// the thread's length and the cylinder's radius from the small end refuses
+/// as an invalid parameter, with or without a major diameter, and leaves
+/// the topology as it was. The far values are the review's, which used to
+/// build quietly wrong bodies.
+#[test]
+fn a_gauge_plane_far_beyond_the_thread_refuses() {
+    let form = gauge_review_form();
+    let mut topo = Topology::new();
+    let (body, face) = boss(&mut topo, 6.0, 10.0);
+    let before = topo.num_faces();
+    let reach = MAX_GAUGE_OFFSET_PER_SCALE * 6.0;
+    for major in [None, Some(11.9)] {
+        for gauge in [
+            reach * (1.0 + 1e-12),
+            -reach * 1.01,
+            1e14,
+            -3e15,
+            3e15,
+            1e17,
+        ] {
+            let options = CylinderThreadOptions {
+                major_diameter: major,
+                offset: 2.0,
+                length: Some(6.0),
+                taper: Some(ThreadTaper {
+                    ratio: 0.0625,
+                    small_end: ThreadEndSide::Start,
+                    gauge_offset: Some(gauge),
+                }),
+                ..tight(&form)
+            };
+            assert_eq!(
+                refusal(cut_thread(&mut topo, body, face, &form, &options)),
+                ThreadRefusal::InvalidParameter,
+                "gauge {gauge}, major {major:?}"
+            );
+        }
+    }
+    assert_eq!(before, topo.num_faces());
+}

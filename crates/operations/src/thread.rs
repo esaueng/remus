@@ -101,6 +101,17 @@ pub const MAX_TAPER_RATIO: f64 = 0.25;
 /// slighter taper is a cylindrical thread to any tolerance that matters.
 pub const MIN_TAPER_RATIO: f64 = 1e-3;
 
+/// Farthest a tapered thread's gauge plane may lie from its small end, as a
+/// multiple of the larger of the thread's length and the cylinder's radius.
+///
+/// A thread fitted to its cylinder never reads the gauge plane, but a
+/// [`CylinderThreadOptions::major_diameter`] given there is carried to the
+/// thread across `τ·g`, the taper's gain over the gauge offset `g`, and the
+/// reported gauge-plane diameters gain it too: at `100` times the thread's
+/// scale those keep all but about `7` bits. Standard gauge planes (NPT's
+/// hand-tight length, BSPT's gauge length) lie within the thread.
+pub const MAX_GAUGE_OFFSET_PER_SCALE: f64 = 100.0;
+
 /// Uniform Hermite spans allowed along the axis of one ring segment.
 const MAX_THREAD_SPANS: usize = 4096;
 
@@ -291,7 +302,11 @@ pub struct ThreadTaper {
     /// large end: the plane where
     /// [`CylinderThreadOptions::major_diameter`] is the thread's major
     /// diameter. `None` gauges at the small end. It may lie outside the
-    /// thread.
+    /// thread, up to [`MAX_GAUGE_OFFSET_PER_SCALE`] times the larger of the
+    /// thread's length and the cylinder's radius either way; farther
+    /// refuses as an invalid parameter. Without a major diameter the
+    /// thread is fitted to the cylinder and the gauge plane changes only
+    /// the reported gauge-plane diameters, never the body.
     pub gauge_offset: Option<f64>,
 }
 
@@ -785,8 +800,10 @@ fn cut_thread_joined(
 
     let fit_tol = 1e-9 * radius;
     // A tapered thread's radii gain `radial_rate` per unit of height above
-    // the thread's start; `offset_at` is what they gain from the gauge
-    // plane, where the major diameter is given.
+    // the thread's start. Every radius below is on the start plane; the
+    // gauge plane, where a given major diameter applies, enters only to
+    // place that diameter and to report the gauge-plane diameters, so a
+    // thread fitted to the cylinder never sees it.
     let radial_rate = match options.taper {
         None => 0.0,
         Some(taper) => {
@@ -807,13 +824,25 @@ fn cut_thread_joined(
             }
         }
     };
+    // Height of the gauge plane above the thread's start.
     let gauge = match options.taper {
         None => 0.0,
         Some(taper) => {
             let from_small_end = taper.gauge_offset.unwrap_or(0.0);
-            require(from_small_end.is_finite(), || {
-                format!("gauge offset must be finite, got {from_small_end}")
-            })?;
+            // A gauge plane far beyond the thread is no gauge at all, and
+            // a diameter given there would be placed on the thread only
+            // across a cancellation of two huge radii.
+            let reach = MAX_GAUGE_OFFSET_PER_SCALE * length.max(radius);
+            require(
+                from_small_end.is_finite() && from_small_end.abs() <= reach,
+                || {
+                    format!(
+                        "gauge offset must be finite and within {MAX_GAUGE_OFFSET_PER_SCALE} times the larger of \
+                     the thread's length and the cylinder's radius ({reach}) of the small end, got \
+                     {from_small_end}"
+                    )
+                },
+            )?;
             match taper.small_end {
                 ThreadEndSide::Start => from_small_end,
                 ThreadEndSide::End => length - from_small_end,
@@ -821,12 +850,10 @@ fn cut_thread_joined(
         }
     };
     let tapered = options.taper.is_some();
-    let offset_at = |z: f64| radial_rate * (z - gauge);
-    // What the radii gain at the large end and at the small end.
-    let (grown, shrunk) = (
-        offset_at(0.0).max(offset_at(length)),
-        offset_at(0.0).min(offset_at(length)),
-    );
+    // What the radii gain from the start plane to the end plane, and so at
+    // the large end and at the small end.
+    let rise = radial_rate * length;
+    let (grown, shrunk) = (rise.max(0.0), rise.min(0.0));
     let at_the = |end: &str| {
         if tapered {
             format!(" at its {end} end")
@@ -855,13 +882,14 @@ fn cut_thread_joined(
             ),
         ));
     }
+    // The outer surface's radius on the start plane.
     let major = match options.major_diameter {
         Some(diameter) => {
             positive(diameter, "major diameter")?;
-            0.5 * diameter
+            radial_rate.mul_add(-gauge, 0.5 * diameter)
         }
         // The crest on the boss at the large end, on the bore at the small
-        // end.
+        // end, read off the cylinder with no gauge plane in between.
         None => match kind {
             ThreadKind::External => radius - grown,
             ThreadKind::Internal => radius + form.depth - shrunk,
@@ -880,7 +908,7 @@ fn cut_thread_joined(
         ));
     }
     let seam_gap = SEAM_DEPTH * form.depth;
-    // (crest, root) radii on the gauge plane and the band the tube rebuilds.
+    // (crest, root) radii on the start plane and the band the tube rebuilds.
     // The thread must fit the cylinder where it comes nearest to it: an
     // external thread at its large end, an internal one at its small end.
     let (crest, root, band) = match kind {
@@ -938,17 +966,20 @@ fn cut_thread_joined(
         }
     };
     let (major_r, minor_r) = (crest.max(root), crest.min(root));
+    // The gauge plane's radii, for the report only.
+    let at_gauge = radial_rate * gauge;
+    let (gauge_major, gauge_minor) = (major_r + at_gauge, minor_r + at_gauge);
     let lead = form.lead();
-    let mean = major_r + minor_r;
+    let mean = gauge_major + gauge_minor;
     let geometry = ThreadGeometry {
         kind,
-        major_diameter: 2.0 * major_r,
-        minor_diameter: 2.0 * minor_r,
+        major_diameter: 2.0 * gauge_major,
+        minor_diameter: 2.0 * gauge_minor,
         taper_angle: radial_rate.abs().atan(),
-        start_major_diameter: 2.0 * (major_r + offset_at(0.0)),
-        end_major_diameter: 2.0 * (major_r + offset_at(length)),
-        start_minor_diameter: 2.0 * (minor_r + offset_at(0.0)),
-        end_minor_diameter: 2.0 * (minor_r + offset_at(length)),
+        start_major_diameter: 2.0 * major_r,
+        end_major_diameter: 2.0 * (major_r + rise),
+        start_minor_diameter: 2.0 * minor_r,
+        end_minor_diameter: 2.0 * (minor_r + rise),
         pitch: form.pitch,
         lead,
         crest_width: form.crest_width,
@@ -1001,8 +1032,8 @@ fn cut_thread_joined(
             topo,
             &frame,
             form,
-            crest + offset_at(0.0),
-            root + offset_at(0.0),
+            crest,
+            root,
             radial_rate,
             options.phase,
             kind,
@@ -1036,7 +1067,7 @@ fn cut_thread_joined(
                 &frame,
                 kind,
                 band,
-                [crest + offset_at(0.0), crest + offset_at(length)],
+                [crest, crest + rise],
                 length,
                 Glue::Simplest,
             )?
