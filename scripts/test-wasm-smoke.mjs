@@ -81,6 +81,7 @@ import {
   runBooleanScaleRegression,
   runAnisotropicBooleanRegression,
   runZeroAreaMeshExportRegression,
+  runFuseRegionsRegression,
 } from './openzcad-wasm-consumer-regressions.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -1859,6 +1860,7 @@ part(() => runSplitVertexRefusalRegression({ RemusKernel }));
 part(() => runBooleanScaleRegression({ RemusKernel }));
 part(() => runAnisotropicBooleanRegression({ RemusKernel }));
 part(() => runZeroAreaMeshExportRegression({ RemusKernel, RemusIo }));
+part(() => runFuseRegionsRegression({ RemusKernel }));
 
 // 16. B6 plane-section/split packaged-runtime witnesses (actual WASM execution,
 // not native contract tests): ordinary/coincident/empty sections, cavity and
