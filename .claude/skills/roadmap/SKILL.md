@@ -152,9 +152,10 @@ that does not exist yet; without it, stop.
 
 ## Open items with a repro
 
-The `#[ignore]` inventory (recounted 2026-11-13 with B7 rebased onto
-`c14c99c8`: 58 actual attributes in 33 files, all in `operations`, `io`,
-`heal`, `math`, `wasm` and `remus`) splits by the ignore reason as written.
+The `#[ignore]` inventory (recounted 2026-11-14 on `1632392b`, adding the two
+O2.3d budget-policy probes from #1715: 60 actual attributes in 35 files, all in
+`algo`, `operations`, `io`, `heal`, `math`, `wasm` and `remus`) splits by the
+ignore reason as written.
 B51's three closures, B275 to B278 and the 5.7b offset changes are retained;
 B7's two witnesses now run un-ignored. Listed, not re-run, except B265,
 B266, B272, B275 to B278 and the three 5.7b witnesses (failed as pinned).
@@ -186,17 +187,21 @@ B266, B272, B275 to B278 and the three 5.7b witnesses (failed as pinned).
   (`separation_unproven`). The #1545 cylinder pass-through (O4.4) is closed
   there.
 
-**29 manual runs:**
+**31 manual runs:**
 - slow, exhaustive or differential (11): `boolean/tests.rs::staircase_fuse_with_cylinders`,
   the B53 17,150-input sweep, the B51 60-draw torus–cone sweep, `math/src/fma.rs::long_random_differential`,
   `io/tests/classify_engine_oracle.rs`, `math/tests/differential_line_torus.rs`
   soak, the two `gear/hindley_wheel/hob_oracle_tests.rs` verbatim searches,
   and `sweep_shelled_wall_rim_notch.rs` ×3 (two-revision sweeps);
-- measurements and timing (6): `regress_unify_scaling.rs` ×2 (#284), the
+- measurements and timing (7): `regress_unify_scaling.rs` ×2 (#284), the
   PERF-H03 table in `heal/src/fix/duplicate_faces.rs`, `axial_replay_perf.rs`,
-  `prepared_group_edit.rs` and `wasm/src/bindings/snapshot_tests.rs`;
-- print-only diagnostics (9): `profile_intersect.rs` ×3, the two #696 dovetail
-  probes, and the four `diag_*tangency*` probes;
+  `prepared_group_edit.rs`, `wasm/src/bindings/snapshot_tests.rs` and the
+  O2.3d section-grid work probe
+  (`algo/src/builder/face_splitter/shadow/tests.rs::work_of_a_section_grid`);
+- print-only diagnostics (10): `profile_intersect.rs` ×3, the two #696 dovetail
+  probes, the four `diag_*tangency*` probes, and the O2.3d budget-equality
+  probe (`operations/tests/research_o23d_budget_equality.rs`; the defect it
+  measured is fixed by #1719 and pinned by `regress_arrangement_routing_budgets`);
 - external fixtures (3): `io/tests/gecko_bottom_chamfer.rs` ×2
   (`REMUS_VIDEO_FIXTURES`) and the cumulative Gecko document writer in
   `wasm/src/bindings/prepared_group_edit/tests.rs` (`REMUS_CUMULATIVE_GECKO_DOC`).
