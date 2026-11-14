@@ -287,6 +287,7 @@ Quick reference — find the right file for any task:
 | PaveFiller orchestrator | `pave_filler/mod.rs` |
 | Shared PaveFiller phase helpers | `pave_filler/helpers.rs` |
 | Isolated curved NURBS section clipping and whole-span bounds | `pave_filler/curved_section_clip.rs`, `pave_filler/curved_section_clip/bernstein.rs`, `pave_filler/curved_section_clip/tests.rs` |
+| Section-curve paves on trimmed analytic curved faces (B7): pave vertices on a holed or bayed face's trimming edges split the section block, and leaves certified off the face are dropped (uncertain leaves are kept) | `pave_filler/section_paves.rs` |
 | Read-only shared ruled-section discovery with original native traces and certified physical trim windows | `pave_filler/curved_section_clip/discovery.rs` |
 | Phases VV/VE/EE/VF/EF/FF | `pave_filler/phase_*.rs` |
 | Bounded algebraic events for an actual Line/Sphere carrier pair | `pave_filler/phase_ef/line_sphere.rs` |
@@ -297,9 +298,11 @@ Quick reference — find the right file for any task:
 | Exact-curve chart arrangement: certified noding and leaving sectors, region tracing and holes, interior witnesses outside the curve enclosures; distinguishes unsupported inputs from failed certificates | `builder/face_splitter/chart_arrangement.rs` |
 | Curve enclosures in plane, cylinder and torus charts: positive-weight Bezier and conic hulls, interval velocity cones, adaptive noding and node-sector proofs (adversarial tests) | `builder/face_splitter/chart_certificate.rs`, `builder/face_splitter/chart_certificate_tests.rs` |
 | Torus and cylinder faces opened along their seams, sections and boundary pieces partitioned by the chart arrangement; primary torus path and cylinder rescue, with separate failed-certificate diagnostics | `builder/face_splitter/periodic_face_chart.rs` |
+| Cylinder faces trimmed by holes or a bay in the outer wire, partitioned by the chart arrangement in their continuously lifted `(u, v)` cell (holes and sections cut at the cell's seam lines) | `builder/face_splitter/trimmed_cylinder_chart.rs` |
 | Positive-weight NURBS sections certified outside planar or cylindrical face material before the left-out rescue check; crossing, hole-domain and separating-direction controls | `builder/face_splitter/section_clearance_tests.rs` |
 | Planar line/circle face re-partition when the established split contains spurs, omits sections or fails its area consistency estimate | `builder/face_splitter/plane_chart.rs` |
 | Lifted torus and cylinder parameter rectangles recognized from iso-parameter boundary curves; exact periodic chart membership | `periodic_chart.rs` |
+| Boundary wires of an analytic curved face as outlines in its `(u, v)` chart, lifted continuously along the wire: chart-point containment and model-point distance, each chord with a whole-interval deviation bound (NURBS via rounding-inclusive Bernstein bounds; no bound, no exclusion) | `chart_trim.rs` |
 | Native equator partition and whole-interval circular rim coverage oracles | `builder/face_splitter/special_cases/equator_partition_tests.rs` |
 | Isolated exact-event UV arrangement and cylinder-strip quotient | `builder/face_splitter/arrangement.rs`, `builder/face_splitter/arrangement/` (geometry, regions, periodic) |
 | Shadow differential of the legacy special-case emitters against the arrangement adapters (O2.3d step 0; test and `perf-counters` builds only, measures and never changes a result) | `builder/face_splitter/shadow.rs`, `builder/face_splitter/shadow/tests.rs` |
