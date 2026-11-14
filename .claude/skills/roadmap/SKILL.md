@@ -152,14 +152,13 @@ that does not exist yet; without it, stop.
 
 ## Open items with a repro
 
-The `#[ignore]` inventory (regenerated 2026-11-13 on `877d8908` with B62's
-witness un-ignored, the two B7 witnesses and B275's to B278's added, B51's
-three closed, and the 5.7b slice's O4.4 pass-through un-ignored with its three
-witnesses added, then B7's two witnesses un-ignored: 58 actual attributes in 33 files, all in `operations`, `io`,
+The `#[ignore]` inventory (recounted 2026-11-13 with B7 rebased onto
+`c14c99c8`: 58 actual attributes in 33 files, all in `operations`, `io`,
 `heal`, `math`, `wasm` and `remus`) splits by the ignore reason as written.
-Listed, not re-run, except B265, B266, B272, B275 to B278, the two B7
-witnesses (now passing) and the three 5.7b witnesses (failed as pinned). **29 open engine
-witnesses**, each with an owner row:
+B51's three closures, B275 to B278 and the 5.7b offset changes are retained;
+B7's two witnesses now run un-ignored. Listed, not re-run, except B265,
+B266, B272, B275 to B278 and the three 5.7b witnesses (failed as pinned).
+**29 open engine witnesses**, each with an owner row:
 - four B26 property ready-repros in `operations/tests/prop_boolean_invariants.rs`:
   finding 13 sphere–torus ×3 (B38) and finding 20 sphere–cone (B33);
 - `regress_b52_box_cylinder_rim_notch.rs` (B270) and

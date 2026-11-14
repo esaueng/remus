@@ -198,6 +198,19 @@ fn volume_of(topo: &Topology, solid: SolidId) -> f64 {
         .unwrap_or(f64::NAN)
 }
 
+/// Preserve the review's measured volumes and watertight display meshes.
+fn assert_review_measurements(topo: &Topology, solid: SolidId, volume: f64, tag: &str) {
+    use remus_operations::tessellate::{edge_census, is_watertight, tessellate_solid};
+
+    let measured = volume_of(topo, solid);
+    assert!((measured - volume).abs() < 1e-6, "{tag}: {measured:.9}");
+    for deflection in [0.05, 0.01] {
+        let mesh = tessellate_solid(topo, solid, deflection).unwrap();
+        let census = edge_census(&mesh);
+        assert!(is_watertight(&mesh), "{tag}: {deflection}, {census:?}");
+    }
+}
+
 /// The desired result: every edge used exactly twice, by id and by position,
 /// every probe classified as expected, and the volume within 2e-4 of the
 /// independent reference. Every oracle is evaluated before the single
@@ -412,6 +425,7 @@ fn coaxial_wider_half_tunnel() {
         &(Mat4::translation(-1.0, 6.0, 2.0) * Mat4::rotation_y(FRAC_PI_2)),
     );
     let result = chain(&mut topo, third);
+    assert_review_measurements(&topo, result, 308.385_322, "coaxial wider half tunnel");
     assert_desired(
         &topo,
         result,
@@ -454,6 +468,7 @@ fn oblique_tunnel_crossing() {
     let mut topo = Topology::new();
     let third = oblique_cutter(&mut topo);
     let result = chain(&mut topo, third);
+    assert_review_measurements(&topo, result, 307.564_244, "oblique tunnel crossing");
     assert_desired(
         &topo,
         result,

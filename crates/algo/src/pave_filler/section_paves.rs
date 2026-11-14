@@ -35,6 +35,7 @@
 use std::collections::BTreeMap;
 use std::f64::consts::TAU;
 
+use remus_math::compact_sort::CompactSort;
 use remus_math::det_hash::DetHashMap;
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::Point3;
@@ -100,8 +101,9 @@ impl TrimmedFace {
             && ends.iter().all(|&p| off(p) || self.near_boundary(p, band))
     }
 
-    /// Whether `p` is within `band`, plus the outline's chord error, of one
-    /// of the face's boundary outlines.
+    /// Whether `p` is within `band`, plus the outline's certified continuous
+    /// chord-error bound, of a boundary. An unavailable bound is infinity,
+    /// so it always retains the leaf rather than trusting sampled membership.
     fn near_boundary(&self, p: Point3, band: f64) -> bool {
         self.outer
             .iter()
@@ -349,8 +351,7 @@ fn section_paves(
         }
     }
     // Deterministic order along the curve; ties by vertex id.
-    #[allow(clippy::disallowed_methods)]
-    hits.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.index().cmp(&b.1.index())));
+    hits.compact_sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.index().cmp(&b.1.index())));
     let mut paves: Vec<Pave> = Vec::new();
     let mut last_point: Option<Point3> = None;
     for (t, vid, point) in hits {
@@ -954,5 +955,143 @@ mod tests {
         let in_bay = f.cyl.evaluate(1.5, 3.5);
         let chord = 2.0 * 0.25_f64.sin();
         assert!((outer.distance(in_bay) - chord).abs() < 1e-12);
+    }
+
+    // Review oracle: the exact rational quadratic cylinder arc has a height
+    // peak z = 2.496243741134287 at u = 1.5. Only its knot spacing changes;
+    // the whole generator z = 1.5..2.0 stays below the hole on material.
+    #[allow(clippy::too_many_lines)]
+    fn material_below_rational_hole_bump(k0: f64, k1: f64, reversed: bool) {
+        let mut f = seam_cut(false);
+        let mut cps = Vec::new();
+        let mut weights = Vec::new();
+        for (k, (a, b)) in [(1.0_f64, 1.4_f64), (1.4, 1.6), (1.6, 2.0)]
+            .into_iter()
+            .enumerate()
+        {
+            let mid = f64::midpoint(a, b);
+            let weight = ((b - a) / 2.0).cos();
+            if k == 0 {
+                cps.push(f.cyl.evaluate(a, 1.0));
+                weights.push(1.0);
+            }
+            let c = f.cyl.evaluate(mid, 0.0);
+            cps.push(Point3::new(
+                c.x() / weight,
+                c.y() / weight,
+                if k == 1 { 4.0 } else { 1.0 },
+            ));
+            weights.push(weight);
+            cps.push(f.cyl.evaluate(b, 1.0));
+            weights.push(1.0);
+        }
+        let curve = remus_math::nurbs::NurbsCurve::new(
+            2,
+            vec![0., 0., 0., k0, k0, k1, k1, 1., 1., 1.],
+            cps,
+            weights,
+        )
+        .unwrap();
+        let peak = curve.evaluate(f64::midpoint(k0, k1));
+        let (peak_u, peak_v) = f.cyl.project_point(peak);
+        assert!((peak - f.cyl.evaluate(peak_u, peak_v)).length() < 1e-12);
+        assert!((peak_u - 1.5).abs() < 1e-12 && peak_v > 2.49);
+        let a = f.topo.add_vertex(Vertex::new(f.cyl.evaluate(1., 1.), TOL));
+        let b = f.topo.add_vertex(Vertex::new(f.cyl.evaluate(2., 1.), TOL));
+        let c = f.topo.add_vertex(Vertex::new(f.cyl.evaluate(2., 3.), TOL));
+        let d = f.topo.add_vertex(Vertex::new(f.cyl.evaluate(1., 3.), TOL));
+        let mut bottom = if reversed {
+            Edge::new(b, a, EdgeCurve::NurbsCurve(curve))
+        } else {
+            Edge::new(a, b, EdgeCurve::NurbsCurve(curve))
+        };
+        bottom.set_trim(Some(if reversed { (1., 0.) } else { (0., 1.) }));
+        let bottom = f.topo.add_edge(bottom);
+        if reversed {
+            f.arena.init_edge_pave_block(bottom, b, 1., a, 0.);
+        } else {
+            f.arena.init_edge_pave_block(bottom, a, 0., b, 1.);
+        }
+        let right = line(&mut f.topo, &mut f.arena, b, c);
+        let top = arc(&mut f.topo, &mut f.arena, &f.cyl, 3., (d, 1.), (c, 2.));
+        let left = line(&mut f.topo, &mut f.arena, a, d);
+        let hole = f.topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(left, true),
+                    OrientedEdge::new(top, true),
+                    OrientedEdge::new(right, false),
+                    OrientedEdge::new(bottom, reversed),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        let outer = f.topo.face(f.wall).unwrap().outer_wire();
+        f.wall = f.topo.add_face(Face::new(
+            outer,
+            vec![hole],
+            FaceSurface::Cylinder(f.cyl.clone()),
+        ));
+        let trimmed = trimmed_face(&f.topo, &f.arena, f.wall, Tolerance::new()).unwrap();
+        let outline = &trimmed.holes[0];
+        assert!(
+            outline.sagitta.is_finite(),
+            "the certificate must be available"
+        );
+        assert!(outline.distance(peak) <= outline.sagitta);
+        // The second face is a radial plane rectangle, so this generator is an
+        // actual carrier intersection, bounded at the rectangle's two heights.
+        let radial = f.cyl.evaluate(1.5, 0.0) - Point3::new(0., 0., 0.);
+        let positions = [
+            Point3::new(-2. * radial.x(), -2. * radial.y(), 1.5),
+            Point3::new(2. * radial.x(), 2. * radial.y(), 1.5),
+            Point3::new(2. * radial.x(), 2. * radial.y(), 2.),
+            Point3::new(-2. * radial.x(), -2. * radial.y(), 2.),
+        ];
+        let vertices = positions.map(|p| f.topo.add_vertex(Vertex::new(p, TOL)));
+        let mut edges = Vec::new();
+        for k in 0..4 {
+            edges.push(OrientedEdge::new(
+                line(
+                    &mut f.topo,
+                    &mut f.arena,
+                    vertices[k],
+                    vertices[(k + 1) % 4],
+                ),
+                true,
+            ));
+        }
+        let wire = f.topo.add_wire(Wire::new(edges, true).unwrap());
+        f.other = f.topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(-radial.y(), radial.x(), 0.),
+                d: 0.,
+            },
+        ));
+        let section = f.generator(1.5, 1.5, 2.0);
+        f.run();
+
+        assert_eq!(
+            f.ranges(section),
+            vec![(0.0, 0.5)],
+            "The whole generator is material below the exact hole boundary z>2.49"
+        );
+    }
+
+    #[test]
+    fn narrow_knot_hole_bump_keeps_the_material_generator() {
+        for reversed in [false, true] {
+            material_below_rational_hole_bump(0.001, 0.002, reversed);
+        }
+    }
+
+    #[test]
+    fn wide_knot_hole_bump_keeps_the_same_material_generator() {
+        for reversed in [false, true] {
+            material_below_rational_hole_bump(1.0 / 3.0, 2.0 / 3.0, reversed);
+        }
     }
 }

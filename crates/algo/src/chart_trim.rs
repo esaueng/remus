@@ -8,6 +8,9 @@
 //! both need the face's true region there; this module samples a wire once
 //! and answers the two questions they ask of it: is a chart point inside the
 //! outline, and how far is a model point from it.
+//! Every chord carries a whole-interval deviation bound; NURBS bounds reuse
+//! the rounding-inclusive Bernstein certificates in `remus_math`. When a
+//! bound is unavailable the outline cannot authorize section exclusion.
 //!
 //! The outline is lifted CONTINUOUSLY along the wire, so a seam-cut wall's
 //! outer wire (which runs its seam edge once at each end of the period)
@@ -17,9 +20,12 @@
 
 use std::f64::consts::TAU;
 
+use remus_math::context::OperationContext;
+use remus_math::nurbs::{NurbsCurve, reuse::bound_curve_position};
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point2, Point3};
 use remus_topology::Topology;
+use remus_topology::edge::EdgeCurve;
 use remus_topology::face::FaceSurface;
 use remus_topology::wire::WireId;
 
@@ -44,8 +50,63 @@ pub struct ChartLoop {
     pub lo: Point2,
     /// Upper chart bound of `uv`.
     pub hi: Point2,
-    /// Largest chord error of the sampled outline, in model units.
+    /// Whole-interval upper bound on the outline's chord error, in model
+    /// units. Infinity means unavailable: no exclusion may rely on it.
     pub sagitta: f64,
+}
+
+/// Continuous enclosure about a parameter-matched polyline. For NURBS the
+/// existing outward-rounded rational Bernstein certificate covers EVERY
+/// common knot span, including spans between all the polyline's samples.
+/// No sampled midpoint is evidence of a bound. An unavailable certificate
+/// deliberately makes boundary proximity undecidable for all points.
+fn polyline_error(curve: &EdgeCurve, parameters: &[f64], points: &[Point3]) -> Option<f64> {
+    let step = parameters
+        .windows(2)
+        .map(|w| (w[1] - w[0]).abs())
+        .fold(0.0, f64::max);
+    let bound = match curve {
+        EdgeCurve::Line => 0.0,
+        EdgeCurve::Circle(c) if step <= TAU => {
+            // Exact maximum distance to an arc chord, evaluated without
+            // subtracting nearly equal numbers.
+            2.0 * c.radius() * (step * 0.25).sin().powi(2)
+        }
+        EdgeCurve::Ellipse(e) => {
+            // Linear interpolation remainder: max |c''| * step² / 8.
+            e.semi_major().max(e.semi_minor()) * step.powi(2) / 8.0
+        }
+        EdgeCurve::NurbsCurve(n) => {
+            let mut parameters = parameters.to_vec();
+            let mut points = points.to_vec();
+            // A stored trim can traverse the native domain backwards;
+            // Bernstein comparison consumes an increasing interval.
+            if parameters[0] > *parameters.last()? {
+                parameters.reverse();
+                points.reverse();
+            }
+            let mut knots = vec![parameters[0]];
+            knots.extend_from_slice(&parameters);
+            knots.push(*parameters.last()?);
+            let weights = vec![1.0; points.len()];
+            let polyline = NurbsCurve::new(1, knots, points, weights).ok()?;
+            bound_curve_position(
+                n,
+                &polyline,
+                (parameters[0], *parameters.last()?),
+                1_000_000,
+                &OperationContext::default(),
+            )
+            .ok()?
+        }
+        EdgeCurve::Circle(_) | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => return None,
+    };
+    let scale = points
+        .iter()
+        .flat_map(|p| p.0)
+        .fold(1.0_f64, |s, x| s.max(x.abs()));
+    let bound = (bound + 1e-14 * scale).next_up();
+    bound.is_finite().then_some(bound)
 }
 
 impl ChartLoop {
@@ -135,50 +196,46 @@ pub fn chart_loop(
     topo: &Topology,
     surface: &FaceSurface,
     wire_id: WireId,
-    tol: Tolerance,
+    _tol: Tolerance,
 ) -> Option<ChartLoop> {
     let v_periodic = chart_v_periodic(surface)?;
     let wire = topo.wire(wire_id).ok()?;
     let mut pts: Vec<Point3> = Vec::new();
     let mut sagitta = 0.0_f64;
+    let mut previous_end: Option<Point3> = None;
+    let mut join_error = 0.0_f64;
     for oe in wire.edges() {
         let edge = topo.edge(oe.edge()).ok()?;
         let sp = topo.vertex(edge.start()).ok()?.point();
         let ep = topo.vertex(edge.end()).ok()?.point();
         let (t0, t1) = edge.strict_domain().ok()?;
-        let at = |f: f64| {
-            let f = if oe.is_forward() { f } else { 1.0 - f };
-            edge.curve()
-                .evaluate_with_endpoints((t1 - t0).mul_add(f, t0), sp, ep)
-        };
         #[allow(clippy::cast_precision_loss)]
         let n = SAMPLES_PER_EDGE as f64;
-        for k in 0..SAMPLES_PER_EDGE {
-            #[allow(clippy::cast_precision_loss)]
-            let (a, m, b) = (
-                at(k as f64 / n),
-                at((k as f64 + 0.5) / n),
-                at((k as f64 + 1.0) / n),
-            );
-            let chord = b - a;
-            let len_sq = chord.length_squared();
-            let foot = if len_sq > 0.0 {
-                a + chord * ((m - a).dot(chord) / len_sq).clamp(0.0, 1.0)
-            } else {
-                a
-            };
-            sagitta = sagitta.max((m - foot).length());
-            if pts.last().is_none_or(|&q| (a - q).length() > tol.linear) {
-                pts.push(a);
-            }
+        #[allow(clippy::cast_precision_loss)]
+        let parameters: Vec<f64> = (0..=SAMPLES_PER_EDGE)
+            .map(|k| (t1 - t0).mul_add(k as f64 / n, t0))
+            .collect();
+        let mut samples: Vec<Point3> = parameters
+            .iter()
+            .map(|&t| edge.curve().evaluate_with_endpoints(t, sp, ep))
+            .collect();
+        sagitta = sagitta
+            .max(polyline_error(edge.curve(), &parameters, &samples).unwrap_or(f64::INFINITY));
+        if !oe.is_forward() {
+            samples.reverse();
         }
+        if let Some(end) = previous_end {
+            join_error = join_error.max((samples[0] - end).length());
+        }
+        previous_end = samples.last().copied();
+        // Keep every sample: removing even a short segment would require
+        // bounding the deviation to the replacement chord too.
+        pts.extend_from_slice(&samples[..SAMPLES_PER_EDGE]);
     }
-    if pts.len() >= 2
-        && let (Some(&first), Some(&last)) = (pts.first(), pts.last())
-        && (first - last).length() <= tol.linear
-    {
-        pts.pop();
+    if let (Some(&first), Some(end)) = (pts.first(), previous_end) {
+        join_error = join_error.max((first - end).length());
     }
+    sagitta = (sagitta + join_error).next_up();
     if pts.len() < 3 {
         return None;
     }
