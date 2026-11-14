@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
-"""Reuse only a protected-main artifact with identical inputs and tested bytes."""
+"""Reuse only a protected-main artifact with identical inputs and tested bytes.
 
+CI runs the integration base's copy of this script with ``--checkout`` naming
+the pull request checkout, so a change under test cannot weaken the checks
+that qualify its own committed packages.
+"""
+
+import argparse
 import hashlib
 from collections import Counter
 import io
@@ -14,7 +20,10 @@ import sys
 import tempfile
 import zipfile
 
-ROOT = Path(__file__).resolve().parents[1]
+# The scripts that do the qualifying always come from this script's own tree;
+# the checkout being qualified defaults to the same tree.
+SCRIPTS = Path(__file__).resolve().parent
+ROOT = SCRIPTS.parent
 REPOSITORY = "esaueng/remus"
 PACKAGE_ROOTS = ("crates/wasm/pkg", "crates/wasm-io/pkg")
 # Every part of both runtime suites; scripts/test-packaged-suite-parts.mjs
@@ -86,18 +95,18 @@ def api(path, binary=False):
     return output if binary else json.loads(output)
 
 
-def identical_inputs(source):
+def identical_inputs(source, checkout=ROOT):
     for args in (("merge-base", "--is-ancestor", source, "origin/main"),
                  ("diff", "--quiet", source, "HEAD", "--", ".",
                   ":(exclude)crates/wasm/pkg/**", ":(exclude)crates/wasm-io/pkg/**"),
                  ("diff", "--quiet", "HEAD", "--", ".",
                   ":(exclude)crates/wasm/pkg/**", ":(exclude)crates/wasm-io/pkg/**")):
-        if subprocess.run(["git", *args], cwd=ROOT, capture_output=True, check=False).returncode:
+        if subprocess.run(["git", *args], cwd=checkout, capture_output=True, check=False).returncode:
             return False
     return True
 
 
-def reuse(trace=None):
+def reuse(trace=None, checkout=ROOT):
     trace = QualificationTrace() if trace is None else trace
     if os.environ.get("GITHUB_REPOSITORY", "").lower() != REPOSITORY.lower():
         trace.reject("repository_mismatch")
@@ -113,7 +122,7 @@ def reuse(trace=None):
             trace.reject("ineligible_run")
             continue
         trace.stage = "source_inputs"
-        if not identical_inputs(run["head_sha"]):
+        if not identical_inputs(run["head_sha"], checkout):
             trace.reject("inputs_or_ancestry_differ")
             continue
         trace.stage = "artifact_metadata"
@@ -142,27 +151,31 @@ def reuse(trace=None):
             # Never extract an Actions artifact into the source checkout. The
             # existing installer validates every path/type before extraction.
             trace.stage = "archive_install"
-            subprocess.run([sys.executable, str(ROOT / "scripts/install-wasm-package-archive.py"),
+            subprocess.run([sys.executable, str(SCRIPTS / "install-wasm-package-archive.py"),
                             str(archive), *PACKAGE_ROOTS], cwd=directory, check=True)
-            checker = runpy.run_path(str(ROOT / "scripts/check-wasm-package-integrity.py"))
+            checker = runpy.run_path(str(SCRIPTS / "check-wasm-package-integrity.py"))
             trace.stage = "package_integrity"
-            checker["check"]("HEAD", ROOT, rebuilt_directory=directory)
+            checker["check"]("HEAD", checkout, rebuilt_directory=directory)
             # The size gate must consume the verified bytes, even if an
             # earlier local test modified the checkout's generated files.
             trace.stage = "verified_package_install"
-            subprocess.run([sys.executable, str(ROOT / "scripts/install-wasm-package-archive.py"),
-                            str(archive), *PACKAGE_ROOTS], cwd=ROOT, check=True)
+            subprocess.run([sys.executable, str(SCRIPTS / "install-wasm-package-archive.py"),
+                            str(archive), *PACKAGE_ROOTS], cwd=checkout, check=True)
         return {"source": run["head_sha"], "run": run["html_url"],
                 "artifact": artifact["id"], "digest": artifact["digest"]}
     return None
 
 
-def main():
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--checkout", type=Path, default=ROOT,
+                        help="checkout whose committed packages are qualified (default: this tree)")
+    checkout = parser.parse_args(argv).checkout.resolve()
     proof = None
     trace = QualificationTrace()
     reason = None
     try:
-        proof = reuse(trace)
+        proof = reuse(trace, checkout)
     except Exception as error:
         # An unavailable, expired, malformed or mismatched proof requires the
         # unchanged clean rebuild. Never turn retrieval failure into success.

@@ -90,7 +90,7 @@ jobs:
       - uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
         if: matrix.os != 'windows-11-arm'
         with:
-          tool: wasm-pack
+          tool: wasm-pack@0.15.0
       # These two Windows build helpers are x64-emulated; the compiler, Cargo,
       # Node process and both executed Remus geometry programs must be ARM64.
       - uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1

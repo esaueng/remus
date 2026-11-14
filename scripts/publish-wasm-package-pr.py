@@ -7,7 +7,11 @@ reads `WASM-Size:` lines from the refresh PR's own description. So the
 description carries the declarations of those source PRs, each marked with its
 PR number. When no source PR declared one, nothing is carried and the gate
 still fails on growth above its threshold, so a human reviews it.
+
+Only merge-time descriptions are carried: a description edited after its PR
+merged could add a declaration nobody reviewed, so its lines are dropped.
 """
+from datetime import datetime
 import json
 import os
 import re
@@ -37,6 +41,32 @@ REFRESH_BRANCH = 'codex/wasm-refresh-'
 
 def api(path):
     return json.loads(run('gh', 'api', path))
+
+
+# GitHub exposes when a description was last edited only through GraphQL.
+DESCRIPTION_QUERY = ('query($owner: String!, $name: String!, $number: Int!) {'
+                     ' repository(owner: $owner, name: $name) {'
+                     ' pullRequest(number: $number) { body mergedAt lastEditedAt } } }')
+
+
+def timestamp(value):
+    return datetime.fromisoformat(value.replace('Z', '+00:00'))
+
+
+def merge_time_body(repo, number):
+    """A merged PR's description, or None when it was edited after the merge.
+
+    The body and its edit time come from one response, so an edit cannot land
+    between reading the one and checking the other.
+    """
+    owner, name = repo.split('/', 1)
+    pull = json.loads(run('gh', 'api', 'graphql', '-f', f'query={DESCRIPTION_QUERY}',
+                          '-f', f'owner={owner}', '-f', f'name={name}',
+                          '-F', f'number={number}'))['data']['repository']['pullRequest']
+    edited, merged = pull['lastEditedAt'], pull['mergedAt']
+    if not merged or (edited and timestamp(edited) > timestamp(merged)):
+        return None
+    return pull['body']
 
 
 def size_declarations(body):
@@ -114,19 +144,28 @@ def size_section(repo, source):
     heading = '## WASM size declarations\n\n'
     try:
         base = previous_source(repo, source)
-        carried = [f'{line} (carried from #{pull["number"]})'
-                   for pull in merged_prs(repo, base, source)
-                   for line in size_declarations(pull.get('body'))
-                   if not CARRIED.search(line)]
+        carried, edited = [], []
+        for pull in merged_prs(repo, base, source):
+            body = merge_time_body(repo, pull['number'])
+            if body is None:
+                edited.append(f'#{pull["number"]}')
+                continue
+            carried += [f'{line} (carried from #{pull["number"]})'
+                        for line in size_declarations(body) if not CARRIED.search(line)]
     except (subprocess.CalledProcessError, RuntimeError, KeyError, TypeError, ValueError) as error:
         return (heading + f'Could not collect the source PRs\' `{DECLARATION_PREFIX}` lines ({error}). '
                 'If the size gate reports undeclared growth, copy the source PRs\' declarations here.\n')
     span = f'`{base[:12]}`..`{source[:12]}`'
+    skipped = ''
+    if edited:
+        skipped = ('\nNot carried, because the description changed after the PR merged: '
+                   + ', '.join(edited) + '. Review those PRs and declare any growth here by hand.\n')
     if not carried:
         return (heading + f'No source PR merged in {span} declared a `{DECLARATION_PREFIX}` line. '
-                'If the size gate reports undeclared growth, review those PRs and declare it here.\n')
+                'If the size gate reports undeclared growth, review those PRs and declare it here.\n'
+                + skipped)
     return (heading + f'Carried from the source PRs merged in {span}, whose combined growth this '
-            'refresh packages:\n\n' + '\n'.join(carried) + '\n')
+            'refresh packages:\n\n' + '\n'.join(carried) + '\n' + skipped)
 
 
 def close_superseded(repo, source, branch, replacement):

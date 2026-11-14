@@ -54,7 +54,7 @@ jobs:
           node scripts/perf/face-drag-session/drag_session_bench.test.cjs
       - uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
         with:
-          tool: wasm-pack
+          tool: wasm-pack@0.15.0
       - name: Build and qualify baseline packages
         working-directory: baseline
         run: cargo xtask wasm-build

@@ -21,6 +21,12 @@ normalization retain their existing treatment. Verified bytes are then
 installed for the size gate. A source, binary, glue, export, metadata,
 toolchain or test change cannot borrow an unrelated qualification result.
 
+CI runs the integration base commit's copies of the reuse script, the archive
+installer and the integrity checker against the pull request checkout
+(`--checkout`), so a diff cannot change a committed package and weaken its
+checks together. A base whose reuse script predates `--checkout` reuses
+nothing and falls back to the clean rebuild.
+
 Expired/missing artifacts, reruns, incomplete jobs, failed comparisons and
 retrieval errors select the unchanged clean rebuild and full package suites.
 No arbitrary PR artifact or cached green check is used as a proof. Existing

@@ -136,7 +136,7 @@ class IntegrityTests(unittest.TestCase):
         self.assertIn("    needs: integrity", workflow.split("  version:\n", 1)[1])
         clean = workflow.index("rm -rf -- crates/wasm/pkg crates/wasm-io/pkg")
         build = workflow.index("cargo xtask wasm-build")
-        compare = workflow.index("python3 scripts/check-wasm-package-integrity.py --revision HEAD")
+        compare = workflow.index('python3 "$CHECKERS/scripts/check-wasm-package-integrity.py" --revision HEAD')
         self.assertLess(clean, build)
         self.assertLess(build, compare)
         self.assertNotIn("pull_request_target", workflow)

@@ -40,7 +40,7 @@ Outside the fan-in: the `wasm-size` comment job and `public-commit-metadata` in 
 
 There are no separate Format, Layer Boundaries, Unused Dependencies, TOML Format, Apache Lineage or Doc Paths jobs: those checks run inside Repository Policy, so a failure in one shows up as that job failing. In CI an integration test is reported under a generated harness binary, e.g. `remus-operations::ci_harness_3 foo::test_name` for a test in `crates/operations/tests/<foo>.rs`; locally `cargo test -p remus-operations --test foo` is unchanged (`docs/ci-cadence.md`, "Native tests in CI"). A merge-group run executes only the light gates (Repository Policy, Secrets Scan, Documentation).
 
-`benchmark.yml` contributes `Kernel perf` and `Publish benchmark` (PR runs only with the `ci:benchmark` label); neither is in `CI Pass`. `blacksmith-sh` posts a `[code]smith` entry that reports SKIPPED — it is a runner-provider App that no workflow here uses, not a reviewer or a quality check.
+`benchmark.yml` contributes `Kernel perf` plus `Publish benchmark` (main baseline runs) or `Compare benchmark` (PR runs, only with the `ci:benchmark` label); none is in `CI Pass`. `blacksmith-sh` posts a `[code]smith` entry that reports SKIPPED — it is a runner-provider App that no workflow here uses, not a reviewer or a quality check.
 
 The size jobs check out `ref: ${{ github.event.pull_request.base.sha }}` (your PR's real base) and compare the PR build with the package COMMITTED there, not with a build of the base source. If a kernel change merged into the base and its package refresh has not landed yet, its growth shows up in your delta (and can trip the 64 KiB `WASM-Size:` rule); wait for the refresh or declare it. The refresh PR itself carries the `WASM-Size:` lines of the source PRs merged since the previous refresh (`scripts/publish-wasm-package-pr.py`) when it can collect them; when collection fails the description says so and the declaration has to be added by hand (as on #1208); a refresh that still fails the gate packages growth no source PR declared, so review those PRs and declare it in the refresh PR. Otherwise a nonzero delta on a change that cannot reach the binary (a `#[cfg(test)]`-only or docs-only diff) deserves a second look. `Cargo.lock` is committed, so both builds resolve from their checked-in locks; if your diff does not touch the lockfile, resolution is identical on both sides and a delta on a test-only diff is genuinely unexplained — investigate rather than blaming dependency drift.
 
@@ -136,7 +136,7 @@ Supply-chain jobs can fail on a PR that never touched dependencies. `Cargo.lock`
 
 ### cargo-deny / audit / OSV advisories
 
-The `deny` job runs cargo-deny-action against `deny.toml`; the `audit` job runs `cargo audit` on a freshly generated lockfile. Both gate PRs through `CI Pass`. OSV lives in its own workflow (`.github/workflows/osv-scan.yml`): on PRs it is report-only and does not gate; pushes to `main` and the Monday 06:00 UTC schedule fail closed.
+The `deny` job runs cargo-deny-action against `deny.toml`; the `audit` job runs `cargo audit` on a freshly generated lockfile. Both gate PRs through `CI Pass`. OSV lives in its own workflow (`.github/workflows/osv-scan.yml`): on PRs and merge-queue entries its `OSV Scan` check fails when the lockfiles add a vulnerability relative to the base commit, and it blocks a merge only while it is a required status check (a repository setting); pushes to `main` and the Monday 06:00 UTC schedule fail on any detected vulnerability.
 
 Policy: do NOT widen the `deny.toml` license allowlist and do NOT add blanket ignore entries to get green. Current state to preserve: `licenses.allow` has eight permissive entries, the four non-obvious ones (CC0-1.0, ISC, BSD-2-Clause, BSD-3-Clause) carrying a provenance comment that names the dependency tree pulling them in, and there is no `[advisories] ignore` list at all (`[advisories]` sets only `unmaintained` and `yanked`).
 
@@ -163,7 +163,7 @@ Bumping wasm-bindgen is its own change with its own PR. Never bump it as a drive
 ### Scheduled workflows
 
 - `.github/workflows/mutants.yml` (Mutation Testing): Sundays 02:00 UTC plus manual dispatch. Runs cargo-mutants on `remus-math` and `remus-algo` and uploads a report artifact. It never runs on PRs and never gates them; a red scheduled run is a signal to improve tests, not a merge blocker.
-- `.github/workflows/osv-scan.yml`: Mondays 06:00 UTC plus main pushes, fail-closed there; report-only on PRs (see above).
+- `.github/workflows/osv-scan.yml`: Mondays 06:00 UTC plus main pushes, fail-closed there; on PRs and merge-queue entries it fails only on newly introduced vulnerabilities (see above).
 - `benchmark.yml` runs daily (06:29 UTC), on manual dispatch and on PRs labelled `ci:benchmark`; it is not part of `CI Pass`.
 - `daily-validation.yml` (Daily dependency validation): daily 06:43 UTC, Cargo Deny, the advisory audit and MSRV on protected `main`. The full schedule list is in `docs/ci-cadence.md`, "Schedules".
 
@@ -173,9 +173,9 @@ Bumping wasm-bindgen is its own change with its own PR. Never bump it as a drive
 |---------|-------|--------|
 | `git push` hangs or is rejected | Not the historical SSH problem: `origin` is HTTPS with no rewrite. Suspect expired keychain credentials or a network block | `git ls-remote origin` to isolate auth from the push itself |
 | `origin/<branch>` does not match what you pushed | You pushed via an explicit URL; those do not update tracking refs | Verify with `gh pr view <N> --json headRefOid` or `git ls-remote` |
-| commitlint prints `✖ found N problems` yet the commit succeeded | The commit-msg hook swallows commitlint failures and exits 0 by design of its fallback | Treat as a rejection: `git commit --amend` to `type(scope): subject` form |
+| commitlint prints `✖ found N problems` and the commit is rejected | The message is not a conventional commit | Rewrite it in `type(scope): subject` form and commit again |
 | pre-commit fails on clippy warnings you did not write | Pre-existing breakage on the branch base | Stop and report; never `--no-verify` |
-| `⚠️ commitlint not available` warning on commit | `node_modules` missing, but only if no `✖` lines print above it; the same warning also follows a real lint failure (see the `✖` row) because the hook's fallback fires on any nonzero commitlint exit | If `✖` lines precede it, fix the message; otherwise `npm install` at repo root. Either way the commit went through unchecked, re-verify the message manually |
+| `⚠️ commitlint not available` warning on commit | `node_modules` is missing, so the hook found no `commitlint` binary | `npm ci --ignore-scripts` at repo root; the commit went through unchecked, so verify the message by hand |
 | PR shows mergeable with nothing green yet | `mergeable` only means conflict-free; `mergeStateStatus` carries the check state | Read `mergeStateStatus`: `BLOCKED` waits on `CI Pass` or an open review thread |
 | A review check never appears, however long you poll | No reviewer app is installed on this repo; the check does not exist | Stop waiting. Self-review the diff and report that no reviewer ran |
 | Enqueued PR left the queue without merging | Its merge-group run (`gh-readonly-queue/main/pr-<N>-*`) failed or timed out, tested against current `main` | Read that `merge_group` run, fix on the branch, enqueue again |
@@ -206,4 +206,4 @@ Bumping wasm-bindgen is its own change with its own PR. Never bump it as a drive
 - "gh pr view showed no comments, so there are no findings": inline findings live on `pulls/<N>/comments` (the API), check both surfaces.
 - "Branch protection will catch it": protection checks only `CI Pass`, freshness and resolved threads, admins bypass it, and three checks sit outside it. It catches a red `CI Pass` or an open thread, nothing else.
 - "The plan doc helps reviewers, commit it": working plans and specs never get committed.
-- "The commit went through, so the message passed commitlint": the commit-msg hook never blocks. Check the hook output for `✖` lines and amend if any appeared.
+- "The commit went through, so the message passed commitlint": only when commitlint was installed. A `commitlint not available` warning means nothing checked the message.

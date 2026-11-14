@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Check public commit author and committer metadata without printing identities."""
+"""Check public commit identities without printing them.
+
+Covers the author, the committer and every `Co-authored-by:` and
+`Signed-off-by:` trailer, since GitHub publishes all of them.
+"""
 
 from __future__ import annotations
 
@@ -22,8 +26,17 @@ DEFAULT_NAMES = {
 }
 ALLOWED_EMAIL_DOMAINS = {"users.noreply.github.com"}
 # Exact public automation identities only; personal addresses still fail.
-PUBLIC_BOT_IDENTITIES = {"noreply@anthropic.com": {"claude", "claude code"}}
+# Claude's attribution trailers may name the model, as in "Claude Opus 5.5";
+# Dependabot signs off with GitHub's support address.
+PUBLIC_BOT_IDENTITIES = {
+    "noreply@anthropic.com": re.compile(r"claude(?: code| (?:opus|sonnet|haiku|fable) [0-9]+(?:\.[0-9]+)*)?"),
+    "support@github.com": re.compile(r"dependabot\[bot\]"),
+}
 EMAIL_PATTERN = re.compile(r"^([^\s@<>]+)@([^\s@<>]+)$")
+# Identity trailers anywhere in the message, not only in git's final trailer
+# block: a line GitHub might attribute is checked rather than skipped.
+TRAILER_PATTERN = re.compile(r"^[ \t]*(co-authored-by|signed-off-by)[ \t]*:(.*)$", re.IGNORECASE)
+TRAILER_IDENTITY = re.compile(r"^(.*?)[ \t]*<([^<>]*)>$")
 
 
 def validate_identity(name: str, email: str) -> list[str]:
@@ -34,15 +47,32 @@ def validate_identity(name: str, email: str) -> list[str]:
         problems.append("name is an obvious placeholder")
 
     match = EMAIL_PATTERN.fullmatch(email.lower())
+    bot_name = PUBLIC_BOT_IDENTITIES.get(email.lower())
     if not match:
         problems.append("email is malformed")
     elif (
         match.group(2) not in ALLOWED_EMAIL_DOMAINS
         and email.lower() != "noreply@github.com"
-        and name.strip().lower() not in PUBLIC_BOT_IDENTITIES.get(email.lower(), set())
+        and not (bot_name and bot_name.fullmatch(name.strip().lower()))
     ):
         problems.append("email must use a GitHub noreply domain or an approved public bot identity")
     return problems
+
+
+def trailer_identities(message: str) -> list[tuple[str, str | None, str | None]]:
+    """(label, name, email) for each identity trailer; name and email are None when unparseable."""
+    identities: list[tuple[str, str | None, str | None]] = []
+    for line in message.splitlines():
+        trailer = TRAILER_PATTERN.match(line)
+        if not trailer:
+            continue
+        label = f"{trailer.group(1).lower()} trailer"
+        identity = TRAILER_IDENTITY.match(trailer.group(2).strip())
+        if identity:
+            identities.append((label, identity.group(1), identity.group(2)))
+        else:
+            identities.append((label, None, None))
+    return identities
 
 
 def validate_commits(commits: list[dict[str, str]]) -> list[str]:
@@ -54,23 +84,31 @@ def validate_commits(commits: list[dict[str, str]]) -> list[str]:
         ):
             for problem in validate_identity(commit[name_key], commit[email_key]):
                 findings.append(f"{commit['hash'][:12]}: {label} {problem}")
+        for label, name, email in trailer_identities(commit.get("message", "")):
+            if name is None or email is None:
+                findings.append(f"{commit['hash'][:12]}: {label} is not of the form 'Name <email>'")
+                continue
+            for problem in validate_identity(name, email):
+                findings.append(f"{commit['hash'][:12]}: {label} {problem}")
     return findings
 
 
 def read_commits(base: str, head: str) -> list[dict[str, str]]:
-    fmt = "%H%x00%an%x00%ae%x00%cn%x00%ce%x00%x1e"
+    fmt = "%H%x00%an%x00%ae%x00%cn%x00%ce%x00%B%x1e"
     output = subprocess.run(
         ["git", "log", f"--format={fmt}", "--no-decorate", f"{base}..{head}"],
         check=True,
         capture_output=True,
-        text=True,
+        # Messages carry non-ASCII text; never depend on the platform codec.
+        encoding="utf-8",
+        errors="replace",
     ).stdout
     commits: list[dict[str, str]] = []
     for record in output.split("\x1e"):
         if not record.strip():
             continue
         fields = record.removeprefix("\n").split("\x00")
-        if len(fields) < 5:
+        if len(fields) != 6:
             raise ValueError("could not parse commit metadata")
         commits.append(
             {
@@ -79,6 +117,7 @@ def read_commits(base: str, head: str) -> list[dict[str, str]]:
                 "author_email": fields[2],
                 "committer_name": fields[3],
                 "committer_email": fields[4],
+                "message": fields[5],
             }
         )
     return commits

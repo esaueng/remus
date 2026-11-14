@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 
-npx --no -- commitlint --edit "$1" 2>/dev/null || {
+# Skip only when commitlint is not installed; a lint failure rejects the commit.
+PATH="$PWD/node_modules/.bin:$PATH"
+if ! command -v commitlint >/dev/null 2>&1; then
   echo "⚠️  commitlint not available, skipping commit message check."
-  echo "   Run 'npm install' to enable conventional commit enforcement."
-}
+  echo "   Run 'npm ci --ignore-scripts' to enable conventional commit enforcement."
+  exit 0
+fi
+exec commitlint --edit "$1"

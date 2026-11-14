@@ -54,7 +54,7 @@ cancellation or missing result fails the gate.
 - **Pull request:** the tiers selected for the diff between the PR's base
   and its merge ref. A new push cancels the PR's running CI.
 - **Merge queue:** light gates only: Repository Policy, Secrets Scan and
-  Documentation in `CI Pass`, plus the privacy, dependency-review, WASM
+  Documentation in `CI Pass`, plus the privacy, dependency-review, OSV, WASM
   version and performance-harness-contract workflows. The pull request
   already ran its tiers on its merge ref, and the `main` push of the squashed
   tree runs them again. Two PRs that pass alone but break together therefore
@@ -95,7 +95,7 @@ All times UTC; scheduled runs use `main`.
 | `mutants.yml` | Sunday 02:00 | sharded mutation testing |
 | `fuzz.yml` | Sunday 03:30 | fuzz targets |
 | `opseq81-campaign.yml` | Sunday 04:30 | bounded operation-sequence campaign |
-| `osv-scan.yml` | Monday 06:00 | OSV scan (also on PRs, report-only, and on `main` pushes) |
+| `osv-scan.yml` | Monday 06:00 | OSV scan (also on `main` pushes, and on PRs and merge groups, where it fails on newly introduced vulnerabilities) |
 
 There is no daily full native run: every `main` push with a source change
 already runs the complete native suite and Clippy.

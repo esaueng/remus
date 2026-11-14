@@ -47,12 +47,33 @@ jobs:
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
+      # A diff may change a committed package and the scripts that check it
+      # together, so the checks below run the BASE commit's copies against
+      # this checkout, as the size gate does.
+      - name: Check out the base commit's package checkers
+        id: checkers
+        if: steps.packages.outputs.changed == 'true'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+        run: |
+          base="$RUNNER_TEMP/checker-base"
+          git worktree add --detach "$base" "$BASE_SHA"
+          echo "dir=$base" >> "$GITHUB_OUTPUT"
       - name: Reuse an identical protected-main package qualification
         id: qualification
         if: steps.packages.outputs.changed == 'true'
         env:
+          CHECKERS: ${{ steps.checkers.outputs.dir }}
           GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/reuse-wasm-qualification.py
+        run: |
+          # Bootstrap: a base script without --checkout would qualify the base
+          # tree instead of this one, so such a base reuses nothing.
+          if ! grep -qs -- '--checkout' "$CHECKERS/scripts/reuse-wasm-qualification.py"; then
+            echo "::notice::The base commit's reuse script cannot qualify another checkout; rebuilding both packages."
+            echo "reused=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          python3 "$CHECKERS/scripts/reuse-wasm-qualification.py" --checkout "$GITHUB_WORKSPACE"
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: steps.packages.outputs.changed == 'true'
         with:
@@ -68,12 +89,24 @@ jobs:
           tool: wasm-pack@0.15.0
       - name: Rebuild both packages and compare every committed file
         if: steps.packages.outputs.changed == 'true' && steps.qualification.outputs.reused != 'true'
+        env:
+          CHECKERS: ${{ steps.checkers.outputs.dir }}
         run: |
+          # Fail closed: main has carried this checker far longer than the size
+          # gate, so a base without it is stale rather than a bootstrap to skip.
+          if [ ! -f "$CHECKERS/scripts/check-wasm-package-integrity.py" ]; then
+            echo "::error::The base commit has no scripts/check-wasm-package-integrity.py; rebase onto main."
+            exit 1
+          fi
           # Remove committed files first: a build must not inherit extra payload
           # files planted in a package that wasm-pack would otherwise leave alone.
           rm -rf -- crates/wasm/pkg crates/wasm-io/pkg
+          # This build runs the PR's own xtask, build.rs and proc macros on this
+          # runner, so hostile build code could alter $CHECKERS or reproduce
+          # planted bytes. The comparison catches honest drift only; build
+          # tooling changes need human review (SECURITY.md, Supply Chain).
           cargo xtask wasm-build
-          python3 scripts/check-wasm-package-integrity.py --revision HEAD
+          python3 "$CHECKERS/scripts/check-wasm-package-integrity.py" --revision HEAD
       # A package-only diff (a refresh PR) runs no heavy CI tier
       # (scripts/classify-ci-changes.py), so CI's WASM Size Gate skips it. Apply
       # the same gate here to the modules just proven to match a source build,
