@@ -148,7 +148,10 @@ a valid Stored (uncompressed) single-entry ZIP. `threemf_reader` mutates raw
 ZIP bytes, so CRC and deflate checks refuse almost every input before the XML
 parser runs; this target reaches the XML parser, component and build
 resolution, and transform flattening on every input. A ZIP refusal of the
-wrapper's archive is a harness bug and fails the run.
+wrapper's archive is a harness bug and fails the run. `glb_reader` and
+`threemf_reader` each start from one valid container, a 1 x 2 x 3 box, so a
+campaign begins with an input that reaches `import_mesh`;
+`crates/io/tests/fuzz_mesh_seeds.rs` checks both seeds still import.
 
 `brep_reader` drives the ASCII BREP import (`brep::read_brep_with_limits`)
 from the committed `crates/io/tests/data/brep` fixtures. `step_assembly`
