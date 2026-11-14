@@ -6,12 +6,19 @@ Consumers install `crates/wasm/pkg` and `crates/wasm-io/pkg` straight from
 code it runs (SECURITY.md, Supply Chain). So only the package bot's refresh PRs,
 which `publish.yml` builds from protected `main`, may change those directories.
 
-Under `pull_request_target` this script and its workflow come from the base
-branch, never from the PR. It reads the PR's changed files from the API as data
-and publishes the `package-source` commit status on the PR head, which a fork
-PR's read-only token cannot forge. Under `merge_group` it re-checks the queued
-PR the same way; that copy comes from the group head, so the PR run is the
-boundary and the queue run only keeps the required status present.
+This script and `.github/workflows/package-source.yml` always run from the
+default branch (`pull_request_target` and `workflow_run`), never from PR or
+merge-group code, and treat everything they read as data. The verdict is
+published as the `package-source` check run by a GitHub App whose key lives in
+an environment that PR and merge-group workflows cannot use, so requiring the
+check with that App as its source makes it unforgeable by PR code.
+
+- Merge queue (the boundary): `Package source request` runs on `merge_group`
+  without credentials; its completion triggers the trusted run, which reads the
+  queue commit's own diff against its single parent. That diff is exactly what
+  the queued PR adds to `main` and cannot change after the fact.
+- Pull request (early feedback): checks the PR's file list for the event's head
+  SHA, and publishes nothing when the PR head moved during the check.
 """
 
 from __future__ import annotations
@@ -27,11 +34,16 @@ import urllib.request
 PACKAGE_ROOTS = ("crates/wasm/pkg/", "crates/wasm-io/pkg/")
 PACKAGE_BOT = "remus-package-bot[bot]"
 REFRESH_BRANCH_PREFIX = "codex/wasm-refresh-"
-STATUS_CONTEXT = "package-source"
-# The pull request files API lists at most this many files.
+CHECK_NAME = "package-source"
+# The pull request files and commit APIs list at most this many files.
 MAX_LISTED_FILES = 3000
-QUEUE_REF = re.compile(r"^(?:refs/heads/)?gh-readonly-queue/[^/].*/pr-([1-9][0-9]*)-[0-9a-f]{40}$")
+QUEUE_BRANCH = re.compile(r"^(?:refs/heads/)?gh-readonly-queue/main/pr-([1-9][0-9]*)-[0-9a-f]{40}$")
+SHA = re.compile(r"^[0-9a-f]{40}$")
 API = "https://api.github.com"
+
+
+class Stale(Exception):
+    """The PR moved while it was being checked; a newer run owns the verdict."""
 
 
 def package_paths(files: list[dict]) -> list[str]:
@@ -54,10 +66,9 @@ def is_package_bot_pr(pr: dict, repository: str) -> bool:
     )
 
 
-def verdict(pr: dict, files: list[dict], repository: str) -> tuple[bool, str]:
-    """(passes, description) for one PR and its full changed-file list."""
-    expected = pr.get("changed_files")
-    if not isinstance(expected, int) or expected > MAX_LISTED_FILES or len(files) < expected:
+def verdict(pr: dict, files: list[dict], repository: str, expected: int | None) -> tuple[bool, str]:
+    """(passes, summary) for one change. `expected` is the file count, if known."""
+    if len(files) >= MAX_LISTED_FILES or (expected is not None and (expected > MAX_LISTED_FILES or len(files) != expected)):
         return False, "Could not list every changed file; refusing to vouch for the packages."
     touched = package_paths(files)
     if not touched:
@@ -68,10 +79,10 @@ def verdict(pr: dict, files: list[dict], repository: str) -> tuple[bool, str]:
     return False, f"Only the package bot may change committed packages: {shown}"
 
 
-def queued_pr_number(head_ref: str) -> int:
-    match = QUEUE_REF.match(head_ref or "")
+def queued_pr_number(branch: str) -> int:
+    match = QUEUE_BRANCH.match(branch or "")
     if not match:
-        raise ValueError(f"unexpected merge queue ref: {head_ref!r}")
+        raise ValueError(f"unexpected merge queue branch: {branch!r}")
     return int(match.group(1))
 
 
@@ -94,28 +105,73 @@ def next_link(link_header: str) -> str | None:
     return None
 
 
-def list_files(repository: str, number: int, token: str) -> list[dict]:
-    url: str | None = f"{API}/repos/{repository}/pulls/{number}/files?per_page=100"
+def paged_files(url: str, token: str, key: str | None = None) -> list[dict]:
+    """Every file from a paginated list (`key` selects it from an object page)."""
     files: list[dict] = []
-    while url:
-        page, link = request("GET", url, token)
-        files.extend(page)
-        url = next_link(link)
+    next_url: str | None = url
+    while next_url:
+        page, link = request("GET", next_url, token)
+        files.extend(page[key] if key else page)
+        next_url = next_link(link)
     return files
 
 
-def publish(repository: str, sha: str, token: str, state: str, description: str, target: str) -> None:
+def check_pull_request(event: dict, repository: str, token: str) -> tuple[str, bool, str]:
+    """Verdict for the head SHA named by a pull_request_target event."""
+    number = int(event["pull_request"]["number"])
+    sha = event["pull_request"]["head"]["sha"]
+    if not SHA.match(sha):
+        raise ValueError("unexpected head SHA")
+    pr_url = f"{API}/repos/{repository}/pulls/{number}"
+    before, _ = request("GET", pr_url, token)
+    if before["head"]["sha"] != sha:
+        raise Stale(sha)
+    files = paged_files(f"{pr_url}/files?per_page=100", token)
+    after, _ = request("GET", pr_url, token)
+    # The file list belongs to this head and base only if neither moved meanwhile.
+    if after["head"]["sha"] != sha or after["base"]["sha"] != before["base"]["sha"]:
+        raise Stale(sha)
+    passed, summary = verdict(after, files, repository, after.get("changed_files"))
+    return sha, passed, summary
+
+
+def check_merge_group(event: dict, repository: str, token: str) -> tuple[str, bool, str]:
+    """Verdict for a queue commit, from its own diff against its single parent."""
+    run = event["workflow_run"]
+    if run.get("event") != "merge_group" or (run.get("head_repository") or {}).get("full_name") != repository:
+        raise ValueError("not a merge group run of this repository")
+    sha = run["head_sha"]
+    if not SHA.match(sha):
+        raise ValueError("unexpected head SHA")
+    number = queued_pr_number(run.get("head_branch", ""))
+    commit_url = f"{API}/repos/{repository}/commits/{sha}?per_page=100"
+    commit, _ = request("GET", commit_url, token)
+    if len(commit.get("parents") or []) != 1:
+        return sha, False, "Queue commit is not a single squash commit; refusing to vouch for the packages."
+    files = paged_files(commit_url, token, key="files")
+    pr, _ = request("GET", f"{API}/repos/{repository}/pulls/{number}", token)
+    passed, summary = verdict(pr, files, repository, None)
+    return sha, passed, summary
+
+
+def publish(repository: str, sha: str, token: str, passed: bool, summary: str) -> None:
     request(
         "POST",
-        f"{API}/repos/{repository}/statuses/{sha}",
+        f"{API}/repos/{repository}/check-runs",
         token,
-        {"state": state, "context": STATUS_CONTEXT, "description": description[:140], "target_url": target},
+        {
+            "name": CHECK_NAME,
+            "head_sha": sha,
+            "status": "completed",
+            "conclusion": "success" if passed else "failure",
+            "output": {"title": summary[:200], "summary": summary},
+        },
     )
 
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--publish", action="store_true", help="post the commit status (CI only)")
+    parser.add_argument("--publish", action="store_true", help="publish the check run (CI only)")
     args = parser.parse_args(argv)
 
     token = os.environ["GH_TOKEN"]
@@ -123,28 +179,24 @@ def main(argv: list[str]) -> int:
     event_name = os.environ["GITHUB_EVENT_NAME"]
     with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as handle:
         event = json.load(handle)
-    target = f"{os.environ.get('GITHUB_SERVER_URL', 'https://github.com')}/{repository}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"
 
-    if event_name == "pull_request_target":
-        number = int(event["pull_request"]["number"])
-        sha = event["pull_request"]["head"]["sha"]
-    elif event_name == "merge_group":
-        sha = event["merge_group"]["head_sha"]
-        number = queued_pr_number(event["merge_group"]["head_ref"])
-    else:
+    check = {"pull_request_target": check_pull_request, "workflow_run": check_merge_group}.get(event_name)
+    if check is None:
         print(f"unsupported event: {event_name}", file=sys.stderr)
         return 1
-
-    if args.publish:
-        publish(repository, sha, token, "pending", "Checking who changes the committed packages.", target)
     try:
-        pr, _ = request("GET", f"{API}/repos/{repository}/pulls/{number}", token)
-        passed, description = verdict(pr, list_files(repository, number, token), repository)
-    except (urllib.error.URLError, KeyError, ValueError, TypeError) as error:
-        passed, description = False, f"Could not verify the package source: {type(error).__name__}"
-    print(description)
+        sha, passed, summary = check(event, repository, token)
+    except Stale:
+        print("The PR head or base moved during the check; the newer run publishes the verdict.")
+        return 0
+    except (OSError, KeyError, ValueError, TypeError, json.JSONDecodeError) as error:
+        # Without a trustworthy SHA there is nothing to publish on: a missing
+        # required check blocks the merge, which is the fail-closed outcome.
+        print(f"Could not verify the package source: {type(error).__name__}: {error}", file=sys.stderr)
+        return 1
+    print(summary)
     if args.publish:
-        publish(repository, sha, token, "success" if passed else "failure", description, target)
+        publish(repository, sha, os.environ["CHECKS_TOKEN"], passed, summary)
     return 0 if passed else 1
 
 

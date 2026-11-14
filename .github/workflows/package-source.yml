@@ -1,41 +1,60 @@
 name: Package source
 
 # Only the package bot's refresh PRs may change the committed WASM packages
-# (SECURITY.md, Supply Chain). Under pull_request_target this definition and
-# scripts/check_package_source.py run from the base branch, never from the PR:
-# nothing here checks out or executes PR content. The script reads the PR's
-# changed files from the API as data and publishes the `package-source` commit
-# status on the PR head, which a fork PR's read-only token cannot forge. The
-# merge_group run re-checks the queued PR so the required status is present on
-# the group head; its copy comes from the group, so the PR run is the boundary.
+# (SECURITY.md, Supply Chain). Both triggers run this definition and
+# scripts/check_package_source.py from the default branch, never from PR or
+# merge-group code, and nothing here checks out or executes that code. The
+# verdict is published as the `package-source` check run with the history
+# privacy App, whose key lives in the `history-privacy` environment that only
+# default-branch runs can use; require the check with that App as its source.
+#
+# - workflow_run (the boundary): `Package source request` runs on merge_group
+#   without credentials; this run then checks the queue commit's own diff.
+# - pull_request_target (early feedback): checks the event's PR head, including
+#   after a retarget (`edited`).
 on:
   pull_request_target:
-    types: [opened, synchronize, reopened]
-  merge_group:
+    types: [opened, synchronize, reopened, edited]
+  workflow_run:
+    workflows: ["Package source request"]
+    types: [completed]
 
 permissions: {}
 
+# Never cancel: each run binds its verdict to its own head SHA.
 concurrency:
-  group: package-source-${{ github.event.pull_request.number || github.event.merge_group.head_sha }}
-  cancel-in-progress: true
+  group: package-source-${{ github.event.pull_request.number || github.event.workflow_run.head_sha || github.run_id }}
+  cancel-in-progress: false
 
 jobs:
   package-source:
+    if: >-
+      github.event_name == 'pull_request_target' ||
+      (github.event.workflow_run.event == 'merge_group' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
     name: Committed packages come from the package bot
+    environment: history-privacy
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
       pull-requests: read
-      statuses: write
     steps:
-      # The default ref is the base branch under pull_request_target.
+      # The default ref is the default branch for both triggers.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           sparse-checkout: scripts/check_package_source.py
           sparse-checkout-cone-mode: false
-      - name: Publish the package-source status
+      - name: Create narrowly scoped check publisher token
+        id: publisher
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.HISTORY_PRIVACY_APP_CLIENT_ID }}
+          private-key: ${{ secrets.HISTORY_PRIVACY_APP_PRIVATE_KEY }}
+          permission-checks: write
+      - name: Publish the package-source check
         env:
           GH_TOKEN: ${{ github.token }}
+          CHECKS_TOKEN: ${{ steps.publisher.outputs.token }}
         run: python3 scripts/check_package_source.py --publish

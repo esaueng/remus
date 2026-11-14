@@ -1,0 +1,18 @@
+name: Package source request
+
+# Merge-group code controls this definition, so it gets no credentials and does
+# nothing itself. Its completion triggers the default-branch `Package source`
+# workflow, which checks the queue commit and publishes `package-source`. A
+# group that removes or renames this file gets no check and cannot merge.
+on:
+  merge_group:
+
+permissions: {}
+
+jobs:
+  request:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Request the trusted package-source check
+        run: echo "Package source check requested for this merge group commit."
