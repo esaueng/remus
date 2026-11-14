@@ -295,6 +295,245 @@ export const runRidgeChamferContactRegression = ({ RemusKernel }) => {
   console.log('ok - ridge chamfer: rolling-ball seam handovers retain the complete band through direct and both batch APIs');
 };
 
+// P-Class 4.8: `fuseRegions`, the N-ary planar fuse with regions, total
+// lineage and operand dispositions, through the generated JS wrapper. The
+// Rust tests call `fuse_regions_direct`, which bypasses that wrapper and its
+// optional-argument and thrown-`Error` conversions.
+// Three overlapping boxes, a far box and a small box inside the first.
+const FUSE_REGION_BOXES = [
+  { size: [2, 2, 2], at: [0, 0, 0] },
+  { size: [2, 2, 2], at: [1, 0.5, 0.25] },
+  { size: [2, 2, 2], at: [0.5, 1, 0.75] },
+  { size: [1, 2, 3], at: [40, 30, 20] },
+  { size: [0.5, 0.5, 0.5], at: [0.25, 0.25, 0.25] },
+];
+
+const placeFuseRegionBox = (kernel, { size, at }) => {
+  const solid = kernel.makeBox(...size);
+  kernel.transformSolid(solid, Float64Array.of(1, 0, 0, at[0], 0, 1, 0, at[1], 0, 0, 1, at[2], 0, 0, 0, 1));
+  return solid;
+};
+
+// The union volume of axis-aligned boxes by inclusion-exclusion.
+const boxUnionVolume = (boxes) => {
+  let total = 0;
+  for (let mask = 1; mask < 1 << boxes.length; mask++) {
+    const members = boxes.filter((_, index) => mask & (1 << index));
+    let volume = 1;
+    for (let axis = 0; axis < 3; axis++) {
+      const low = Math.max(...members.map(({ at }) => at[axis]));
+      const high = Math.min(...members.map(({ size, at }) => at[axis] + size[axis]));
+      volume *= Math.max(0, high - low);
+    }
+    total += members.length % 2 ? volume : -volume;
+  }
+  return total;
+};
+
+const sortedIds = values => Array.from(values).sort((a, b) => a - b);
+
+const assertFuseRegionsResult = (kernel, handles, result, label) => {
+  assert.deepEqual(Object.keys(result).sort(), ['compound', 'operands', 'regions'], `${label}: result keys`);
+  assert.deepEqual(
+    Array.from(kernel.getCompoundSolids(result.compound)),
+    result.regions.map(region => region.solid),
+    `${label}: the compound holds the regions in order`,
+  );
+  // The three overlapping boxes and the small one fuse into region 0; the
+  // far box is region 1, its own handle.
+  assert.deepEqual(result.regions.map(region => region.operands), [[0, 1, 2], [3]], `${label}: region operands`);
+  assert.equal(result.regions[1].solid, handles[3], `${label}: a preserved operand keeps its handle`);
+  const expectedVolumes = [boxUnionVolume(FUSE_REGION_BOXES.slice(0, 3)), boxUnionVolume([FUSE_REGION_BOXES[3]])];
+  result.regions.forEach((region, index) => {
+    const where = `${label}: region ${index}`;
+    assert.deepEqual(Object.keys(region).sort(), ['evolution', 'faceOperands', 'operands', 'solid'], `${where} keys`);
+    assert.deepEqual(Object.keys(region.evolution).sort(), ['edges', 'faces', 'vertices'], `${where} evolution keys`);
+    assert.equal(kernel.validateSolid(region.solid), 0, `${where} validates`);
+    const volume = kernel.volume(region.solid, DEFLECTION);
+    assert.ok(Math.abs(volume - expectedVolumes[index]) <= 1e-9, `${where} volume ${volume} != ${expectedVolumes[index]}`);
+    // Lineage is total: one entry per result face, edge and vertex, every
+    // face sourced from a face of the operand `faceOperands` names, and no
+    // edge unresolved.
+    const { faces, edges, vertices } = region.evolution;
+    assert.deepEqual(sortedIds(faces.map(entry => entry.face)), sortedIds(kernel.getSolidFaces(region.solid)), `${where} faces`);
+    assert.deepEqual(sortedIds(edges.map(entry => entry.edge)), sortedIds(kernel.getSolidEdges(region.solid)), `${where} edges`);
+    assert.deepEqual(
+      sortedIds(vertices.map(entry => entry.vertex)),
+      sortedIds(kernel.getSolidVertices(region.solid)),
+      `${where} vertices`,
+    );
+    assert.equal(region.faceOperands.length, faces.length, `${where}: one operand per face`);
+    assert.deepEqual(sortedIds(new Set(region.faceOperands)), region.operands, `${where}: operands are the face sources`);
+    faces.forEach((entry, face) => {
+      const operand = region.faceOperands[face];
+      assert.ok(
+        Array.from(kernel.getSolidFaces(handles[operand])).includes(entry.source),
+        `${where}: face ${entry.face} must come from a face of operand ${operand}, got ${entry.source}`,
+      );
+    });
+    // Every source field names a real entity of one of the region's
+    // operands: `from` on preserved/modified edges and preserved vertices,
+    // and `faceA`/`faceB` on generated edges, which meet faces of two
+    // different operands.
+    const owner = (lookup, id) => region.operands.find(operand => Array.from(lookup(handles[operand])).includes(id));
+    for (const entry of edges) {
+      const text = `${where}: edge ${JSON.stringify(entry)}`;
+      if (entry.event === 'generated') {
+        const sides = [entry.faceA, entry.faceB].map(face => owner(kernel.getSolidFaces.bind(kernel), face));
+        assert.ok(sides.every(side => side !== undefined) && sides[0] !== sides[1], `${text}: faces of two operands`);
+      } else {
+        assert.ok(['preserved', 'modified'].includes(entry.event), text);
+        assert.notEqual(owner(kernel.getSolidEdges.bind(kernel), entry.from), undefined, `${text}: from an operand edge`);
+      }
+    }
+    for (const entry of vertices) {
+      const text = `${where}: vertex ${JSON.stringify(entry)}`;
+      if (entry.event === 'created') assert.ok(!('from' in entry), text);
+      else {
+        assert.equal(entry.event, 'preserved', text);
+        assert.notEqual(owner(kernel.getSolidVertices.bind(kernel), entry.from), undefined, `${text}: from an operand vertex`);
+      }
+    }
+  });
+  // The preserved far box keeps its own entities: identity lineage.
+  const { faces: farFaces, edges: farEdges, vertices: farVertices } = result.regions[1].evolution;
+  assert.ok(farFaces.every(entry => entry.source === entry.face), `${label}: preserved faces are their own sources`);
+  assert.ok(farEdges.every(entry => entry.event === 'preserved' && entry.from === entry.edge), `${label}: preserved edges`);
+  assert.ok(farVertices.every(entry => entry.event === 'preserved' && entry.from === entry.vertex), `${label}: preserved vertices`);
+  assert.deepEqual(result.operands, [
+    { solid: handles[0], disposition: 'contributes', regions: [0] },
+    { solid: handles[1], disposition: 'contributes', regions: [0] },
+    { solid: handles[2], disposition: 'contributes', regions: [0] },
+    { solid: handles[3], disposition: 'preserved', regions: [1] },
+    { solid: handles[4], disposition: 'absorbed', regions: [0] },
+  ], `${label}: operand dispositions`);
+  // An absorbed operand sources no face; a contributing one sources a face
+  // in every region it lists.
+  result.operands.forEach(({ disposition, regions }, operand) => {
+    for (const index of regions) {
+      assert.equal(
+        result.regions[index].faceOperands.includes(operand),
+        disposition !== 'absorbed',
+        `${label}: operand ${operand} (${disposition}) in region ${index}`,
+      );
+    }
+  });
+};
+
+export const runFuseRegionsRegression = ({ RemusKernel }) => {
+  const withBoxes = (run) => {
+    const kernel = new RemusKernel();
+    try { return run(kernel, FUSE_REGION_BOXES.map(box => placeFuseRegionBox(kernel, box))); } finally { kernel.free(); }
+  };
+  const batchRow = (kernel, entry, args) => {
+    const rows = JSON.parse(kernel[entry](JSON.stringify([{ op: 'fuseRegions', args }])));
+    assert.equal(rows.length, 1, `${entry}: one response row`);
+    return rows[0];
+  };
+
+  // Success, and parity between the direct method and both batch entry
+  // points: identical histories give identical handles, so the payloads
+  // compare whole.
+  const direct = withBoxes((kernel, handles) => {
+    const result = JSON.parse(kernel.fuseRegions(Uint32Array.from(handles)));
+    assertFuseRegionsResult(kernel, handles, result, 'direct');
+    return result;
+  });
+  for (const entry of ['executeBatchV2', 'executeBatch']) {
+    withBoxes((kernel, handles) => {
+      const row = batchRow(kernel, entry, { solids: handles });
+      assert.equal(row.error, undefined, `${entry}: ${JSON.stringify(row)}`);
+      assertFuseRegionsResult(kernel, handles, row.ok, entry);
+      assert.deepEqual(row.ok, direct, `${entry} and direct fuseRegions payloads`);
+    });
+  }
+
+  // `sheets` and `wires` omitted, undefined, null or empty all mean none.
+  const directOptional = [
+    ['omitted', (kernel, solids) => kernel.fuseRegions(solids)],
+    ['undefined', (kernel, solids) => kernel.fuseRegions(solids, undefined, undefined)],
+    ['null', (kernel, solids) => kernel.fuseRegions(solids, null, null)],
+    ['empty', (kernel, solids) => kernel.fuseRegions(solids, new Uint32Array(), new Uint32Array())],
+  ];
+  for (const [label, call] of directOptional) {
+    withBoxes((kernel, handles) => {
+      assert.deepEqual(JSON.parse(call(kernel, Uint32Array.from(handles))), direct, `direct, optional lists ${label}`);
+    });
+  }
+  for (const [label, extra] of [['omitted', {}], ['null', { sheets: null, wires: null }], ['empty', { sheets: [], wires: [] }]]) {
+    withBoxes((kernel, handles) => {
+      const row = batchRow(kernel, 'executeBatchV2', { solids: handles, ...extra });
+      assert.deepEqual(row.ok, direct, `executeBatchV2, optional lists ${label}: ${JSON.stringify(row.error)}`);
+    });
+  }
+
+  // Refusals are typed on every route and leave the model unchanged.
+  const refusals = [
+    { reason: 'duplicate_operand', operands: (handles) => [handles[0], handles[1], handles[0]] },
+    { reason: 'too_few_operands', operands: (handles) => [handles[1]] },
+    // A cylinder overlapping the first box puts a curved operand in a
+    // touching group.
+    { reason: 'curved_cluster', curved: true, operands: (handles, cylinder) => [handles[0], cylinder] },
+  ];
+  for (const { reason, curved, operands } of refusals) {
+    const texts = {};
+    for (const route of ['direct', 'executeBatchV2', 'executeBatch']) {
+      const where = `${reason} via ${route}`;
+      const setup = (kernel) => {
+        const handles = FUSE_REGION_BOXES.slice(0, 2).map(box => placeFuseRegionBox(kernel, box));
+        return { handles, cylinder: curved ? kernel.makeCylinder(1, 3) : undefined };
+      };
+      // A control kernel with the same history but no refusal gives the
+      // handle the next allocation must receive.
+      const control = new RemusKernel();
+      let nextHandle;
+      try { setup(control); nextHandle = control.makeBox(1, 1, 1); } finally { control.free(); }
+      const kernel = new RemusKernel();
+      try {
+        const { handles, cylinder } = setup(kernel);
+        const all = Uint32Array.from(cylinder === undefined ? handles : [...handles, cylinder]);
+        const bytes = Uint8Array.from(kernel.serializeSolids(all));
+        const journal = kernel.journalSummary();
+        // Every arena counts here, so a stray vertex, edge, face, shell or
+        // compound shows even when no solid handle moves.
+        const slots = () => JSON.parse(kernel.checkpointMemoryStats()).allocatedSlots;
+        const allocated = slots();
+        const solids = operands(handles, cylinder);
+        if (route === 'direct') {
+          assert.throws(() => kernel.fuseRegions(Uint32Array.from(solids)), (error) => {
+            assert.ok(error instanceof Error, `${where}: throws an Error`);
+            texts[route] = error.message;
+            return true;
+          });
+          assert.ok(texts[route].startsWith('unsupported_nary_fuse: '), `${where}: code prefix in ${texts[route]}`);
+        } else {
+          const row = batchRow(kernel, route, { solids });
+          assert.equal(row.ok, undefined, `${where}: ${JSON.stringify(row)}`);
+          if (route === 'executeBatchV2') {
+            assert.equal(row.error.code, 'operation_failed', `${where}: ${JSON.stringify(row.error)}`);
+            assert.equal(row.error.category, 'unsupported', `${where}: category`);
+            assert.equal(row.error.details.kernelCode, 'unsupported_nary_fuse', `${where}: kernelCode`);
+            assert.equal(row.error.details.reason, reason, `${where}: reason`);
+            assert.equal(row.error.details.operation, 'fuseRegions', `${where}: operation`);
+            texts[route] = row.error.message;
+          } else {
+            assert.equal(typeof row.error, 'string', `${where}: legacy error is text`);
+            texts[route] = row.error;
+          }
+        }
+        assert.ok(texts[route].includes(`(${reason})`), `${where}: cause in ${texts[route]}`);
+        assert.equal(slots(), allocated, `${where}: no entity allocated`);
+        assert.deepEqual(Uint8Array.from(kernel.serializeSolids(all)), bytes, `${where}: operands unchanged`);
+        assert.equal(kernel.journalSummary(), journal, `${where}: journal unchanged`);
+        assert.equal(kernel.makeBox(1, 1, 1), nextHandle, `${where}: no handle allocated`);
+      } finally { kernel.free(); }
+    }
+    assert.equal(texts.executeBatch, texts.executeBatchV2, `${reason}: both batch routes carry one message`);
+    assert.equal(texts.direct, `unsupported_nary_fuse: ${texts.executeBatchV2}`, `${reason}: the direct message is the coded batch message`);
+  }
+  console.log('ok - fuseRegions: regions, total lineage, dispositions, optional lists and transactional refusals through direct and both batch APIs');
+};
+
 /** `exports` merges the kernel package (`RemusKernel`, `decodeEvolutionPayload`)
  * with the translator package (`RemusIo`). */
 // `part` lets a caller run a subset (packaged-suite-parts.mjs); the default runs all.
@@ -325,6 +564,7 @@ export const runOpenZcadConsumerRegressions = (exports, part = run => run()) => 
   part(() => runBooleanScaleRegression(exports));
   part(() => runAnisotropicBooleanRegression(exports));
   part(() => runZeroAreaMeshExportRegression(exports));
+  part(() => runFuseRegionsRegression(exports));
 };
 
 // W12a: the imported part, using the same journal/evolution entry points as
