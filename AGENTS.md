@@ -341,6 +341,7 @@ Quick reference — find the right file for any task:
 | Exact axis extremes of circle/ellipse arcs (broad-phase boxes) | `conic_bounds.rs` |
 | The length tolerances a planar face's section vertices are held to, stated once for phase FF, the face splitter's welds and shell assembly (band, weld, separation distance), with every weld a later stage applies and the floor that keeps the separation over the fixed ones at any caller tolerance | `section_tolerance.rs` |
 | Independent-oracle tests for phase-FF exact-vs-refuse helpers (disc clip, one-hit graze, torus oval trim, one-rim notch) | `pave_filler/phase_ff/helper_oracle_tests.rs` |
+| Independent-oracle tests for the N-way region fuse (`fuse_n_regions_with_entity_evolution`): hand-counted unions, the store's caller maps, the store-agnostic lineage export, the per-source face tally, the pre-export gate and the typed refusals | `gfa/nary_oracle_tests.rs` |
 | Closed-section window endpoints on the face boundary crossed by a fitted rim, with margin-band and partner-rim fit-wobble controls against independent chord crossings | `pave_filler/phase_ff/closed_window_end_tests.rs` |
 | Closed-section clipping retains a tilted cylinder rim crossed near a planar edge, including crossings hidden within the partner margin | `pave_filler/phase_ff/closed_window_partner_tests.rs` |
 | Trimmed-torus broad-phase boxes and minor-angle bands: complete positive-weight Bezier and circle hulls, continuous parameter lifts, winding and area-sign checks, conservative carrier fallback (including adversarial knot/weight and ridge tests) | `pave_filler/phase_ff/torus_extent.rs`, `pave_filler/phase_ff/torus_extent/lift.rs`, `pave_filler/phase_ff/torus_extent/certified_tests.rs`, `pave_filler/phase_ff/torus_extent/tests.rs` |
@@ -561,6 +562,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Independent carrier and manifold oracles for the sphere equator | `primitives/sphere_equator_tests.rs` |
 | Boolean (union/cut/intersect) | `boolean/` (mod, types, classify, assembly, tests, nway_pairs_tests, disjoint_witness_tests) |
 | One-sided material contradiction detector for established Boolean results built after dropped sections; grid agreement is not a certificate | `boolean/material_witness.rs` |
+| N-ary planar General Fuse (`fuse_regions`, `fuse_body_regions`): regions, total face lineage and a per-operand disposition; typed refusals qualified in the arrangement's store before export (P-Class 4.8, first slice) | `boolean/nary.rs` |
 | Three-box union grouping and order regression: exact volume, solid validation, closed oriented mesh, material probes, source preservation and STEP replay (OpenZCAD 1246) | `tests/regress_issue_1246_box_union_grouping.rs` |
 | Nested inner wires measured with alternating material: a standalone face's area and a pocketed block with a standing, holed island (face area, volume, centre of mass, surface area against signed boxes) (tests) | `tests/nested_inner_wire_measure.rs` |
 | Certified inner-loop nesting through the public measures at three scales: an island nearly filling its hole for every edge split, eccentric circles nearly touching, an elliptical island, three levels in every order, reversed and tilted faces, a trimmed NURBS hole whose unused spans surround its neighbour, and a pocketed cylinder whose `solid_volume`, `solid_properties` and `face_area` agree, read the same warm and cold, and fall back to the mesh when the nesting is left undecided (tests) | `tests/certified_loop_nesting_measure.rs` |
@@ -871,6 +873,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Sphere-boss seam fillet through the batch ops (esaueng/remus#1561): closed display mesh at the consumer's settings, contacts on their supports within their recorded tolerance (contract test) | `bindings/sphere_boss_seam_fillet_tests.rs` |
 | Direct and both batch WASM qualification of the B38 sphere–torus orientation repair (P-Class 8.1 seeds 5201 and 1146): exact, validator-clean, slice-integral volumes, watertight meshes, refusal rollback | `bindings/sphere_torus_orientation_tests.rs` |
 | Entity-evolution and journal bindings | `bindings/evolution.rs` |
+| N-ary region-fuse binding (`fuseRegions`) with its direct and batch contract tests | `bindings/fuse_regions.rs` |
 | Typed persistent GCS sketch bindings | `bindings/gcs_sketch.rs` |
 | Linked planar GCS attachment and fixed external lines | `bindings/linked_sketch.rs` |
 | Faces with inner (hole) wires — validation & construction | `holed_face.rs` |

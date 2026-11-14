@@ -5,7 +5,7 @@
 
 use remus_math::compact_sort::CompactSort;
 use remus_math::context::OperationContext;
-use remus_math::det_hash::DetHashMap;
+use remus_math::det_hash::{DetHashMap, DetHashSet};
 use remus_math::tolerance::Tolerance;
 use remus_topology::BodyClass;
 use remus_topology::Topology;
@@ -16,6 +16,7 @@ use remus_topology::solid::SolidId;
 
 use crate::bop::BooleanOp;
 use crate::builder::Builder;
+use crate::ds::shape_store::EvolutionStore;
 use crate::ds::{GfaArena, GfaShapeStoreN};
 use crate::error::AlgoError;
 use crate::pave_filler;
@@ -1228,16 +1229,35 @@ impl EntityLineage {
 /// Returned as store edge index → the pair in the order the FF phase recorded
 /// it.
 fn section_pairs_by_incidence(
-    store: &crate::ds::GfaShapeStore,
-    store_result: SolidId,
-    store_origins: &crate::builder::FaceProvenance,
+    incident_sources: &std::collections::BTreeMap<usize, (usize, usize)>,
     lineage: &EntityLineage,
-) -> Result<std::collections::BTreeMap<usize, (usize, usize)>, AlgoError> {
+) -> std::collections::BTreeMap<usize, (usize, usize)> {
     let intersected: std::collections::BTreeMap<(usize, usize), (usize, usize)> = lineage
         .section_origins
         .values()
         .map(|&(a, b)| ((a.min(b), a.max(b)), (a, b)))
         .collect();
+    incident_sources
+        .iter()
+        .filter_map(|(&edge, &(a, b))| {
+            intersected
+                .get(&(a.min(b), a.max(b)))
+                .map(|&pair| (edge, pair))
+        })
+        .collect()
+}
+
+/// The input source faces of the two result faces each result edge bounds.
+///
+/// Store edge index → `(source of one face, source of the other)`, for every
+/// edge of `store_result` used by exactly two result faces that both have a
+/// recorded source. An edge with one face (a seam), more than two, or a face
+/// with no source is absent.
+fn incident_source_faces(
+    store_topo: &Topology,
+    store_result: SolidId,
+    store_origins: &crate::builder::FaceProvenance,
+) -> Result<std::collections::BTreeMap<usize, (usize, usize)>, AlgoError> {
     let source: DetHashMap<usize, usize> = store_origins
         .iter()
         .filter_map(|(out, src)| src.map(|src| (out.index(), src.index())))
@@ -1245,11 +1265,11 @@ fn section_pairs_by_incidence(
 
     let mut incident: std::collections::BTreeMap<usize, Vec<usize>> =
         std::collections::BTreeMap::new();
-    for face_id in remus_topology::explorer::solid_faces(&store.topo, store_result)? {
-        let face = store.topo.face(face_id)?;
+    for face_id in remus_topology::explorer::solid_faces(store_topo, store_result)? {
+        let face = store_topo.face(face_id)?;
         for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
         {
-            for oriented in store.topo.wire(wire_id)?.edges() {
+            for oriented in store_topo.wire(wire_id)?.edges() {
                 let faces = incident.entry(oriented.edge().index()).or_default();
                 if !faces.contains(&face_id.index()) {
                     faces.push(face_id.index());
@@ -1258,54 +1278,114 @@ fn section_pairs_by_incidence(
         }
     }
 
-    let mut pairs = std::collections::BTreeMap::new();
+    let mut sources = std::collections::BTreeMap::new();
     for (edge, faces) in incident {
         let [first, second] = faces.as_slice() else {
             continue;
         };
-        let (Some(&a), Some(&b)) = (source.get(first), source.get(second)) else {
-            continue;
-        };
-        if let Some(&pair) = intersected.get(&(a.min(b), a.max(b))) {
-            pairs.insert(edge, pair);
+        if let (Some(&a), Some(&b)) = (source.get(first), source.get(second)) {
+            sources.insert(edge, (a, b));
         }
     }
-    Ok(pairs)
+    Ok(sources)
 }
 
-fn export_entity_evolution(
-    topo: &mut Topology,
-    store: &crate::ds::GfaShapeStore,
+/// Result edges whose two faces descend from two input faces that share
+/// exactly one input edge.
+///
+/// The N-way face splitter rebuilds a boundary edge that two other sources
+/// cut (three pieces of one input edge) without a pave-block or source-edge
+/// tag, so the chase in [`export_entity_evolution`] stops at the rebuilt
+/// piece. The parent is still determined by records alone: the piece bounds
+/// one result face from input face `a` and one from input face `b`, so it
+/// lies on both, and two faces of a valid solid meet only along the edges
+/// they share. When `a` and `b` share exactly one input edge, the piece is a
+/// piece of that edge.
+///
+/// Uniqueness is the whole argument, so it is required: two faces sharing no
+/// edge, or more than one (a slot's walls, a face and the rim of its own
+/// hole), bind nothing and the edge stays unresolved.
+///
+/// Returned as store result edge index → store input edge index.
+fn boundary_parents_by_incidence(
+    store_topo: &Topology,
+    incident_sources: &std::collections::BTreeMap<usize, (usize, usize)>,
+) -> Result<std::collections::BTreeMap<usize, usize>, AlgoError> {
+    let mut face_edges: std::collections::BTreeMap<usize, std::collections::BTreeSet<usize>> =
+        std::collections::BTreeMap::new();
+    let mut edges_of = |face: usize| -> Result<std::collections::BTreeSet<usize>, AlgoError> {
+        if let Some(edges) = face_edges.get(&face) {
+            return Ok(edges.clone());
+        }
+        let face_id = store_topo.face_id_from_index(face).ok_or_else(|| {
+            AlgoError::AssemblyFailed(format!("source face {face} is not in the store"))
+        })?;
+        let stored = store_topo.face(face_id)?;
+        let mut edges = std::collections::BTreeSet::new();
+        for wire_id in
+            std::iter::once(stored.outer_wire()).chain(stored.inner_wires().iter().copied())
+        {
+            for oriented in store_topo.wire(wire_id)?.edges() {
+                edges.insert(oriented.edge().index());
+            }
+        }
+        face_edges.insert(face, edges.clone());
+        Ok(edges)
+    };
+
+    let mut parents = std::collections::BTreeMap::new();
+    for (&edge, &(a, b)) in incident_sources {
+        if a == b {
+            continue;
+        }
+        let (edges_a, edges_b) = (edges_of(a)?, edges_of(b)?);
+        let mut shared = edges_a.intersection(&edges_b);
+        if let (Some(&only), None) = (shared.next(), shared.next()) {
+            parents.insert(edge, only);
+        }
+    }
+    Ok(parents)
+}
+
+/// Which incidence arguments [`export_entity_evolution`] may use for an edge
+/// its construction chase does not reach.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IncidenceLineage {
+    /// Section edges only: the two-operand contract, unchanged.
+    Sections,
+    /// Section edges, and boundary pieces whose two source faces share
+    /// exactly one input edge (the N-way splitter's untagged rebuilds).
+    SectionsAndBoundaries,
+}
+
+/// The construction-derived event of every edge of one store result solid,
+/// keyed by store edge index. The events themselves name caller entities.
+///
+/// Reads the store only, so a caller can refuse a result on its lineage
+/// before any of it is exported.
+fn resolve_edge_events(
+    store: &dyn EvolutionStore,
     store_result: SolidId,
-    store_origins: crate::builder::FaceProvenance,
+    store_origins: &crate::builder::FaceProvenance,
     builder_lineage: &crate::builder::split_types::EdgeLineageLog,
     lineage: &EntityLineage,
-) -> Result<(SolidId, EntityEvolution), AlgoError> {
-    let (result, export) = store.export_solid_with_entity_maps(topo, store_result)?;
-    let section_by_incidence =
-        section_pairs_by_incidence(store, store_result, &store_origins, lineage)?;
-
-    let mut faces = Vec::with_capacity(store_origins.len());
-    for (store_out, store_src) in store_origins {
-        let caller_out = export
-            .faces
-            .get(&store_out.index())
-            .ok_or_else(|| {
-                AlgoError::AssemblyFailed(
-                    "result face missing from export map (provenance desync)".into(),
-                )
-            })?
-            .index();
-        let caller_src =
-            store_src.and_then(|source| store.input_face_to_caller.get(&source.index()).copied());
-        faces.push((caller_out, caller_src));
-    }
+    incidence: IncidenceLineage,
+) -> Result<std::collections::BTreeMap<usize, EdgeEvent>, AlgoError> {
+    let store_topo = store.store_topo();
+    let incident_sources = incident_source_faces(store_topo, store_result, store_origins)?;
+    let section_by_incidence = section_pairs_by_incidence(&incident_sources, lineage);
+    let boundary_by_incidence = match incidence {
+        IncidenceLineage::Sections => std::collections::BTreeMap::new(),
+        IncidenceLineage::SectionsAndBoundaries => {
+            boundary_parents_by_incidence(store_topo, &incident_sources)?
+        }
+    };
 
     let resolve_edge = |store_index: usize| -> EdgeEvent {
         let mut current = store_index;
         let mut transformed = false;
         for _ in 0..64 {
-            if let Some(&caller) = store.input_edge_to_caller.get(&current) {
+            if let Some(caller) = store.caller_edge(current) {
                 return if transformed {
                     EdgeEvent::Modified(caller)
                 } else {
@@ -1314,8 +1394,8 @@ fn export_entity_evolution(
             }
             if let Some(&(face_a, face_b)) = lineage.section_origins.get(&current) {
                 return EdgeEvent::Generated {
-                    face_a: store.input_face_to_caller.get(&face_a).copied(),
-                    face_b: store.input_face_to_caller.get(&face_b).copied(),
+                    face_a: store.caller_face(face_a),
+                    face_b: store.caller_face(face_b),
                 };
             }
             if let Some(&old) = builder_lineage.rewrites.get(&current) {
@@ -1340,17 +1420,97 @@ fn export_entity_evolution(
         }
         match section_by_incidence.get(&store_index) {
             Some(&(face_a, face_b)) => EdgeEvent::Generated {
-                face_a: store.input_face_to_caller.get(&face_a).copied(),
-                face_b: store.input_face_to_caller.get(&face_b).copied(),
+                face_a: store.caller_face(face_a),
+                face_b: store.caller_face(face_b),
             },
-            None => EdgeEvent::Unresolved,
+            None => boundary_by_incidence
+                .get(&store_index)
+                .and_then(|&parent| store.caller_edge(parent))
+                .map_or(EdgeEvent::Unresolved, EdgeEvent::Modified),
         }
     };
+
+    let mut events = std::collections::BTreeMap::new();
+    for face_id in remus_topology::explorer::solid_faces(store_topo, store_result)? {
+        let face = store_topo.face(face_id)?;
+        for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+        {
+            for oriented in store_topo.wire(wire_id)?.edges() {
+                let index = oriented.edge().index();
+                events.entry(index).or_insert_with(|| resolve_edge(index));
+            }
+        }
+    }
+    Ok(events)
+}
+
+/// Export one store result solid to the caller's topology with its
+/// construction-derived entity evolution.
+///
+/// `store` is read only through [`EvolutionStore`], so the two-operand and
+/// N-way stores share this one chase: input identity comes from the store's
+/// copy maps, and every other record (`lineage`, `builder_lineage`) is
+/// store-local and operand-count agnostic.
+fn export_entity_evolution(
+    topo: &mut Topology,
+    store: &dyn EvolutionStore,
+    store_result: SolidId,
+    store_origins: crate::builder::FaceProvenance,
+    builder_lineage: &crate::builder::split_types::EdgeLineageLog,
+    lineage: &EntityLineage,
+    incidence: IncidenceLineage,
+) -> Result<(SolidId, EntityEvolution), AlgoError> {
+    let edge_events = resolve_edge_events(
+        store,
+        store_result,
+        &store_origins,
+        builder_lineage,
+        lineage,
+        incidence,
+    )?;
+    export_with_edge_events(topo, store, store_result, store_origins, &edge_events)
+}
+
+/// The export half of [`export_entity_evolution`]: copy the solid out and
+/// translate face provenance, the resolved edge events and vertex identity
+/// into caller indices.
+fn export_with_edge_events(
+    topo: &mut Topology,
+    store: &dyn EvolutionStore,
+    store_result: SolidId,
+    store_origins: crate::builder::FaceProvenance,
+    edge_events: &std::collections::BTreeMap<usize, EdgeEvent>,
+) -> Result<(SolidId, EntityEvolution), AlgoError> {
+    let (result, export) = {
+        let _phase = crate::perf::phase(crate::perf::PhaseKind::StoreExport);
+        crate::ds::shape_store::deep_copy_solid_with_maps(store.store_topo(), topo, store_result)?
+    };
+
+    let mut faces = Vec::with_capacity(store_origins.len());
+    for (store_out, store_src) in store_origins {
+        let caller_out = export
+            .faces
+            .get(&store_out.index())
+            .ok_or_else(|| {
+                AlgoError::AssemblyFailed(
+                    "result face missing from export map (provenance desync)".into(),
+                )
+            })?
+            .index();
+        let caller_src = store_src.and_then(|source| store.caller_face(source.index()));
+        faces.push((caller_out, caller_src));
+    }
 
     let mut edges: Vec<(usize, EdgeEvent)> = export
         .edges
         .iter()
-        .map(|(&store_index, caller_edge)| (caller_edge.index(), resolve_edge(store_index)))
+        .map(|(store_index, caller_edge)| {
+            let event = edge_events
+                .get(store_index)
+                .cloned()
+                .unwrap_or(EdgeEvent::Unresolved);
+            (caller_edge.index(), event)
+        })
         .collect();
     edges.compact_sort_by_key(|(index, _)| *index);
 
@@ -1359,11 +1519,8 @@ fn export_entity_evolution(
         .iter()
         .map(|(&store_index, caller_vertex)| {
             let event = store
-                .input_vertex_to_caller
-                .get(&store_index)
-                .map_or(VertexEvent::Created, |&caller| {
-                    VertexEvent::Preserved(caller)
-                });
+                .caller_vertex(store_index)
+                .map_or(VertexEvent::Created, VertexEvent::Preserved);
             (caller_vertex.index(), event)
         })
         .collect();
@@ -1456,6 +1613,7 @@ fn boolean_with_entity_evolution_impl(
         store_origins,
         &builder_lineage,
         &lineage,
+        IncidenceLineage::Sections,
     )
 }
 
@@ -1529,10 +1687,308 @@ fn boolean_regions_with_entity_evolution_impl(
             region_origins,
             &builder_lineage,
             &lineage,
+            IncidenceLineage::Sections,
         )?;
         regions.push(BooleanRegion { solid, evolution });
     }
     Ok(regions)
+}
+
+/// An N-way planar fuse kept as separate regions, each with total
+/// construction-derived entity evolution. See
+/// [`fuse_n_regions_with_entity_evolution`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NaryFuseRegions {
+    /// One independently assembled solid per disconnected region of the
+    /// union, in the assembler's order, each with provenance total over its
+    /// faces, edges and vertices.
+    pub regions: Vec<BooleanRegion>,
+    /// Per source, in input order: how many of its sub-faces the builder
+    /// kept, dropped as strictly inside another source, or dropped by
+    /// coincident-face resolution.
+    pub sources: Vec<crate::builder::SourceFaceTally>,
+}
+
+/// Qualified N-way regions retained in their isolated arrangement store.
+///
+/// Inspect the face sources and source tallies before [`Self::export`] so a
+/// caller combining several arrangements can accept them all before any
+/// result allocation reaches its topology. Dropping this value allocates
+/// nothing in the caller. Source indices refer to the topology passed to
+/// [`prepare_fuse_n_regions_with_entity_evolution`]; export back to that
+/// topology while those source entities remain unchanged.
+pub struct PreparedNaryFuseRegions {
+    store: GfaShapeStoreN,
+    regions: Vec<PreparedNaryFuseRegion>,
+    face_sources: Vec<Vec<usize>>,
+    /// Per-source face tallies, in input order, as in [`NaryFuseRegions`].
+    pub sources: Vec<crate::builder::SourceFaceTally>,
+}
+
+struct PreparedNaryFuseRegion {
+    solid: SolidId,
+    origins: crate::builder::FaceProvenance,
+    edge_events: std::collections::BTreeMap<usize, EdgeEvent>,
+}
+
+impl PreparedNaryFuseRegions {
+    /// Caller source face indices, one per result face, grouped in region
+    /// order and parallel to each exported region's `evolution.faces`.
+    /// Every result face is claimed exactly once, and every source resolves
+    /// to an input face. Result edges also have resolved construction records.
+    #[must_use]
+    pub fn face_sources(&self) -> &[Vec<usize>] {
+        &self.face_sources
+    }
+
+    /// Export the accepted regions and their lineage to the caller topology.
+    ///
+    /// # Errors
+    ///
+    /// Returns a topology or assembly error if copying fails. The transaction
+    /// restores live entities on error; qualification and typed refusals have
+    /// already completed without allocating caller slots.
+    pub fn export(self, topo: &mut Topology) -> Result<NaryFuseRegions, AlgoError> {
+        remus_topology::transaction::run_transacted(topo, |topo| {
+            let mut regions = Vec::with_capacity(self.regions.len());
+            for region in self.regions {
+                let (solid, evolution) = export_with_edge_events(
+                    topo,
+                    &self.store,
+                    region.solid,
+                    region.origins,
+                    &region.edge_events,
+                )?;
+                regions.push(BooleanRegion { solid, evolution });
+            }
+            Ok(NaryFuseRegions {
+                regions,
+                sources: self.sources,
+            })
+        })
+    }
+}
+
+/// Fuse **N** planar solids in one arrangement, keeping every disconnected
+/// region of the union as its own solid and returning construction-derived
+/// face, edge and vertex history in caller indices.
+///
+/// The lineage-carrying counterpart of [`fuse_n_with_candidate_pairs`]; the
+/// two differ in what they refuse. This entry point is fail-closed:
+///
+/// - every source face must be planar and every source edge a line (the
+///   N-way builder resolves coincident faces for planes only);
+/// - a sub-face whose interior sample the classifier cannot place, or that
+///   lies on another source outside a resolved coincident group, is refused
+///   (`ClassificationUnresolved`) — never counted as outside.
+///
+/// `candidate_pairs` follows [`fuse_n_with_candidate_pairs`]: `None`
+/// intersects every pair, `Some` only the listed ones, and the source-pair
+/// budget counts the pairs intersected. At least two sources are required.
+///
+/// A source with no kept face (`SourceFaceTally::kept` zero) had every
+/// sub-face decided as inside or coincident with other sources; whether its
+/// material is in the result is for the caller to check independently.
+///
+/// **The gate.** Everything this function can refuse, it refuses before the
+/// result reaches `topo`: the regions are assembled in an isolated store, a
+/// result edge with no construction record is refused there
+/// (`LineageUnresolved`), and then `gate` is handed the store topology, the
+/// store copies of the sources (in `sources` order) and the store regions.
+/// An error from it is returned as is. Only a result that passes is
+/// exported, so a refusal allocates nothing in the caller's arena. A caller
+/// with nothing to add passes a gate that returns `Ok(())`.
+///
+/// # Errors
+///
+/// Returns [`AlgoError::UnsupportedNaryFuse`] for fewer than two sources,
+/// curved geometry, a pair list over the budget, an unresolved
+/// classification or an unresolved result edge; whatever `gate` returns;
+/// and any other [`AlgoError`] from the pave filler, the splitter or
+/// assembly. Every failure leaves the caller's topology as it was.
+pub fn fuse_n_regions_with_entity_evolution(
+    topo: &mut Topology,
+    sources: &[SolidId],
+    candidate_pairs: Option<&[(usize, usize)]>,
+    context: &OperationContext,
+    gate: &mut NaryRegionGate<'_>,
+) -> Result<NaryFuseRegions, AlgoError> {
+    prepare_fuse_n_regions_with_entity_evolution(topo, sources, candidate_pairs, context, gate)?
+        .export(topo)
+}
+
+/// A caller's pre-export qualification of an N-way region fuse: given the
+/// store topology, the store copies of the sources and the store regions,
+/// accept the result or refuse it.
+pub type NaryRegionGate<'a> =
+    dyn FnMut(&Topology, &[SolidId], &[SolidId]) -> Result<(), AlgoError> + 'a;
+
+/// The first non-planar face or non-line edge of `solid`, as its type tag.
+fn first_curved_entity(topo: &Topology, solid: SolidId) -> Result<Option<&'static str>, AlgoError> {
+    for face_id in remus_topology::explorer::solid_faces(topo, solid)? {
+        let face = topo.face(face_id)?;
+        if !face.surface().is_planar() {
+            return Ok(Some(face.surface().type_tag()));
+        }
+        for &wire_id in std::iter::once(&face.outer_wire()).chain(face.inner_wires()) {
+            for oriented in topo.wire(wire_id)?.edges() {
+                let curve = topo.edge(oriented.edge())?.curve();
+                if !matches!(curve, remus_topology::edge::EdgeCurve::Line) {
+                    return Ok(Some(curve.type_tag()));
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Prepare [`fuse_n_regions_with_entity_evolution`] without exporting.
+///
+/// The sources, candidate pairs, context and gate follow that entry point's
+/// contract. All geometry and lineage qualification runs in the isolated
+/// store; the caller topology is read-only. This lets callers accept several
+/// groups, including their lineage and dispositions, before exporting any.
+///
+/// # Errors
+///
+/// Returns the preparation and gate errors of
+/// [`fuse_n_regions_with_entity_evolution`], without changing caller slots.
+pub fn prepare_fuse_n_regions_with_entity_evolution(
+    topo: &Topology,
+    sources: &[SolidId],
+    candidate_pairs: Option<&[(usize, usize)]>,
+    context: &OperationContext,
+    gate: &mut NaryRegionGate<'_>,
+) -> Result<PreparedNaryFuseRegions, AlgoError> {
+    use crate::error::NaryFuseRefusal;
+
+    if sources.len() < 2 {
+        return Err(AlgoError::UnsupportedNaryFuse {
+            cause: NaryFuseRefusal::TooFewOperands,
+            reason: format!("needs at least two sources, got {}", sources.len()),
+        });
+    }
+    let pair_count = match candidate_pairs {
+        Some(pairs) => Some(pairs.len()),
+        None => sources
+            .len()
+            .checked_mul(sources.len() - 1)
+            .map(|twice| twice / 2),
+    };
+    if pair_count.is_none_or(|count| count > MAX_NWAY_SOURCE_PAIRS) {
+        return Err(AlgoError::UnsupportedNaryFuse {
+            cause: NaryFuseRefusal::PairBudgetExceeded,
+            reason: format!(
+                "{} sources need more than the {MAX_NWAY_SOURCE_PAIRS} source pairs one \
+                 arrangement accepts",
+                sources.len()
+            ),
+        });
+    }
+    if let Some(pairs) = candidate_pairs {
+        pave_filler::validate_candidate_pairs(pairs, sources.len())?;
+    }
+    for (index, &source) in sources.iter().enumerate() {
+        if let Some(tag) = first_curved_entity(topo, source)? {
+            return Err(AlgoError::UnsupportedNaryFuse {
+                cause: NaryFuseRefusal::CurvedCluster,
+                reason: format!("source {index} carries unqualified `{tag}` geometry"),
+            });
+        }
+    }
+
+    let tol = context.tolerance;
+    let mut store = GfaShapeStoreN::with_caller_maps(topo, sources)?;
+    let mut arena = GfaArena::new();
+    pave_filler::run_pave_filler_n_with_pairs(
+        &mut store.topo,
+        &store.sources,
+        candidate_pairs,
+        context,
+        &mut arena,
+    )?;
+    let lineage = EntityLineage::capture(&arena);
+
+    let built = crate::builder::build_fuse_n_regions(
+        std::mem::take(&mut store.topo),
+        arena,
+        &store.sources,
+        &store.face_source,
+        candidate_pairs,
+        tol,
+        context,
+    )?;
+    store.topo = built.topo;
+
+    // Qualify in the store, before anything reaches the caller's arena:
+    // first the lineage of every region, then the caller's gate.
+    let origins_by_face: DetHashMap<FaceId, Option<FaceId>> = built.origins.into_iter().collect();
+    let mut pending = Vec::with_capacity(built.regions.len());
+    let mut face_sources = Vec::with_capacity(built.regions.len());
+    for (position, &store_region) in built.regions.iter().enumerate() {
+        let region_origins: crate::builder::FaceProvenance =
+            remus_topology::explorer::solid_faces(&store.topo, store_region)?
+                .into_iter()
+                .map(|face| (face, origins_by_face.get(&face).copied().flatten()))
+                .collect();
+        // The provenance above walks every result face. Resolve each claim
+        // now, in the exact order export uses, before any caller allocation.
+        let mut claimed = DetHashSet::default();
+        let caller_sources = region_origins
+            .iter()
+            .map(|&(face, source)| {
+                if !claimed.insert(face) {
+                    return Err(AlgoError::UnsupportedNaryFuse {
+                        cause: NaryFuseRefusal::LineageUnresolved,
+                        reason: format!("region {position}: a result face is claimed twice"),
+                    });
+                }
+                source
+                    .and_then(|source| store.caller_face(source.index()))
+                    .ok_or_else(|| AlgoError::UnsupportedNaryFuse {
+                        cause: NaryFuseRefusal::LineageUnresolved,
+                        reason: format!(
+                            "region {position}: result face {} names no input face",
+                            face.index()
+                        ),
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let edge_events = resolve_edge_events(
+            &store,
+            store_region,
+            &region_origins,
+            &built.lineage,
+            &lineage,
+            IncidenceLineage::SectionsAndBoundaries,
+        )?;
+        let unresolved = edge_events
+            .values()
+            .filter(|event| matches!(event, EdgeEvent::Unresolved))
+            .count();
+        if unresolved > 0 {
+            return Err(AlgoError::UnsupportedNaryFuse {
+                cause: NaryFuseRefusal::LineageUnresolved,
+                reason: format!(
+                    "region {position}: {unresolved} result edge(s) have no construction record"
+                ),
+            });
+        }
+        face_sources.push(caller_sources);
+        pending.push(PreparedNaryFuseRegion {
+            solid: store_region,
+            origins: region_origins,
+            edge_events,
+        });
+    }
+    gate(&store.topo, &store.sources, &built.regions)?;
+
+    Ok(PreparedNaryFuseRegions {
+        store,
+        regions: pending,
+        face_sources,
+        sources: built.tallies,
+    })
 }
 
 /// Split the target solid's faces wherever they intersect the tool while
@@ -1607,6 +2063,7 @@ pub fn imprint_with_entity_evolution(
             store_origins,
             &builder_lineage,
             &lineage,
+            IncidenceLineage::Sections,
         )?;
         if evolution.faces.iter().any(|(_, source)| source.is_none())
             || evolution
@@ -1769,6 +2226,10 @@ mod entity_evolution_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "gfa/nary_oracle_tests.rs"]
+mod nary_oracle_tests;
 
 #[cfg(test)]
 mod drop_scope_tests {

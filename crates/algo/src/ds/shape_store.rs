@@ -161,22 +161,6 @@ impl GfaShapeStore {
         let _phase = crate::perf::phase(crate::perf::PhaseKind::StoreExport);
         deep_copy_solid(&self.topo, target, solid_id)
     }
-
-    /// Like [`Self::export_solid`], but returns the full store-index → new
-    /// caller-entity maps for faces, edges, and vertices (Issue 12 entity
-    /// evolution).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`AlgoError`] if any topology lookup fails.
-    pub fn export_solid_with_entity_maps(
-        &self,
-        target: &mut Topology,
-        solid_id: SolidId,
-    ) -> Result<(SolidId, DeepCopyMaps), AlgoError> {
-        let _phase = crate::perf::phase(crate::perf::PhaseKind::StoreExport);
-        deep_copy_solid_with_maps(&self.topo, target, solid_id)
-    }
 }
 
 /// Isolated shape store for an N-way GFA fuse.
@@ -193,6 +177,65 @@ pub struct GfaShapeStoreN {
     /// Store-local input face → the source index (position in `sources`) it
     /// belongs to. The basis for per-sub-face source tagging downstream.
     pub face_source: DetHashMap<FaceId, usize>,
+    /// Store-local input entity index → caller entity index, for lineage
+    /// export. `None` for a store built by [`Self::new`], whose only export
+    /// is the bare result solid.
+    pub caller: Option<CallerMaps>,
+}
+
+/// Store-local input entity index → the caller entity index it was copied
+/// from, per kind: input identity across the isolation copy.
+#[derive(Debug, Default)]
+pub struct CallerMaps {
+    /// Store face index → caller face index.
+    pub faces: DetHashMap<usize, usize>,
+    /// Store edge index → caller edge index.
+    pub edges: DetHashMap<usize, usize>,
+    /// Store vertex index → caller vertex index.
+    pub vertices: DetHashMap<usize, usize>,
+}
+
+/// What entity-evolution export reads from a GFA shape store, whatever its
+/// operand count: the store topology and input identity across the copy.
+pub trait EvolutionStore {
+    /// The store's own topology.
+    fn store_topo(&self) -> &Topology;
+    /// Caller face index of a store input face.
+    fn caller_face(&self, store_index: usize) -> Option<usize>;
+    /// Caller edge index of a store input edge.
+    fn caller_edge(&self, store_index: usize) -> Option<usize>;
+    /// Caller vertex index of a store input vertex.
+    fn caller_vertex(&self, store_index: usize) -> Option<usize>;
+}
+
+impl EvolutionStore for GfaShapeStore {
+    fn store_topo(&self) -> &Topology {
+        &self.topo
+    }
+    fn caller_face(&self, store_index: usize) -> Option<usize> {
+        self.input_face_to_caller.get(&store_index).copied()
+    }
+    fn caller_edge(&self, store_index: usize) -> Option<usize> {
+        self.input_edge_to_caller.get(&store_index).copied()
+    }
+    fn caller_vertex(&self, store_index: usize) -> Option<usize> {
+        self.input_vertex_to_caller.get(&store_index).copied()
+    }
+}
+
+impl EvolutionStore for GfaShapeStoreN {
+    fn store_topo(&self) -> &Topology {
+        &self.topo
+    }
+    fn caller_face(&self, store_index: usize) -> Option<usize> {
+        self.caller.as_ref()?.faces.get(&store_index).copied()
+    }
+    fn caller_edge(&self, store_index: usize) -> Option<usize> {
+        self.caller.as_ref()?.edges.get(&store_index).copied()
+    }
+    fn caller_vertex(&self, store_index: usize) -> Option<usize> {
+        self.caller.as_ref()?.vertices.get(&store_index).copied()
+    }
 }
 
 impl GfaShapeStoreN {
@@ -225,6 +268,54 @@ impl GfaShapeStoreN {
             topo,
             sources,
             face_source,
+            caller: None,
+        })
+    }
+
+    /// Like [`Self::new`], but also records every input face, edge and vertex
+    /// against the caller entity it was copied from, so a result built in
+    /// this store can be exported with entity evolution.
+    ///
+    /// A caller entity reached from two sources (the same solid listed twice,
+    /// or two solids sharing an edge) is copied once per source; each copy
+    /// maps back to that one caller entity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AlgoError`] if `origs` is empty or any topology lookup fails.
+    pub fn with_caller_maps(source: &Topology, origs: &[SolidId]) -> Result<Self, AlgoError> {
+        let _phase = crate::perf::phase(crate::perf::PhaseKind::StoreImport);
+        if origs.is_empty() {
+            return Err(AlgoError::AssemblyFailed(
+                "N-way fuse store needs at least one source solid".into(),
+            ));
+        }
+
+        let mut topo = Topology::default();
+        let mut sources = Vec::with_capacity(origs.len());
+        let mut face_source = DetHashMap::default();
+        let mut caller = CallerMaps::default();
+
+        for (src_idx, &orig) in origs.iter().enumerate() {
+            let (solid, maps) = deep_copy_solid_with_maps(source, &mut topo, orig)?;
+            sources.push(solid);
+            for (caller_idx, store_face) in maps.faces {
+                face_source.insert(store_face, src_idx);
+                caller.faces.insert(store_face.index(), caller_idx);
+            }
+            for (caller_idx, store_edge) in maps.edges {
+                caller.edges.insert(store_edge.index(), caller_idx);
+            }
+            for (caller_idx, store_vertex) in maps.vertices {
+                caller.vertices.insert(store_vertex.index(), caller_idx);
+            }
+        }
+
+        Ok(Self {
+            topo,
+            sources,
+            face_source,
+            caller: Some(caller),
         })
     }
 
@@ -299,8 +390,15 @@ pub fn deep_copy_sheet(
     Ok(*copied)
 }
 
+/// Deep-copy a solid from `source` into `target`, returning the new solid
+/// and the source-index → copied-entity maps for its faces, edges and
+/// vertices.
+///
+/// # Errors
+///
+/// Returns [`AlgoError`] if any topology lookup fails.
 #[allow(clippy::items_after_statements)]
-fn deep_copy_solid_with_maps(
+pub fn deep_copy_solid_with_maps(
     source: &Topology,
     target: &mut Topology,
     solid_id: SolidId,

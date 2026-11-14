@@ -1114,6 +1114,12 @@ impl From<remus_algo::error::AlgoError> for StructuredWasmError {
         structured
             .details
             .insert("kernelCode".to_string(), Value::from(diagnostic.code()));
+        // The N-ary fuse refusal's cause is part of its wire contract.
+        if let remus_algo::error::AlgoError::UnsupportedNaryFuse { cause, .. } = &error {
+            structured
+                .details
+                .insert("reason".to_string(), Value::from(cause.code()));
+        }
         structured
     }
 }

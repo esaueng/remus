@@ -13,6 +13,7 @@ pub mod construction_detailed;
 pub mod construction_imprint;
 pub mod draft_analysis;
 pub mod evolution;
+pub mod fuse_regions;
 pub mod gcs_sketch;
 pub mod gear;
 #[cfg(all(test, feature = "io"))]

@@ -1380,7 +1380,6 @@ impl Builder {
 ///
 /// Returns [`AlgoError`] if a coincident contact is detected, a sub-face cannot
 /// be sampled or classified, or assembly fails.
-#[allow(clippy::too_many_lines)]
 pub fn build_fuse_n(
     mut topo: Topology,
     arena: GfaArena,
@@ -1391,6 +1390,135 @@ pub fn build_fuse_n(
     context: &OperationContext,
 ) -> Result<(Topology, SolidId), AlgoError> {
     let _phase = crate::perf::phase(crate::perf::PhaseKind::BuildNway);
+    let mut selection = select_fuse_n(
+        &mut topo,
+        &arena,
+        sources,
+        face_source,
+        candidate_pairs,
+        tol,
+        context,
+        UnknownClass::Outside,
+    )?;
+    let solid_id =
+        assemble::assemble_solid(&mut topo, &selection.selected, &[], &mut selection.lineage)?;
+    Ok((topo, solid_id))
+}
+
+/// How the N-way builder disposed of one source's sub-faces.
+///
+/// Every sub-face of a source lands in exactly one bucket, so the three
+/// counts sum to the number of sub-faces the splitter made of that source.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SourceFaceTally {
+    /// Sub-faces selected into the union boundary.
+    pub kept: usize,
+    /// Sub-faces dropped because their interior sample classified strictly
+    /// inside another source.
+    pub inside: usize,
+    /// Sub-faces dropped by coincident-face resolution: an interior interface
+    /// between opposite-oriented coincident faces, or a same-oriented
+    /// duplicate whose group is represented by another source's face.
+    pub coincident: usize,
+}
+
+/// The N-way union kept as separate regions, with the records lineage export
+/// needs. See [`build_fuse_n_regions`].
+pub struct NwayFuseRegions {
+    /// The store topology, now holding the regions.
+    pub topo: Topology,
+    /// One solid per disconnected growth region.
+    pub regions: Vec<SolidId>,
+    /// `(result face, input source face)` over every region, store-local.
+    pub origins: FaceProvenance,
+    /// Split and assembly edge records for chasing a result edge to its input.
+    pub lineage: split_types::EdgeLineageLog,
+    /// Per source, in `sources` order: what became of its sub-faces.
+    pub tallies: Vec<SourceFaceTally>,
+}
+
+/// [`build_fuse_n`] for a caller that needs the result's lineage: the union is
+/// returned as one solid per disconnected region with face provenance, the
+/// edge lineage log and a per-source tally, and classification fails closed.
+///
+/// Where [`build_fuse_n`] counts a sample the classifier cannot place
+/// (`Unknown`) as outside — its caller validates the single result and falls
+/// back to the sequential fuse — this refuses it, as it refuses an unresolved
+/// `On`: a kept or dropped face must be a decision, because the tally reports
+/// a source with no kept face as lying within the others.
+///
+/// # Errors
+///
+/// Returns [`AlgoError::UnsupportedNaryFuse`] (cause
+/// `ClassificationUnresolved`) for an `Unknown` or unresolved coincident
+/// classification, and [`AlgoError`] if a sub-face cannot be sampled, or
+/// splitting or assembly fails.
+pub fn build_fuse_n_regions(
+    mut topo: Topology,
+    arena: GfaArena,
+    sources: &[SolidId],
+    face_source: &DetHashMap<FaceId, usize>,
+    candidate_pairs: Option<&[(usize, usize)]>,
+    tol: Tolerance,
+    context: &OperationContext,
+) -> Result<NwayFuseRegions, AlgoError> {
+    let _phase = crate::perf::phase(crate::perf::PhaseKind::BuildNway);
+    let mut selection = select_fuse_n(
+        &mut topo,
+        &arena,
+        sources,
+        face_source,
+        candidate_pairs,
+        tol,
+        context,
+        UnknownClass::Refuse,
+    )?;
+    let (regions, origins) = assemble::assemble_solids_with_origins(
+        &mut topo,
+        &selection.selected,
+        &[],
+        &mut selection.lineage,
+    )?;
+    Ok(NwayFuseRegions {
+        topo,
+        regions,
+        origins,
+        lineage: selection.lineage,
+        tallies: selection.tallies,
+    })
+}
+
+/// What an N-way classification does with a sample the classifier cannot
+/// place, and with a coincidence the same-domain pass left unresolved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UnknownClass {
+    /// `Unknown` counts as outside; an unresolved `On` is an assembly error
+    /// for the caller's sequential fallback ([`build_fuse_n`]).
+    Outside,
+    /// Either is a classification failure ([`build_fuse_n_regions`]).
+    Refuse,
+}
+
+/// The faces an N-way fuse keeps, before assembly.
+struct NwaySelection {
+    selected: Vec<bop::SelectedFace>,
+    lineage: split_types::EdgeLineageLog,
+    tallies: Vec<SourceFaceTally>,
+}
+
+/// Split every source face, resolve coincident faces and classify the rest:
+/// the shared front half of [`build_fuse_n`] and [`build_fuse_n_regions`].
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
+fn select_fuse_n(
+    topo: &mut Topology,
+    arena: &GfaArena,
+    sources: &[SolidId],
+    face_source: &DetHashMap<FaceId, usize>,
+    candidate_pairs: Option<&[(usize, usize)]>,
+    tol: Tolerance,
+    context: &OperationContext,
+    unknown: UnknownClass,
+) -> Result<NwaySelection, AlgoError> {
     // Ascending rival sources of each source, when the caller pruned pairs.
     let rivals: Option<Vec<Vec<usize>>> = candidate_pairs.map(|pairs| {
         let mut rivals = vec![Vec::new(); sources.len()];
@@ -1408,12 +1536,12 @@ pub fn build_fuse_n(
     });
     // Split every source face. Sections are face-relative, so a constant rank
     // is correct for all of them (see the doc comment).
-    let edge_images = fill_images::fill_edge_images(&arena);
+    let edge_images = fill_images::fill_edge_images(arena);
     let all_a_ranks: DetHashMap<FaceId, Rank> = face_source.keys().map(|&f| (f, Rank::A)).collect();
     let mut nway_lineage = split_types::EdgeLineageLog::default();
     let sub_faces = fill_images_faces::fill_images_faces(
-        &mut topo,
-        &arena,
+        topo,
+        arena,
         &edge_images,
         &all_a_ranks,
         tol,
@@ -1438,13 +1566,13 @@ pub fn build_fuse_n(
     // are interior interfaces (all dropped); same-oriented groups keep one
     // representative (still verified against sources outside the group). The
     // remaining sub-faces are classified by inside/outside as usual.
-    let sd = same_domain::detect_same_domain_fuse_n(&topo, &arena, &sub_faces, &sub_source, tol)?;
+    let sd = same_domain::detect_same_domain_fuse_n(topo, arena, &sub_faces, &sub_source, tol)?;
     let keep_reprs: DetHashMap<usize, DetHashSet<usize>> = sd.keep_reprs.into_iter().collect();
 
     // One ray-cast geometry per source, reused across every rival sub-face.
     let geoms: Vec<Option<classifier::RayCastGeoms>> = sources
         .iter()
-        .map(|&s| classifier::RayCastGeoms::new(&topo, s).ok())
+        .map(|&s| classifier::RayCastGeoms::new(topo, s).ok())
         .collect();
 
     // Keep a sub-face iff its interior sample is outside every source in
@@ -1473,38 +1601,70 @@ pub fn build_fuse_n(
             )? {
                 FaceClass::Inside => return Ok(false),
                 FaceClass::On | FaceClass::CoplanarSame | FaceClass::CoplanarOpposite => {
-                    return Err(AlgoError::AssemblyFailed(
-                        "N-way fuse: unresolved coincident face; sequential fallback".into(),
-                    ));
+                    return Err(match unknown {
+                        UnknownClass::Outside => AlgoError::AssemblyFailed(
+                            "N-way fuse: unresolved coincident face; sequential fallback".into(),
+                        ),
+                        UnknownClass::Refuse => AlgoError::UnsupportedNaryFuse {
+                            cause: crate::error::NaryFuseRefusal::ClassificationUnresolved,
+                            reason: format!(
+                                "a face of source {own} lies on source {j} outside any \
+                                 resolved coincident group"
+                            ),
+                        },
+                    });
                 }
-                FaceClass::Outside | FaceClass::Unknown => {}
+                FaceClass::Outside => {}
+                FaceClass::Unknown => {
+                    if unknown == UnknownClass::Refuse {
+                        return Err(AlgoError::UnsupportedNaryFuse {
+                            cause: crate::error::NaryFuseRefusal::ClassificationUnresolved,
+                            reason: format!(
+                                "a face of source {own} could not be classified against \
+                                 source {j}"
+                            ),
+                        });
+                    }
+                }
             }
         }
         Ok(true)
     };
 
     let mut selected = Vec::new();
+    let mut tallies = vec![SourceFaceTally::default(); sources.len()];
     for (idx, sf) in sub_faces.iter().enumerate() {
         let own = sub_source[idx];
         let sample = match sf.interior_point {
             Some(pt) => pt,
-            None => sample_face_interior(&topo, sf.face_id, tol)?,
+            None => sample_face_interior(topo, sf.face_id, tol)?,
         };
 
-        let keep = if sd.grouped.contains(&idx) {
+        let representative = keep_reprs.get(&idx);
+        let grouped = sd.grouped.contains(&idx);
+        let keep = if grouped {
             // A coincident face: kept only if it is this group's same-oriented
             // representative AND outside every source not in the group.
-            match keep_reprs.get(&idx) {
+            match representative {
                 Some(group_sources) => {
-                    keep_if_outside(&topo, sample, own, &|j| !group_sources.contains(&j))?
+                    keep_if_outside(topo, sample, own, &|j| !group_sources.contains(&j))?
                 }
                 None => false,
             }
         } else {
             // A normal sub-face: kept iff outside every other source.
-            keep_if_outside(&topo, sample, own, &|_| true)?
+            keep_if_outside(topo, sample, own, &|_| true)?
         };
 
+        if let Some(tally) = tallies.get_mut(own) {
+            if keep {
+                tally.kept += 1;
+            } else if grouped && representative.is_none() {
+                tally.coincident += 1;
+            } else {
+                tally.inside += 1;
+            }
+        }
         if keep {
             selected.push(bop::SelectedFace {
                 face_id: sf.face_id,
@@ -1514,12 +1674,15 @@ pub fn build_fuse_n(
         }
     }
 
-    orient_selected_fuse_analytic_holes(&mut topo, &sub_faces, &selected);
-    let solid_id = assemble::assemble_solid(&mut topo, &selected, &[], &mut nway_lineage)?;
-    Ok((topo, solid_id))
+    orient_selected_fuse_analytic_holes(topo, &sub_faces, &selected);
+    Ok(NwaySelection {
+        selected,
+        lineage: nway_lineage,
+        tallies,
+    })
 }
 
-/// Restore the stored-CW hole convention on selected analytic fuse remainders.
+// Restore the stored-CW hole convention on selected analytic fuse remainders.
 ///
 /// The face splitter reverses internal loops into a generic hole orientation
 /// before classification. That representation is required by cuts, but a

@@ -943,6 +943,16 @@
       "reason": "evolution/journal surface; B18 audit scope, already typed with its payload"
     },
     {
+      "js": "fuseRegions",
+      "rust": "fuse_regions",
+      "file": "bindings/fuse_regions.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "4.8",
+      "reason": "N-ary region fuse; already typed with its regions, lineage and disposition payload"
+    },
+    {
       "js": "fuseWithEntityEvolution",
       "rust": "fuse_with_entity_evolution",
       "file": "bindings/evolution.rs",

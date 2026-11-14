@@ -328,6 +328,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "intersectWithEvolution"
         | "compoundCut"
         | "fuseAll"
+        | "fuseRegions"
         | "transform"
         | "transformDetailed"
         | "copySolid"
@@ -1390,6 +1391,12 @@ impl RemusKernel {
                 let result = remus_operations::compound_ops::fuse_solids(self.topo_mut(), &solids)
                     .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(solid_id_to_u32(result)))
+            }
+            "fuseRegions" => {
+                let solids = get_u32_array(args, "solids")?;
+                let sheets = get_u32_array_optional(args, "sheets")?;
+                let wires = get_u32_array_optional(args, "wires")?;
+                self.fuse_regions_json(&solids, &sheets, &wires)
             }
             "transform" => {
                 let s = get_u32(args, "solid")?;

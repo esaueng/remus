@@ -7,6 +7,7 @@
 pub mod assembly;
 mod local_cut;
 mod material_witness;
+mod nary;
 mod store_local;
 mod types;
 pub(crate) use assembly::{
@@ -14,6 +15,10 @@ pub(crate) use assembly::{
     assemble_solid_mixed_with_history_and_curves,
 };
 use assembly::{validate_boolean_result, validate_boolean_result_with_tolerance};
+pub use nary::{
+    NaryFuseRegion, NaryFuseResult, OperandDisposition, fuse_body_regions, fuse_regions,
+};
+pub use remus_algo::error::NaryFuseRefusal;
 pub use remus_algo::gfa::{EdgeEvent, EntityEvolution, VertexEvent};
 use remus_math::compact_sort::CompactSort;
 pub use store_local::{set_thread_store_local_cuts, thread_store_local_cuts_enabled};
