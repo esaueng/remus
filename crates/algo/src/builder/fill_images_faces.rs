@@ -3363,7 +3363,8 @@ fn dedup_collinear_sections(sections: &mut Vec<SectionEdge>, tol: f64) {
             // to the other is not a longer copy of the ruling's pieces, and
             // reading it as one deleted both pieces of a ruling the
             // section-pave pass had split (B7).
-            if matches!(si.curve_3d, EdgeCurve::Line) != matches!(sj.curve_3d, EdgeCurve::Line) {
+            let lines = matches!(si.curve_3d, EdgeCurve::Line);
+            if lines != matches!(sj.curve_3d, EdgeCurve::Line) {
                 continue;
             }
 
@@ -3425,11 +3426,20 @@ fn dedup_collinear_sections(sections: &mut Vec<SectionEdge>, tol: f64) {
                 continue;
             }
 
-            // Overlapping collinear sections, shorter fully contained — remove it.
+            // Overlapping collinear sections, shorter fully contained — remove
+            // it. For two curved sections the chord test above is only a
+            // prefilter: concentric semicircles share a chord line with the
+            // inner chord nested in the outer one, yet are different curves
+            // (a notched hollow tube's two trimmed walls on one cutter). A
+            // curved section is redundant only when it lies on the longer
+            // one's own curve, within its span.
+            let redundant = |inner: &SectionEdge, outer: &SectionEdge| {
+                lines || curved_section_within(outer, inner, tol * 10.0)
+            };
             if len_i < len_j - tol {
-                to_remove[i] = true;
+                to_remove[i] |= redundant(si, sj);
             } else if len_j < len_i - tol {
-                to_remove[j] = true;
+                to_remove[j] |= redundant(sj, si);
             }
             // If equal length, keep both (they might be distinct edges)
         }
@@ -3445,6 +3455,53 @@ fn dedup_collinear_sections(sections: &mut Vec<SectionEdge>, tol: f64) {
         });
         log::debug!("dedup_collinear_sections: removed {removed} subset edges");
     }
+}
+
+/// Whether `inner` lies on `outer`'s own curve within `band`, sampled along
+/// `inner`'s whole span: every sample has a point of `outer`, inside its
+/// span, within `band`. Carriers this cannot measure never qualify.
+fn curved_section_within(outer: &SectionEdge, inner: &SectionEdge, band: f64) -> bool {
+    const SAMPLES: u32 = 16;
+    let (a, b) = inner.domain();
+    (0..=SAMPLES).all(|k| {
+        let t = (b - a).mul_add(f64::from(k) / f64::from(SAMPLES), a);
+        let p = inner
+            .curve_3d
+            .evaluate_with_endpoints(t, inner.start, inner.end);
+        distance_to_section_curve(outer, p).is_some_and(|d| d <= band)
+    })
+}
+
+/// Distance from `p` to a point of `section`'s curve within its span: the
+/// exact foot where the carrier's projection lands in the span, else the
+/// nearer end. `None` for a line or an unsupported carrier.
+fn distance_to_section_curve(section: &SectionEdge, p: Point3) -> Option<f64> {
+    use std::f64::consts::TAU;
+    let (t0, t1) = section.domain();
+    let (lo, hi) = (t0.min(t1), t0.max(t1));
+    let at = |t: f64| {
+        section
+            .curve_3d
+            .evaluate_with_endpoints(t, section.start, section.end)
+    };
+    let in_span = |t: f64| (lo..=hi).contains(&t);
+    let foot = match &section.curve_3d {
+        EdgeCurve::Circle(c) => Some(lo + (c.project(p) - lo).rem_euclid(TAU))
+            .filter(|&t| in_span(t))
+            .map(at),
+        EdgeCurve::Ellipse(e) => Some(lo + (e.project(p) - lo).rem_euclid(TAU))
+            .filter(|&t| in_span(t))
+            .map(at),
+        EdgeCurve::NurbsCurve(n) => {
+            remus_math::nurbs::projection::project_point_to_curve(n, p, 1e-12)
+                .ok()
+                .filter(|hit| in_span(hit.parameter))
+                .map(|hit| hit.point)
+        }
+        EdgeCurve::Line | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => return None,
+    };
+    let ends = (p - at(t0)).length().min((p - at(t1)).length());
+    Some(foot.map_or(ends, |q| (p - q).length().min(ends)))
 }
 
 /// Intersect a section line with a curved boundary edge's TRUE geometry,
