@@ -52,7 +52,7 @@ jobs:
         run: |
           python3 -m unittest discover -s scripts/perf/face-drag-session -p 'test_compare_preview.py'
           node scripts/perf/face-drag-session/drag_session_bench.test.cjs
-      - uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
+      - uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
         with:
           tool: wasm-pack@0.15.0
       - name: Build and qualify baseline packages
