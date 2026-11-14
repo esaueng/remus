@@ -20,10 +20,14 @@
 //!    the pave vertices on that face's trimming edges that lie on the curve
 //!    (within the weld band: marched geometry is good to ~1e-6) become extra
 //!    paves of the curve's block.
-//! 2. The block is split at them, exactly as an operand-edge block is.
-//! 3. A leaf that lies off such a face (interior samples strictly in a hole
-//!    or outside the outer wire, ends off the face or on its boundary) is on
-//!    neither face's material and is dropped — for BOTH faces at once.
+//! 2. The block is split locally, preserving geometrically distinct paves
+//!    even when their native parameters differ by less than 1e-10.
+//! 3. A leaf is dropped for BOTH faces only with a whole-interval certificate
+//!    of exclusion. Outward-rounded Bernstein balls cover every knot span;
+//!    each ball is strictly off the face or inside an already resolved end
+//!    vertex's model-space weld ball. Samples can only retain a leaf.
+//!    Unavailable bounds, projection singularities and exhausted work keep it.
+//!    Cylinder projection is bounded here; other carriers retain their leaves.
 //!
 //! A curve the pass changes is marked [`IntersectionCurveDS::paved`]; its
 //! `pave_blocks` then lists the surviving leaves, which the builder feeds as
@@ -36,7 +40,9 @@ use std::collections::BTreeMap;
 use std::f64::consts::TAU;
 
 use remus_math::compact_sort::CompactSort;
+use remus_math::context::OperationContext;
 use remus_math::det_hash::DetHashMap;
+use remus_math::nurbs::{NurbsCurve, reuse::bound_curve_position};
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::Point3;
 use remus_topology::Topology;
@@ -45,7 +51,7 @@ use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::vertex::VertexId;
 use remus_topology::wire::WireId;
 
-use crate::chart_trim::{ChartLoop, chart_loop, chart_v_periodic};
+use crate::chart_trim::{ChartLoop, chart_loop, chart_v_periodic, exclusion_loop};
 use crate::ds::{GfaArena, IntersectionCurveDS, Pave, PaveBlockId};
 use crate::error::AlgoError;
 
@@ -53,9 +59,7 @@ use crate::error::AlgoError;
 /// marched edge sits up to ~1e-6 off the exact section it lies on.
 const WELD_FACTOR: f64 = 100.0;
 
-/// Interior fractions of a leaf probed against the face. A leaf is dropped
-/// only when every probe is decisively off the face and neither end is
-/// decisively on it.
+/// Cheap material probes can only retain a leaf; deletion needs a certificate.
 const LEAF_PROBES: [f64; 3] = [0.25, 0.5, 0.75];
 
 /// An analytic curved face whose trimmed region is not a chart rectangle,
@@ -69,36 +73,26 @@ struct TrimmedFace {
     outer: Option<ChartLoop>,
     /// Inner wires that close in the chart: ordinary holes.
     holes: Vec<ChartLoop>,
+    /// Refined outlines used only by whole-leaf certificates: `true` for a
+    /// hole, `false` for the exterior of the outer outline.
+    exclusion: Vec<(ChartLoop, bool)>,
     /// Resolved pave vertices on the trimming edges, ascending by id.
     vertices: Vec<(VertexId, Point3)>,
 }
 
 impl TrimmedFace {
-    /// Whether a section piece lies off this face: every interior probe is
-    /// off the trimmed region and clear of every boundary outline by more
-    /// than `band` plus the outline's chord error, and neither end is
-    /// decisively on the face.
-    ///
-    /// The end condition is what keeps an unpaved piece whole: a piece that
-    /// starts on the face's material and dips off it has a crossing the pave
-    /// search missed, and its probes cannot speak for its ends.
-    fn excludes(&self, probes: &[Point3], ends: [Point3; 2], band: f64) -> bool {
-        let off = |p: Point3| {
-            let Some(uv) = self.surface.project_point(p) else {
-                return false;
-            };
-            self.outer
-                .as_ref()
-                .is_some_and(|outer| !outer.contains(uv, self.v_periodic))
-                || self
-                    .holes
-                    .iter()
-                    .any(|hole| hole.contains(uv, self.v_periodic))
-        };
-        probes
+    /// A point can select the off-face component only with positive clearance
+    /// from the certified boundary enclosure. It cannot certify a leaf alone.
+    fn clearance(&self, p: Point3) -> Option<f64> {
+        let uv = self.surface.project_point(p)?;
+        let clearance =
+            |outline: &ChartLoop| (outline.distance(p) - 2.0 * outline.sagitta).next_down();
+        self.exclusion
             .iter()
-            .all(|&p| off(p) && !self.near_boundary(p, band))
-            && ends.iter().all(|&p| off(p) || self.near_boundary(p, band))
+            .filter(|(outline, inside)| outline.contains(uv, self.v_periodic) == *inside)
+            .map(|(outline, _)| clearance(outline))
+            .filter(|d| d.is_finite() && *d > 0.0)
+            .max_by(f64::total_cmp)
     }
 
     /// Whether `p` is within `band`, plus the outline's certified continuous
@@ -181,9 +175,29 @@ fn trimmed_face(
     if outer.is_none() && holes.is_empty() {
         return None;
     }
+    let error = tol.linear * WELD_FACTOR / 8.0;
+    let mut exclusion = Vec::new();
+    for (wire, inside) in outer
+        .iter()
+        .map(|_| (face.outer_wire(), false))
+        .chain(face.inner_wires().iter().map(|&wire| (wire, true)))
+    {
+        let Some(outline) = chart_loop(topo, surface, wire, tol) else {
+            continue;
+        };
+        let certified = if outline.sagitta <= error {
+            Some(outline)
+        } else {
+            exclusion_loop(topo, surface, wire, error)
+        };
+        if let Some(outline) = certified {
+            exclusion.push((outline, inside));
+        }
+    }
     Some(TrimmedFace {
         surface: surface.clone(),
         v_periodic,
+        exclusion,
         outer,
         holes,
         vertices: vertices.into_iter().collect(),
@@ -258,7 +272,7 @@ pub fn perform(topo: &Topology, tol: Tolerance, arena: &mut GfaArena) -> Result<
             if let Some(pb) = arena.pave_blocks.get_mut(root) {
                 pb.extra_paves = paves;
             }
-            super::make_blocks::split_at_extra_paves(arena, root)
+            split_section(arena, root)
         } else {
             vec![root]
         };
@@ -344,7 +358,7 @@ fn section_paves(
             else {
                 continue;
             };
-            if (foot - point).length() > weld || !pb.contains_parameter_interior(t, 1e-10) {
+            if (foot - point).length() > weld || !pb.contains_parameter_interior(t, 0.0) {
                 continue;
             }
             hits.push((t, vid, point));
@@ -360,6 +374,11 @@ fn section_paves(
         }
         paves.push(Pave::new(vid, t));
         last_point = Some(point);
+    }
+    // Distinct model points at an indistinguishable parameter are unresolved.
+    // Keep the original curve rather than invent a zero-width material leaf.
+    if paves.windows(2).any(|w| w[0].parameter >= w[1].parameter) {
+        return Ok(None);
     }
     // A pave marks where the section CROSSES a trimming edge. A section that
     // rides the boundary through a vertex of it (a cap plane's circle lying
@@ -394,8 +413,72 @@ fn section_paves(
     Ok(Some((*root, crossing)))
 }
 
-/// Whether the leaf block lies off one of the curve's trimmed faces (see
-/// [`TrimmedFace::excludes`]).
+/// Split section blocks without the operand splitter's parameter-space weld.
+/// `section_paves` has already welded in MODEL space and sorted strictly.
+fn split_section(arena: &mut GfaArena, root: PaveBlockId) -> Vec<PaveBlockId> {
+    let Some(pb) = arena.pave_blocks.get(root).cloned() else {
+        return vec![root];
+    };
+    let mut previous = pb.start;
+    let mut children = Vec::with_capacity(pb.extra_paves.len() + 1);
+    for next in pb
+        .extra_paves
+        .iter()
+        .copied()
+        .chain(std::iter::once(pb.end))
+    {
+        children.push(arena.pave_blocks.alloc(crate::ds::PaveBlock::new(
+            pb.original_edge,
+            previous,
+            next,
+        )));
+        previous = next;
+    }
+    if let Some(pb) = arena.pave_blocks.get_mut(root) {
+        pb.children.clone_from(&children);
+    }
+    children
+}
+
+/// Enclose the ENTIRE interval in a ball, including every NURBS knot span.
+/// Bernstein failure, nonfinite arithmetic and unsupported carriers retain it.
+fn section_ball(
+    curve: &EdgeCurve,
+    range: (f64, f64),
+    ends: (Point3, Point3),
+) -> Option<(Point3, f64)> {
+    let (a, b) = range;
+    let m = f64::midpoint(a, b);
+    let center = match curve {
+        EdgeCurve::Line => ends.0 + (ends.1 - ends.0) * 0.5,
+        _ => curve.evaluate_with_endpoints(m, ends.0, ends.1),
+    };
+    let radius = match curve {
+        EdgeCurve::Line => (ends.1 - ends.0).length() * 0.5,
+        EdgeCurve::Circle(c) => c.radius() * ((b - a) * 0.5).min(2.0),
+        EdgeCurve::Ellipse(e) => e.semi_major().max(e.semi_minor()) * ((b - a) * 0.5).min(2.0),
+        EdgeCurve::NurbsCurve(n) => {
+            let constant =
+                NurbsCurve::new(1, vec![a, a, b, b], vec![center; 2], vec![1.0; 2]).ok()?;
+            bound_curve_position(n, &constant, range, 1_000_000, &OperationContext::default())
+                .ok()?
+        }
+        EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => return None,
+    };
+    let scale = center
+        .0
+        .iter()
+        .chain(ends.0.0.iter())
+        .chain(ends.1.0.iter())
+        .fold(radius.abs().max(1.0), |s, x| s.max(x.abs()));
+    let radius = (radius + 1e-14 * scale).next_up();
+    (radius.is_finite() && center.0.iter().all(|x| x.is_finite())).then_some((center, radius))
+}
+
+/// Prove exclusion over a cover of the complete leaf, never from probes.
+/// Every accepted ball is in one off-face component with positive margin or
+/// in a resolved endpoint's existing weld ball. No chord-error enlargement of
+/// that weld is permitted. Exhausting the finite budget means KEEP.
 fn leaf_off_face(
     topo: &Topology,
     arena: &GfaArena,
@@ -410,19 +493,85 @@ fn leaf_off_face(
     let (ta, tb) = pb.parameter_range();
     let start = topo.vertex(arena.resolve_vertex(pb.start.vertex))?.point();
     let end = topo.vertex(arena.resolve_vertex(pb.end.vertex))?.point();
-    let probes = LEAF_PROBES.map(|f| match curve {
-        EdgeCurve::Line => start + (end - start) * f,
-        EdgeCurve::Circle(_)
-        | EdgeCurve::Ellipse(_)
-        | EdgeCurve::NurbsCurve(_)
-        | EdgeCurve::Hyperbola(_)
-        | EdgeCurve::Parabola(_) => {
-            curve.evaluate_with_endpoints((tb - ta).mul_add(f, ta), start, end)
+    let at = |t: f64| match curve {
+        EdgeCurve::Line => start + (end - start) * ((t - ta) / (tb - ta)),
+        _ => curve.evaluate_with_endpoints(t, start, end),
+    };
+    for face in trimmed {
+        // Probes may only KEEP. They are a cheap way to avoid certification
+        // when the leaf plainly contains material or rides the boundary.
+        if LEAF_PROBES
+            .iter()
+            .any(|&f| face.clearance(at((tb - ta).mul_add(f, ta))).is_none())
+        {
+            continue;
         }
-    });
-    Ok(trimmed
-        .iter()
-        .any(|face| face.excludes(&probes, [start, end], weld)))
+        // A resolved endpoint is already identified with a trimming vertex
+        // within the model-space weld band. Its collar must be enclosed in
+        // that SAME vertex ball, never in a parameter-width or chord-error
+        // band. Everything beyond those weld balls needs strict exclusion.
+        let start_id = arena.resolve_vertex(pb.start.vertex);
+        let end_id = arena.resolve_vertex(pb.end.vertex);
+        let collars: Vec<_> = face
+            .vertices
+            .iter()
+            .filter(|(id, _)| *id == start_id || *id == end_id)
+            .map(|(_, p)| *p)
+            .collect();
+        let mut pending = vec![(ta, tb, 0)];
+        let mut certified = true;
+        for _ in 0..4096 {
+            let Some((a, b, depth)) = pending.pop() else {
+                break;
+            };
+            let Some((center, radius)) = section_ball(curve, (a, b), (at(a), at(b))) else {
+                certified = false;
+                break;
+            };
+            if collars
+                .iter()
+                .any(|p| ((center - *p).length() + radius).next_up() < weld)
+            {
+                continue;
+            }
+            // Projection onto a cylinder is Lipschitz on a ball clear of
+            // its axis: axial factor 1, radial factor R / min(radius).
+            // This also covers marched sections slightly off the carrier.
+            if let FaceSurface::Cylinder(c) = &face.surface {
+                let q = center - c.origin();
+                let radial = q - c.axis() * q.dot(c.axis());
+                let scale = center
+                    .0
+                    .iter()
+                    .chain(c.origin().0.iter())
+                    .fold(c.radius().max(1.0), |s, x| s.max(x.abs()));
+                let slack = 1e-14 * scale;
+                let minimum_radius = (radial.length() - radius - slack).next_down();
+                if minimum_radius > 0.0 {
+                    let (u, v) = c.project_point(center);
+                    let projected = c.evaluate(u, v);
+                    let projected_radius =
+                        (radius * (c.radius() / minimum_radius).max(1.0) + slack).next_up();
+                    if face
+                        .clearance(projected)
+                        .is_some_and(|d| d > projected_radius)
+                    {
+                        continue;
+                    }
+                }
+            }
+            let m = f64::midpoint(a, b);
+            if m <= a || m >= b || depth >= 48 {
+                certified = false;
+                break;
+            }
+            pending.extend([(m, b, depth + 1), (a, m, depth + 1)]);
+        }
+        if certified && pending.is_empty() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 #[cfg(test)]
@@ -1093,5 +1242,180 @@ mod tests {
         for reversed in [false, true] {
             material_below_rational_hole_bump(1.0 / 3.0, 2.0 / 3.0, reversed);
         }
+    }
+    #[test]
+    fn review_material_excursion_between_leaf_probes() {
+        material_excursion(false, 0.001, 0.002);
+    }
+    #[test]
+    fn review_material_excursion_with_crossing_paves_control() {
+        material_excursion(true, 0.001, 0.002);
+    }
+    #[test]
+    fn review_material_excursion_with_tiny_span_crossing_paves() {
+        material_excursion(true, 0.001, 0.001_000_000_000_001);
+    }
+    #[test]
+    fn review_material_excursion_with_close_but_resolved_crossing_paves() {
+        material_excursion(true, 0.001, 0.001_000_000_01);
+    }
+    #[test]
+    fn review_material_excursion_with_wide_spacing() {
+        material_excursion(true, 1.0 / 3.0, 2.0 / 3.0);
+    }
+    #[allow(clippy::too_many_lines)]
+    fn material_excursion(with_paves: bool, k0: f64, k1: f64) {
+        let mut f = holed(1.);
+        // Give the wall a complete, closed outer boundary at z=0 and z=4.
+        let old_hole = f.topo.face(f.wall).unwrap().inner_wires()[0];
+        let hole_edges = f
+            .topo
+            .wire(old_hole)
+            .unwrap()
+            .edges()
+            .iter()
+            .rev()
+            .map(|oe| OrientedEdge::new(oe.edge(), !oe.is_forward()))
+            .collect();
+        let hole = f.topo.add_wire(Wire::new(hole_edges, true).unwrap());
+        let s0 = f.topo.add_vertex(Vertex::new(f.cyl.evaluate(0., 0.), TOL));
+        let s1 = f.topo.add_vertex(Vertex::new(f.cyl.evaluate(0., 4.), TOL));
+        let bottom = arc(&mut f.topo, &mut f.arena, &f.cyl, 0., (s0, 0.), (s0, TAU));
+        let top = arc(&mut f.topo, &mut f.arena, &f.cyl, 4., (s1, 0.), (s1, TAU));
+        let seam = line(&mut f.topo, &mut f.arena, s0, s1);
+        let outer = f.topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(bottom, true),
+                    OrientedEdge::new(seam, true),
+                    OrientedEdge::new(top, false),
+                    OrientedEdge::new(seam, false),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        f.wall = f.topo.add_face(Face::new(
+            outer,
+            vec![hole],
+            FaceSurface::Cylinder(f.cyl.clone()),
+        ));
+        // Exact section of this cylinder with an oblique plane. z(u) has a
+        // minimum of 0.5 at u=1.5 and is 2.0 at u=1.2 and 1.8.
+        let amplitude = 1.5 / (1. - 0.3_f64.cos());
+        let height = 0.5 + amplitude;
+        let u_center = 1.5;
+        let radial = f.cyl.evaluate(u_center, 0.) - Point3::new(0., 0., 0.);
+        let z_of = |p: Point3| height - amplitude * (p.x() * radial.x() + p.y() * radial.y());
+        let mut cps = Vec::new();
+        let mut ws = Vec::new();
+        for (k, (a, b)) in [(1.2_f64, 1.3_f64), (1.3, 1.7), (1.7, 1.8)]
+            .into_iter()
+            .enumerate()
+        {
+            let w = ((b - a) / 2.).cos();
+            if k == 0 {
+                let p = f.cyl.evaluate(a, 0.);
+                cps.push(Point3::new(p.x(), p.y(), z_of(p)));
+                ws.push(1.);
+            }
+            let p = f.cyl.evaluate(f64::midpoint(a, b), 0.);
+            let p = Point3::new(p.x() / w, p.y() / w, 0.);
+            cps.push(Point3::new(p.x(), p.y(), z_of(p)));
+            ws.push(w);
+            let p = f.cyl.evaluate(b, 0.);
+            cps.push(Point3::new(p.x(), p.y(), z_of(p)));
+            ws.push(1.);
+        }
+        let n = remus_math::nurbs::NurbsCurve::new(
+            2,
+            vec![0., 0., 0., k0, k0, k1, k1, 1., 1., 1.],
+            cps,
+            ws,
+        )
+        .unwrap();
+        for t in [0., 0.25, 0.5, 0.75, 1.] {
+            let p = n.evaluate(t);
+            let (u, z) = f.cyl.project_point(p);
+            if k1 < 0.01 {
+                assert!(u > 1. && u < 2. && z > 1. && z < 3.);
+            }
+            assert!((p - f.cyl.evaluate(u, z)).length() < 1e-12);
+            assert!((z - z_of(p)).abs() < 1e-12);
+        }
+        let material = n.evaluate(f64::midpoint(k0, k1));
+        let (u, z) = f.cyl.project_point(material);
+        assert!((u - 1.5).abs() < 1e-4 && (z - 0.5).abs() < 1e-4);
+        // The other face is the actual section plane. The wall's trimming-edge
+        // arena has no interior paves, precisely the uncertain case the end
+        // check purports to retain when crossing discovery missed a crossing.
+        // This rectangle cuts the actual carrier section at u=1.2 and 1.8:
+        // tangent coordinate is +/-sin(.3), radial coordinate 0.9..1.1.
+        let tangent =
+            f.cyl.evaluate(u_center + std::f64::consts::FRAC_PI_2, 0.) - Point3::new(0., 0., 0.);
+        let limit = 0.3_f64.sin();
+        let corners = [(0.9, -limit), (1.1, -limit), (1.1, limit), (0.9, limit)].map(|(r, t)| {
+            let xy = radial * r + tangent * t;
+            let p = Point3::new(xy.x(), xy.y(), z_of(Point3::new(xy.x(), xy.y(), 0.)));
+            f.topo.add_vertex(Vertex::new(p, TOL))
+        });
+        let mut edges = Vec::new();
+        for k in 0..4 {
+            edges.push(OrientedEdge::new(
+                line(&mut f.topo, &mut f.arena, corners[k], corners[(k + 1) % 4]),
+                true,
+            ));
+        }
+        let outer = f.topo.add_wire(Wire::new(edges, true).unwrap());
+        let normal = Vec3::new(amplitude * radial.x(), amplitude * radial.y(), 1.);
+        let norm = normal.length();
+        f.other = f.topo.add_face(Face::new(
+            outer,
+            vec![],
+            FaceSurface::Plane {
+                normal: normal * norm.recip(),
+                d: height / norm,
+            },
+        ));
+        let section = f.section(
+            EdgeCurve::NurbsCurve(n.clone()),
+            (0., 1.),
+            (n.evaluate(0.), n.evaluate(1.)),
+        );
+        if with_paves {
+            let angle = (1. - 0.5 / amplitude).acos();
+            let bottom = f.trim[0];
+            for u in [1.5 - angle, 1.5 + angle] {
+                let p = f.cyl.evaluate(u, 1.);
+                let projection =
+                    remus_math::nurbs::projection::project_point_to_curve(&n, p, 1e-12).unwrap();
+                if k1 - k0 > 1e-12 {
+                    assert!(projection.distance < TOL * WELD_FACTOR);
+                }
+                f.cross(bottom, u, p, ZERO);
+            }
+        }
+        let root = f.arena.curves[section].pave_blocks[0];
+        f.run();
+        // Closed-form crossings are ~0.344 model units apart. When their
+        // projections resolve inside the weld band, BOTH must survive even
+        // when their native parameters differ by less than 1e-10.
+        if with_paves && k1 - k0 > 1e-12 {
+            assert_eq!(f.arena.pave_blocks.get(root).unwrap().children.len(), 3);
+            let paves = &f.arena.pave_blocks.get(root).unwrap().extra_paves;
+            assert_eq!(paves.len(), 2);
+            let points = paves
+                .iter()
+                .map(|p| f.topo.vertex(p.vertex).unwrap().point())
+                .collect::<Vec<_>>();
+            assert!((points[0] - points[1]).length() > 0.3);
+        }
+        assert!(
+            f.ranges(section)
+                .iter()
+                .any(|&(a, b)| a <= f64::midpoint(k0, k1) && f64::midpoint(k0, k1) <= b),
+            "Valid cylinder/plane section contains material at {u}, {z}; got {:?}",
+            f.ranges(section)
+        );
     }
 }

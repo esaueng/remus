@@ -198,7 +198,7 @@ pub fn chart_loop(
     wire_id: WireId,
     _tol: Tolerance,
 ) -> Option<ChartLoop> {
-    let v_periodic = chart_v_periodic(surface)?;
+    chart_v_periodic(surface)?;
     let wire = topo.wire(wire_id).ok()?;
     let mut pts: Vec<Point3> = Vec::new();
     let mut sagitta = 0.0_f64;
@@ -240,6 +240,80 @@ pub fn chart_loop(
         return None;
     }
 
+    loop_from_points(surface, pts, sagitta)
+}
+
+/// Refine ONLY the section-exclusion outline. Classifier and boundary-riding
+/// samples remain unchanged. Each accepted chord bounds its complete native
+/// interval; knot spans are seeded explicitly, so parameter compression cannot
+/// conceal an excursion. Work exhaustion or any unavailable bound means KEEP.
+pub fn exclusion_loop(
+    topo: &Topology,
+    surface: &FaceSurface,
+    wire_id: WireId,
+    error: f64,
+) -> Option<ChartLoop> {
+    let wire = topo.wire(wire_id).ok()?;
+    let mut pts: Vec<Point3> = Vec::new();
+    let mut previous_end: Option<Point3> = None;
+    let mut sagitta = 0.0_f64;
+    let mut work = 0;
+    for oe in wire.edges() {
+        let edge = topo.edge(oe.edge()).ok()?;
+        let sp = topo.vertex(edge.start()).ok()?.point();
+        let ep = topo.vertex(edge.end()).ok()?.point();
+        let (t0, t1) = edge.strict_domain().ok()?;
+        let (lo, hi) = (t0.min(t1), t0.max(t1));
+        let mut breaks = vec![lo];
+        if let EdgeCurve::NurbsCurve(n) = edge.curve() {
+            for &knot in n.knots() {
+                if knot > *breaks.last()? && knot < hi {
+                    breaks.push(knot);
+                }
+            }
+        }
+        breaks.push(hi);
+        let at = |t| edge.curve().evaluate_with_endpoints(t, sp, ep);
+        let mut pending: Vec<_> = breaks.windows(2).rev().map(|w| (w[0], w[1])).collect();
+        let mut samples = Vec::new();
+        while let Some((a, b)) = pending.pop() {
+            work += 1;
+            if work > 32768 {
+                return None;
+            }
+            let (pa, pb) = (at(a), at(b));
+            let bound = polyline_error(edge.curve(), &[a, b], &[pa, pb])?;
+            if bound <= error {
+                samples.push(pa);
+                sagitta = sagitta.max(bound);
+            } else {
+                let m = f64::midpoint(a, b);
+                if m <= a || m >= b {
+                    return None;
+                }
+                pending.extend([(m, b), (a, m)]);
+            }
+        }
+        samples.push(at(hi));
+        if (t0 > t1) == oe.is_forward() {
+            samples.reverse();
+        }
+        if let Some(end) = previous_end {
+            sagitta = (sagitta + (samples[0] - end).length()).next_up();
+        }
+        previous_end = samples.last().copied();
+        pts.extend_from_slice(&samples[..samples.len() - 1]);
+    }
+    sagitta = (sagitta + (pts.first().copied()? - previous_end?).length()).next_up();
+    if sagitta > error || pts.len() < 3 {
+        return None;
+    }
+    loop_from_points(surface, pts, sagitta)
+}
+
+/// Construct the same continuous chart lift for a certified model polyline.
+fn loop_from_points(surface: &FaceSurface, pts: Vec<Point3>, sagitta: f64) -> Option<ChartLoop> {
+    let v_periodic = chart_v_periodic(surface)?;
     let mut uv: Vec<Point2> = Vec::with_capacity(pts.len());
     for &p in &pts {
         let (u, v) = surface.project_point(p)?;
