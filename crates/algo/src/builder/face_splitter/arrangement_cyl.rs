@@ -1294,10 +1294,15 @@ fn emit_cylinder_run(
             if !source_span[0].is_finite() || !source_span[1].is_finite() {
                 return Err(internal("non-finite circle subspan"));
             }
+            // `source_span` runs in traversal order; `trim` is the native
+            // interval (`OrientedPCurveEdge::trim`), which `traversal_domain`
+            // swaps back for a reversed use.
+            let [s0, s1] = source_span;
+            let forward = s1 >= s0;
             (
                 parent.pcurve.clone(),
-                Some((source_span[0], source_span[1])),
-                source_span[1] >= source_span[0],
+                Some(if forward { (s0, s1) } else { (s1, s0) }),
+                forward,
             )
         }
         EdgeCurve::NurbsCurve(_)
@@ -1315,7 +1320,10 @@ fn emit_cylinder_run(
     } else {
         None
     };
-    if let (EdgeCurve::Circle(circle), Some((t0, t1))) = (&carrier.curve_3d, trim) {
+    // Endpoints are checked in traversal order, from the span before its
+    // native reordering.
+    if let EdgeCurve::Circle(circle) = &carrier.curve_3d {
+        let [t0, t1] = source_span;
         let start_ok = (circle.evaluate(t0) - first.endpoints_3d[0]).length() <= tolerance
             && (circle.evaluate(t1) - last.endpoints_3d[1]).length() <= tolerance;
         if !start_ok {
@@ -1560,6 +1568,56 @@ mod tests {
             (areas[1] - 2.0 * (TAU - 2.0) * 3.0).abs() < 1e-6,
             "{areas:?}"
         );
+    }
+
+    /// `OrientedPCurveEdge::trim` is native-direction, so every circle arc
+    /// read back through `traversal_domain()` (which swaps the trim of a
+    /// reversed use) must start at `start_3d`, end at `end_3d` and sweep the
+    /// way `forward` says. A reversed closed rim whose trim is stored in
+    /// traversal order walks the circle the wrong way round, and a reversed
+    /// open arc starts at its end point. The other tests here sample arcs
+    /// from `start_3d`, `end_3d` and `forward` only, so they cannot see it.
+    #[test]
+    fn circle_trims_are_native_and_sample_the_traversed_arc() {
+        let mut reversed_arcs = 0_usize;
+        for face_reversed in [false, true] {
+            let (topo, face) = lateral(2.0, 3.0, face_reversed);
+            for (label, sections) in [
+                (
+                    "bands",
+                    vec![section_circle(2.0, 1.0), section_circle(2.0, 2.0)],
+                ),
+                ("sectors", vec![section_ruling(2.0, 2.0, 3.0)]),
+            ] {
+                let subs = split_emit(&topo, face, &sections).expect(label);
+                for (r, sub) in subs.iter().enumerate() {
+                    for (i, e) in sub.outer_wire.iter().enumerate() {
+                        let EdgeCurve::Circle(circle) = &e.curve_3d else {
+                            continue;
+                        };
+                        let tag = format!(
+                            "{label}, face reversed {face_reversed}, region {r} edge {i} (forward {}, trim {:?})",
+                            e.forward, e.trim
+                        );
+                        reversed_arcs += usize::from(!e.forward);
+                        let (t0, t1) = e.traversal_domain();
+                        let expected = edge_polyline(e);
+                        let last = (expected.len() - 1) as f64;
+                        for (k, want) in expected.iter().enumerate() {
+                            let t = (t1 - t0).mul_add(k as f64 / last, t0);
+                            let off = (circle.evaluate(t) - *want).length();
+                            assert!(
+                                off < 1e-6,
+                                "{tag}: sample {k} of the trim is {off:.3e} off the traversed arc"
+                            );
+                        }
+                        let (lo, hi) = e.trim.expect("circle trim");
+                        assert!(lo <= hi, "{tag}: trim is not native-direction");
+                    }
+                }
+            }
+        }
+        assert!(reversed_arcs > 0, "the fixtures carry no reversed arc");
     }
 
     /// These rulings are angularly distinct inside the declared production
