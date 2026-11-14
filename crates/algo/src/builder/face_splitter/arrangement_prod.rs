@@ -86,23 +86,19 @@ fn work_mark(phase: &'static str, value: usize) {
 #[cfg(not(any(test, feature = "perf-counters")))]
 const fn work_mark(_phase: &'static str, _value: usize) {}
 
-fn budget_decline(context: &OperationContext) -> Result<bool, AlgoError> {
-    if context.budgets == remus_math::context::WorkBudgets::new() {
-        Ok(false)
-    } else {
-        Err(collect_failed(ArrangementError::WorkBudgetExceeded))
-    }
+/// Budget exhaustion is always a typed refusal, whatever the budgets: the
+/// adapter runs only where the splitter routes a face family to it, so a
+/// silent decline would hide that the routed family needs more work.
+fn budget_exceeded() -> AlgoError {
+    collect_failed(ArrangementError::WorkBudgetExceeded)
 }
 
-fn charge_collection_step(
-    context: &OperationContext,
-    steps: &mut usize,
-) -> Result<bool, AlgoError> {
+fn charge_collection_step(context: &OperationContext, steps: &mut usize) -> Result<(), AlgoError> {
     *steps = steps.saturating_add(1);
     if *steps > context.budgets.march_steps {
-        budget_decline(context)
+        Err(budget_exceeded())
     } else {
-        Ok(true)
+        Ok(())
     }
 }
 
@@ -219,7 +215,7 @@ pub(super) fn collect_planar_uses(
             return Ok(None);
         }
         if collector.uses.len() > context.budgets.queue_size {
-            return budget_decline(context).map(|_| None);
+            return Err(budget_exceeded());
         }
     }
     if !Collector::loops_match_wires(topo, face_id) {
@@ -234,7 +230,7 @@ pub(super) fn collect_planar_uses(
             return Ok(None);
         }
         if collector.uses.len() > context.budgets.queue_size {
-            return budget_decline(context).map(|_| None);
+            return Err(budget_exceeded());
         }
     }
     // Interior concurrency first: shared-cert splits become range
@@ -244,7 +240,7 @@ pub(super) fn collect_planar_uses(
     }
     work_mark("collect-concurrency", pair_steps);
     if collector.uses.len() > context.budgets.queue_size {
-        return budget_decline(context).map(|_| None);
+        return Err(budget_exceeded());
     }
     if !collector.prejoin_endpoints(context, &mut pair_steps)? {
         return Ok(None);
@@ -254,7 +250,7 @@ pub(super) fn collect_planar_uses(
         return Ok(None);
     }
     if collector.uses.len() > context.budgets.queue_size {
-        return budget_decline(context).map(|_| None);
+        return Err(budget_exceeded());
     }
     if !collector.section_ends_resolved() {
         return Ok(None);
@@ -479,9 +475,7 @@ fn scan_degenerate_contact(
             context
                 .check_cancelled()
                 .map_err(|_| AlgoError::FaceSplitFailed("planar arrangement cancelled".into()))?;
-            if !charge_collection_step(context, steps)? {
-                return Ok(None);
-            }
+            charge_collection_step(context, steps)?;
             if uses_pair_is_degenerate(&uses[i], &uses[j], tol) {
                 return Ok(Some(true));
             }
@@ -541,13 +535,6 @@ pub(super) fn try_split_plane_face_by_provenance_arrangement(
     }
     work_mark("scan", inputs.collection_steps);
     match run_planar_arrangement(&inputs, context) {
-        Err(ArrangementError::WorkBudgetExceeded)
-            if context.budgets == remus_math::context::WorkBudgets::new() =>
-        {
-            // Preserve the legacy default operation while requiring callers
-            // to opt into enough work for the quadratic arrangement.
-            Ok(None)
-        }
         Err(
             ArrangementError::AmbiguousContact
             | ArrangementError::AmbiguousOverlap
@@ -1300,9 +1287,7 @@ impl<'a> Collector<'a> {
         for i in 0..self.uses.len() {
             for j in i + 1..self.uses.len() {
                 context.check_cancelled().map_err(cancelled)?;
-                if !charge_collection_step(context, pair_steps)? {
-                    return Ok(false);
-                }
+                charge_collection_step(context, pair_steps)?;
                 let (Some(ti), Some(tj), point) =
                     line_crossing(&self.uses[i], &self.uses[j], self.tol)
                 else {
@@ -1318,7 +1303,7 @@ impl<'a> Collector<'a> {
             }
         }
         if !crossings.is_empty() && *pair_steps >= context.budgets.march_steps {
-            return budget_decline(context);
+            return Err(budget_exceeded());
         }
         // Deterministic greedy clustering within tolerance.
         crossings.compact_sort_by(|a, b| {
@@ -1330,15 +1315,11 @@ impl<'a> Collector<'a> {
         let mut clusters: Vec<(Point2, Vec<(usize, f64)>)> = Vec::new();
         for crossing in &crossings {
             context.check_cancelled().map_err(cancelled)?;
-            if !charge_collection_step(context, pair_steps)? {
-                return Ok(false);
-            }
+            charge_collection_step(context, pair_steps)?;
             let mut placed = false;
             for (center, members) in &mut clusters {
                 context.check_cancelled().map_err(cancelled)?;
-                if !charge_collection_step(context, pair_steps)? {
-                    return Ok(false);
-                }
+                charge_collection_step(context, pair_steps)?;
                 if (*center - crossing.point).length() <= self.tol {
                     members.push((crossing.first, crossing.first_param));
                     members.push((crossing.second, crossing.second_param));
@@ -1361,9 +1342,7 @@ impl<'a> Collector<'a> {
         let mut cuts: BTreeMap<usize, Vec<(f64, u64)>> = BTreeMap::new();
         for (center, members) in &clusters {
             context.check_cancelled().map_err(cancelled)?;
-            if !charge_collection_step(context, pair_steps)? {
-                return Ok(false);
-            }
+            charge_collection_step(context, pair_steps)?;
             let mut distinct: Vec<usize> = members.iter().map(|(u, _)| *u).collect();
             distinct.compact_sort_unstable();
             distinct.dedup();
@@ -1375,9 +1354,7 @@ impl<'a> Collector<'a> {
             let mut cluster_cert = None;
             for (position, cert) in &self.cert_positions {
                 context.check_cancelled().map_err(cancelled)?;
-                if !charge_collection_step(context, pair_steps)? {
-                    return Ok(false);
-                }
+                charge_collection_step(context, pair_steps)?;
                 if (self.frame.project(*position) - *center).length() <= self.tol {
                     cluster_cert = Some(*cert);
                     break;
@@ -1388,9 +1365,7 @@ impl<'a> Collector<'a> {
             // its certificate) defers rather than misbuilds.
             for use_data in &self.uses {
                 context.check_cancelled().map_err(cancelled)?;
-                if !charge_collection_step(context, pair_steps)? {
-                    return Ok(false);
-                }
+                charge_collection_step(context, pair_steps)?;
                 for end in 0..2 {
                     if use_data.endpoints[end] != cluster_cert
                         && (eval_pcurve(use_data, use_data.range[end]) - *center).length()
@@ -1488,9 +1463,7 @@ impl<'a> Collector<'a> {
             let cert = self.uses[idx].endpoints[side];
             let uv = eval_pcurve(&self.uses[idx], self.uses[idx].range[side]);
             for (other_idx, other) in self.uses.iter().enumerate() {
-                if !charge_collection_step(context, pair_steps)? {
-                    return Ok(false);
-                }
+                charge_collection_step(context, pair_steps)?;
                 if other_idx == idx {
                     continue;
                 }

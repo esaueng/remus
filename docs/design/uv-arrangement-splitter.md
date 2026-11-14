@@ -4,9 +4,10 @@ Status: accepted implementation design for Open Kernel O2.3a. O2.3b has a
 bounded isolated runtime slice described below plus a cylinder-strip quotient
 fix (single-ruling shared-seam adjacency, roundoff-tolerant seam-`v` matching)
 and a bounded production cylinder slice (O2.3b/c/d) described in the appendix;
-planar production integration (O2.3c) is live as a last resort, cylinder
-production is early-path with budget-gated fallback (declines on default
-budgets, preserving legacy). No emitter deleted in the cylinder slice; the
+planar production integration (O2.3c) has a last-resort site and cylinder
+production an early-path site, both routed to legacy today (see
+[O2.3d routing](#o23d-routing-is-a-constant-not-a-budget-2026-11-13)). No
+emitter deleted in the cylinder slice; the
 rest of O2.3b-d migration and the three-entry-point deletion floor remain
 staged. Shared-file ownership was rechecked before each runtime slice.
 O2.3d step 0 (2026-11-12) added the special-case ratchet and a shadow
@@ -21,9 +22,9 @@ adapters need and recommends a policy; it changed no behaviour (see
 - Retirement target:
   `crates/algo/src/builder/face_splitter/special_cases.rs`.
 - This note changes no boolean behavior with default budgets and introduces no
-  public capability (cylinder arrangement declines on default budgets to the
-  established band/sector paths; it fires with opt-in large budgets in tests
-  and future callers).
+  public capability (both production adapter sites are routed to the
+  established paths whatever the budgets; the adapters run directly in their
+  own tests and in the shadow differential).
 
 ## Problem and boundary
 
@@ -439,8 +440,10 @@ winding, metric area (`radius * UV area`), certified interior seeds and exact
 source subspans are carried into `SplitSubFace` (`emit_cylinder_subfaces`;
 non-wrapping via lifted cycles with seam, wrapping via quotient boundaries
 seam-free). Production dispatch (`split_face_2d_impl`) tries the cylinder
-arrangement early for `Cylinder` faces (before bands), declining on default
-budgets (preserving legacy) and out-of-domain inputs; established
+arrangement early for `Cylinder` faces (before bands) when the family is
+routed to it (it is not today, see
+[O2.3d routing](#o23d-routing-is-a-constant-not-a-budget-2026-11-13)),
+declining on out-of-domain inputs; established
 band/sector/rectilinear/DCEL paths remain as fallbacks. No emitter deleted in
 this slice (sectors/bands retained; differential agreement evidenced with
 opt-in budgets, closed-form `2πrΔz` bands and `rθh` sectors, permutation/
@@ -837,7 +840,10 @@ convention:
   from `start_3d`, `end_3d` and `forward`, never from `trim`, which is why
   they did not see it.
 
-Fix (not landed): in `emit_cylinder_run`, store the native interval,
+Fix (landed with
+[O2.3d routing](#o23d-routing-is-a-constant-not-a-budget-2026-11-13), which
+lists the pins as they now stand): in `emit_cylinder_run`, store the native
+interval,
 `Some(if forward { (s0, s1) } else { (s1, s0) })`, keeping `forward`, and make
 the endpoint check beside it evaluate the traversal order. That matches the
 legacy emitters and `arrangement_prod`. Pins: the two shadow fixtures turn
@@ -848,11 +854,15 @@ misreads", and `arrangement_cyl`'s differential sampling moves to
 
 ### 6. A production defect: the budget-equality gate
 
-The adapters treat budget exhaustion as a silent decline only when
+**Status: fixed** by
+[O2.3d routing](#o23d-routing-is-a-constant-not-a-budget-2026-11-13); this
+section records the defect as measured before the fix.
+
+The adapters treated budget exhaustion as a silent decline only when
 `context.budgets == WorkBudgets::new()`. Any other budget value, including
-one unrelated to face splitting, turns the same exhaustion into a typed
-`FaceSplitFailed` that propagates out of `split_face_2d_impl`; and a budget
-that happens to be large lets the adapters claim faces ahead of the legacy
+one unrelated to face splitting, turned the same exhaustion into a typed
+`FaceSplitFailed` that propagated out of `split_face_2d_impl`; and a budget
+that happened to be large let the adapters claim faces ahead of the legacy
 emitters.
 
 **H** (`research_o23d_budget_equality.rs`; default fallback policy, then
@@ -866,7 +876,7 @@ emitters.
 
 All results validate. The splitter's debug log names the cause:
 `provenance arrangement refused face=Id(2) err=WorkBudgetExceeded uses=6` at
-the last-resort planar site. Production callers reach this today: WASM
+the last-resort planar site. Production callers reached this before the fix: WASM
 `booleanWithQuality`, `booleanWithCancellation` and the batch `marchSteps`
 option build their context with `quality_context`, which sets exactly these
 fields. **I:** any budget option on those calls, even a larger Newton or
@@ -880,7 +890,7 @@ unaffected.
 Across the corpus every probed face ran under the default context, and at
 that context neither production site ever produced a split; the adapter
 exhausted the budget or declined on every face (**H**). At default budgets
-both production call sites are dead code, and their only live effect is the
+both production call sites were dead code, and their only live effect was the
 defect above.
 
 ### 7. Recommendation
@@ -894,7 +904,7 @@ charged work (subject to the collection exclusions in section 4).
 
 Recommended, in three separable steps:
 
-1. **Decouple routing from budgets now.** This preserves behaviour at
+1. **Decouple routing from budgets now** (done). This preserves behaviour at
    defaults and fixes section 6. The adapters stop reading
    `budgets == WorkBudgets::new()`. Whether a face family goes to the
    arrangement becomes an explicit per-family routing constant in
@@ -906,7 +916,9 @@ Recommended, in three separable steps:
    exact default results instead of a mesh fallback or an `ExactOnly` error.
    Pin: turn `research_o23d_budget_equality` into an assertion that
    `newton+1` and raised SSI budgets give the same topology as the default.
-   It fails today.
+   It failed on `main` before the fix; it is now
+   `regress_arrangement_routing_budgets.rs` (done, see the routing section
+   below).
 2. **Give the arrangement its own work field.** Add
    `WorkBudgets::arrangement_steps` (the struct is `#[non_exhaustive]`, so
    this is additive) with default **1,048,576** (2²⁰). That is 11.7× the
@@ -973,6 +985,47 @@ legacy path is gone, and the step-2 guard should be re-measured as the corpus
 grows. An input-scaled formula remains a later option (for example
 32 n² + 4,096 under the same ceiling) if per-face bounds on small faces ever
 matter; nothing measured here needs it.
+
+## O2.3d routing is a constant, not a budget (2026-11-13)
+
+Step 1 of the recommendation above, and the fix for the defect in
+[section 6](#6-a-production-defect-the-budget-equality-gate) and the `trim`
+direction in [section 5](#5-the-cylinder-trim-direction). Before it, both
+adapters declined silently on budget exhaustion only while
+`context.budgets == WorkBudgets::new()`. Rechecked on `main` 877d8908 by the
+regression test below: with `newton_iterations` 21 the three cylinder
+booleans of section 6 went to mesh fallbacks (41, 57 and 50 faces), or
+errors under `ExactOnly`, and with raised march, queue and segment budgets
+the cylinder adapter claimed the offset-cylinder faces (4 and 8 faces).
+
+Now `face_splitter/mod.rs` routes each family with a production adapter site
+through a constant, `CYLINDER_LATERAL_ROUTE` (early cylinder site, the faces
+the band and sector emitters take) and `PLANAR_LAST_RESORT_ROUTE`
+(last-resort planar site), both `ArrangementRoute::Legacy`. A legacy-routed
+site skips the adapter before collecting, whatever the budgets. The
+crossing-plane and disc-by-chords emitters have no production adapter site,
+so they get a route only when a migration adds one. Inside the adapters,
+exhaustion is now always a typed `WorkBudgetExceeded` refusal, which is also
+what the shadow differential reads. Default-budget behaviour is unchanged;
+non-default budgets now give the default-budget result
+(`crates/operations/tests/regress_arrangement_routing_budgets.rs`, the
+assertion step 1 asked for). The work probe (`shadow::work`) still measures
+every face that qualifies for either production site, whatever the route,
+and no longer needs to perturb default budgets to see typed exhaustion. The
+ignored probe `research_o23d_budget_equality.rs` stays as the record of the
+measurement; after the fix its three budget columns agree.
+
+`emit_cylinder_run` now stores the native interval
+(`if forward { (s0, s1) } else { (s1, s0) }`) and checks the carrier
+endpoints in traversal order. Pins: `arrangement_cyl`'s
+`circle_trims_are_native_and_sample_the_traversed_arc` samples every arc
+from `traversal_domain()`; the band and sector shadow fixtures agree with
+the legacy emitters; `reversed_rim_trims_misread_through_traversal_domain`
+asserts no misreads.
+
+Deferred: steps 2 and 3, a dedicated arrangement work budget and flipping
+any family to the arrangement. A flipped family would refuse on the default
+`march_steps` of 200, so it needs its own budget first.
 
 ## Non-goals
 

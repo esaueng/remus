@@ -138,16 +138,6 @@ impl Outcome {
     }
 }
 
-/// Budgets the adapters treat as non-default, so budget exhaustion comes
-/// back typed (see `shadow_context`).
-fn typed(budgets: WorkBudgets) -> WorkBudgets {
-    if budgets == WorkBudgets::new() {
-        budgets.with_blend_walk_steps(budgets.blend_walk_steps.saturating_sub(1))
-    } else {
-        budgets
-    }
-}
-
 impl Probe<'_> {
     /// Content identity for this diagnostic schema, independent of arena
     /// lineage and timing. Debug floats round-trip; the exact topology view
@@ -181,7 +171,9 @@ impl Probe<'_> {
         &self,
         budgets: WorkBudgets,
     ) -> std::thread::Result<Result<Option<Vec<SplitSubFace>>, AlgoError>> {
-        let context = self.context.clone().with_budgets(typed(budgets));
+        // The adapters report exhaustion typed whatever the budgets, so a
+        // budget decline is told apart from an out-of-domain one directly.
+        let context = self.context.clone().with_budgets(budgets);
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match self.adapter {
             Adapter::Plane(frame) => {
                 arrangement_prod::try_split_plane_face_by_provenance_arrangement(

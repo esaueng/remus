@@ -101,12 +101,10 @@ fn collect_failed(error: ArrangementError) -> AlgoError {
     AlgoError::FaceSplitFailed(format!("cylinder arrangement refused: {error:?}"))
 }
 
-fn budget_decline(context: &OperationContext) -> Result<bool, AlgoError> {
-    if context.budgets == remus_math::context::WorkBudgets::new() {
-        Ok(false)
-    } else {
-        Err(collect_failed(ArrangementError::WorkBudgetExceeded))
-    }
+/// Budget exhaustion is always a typed refusal, whatever the budgets: the
+/// adapter runs only where the splitter routes a face family to it.
+fn budget_exceeded() -> AlgoError {
+    collect_failed(ArrangementError::WorkBudgetExceeded)
 }
 
 /// Collect certified strip uses for a cylinder lateral.
@@ -420,7 +418,7 @@ pub(super) fn collect_cylinder_uses(
     }
     let n_uses = 4 + lats.len() + ruls.len();
     if n_uses > MAX_CYL_USES || n_uses > context.budgets.queue_size {
-        return budget_decline(context).map(|_| None);
+        return Err(budget_exceeded());
     }
     // Build strip uses: bottom(0), right(1), top(2), left(3), then latitudes
     // (sorted by `v`), then rulings (sorted by `u_rel`). All pcurves are
@@ -837,7 +835,7 @@ pub(super) fn collect_cylinder_uses(
         });
     }
     if uses.len() > MAX_CYL_USES || uses.len() > context.budgets.queue_size {
-        return budget_decline(context).map(|_| None);
+        return Err(budget_exceeded());
     }
     Ok(Some(CylinderInputs {
         uses,
@@ -934,11 +932,6 @@ pub(super) fn try_split_cylinder_face_by_provenance_arrangement(
         return Ok(None);
     }
     match run_cylinder_arrangement(&inputs, context) {
-        Err(ArrangementError::WorkBudgetExceeded)
-            if context.budgets == remus_math::context::WorkBudgets::new() =>
-        {
-            Ok(None)
-        }
         Err(
             ArrangementError::AmbiguousContact
             | ArrangementError::AmbiguousOverlap
