@@ -163,6 +163,7 @@ export const remuskernel_fuse: (a: number, b: number, c: number) => [number, num
 export const remuskernel_fuseAll: (a: number, b: number, c: number) => [number, number, number];
 export const remuskernel_fuseDetailed: (a: number, b: number, c: number) => [number, number, number];
 export const remuskernel_fuseJournaled: (a: number, b: number, c: number) => [number, number, number, number];
+export const remuskernel_fuseRegions: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
 export const remuskernel_fuseWithEntityEvolution: (a: number, b: number, c: number) => [number, number, number, number];
 export const remuskernel_fuseWithEvolution: (a: number, b: number, c: number) => [number, number, number];
 export const remuskernel_fuseWithOptions: (a: number, b: number, c: number, d: number) => [number, number, number];
