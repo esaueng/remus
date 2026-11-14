@@ -451,7 +451,11 @@ fn section_ball(
     let m = f64::midpoint(a, b);
     let center = match curve {
         EdgeCurve::Line => ends.0 + (ends.1 - ends.0) * 0.5,
-        _ => curve.evaluate_with_endpoints(m, ends.0, ends.1),
+        EdgeCurve::Circle(_)
+        | EdgeCurve::Ellipse(_)
+        | EdgeCurve::NurbsCurve(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => curve.evaluate_with_endpoints(m, ends.0, ends.1),
     };
     let radius = match curve {
         EdgeCurve::Line => (ends.1 - ends.0).length() * 0.5,
@@ -495,7 +499,11 @@ fn leaf_off_face(
     let end = topo.vertex(arena.resolve_vertex(pb.end.vertex))?.point();
     let at = |t: f64| match curve {
         EdgeCurve::Line => start + (end - start) * ((t - ta) / (tb - ta)),
-        _ => curve.evaluate_with_endpoints(t, start, end),
+        EdgeCurve::Circle(_)
+        | EdgeCurve::Ellipse(_)
+        | EdgeCurve::NurbsCurve(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => curve.evaluate_with_endpoints(t, start, end),
     };
     for face in trimmed {
         // Probes may only KEEP. They are a cheap way to avoid certification
