@@ -5776,16 +5776,24 @@ pub fn split_face_2d(
         && subfaces_have_out_and_back(&parts, tol.linear);
     // A section certified to stay clear of the face (its whole control hull
     // separated from the face's closed region, up to the boundary's
-    // tolerance band) divides nothing, so the established partition rightly
-    // omits it; only the remaining sections can be left out.
-    let left_out = !spur
-        && sections_left_out(
-            sections
-                .iter()
-                .filter(|s| !section_clear_of_face(topo, face_id, s, tol.linear)),
-            &parts,
-            tol.linear,
-        );
+    // tolerance band), or to lie on one of the face's own boundary edges
+    // (the same exact carrier, within that edge's span), divides nothing, so
+    // the established partition rightly omits it; only the remaining
+    // sections can be left out.
+    let dividing: Vec<&SectionEdge> = sections
+        .iter()
+        .filter(|s| {
+            !section_clear_of_face(topo, face_id, s, tol.linear)
+                && !section_on_face_boundary(topo, face_id, s, tol.linear)
+        })
+        .collect();
+    // Nothing divides the face: the established splitter's empty result
+    // keeps it whole (the caller rebuilds it on its edge images), which is
+    // exactly its partition.
+    if !spur && dividing.is_empty() && parts.is_empty() {
+        return Ok(parts);
+    }
+    let left_out = !spur && sections_left_out(dividing.iter().copied(), &parts, tol.linear);
     if !spur && !left_out && partition_tiles_face(topo, face_id, &parts) {
         return Ok(parts);
     }
@@ -5997,6 +6005,99 @@ fn face_boundary_support(
         }
     }
     sup.is_finite().then_some(sup)
+}
+
+/// Whether `section` lies on one of `face`'s own boundary edges, proven by
+/// carrier identity and span containment, never by samples: a straight
+/// section with both ends on a straight boundary edge (the segment is
+/// convex), or a circular section on the same circle (center, axis and
+/// radius within `tol`) whose whole arc lies within the boundary arc. Such a
+/// section retraces the boundary and divides nothing. Other carriers never
+/// qualify.
+fn section_on_face_boundary(
+    topo: &Topology,
+    face_id: FaceId,
+    section: &SectionEdge,
+    tol: f64,
+) -> bool {
+    let Ok(face) = topo.face(face_id) else {
+        return false;
+    };
+    std::iter::once(face.outer_wire())
+        .chain(face.inner_wires().iter().copied())
+        .filter_map(|wire| topo.wire(wire).ok())
+        .flat_map(|wire| {
+            wire.edges()
+                .iter()
+                .map(remus_topology::wire::OrientedEdge::edge)
+                .collect::<Vec<_>>()
+        })
+        .any(|edge_id| {
+            let Ok(edge) = topo.edge(edge_id) else {
+                return false;
+            };
+            let (Ok(a), Ok(b)) = (topo.vertex(edge.start()), topo.vertex(edge.end())) else {
+                return false;
+            };
+            let (a, b) = (a.point(), b.point());
+            match (&section.curve_3d, edge.curve()) {
+                (EdgeCurve::Line, EdgeCurve::Line) => {
+                    let d = b - a;
+                    let len = d.length();
+                    len > tol
+                        && [section.start, section.end].iter().all(|&p| {
+                            let s = (p - a).dot(d) / (len * len);
+                            let slack = tol / len;
+                            (-slack..=1.0 + slack).contains(&s) && (a + d * s - p).length() <= tol
+                        })
+                }
+                (EdgeCurve::Circle(on), EdgeCurve::Circle(rim)) => {
+                    circle_arc_within(on, section, rim, edge.strict_domain().ok(), tol)
+                }
+                _ => false,
+            }
+        })
+}
+
+/// Whether the arc `section` of circle `on` lies within the arc `domain` of
+/// circle `rim`, which must be the same circle within `tol`.
+fn circle_arc_within(
+    on: &remus_math::curves::Circle3D,
+    section: &SectionEdge,
+    rim: &remus_math::curves::Circle3D,
+    domain: Option<(f64, f64)>,
+    tol: f64,
+) -> bool {
+    use std::f64::consts::TAU;
+    let Some((d0, d1)) = domain else {
+        return false;
+    };
+    let r = rim.radius();
+    let (Ok(n_on), Ok(n_rim)) = (on.normal().normalize(), rim.normal().normalize()) else {
+        return false;
+    };
+    let same = (on.center() - rim.center()).length() <= tol
+        && (on.radius() - r).abs() <= tol
+        && n_on.cross(n_rim).length() * r <= tol
+        && [section.start, section.end]
+            .iter()
+            .all(|&p| ((p - rim.center()).length() - r).abs() <= tol);
+    if !same || r <= tol {
+        return false;
+    }
+    let (t0, t1) = section.domain();
+    let sweep = (t1 - t0) * n_on.dot(n_rim).signum();
+    if !sweep.is_finite() || sweep.abs() > TAU {
+        return false;
+    }
+    let (lo, hi) = (d0.min(d1), d0.max(d1));
+    let eps = tol / r;
+    let start = lo + (rim.project(section.start) - lo).rem_euclid(TAU);
+    // The start may also be named one period below (an arc ending at `lo`).
+    [start, start - TAU].iter().any(|&a| {
+        let (x, y) = (a.min(a + sweep), a.max(a + sweep));
+        x >= lo - eps && y <= hi + eps
+    })
 }
 
 /// Whether a section is certified to meet the face's closed region at most

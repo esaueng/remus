@@ -782,6 +782,45 @@ mod tests {
         assert_eq!(parts, 3);
     }
 
+    /// The bay's floor arc at height `z`, over `trim`, as a section.
+    fn arc_section(cyl: &CylindricalSurface, z: f64, trim: (f64, f64)) -> SectionEdge {
+        let dummy = Curve2D::Line(Line2D::new(Point2::new(0.0, 0.0), Vec2::new(1.0, 0.0)).unwrap());
+        SectionEdge {
+            curve_3d: EdgeCurve::Circle(crate::chart_trim::fixtures::ring(cyl, z)),
+            trim: Some(trim),
+            pcurve_a: dummy.clone(),
+            pcurve_b: dummy,
+            start: cyl.evaluate(trim.0, z),
+            end: cyl.evaluate(trim.1, z),
+            start_uv_a: None,
+            end_uv_a: None,
+            start_uv_b: None,
+            end_uv_b: None,
+            target_face: None,
+            pave_block_id: None,
+        }
+    }
+
+    /// A section retracing part of a boundary arc (a thread flank's rim did
+    /// this) is certified to divide nothing: the same circle, inside the
+    /// boundary arc's span. Off that span, or on another circle, it is not.
+    #[test]
+    fn a_section_retracing_a_boundary_arc_is_certified_on_the_boundary() {
+        let (topo, face, cyl) = wall(Trim::Bay);
+        let on = |s: &SectionEdge| super::super::section_on_face_boundary(&topo, face, s, 1e-7);
+        // The bay's floor is the arc u in [1, 2] at height 3.
+        assert!(on(&arc_section(&cyl, 3.0, (1.2, 1.8))));
+        assert!(on(&arc_section(&cyl, 3.0, (1.0, 2.0))));
+        // Past the floor's end, and one period away past it.
+        assert!(!on(&arc_section(&cyl, 3.0, (1.5, 2.5))));
+        assert!(!on(&arc_section(&cyl, 3.0, (2.2, 2.8))));
+        // The same span one unit lower, on no boundary.
+        assert!(!on(&arc_section(&cyl, 2.0, (1.2, 1.8))));
+        // A straight section on the bay's left generator, and one beside it.
+        assert!(on(&ruling(&cyl, 1.0, (3.2, 3.8))));
+        assert!(!on(&ruling(&cyl, 1.1, (3.2, 3.8))));
+    }
+
     /// A ruling crossing the hole with no node on its rims (an unresolved
     /// contact) is admitted, and its arrangement cannot be certified. The
     /// established partition the rescue was asked to replace failed its own
