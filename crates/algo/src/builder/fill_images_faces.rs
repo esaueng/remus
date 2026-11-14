@@ -3431,8 +3431,8 @@ fn dedup_collinear_sections(sections: &mut Vec<SectionEdge>, tol: f64) {
             // prefilter: concentric semicircles share a chord line with the
             // inner chord nested in the outer one, yet are different curves
             // (a notched hollow tube's two trimmed walls on one cutter). A
-            // curved section is redundant only when it lies on the longer
-            // one's own curve, within its span.
+            // curved section is redundant only when it is certified to lie
+            // on the longer one's own curve, within its span.
             let redundant = |inner: &SectionEdge, outer: &SectionEdge| {
                 lines || curved_section_within(outer, inner, tol * 10.0)
             };
@@ -3457,51 +3457,41 @@ fn dedup_collinear_sections(sections: &mut Vec<SectionEdge>, tol: f64) {
     }
 }
 
-/// Whether `inner` lies on `outer`'s own curve within `band`, sampled along
-/// `inner`'s whole span: every sample has a point of `outer`, inside its
-/// span, within `band`. Carriers this cannot measure never qualify.
+/// Whether `inner` is CERTIFIED to lie within `2 * band` of `outer`'s own
+/// curve. Only straight NURBS spans qualify: `outer`'s span, cut out of its
+/// carrier, has its whole control polygon within `band` of the line through
+/// its ends, so the span lies along that line and (being continuous) passes
+/// within `band` of every point of its end chord; `inner`'s span has its
+/// whole control polygon within `band` of that chord, so its convex hull, and
+/// the curve with it, does too. Every other pair is kept: no sampling proves
+/// containment (a bump narrower than the samples slips between them), and
+/// the projection of a whole carrier can land outside a trimmed span.
 fn curved_section_within(outer: &SectionEdge, inner: &SectionEdge, band: f64) -> bool {
-    const SAMPLES: u32 = 16;
-    let (a, b) = inner.domain();
-    (0..=SAMPLES).all(|k| {
-        let t = (b - a).mul_add(f64::from(k) / f64::from(SAMPLES), a);
-        let p = inner
-            .curve_3d
-            .evaluate_with_endpoints(t, inner.start, inner.end);
-        distance_to_section_curve(outer, p).is_some_and(|d| d <= band)
-    })
-}
-
-/// Distance from `p` to a point of `section`'s curve within its span: the
-/// exact foot where the carrier's projection lands in the span, else the
-/// nearer end. `None` for a line or an unsupported carrier.
-fn distance_to_section_curve(section: &SectionEdge, p: Point3) -> Option<f64> {
-    use std::f64::consts::TAU;
-    let (t0, t1) = section.domain();
-    let (lo, hi) = (t0.min(t1), t0.max(t1));
-    let at = |t: f64| {
-        section
-            .curve_3d
-            .evaluate_with_endpoints(t, section.start, section.end)
+    let (EdgeCurve::NurbsCurve(o), EdgeCurve::NurbsCurve(i)) = (&outer.curve_3d, &inner.curve_3d)
+    else {
+        return false;
     };
-    let in_span = |t: f64| (lo..=hi).contains(&t);
-    let foot = match &section.curve_3d {
-        EdgeCurve::Circle(c) => Some(lo + (c.project(p) - lo).rem_euclid(TAU))
-            .filter(|&t| in_span(t))
-            .map(at),
-        EdgeCurve::Ellipse(e) => Some(lo + (e.project(p) - lo).rem_euclid(TAU))
-            .filter(|&t| in_span(t))
-            .map(at),
-        EdgeCurve::NurbsCurve(n) => {
-            remus_math::nurbs::projection::project_point_to_curve(n, p, 1e-12)
-                .ok()
-                .filter(|hit| in_span(hit.parameter))
-                .map(|hit| hit.point)
-        }
-        EdgeCurve::Line | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => return None,
+    let (Some(o), Some(i)) = (
+        crate::chart_trim::nurbs_span(o, outer.domain()),
+        crate::chart_trim::nurbs_span(i, inner.domain()),
+    ) else {
+        return false;
     };
-    let ends = (p - at(t0)).length().min((p - at(t1)).length());
-    Some(foot.map_or(ends, |q| (p - q).length().min(ends)))
+    let (Some(&a), Some(&b)) = (o.control_points().first(), o.control_points().last()) else {
+        return false;
+    };
+    let d = b - a;
+    let len_sq = d.length_squared();
+    if len_sq.is_nan() || len_sq <= band * band {
+        return false;
+    }
+    let off = |p: Point3, clamp: bool| {
+        let s = (p - a).dot(d) / len_sq;
+        let s = if clamp { s.clamp(0.0, 1.0) } else { s };
+        (p - (a + d * s)).length()
+    };
+    o.control_points().iter().all(|&p| off(p, false) <= band)
+        && i.control_points().iter().all(|&p| off(p, true) <= band)
 }
 
 /// Intersect a section line with a curved boundary edge's TRUE geometry,

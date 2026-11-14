@@ -21,6 +21,7 @@
 use std::f64::consts::TAU;
 
 use remus_math::context::OperationContext;
+use remus_math::nurbs::knot_ops::curve_split;
 use remus_math::nurbs::{NurbsCurve, reuse::bound_curve_position};
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point2, Point3};
@@ -309,6 +310,33 @@ pub fn exclusion_loop(
         return None;
     }
     loop_from_points(surface, pts, sagitta)
+}
+
+/// The part of `curve` over `range` (either order) as its own clamped NURBS,
+/// cut out by knot insertion at the range's ends, in the curve's own
+/// parameterisation. Its control polygon bounds exactly that span (with
+/// positive weights the span lies in the polygon's convex hull), and a
+/// projection onto it finds the nearest point of the span, never of the
+/// carrier outside it. `None` when the range is not inside the domain, a
+/// split fails, or a weight is not positive.
+pub fn nurbs_span(curve: &NurbsCurve, range: (f64, f64)) -> Option<NurbsCurve> {
+    let (lo, hi) = (range.0.min(range.1), range.0.max(range.1));
+    let (d0, d1) = curve.domain();
+    let slack = 1e-12 * (d1 - d0).abs().max(1.0);
+    if !(lo.is_finite() && hi.is_finite()) || hi <= lo || lo < d0 - slack || hi > d1 + slack {
+        return None;
+    }
+    let mut span = curve.clone();
+    if lo > d0 + slack {
+        span = curve_split(&span, lo).ok()?.1;
+    }
+    if hi < span.domain().1 - slack {
+        span = curve_split(&span, hi).ok()?.0;
+    }
+    span.weights()
+        .iter()
+        .all(|w| w.is_finite() && *w > 0.0)
+        .then_some(span)
 }
 
 /// Construct the same continuous chart lift for a certified model polyline.
