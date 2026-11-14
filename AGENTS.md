@@ -303,6 +303,7 @@ Quick reference — find the right file for any task:
 | Native equator partition and whole-interval circular rim coverage oracles | `builder/face_splitter/special_cases/equator_partition_tests.rs` |
 | Isolated exact-event UV arrangement and cylinder-strip quotient | `builder/face_splitter/arrangement.rs`, `builder/face_splitter/arrangement/` (geometry, regions, periodic) |
 | Shadow differential of the legacy special-case emitters against the arrangement adapters (O2.3d step 0; test and `perf-counters` builds only, measures and never changes a result) | `builder/face_splitter/shadow.rs`, `builder/face_splitter/shadow/tests.rs` |
+| Work probe for the arrangement adapters' budget policy: least march/queue/segments per face, per-phase steps, sizes and adapter-vs-legacy timings (O2.3d; test and `perf-counters` builds only, inert until `REMUS_SPLITTER_WORK_LOG` is set) | `builder/face_splitter/shadow/work.rs` |
 | Production UV arrangement dispatch and guards | `builder/face_splitter/arrangement_prod.rs` |
 | Closed-form oracles for the splitter's periodic-lateral and sphere-collar shortcuts (tests) | `builder/face_splitter/closed_form_split_tests.rs` |
 | Closed-form oracles for the plane multi-loop gate: circles compared as discs against each other, inner-wire openings and the outer outline (tests) | `builder/face_splitter/closed_loops_separation_tests.rs` |

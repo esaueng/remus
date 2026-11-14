@@ -690,6 +690,68 @@ pub fn take_winding_cut_projections() -> u64 {
     WINDING_CUT_PROJECTIONS.with(|count| count.replace(0))
 }
 
+/// Run diagnostic splitter reruns without adding to the caller's work.
+/// This guard exists only where the shadow harness does; ordinary builds
+/// and logging-disabled calls never enter it.
+#[cfg(any(test, feature = "perf-counters"))]
+pub(crate) fn with_preserved_work_counters<R>(f: impl FnOnce() -> R) -> R {
+    struct Restore {
+        ray: [u64; 9],
+        winding: u64,
+        #[cfg(feature = "perf-counters")]
+        counts: Vec<(&'static std::thread::LocalKey<Cell<u64>>, u64)>,
+    }
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            RAY_WORK.set(self.ray);
+            WINDING_CUT_PROJECTIONS.set(self.winding);
+            #[cfg(feature = "perf-counters")]
+            for &(counter, value) in &self.counts {
+                counter.set(value);
+            }
+        }
+    }
+    let _restore = Restore {
+        ray: RAY_WORK.get(),
+        winding: WINDING_CUT_PROJECTIONS.get(),
+        #[cfg(feature = "perf-counters")]
+        counts: [
+            &PAVE_VERTEX_PROBES,
+            &SD_POLY_CLIPS,
+            &RAY_GEOM_BUILDS,
+            &FACE_SPLIT_PROBES,
+            &LOCAL_VERTEX_INSERTS,
+            &EF_NURBS_PAIR_PROBES,
+            &DISTANCE_FACE_PROBES,
+            &VE_LINE_PROJECTIONS,
+            &VE_SAMPLED_PROJECTIONS,
+            &VE_PROJECTION_EVALS,
+            &JUNCTION_SEEDS,
+            &EF_ANALYTIC_PAIR_SCANS,
+            &EF_ANALYTIC_PAIRS_GATED,
+            &JUNCTION_CURVE_SCANS,
+            &FACE_EXTENT_BUILDS,
+            &HOLE_CONTAINMENT_SAMPLINGS,
+            &FACE_BBOX_BUILDS,
+            &FACE_OUTLINE_SAMPLINGS,
+            &STORE_FACES_COPIED,
+            &JUNCTION_CELLS_COPIED,
+            &COPLANAR_SECTION_PROBES,
+            &FF_CYLINDER_NURBS_MARCHES,
+            &FF_CYLINDER_NURBS_CLEARED,
+            &VE_PAIRS_VISITED,
+            &EE_PAIRS_VISITED,
+            &EE_PAIRS_SURVIVING,
+            &FF_PAIRS_VISITED,
+            &FF_PAIRS_SURVIVING,
+        ]
+        .into_iter()
+        .map(|counter| (counter, counter.get()))
+        .collect(),
+    };
+    f()
+}
+
 /// A snapshot of every work counter since the last [`reset`]. Only available
 /// with `perf-counters`.
 #[cfg(feature = "perf-counters")]
