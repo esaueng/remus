@@ -326,3 +326,39 @@ fn gecko_a6_explicit_chain_bindings() {
         assert_eq!(geometry(&k, source), before);
     }
 }
+
+/// Issue #1746: `resizeCylindricalFaceDetailed` names which step refused a
+/// diameter, so a client can tell a size limit from blends that do not
+/// re-fillet. Ø40 meets the block's back face; Ø34 resizes sharp but leaves
+/// an edge no R4 round fits.
+#[test]
+fn gecko_diameter_refusal_names_its_cause() {
+    let mut k = RemusKernel::new();
+    let solid = fixture(&mut k);
+    let face = cylinder(&k, solid, false);
+    let before = geometry(&k, solid);
+    for (radius, reason, advice) in [
+        (20.0, "wall_meets_face", true),
+        (17.0, "group_reblend_failed", false),
+    ] {
+        let crate::types::SolidOperationDetailedResult::Error { code, details, .. } =
+            k.resize_cylindrical_face_reblend_detailed_impl(solid, face, radius, true)
+        else {
+            panic!("R{radius} resized");
+        };
+        assert_eq!(code, "cylinder-diameter-unbuildable", "R{radius}");
+        assert_eq!(
+            details["kernelCode"], "cylinder-diameter-unbuildable",
+            "R{radius}"
+        );
+        assert_eq!(details["reason"], reason, "R{radius}");
+        assert_eq!(details["requestedDiameter"], radius * 2.0, "R{radius}");
+        let message = details["message"].as_str().unwrap_or_default();
+        assert_eq!(
+            message.contains("try a smaller diameter"),
+            advice,
+            "R{radius}: {message}"
+        );
+        assert_eq!(geometry(&k, solid), before, "R{radius}");
+    }
+}

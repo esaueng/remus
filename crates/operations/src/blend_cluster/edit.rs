@@ -67,6 +67,7 @@ use super::{
 };
 use crate::OperationsError;
 use crate::copy::{CopiedSolidEntities, copy_solid_between_with_entity_map};
+use crate::error_payloads::DiameterRefusalCause;
 use crate::evolution::EvolutionMap;
 use crate::resize_blend::{ResizeBlendError, ResizeBlendResult};
 
@@ -976,19 +977,21 @@ fn carry_member_identities(
 }
 
 fn diameter_refusal(error: OperationsError, radius: f64) -> OperationsError {
-    if matches!(
-        &error,
-        OperationsError::Offset(remus_offset::OffsetError::TopologyChange { .. })
-            | OperationsError::BlendCluster(BlendClusterError::ReblendFailed { .. })
-    ) {
-        BlendClusterError::DiameterUnbuildable {
-            diameter: 2.0 * radius,
-            reason: error.to_string(),
+    let cause = match &error {
+        OperationsError::Offset(remus_offset::OffsetError::TopologyChange { .. }) => {
+            DiameterRefusalCause::WallMeetsFace
         }
-        .into()
-    } else {
-        error
+        OperationsError::BlendCluster(BlendClusterError::ReblendFailed { .. }) => {
+            DiameterRefusalCause::GroupReblendFailed
+        }
+        _ => return error,
+    };
+    BlendClusterError::DiameterUnbuildable {
+        diameter: 2.0 * radius,
+        reason: error.to_string(),
+        cause,
     }
+    .into()
 }
 
 /// Re-index an evolution: inputs through `inputs`, outputs through

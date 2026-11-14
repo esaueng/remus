@@ -168,19 +168,57 @@ impl ResizeBlendError {
     }
 }
 
+/// Which step of a resize through a blend group refused the diameter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiameterRefusalCause {
+    /// The exact resize of the sharp wall would meet another face at this
+    /// diameter (a topology change).
+    WallMeetsFace,
+    /// The group's blends did not re-fillet on the resized sharp body in any
+    /// planned stage order.
+    GroupReblendFailed,
+}
+
+impl DiameterRefusalCause {
+    /// Stable code used across the WASM boundary as `details.reason`.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::WallMeetsFace => "wall_meets_face",
+            Self::GroupReblendFailed => "group_reblend_failed",
+        }
+    }
+}
+
+fn diameter_refusal_message(diameter: f64, cause: DiameterRefusalCause, reason: &str) -> String {
+    match cause {
+        DiameterRefusalCause::WallMeetsFace => format!(
+            "diameter {diameter} mm cannot be built with the existing supports and blends; try a smaller diameter: {reason}"
+        ),
+        DiameterRefusalCause::GroupReblendFailed => format!(
+            "diameter {diameter} mm cannot be built: the blends around the wall do not re-fillet on the resized body: {reason}"
+        ),
+    }
+}
+
 /// Stable, machine-readable refusal from
 /// [`recognize_blend_cluster`](crate::blend_cluster::recognize_blend_cluster).
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum BlendClusterError {
     /// A cylindrical support cannot reach this diameter while retaining its blends.
-    #[error(
-        "diameter {diameter} mm cannot be built with the existing supports and blends; try a smaller diameter: {reason}"
-    )]
+    ///
+    /// Only [`DiameterRefusalCause::WallMeetsFace`] is a statement about the
+    /// size. A [`DiameterRefusalCause::GroupReblendFailed`] refusal says the
+    /// group did not re-fillet on the resized body, which can hold at every
+    /// diameter, so its message does not advise a smaller one.
+    #[error("{}", diameter_refusal_message(*diameter, *cause, reason))]
     DiameterUnbuildable {
         /// Requested diameter, in model units.
         diameter: f64,
         /// Sharp-wall or re-fillet refusal.
         reason: String,
+        /// Which step refused.
+        cause: DiameterRefusalCause,
     },
     /// The seed does not name a face of the solid.
     #[error("invalid blend-cluster seed: {reason}")]

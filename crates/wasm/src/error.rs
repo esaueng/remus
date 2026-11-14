@@ -650,12 +650,16 @@ impl From<remus_operations::OperationsError> for StructuredWasmError {
                     .insert("kernelCode".to_string(), Value::from(error.code()));
                 if let remus_operations::blend_cluster::BlendClusterError::DiameterUnbuildable {
                     diameter,
+                    cause,
                     ..
                 } = error
                 {
                     structured
                         .details
                         .insert("requestedDiameter".to_string(), Value::from(diameter));
+                    structured
+                        .details
+                        .insert("reason".to_string(), Value::from(cause.code()));
                 }
                 structured
             }
