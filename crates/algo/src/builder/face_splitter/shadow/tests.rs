@@ -1,0 +1,599 @@
+//! The shadow differential's comparison rules, and its counters driven
+//! through the production splitter on faces each legacy emitter owns.
+
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+use std::f64::consts::{PI, TAU};
+
+use remus_math::context::OperationContext;
+use remus_math::curves::Circle3D;
+use remus_math::curves2d::{Curve2D, Line2D};
+use remus_math::det_hash::DetHashMap;
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::{Point2, Point3, Vec2, Vec3};
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve};
+use remus_topology::face::{Face, FaceId, FaceSurface};
+use remus_topology::vertex::Vertex;
+use remus_topology::wire::{OrientedEdge, Wire};
+
+use super::super::super::split_types::{
+    OrientedPCurveEdge, SectionEdge, SplitSubFace, SurfaceInfo,
+};
+use super::super::split_face_2d;
+use super::{Mismatch, ShadowBudgets, Verdict, compare, take_reasons, with_mode};
+use crate::ds::Rank;
+use crate::gfa::{SectionDropScope, SplitterShadowCounts, SplitterShadowEntry};
+
+const TOL: f64 = 1e-7;
+
+fn dummy_pcurve() -> Curve2D {
+    Curve2D::Line(Line2D::new(Point2::new(0.0, 0.0), Vec2::new(1.0, 0.0)).unwrap())
+}
+
+fn z_plane() -> FaceSurface {
+    FaceSurface::Plane {
+        normal: Vec3::new(0.0, 0.0, 1.0),
+        d: 0.0,
+    }
+}
+
+fn edge(
+    curve: EdgeCurve,
+    trim: Option<(f64, f64)>,
+    start: Point3,
+    end: Point3,
+) -> OrientedPCurveEdge {
+    OrientedPCurveEdge {
+        curve_3d: curve,
+        trim,
+        pcurve: dummy_pcurve(),
+        start_uv: Point2::new(start.x(), start.y()),
+        end_uv: Point2::new(end.x(), end.y()),
+        start_3d: start,
+        end_3d: end,
+        forward: true,
+        source_edge_idx: None,
+        pave_block_id: None,
+        source_topo_edge: None,
+    }
+}
+
+fn line(start: Point3, end: Point3) -> OrientedPCurveEdge {
+    edge(EdgeCurve::Line, None, start, end)
+}
+
+fn unit_circle() -> Circle3D {
+    Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap()
+}
+
+/// A counter-clockwise arc of `circle` from angle `t0` to `t1`.
+fn arc(circle: &Circle3D, t0: f64, t1: f64) -> OrientedPCurveEdge {
+    edge(
+        EdgeCurve::Circle(circle.clone()),
+        Some((t0, t1)),
+        circle.evaluate(t0),
+        circle.evaluate(t1),
+    )
+}
+
+fn region(outer: Vec<OrientedPCurveEdge>) -> SplitSubFace {
+    SplitSubFace {
+        surface: z_plane(),
+        outer_wire: outer,
+        inner_wires: Vec::new(),
+        reversed: false,
+        // Any face handle: the comparison never reads the parent.
+        parent: square_face(1.0).1,
+        rank: Rank::A,
+        precomputed_interior: None,
+    }
+}
+
+fn polygon(points: &[(f64, f64)]) -> Vec<OrientedPCurveEdge> {
+    let at = |i: usize| {
+        let (x, y) = points[i % points.len()];
+        Point3::new(x, y, 0.0)
+    };
+    (0..points.len()).map(|i| line(at(i), at(i + 1))).collect()
+}
+
+/// The upper half disc: the diameter, then the arc back.
+fn half_disc(arc_pieces: &[(f64, f64)]) -> Vec<OrientedPCurveEdge> {
+    let circle = unit_circle();
+    let mut wire = vec![line(circle.evaluate(PI), circle.evaluate(0.0))];
+    wire.extend(arc_pieces.iter().map(|&(t0, t1)| arc(&circle, t0, t1)));
+    wire
+}
+
+#[test]
+fn a_rotated_wire_and_reordered_regions_agree() {
+    let left = [(0.0, 0.0), (1.0, 0.0), (1.0, 2.0), (0.0, 2.0)];
+    let right = [(1.0, 0.0), (2.0, 0.0), (2.0, 2.0), (1.0, 2.0)];
+    let legacy = [region(polygon(&left)), region(polygon(&right))];
+    let mut rotated = polygon(&left);
+    rotated.rotate_left(3);
+    let shadow = [region(polygon(&right)), region(rotated)];
+    assert_eq!(compare(&legacy, &shadow, TOL), Verdict::Agreed);
+}
+
+#[test]
+fn each_property_is_named_by_the_first_mismatch() {
+    let square = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
+    let legacy = [region(polygon(&square))];
+
+    assert_eq!(
+        compare(&legacy, &[], TOL),
+        Verdict::Different(Mismatch::RegionCount)
+    );
+
+    // A vertex beyond the linear tolerance, and one inside it.
+    let moved = |d: f64| [(0.0, 0.0), (1.0, 0.0), (1.0 + d, 1.0), (0.0, 1.0)];
+    assert_eq!(
+        compare(&legacy, &[region(polygon(&moved(1e-5)))], TOL),
+        Verdict::Different(Mismatch::Vertex)
+    );
+    assert_eq!(
+        compare(&legacy, &[region(polygon(&moved(5e-8)))], TOL),
+        Verdict::Agreed
+    );
+
+    // The same traversal backwards is another wire, not a rotation.
+    let mut backwards: Vec<_> = polygon(&square)
+        .into_iter()
+        .rev()
+        .map(|e| line(e.end_3d, e.start_3d))
+        .collect();
+    backwards.rotate_left(1);
+    assert_eq!(
+        compare(&legacy, &[region(backwards)], TOL),
+        Verdict::Different(Mismatch::Vertex)
+    );
+
+    let triangle = [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)];
+    assert_eq!(
+        compare(&legacy, &[region(polygon(&triangle))], TOL),
+        Verdict::Different(Mismatch::EdgeCount)
+    );
+
+    let mut holed = region(polygon(&square));
+    holed.inner_wires.push(polygon(&triangle));
+    assert_eq!(
+        compare(&legacy, &[holed], TOL),
+        Verdict::Different(Mismatch::HoleCount)
+    );
+
+    let mut flipped = region(polygon(&square));
+    flipped.reversed = true;
+    assert_eq!(
+        compare(&legacy, &[flipped], TOL),
+        Verdict::Different(Mismatch::Orientation)
+    );
+}
+
+#[test]
+fn a_chord_is_not_its_arc() {
+    let legacy = [region(half_disc(&[(0.0, PI)]))];
+    let circle = unit_circle();
+    let chorded = vec![
+        line(circle.evaluate(PI), circle.evaluate(0.0)),
+        line(circle.evaluate(0.0), circle.evaluate(PI)),
+    ];
+    assert_eq!(
+        compare(&legacy, &[region(chorded)], TOL),
+        Verdict::Different(Mismatch::KindSequence)
+    );
+}
+
+#[test]
+fn an_arc_keeps_its_carrier_and_its_way_round() {
+    let legacy = [region(half_disc(&[(0.0, PI)]))];
+    let unit = unit_circle();
+    let (east, north, west) = (
+        unit.evaluate(0.0),
+        unit.evaluate(0.5 * PI),
+        unit.evaluate(PI),
+    );
+
+    // The same endpoints on a larger circle through them.
+    let origin = Point3::new(0.0, 0.0, 0.0);
+    let far = Circle3D::new(
+        origin - (north - origin),
+        Vec3::new(0.0, 0.0, 1.0),
+        2f64.sqrt(),
+    )
+    .unwrap();
+    let mut bulged = half_disc(&[]);
+    bulged.push(edge(
+        EdgeCurve::Circle(far.clone()),
+        Some((far.project(east), far.project(west))),
+        east,
+        west,
+    ));
+    assert_eq!(
+        compare(&legacy, &[region(bulged)], TOL),
+        Verdict::Different(Mismatch::Carrier)
+    );
+
+    // The same circle and endpoints the other way round: the complement.
+    let mut lower = half_disc(&[]);
+    lower.push(edge(EdgeCurve::Circle(unit), Some((0.0, -PI)), east, west));
+    assert_eq!(
+        compare(&legacy, &[region(lower)], TOL),
+        Verdict::Different(Mismatch::SubSpan)
+    );
+
+    // The same interval stored in traversal order on a reversed use: the
+    // ends match, the direction `traversal_domain` reads from it does not.
+    let mut top = edge(
+        EdgeCurve::Circle(unit_circle()),
+        Some((0.0, PI)),
+        west,
+        east,
+    );
+    top.forward = false;
+    let mut swapped = top.clone();
+    swapped.trim = Some((PI, 0.0));
+    let cap = |arc: OrientedPCurveEdge| vec![line(east, west), arc];
+    assert_eq!(
+        compare(
+            &[region(cap(top.clone()))],
+            &[region(cap(top.clone()))],
+            TOL
+        ),
+        Verdict::Agreed
+    );
+    assert_eq!(
+        compare(&[region(cap(top))], &[region(cap(swapped))], TOL),
+        Verdict::Different(Mismatch::SpanDirection)
+    );
+
+    // The same arc a whole turn later is the same sub-span.
+    assert_eq!(
+        compare(&legacy, &[region(half_disc(&[(TAU, TAU + PI)]))], TOL),
+        Verdict::Agreed
+    );
+}
+
+#[test]
+fn a_carrier_broken_elsewhere_is_segmentation_only() {
+    let legacy = [region(half_disc(&[(0.0, PI)]))];
+    let split = [region(half_disc(&[(0.0, 0.5 * PI), (0.5 * PI, PI)]))];
+    assert_eq!(
+        compare(&legacy, &split, TOL),
+        Verdict::SegmentationOnly(Mismatch::EdgeCount)
+    );
+
+    // A full circle cut at different angles, and into different pieces.
+    let circle = unit_circle();
+    let whole = [region(vec![arc(&circle, 0.0, TAU)])];
+    let turned = [region(vec![arc(&circle, 1.0, 1.0 + TAU)])];
+    assert_eq!(
+        compare(&whole, &turned, TOL),
+        Verdict::SegmentationOnly(Mismatch::Vertex)
+    );
+    let quartered = [region(
+        (0..4)
+            .map(|k| {
+                arc(
+                    &circle,
+                    f64::from(k) * 0.5 * PI,
+                    f64::from(k + 1) * 0.5 * PI,
+                )
+            })
+            .collect(),
+    )];
+    assert_eq!(
+        compare(&whole, &quartered, TOL),
+        Verdict::SegmentationOnly(Mismatch::EdgeCount)
+    );
+
+    // Merging never hides a different partition.
+    let other = Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.5).unwrap();
+    assert_eq!(
+        compare(&whole, &[region(vec![arc(&other, 0.0, TAU)])], TOL),
+        Verdict::Different(Mismatch::Carrier)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Counters, through the production splitter
+// ---------------------------------------------------------------------------
+
+fn line_section(start: Point3, end: Point3, pave_block: usize) -> SectionEdge {
+    let dir = Vec2::new(end.x() - start.x(), end.y() - start.y());
+    let len = dir.length().max(1e-12);
+    let pcurve = Curve2D::Line(
+        Line2D::new(
+            Point2::new(start.x(), start.y()),
+            Vec2::new(dir.x() / len, dir.y() / len),
+        )
+        .unwrap(),
+    );
+    SectionEdge {
+        curve_3d: EdgeCurve::Line,
+        trim: None,
+        pcurve_a: pcurve.clone(),
+        pcurve_b: pcurve,
+        start,
+        end,
+        start_uv_a: None,
+        end_uv_a: None,
+        start_uv_b: None,
+        end_uv_b: None,
+        target_face: None,
+        pave_block_id: Some(pave_block),
+    }
+}
+
+fn square_face(size: f64) -> (Topology, FaceId) {
+    let mut topo = Topology::new();
+    let corners = [(0.0, 0.0), (size, 0.0), (size, size), (0.0, size)];
+    let vertices: Vec<_> = corners
+        .iter()
+        .map(|&(x, y)| topo.add_vertex(Vertex::new(Point3::new(x, y, 0.0), TOL)))
+        .collect();
+    let edges: Vec<_> = (0..4)
+        .map(|i| {
+            topo.add_edge(Edge::new(
+                vertices[i],
+                vertices[(i + 1) % 4],
+                EdgeCurve::Line,
+            ))
+        })
+        .collect();
+    let wire = topo.add_wire(
+        Wire::new(
+            edges.iter().map(|e| OrientedEdge::new(*e, true)).collect(),
+            true,
+        )
+        .unwrap(),
+    );
+    let face = topo.add_face(Face::new(wire, Vec::new(), z_plane()));
+    (topo, face)
+}
+
+fn disc_face(radius: f64) -> (Topology, FaceId) {
+    let mut topo = Topology::new();
+    let circle =
+        Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), radius).unwrap();
+    let v = topo.add_vertex(Vertex::new(circle.evaluate(0.0), TOL));
+    let mut rim = Edge::new(v, v, EdgeCurve::Circle(circle));
+    rim.set_trim(Some((0.0, TAU)));
+    let rim = topo.add_edge(rim);
+    let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(rim, true)], true).unwrap());
+    let face = topo.add_face(Face::new(wire, Vec::new(), z_plane()));
+    (topo, face)
+}
+
+/// A full cylinder lateral of radius `r` between `z = 0` and `z = h`.
+fn lateral_face(r: f64, h: f64) -> (Topology, FaceId) {
+    let mut topo = Topology::new();
+    let z = Vec3::new(0.0, 0.0, 1.0);
+    let surface =
+        remus_math::surfaces::CylindricalSurface::new(Point3::new(0.0, 0.0, 0.0), z, r).unwrap();
+    let v_bot = topo.add_vertex(Vertex::new(Point3::new(r, 0.0, 0.0), TOL));
+    let v_top = topo.add_vertex(Vertex::new(Point3::new(r, 0.0, h), TOL));
+    let bot = Circle3D::new(Point3::new(0.0, 0.0, 0.0), z, r).unwrap();
+    let top = Circle3D::new(Point3::new(0.0, 0.0, h), z, r).unwrap();
+    let b0 = bot.project(Point3::new(r, 0.0, 0.0));
+    let t0 = top.project(Point3::new(r, 0.0, h));
+    let mut be = Edge::new(v_bot, v_bot, EdgeCurve::Circle(bot));
+    be.set_trim(Some((b0, b0 + TAU)));
+    let mut te = Edge::new(v_top, v_top, EdgeCurve::Circle(top));
+    te.set_trim(Some((t0, t0 + TAU)));
+    let be = topo.add_edge(be);
+    let te = topo.add_edge(te);
+    let seam = topo.add_edge(Edge::new(v_bot, v_top, EdgeCurve::Line));
+    let wire = topo.add_wire(
+        Wire::new(
+            vec![
+                OrientedEdge::new(be, true),
+                OrientedEdge::new(seam, true),
+                OrientedEdge::new(te, false),
+                OrientedEdge::new(seam, false),
+            ],
+            true,
+        )
+        .unwrap(),
+    );
+    let face = topo.add_face(Face::new(wire, vec![], FaceSurface::Cylinder(surface)));
+    (topo, face)
+}
+
+fn latitude_section(r: f64, z: f64, pave_block: usize) -> SectionEdge {
+    let circle = Circle3D::new(Point3::new(0.0, 0.0, z), Vec3::new(0.0, 0.0, 1.0), r).unwrap();
+    let seam = Point3::new(r, 0.0, z);
+    let t0 = circle.project(seam);
+    SectionEdge {
+        curve_3d: EdgeCurve::Circle(circle),
+        trim: Some((t0, t0 + TAU)),
+        pcurve_a: dummy_pcurve(),
+        pcurve_b: dummy_pcurve(),
+        start: seam,
+        end: seam,
+        start_uv_a: None,
+        end_uv_a: None,
+        start_uv_b: None,
+        end_uv_b: None,
+        target_face: None,
+        pave_block_id: Some(pave_block),
+    }
+}
+
+fn ruling_section(r: f64, theta: f64, h: f64, pave_block: usize) -> SectionEdge {
+    let at = |z: f64| Point3::new(r * theta.cos(), r * theta.sin(), z);
+    SectionEdge {
+        curve_3d: EdgeCurve::Line,
+        trim: None,
+        pcurve_a: dummy_pcurve(),
+        pcurve_b: dummy_pcurve(),
+        start: at(0.0),
+        end: at(h),
+        start_uv_a: None,
+        end_uv_a: None,
+        start_uv_b: None,
+        end_uv_b: None,
+        target_face: None,
+        pave_block_id: Some(pave_block),
+    }
+}
+
+type Counts = [SplitterShadowCounts; SplitterShadowEntry::ALL.len()];
+
+/// Split through the production entry with the shadow differential set to
+/// `mode`, returning the partition and the shadow counts it recorded.
+fn split(
+    mode: Option<ShadowBudgets>,
+    topo: &Topology,
+    face: FaceId,
+    sections: &[SectionEdge],
+) -> (Vec<SplitSubFace>, Counts, Vec<String>) {
+    let scope = SectionDropScope::enter();
+    take_reasons();
+    let info = topo.face(face).ok().and_then(|f| {
+        matches!(f.surface(), FaceSurface::Cylinder(_)).then_some(SurfaceInfo::Parametric {
+            u_periodic: true,
+            v_periodic: false,
+        })
+    });
+    let parts = with_mode(mode, || {
+        split_face_2d(
+            topo,
+            face,
+            sections,
+            Rank::A,
+            &Tolerance::default(),
+            None,
+            info.as_ref(),
+            &DetHashMap::default(),
+            &OperationContext::new(),
+            None,
+        )
+        .unwrap()
+    });
+    (
+        parts,
+        SplitterShadowEntry::ALL.map(|entry| scope.splitter_shadow(entry)),
+        take_reasons(),
+    )
+}
+
+/// What one budget mode recorded for the entry point under test.
+#[derive(Debug, PartialEq, Eq)]
+struct Seen {
+    counts: SplitterShadowCounts,
+    reasons: Vec<String>,
+}
+
+/// What `entry` recorded under default and raised budgets, after checking
+/// that the differential is inert until enabled, that neither shadow run
+/// changed the partition, and that no other entry point fired.
+fn shadowed(
+    entry: SplitterShadowEntry,
+    topo: &Topology,
+    face: FaceId,
+    sections: &[SectionEdge],
+) -> [Seen; 2] {
+    let (plain, off, reasons) = split(None, topo, face, sections);
+    assert_eq!(off, Counts::default(), "inert until enabled");
+    assert!(reasons.is_empty(), "inert until enabled");
+    [ShadowBudgets::Inherit, ShadowBudgets::Raised].map(|mode| {
+        let (parts, counts, reasons) = split(Some(mode), topo, face, sections);
+        assert_eq!(
+            format!("{parts:?}"),
+            format!("{plain:?}"),
+            "a shadow run must not change the partition"
+        );
+        for other in SplitterShadowEntry::ALL {
+            if other != entry {
+                assert_eq!(counts[other as usize], SplitterShadowCounts::default());
+            }
+        }
+        Seen {
+            counts: counts[entry as usize],
+            reasons,
+        }
+    })
+}
+
+fn seen(counts: SplitterShadowCounts, reason: &str) -> Seen {
+    Seen {
+        counts,
+        reasons: vec![reason.to_owned()],
+    }
+}
+
+const fn counts(
+    agreed: u64,
+    disagreed: u64,
+    declined: u64,
+    declined_on_budget: u64,
+) -> SplitterShadowCounts {
+    SplitterShadowCounts {
+        fired: agreed + disagreed + declined + declined_on_budget,
+        agreed,
+        disagreed,
+        declined,
+        declined_on_budget,
+        refused: 0,
+    }
+}
+
+#[test]
+fn crossing_sections_shadow_the_crossing_emitter() {
+    let (topo, face) = square_face(2.0);
+    let sections = [
+        line_section(Point3::new(1.0, 0.0, 0.0), Point3::new(1.0, 2.0, 0.0), 7),
+        line_section(Point3::new(0.0, 1.0, 0.0), Point3::new(2.0, 1.0, 0.0), 8),
+    ];
+    let [default, raised] = shadowed(SplitterShadowEntry::CrossingPlane, &topo, face, &sections);
+    assert_eq!(default, seen(counts(0, 0, 0, 1), "work-budget"));
+    assert_eq!(raised, seen(counts(1, 0, 0, 0), "-"));
+}
+
+#[test]
+fn rim_chords_shadow_the_disc_emitter() {
+    // Two chords fanning from one rim point: three regions.
+    let (topo, face) = disc_face(8.0);
+    let y = 8.0 * (PI / 4.0).sin();
+    let apex = Point3::new(8.0, 0.0, 0.0);
+    let sections = [
+        line_section(apex, Point3::new(-y, y, 0.0), 7),
+        line_section(apex, Point3::new(-y, -y, 0.0), 8),
+    ];
+    let [default, raised] = shadowed(SplitterShadowEntry::DiskByChords, &topo, face, &sections);
+    assert_eq!(default, seen(counts(0, 0, 0, 1), "work-budget"));
+    // Same three regions on the same carrier; the two sides break the rim
+    // at different angles.
+    assert_eq!(
+        raised,
+        seen(counts(0, 1, 0, 0), "segmentation-only(vertex)")
+    );
+}
+
+/// The cylinder adapter stores a reversed rim use's `trim` in traversal
+/// order, where [`OrientedPCurveEdge::trim`] is native-direction and the
+/// legacy emitters keep it so. Regions, wires, vertices and carriers all
+/// match; only that interval's direction differs. Pinned as measured: an
+/// adapter that adopts the native convention turns both into agreements.
+#[test]
+fn latitude_circles_shadow_the_band_emitter() {
+    let (topo, face) = lateral_face(2.0, 3.0);
+    let sections = [
+        latitude_section(2.0, 0.9, 100),
+        latitude_section(2.0, 2.1, 101),
+    ];
+    let [default, raised] = shadowed(SplitterShadowEntry::CylinderBands, &topo, face, &sections);
+    assert_eq!(default, seen(counts(0, 0, 0, 1), "work-budget"));
+    assert_eq!(raised, seen(counts(0, 1, 0, 0), "span-direction"));
+}
+
+#[test]
+fn a_ruling_shadows_the_sector_emitter() {
+    let (topo, face) = lateral_face(2.0, 3.0);
+    let sections = [ruling_section(2.0, 2.0, 3.0, 200)];
+    let [default, raised] = shadowed(SplitterShadowEntry::PeriodicSectors, &topo, face, &sections);
+    assert_eq!(default, seen(counts(0, 0, 0, 1), "work-budget"));
+    assert_eq!(raised, seen(counts(0, 1, 0, 0), "span-direction"));
+}

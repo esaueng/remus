@@ -37,6 +37,83 @@ struct ScopeCounts {
     dropped: u64,
     uncertified_charts: u64,
     uncertified_rescues: u64,
+    #[cfg(any(test, feature = "perf-counters"))]
+    splitter_shadow: [SplitterShadowCounts; SplitterShadowEntry::ALL.len()],
+}
+
+/// A legacy face-splitter entry point whose result the UV-arrangement shadow
+/// differential re-derives (O2.3d step 0; see
+/// `builder/face_splitter/shadow.rs`). Test and `perf-counters` builds only.
+#[cfg(any(test, feature = "perf-counters"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SplitterShadowEntry {
+    /// `special_cases::try_split_crossing_plane_face`, together with its
+    /// only-caller helper `chain_boundary_edges`.
+    CrossingPlane,
+    /// `special_cases::try_split_disk_by_chords`.
+    DiskByChords,
+    /// `special_cases::split_periodic_face_into_sectors`.
+    PeriodicSectors,
+    /// The cylinder arm of `special_cases::split_periodic_face_into_bands`.
+    CylinderBands,
+}
+
+#[cfg(any(test, feature = "perf-counters"))]
+impl SplitterShadowEntry {
+    /// Every shadowed entry point, in counter order.
+    pub const ALL: [Self; 4] = [
+        Self::CrossingPlane,
+        Self::DiskByChords,
+        Self::PeriodicSectors,
+        Self::CylinderBands,
+    ];
+
+    /// The legacy function this entry stands for.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::CrossingPlane => "try_split_crossing_plane_face",
+            Self::DiskByChords => "try_split_disk_by_chords",
+            Self::PeriodicSectors => "split_periodic_face_into_sectors",
+            Self::CylinderBands => "split_periodic_face_into_bands[cylinder]",
+        }
+    }
+}
+
+/// How one shadow run of the arrangement path compared with the legacy
+/// result that was returned.
+#[cfg(any(test, feature = "perf-counters"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SplitterShadowOutcome {
+    /// Same regions, wires, vertices, carriers and sub-spans.
+    Agreed,
+    /// The arrangement produced a different partition.
+    Disagreed,
+    /// The arrangement declined the face as out of its domain.
+    Declined,
+    /// The arrangement ran out of its work budget.
+    DeclinedOnBudget,
+    /// The arrangement claimed the face and then refused it with an error,
+    /// which an early dispatch would propagate.
+    Refused,
+}
+
+/// Shadow-differential counts of one legacy entry point.
+#[cfg(any(test, feature = "perf-counters"))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SplitterShadowCounts {
+    /// Legacy results adopted while the shadow differential was enabled.
+    pub fired: u64,
+    /// Of those, arrangement results equal to the legacy result.
+    pub agreed: u64,
+    /// Arrangement results that differ from the legacy result.
+    pub disagreed: u64,
+    /// Faces the arrangement declined for a reason other than its budget.
+    pub declined: u64,
+    /// Faces the arrangement gave up on for lack of work budget.
+    pub declined_on_budget: u64,
+    /// Faces the arrangement claimed and then refused with an error.
+    pub refused: u64,
 }
 
 /// Records the open section chains the face splitter drops while it is open.
@@ -103,6 +180,15 @@ impl SectionDropScope {
         self.counts().uncertified_rescues
     }
 
+    /// Shadow-differential counts of one legacy splitter entry point since
+    /// this scope opened. All zero unless the differential was enabled (see
+    /// `builder/face_splitter/shadow.rs`).
+    #[cfg(any(test, feature = "perf-counters"))]
+    #[must_use]
+    pub fn splitter_shadow(&self, entry: SplitterShadowEntry) -> SplitterShadowCounts {
+        self.counts().splitter_shadow[entry as usize]
+    }
+
     fn counts(&self) -> ScopeCounts {
         SECTION_DROP_SCOPES.with(|scopes| {
             scopes
@@ -137,6 +223,24 @@ pub(crate) fn note_uncertified_chart() {
 /// [`SectionDropScope::uncertified_rescues`]).
 pub(crate) fn note_uncertified_rescue() {
     note(|c| c.uncertified_rescues = c.uncertified_rescues.saturating_add(1));
+}
+
+/// Count one shadow-differential run of a legacy splitter entry point (see
+/// [`SectionDropScope::splitter_shadow`]).
+#[cfg(any(test, feature = "perf-counters"))]
+pub(crate) fn note_splitter_shadow(entry: SplitterShadowEntry, outcome: SplitterShadowOutcome) {
+    note(|c| {
+        let counts = &mut c.splitter_shadow[entry as usize];
+        counts.fired = counts.fired.saturating_add(1);
+        let slot = match outcome {
+            SplitterShadowOutcome::Agreed => &mut counts.agreed,
+            SplitterShadowOutcome::Disagreed => &mut counts.disagreed,
+            SplitterShadowOutcome::Declined => &mut counts.declined,
+            SplitterShadowOutcome::DeclinedOnBudget => &mut counts.declined_on_budget,
+            SplitterShadowOutcome::Refused => &mut counts.refused,
+        };
+        *slot = slot.saturating_add(1);
+    });
 }
 
 fn note(f: impl Fn(&mut ScopeCounts)) {

@@ -1,0 +1,27 @@
+# Face-splitter special-case ratchet (Open Kernel O2.3d), read by
+# `scripts/check-splitter-ratchet.py`; that script documents each metric.
+#
+# Floors: `<floor> <metric>`, `LC_ALL=C sort`ed by metric. The allowed count of
+# a metric is its floor plus its ledger raises below, and the observed count
+# must equal it exactly.
+#
+# - A count may rise only with a ledger line naming the roadmap row that owns
+#   the growth. Never raise a floor by hand.
+# - When a count shrinks, set its floor to the observed count and delete that
+#   metric's ledger lines in the same change, so the reduction is banked.
+#
+# Baseline taken 2026-11-12 with O2.3d step 0. At the O2.3a design baseline
+# (`fc4b55a1`) special_cases.rs held 3,651 production lines and 10 entry points.
+19 mod.dispatch_returns.split_face_2d_impl
+36 mod.emitter_lines.arrangement_regions_from_combined
+1228 mod.emitter_lines.arrangement_regions_from_inputs
+610 mod.emitter_lines.split_cylinder_band_by_arrangement
+496 mod.emitter_lines.split_periodic_face_by_rim_chains
+305 mod.emitter_lines.split_periodic_face_by_winding_chain
+83 mod.emitter_lines.split_plane_face_by_arrangement
+16 special_cases.entry_points
+6566 special_cases.production_lines
+34 special_cases.pub_fns
+
+# Ledger: `raise <metric> +<n> <roadmap-anchor> <reason>`, where the anchor is
+# the row's `<a id>` in docs/kernel-maturity/roadmap.md (for example `o-o2-3d`).

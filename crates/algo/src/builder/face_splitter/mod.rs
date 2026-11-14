@@ -34,6 +34,10 @@ mod rim_chain_oracle_tests;
 mod sampling;
 #[cfg(test)]
 mod section_clearance_tests;
+// Shadow differential of the legacy emitters against the arrangement
+// adapters (O2.3d step 0). Measures only; absent from normal builds.
+#[cfg(any(test, feature = "perf-counters"))]
+mod shadow;
 mod special_cases;
 pub(in crate::builder) use special_cases::cylinder_cone_remainder_interior;
 
@@ -7225,6 +7229,17 @@ fn split_face_2d_impl(
             tol.linear,
         )
     {
+        #[cfg(any(test, feature = "perf-counters"))]
+        shadow::cylinder(
+            crate::gfa::SplitterShadowEntry::CylinderBands,
+            topo,
+            face_id,
+            sections,
+            rank,
+            tol,
+            context,
+            &bands,
+        );
         return Ok(bands);
     }
 
@@ -8833,6 +8848,18 @@ fn split_face_2d_impl(
         )?
         && result.len() > loops.len()
     {
+        #[cfg(any(test, feature = "perf-counters"))]
+        shadow::plane(
+            crate::gfa::SplitterShadowEntry::CrossingPlane,
+            topo,
+            face_id,
+            sections,
+            rank,
+            frame,
+            tol,
+            context,
+            &result,
+        );
         return Ok(result);
     }
 
@@ -8881,6 +8908,18 @@ fn split_face_2d_impl(
             || greedy_outer_loops_nested(&loops, cw_loops)
             || wire_loops_have_degenerate_area(&loops, tol.linear))
         {
+            #[cfg(any(test, feature = "perf-counters"))]
+            shadow::plane(
+                crate::gfa::SplitterShadowEntry::DiskByChords,
+                topo,
+                face_id,
+                sections,
+                rank,
+                frame,
+                tol,
+                context,
+                &result,
+            );
             return Ok(result);
         }
 
@@ -9009,6 +9048,17 @@ fn split_face_2d_impl(
             &surface, boundary, sections, rank, reversed, face_id, tol.linear,
         )
     {
+        #[cfg(any(test, feature = "perf-counters"))]
+        shadow::cylinder(
+            crate::gfa::SplitterShadowEntry::PeriodicSectors,
+            topo,
+            face_id,
+            sections,
+            rank,
+            tol,
+            context,
+            &sectors,
+        );
         return Ok(sectors);
     }
     if u_periodic
