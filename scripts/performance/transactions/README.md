@@ -55,7 +55,9 @@ implementation for caught/propagated failures, outer rollback and validation vet
 Probe-only `unsafe` is confined to `allocator.rs`, a forwarding `System` allocator
 inserted into disposable measurement sources. The workspace forbids `unsafe_code`,
 so `instrument.py` relaxes that lint to `deny` in the disposable copy only, where
-the allocator's `#![allow(unsafe_code)]` can take effect. Production code remains safe Rust;
+the allocator's `#![allow(unsafe_code)]` can take effect. Older baselines that
+already deny it are accepted unchanged; any other lint configuration is refused
+before the script writes anything. Production code remains safe Rust;
 there is no new runtime feature, dependency, fault switch or JS export.
 
 For uninstrumented timing, start from fresh source archives and run
