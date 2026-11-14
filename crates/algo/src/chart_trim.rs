@@ -28,6 +28,7 @@ use remus_math::vec::{Point2, Point3};
 use remus_topology::Topology;
 use remus_topology::edge::EdgeCurve;
 use remus_topology::face::FaceSurface;
+use remus_topology::vertex::VertexId;
 use remus_topology::wire::WireId;
 
 use crate::builder::classify_2d::point_in_polygon_2d;
@@ -248,6 +249,20 @@ pub fn chart_loop(
 /// samples remain unchanged. Each accepted chord bounds its complete native
 /// interval; knot spans are seeded explicitly, so parameter compression cannot
 /// conceal an excursion. Work exhaustion or any unavailable bound means KEEP.
+///
+/// The returned `sagitta` is a POINTWISE bound on the outline's deviation
+/// from the boundary: the larger of the chord error (every accepted chord's
+/// whole-interval bound, each at most `error`) and the largest JOIN GAP, the
+/// distance between one edge's evaluated end and the next edge's evaluated
+/// start. The outline keeps both points and bridges them with a segment, so
+/// every bridge point lies within its gap of a boundary point; gaps combine
+/// by maximum, not by sum. A gap is admitted when it is at most `error`, or
+/// when the topology accounts for it: under the vertex ball-containment
+/// invariant (RFC 0004, see `Vertex::set_tolerance`), each edge end lies
+/// within its effective tolerance (the edge's own tolerance, else the
+/// shared vertex's) of the shared vertex. Both ends are checked against that
+/// claim here, not assumed, and the gap may be no larger than the larger of
+/// the two tolerances. Any other gap refuses the outline.
 pub fn exclusion_loop(
     topo: &Topology,
     surface: &FaceSurface,
@@ -256,11 +271,22 @@ pub fn exclusion_loop(
 ) -> Option<ChartLoop> {
     let wire = topo.wire(wire_id).ok()?;
     let mut pts: Vec<Point3> = Vec::new();
-    let mut previous_end: Option<Point3> = None;
+    // The previous edge's evaluated end and its effective tolerance there;
+    // the first edge's start, its vertex and tolerance, for the closing join.
+    let mut previous_end: Option<(Point3, f64)> = None;
+    let mut first_start: Option<(Point3, VertexId, f64)> = None;
     let mut sagitta = 0.0_f64;
     let mut work = 0;
     for oe in wire.edges() {
         let edge = topo.edge(oe.edge()).ok()?;
+        let (start_v, end_v) = if oe.is_forward() {
+            (edge.start(), edge.end())
+        } else {
+            (edge.end(), edge.start())
+        };
+        let tolerance_at =
+            |v: VertexId| Some(edge.tolerance().unwrap_or(topo.vertex(v).ok()?.tolerance()));
+        let (start_tol, end_tol) = (tolerance_at(start_v)?, tolerance_at(end_v)?);
         let sp = topo.vertex(edge.start()).ok()?.point();
         let ep = topo.vertex(edge.end()).ok()?.point();
         let (t0, t1) = edge.strict_domain().ok()?;
@@ -299,17 +325,61 @@ pub fn exclusion_loop(
         if (t0 > t1) == oe.is_forward() {
             samples.reverse();
         }
-        if let Some(end) = previous_end {
-            sagitta = (sagitta + (samples[0] - end).length()).next_up();
+        match previous_end {
+            Some((end, end_tol_before)) => {
+                let gap = admitted_join(
+                    topo,
+                    start_v,
+                    (end, end_tol_before),
+                    (samples[0], start_tol),
+                    error,
+                )?;
+                if gap > 0.0 {
+                    pts.push(end);
+                }
+                sagitta = sagitta.max(gap);
+            }
+            None => first_start = Some((samples[0], start_v, start_tol)),
         }
-        previous_end = samples.last().copied();
+        previous_end = Some((*samples.last()?, end_tol));
         pts.extend_from_slice(&samples[..samples.len() - 1]);
     }
-    sagitta = (sagitta + (pts.first().copied()? - previous_end?).length()).next_up();
-    if sagitta > error || pts.len() < 3 {
+    let (start, start_v, start_tol) = first_start?;
+    let (end, end_tol) = previous_end?;
+    let gap = admitted_join(topo, start_v, (end, end_tol), (start, start_tol), error)?;
+    if gap > 0.0 {
+        pts.push(end);
+    }
+    sagitta = sagitta.max(gap).next_up();
+    if pts.len() < 3 {
         return None;
     }
     loop_from_points(surface, pts, sagitta)
+}
+
+/// The gap between the evaluated end `a` of one boundary edge and the
+/// evaluated start `b` of the next at `vertex`, when admitted (see
+/// [`exclusion_loop`]): within `error`, or both ends inside their effective
+/// tolerance of the vertex point and the gap within the larger of the two.
+fn admitted_join(
+    topo: &Topology,
+    vertex: VertexId,
+    (a, tol_a): (Point3, f64),
+    (b, tol_b): (Point3, f64),
+    error: f64,
+) -> Option<f64> {
+    let gap = (b - a).length();
+    if !gap.is_finite() {
+        return None;
+    }
+    if gap <= error {
+        return Some(gap);
+    }
+    let p = topo.vertex(vertex).ok()?.point();
+    // A tolerance recorded as a measured distance may round one ulp below a
+    // recomputation of the same distance.
+    let within = |q: Point3, tol: f64| (q - p).length() <= (tol * (1.0 + 1e-12)).next_up();
+    (within(a, tol_a) && within(b, tol_b) && gap <= tol_a.max(tol_b)).then_some(gap)
 }
 
 /// The part of `curve` over `range` (either order) as its own clamped NURBS,
@@ -530,6 +600,105 @@ mod tests {
         let (topo, face, _) = wall(trim);
         let face = topo.face(face).unwrap();
         chart_loop(&topo, face.surface(), face.outer_wire(), Tolerance::new()).unwrap()
+    }
+
+    /// The hole `u in [1, 2] x v in [1, 3]` with exact rim arcs and MARCHED
+    /// rulings: degree-1 NURBS whose ends sit `delta` up the axis from their
+    /// vertices, as a marched trace ends off the vertex it was welded to.
+    /// Every one of the four joins has a gap of `delta`. `edge_tolerance` is
+    /// the rulings' own tolerance claim; the vertices keep 1e-7.
+    fn marched_hole(delta: f64, edge_tolerance: Option<f64>) -> (Topology, FaceSurface, WireId) {
+        use remus_topology::edge::Edge;
+        use remus_topology::vertex::Vertex;
+        use remus_topology::wire::{OrientedEdge, Wire};
+
+        let mut topo = Topology::new();
+        let cyl = super::fixtures::cylinder();
+        let corner = |topo: &mut Topology, u: f64, v: f64| {
+            topo.add_vertex(Vertex::new(cyl.evaluate(u, v), 1e-7))
+        };
+        let (a, b) = (corner(&mut topo, 1.0, 1.0), corner(&mut topo, 2.0, 1.0));
+        let (c, d) = (corner(&mut topo, 2.0, 3.0), corner(&mut topo, 1.0, 3.0));
+        let arc = |topo: &mut Topology, z: f64, from, to| {
+            let mut edge = Edge::new(from, to, EdgeCurve::Circle(super::fixtures::ring(&cyl, z)));
+            edge.set_trim(Some((1.0, 2.0)));
+            topo.add_edge(edge)
+        };
+        let ruling = |topo: &mut Topology, u: f64, from, to| {
+            let n = NurbsCurve::new(
+                1,
+                vec![0.0, 0.0, 1.0, 1.0],
+                vec![cyl.evaluate(u, 1.0 + delta), cyl.evaluate(u, 3.0 + delta)],
+                vec![1.0; 2],
+            )
+            .unwrap();
+            let mut edge = Edge::new(from, to, EdgeCurve::NurbsCurve(n));
+            edge.set_trim(Some((0.0, 1.0)));
+            edge.set_tolerance(edge_tolerance).unwrap();
+            topo.add_edge(edge)
+        };
+        let bottom = arc(&mut topo, 1.0, a, b);
+        let right = ruling(&mut topo, 2.0, b, c);
+        let top = arc(&mut topo, 3.0, d, c);
+        let left = ruling(&mut topo, 1.0, a, d);
+        let wire = topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(bottom, true),
+                    OrientedEdge::new(right, true),
+                    OrientedEdge::new(top, false),
+                    OrientedEdge::new(left, false),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        (topo, FaceSurface::Cylinder(cyl), wire)
+    }
+
+    /// The section-pave pass's exclusion budget, `100 tol / 8`.
+    const BUDGET: f64 = 1.25e-6;
+
+    /// Four joins of 0.5e-6 each fit the budget one by one; their sum, 2e-6,
+    /// does not. The deviation is pointwise, so the outline certifies, with
+    /// the largest of the chord error and the gaps as its bound.
+    #[test]
+    fn join_gaps_that_each_fit_certify_though_their_sum_does_not() {
+        let (topo, surface, wire) = marched_hole(0.5e-6, None);
+        let outline = exclusion_loop(&topo, &surface, wire, BUDGET).unwrap();
+        assert!(
+            outline.sagitta >= 0.5e-6 && outline.sagitta <= BUDGET,
+            "{}",
+            outline.sagitta
+        );
+    }
+
+    /// Gaps of 4e-6, past the budget, on rulings that claim a 5e-6
+    /// tolerance and whose ends lie inside it: the topology accounts for
+    /// them, and the bound is the gap.
+    #[test]
+    fn join_gaps_inside_the_edges_own_tolerance_certify() {
+        let (topo, surface, wire) = marched_hole(4e-6, Some(5e-6));
+        let outline = exclusion_loop(&topo, &surface, wire, BUDGET).unwrap();
+        assert!(
+            outline.sagitta >= 4e-6 && outline.sagitta < 4.1e-6,
+            "{}",
+            outline.sagitta
+        );
+    }
+
+    /// Controls: the same 4e-6 gaps with no edge tolerance (the vertices
+    /// claim 1e-7), or with rulings claiming less than their ends' actual
+    /// distance from the vertices, are not accounted for, and refuse.
+    #[test]
+    fn join_gaps_no_tolerance_accounts_for_refuse() {
+        for claim in [None, Some(3e-6)] {
+            let (topo, surface, wire) = marched_hole(4e-6, claim);
+            assert!(
+                exclusion_loop(&topo, &surface, wire, BUDGET).is_none(),
+                "{claim:?}"
+            );
+        }
     }
 
     #[test]
