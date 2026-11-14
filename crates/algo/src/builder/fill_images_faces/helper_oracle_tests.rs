@@ -657,6 +657,7 @@ fn winding_fixture(
             face_b: plane,
             pave_blocks: vec![],
             t_range: (0.0, 1.0),
+            paved: false,
         });
     }
     (topo, arena, cyl)

@@ -22,6 +22,7 @@
 #![cfg_attr(test, allow(clippy::disallowed_methods))]
 
 pub mod bop;
+pub(crate) mod chart_trim;
 pub mod diagnostic;
 pub mod error;
 pub mod gfa;

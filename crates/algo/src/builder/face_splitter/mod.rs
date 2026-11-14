@@ -39,6 +39,7 @@ mod section_clearance_tests;
 #[cfg(any(test, feature = "perf-counters"))]
 mod shadow;
 mod special_cases;
+mod trimmed_cylinder_chart;
 pub(in crate::builder) use special_cases::cylinder_cone_remainder_interior;
 
 pub use conversion::collect_wire_points;
@@ -5800,7 +5801,7 @@ pub fn split_face_2d(
         else {
             return Ok(parts);
         };
-        periodic_face_chart::split_periodic_face_by_chart(
+        let rectangle = periodic_face_chart::split_periodic_face_by_chart(
             &surface,
             &boundary,
             !face.inner_wires().is_empty(),
@@ -5809,7 +5810,32 @@ pub fn split_face_2d(
             face.is_reversed(),
             face_id,
             tol.linear,
-        )
+        );
+        if matches!(rectangle, chart_arrangement::ChartSplit::Unsupported) {
+            // Not a chart rectangle: a wall with holes, or with a bay in its
+            // outer wire, has its own chart partition.
+            let mut holes = Vec::with_capacity(face.inner_wires().len());
+            for &wire in face.inner_wires() {
+                let hole_pts = collect_wire_points(topo, wire);
+                let Ok(hole) = boundary_edges_to_pcurve(topo, wire, &surface, &hole_pts, None)
+                else {
+                    return Ok(parts);
+                };
+                holes.push(hole);
+            }
+            trimmed_cylinder_chart::split_trimmed_cylinder_by_chart(
+                &surface,
+                &boundary,
+                &holes,
+                sections,
+                rank,
+                face.is_reversed(),
+                face_id,
+                tol.linear,
+            )
+        } else {
+            rectangle
+        }
     };
     if let chart_arrangement::ChartSplit::Certified(rescued) = &rescued {
         log::debug!(

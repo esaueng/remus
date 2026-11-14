@@ -31,6 +31,7 @@ pub mod phase_ff_coplanar;
 pub mod phase_ve;
 pub mod phase_vf;
 pub mod phase_vv;
+pub mod section_paves;
 
 #[cfg(test)]
 mod tests;
@@ -190,6 +191,7 @@ impl<'a> PaveFiller<'a> {
 ///
 /// **Stage 2 — Resolution** (writes `&mut Topology`):
 /// - `MakeBlocks` — splits pave blocks at extra paves
+/// - `SectionPaves` — paves and splits section curves on holed curved faces
 /// - `MakeSplitEdges` — creates new topology edges for leaf pave blocks
 /// - `MakePCurves` — builds 2D curves on faces (stub)
 /// - `FillFaceInfo` — classifies pave blocks as On/In/Sc per face
@@ -231,6 +233,8 @@ pub fn run_pave_filler_with_context(
     let _phase = crate::perf::phase(crate::perf::PhaseKind::Resolve);
     context.check_cancelled()?;
     make_blocks::perform(arena)?;
+    context.check_cancelled()?;
+    section_paves::perform(topo, tol, arena)?;
     context.check_cancelled()?;
     force_interf_ee::perform(topo, tol, arena)?;
     context.check_cancelled()?;
@@ -442,6 +446,8 @@ pub fn run_pave_filler_n_with_pairs(
     let _phase = crate::perf::phase(crate::perf::PhaseKind::Resolve);
     context.check_cancelled()?;
     make_blocks::perform(arena)?;
+    context.check_cancelled()?;
+    section_paves::perform(topo, tol, arena)?;
     context.check_cancelled()?;
     force_interf_ee::perform(topo, tol, arena)?;
     context.check_cancelled()?;

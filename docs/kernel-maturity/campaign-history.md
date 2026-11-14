@@ -445,6 +445,60 @@ nozzle nm 1→15, clip volume 46.78→46.70 vs 46.6±0.05). Dovetail residuals:
   keyed, NURBS boundary arm) broke the groove/a1corner calibrated chains
   which DEPEND on downstream reconciliation of asymmetric splits.** Repro:
   cache replay_scplate.rs (RAWN=n) + capture-snapclip-plate-fresh.
+- **B7 section-pave pass — SHIPPED for trimmed curved faces (2026-11-13,
+  fixture `crates/operations/tests/regress_b7_section_pave_attachment.rs`):**
+  the in-repo repro (plate − bore − marched tunnel − third cutter) turned
+  out to be THREE stacked roots, all of one shape: after the second cut the
+  bore wall carries the marched loop as a HOLE straddling its seam and the
+  tunnel wall carries it as a BAY in its outer wire, and three stages still
+  assumed a cylinder wall is a chart rectangle. (1) The diagnosed one:
+  `phase_ff` gives a section one pave block and its analytic extent is a
+  height band plus an angular gap, so a ruling through the hole and a
+  circle through the bay reached both faces whole. Fixed at the proposed
+  altitude: `pave_filler/section_paves.rs` runs after `make_blocks`, puts
+  the trimming edges' pave vertices on the curve (weld band, 100·tol),
+  splits the block with the same splitter as an operand edge, and drops
+  leaves off the face (interior probes strictly off, ends not decisively
+  on); the builder feeds one section per surviving leaf with its pave-block
+  id. The groundwork saw only holes; the tunnel wall's BAY needed the same
+  pass (an outer wire that closes in the chart and is not a rectangle).
+  (2) NOT in the diagnosis: the engine's own ray-cast classifier read the
+  step-2 operand's bore void as material — 2,278 of 25,306 grid points —
+  because a cylinder with a non-band hole fell to the planar-polygon
+  fallback and a bayed lateral with full rim circles read as a full band.
+  Void pieces of the cutter wall were therefore kept. Found by classifying
+  a grid against the primitives' analytic membership, the "verify the
+  inputs" prior; fixed with a chart-outline wall model
+  (`FaceGeom::ChartTrimmedCylinder`, outlines shared with the pave pass in
+  `chart_trim.rs`). (3) NOT in the diagnosis: no splitter joins a section to
+  a hole or a bay. The established dispatch sends such a wall to the
+  internal-loops emitter, which keeps closed loops and drops every open
+  chain, and the certified chart partition admitted chart rectangles only.
+  `face_splitter/trimmed_cylinder_chart.rs` is a second front end to the
+  same certified tracer (which already handled arbitrary boundaries and
+  holes for planes): outer wire lifted with its bay, hole wires cut at the
+  seam lines and oriented against it, rulings as straight chart pieces,
+  boundary pieces split at nodes by projection, and the seam's pieces
+  inside a seam-straddling hole removed. It runs only where the
+  established partition already failed its own checks, and a failed
+  certificate keeps the old result. Two smaller traps on the way: a node
+  computed on a marched hole edge sits ~1e-6 off the exact seam ruling it
+  must split (weld band again, the fifth such gap), and
+  `dedup_collinear_sections` compares CHORDS, so a marched arc from one end
+  of a ruling to the other deleted both pieces of that ruling as "subsets".
+  One foil caught the pass itself: it paved a cap circle at the vertex
+  where two rim arcs of a herringbone tooth patch meet, a section RIDING
+  the boundary rather than crossing it, and the internal-herringbone gear
+  ring moved 4e-6 in volume while staying valid and watertight; a vertex
+  whose two neighbouring pieces both lie on the boundary is not paved.
+  REFUTED on the way: that the oblique case's phantom inner wire came from
+  the in-hole loop (dropping it left the tunnel wall just as wrong; a third
+  loop, on the tunnel wall's carrier inside the bay, was the section
+  feeding it). Result: wider 4 bad edges / 319.757 → 0 / 308.385 (reference
+  308.387); oblique 7 / 294.378 → 0 / 307.564 (reference 307.568). The
+  per-face workarounds (split registry, boundary-vertex presplit, the
+  seam-split rules that clear `pave_block_id`) all remain: the pass leaves
+  every curve between planes and chart rectangles exactly as it was.
 - **NURBS endpoint-trimmed convention — FORWARD SPANS SHIPPED; reversed
   spans remain OPEN behind a named arrangement defect (2026-07-17, the
   deepened-notch dig's terminal root):** `EdgeCurve::domain_with_endpoints`

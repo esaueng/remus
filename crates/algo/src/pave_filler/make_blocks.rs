@@ -37,53 +37,11 @@ pub fn perform(arena: &mut GfaArena) -> Result<(), AlgoError> {
                 .is_some_and(|pb| !pb.extra_paves.is_empty());
 
             if has_extras {
-                // Snapshot all data we need before mutating
-                let (original_edge, start, end, extra_paves) = {
-                    let pb = match arena.pave_blocks.get(pb_id) {
-                        Some(pb) => pb,
-                        None => continue,
-                    };
-                    (pb.original_edge, pb.start, pb.end, pb.extra_paves.clone())
-                };
-
-                let mut sorted_paves = extra_paves;
-                sorted_paves.retain(|pave| {
-                    let lo = start.parameter.min(end.parameter) + 1e-10;
-                    let hi = start.parameter.max(end.parameter) - 1e-10;
-                    pave.parameter > lo && pave.parameter < hi
-                });
-                if end.parameter >= start.parameter {
-                    // hot: 2,095+ calls, ~66k n*log2(n) work in one criterion --test + native perf pass.
-                    #[allow(clippy::disallowed_methods)]
-                    sorted_paves.sort_by(|a, b| a.parameter.total_cmp(&b.parameter));
-                } else {
-                    sorted_paves.compact_sort_by(|a, b| b.parameter.total_cmp(&a.parameter));
-                }
-                sorted_paves.dedup_by(|a, b| (a.parameter - b.parameter).abs() < 1e-10);
-
-                let mut prev_pave = start;
-                let mut children = Vec::new();
-
-                for pave in &sorted_paves {
-                    let child = crate::ds::PaveBlock::new(original_edge, prev_pave, *pave);
-                    let child_id = arena.pave_blocks.alloc(child);
-                    children.push(child_id);
-                    prev_pave = *pave;
-                }
-
-                let last_child = crate::ds::PaveBlock::new(original_edge, prev_pave, end);
-                let last_id = arena.pave_blocks.alloc(last_child);
-                children.push(last_id);
-
-                if let Some(pb) = arena.pave_blocks.get_mut(pb_id) {
-                    pb.children.clone_from(&children);
-                }
-
+                let children = split_at_extra_paves(arena, pb_id);
                 log::debug!(
                     "MakeBlocks: edge {edge_id:?} pave block {pb_id:?} split into {} children",
                     children.len(),
                 );
-
                 new_pb_ids.extend(children);
             } else {
                 // No extras — keep the original pave block as a leaf
@@ -95,6 +53,60 @@ pub fn perform(arena: &mut GfaArena) -> Result<(), AlgoError> {
     }
 
     Ok(())
+}
+
+/// Split one pave block at its accumulated extra paves and record the
+/// children on it. Returns the children in traversal order; a block whose
+/// extras all fall on its ends still yields one child spanning it.
+///
+/// Shared by the operand-edge blocks here and the face-face section blocks
+/// in [`super::section_paves`].
+pub(super) fn split_at_extra_paves(
+    arena: &mut GfaArena,
+    pb_id: crate::ds::PaveBlockId,
+) -> Vec<crate::ds::PaveBlockId> {
+    // Snapshot all data we need before mutating
+    let Some((original_edge, start, end, extra_paves)) = arena
+        .pave_blocks
+        .get(pb_id)
+        .map(|pb| (pb.original_edge, pb.start, pb.end, pb.extra_paves.clone()))
+    else {
+        return Vec::new();
+    };
+
+    let mut sorted_paves = extra_paves;
+    sorted_paves.retain(|pave| {
+        let lo = start.parameter.min(end.parameter) + 1e-10;
+        let hi = start.parameter.max(end.parameter) - 1e-10;
+        pave.parameter > lo && pave.parameter < hi
+    });
+    if end.parameter >= start.parameter {
+        // hot: 2,095+ calls, ~66k n*log2(n) work in one criterion --test + native perf pass.
+        #[allow(clippy::disallowed_methods)]
+        sorted_paves.sort_by(|a, b| a.parameter.total_cmp(&b.parameter));
+    } else {
+        sorted_paves.compact_sort_by(|a, b| b.parameter.total_cmp(&a.parameter));
+    }
+    sorted_paves.dedup_by(|a, b| (a.parameter - b.parameter).abs() < 1e-10);
+
+    let mut prev_pave = start;
+    let mut children = Vec::new();
+
+    for pave in &sorted_paves {
+        let child = crate::ds::PaveBlock::new(original_edge, prev_pave, *pave);
+        let child_id = arena.pave_blocks.alloc(child);
+        children.push(child_id);
+        prev_pave = *pave;
+    }
+
+    let last_child = crate::ds::PaveBlock::new(original_edge, prev_pave, end);
+    let last_id = arena.pave_blocks.alloc(last_child);
+    children.push(last_id);
+
+    if let Some(pb) = arena.pave_blocks.get_mut(pb_id) {
+        pb.children.clone_from(&children);
+    }
+    children
 }
 
 #[cfg(test)]

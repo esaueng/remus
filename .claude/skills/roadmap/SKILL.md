@@ -152,14 +152,13 @@ that does not exist yet; without it, stop.
 
 ## Open items with a repro
 
-The `#[ignore]` inventory (regenerated 2026-11-13 on `877d8908` with B62's
-witness un-ignored, the two B7 witnesses and B275's to B278's added, B51's
-three closed, and the 5.7b slice's O4.4 pass-through un-ignored with its three
-witnesses added: 60 actual attributes in 34 files, all in `operations`, `io`,
+The `#[ignore]` inventory (recounted 2026-11-13 with B7 rebased onto
+`c14c99c8`: 58 actual attributes in 33 files, all in `operations`, `io`,
 `heal`, `math`, `wasm` and `remus`) splits by the ignore reason as written.
-Listed, not re-run, except B265, B266, B272, B275 to B278, the two B7
-witnesses and the three 5.7b witnesses (failed as pinned). **31 open engine
-witnesses**, each with an owner row:
+B51's three closures, B275 to B278 and the 5.7b offset changes are retained;
+B7's two witnesses now run un-ignored. Listed, not re-run, except B265,
+B266, B272, B275 to B278 and the three 5.7b witnesses (failed as pinned).
+**29 open engine witnesses**, each with an owner row:
 - four B26 property ready-repros in `operations/tests/prop_boolean_invariants.rs`:
   finding 13 sphere–torus ×3 (B38) and finding 20 sphere–cone (B33);
 - `regress_b52_box_cylinder_rim_notch.rs` (B270) and
@@ -181,8 +180,6 @@ witnesses**, each with an owner row:
   runout's `solid_volume` at a tight tolerance (B278);
 - STEP audit repros `io/tests/step_roundtrip_mambo_b1_repro.rs` (O1.1d) and
   `step_roundtrip_hammer_holder_repro.rs` (O1.4a);
-- `regress_b7_section_pave_attachment.rs` ×2 (B7: coaxial wider half tunnel,
-  oblique tunnel crossing);
 - `qualify_offset_interference.rs` ×3 (5.7b): slotted and finned prisms have
   no plain-offset construction at a legal distance and refuse their folds
   untyped; a hollow frustum refuses a legal inward offset
@@ -280,6 +277,7 @@ harness's own option-honoured floor misreading a correct 0.05 fillet on an
   `face_splitter` or section/clip change run ALL foils: d4, honeycomb pcut3,
   divider-lip, the nub fixtures, cylinder-slot, groove-mouth, junction-disc.
   Each has caught a discriminant that the target case alone blessed.
+- **A curved face an earlier cut trimmed is not its height band:** a hole or a bay in a cylinder wall broke the FF extent, the ray-cast wall model and the splitter dispatch at once, so classify a grid of the OPERAND against its primitives before debugging the cut that consumes it (B7, `operations/tests/regress_b7_section_pave_attachment.rs`).
 - **A section loop strictly inside a plane face's OUTER wire can still cross one of its holes;** a shortcut that admits closed loops against the outer polygon alone carves overlapping holes, and an all-planar mesh fallback is nearly as compact as the exact result, so only the disclosed quality shows it (B79, `operations/tests/regress_b79_holed_plane_internal_section.rs`).
 - **Splitter interior points of notched or symmetric pieces land on
   feature-plane intersections by construction;** classification must survive

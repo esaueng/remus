@@ -1633,6 +1633,7 @@ fn perform_seeded(
                     bbox: raw.bbox,
                     pave_blocks: vec![pb_id],
                     t_range: raw.t_range,
+                    paved: false,
                 });
 
                 arena.interference.ff.push(Interference::FF {
@@ -2318,6 +2319,7 @@ fn emit_exact_arc_with_authority(
         bbox: raw.bbox,
         pave_blocks: vec![pb_id],
         t_range: raw.t_range,
+        paved: false,
     });
 
     arena.interference.ff.push(Interference::FF {
@@ -11299,6 +11301,7 @@ fn emit_split_circle_arcs(
                 bbox: raw.bbox,
                 pave_blocks: vec![pb_id],
                 t_range: (t_s, t_e),
+                paved: false,
             });
 
             arena.interference.ff.push(Interference::FF {

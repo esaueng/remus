@@ -27,6 +27,12 @@ struct FullDomainNurbs {
     grid: remus_math::nurbs::intersection::LineSurfaceSeedGrid,
 }
 
+/// The chart outlines of a [`FaceGeom::ChartTrimmedCylinder`].
+struct ChartTrim {
+    outer: crate::chart_trim::ChartLoop,
+    holes: Vec<crate::chart_trim::ChartLoop>,
+}
+
 /// Seed-grid resolution for [`FaceGeom::FullDomainNurbs`], as the check
 /// crate's NURBS ray path uses.
 const NURBS_RAY_SAMPLES: usize = 20;
@@ -77,6 +83,17 @@ enum FaceGeom {
         surface: remus_math::surfaces::CylindricalSurface,
         polygon: Vec<Point2>,
         centre_u: f64,
+    },
+    /// A cylindrical face whose outer wire closes in the `(u, v)` chart and
+    /// which carries ordinary holes, or a bay notched into that outer wire:
+    /// a bore wall another bore crosses, a tunnel wall a bore has bitten.
+    /// Crossings are the exact ray/cylinder roots whose chart point lies
+    /// inside the outer outline and outside every hole. Neither older model
+    /// describes such a face: the full-period band counts crossings through
+    /// the bay, and the planar fallback flattens a holed wall altogether.
+    ChartTrimmedCylinder {
+        surface: remus_math::surfaces::CylindricalSurface,
+        trim: Box<ChartTrim>,
     },
     /// A NURBS face bounded by its own parameter domain, such as a helical
     /// gear flank or root fillet swept between its end curves. Crossings are
@@ -1038,6 +1055,7 @@ fn line_clears_carrier(geom: &FaceGeom, origin: Point3, ray_dir: Vec3) -> bool {
         FaceGeom::Planar { .. }
         | FaceGeom::Cylinder { .. }
         | FaceGeom::TrimmedCylinder { .. }
+        | FaceGeom::ChartTrimmedCylinder { .. }
         | FaceGeom::FullDomainNurbs(_)
         | FaceGeom::Cone { .. } => false,
     }
@@ -1161,6 +1179,9 @@ fn geom_kind(geom: &FaceGeom) -> String {
         FaceGeom::Planar { face, .. } => face.kind(),
         FaceGeom::Cylinder { v_min, v_max, .. } => format!("Cylinder(v {v_min:.2}..{v_max:.2})"),
         FaceGeom::TrimmedCylinder { polygon, .. } => format!("TrimmedCylinder({})", polygon.len()),
+        FaceGeom::ChartTrimmedCylinder { trim, .. } => {
+            format!("ChartTrimmedCylinder({} holes)", trim.holes.len())
+        }
         FaceGeom::FullDomainNurbs(_) => "FullDomainNurbs".into(),
         FaceGeom::Cone { .. } => "Cone".into(),
         FaceGeom::Torus { .. } => "Torus".into(),
@@ -1463,6 +1484,16 @@ fn collect_face_geoms(topo: &Topology, solid: SolidId) -> Result<Vec<FaceGeom>, 
         // each is a full-circumference v-band (the shape a flush-cap
         // interaction carves out); any non-banded hole forces the polygon
         // fallback. Partial cylinder patches also fall through.
+        if let remus_topology::face::FaceSurface::Cylinder(cyl) = face.surface()
+            && let Some(trim) = chart_trimmed_cylinder(topo, face)
+        {
+            result.push(FaceGeom::ChartTrimmedCylinder {
+                surface: cyl.clone(),
+                trim: Box::new(trim),
+            });
+            continue;
+        }
+
         if let remus_topology::face::FaceSurface::Cylinder(cyl) = face.surface() {
             let wire = topo.wire(face.outer_wire())?;
             let mut has_closed_circle = false;
@@ -1787,6 +1818,83 @@ fn collect_face_geoms(topo: &Topology, solid: SolidId) -> Result<Vec<FaceGeom>, 
     Ok(result)
 }
 
+/// The chart outlines of a cylindrical face the band and patch models cannot
+/// describe: its outer wire closes in the chart (a seam-cut lateral or a
+/// partial patch), every inner wire is an ordinary hole there, and it has a
+/// hole or — on a lateral with a full rim circle — an outer wire that is not
+/// a chart rectangle (a bay).
+///
+/// `None` keeps the established models: a rectangle without holes is the
+/// band or the angular patch exactly, a hole-free partial patch has its own
+/// sheared-trim model, and an inner wire that winds the period is a band rim
+/// the hole-band model owns.
+fn chart_trimmed_cylinder(topo: &Topology, face: &remus_topology::face::Face) -> Option<ChartTrim> {
+    use crate::chart_trim::chart_loop;
+
+    let tol = Tolerance::default();
+    let outer = chart_loop(topo, face.surface(), face.outer_wire(), tol)?;
+    let mut holes = Vec::with_capacity(face.inner_wires().len());
+    for &wire in face.inner_wires() {
+        holes.push(chart_loop(topo, face.surface(), wire, tol)?);
+    }
+    if holes.is_empty() {
+        if outer.is_chart_rectangle() {
+            return None;
+        }
+        let wire = topo.wire(face.outer_wire()).ok()?;
+        let has_closed_circle = wire.edges().iter().any(|oe| {
+            topo.edge(oe.edge()).is_ok_and(|edge| {
+                matches!(edge.curve(), remus_topology::edge::EdgeCurve::Circle(_))
+                    && edge.start() == edge.end()
+            })
+        });
+        if !has_closed_circle {
+            return None;
+        }
+    }
+    Some(ChartTrim { outer, holes })
+}
+
+/// Crossings with a [`FaceGeom::ChartTrimmedCylinder`]: the ray/cylinder
+/// roots (near-tangent rays read as misses, as for a full cylinder) whose
+/// chart point lies inside the outer outline and outside every hole. A root
+/// within the outlines' chord error of one of them flags the ray as
+/// suspicious: the outlines are sampled, so membership there is not decided.
+fn ray_chart_trimmed_cylinder_crossings(
+    origin: Point3,
+    ray_dir: Vec3,
+    surface: &remus_math::surfaces::CylindricalSurface,
+    trim: &ChartTrim,
+    tol: Tolerance,
+) -> (i32, bool) {
+    let near = 10.0 * tol.linear;
+    let hits = remus_math::ray::ray_cylinder_with(
+        origin,
+        ray_dir,
+        surface,
+        TangentPolicy::DropRelative {
+            scale: surface.radius(),
+        },
+    );
+    let mut crossings = 0;
+    let mut suspicious = false;
+    for t in hits.iter().map(|hit| hit.t) {
+        if t <= tol.linear {
+            continue;
+        }
+        let hit = origin + ray_dir * t;
+        let uv = surface.project_point(hit);
+        suspicious |= std::iter::once(&trim.outer)
+            .chain(trim.holes.iter())
+            .any(|outline| outline.distance(hit) <= near + 2.0 * outline.sagitta);
+        if trim.outer.contains(uv, false) && !trim.holes.iter().any(|hole| hole.contains(uv, false))
+        {
+            crossings += 1;
+        }
+    }
+    (crossings, suspicious)
+}
+
 /// Collect full-circumference v-band holes carved out of a cylindrical face.
 ///
 /// Each inner wire is sampled and projected into `(u, v)`. A wire is treated
@@ -1867,6 +1975,9 @@ fn ray_geom_crossings(
             polygon,
             centre_u,
         } => ray_trimmed_cylinder_crossings(origin, ray_dir, surface, polygon, *centre_u, tol),
+        FaceGeom::ChartTrimmedCylinder { surface, trim } => {
+            ray_chart_trimmed_cylinder_crossings(origin, ray_dir, surface, trim, tol)
+        }
         FaceGeom::FullDomainNurbs(nurbs) => {
             ray_full_domain_nurbs_crossings(origin, ray_dir, nurbs, tol)
         }
@@ -3519,3 +3630,119 @@ mod torus_cull_oracle_tests;
 
 #[cfg(test)]
 mod quadric_policy_oracle_tests;
+
+#[cfg(test)]
+mod chart_trim_tests {
+    //! Closed-form crossings of a unit cylinder wall (axis z, `v ∈ [0, 4]`)
+    //! trimmed by a chart rectangle. A ray leaving the axis at height `z`
+    //! along angle `u` meets the carrier exactly once, at chart point
+    //! `(u, z)`, so whether it counts is read straight off the trim.
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+    use crate::chart_trim::fixtures::{Trim, wall};
+
+    /// Crossings and suspicion of the ray from the axis at height `z` along
+    /// angle `u`.
+    fn radial(trim: Trim, u: f64, z: f64) -> (i32, bool) {
+        let (topo, face, cyl) = wall(trim);
+        let trimmed = chart_trimmed_cylinder(&topo, topo.face(face).unwrap()).unwrap();
+        ray_chart_trimmed_cylinder_crossings(
+            Point3::new(0.0, 0.0, z),
+            cyl.evaluate(u, z) - Point3::new(0.0, 0.0, z),
+            &cyl,
+            &trimmed,
+            Tolerance::default(),
+        )
+    }
+
+    #[test]
+    fn only_a_hole_or_a_bay_takes_the_chart_model() {
+        for (trim, modelled) in [
+            (Trim::None, false),
+            (Trim::Ring, false),
+            (Trim::Hole, true),
+            (Trim::Bay, true),
+        ] {
+            let (topo, face, _) = wall(trim);
+            let got = chart_trimmed_cylinder(&topo, topo.face(face).unwrap());
+            assert_eq!(got.is_some(), modelled);
+        }
+        let (topo, face, _) = wall(Trim::Hole);
+        let holed = chart_trimmed_cylinder(&topo, topo.face(face).unwrap()).unwrap();
+        assert_eq!(holed.holes.len(), 1);
+        // Its outer wire is still the plain rectangle.
+        assert!(holed.outer.is_chart_rectangle());
+    }
+
+    #[test]
+    fn a_ray_through_the_hole_does_not_cross_the_wall() {
+        // Hole: u ∈ [1, 2] × v ∈ [1, 3].
+        assert_eq!(radial(Trim::Hole, 1.5, 2.0), (0, false));
+        // Beside, below and above it the wall is there.
+        assert_eq!(radial(Trim::Hole, 3.0, 2.0), (1, false));
+        assert_eq!(radial(Trim::Hole, 1.5, 0.5), (1, false));
+        assert_eq!(radial(Trim::Hole, 1.5, 3.5), (1, false));
+        // Past the rims there is no wall at all.
+        assert_eq!(radial(Trim::Hole, 3.0, 4.5).0, 0);
+        assert_eq!(radial(Trim::Hole, 3.0, -0.5).0, 0);
+    }
+
+    #[test]
+    fn a_ray_through_the_bay_does_not_cross_the_wall() {
+        // Bay: u ∈ [1, 2] × v ∈ [3, 4], open to the top rim.
+        assert_eq!(radial(Trim::Bay, 1.5, 3.5), (0, false));
+        assert_eq!(radial(Trim::Bay, 1.5, 2.5), (1, false));
+        assert_eq!(radial(Trim::Bay, 0.5, 3.5), (1, false));
+        assert_eq!(radial(Trim::Bay, 4.0, 3.5), (1, false));
+    }
+
+    #[test]
+    fn a_hit_on_a_trimming_edge_is_reported_as_unreliable() {
+        // On the hole's ruling at u = 1, and on its lower arc at v = 1.
+        assert!(radial(Trim::Hole, 1.0, 2.0).1);
+        assert!(radial(Trim::Hole, 1.5, 1.0).1);
+        // On the bay's floor.
+        assert!(radial(Trim::Bay, 1.5, 3.0).1);
+        // A sampled arc is chorded: a hit inside its sagitta is undecided
+        // too, one well clear of it is not.
+        let sagitta = 1.0 - (0.5_f64 / 24.0).cos();
+        assert!(radial(Trim::Hole, 1.5, 1.0 + sagitta).1);
+        assert!(!radial(Trim::Hole, 1.5, 1.0 + 0.01).1);
+    }
+
+    #[test]
+    fn both_roots_of_a_chord_are_read_against_the_trim() {
+        let (topo, face, cyl) = wall(Trim::Hole);
+        let trimmed = chart_trimmed_cylinder(&topo, topo.face(face).unwrap()).unwrap();
+        // From outside, through the wall opposite the hole and out through
+        // the hole: one crossing.
+        let dir = cyl.evaluate(1.5, 0.0) - Point3::new(0.0, 0.0, 0.0);
+        let through_hole = ray_chart_trimmed_cylinder_crossings(
+            Point3::new(-3.0 * dir.x(), -3.0 * dir.y(), 2.0),
+            dir,
+            &cyl,
+            &trimmed,
+            Tolerance::default(),
+        );
+        assert_eq!(through_hole, (1, false));
+        // The same chord below the hole crosses the wall twice.
+        let below = ray_chart_trimmed_cylinder_crossings(
+            Point3::new(-3.0 * dir.x(), -3.0 * dir.y(), 0.5),
+            dir,
+            &cyl,
+            &trimmed,
+            Tolerance::default(),
+        );
+        assert_eq!(below, (2, false));
+        // A ray starting on the far side of the wall never reaches it.
+        let away = ray_chart_trimmed_cylinder_crossings(
+            Point3::new(3.0 * dir.x(), 3.0 * dir.y(), 0.5),
+            dir,
+            &cyl,
+            &trimmed,
+            Tolerance::default(),
+        );
+        assert_eq!(away, (0, false));
+    }
+}
