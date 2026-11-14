@@ -6040,21 +6040,40 @@ fn section_on_face_boundary(
                 return false;
             };
             let (a, b) = (a.point(), b.point());
-            match (&section.curve_3d, edge.curve()) {
-                (EdgeCurve::Line, EdgeCurve::Line) => {
-                    let d = b - a;
-                    let len = d.length();
-                    len > tol
-                        && [section.start, section.end].iter().all(|&p| {
-                            let s = (p - a).dot(d) / (len * len);
-                            let slack = tol / len;
-                            (-slack..=1.0 + slack).contains(&s) && (a + d * s - p).length() <= tol
-                        })
-                }
-                (EdgeCurve::Circle(on), EdgeCurve::Circle(rim)) => {
-                    circle_arc_within(on, section, rim, edge.strict_domain().ok(), tol)
-                }
-                _ => false,
+            match &section.curve_3d {
+                EdgeCurve::Line => match edge.curve() {
+                    EdgeCurve::Line => {
+                        let d = b - a;
+                        let len = d.length();
+                        len > tol
+                            && [section.start, section.end].iter().all(|&p| {
+                                let s = (p - a).dot(d) / (len * len);
+                                let slack = tol / len;
+                                (-slack..=1.0 + slack).contains(&s)
+                                    && (a + d * s - p).length() <= tol
+                            })
+                    }
+                    EdgeCurve::Circle(_)
+                    | EdgeCurve::Ellipse(_)
+                    | EdgeCurve::NurbsCurve(_)
+                    | EdgeCurve::Hyperbola(_)
+                    | EdgeCurve::Parabola(_) => false,
+                },
+                EdgeCurve::Circle(on) => match edge.curve() {
+                    EdgeCurve::Circle(rim) => {
+                        circle_arc_within(on, section, rim, edge.strict_domain().ok(), tol)
+                    }
+                    EdgeCurve::Line
+                    | EdgeCurve::Ellipse(_)
+                    | EdgeCurve::NurbsCurve(_)
+                    | EdgeCurve::Hyperbola(_)
+                    | EdgeCurve::Parabola(_) => false,
+                },
+                // No exact identity proof for these carriers.
+                EdgeCurve::Ellipse(_)
+                | EdgeCurve::NurbsCurve(_)
+                | EdgeCurve::Hyperbola(_)
+                | EdgeCurve::Parabola(_) => false,
             }
         })
 }
