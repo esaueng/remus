@@ -699,6 +699,8 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Thickening | `thicken.rs` |
 | Untrimming | `untrim.rs` |
 | Validation | `validate.rs` |
+| A planar and a cylindrical face of one solid tangent along a line inside both, with no edge there (zero thickness), reported by validation and refused by the boolean gates | `validate/tangent_contact.rs` |
+| Tangent-cut refusals in both orientations, and point-contact, clear-of-wall and fillet-support controls (tests) | `validate/tangent_contact_tests.rs` |
 | Polygon approximations of wires and faces (`face_polygon`, `wire_polygon`; re-exported from `boolean`) | `polygon.rs` |
 | Types carried inside `OperationsError` variants (`HealingReport`, `ResizeBlendError`; re-exported at their original paths) | `error_payloads.rs` |
 | Assembly management | `assembly.rs` |
