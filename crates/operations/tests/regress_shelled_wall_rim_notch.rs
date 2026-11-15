@@ -40,6 +40,7 @@ use remus_operations::primitives::{make_box, make_cylinder};
 use remus_operations::shell_op::shell;
 use remus_operations::tessellate::{
     boundary_edge_count, non_manifold_edge_count, tessellate_solid,
+    tessellate_solid_grouped_with_tolerance,
 };
 use remus_operations::transform::transform_solid;
 use remus_operations::validate::validate_solid;
@@ -740,24 +741,30 @@ fn non_manifold_edges(mesh: &remus_operations::tessellate::TriangleMesh) -> Vec<
         .collect()
 }
 
-fn mesh_area(mesh: &remus_operations::tessellate::TriangleMesh) -> f64 {
-    mesh.indices
-        .chunks_exact(3)
+/// Area of the result's non-planar faces in its own mesh, the only faces
+/// whose mesh departs from the surface. `face_offsets` are those of
+/// `tessellate_solid_grouped_with_tolerance`: face `i` of `solid_faces` owns
+/// the indices from `face_offsets[i]` to `face_offsets[i + 1]`.
+///
+/// Read off the solid's mesh rather than by meshing each curved face again,
+/// which took as long as the solid's mesh did.
+fn curved_area(
+    topo: &Topology,
+    solid: SolidId,
+    mesh: &remus_operations::tessellate::TriangleMesh,
+    face_offsets: &[u32],
+) -> f64 {
+    let faces = solid_faces(topo, solid).unwrap();
+    assert_eq!(face_offsets.len(), faces.len() + 1);
+    faces
+        .into_iter()
+        .zip(face_offsets.windows(2))
+        .filter(|&(f, _)| !topo.face(f).unwrap().surface().is_planar())
+        .flat_map(|(_, range)| mesh.indices[range[0] as usize..range[1] as usize].chunks_exact(3))
         .map(|t| {
             let [a, b, c] = [t[0], t[1], t[2]].map(|i| mesh.positions[i as usize]);
             0.5 * (b - a).cross(c - a).length()
         })
-        .sum()
-}
-
-/// Area of the result's non-planar faces, meshed at `deflection`: the only
-/// faces whose mesh departs from the surface.
-fn curved_area(topo: &Topology, solid: SolidId, deflection: f64) -> f64 {
-    solid_faces(topo, solid)
-        .unwrap()
-        .into_iter()
-        .filter(|&f| !topo.face(f).unwrap().surface().is_planar())
-        .map(|f| mesh_area(&remus_operations::tessellate::tessellate(topo, f, deflection).unwrap()))
         .sum()
 }
 
@@ -801,7 +808,14 @@ fn assert_mesh_geometry_at(
     let report = validate_solid(topo, solid).unwrap();
     assert!(report.is_valid(), "{what}: {:?}", report.issues);
     for &deflection in deflections {
-        let mesh = tessellate_solid(topo, solid, deflection).unwrap();
+        // `tessellate_solid`'s mesh, with each face's triangles together.
+        let (mesh, face_offsets) = tessellate_solid_grouped_with_tolerance(
+            topo,
+            solid,
+            deflection,
+            remus_math::chord::DEFAULT_ANGULAR_TOL,
+        )
+        .unwrap();
         assert_eq!(
             boundary_edge_count(&mesh),
             0,
@@ -826,7 +840,8 @@ fn assert_mesh_geometry_at(
             );
         }
         let measured = mesh_volume(&mesh).abs();
-        let bound = 1.5 * deflection * curved_area(topo, solid, deflection) + VOLUME_TOL * volume;
+        let bound =
+            1.5 * deflection * curved_area(topo, solid, &mesh, &face_offsets) + VOLUME_TOL * volume;
         assert!(
             (measured - volume).abs() <= bound,
             "{what}: mesh volume {measured} vs {volume} (bound {bound}) at deflection {deflection}"
