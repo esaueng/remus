@@ -21,6 +21,9 @@
 //!   history, and they join the re-fillet plan as one more stage, placed in
 //!   the planner's order (concave before convex, larger radii first).
 //!
+//! A draft of faces that carry blends goes through its groups the same way;
+//! that route removes several groups and has its own module (`draft_route`).
+//!
 //! The removal restores a rim as one closed circle and an arc as one edge.
 //! When no planned order re-fillets the group on that body, the band and
 //! cylinder routes remove the group once more with every restored arc cut
@@ -233,10 +236,10 @@ fn finish(group: &SharpGroup, work: &mut Topology, built: Built) -> Result<Built
 
 /// A private copy: the arena, its entity maps, and `(copy face index, source
 /// face index)` pairs, ascending.
-type PrivateCopy = (Topology, CopiedSolidEntities, Vec<(usize, usize)>);
+pub(super) type PrivateCopy = (Topology, CopiedSolidEntities, Vec<(usize, usize)>);
 
 /// `solid` copied into a fresh arena.
-fn copy_in(topo: &Topology, solid: SolidId) -> Result<PrivateCopy, OperationsError> {
+pub(super) fn copy_in(topo: &Topology, solid: SolidId) -> Result<PrivateCopy, OperationsError> {
     let mut work = Topology::new();
     let copied = crate::performance::timed("blend_group.copy_in", || {
         copy_solid_between_with_entity_map(topo, &mut work, solid)
@@ -851,13 +854,22 @@ pub(super) fn source_cluster(topo: &Topology, group: &SharpGroup) -> Option<Blen
     if group.lift.is_some() {
         return None;
     }
-    let source = |face: FaceId| -> Option<FaceId> {
+    reindexed(&group.cluster, |face| {
         let at = group
             .inputs
             .binary_search_by_key(&face.index(), |&(work, _)| work)
             .ok()?;
         topo.face_id_from_index(group.inputs[at].1)
-    };
+    })
+}
+
+/// `cluster` with every face handle replaced by `source`'s image of it: the
+/// same group read on another copy of the same body. `None` when a face has
+/// no image.
+pub(super) fn reindexed(
+    cluster: &BlendCluster,
+    source: impl Fn(FaceId) -> Option<FaceId>,
+) -> Option<BlendCluster> {
     let faces = |faces: &[FaceId]| -> Option<Vec<FaceId>> {
         let mut mapped = faces
             .iter()
@@ -866,7 +878,6 @@ pub(super) fn source_cluster(topo: &Topology, group: &SharpGroup) -> Option<Blen
         mapped.compact_sort_unstable_by_key(|face| face.index());
         Some(mapped)
     };
-    let cluster = &group.cluster;
     let mut members = Vec::with_capacity(cluster.members.len());
     for member in &cluster.members {
         let mut carried = member.clone();
@@ -964,7 +975,7 @@ pub(super) fn copy_out(
 /// Match recognized members by their carrier kind and mapped supports.
 /// Radius and proximity are deliberately not identity keys: this operation
 /// edits radii, and neighbouring corner patches may be very close together.
-fn carry_member_identities(
+pub(super) fn carry_member_identities(
     topo: &Topology,
     before: &BlendCluster,
     source: SolidId,
@@ -1094,7 +1105,7 @@ fn diameter_refusal(error: OperationsError, radius: f64) -> OperationsError {
 /// Re-index an evolution: inputs through `inputs`, outputs through
 /// `outputs` (both sorted `(from, to)` pairs). An index without a pair is
 /// dropped, and an output that loses an attributed input becomes unresolved.
-fn translate(
+pub(super) fn translate(
     evolution: &EvolutionMap,
     inputs: &[(usize, usize)],
     outputs: &[(usize, usize)],
