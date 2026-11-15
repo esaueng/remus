@@ -23,6 +23,11 @@ priority = 100
 filter = 'test(canonical_circle_coil_fillets_keep_input_and_remove_material) | test(an_eccentric_section_well_past_a_hole_edge_is_exact) | test(an_eccentric_section_beside_a_remote_slot_is_exact) | test(a_large_cylinder_across_a_narrow_slot_is_exact_or_refused) | test(sphere_boss_wall_resizes_both_ways_across_scales) | test(free_end_and_bottom_chamfers_meet_in_either_order)'
 priority = 100
 
+# The reference video's order, split into steps: tens of seconds each.
+[[profile.default.overrides]]
+filter = 'test(a1_to_a3_verify_at_every_step) | test(a4_to_a6_verify_at_every_step) | test(a7_boss_diameters_14_6_then_17) | test(a7_boss_diameter_21_1_previewed_then_cancelled) | test(a7_boss_diameter_14_7_then_an_oversize_refusal)'
+priority = 90
+
 [[profile.default.overrides]]
 filter = 'test(offset_torus_sphere_cut_matches_annulus_overlap) | test(offset_torus_sphere_fuse_retains_both_operands)'
 priority = 100
