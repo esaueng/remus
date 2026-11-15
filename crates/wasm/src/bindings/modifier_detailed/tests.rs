@@ -1582,3 +1582,113 @@ fn resize_twin_argument_and_handle_refusals_are_data() {
         assert_eq!(counts(&kernel), before, "{direct}: mutated");
     }
 }
+
+/// Issue #1746, the reported JS sequence: a block with a boss on its corner
+/// edge, an R2 fillet of the joint and the two block top edges into it, R1
+/// on the boss rim and three more block edges one fillet each, then
+/// `resizeCylindricalFaceDetailed(…, allowApproximate: true)` on the boss
+/// wall. Every diameter resizes: the wall is at the new radius and the body
+/// is valid and watertight.
+#[test]
+fn issue_1746_filleted_boss_resizes_through_its_blend_group() {
+    use remus_operations::tessellate::{
+        boundary_edge_count, non_manifold_edge_count, tessellate_solid,
+    };
+
+    let mut kernel = RemusKernel::new();
+    let made = batch_v2(
+        &mut kernel,
+        &json!([
+            {"op": "makeBox", "args": {"width": 50.0, "height": 36.0, "depth": 12.5}},
+            {"op": "makeCylinder", "args": {"radius": 6.0, "height": 28.0}},
+            {"op": "fuse", "args": {"solidA": 0, "solidB": 1}},
+        ]),
+    );
+    let mut solid = handle(&made[2]["ok"]);
+    let near = |a: f64, b: f64| (a - b).abs() < 1e-6;
+    // Edges of one kind (circle or not) whose both endpoints satisfy `on`,
+    // as the operations regression (`regress_issue_1746_boss_reblend`) picks
+    // the repro's edges.
+    let edges_where =
+        |kernel: &RemusKernel, solid: u32, circle: bool, on: &dyn Fn(Point3) -> bool| {
+            let id = kernel.resolve_solid(solid).unwrap();
+            let topo = kernel.topo();
+            let handles: Vec<u32> = remus_topology::explorer::solid_edges(topo, id)
+                .unwrap()
+                .into_iter()
+                .filter(|&edge| {
+                    let data = topo.edge(edge).unwrap();
+                    let start = topo.vertex(data.start()).unwrap().point();
+                    let end = topo.vertex(data.end()).unwrap().point();
+                    matches!(data.curve(), EdgeCurve::Circle(_)) == circle && on(start) && on(end)
+                })
+                .map(edge_id_to_u32)
+                .collect();
+            assert!(!handles.is_empty(), "no edge");
+            handles
+        };
+    let fillet = |kernel: &mut RemusKernel, solid: u32, edges: &[u32], r: f64| match kernel
+        .fillet_detailed_impl(solid, edges, r, false)
+    {
+        SolidOperationDetailedResult::Ok { value, .. } => value,
+        refused @ SolidOperationDetailedResult::Error { .. } => {
+            panic!("R{r} fillet of {edges:?}: {}", envelope(refused))
+        }
+    };
+    // R2: the joint (its arc on the block top and its two vertical seams)
+    // and the two block top edges that run into it.
+    let mut joint = edges_where(&kernel, solid, true, &|p| near(p.z(), 12.5));
+    joint.extend(edges_where(&kernel, solid, false, &|p| {
+        (near(p.x(), 6.0) && near(p.y(), 0.0)) || (near(p.x(), 0.0) && near(p.y(), 6.0))
+    }));
+    joint.extend(edges_where(&kernel, solid, false, &|p| {
+        near(p.z(), 12.5) && (near(p.y(), 0.0) || near(p.x(), 0.0))
+    }));
+    solid = fillet(&mut kernel, solid, &joint, 2.0);
+    // R1: the boss rim, then three block edges, one fillet each.
+    let rim = edges_where(&kernel, solid, true, &|p| near(p.z(), 28.0));
+    solid = fillet(&mut kernel, solid, &rim, 1.0);
+    let block_edges: [&dyn Fn(Point3) -> bool; 3] = [
+        &|p| near(p.x(), 50.0) && near(p.z(), 12.5),
+        &|p| near(p.y(), 36.0) && near(p.z(), 12.5),
+        &|p| near(p.y(), 0.0) && near(p.z(), 0.0) && p.x() > 6.0,
+    ];
+    for on in block_edges {
+        let edges = edges_where(&kernel, solid, false, on);
+        solid = fillet(&mut kernel, solid, &edges, 1.0);
+    }
+    assert_eq!(kernel.validate_solid(solid).unwrap(), 0);
+
+    let wall_of = |kernel: &RemusKernel, solid: u32, radius: f64| -> Vec<FaceId> {
+        let id = kernel.resolve_solid(solid).unwrap();
+        remus_topology::explorer::solid_faces(kernel.topo(), id)
+            .unwrap()
+            .into_iter()
+            .filter(|&face| {
+                matches!(kernel.topo().face(face).unwrap().surface(), FaceSurface::Cylinder(c)
+                    if (c.radius() - radius).abs() < 1e-6
+                        && c.origin().x().abs() < 1e-9
+                        && c.origin().y().abs() < 1e-9)
+            })
+            .collect()
+    };
+    let [wall] = wall_of(&kernel, solid, 6.0)[..] else {
+        panic!("one boss wall");
+    };
+    let wall = face_id_to_u32(wall);
+    for radius in [6.2, 5.5, 7.0, 14.0] {
+        let resized =
+            match kernel.resize_cylindrical_face_reblend_detailed_impl(solid, wall, radius, true) {
+                SolidOperationDetailedResult::Ok { value, .. } => value,
+                refused @ SolidOperationDetailedResult::Error { .. } => {
+                    panic!("R{radius}: {}", envelope(refused))
+                }
+            };
+        assert_eq!(wall_of(&kernel, resized, radius).len(), 1, "R{radius}");
+        assert_eq!(kernel.validate_solid(resized).unwrap(), 0, "R{radius}");
+        let mesh =
+            tessellate_solid(kernel.topo(), kernel.resolve_solid(resized).unwrap(), 0.01).unwrap();
+        assert_eq!(boundary_edge_count(&mesh), 0, "R{radius}");
+        assert_eq!(non_manifold_edge_count(&mesh), 0, "R{radius}");
+    }
+}
