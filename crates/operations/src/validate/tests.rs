@@ -1371,3 +1371,117 @@ fn incomplete_periodic_rim_chain_is_reported_as_a_warning() {
                 .contains("does not form closed or full-turn rim cycles")
     }));
 }
+
+/// Pack two solids' outer shells into one shell, the way `fuse_all` joined
+/// groups it had proved apart.
+fn shell_merge_at(
+    topo: &mut Topology,
+    a: SolidId,
+    b: SolidId,
+    (x, y, z): (f64, f64, f64),
+) -> SolidId {
+    crate::transform::transform_solid(topo, b, &remus_math::mat::Mat4::translation(x, y, z))
+        .unwrap();
+    crate::compound_ops::merge_disjoint_solids(topo, &[a, b]).unwrap()
+}
+
+fn has_internal_wall_issue(report: &ValidationReport) -> bool {
+    report
+        .issues
+        .iter()
+        .any(|i| i.severity == Severity::Error && i.description.contains("internal wall"))
+}
+
+#[test]
+fn cap_to_cap_shell_merge_is_reported_as_internal_wall() {
+    // #1738: a hub standing on a flange, shell-merged without a boolean, keeps
+    // both coincident cap discs as a double wall through the body. Every
+    // component is closed and Euler-consistent and they meet on a slab of zero
+    // thickness, so only the coincident-face check can report it. Coaxial,
+    // off-axis, and equal radii.
+    for (r_hub, x) in [(20.0, 0.0), (20.0, 10.0), (40.0, 0.0)] {
+        let mut topo = Topology::new();
+        let flange = crate::primitives::make_cylinder(&mut topo, 40.0, 10.0).unwrap();
+        let hub = crate::primitives::make_cylinder(&mut topo, r_hub, 30.0).unwrap();
+        let walled = shell_merge_at(&mut topo, flange, hub, (x, 0.0, 10.0));
+        let report = validate_solid(&topo, walled).unwrap();
+        assert!(
+            !report.is_valid() && has_internal_wall_issue(&report),
+            "hub r{r_hub} at x={x}: internal wall must be reported: {:?}",
+            report.issues
+        );
+    }
+
+    // Box on box: the planar, straight-edged variant.
+    let mut topo = Topology::new();
+    let base = crate::primitives::make_box(&mut topo, 80.0, 80.0, 10.0).unwrap();
+    let post = crate::primitives::make_box(&mut topo, 20.0, 20.0, 30.0).unwrap();
+    let walled = shell_merge_at(&mut topo, base, post, (30.0, 30.0, 10.0));
+    let report = validate_solid(&topo, walled).unwrap();
+    assert!(
+        has_internal_wall_issue(&report),
+        "box on box: internal wall must be reported: {:?}",
+        report.issues
+    );
+}
+
+#[test]
+fn zero_area_contact_shell_merge_is_not_an_internal_wall() {
+    // Coplanar, oppositely oriented faces that meet only along an edge or at a
+    // point share no area: a legitimate tangent union, not a wall.
+    let mut topo = Topology::new();
+    let a = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+    let b = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+    let edge_contact = shell_merge_at(&mut topo, a, b, (10.0, 0.0, 10.0));
+    let report = validate_solid(&topo, edge_contact).unwrap();
+    assert!(
+        report.is_valid(),
+        "boxes meeting along an edge: {:?}",
+        report.issues
+    );
+
+    // Stacked cylinders whose cap discs touch at one rim point: the exact
+    // circle trim must not read near-rim samples as shared.
+    let mut topo = Topology::new();
+    let a = crate::primitives::make_cylinder(&mut topo, 20.0, 10.0).unwrap();
+    let b = crate::primitives::make_cylinder(&mut topo, 20.0, 10.0).unwrap();
+    let rim_point = shell_merge_at(&mut topo, a, b, (40.0, 0.0, 10.0));
+    let report = validate_solid(&topo, rim_point).unwrap();
+    assert!(
+        report.is_valid(),
+        "cylinders meeting at a rim point: {:?}",
+        report.issues
+    );
+}
+
+#[test]
+fn tilted_face_clear_of_its_neighbour_is_not_an_internal_wall() {
+    // Two faces with near-opposite normals whose planes both pass through the
+    // origin, so normals and offsets match, but one is tilted 1e-5 rad and sits
+    // 1e-5 to 2e-5 clear of the other over their projected overlap. Projected
+    // trim membership alone read that gap as a shared patch.
+    let mut topo = Topology::new();
+    let small = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+    crate::transform::transform_solid(
+        &mut topo,
+        small,
+        &remus_math::mat::Mat4::translation(1.0, 0.0, -1.0),
+    )
+    .unwrap();
+    let tilted = crate::primitives::make_box(&mut topo, 20.0, 1.0, 1.0).unwrap();
+    crate::transform::transform_solid(
+        &mut topo,
+        tilted,
+        &remus_math::mat::Mat4::translation(-10.0, 0.0, 0.0),
+    )
+    .unwrap();
+    crate::transform::transform_solid(&mut topo, tilted, &remus_math::mat::Mat4::rotation_y(-1e-5))
+        .unwrap();
+    let merged = crate::compound_ops::merge_disjoint_solids(&mut topo, &[small, tilted]).unwrap();
+    let report = validate_solid(&topo, merged).unwrap();
+    assert!(
+        !has_internal_wall_issue(&report),
+        "a 1e-5 gap is not a wall: {:?}",
+        report.issues
+    );
+}

@@ -378,6 +378,147 @@ fn outer_components_materially_overlap(
     Ok(false)
 }
 
+/// A planar face of two different OUTER-shell components that lie on one plane
+/// with opposite effective normals and share interior points: an internal
+/// wall (#1738).
+///
+/// Two closed components that meet face to face are one body with a
+/// zero-thickness double wall through it, not a tangent or disjoint union. The
+/// material-overlap test cannot see it (the components meet on a slab of zero
+/// thickness), so a fuse that shell-merged two cylinders standing cap to cap
+/// passed validation, and later fillets and cuts built wrong geometry.
+///
+/// Points are triangle centroids of each face's own mesh, so they lie in that
+/// face's interior; a pair is a wall only when a centroid of one face is inside
+/// BOTH trims, by the exact line-and-circle trim test, and on both planes
+/// within linear tolerance. A centroid strictly
+/// inside one face and inside the other means an open patch of contact, so
+/// faces that meet only along an edge are never reported. The check adds an
+/// error, so whatever it cannot decide (curved trims, an unresolved ray event,
+/// an exhausted budget) is left unreported rather than flagged.
+fn outer_components_internal_wall(
+    topo: &Topology,
+    solid: SolidId,
+    components: &[Vec<FaceId>],
+) -> Result<Option<(FaceId, FaceId)>, crate::OperationsError> {
+    use remus_check::distance::PlanarTrim;
+    use std::collections::HashSet;
+
+    const MAX_FACE_PAIR_CHECKS: usize = 4_096;
+    const MAX_SAMPLES_PER_FACE: usize = 256;
+
+    struct PlanarFace {
+        component: usize,
+        face: FaceId,
+        normal: Vec3,
+        offset: f64,
+        bbox: remus_math::aabb::Aabb3,
+    }
+
+    let tol = Tolerance::new().linear;
+    let solid_data = topo.solid(solid)?;
+    let outer_faces: HashSet<usize> = topo
+        .shell(solid_data.outer_shell())?
+        .faces()
+        .iter()
+        .map(|f| f.index())
+        .collect();
+
+    let mut planar = Vec::new();
+    for (ci, comp) in components.iter().enumerate() {
+        if !comp.iter().all(|f| outer_faces.contains(&f.index())) {
+            continue;
+        }
+        for &fid in comp {
+            let Some(normal) = topo.face(fid)?.effective_plane_normal() else {
+                continue;
+            };
+            let Ok(normal) = normal.normalize() else {
+                continue;
+            };
+            let Ok(poly) = crate::polygon::face_polygon(topo, fid) else {
+                continue;
+            };
+            let Some(&p0) = poly.first() else {
+                continue;
+            };
+            planar.push(PlanarFace {
+                component: ci,
+                face: fid,
+                normal,
+                offset: normal.dot(p0 - Point3::new(0.0, 0.0, 0.0)),
+                bbox: remus_math::aabb::Aabb3::from_points(poly),
+            });
+        }
+    }
+
+    // Interior samples of `face`: centroids of its own mesh triangles.
+    let samples = |fid: FaceId, bbox: &remus_math::aabb::Aabb3| -> Option<Vec<Point3>> {
+        let deflection = ((bbox.max - bbox.min).length() / 200.0).max(1e-4);
+        let mesh = crate::tessellate::tessellate_with_uvs(topo, fid, deflection).ok()?;
+        let tris: Vec<_> = mesh.mesh.indices.chunks_exact(3).collect();
+        let stride = tris.len().div_ceil(MAX_SAMPLES_PER_FACE).max(1);
+        Some(
+            tris.iter()
+                .step_by(stride)
+                .map(|t| {
+                    let [a, b, c] = [0, 1, 2].map(|k| mesh.mesh.positions[t[k] as usize]);
+                    Point3::new(
+                        (a.x() + b.x() + c.x()) / 3.0,
+                        (a.y() + b.y() + c.y()) / 3.0,
+                        (a.z() + b.z() + c.z()) / 3.0,
+                    )
+                })
+                .collect(),
+        )
+    };
+
+    let mut pair_checks = 0usize;
+    for (i, a) in planar.iter().enumerate() {
+        for b in planar.iter().skip(i + 1) {
+            if a.component == b.component
+                || a.normal.dot(b.normal) > -1.0 + 1e-9
+                || (a.offset + b.offset).abs() > tol
+                || !a.bbox.expanded(tol).intersects(b.bbox)
+            {
+                continue;
+            }
+            pair_checks += 1;
+            if pair_checks > MAX_FACE_PAIR_CHECKS {
+                return Ok(None);
+            }
+            let (Ok(trim_a), Ok(trim_b)) = (
+                PlanarTrim::build(topo, a.face, a.normal),
+                PlanarTrim::build(topo, b.face, b.normal),
+            ) else {
+                continue;
+            };
+            for (probe, bbox) in [(a.face, &a.bbox), (b.face, &b.bbox)] {
+                let Some(points) = samples(probe, bbox) else {
+                    continue;
+                };
+                // The pair filter compares normals and one offset each, which a
+                // slightly tilted face through the same reference point passes
+                // while sitting clear of the other face. `PlanarTrim::contains`
+                // tests projected membership only, so a shared point must also
+                // lie on both planes.
+                let on_plane = |f: &PlanarFace, p: Point3| {
+                    (f.normal.dot(p - Point3::new(0.0, 0.0, 0.0)) - f.offset).abs() <= tol
+                };
+                if points.into_iter().any(|p| {
+                    on_plane(a, p)
+                        && on_plane(b, p)
+                        && matches!(trim_a.contains(p), Ok(true))
+                        && matches!(trim_b.contains(p), Ok(true))
+                }) {
+                    return Ok(Some((a.face, b.face)));
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
 /// Count vertices, edges, faces, and inner wire loops of one face component.
 ///
 /// Entities are deduplicated by id within the component, mirroring
@@ -1169,6 +1310,18 @@ fn validate_solid_observed(
                 severity: Severity::Error,
                 description: format!(
                     "shell is disconnected: {unreachable} face(s) not reachable from first face"
+                ),
+            });
+        } else if let Some((fa, fb)) = outer_components_internal_wall(topo, solid, &components)? {
+            // Components that meet face to face are not a tangent union: the
+            // shell carries a zero-thickness internal wall (#1738).
+            issues.push(ValidationIssue {
+                severity: Severity::Error,
+                description: format!(
+                    "faces {} and {} are coincident and oppositely oriented across \
+                     shell components (internal wall)",
+                    fa.index(),
+                    fb.index()
                 ),
             });
         }

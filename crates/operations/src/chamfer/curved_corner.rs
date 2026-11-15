@@ -470,7 +470,8 @@ pub(super) fn clip(
     center: Point3,
     span: f64,
 ) -> Result<(SolidId, FaceSources), OperationsError> {
-    if let Ok((halves, evolution)) = crate::split::split_with_evolution(topo, solid, point, normal)
+    if let Ok((halves, evolution)) =
+        crate::split::split_planar_with_evolution(topo, solid, point, normal)
     {
         let mut faces = Vec::new();
         for (source, outputs) in evolution.negative.modified {

@@ -8,6 +8,21 @@ historical predecessor-line records, retained for provenance. The
 
 ### Fixed
 
+* **operations,wasm:** `fillet` no longer refuses two rounds that meet at a
+  corner whose third edge stays sharp unless that corner is convex and
+  square, nor a chain that crosses the tangent seam of an earlier round on
+  a concave or drafted body (#1743). A pocket's floor loop, or two adjacent
+  floor edges, and the top or bottom loop of a drafted box were refused at
+  every radius with `unsupported-vertex-blend` ("2 stripes meet"); the same
+  loops after rounding the pocket's wall corners or the box's drafted
+  uprights were refused with `unsupported-seam-crossing`. The corner is now
+  the ball tangent to its three faces at any angles, convex or concave: a
+  sphere patch and a planar ledge where the sharp edge resumes. A floor loop
+  under rounded wall corners builds as cylinders and tori, and a loop over
+  rounds that lean builds each stripe over a round between that round's
+  seams, bounded by the exact contact ellipses, with the stripe itself a
+  NURBS surface (it has no closed form). Chamfering a loop over leaning
+  rounds is still refused with `trimming-failure`.
 * **operations,wasm:** resizing a filleted boss through its blend group
   (`resizeCylindricalFace`, `resizeCylindricalFaceDetailed`) and resizing a
   band of such a group (`resizeBlend`) no longer refuse a group whose
@@ -19,6 +34,23 @@ historical predecessor-line records, retained for provenance. The
   primitive had quarter arcs. When the planned re-fillet orders refuse, the
   group is now removed again with every restored arc cut below a half turn
   and re-filleted the same way. Groups that already rebuilt are unchanged.
+* **operations,wasm:** `draft` and `draftJournaled` no longer refuse a
+  planar face that has a corner on a blend. A 40 x 40 x 20 box with its
+  vertical edges at R5, drafted by 2 degrees on four walls or on one
+  (#1744), was refused with "corner N of a drafted face also lies on a
+  curved face; re-trimming a curved neighbour against the drafted plane is
+  not implemented". The draft now goes through the recognized blend groups
+  in its way: each is removed to its sharp edges, the sharp body is drafted
+  exactly, and the groups are re-filleted at their recorded radii, so a
+  fillet between two drafted walls comes back as the exact cylinder of the
+  same radius along their new section. Blends the draft does not reach are
+  left alone, and a curved neighbour that is not a blend keeps the old
+  refusal. Where a group does not remove to sharp or does not re-fillet on
+  the drafted body, the draft refuses and names the step. A rounded top
+  loop on a box drafted on all four walls is still refused that way: its
+  corner patches sit over flat ledges that do not remove to sharp edges
+  yet, and the loop would not re-fillet at corners the taper leaves out of
+  square (#1743).
 * **operations,wasm:** a tapered thread fitted to its cylinder (no
   `majorDiameter`) no longer depends on `gaugeOffset`: its radii are taken
   from the cylinder on the start plane, and the gauge plane changes only the

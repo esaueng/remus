@@ -919,6 +919,8 @@ pub(super) fn heal_cylinder_sphere_band(
         edges: sharp_edges,
         face_map,
         boundary_history: Some(boundary_history),
+
+        absorbed: Vec::new(),
     })
 }
 

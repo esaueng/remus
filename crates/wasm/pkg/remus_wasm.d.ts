@@ -4934,11 +4934,15 @@ export class RemusKernel {
     /**
      * Split a solid into two halves along a plane.
      *
-     * Returns `[positive_solid_handle, negative_solid_handle]`.
+     * Returns `[positive_solid_handle, negative_solid_handle]`. Cuts across
+     * curved edges, non-planar faces or a face's holes are built by the exact
+     * half-space booleans; the halves are exact either way.
      *
      * # Errors
      *
-     * Returns an error if the plane doesn't intersect the solid.
+     * Returns an error if the plane doesn't cross the solid's interior, or
+     * if neither the planar trimmer nor the exact booleans can build the
+     * halves (for example a cavity shell, or an elliptical section).
      */
     split(solid: number, px: number, py: number, pz: number, nx: number, ny: number, nz: number): Uint32Array;
     /**
