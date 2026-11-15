@@ -27,6 +27,7 @@ mod conversion;
 mod edge_splitting;
 #[cfg(test)]
 mod hole_split_tests;
+mod outline_touch;
 mod periodic_face_chart;
 mod plane_chart;
 #[cfg(test)]
@@ -5739,7 +5740,7 @@ pub fn split_face_2d(
     context: &OperationContext,
     split_registry: Option<&mut remus_math::det_hash::DetHashMap<usize, Vec<Point3>>>,
 ) -> Result<Vec<SplitSubFace>, AlgoError> {
-    let parts = split_face_2d_established(
+    let mut parts = split_face_2d_established(
         topo,
         face_id,
         sections,
@@ -5751,6 +5752,9 @@ pub fn split_face_2d(
         context,
         split_registry,
     )?;
+    // A rim touching its face's outline is part of that outline, whichever
+    // emitter wrote it as a hole.
+    outline_touch::join_touching_rims(topo, face_id, &mut parts, sections, tol.linear);
     // A result that runs a section out and back, leaves one out, or does not
     // tile the face is not a partition of it (the holed-cap weave turns
     // sections bridging the outer wire and a hole into spurs; a wall section
@@ -9559,6 +9563,47 @@ fn split_face_2d_impl(
         {
             loops = dcel;
             cw_loops = false;
+        }
+    }
+
+    // Sections meeting at one point of the boundary of a cylinder patch (a
+    // fillet band). The greedy walker arriving there along one section turns
+    // onto the other instead of back along the boundary, and tours every
+    // region as one loop through that point (#1739: a hole whose wall touches
+    // the fillet's spring line leaves two section arcs tangent to that edge
+    // at one vertex; the unsplit fillet then classified inside the tool and
+    // was dropped, leaving eight free edges). The periodic and planar arms
+    // above recover such a trace; a patch that does not wrap had none. The
+    // trigger is the failure itself, a loop revisiting a vertex, and the
+    // replacement must be strictly healthier: the DCEL trace when it refines
+    // the partition cleanly, else the tour split at its pinch vertices.
+    if !is_plane
+        && !u_periodic
+        && !v_periodic
+        && sections.len() >= 2
+        && original_inner_wires.is_empty()
+        && matches!(&surface, FaceSurface::Cylinder(_))
+        && wire_loops_self_cross(&loops, tol.linear)
+    {
+        let dcel = build_wire_loops_dcel(&all_edges, tol.linear, false, false);
+        if dcel.len() > loops.len()
+            && !wire_loops_have_degenerate_area(&dcel, tol.linear)
+            && !wire_loops_self_cross(&dcel, tol.linear)
+            && !greedy_outer_loops_nested(&dcel, cw_loops)
+        {
+            loops = dcel;
+        } else {
+            let resolved: Vec<Vec<OrientedPCurveEdge>> = loops
+                .iter()
+                .flat_map(|lp| split_loop_at_pinch_vertices(lp, tol.linear))
+                .collect();
+            if resolved.len() > loops.len()
+                && !wire_loops_have_degenerate_area(&resolved, tol.linear)
+                && !wire_loops_self_cross(&resolved, tol.linear)
+                && !greedy_outer_loops_nested(&resolved, cw_loops)
+            {
+                loops = resolved;
+            }
         }
     }
 

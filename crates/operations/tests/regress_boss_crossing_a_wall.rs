@@ -22,6 +22,15 @@
 //! pinch vertex the analytic splitter does not build; it now fails over to the
 //! approximate path instead of returning an operand-shaped lie.
 //!
+//! The tangent cut is the exception that has no solid for an answer (#1739).
+//! A bore whose wall touches the plate's `x = 0` side from inside leaves no
+//! material along the line `(0, 20, 0..8)`: the side and the bore wall touch
+//! there, each with the line in its interior. That body was returned as
+//! exact, with every edge on two faces and a closed-form volume, and it is
+//! refused now under either fallback policy. The tangent fuse meets the wall
+//! at one point and is a solid; a bore `1e-7` inside the side leaves a wall
+//! and is cut exactly, as before.
+//!
 //! Every expected volume is composed from the construction's own dimensions —
 //! the plate box, the boss cylinder, and the circular segment
 //! `r^2 acos(d/r) - d sqrt(r^2 - d^2)` the wall cuts off the boss's footprint.
@@ -276,13 +285,27 @@ fn cut_across_the_wall_is_exact_and_stays_a_cylinder() {
 /// plate (-11.57 %) and the cut as the untouched blank (+15.06 %), both passing
 /// every structural check there is. The approximate path is allowed here; a
 /// wrong body is not.
+///
+/// The tangent cut has no solid to return: the bore leaves a wall of zero
+/// thickness along the contact line, so it is refused by name (#1739), which
+/// is not a dropped operand either.
 #[test]
 fn a_tangent_boss_is_never_silently_dropped() {
     for &(op, name) in &[(BooleanOp::Fuse, "fuse"), (BooleanOp::Cut, "cut")] {
         let mut topo = Topology::new();
         let (plate, boss) = build(&mut topo, 0.0);
-        let result = boolean(&mut topo, op, plate, boss)
-            .unwrap_or_else(|e| panic!("{name} of a tangent boss: {e}"));
+        let outcome = boolean(&mut topo, op, plate, boss);
+        if op == BooleanOp::Cut {
+            assert!(
+                matches!(
+                    outcome,
+                    Err(remus_operations::OperationsError::ExactOnlyUnattainable)
+                ),
+                "cut of a tangent boss must be refused as zero-thickness, got {outcome:?}"
+            );
+            continue;
+        }
+        let result = outcome.unwrap_or_else(|e| panic!("{name} of a tangent boss: {e}"));
         let what = format!("{name} of a tangent boss");
 
         assert_watertight(&topo, result, &what);
@@ -302,6 +325,10 @@ fn a_tangent_boss_is_never_silently_dropped() {
 
 /// Both sides of tangency and the exact contact retain analytic material
 /// across the scale sweep, including the former large-scale refusal.
+///
+/// One cell has no material to retain: the cut at exact contact, whose bore
+/// leaves a zero-thickness wall (#1739). It is refused at every scale, the
+/// same way.
 #[test]
 fn tangent_boundary_is_stable_across_scale() {
     for scale in SCALE_SWEEP {
@@ -311,8 +338,19 @@ fn tangent_boundary_is_stable_across_scale() {
                 let (plate, boss) = build_scaled(&mut topo, d, scale);
                 let what = format!("{name} at d/r={} and scale={scale}", d / R);
                 let exact = OperationContext::new().with_fallback(FallbackPolicy::ExactOnly);
-                let outcome = boolean_with_context(&mut topo, op, plate, boss, &exact)
-                    .unwrap_or_else(|e| panic!("{what}: qualified exact cell failed: {e}"));
+                let outcome = boolean_with_context(&mut topo, op, plate, boss, &exact);
+                if op == BooleanOp::Cut && d == 0.0 {
+                    assert!(
+                        matches!(
+                            outcome,
+                            Err(remus_operations::OperationsError::ExactOnlyUnattainable)
+                        ),
+                        "{what}: a zero-thickness cut must be refused, got {outcome:?}"
+                    );
+                    continue;
+                }
+                let outcome =
+                    outcome.unwrap_or_else(|e| panic!("{what}: qualified exact cell failed: {e}"));
                 assert_eq!(outcome.quality, BooleanQuality::Exact, "{what}");
                 let result = outcome.solid;
                 assert_watertight(&topo, result, &what);
@@ -393,14 +431,27 @@ fn b62_wall_crossing_sliver_fuse_closes() {
 /// polygonised r=10 boss. This is the sweep that pins the two silent failures,
 /// which were -11.57 % and +15.06 % — neither of them an approximation, so
 /// neither visible to an approximation census.
+///
+/// The cut at exact contact is the one placement with no closed body: it is
+/// refused as non-manifold rather than approximated (#1739).
 #[test]
 fn every_crossing_depth_is_at_least_close() {
     for &(op, name) in &[(BooleanOp::Fuse, "fuse"), (BooleanOp::Cut, "cut")] {
         for d in FULL_SWEEP {
             let mut topo = Topology::new();
             let (plate, boss) = build(&mut topo, d);
-            let result = boolean_allowing_fallback(&mut topo, op, plate, boss)
-                .unwrap_or_else(|e| panic!("{name} at d={d}: {e}"));
+            let outcome = boolean_allowing_fallback(&mut topo, op, plate, boss);
+            if op == BooleanOp::Cut && d == 0.0 {
+                assert!(
+                    matches!(
+                        outcome,
+                        Err(remus_operations::OperationsError::NonManifoldResult)
+                    ),
+                    "cut at d=0 leaves a zero-thickness wall and must be refused, got {outcome:?}"
+                );
+                continue;
+            }
+            let result = outcome.unwrap_or_else(|e| panic!("{name} at d={d}: {e}"));
             let what = format!("{name} at d={d}");
             assert_watertight(&topo, result, &what);
             let want = expected(op, d);
