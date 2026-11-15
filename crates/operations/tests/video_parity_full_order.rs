@@ -52,10 +52,11 @@
 //! the commit is the unprepared call's result.
 //!
 //! The order is split into tests that run in parallel: A1 to A3, A4 to A6,
-//! and three stretches of A7. Each step is checked in one test; the tests
+//! and four stretches of A7. Each step is checked in one test; the tests
 //! after it start from the same body built with only the edits the
-//! application keeps (`built_a3`, `built_a6`), and the tests that check the
-//! steps assert that those builders give the verified bodies byte for byte.
+//! application keeps (`built_a3`, `built_a6`, `built_diameters`), and the
+//! tests that check the steps assert that those builders give the verified
+//! bodies byte for byte.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -1063,14 +1064,37 @@ fn a7_diameter(
     result
 }
 
-/// A7 on the A6 body: the boss Ø12 -> 14.6 -> 17, each step verified; the
-/// joined cap stays at z26 with its rim.
+/// A7's first diameter on the A6 body: Ø12 -> 14.6, verified; and
+/// [`built_diameters`] builds the same body.
 #[test]
-fn a7_boss_diameters_14_6_then_17() {
+fn a7_boss_diameter_14_6() {
     let (mut topo, a6, _) = built_a6();
     let census_a6 = census(&topo, a6);
-    let solid = a7_diameter(&mut topo, a6, 14.6, &census_a6);
-    a7_diameter(&mut topo, solid, 17.0, &census_a6);
+    let mut built_topo = topo.clone();
+    let verified = a7_diameter(&mut topo, a6, 14.6, &census_a6);
+    let built = built_diameters(&mut built_topo, a6, &[14.6]);
+    assert_eq!(
+        fingerprint(&built_topo, built),
+        fingerprint(&topo, verified),
+        "built A7 Ø14.6"
+    );
+}
+
+/// A7's second diameter, after Ø14.6: Ø14.6 -> 17, verified; and
+/// [`built_diameters`] builds the same body.
+#[test]
+fn a7_boss_diameter_17_after_14_6() {
+    let (mut topo, a6, _) = built_a6();
+    let census_a6 = census(&topo, a6);
+    let at_14_6 = built_diameters(&mut topo, a6, &[14.6]);
+    let mut built_topo = topo.clone();
+    let verified = a7_diameter(&mut topo, at_14_6, 17.0, &census_a6);
+    let built = built_diameters(&mut built_topo, at_14_6, &[17.0]);
+    assert_eq!(
+        fingerprint(&built_topo, built),
+        fingerprint(&topo, verified),
+        "built A7 Ø17"
+    );
 }
 
 /// A7 after Ø14.6 and Ø17: Ø21.1 previewed through the prepared API and

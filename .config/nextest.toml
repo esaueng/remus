@@ -25,7 +25,7 @@ priority = 100
 
 # The reference video's order, split into steps: tens of seconds each.
 [[profile.default.overrides]]
-filter = 'test(a1_to_a3_verify_at_every_step) | test(a4_to_a6_verify_at_every_step) | test(a7_boss_diameters_14_6_then_17) | test(a7_boss_diameter_21_1_previewed_then_cancelled) | test(a7_boss_diameter_14_7_then_an_oversize_refusal)'
+filter = 'test(a1_to_a3_verify_at_every_step) | test(a4_to_a6_verify_at_every_step) | test(a7_boss_diameter_14_6) | test(a7_boss_diameter_17_after_14_6) | test(a7_boss_diameter_21_1_previewed_then_cancelled) | test(a7_boss_diameter_14_7_then_an_oversize_refusal)'
 priority = 90
 
 [[profile.default.overrides]]
