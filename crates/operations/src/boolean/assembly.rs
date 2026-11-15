@@ -1857,6 +1857,51 @@ pub(super) fn validate_boolean_result_with_tolerance(
     Ok(())
 }
 
+/// Whether two faces are one curved face closed by one planar face: every
+/// edge either joins the two faces, used once by each in opposite senses, or
+/// is a seam of the curved face, used twice by it in opposite senses.
+fn is_planar_capped_curved_face(
+    topo: &Topology,
+    faces: &[remus_topology::face::FaceId],
+) -> Result<bool, crate::OperationsError> {
+    let [first, second] = faces else {
+        return Ok(false);
+    };
+    let (a, b) = (topo.face(*first)?, topo.face(*second)?);
+    let (plane, curved) = match (a.surface().is_planar(), b.surface().is_planar()) {
+        (true, false) => (*first, *second),
+        (false, true) => (*second, *first),
+        _ => return Ok(false),
+    };
+    // Per edge: the (is planar face, is forward) of each use.
+    let mut uses: HashMap<usize, Vec<(bool, bool)>> = HashMap::default();
+    for fid in [plane, curved] {
+        let face = topo.face(fid)?;
+        for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            for oe in topo.wire(wid)?.edges() {
+                uses.entry(oe.edge().index())
+                    .or_default()
+                    .push((fid == plane, oe.is_forward()));
+            }
+        }
+    }
+    let mut joins = 0usize;
+    for edge_uses in uses.values() {
+        let [(on_plane_a, fwd_a), (on_plane_b, fwd_b)] = edge_uses.as_slice() else {
+            return Ok(false);
+        };
+        if fwd_a == fwd_b {
+            return Ok(false);
+        }
+        match (on_plane_a, on_plane_b) {
+            (true, false) | (false, true) => joins += 1,
+            (false, false) => {}
+            (true, true) => return Ok(false),
+        }
+    }
+    Ok(joins > 0)
+}
+
 fn validate_boolean_result_lenient_with_tolerance(
     topo: &Topology,
     solid: SolidId,
@@ -1866,7 +1911,15 @@ fn validate_boolean_result_lenient_with_tolerance(
     let shell = topo.shell(s.outer_shell())?;
     let face_count = shell.faces().len();
 
-    if face_count < MIN_SOLID_FACES {
+    // A closed shell bounded by planes alone needs at least four faces, and
+    // MIN_SOLID_FACES (a cylinder) is the floor once one face is curved. One
+    // two-face solid is legitimate, though: a curved face closed by a single
+    // planar face, such as the spherical cap and disc a plane cuts from a
+    // sphere (#1790). Only that shape is let through, and only when the two
+    // faces close on each other with consistent orientation; any other
+    // two-face result is still refused.
+    let curved_pair = face_count == 2 && is_planar_capped_curved_face(topo, shell.faces())?;
+    if face_count < MIN_SOLID_FACES && !curved_pair {
         return Err(crate::OperationsError::InvalidInput {
             reason: format!(
                 "boolean result has only {face_count} faces (minimum {MIN_SOLID_FACES} required for a closed solid)"
