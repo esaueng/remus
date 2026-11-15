@@ -30,6 +30,52 @@ thread_local! {
     /// last.
     static SECTION_DROP_SCOPES: std::cell::RefCell<Vec<ScopeCounts>> =
         const { std::cell::RefCell::new(Vec::new()) };
+    /// Open [`ThinCapLensKeep`] guards on this thread.
+    static THIN_CAP_LENS_KEEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Turns on phase FF's thin cap-lens keep (#1742) for the GFA runs on this
+/// thread while it is held.
+///
+/// Phase FF drops a closed section circle as a tangency graze when too few
+/// of its samples fall inside both faces. A circle that crosses a plane
+/// face's outline into a lens deeper than the strict crossing depth is a
+/// real section all the same (two parallel r20 cylinders 39 apart meet each
+/// other's cap in a 26° lens), and with this guard held phase FF keeps it.
+///
+/// Without the guard phase FF only counts such circles
+/// ([`SectionDropScope::thin_cap_lenses`]) and drops them as before, so a
+/// GFA run is exactly what it was before the keep existed. Keeping the
+/// circle can also cost a boolean the previous handling assembled exactly
+/// (r5 walls overlapping by 1e-5 cut exactly without it, and are refused
+/// with it), so the keep is a retry: the caller runs it only after the
+/// unguarded run was refused and counted a candidate.
+#[derive(Debug)]
+pub struct ThinCapLensKeep {
+    _not_send: std::marker::PhantomData<*const ()>,
+}
+
+impl ThinCapLensKeep {
+    /// Hold the keep on this thread until the guard drops.
+    #[must_use]
+    pub fn enter() -> Self {
+        THIN_CAP_LENS_KEEPS.with(|keeps| keeps.set(keeps.get() + 1));
+        Self {
+            _not_send: std::marker::PhantomData,
+        }
+    }
+
+    /// Whether a guard is held on this thread.
+    #[must_use]
+    pub fn active() -> bool {
+        THIN_CAP_LENS_KEEPS.with(|keeps| keeps.get() > 0)
+    }
+}
+
+impl Drop for ThinCapLensKeep {
+    fn drop(&mut self) {
+        THIN_CAP_LENS_KEEPS.with(|keeps| keeps.set(keeps.get().saturating_sub(1)));
+    }
 }
 
 /// Counts of one open [`SectionDropScope`].
@@ -38,6 +84,7 @@ struct ScopeCounts {
     dropped: u64,
     uncertified_charts: u64,
     uncertified_rescues: u64,
+    thin_cap_lenses: u64,
     #[cfg(any(test, feature = "perf-counters"))]
     splitter_shadow: [SplitterShadowCounts; SplitterShadowEntry::ALL.len()],
 }
@@ -181,6 +228,15 @@ impl SectionDropScope {
         self.counts().uncertified_rescues
     }
 
+    /// Closed section circles phase FF found crossing into a planar face by
+    /// more than the strict crossing depth and dropped anyway, because no
+    /// [`ThinCapLensKeep`] was held, since this scope opened. Non-zero means
+    /// a retry under the keep may assemble what this run could not.
+    #[must_use]
+    pub fn thin_cap_lenses(&self) -> u64 {
+        self.counts().thin_cap_lenses
+    }
+
     /// Shadow-differential counts of one legacy splitter entry point since
     /// this scope opened. All zero unless the differential was enabled (see
     /// `builder/face_splitter/shadow.rs`).
@@ -224,6 +280,12 @@ pub(crate) fn note_uncertified_chart() {
 /// [`SectionDropScope::uncertified_rescues`]).
 pub(crate) fn note_uncertified_rescue() {
     note(|c| c.uncertified_rescues = c.uncertified_rescues.saturating_add(1));
+}
+
+/// Count one thin cap-lens circle dropped without a [`ThinCapLensKeep`]
+/// (see [`SectionDropScope::thin_cap_lenses`]).
+pub(crate) fn note_thin_cap_lens() {
+    note(|c| c.thin_cap_lenses = c.thin_cap_lenses.saturating_add(1));
 }
 
 /// Count one shadow-differential run of a legacy splitter entry point (see

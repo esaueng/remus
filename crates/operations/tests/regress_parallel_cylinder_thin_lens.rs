@@ -156,3 +156,227 @@ fn former_near_tangent_fallback_fixture_is_exact_and_right() {
         }
     }
 }
+
+/// What the exact pipeline did on `main` before the thin cap-lens retry, for
+/// a case of [`sweep_subset`]. Documentation only: the test holds the branch
+/// to an exact, clean, right result either way.
+#[derive(Clone, Copy, Debug)]
+enum Main {
+    /// Exact there too: the retry never runs, so the result is main's own.
+    Exact,
+    /// Refused there: the retry builds it.
+    Refused,
+}
+
+/// Two parallel cylinders of radius `r` (height 10 for r5, 30 for r20),
+/// axes `2r - overlap` apart along x, the second raised `dz`.
+fn overlap_pair(topo: &mut Topology, r: f64, dz: f64, overlap: f64) -> (SolidId, SolidId, f64) {
+    let height = if r < 10.0 { 10.0 } else { 30.0 };
+    let a = make_cylinder(topo, r, height).unwrap();
+    let b = make_cylinder(topo, r, height).unwrap();
+    transform_solid(topo, b, &Mat4::translation(2.0 * r - overlap, 0.0, dz)).unwrap();
+    (a, b, height)
+}
+
+fn run_op(
+    topo: &mut Topology,
+    op: &str,
+    a: SolidId,
+    b: SolidId,
+) -> Result<SolidId, remus_operations::OperationsError> {
+    use remus_operations::boolean::{BooleanOptions, compound_cut};
+    match op {
+        "fuse" => boolean(topo, BooleanOp::Fuse, a, b),
+        "cut" => boolean(topo, BooleanOp::Cut, a, b),
+        "intersect" => boolean(topo, BooleanOp::Intersect, a, b),
+        "fuse_solids" => fuse_solids(topo, &[a, b]),
+        "compound_cut" => compound_cut(topo, a, &[b], BooleanOptions::default()),
+        _ => unreachable!("{op}"),
+    }
+}
+
+/// The lens volume an `op` result accounts for: removed by a fuse or a cut,
+/// kept by an intersection.
+fn lens_seen(op: &str, operand: f64, volume: f64) -> f64 {
+    match op {
+        "fuse" | "fuse_solids" => 2.0 * operand - volume,
+        "intersect" => volume,
+        _ => operand - volume,
+    }
+}
+
+/// Review of the depth gate (#1770): with the thin cap-lens keep applied on
+/// every run, r5 walls overlapping by just over its depth (1.01e-5, 2e-5),
+/// the second raised 3, were refused for the Cut that `main` makes exactly.
+/// The keep is now a retry after a failed run, so `main`'s result stands.
+/// Their lenses are ~1e-9 of the volume, under what the volume can resolve,
+/// so the result is held to exact, clean and the closed-form total.
+#[test]
+fn cut_just_past_the_depth_gate_stays_exact() {
+    for overlap in [1.01e-5, 2e-5] {
+        for op in ["cut", "compound_cut"] {
+            let what = format!("{op} overlap={overlap:e}");
+            let mut topo = Topology::new();
+            let (a, b, height) = overlap_pair(&mut topo, 5.0, 3.0, overlap);
+            let operand = mass_properties(&topo, a).unwrap().mass;
+            let result = run_op(&mut topo, op, a, b).unwrap_or_else(|e| panic!("{what}: {e}"));
+            let report = validate_solid(&topo, result).unwrap();
+            assert!(report.issues.is_empty(), "{what}: {:?}", report.issues);
+            let expected = operand - lens(5.0, 10.0 - overlap) * (height - 3.0);
+            let volume = mass_properties(&topo, result).unwrap().mass;
+            assert!(
+                ((volume - expected) / expected).abs() < 1e-8,
+                "{what}: volume {volume}, expected {expected}"
+            );
+        }
+    }
+}
+
+/// A representative subset of the main-vs-branch sweep in PR #1770 (radius,
+/// cap offset, wall overlap, operation, what `main` did): every case where
+/// the branch is exact and its lens volume matches the closed form, at
+/// overlaps either side of the depth gate up to 1.5 mm. Each must be exact,
+/// carry no validation issue, and account for its lens to 1e-6.
+fn sweep_subset() -> Vec<(f64, f64, f64, &'static str, Main)> {
+    vec![
+        (5.0, 0.0, 1e-4, "fuse", Main::Refused),
+        (5.0, 0.0, 1e-4, "cut", Main::Refused),
+        (5.0, 0.0, 1e-4, "intersect", Main::Refused),
+        (5.0, 0.0, 1e-4, "fuse_solids", Main::Exact),
+        (5.0, 0.0, 1e-4, "compound_cut", Main::Refused),
+        (5.0, 0.0, 1e-3, "fuse", Main::Refused),
+        (5.0, 0.0, 1e-3, "cut", Main::Refused),
+        (5.0, 0.0, 1e-3, "intersect", Main::Refused),
+        (5.0, 0.0, 1e-3, "fuse_solids", Main::Exact),
+        (5.0, 0.0, 1e-3, "compound_cut", Main::Refused),
+        (5.0, 0.0, grid(26), "fuse", Main::Refused),
+        (5.0, 0.0, grid(26), "cut", Main::Refused),
+        (5.0, 0.0, grid(26), "intersect", Main::Refused),
+        (5.0, 0.0, grid(26), "fuse_solids", Main::Exact),
+        (5.0, 0.0, grid(26), "compound_cut", Main::Refused),
+        (5.0, 0.0, 1.0, "fuse", Main::Exact),
+        (5.0, 0.0, 1.0, "cut", Main::Exact),
+        (5.0, 0.0, 1.0, "intersect", Main::Exact),
+        (5.0, 0.0, 1.0, "fuse_solids", Main::Exact),
+        (5.0, 0.0, 1.0, "compound_cut", Main::Exact),
+        (5.0, 0.0, 1.5, "fuse", Main::Exact),
+        (5.0, 0.0, 1.5, "cut", Main::Exact),
+        (5.0, 0.0, 1.5, "intersect", Main::Exact),
+        (5.0, 0.0, 1.5, "fuse_solids", Main::Exact),
+        (5.0, 0.0, 1.5, "compound_cut", Main::Exact),
+        (5.0, 3.0, 1e-4, "fuse", Main::Refused),
+        (5.0, 3.0, 1e-4, "intersect", Main::Refused),
+        (5.0, 3.0, 1e-4, "fuse_solids", Main::Refused),
+        (5.0, 3.0, 1e-3, "fuse", Main::Refused),
+        (5.0, 3.0, 1e-3, "cut", Main::Refused),
+        (5.0, 3.0, 1e-3, "intersect", Main::Refused),
+        (5.0, 3.0, 1e-3, "fuse_solids", Main::Refused),
+        (5.0, 3.0, 1e-3, "compound_cut", Main::Refused),
+        (5.0, 3.0, grid(26), "fuse", Main::Refused),
+        (5.0, 3.0, grid(26), "cut", Main::Refused),
+        (5.0, 3.0, grid(26), "intersect", Main::Refused),
+        (5.0, 3.0, grid(26), "fuse_solids", Main::Refused),
+        (5.0, 3.0, grid(26), "compound_cut", Main::Refused),
+        (5.0, 3.0, 1.0, "fuse", Main::Exact),
+        (5.0, 3.0, 1.0, "cut", Main::Exact),
+        (5.0, 3.0, 1.0, "intersect", Main::Exact),
+        (5.0, 3.0, 1.0, "fuse_solids", Main::Exact),
+        (5.0, 3.0, 1.0, "compound_cut", Main::Exact),
+        (5.0, 3.0, 1.5, "fuse", Main::Exact),
+        (5.0, 3.0, 1.5, "cut", Main::Exact),
+        (5.0, 3.0, 1.5, "intersect", Main::Exact),
+        (5.0, 3.0, 1.5, "fuse_solids", Main::Exact),
+        (5.0, 3.0, 1.5, "compound_cut", Main::Exact),
+        (20.0, 0.0, 1e-4, "fuse_solids", Main::Exact),
+        (20.0, 0.0, 1e-3, "fuse", Main::Refused),
+        (20.0, 0.0, 1e-3, "cut", Main::Refused),
+        (20.0, 0.0, 1e-3, "intersect", Main::Refused),
+        (20.0, 0.0, 1e-3, "fuse_solids", Main::Exact),
+        (20.0, 0.0, 1e-3, "compound_cut", Main::Refused),
+        (20.0, 0.0, grid(26), "fuse", Main::Refused),
+        (20.0, 0.0, grid(26), "cut", Main::Refused),
+        (20.0, 0.0, grid(26), "intersect", Main::Refused),
+        (20.0, 0.0, grid(26), "fuse_solids", Main::Exact),
+        (20.0, 0.0, grid(26), "compound_cut", Main::Refused),
+        (20.0, 0.0, 1.0, "fuse", Main::Refused),
+        (20.0, 0.0, 1.0, "cut", Main::Refused),
+        (20.0, 0.0, 1.0, "intersect", Main::Refused),
+        (20.0, 0.0, 1.0, "fuse_solids", Main::Exact),
+        (20.0, 0.0, 1.0, "compound_cut", Main::Refused),
+        (20.0, 0.0, 1.5, "fuse", Main::Exact),
+        (20.0, 0.0, 1.5, "cut", Main::Exact),
+        (20.0, 0.0, 1.5, "intersect", Main::Exact),
+        (20.0, 0.0, 1.5, "fuse_solids", Main::Exact),
+        (20.0, 0.0, 1.5, "compound_cut", Main::Exact),
+        (20.0, 3.0, 1e-3, "fuse", Main::Refused),
+        (20.0, 3.0, 1e-3, "intersect", Main::Refused),
+        (20.0, 3.0, 1e-3, "fuse_solids", Main::Refused),
+        (20.0, 3.0, grid(26), "fuse", Main::Refused),
+        (20.0, 3.0, grid(26), "intersect", Main::Refused),
+        (20.0, 3.0, grid(26), "fuse_solids", Main::Refused),
+        (20.0, 3.0, 1.0, "fuse", Main::Refused),
+        (20.0, 3.0, 1.0, "cut", Main::Refused),
+        (20.0, 3.0, 1.0, "intersect", Main::Refused),
+        (20.0, 3.0, 1.0, "fuse_solids", Main::Refused),
+        (20.0, 3.0, 1.0, "compound_cut", Main::Refused),
+        (20.0, 3.0, 1.5, "fuse", Main::Exact),
+        (20.0, 3.0, 1.5, "cut", Main::Exact),
+        (20.0, 3.0, 1.5, "intersect", Main::Exact),
+        (20.0, 3.0, 1.5, "fuse_solids", Main::Exact),
+        (20.0, 3.0, 1.5, "compound_cut", Main::Exact),
+    ]
+}
+
+/// Overlap `k` of the sweep's log grid, `10^(-7 + 7k/30)` mm, bit for bit.
+fn grid(k: u32) -> f64 {
+    10f64.powf(-7.0 + 7.0 * f64::from(k) / 30.0)
+}
+
+#[test]
+fn sweep_subset_is_exact_clean_and_right() {
+    for (r, dz, overlap, op, main) in sweep_subset() {
+        let what = format!("{op} r={r} dz={dz} overlap={overlap:e} (main: {main:?})");
+        let mut topo = Topology::new();
+        let (a, b, height) = overlap_pair(&mut topo, r, dz, overlap);
+        let operand = mass_properties(&topo, a).unwrap().mass;
+        let result = run_op(&mut topo, op, a, b).unwrap_or_else(|e| panic!("{what}: {e}"));
+        let report = validate_solid(&topo, result).unwrap();
+        assert!(report.issues.is_empty(), "{what}: {:?}", report.issues);
+        let lens_volume = lens(r, 2.0 * r - overlap) * (height - dz);
+        let seen = lens_seen(op, operand, mass_properties(&topo, result).unwrap().mass);
+        assert!(
+            ((seen - lens_volume) / lens_volume).abs() < 1e-6,
+            "{what}: lens volume {seen:e}, expected {lens_volume:e}"
+        );
+    }
+}
+
+/// Ready repro of a defect on `main` that this change leaves as it is: an
+/// exact Cut by a parallel cylinder raised 3 returns the blank untouched at
+/// many overlaps up to 0.2 mm (r5) and 0.34 mm (r20), losing up to 32 mm³.
+/// The sweep in PR #1770 found it; the cut is accepted on the first exact run,
+/// so the thin cap-lens retry never sees it.
+#[test]
+#[ignore = "open: exact Cut by a raised parallel cylinder returns the blank whole (pre-existing on main)"]
+fn raised_parallel_cut_removes_its_lens() {
+    for (r, overlap) in [
+        (5.0, 1e-4),
+        (5.0, grid(18)),
+        (5.0, grid(27)),
+        (20.0, grid(28)),
+    ] {
+        let what = format!("cut r={r} overlap={overlap:e}");
+        let mut topo = Topology::new();
+        let (a, b, height) = overlap_pair(&mut topo, r, 3.0, overlap);
+        let operand = mass_properties(&topo, a).unwrap().mass;
+        let Ok(result) = boolean(&mut topo, BooleanOp::Cut, a, b) else {
+            continue;
+        };
+        let lens_volume = lens(r, 2.0 * r - overlap) * (height - 3.0);
+        let seen = operand - mass_properties(&topo, result).unwrap().mass;
+        assert!(
+            ((seen - lens_volume) / lens_volume).abs() < 1e-6,
+            "{what}: removed {seen:e}, expected {lens_volume:e}"
+        );
+    }
+}

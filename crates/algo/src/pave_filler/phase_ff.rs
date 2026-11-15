@@ -3557,7 +3557,10 @@ fn restrict_curves_to_faces(
             // exactly instead: two parallel r20 cylinders 39 apart meet each
             // other's cap in a circle that enters the cap for a 26° arc,
             // which neither sample density resolved, so the caps were never
-            // split and the fuse was refused (#1742).
+            // split and the fuse was refused (#1742). The circle is kept only
+            // under a `ThinCapLensKeep`; otherwise it is counted and dropped
+            // as before, so the caller can retry under the keep (see
+            // `crate::gfa::ThinCapLensKeep`).
             if !nurbs_pair
                 && closed
                 && closed_circle_enters_plane_face(
@@ -3567,8 +3570,11 @@ fn restrict_curves_to_faces(
                     tol,
                 )
             {
-                out.push(raw);
-                continue;
+                if crate::gfa::ThinCapLensKeep::active() {
+                    out.push(raw);
+                    continue;
+                }
+                crate::gfa::note_thin_cap_lens();
             }
             if n_fine <= N {
                 out.extend(rescue_corner_crossing(
