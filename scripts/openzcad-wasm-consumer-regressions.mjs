@@ -1591,15 +1591,13 @@ export const runDraftHistoryRegression = ({ RemusKernel, RemusIo }) => {
       const roundTrip=new RemusKernel();
       try {
         const importSolid = solid => io.importStep(io.exportStep(kernel.serializeSolids(Uint32Array.of(solid))));
-        if (bore && scale === 1000) {
-          // The unchanged source also exceeds the importer's fixed circle-sampling budget.
-          const limit = /FACE_BOUND curve exceeds the adaptive planar-classification sampling limit/;
-          assert.throws(() => importSolid(source), limit);
-          assert.throws(() => importSolid(second.solid), limit);
-        } else {
-          const [solid]=roundTrip.deserializeSolids(importSolid(second.solid));
-          qualify(roundTrip,solid,secondVolume,scale);
-        }
+        // Every scale reads back, the 1000x bore too: the importer samples a
+        // long planar bound relative to its extent (esaueng/remus#1787) where
+        // a fixed 1e-4 mm budget refused it.
+        const [solid]=roundTrip.deserializeSolids(importSolid(second.solid));
+        qualify(roundTrip,solid,secondVolume,scale);
+        const [unchanged]=roundTrip.deserializeSolids(importSolid(source));
+        qualify(roundTrip,unchanged,sourceVolume,scale);
       } finally { roundTrip.free(); }
       const before=Uint8Array.from(kernel.serializeSolids(Uint32Array.of(second.solid)));
       const journal=kernel.journalSummary();
@@ -1611,7 +1609,7 @@ export const runDraftHistoryRegression = ({ RemusKernel, RemusIo }) => {
       }
     } finally { kernel.free(); io.free(); }
   }
-  console.log('ok - draft history: degree units, successive plain/bored edits at three scales, all refs, arena, qualified STEP or explicit large-bore sampling refusal, rollback');
+  console.log('ok - draft history: degree units, successive plain/bored edits at three scales, all refs, arena, qualified STEP at every scale, rollback');
 };
 
 export const runDefeatureHistoryRegression = ({RemusKernel, RemusIo}) => {
