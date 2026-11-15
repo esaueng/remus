@@ -31,8 +31,10 @@
 //! curve is one the certificate supports, and the boundary is not a plain
 //! rectangle without holes (the rectangle path owns that). Everything after
 //! admission is proven by the arrangement's certificates; a face whose
-//! certificate fails is reported as unsupported, so the caller keeps exactly
-//! what it returned before this front end existed.
+//! certificate fails is reported as [`ChartSplit::Uncertified`]. The caller
+//! keeps its established result, which had already failed its own checks,
+//! and counts the face for the operation's gate, so an exact-only operation
+//! refuses instead of returning it.
 
 use std::f64::consts::TAU;
 
@@ -360,7 +362,8 @@ fn split_at_nodes(
 /// arrangement in its chart.
 ///
 /// [`ChartSplit::Unsupported`] when the face or its sections fall outside
-/// the admitted family (see the module docs).
+/// the admitted family (see the module docs); [`ChartSplit::Uncertified`]
+/// when an admitted face's partition cannot be certified.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn split_trimmed_cylinder_by_chart(
     surface: &FaceSurface,
@@ -434,11 +437,12 @@ pub(super) fn split_trimmed_cylinder_by_chart(
         periodic_v: false,
         v_angular: false,
     };
-    // A failed certificate here reports the face as outside the family, not
-    // as admitted-but-uncertified: these faces had no chart partition before
-    // this front end, and their established results are not this module's to
-    // demote. Only a proven partition changes what the caller returns.
-    partition(
+    // Admitted. The caller asks for this partition only after its established
+    // one failed its own checks (a section left out, a spur, a region set
+    // that does not tile the face), so a failure from here on is a face
+    // nothing certifies: it is reported to the operation's gate, which
+    // refuses an exact-only result, never handed back as outside the family.
+    ChartSplit::admitted(partition(
         surface,
         &carrier,
         &chart,
@@ -452,8 +456,7 @@ pub(super) fn split_trimmed_cylinder_by_chart(
         reversed,
         face_id,
         tol,
-    )
-    .map_or(ChartSplit::Unsupported, ChartSplit::Certified)
+    ))
 }
 
 /// Whether some periodic image of chart point `p` lies inside `outline`.
@@ -703,4 +706,131 @@ fn partition(
         out.len()
     );
     Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    //! The unit wall `v ∈ [0, 4]` with the hole `u ∈ [1, 2] × v ∈ [1, 3]`
+    //! ([`crate::chart_trim::fixtures`]), split through the production entry.
+    #![allow(clippy::unwrap_used)]
+
+    use remus_math::context::OperationContext;
+    use remus_math::curves2d::{Curve2D, Line2D};
+    use remus_math::det_hash::DetHashMap;
+    use remus_math::surfaces::CylindricalSurface;
+    use remus_math::tolerance::Tolerance;
+    use remus_math::vec::Vec2;
+    use remus_topology::Topology;
+
+    use super::super::super::split_types::SurfaceInfo;
+    use super::super::split_face_2d;
+    use super::*;
+    use crate::chart_trim::fixtures::{Trim, wall};
+    use crate::gfa::SectionDropScope;
+
+    /// The ruling at chart angle `u` from height `v0` to `v1`.
+    fn ruling(cyl: &CylindricalSurface, u: f64, (v0, v1): (f64, f64)) -> SectionEdge {
+        let dummy = Curve2D::Line(Line2D::new(Point2::new(0.0, 0.0), Vec2::new(1.0, 0.0)).unwrap());
+        SectionEdge {
+            curve_3d: EdgeCurve::Line,
+            trim: None,
+            pcurve_a: dummy.clone(),
+            pcurve_b: dummy,
+            start: cyl.evaluate(u, v0),
+            end: cyl.evaluate(u, v1),
+            start_uv_a: None,
+            end_uv_a: None,
+            start_uv_b: None,
+            end_uv_b: None,
+            target_face: None,
+            pave_block_id: None,
+        }
+    }
+
+    /// The production split and the uncertified rescues it reported.
+    fn split(topo: &Topology, face: FaceId, sections: &[SectionEdge]) -> (usize, u64) {
+        let scope = SectionDropScope::enter();
+        let parts = split_face_2d(
+            topo,
+            face,
+            sections,
+            Rank::A,
+            &Tolerance::default(),
+            None,
+            Some(&SurfaceInfo::Parametric {
+                u_periodic: true,
+                v_periodic: false,
+            }),
+            &DetHashMap::default(),
+            &OperationContext::new(),
+            None,
+        )
+        .unwrap();
+        (parts.len(), scope.uncertified_rescues())
+    }
+
+    /// Two rim-to-rim rulings clear of the hole: the control the admitted
+    /// family certifies, so nothing is reported.
+    #[test]
+    fn rulings_clear_of_the_hole_report_nothing() {
+        let (topo, face, cyl) = wall(Trim::Hole);
+        let sections = [ruling(&cyl, 3.0, (0.0, 4.0)), ruling(&cyl, 5.0, (0.0, 4.0))];
+        let (parts, uncertified) = split(&topo, face, &sections);
+        assert_eq!(uncertified, 0);
+        // The band between the rulings, and the holed rest, which the seam
+        // runs through and which is emitted as its chart pieces either side.
+        assert_eq!(parts, 3);
+    }
+
+    /// The bay's floor arc at height `z`, over `trim`, as a section.
+    fn arc_section(cyl: &CylindricalSurface, z: f64, trim: (f64, f64)) -> SectionEdge {
+        let dummy = Curve2D::Line(Line2D::new(Point2::new(0.0, 0.0), Vec2::new(1.0, 0.0)).unwrap());
+        SectionEdge {
+            curve_3d: EdgeCurve::Circle(crate::chart_trim::fixtures::ring(cyl, z)),
+            trim: Some(trim),
+            pcurve_a: dummy.clone(),
+            pcurve_b: dummy,
+            start: cyl.evaluate(trim.0, z),
+            end: cyl.evaluate(trim.1, z),
+            start_uv_a: None,
+            end_uv_a: None,
+            start_uv_b: None,
+            end_uv_b: None,
+            target_face: None,
+            pave_block_id: None,
+        }
+    }
+
+    /// A section retracing part of a boundary arc (a thread flank's rim did
+    /// this) is certified to divide nothing: the same circle, inside the
+    /// boundary arc's span. Off that span, or on another circle, it is not.
+    #[test]
+    fn a_section_retracing_a_boundary_arc_is_certified_on_the_boundary() {
+        let (topo, face, cyl) = wall(Trim::Bay);
+        let on = |s: &SectionEdge| super::super::section_on_face_boundary(&topo, face, s, 1e-7);
+        // The bay's floor is the arc u in [1, 2] at height 3.
+        assert!(on(&arc_section(&cyl, 3.0, (1.2, 1.8))));
+        assert!(on(&arc_section(&cyl, 3.0, (1.0, 2.0))));
+        // Past the floor's end, and one period away past it.
+        assert!(!on(&arc_section(&cyl, 3.0, (1.5, 2.5))));
+        assert!(!on(&arc_section(&cyl, 3.0, (2.2, 2.8))));
+        // The same span one unit lower, on no boundary.
+        assert!(!on(&arc_section(&cyl, 2.0, (1.2, 1.8))));
+        // A straight section on the bay's left generator, and one beside it.
+        assert!(on(&ruling(&cyl, 1.0, (3.2, 3.8))));
+        assert!(!on(&ruling(&cyl, 1.1, (3.2, 3.8))));
+    }
+
+    /// A ruling crossing the hole with no node on its rims (an unresolved
+    /// contact) is admitted, and its arrangement cannot be certified. The
+    /// established partition the rescue was asked to replace failed its own
+    /// checks, so the operation's gate must hear of it: the face is reported
+    /// uncertified, never silently handed back as outside the family.
+    #[test]
+    fn an_unnoded_crossing_of_the_hole_is_reported_uncertified() {
+        let (topo, face, cyl) = wall(Trim::Hole);
+        let sections = [ruling(&cyl, 1.5, (0.0, 4.0))];
+        let (_, uncertified) = split(&topo, face, &sections);
+        assert_eq!(uncertified, 1);
+    }
 }
