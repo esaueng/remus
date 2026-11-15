@@ -11,8 +11,15 @@
 //! a bore, the cap gains that bore's cross-section as a hole, sharing the very
 //! edge the bore wall was trimmed back to.
 //!
-//! Anything the plane meets in a way this has no exact construction for is
-//! refused by name with [`OperationsError::Unsupported`], never approximated.
+//! Where the plane meets the body in a way this trimmer has no construction
+//! for — a curved edge, a non-planar face, an inner wire that would become a
+//! notch — [`split`] falls back to the two exact half-space booleans: the
+//! body intersected with a box on each side of the plane, sized from the
+//! body's bounding box and oriented to the plane. That
+//! route is exact-only too, keeps the analytic surfaces, records the same
+//! construction-derived evolution, and passes the same validity and
+//! volume-sum gates. What neither route can build is refused by name with
+//! [`OperationsError::Unsupported`], never approximated.
 //!
 //! A face is placed by the extent of its own boundary curves, computed in
 //! closed form for lines and circles. That is exact for everything this
@@ -180,19 +187,23 @@ pub struct SplitEvolution {
 /// 5. Both halves are validated, required to enclose positive volume, and
 ///    required to add back up to the input.
 ///
+/// When steps 1–4 have no exact construction for the cut (the plane crosses
+/// a curved edge, a non-planar face other than square to a cylinder's axis,
+/// or one of a face's inner wires; contains an edge while crossing the
+/// interior; or cuts a face into more than one piece), the halves come from
+/// the exact half-space booleans instead and pass the same step-5 gates. A
+/// half may then hold more than one disjoint piece, as a boolean result can.
+///
 /// # Errors
 ///
 /// Returns [`OperationsError::InvalidInput`] if `plane_normal` is zero-length
 /// or the plane leaves the body entirely on one side.
 ///
-/// Returns [`OperationsError::Unsupported`] when the split has no exact
-/// construction here — the solid has cavity shells, the plane contains an edge
-/// of the body, the plane crosses a curved edge or one of a face's inner
-/// wires, the plane crosses a non-planar face other than square to a
-/// cylinder's axis, the plane cuts a face into more than one piece, the
-/// section does not close into a single outer loop, or a half fails
-/// validation, encloses no volume, or does not account for its share of the
-/// input's.
+/// Returns [`OperationsError::Unsupported`] when the solid has cavity shells,
+/// when the plane does not cross the solid's interior but contains an edge of
+/// it (it only touches the body along an edge or face), or when neither the
+/// trimmer nor the exact half-space booleans can build the halves — the
+/// reason then names the trimmer's refusal and the boolean's.
 pub fn split(
     topo: &mut Topology,
     solid: SolidId,
@@ -272,7 +283,9 @@ pub fn split_by_sheet(
 ///
 /// The mapping is recorded while the halves are built — which source face
 /// each carried or trimmed face came from — never recovered geometrically
-/// after the fact.
+/// after the fact. The half-space boolean route keeps that promise: it takes
+/// the GFA's construction-derived face origins, and refuses rather than fall
+/// back to a geometric match.
 ///
 /// # Errors
 ///
@@ -288,18 +301,46 @@ pub fn split_with_evolution(
     // volume-sum veto run, so a late refusal would leave half-built
     // topology behind without this wrapper.
     remus_topology::transaction::run_transacted(topo, |topo| {
-        split_with_evolution_impl(topo, solid, plane_point, plane_normal)
+        split_with_evolution_impl(topo, solid, plane_point, plane_normal, Route::WithFallback)
     })
+}
+
+/// [`split_with_evolution`] restricted to the native topology trimmer: no
+/// half-space boolean fallback. For callers that run their own exact cut when
+/// the trimmer refuses, and so must see that refusal rather than a boolean
+/// result whose cap provenance they would then have to re-derive.
+///
+/// # Errors
+///
+/// [`split`]'s errors, with every configuration the trimmer cannot build
+/// refused as [`OperationsError::Unsupported`].
+pub(crate) fn split_planar_with_evolution(
+    topo: &mut Topology,
+    solid: SolidId,
+    plane_point: Point3,
+    plane_normal: Vec3,
+) -> Result<(SplitResult, SplitEvolution), OperationsError> {
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        split_with_evolution_impl(topo, solid, plane_point, plane_normal, Route::PlanarOnly)
+    })
+}
+
+/// Whether a split may fall back to the exact half-space booleans.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Route {
+    WithFallback,
+    PlanarOnly,
 }
 
 /// [`split_with_evolution`] without the transaction wrapper.
 ///
-/// Only the wrapped entry point is safe to call on live topology.
+/// Only the wrapped entry points are safe to call on live topology.
 fn split_with_evolution_impl(
     topo: &mut Topology,
     solid: SolidId,
     plane_point: Point3,
     plane_normal: Vec3,
+    route: Route,
 ) -> Result<(SplitResult, SplitEvolution), OperationsError> {
     let tol = Tolerance::new();
     let normal = plane_normal.normalize()?;
@@ -320,7 +361,264 @@ fn split_with_evolution_impl(
     // crate's own `approx_eq` convention. Never loosened to admit a case.
     let eps = tol.linear.max(model_span(topo, &all_faces)? * tol.relative);
 
-    let cuts = classify_edges(topo, &all_faces, normal, d, eps, tol)?;
+    let contact = plane_contact(topo, &all_faces, normal, d, eps)?;
+    if contact.lo >= -eps || contact.hi <= eps {
+        // No edge of the body reaches across the plane: it misses the body,
+        // or only touches it. (A closed curved face could in principle bow
+        // across the plane between edges clear of it; that case is neither
+        // detected here nor built by the exact booleans.)
+        return Err(match contact.contained {
+            Some(edge) => unsupported(format!(
+                "the cutting plane does not cross the solid's interior; it only \
+                 touches the body and contains edge {} of the solid, so there \
+                 is nothing to split",
+                edge.index()
+            )),
+            None => OperationsError::InvalidInput {
+                reason: "cutting plane does not split the solid (entirely on one side)".into(),
+            },
+        });
+    }
+
+    let planar = remus_topology::transaction::run_transacted(topo, |topo| {
+        planar_split(topo, solid, &all_faces, normal, d, eps, tol)
+    });
+    match planar {
+        Err(OperationsError::Unsupported { reason, .. }) if route == Route::WithFallback => {
+            // The trimmer has no exact construction for this cut (a curved
+            // edge, a non-planar face, a hole turned notch, ...). The two
+            // half-space booleans build the same halves exactly.
+            remus_topology::transaction::run_transacted(topo, |topo| {
+                half_space_split(topo, solid, normal, d, tol)
+            })
+            .map_err(|fallback| {
+                unsupported(format!(
+                    "{reason}; the exact half-space boolean fallback also refused \
+                     ({fallback})"
+                ))
+            })
+        }
+        other => other,
+    }
+}
+
+/// How the body's edges meet the cutting plane: the signed-distance extent
+/// over all of them, and the first edge the plane contains.
+struct PlaneContact {
+    lo: f64,
+    hi: f64,
+    contained: Option<EdgeId>,
+}
+
+fn plane_contact(
+    topo: &Topology,
+    all_faces: &[FaceId],
+    normal: Vec3,
+    d: f64,
+    eps: f64,
+) -> Result<PlaneContact, OperationsError> {
+    let mut seen: BTreeSet<usize> = BTreeSet::new();
+    let mut contact = PlaneContact {
+        lo: f64::INFINITY,
+        hi: f64::NEG_INFINITY,
+        contained: None,
+    };
+    for &fid in all_faces {
+        for eid in face_edges(topo, fid)? {
+            if !seen.insert(eid.index()) {
+                continue;
+            }
+            let (lo, hi) = edge_range(topo, eid, normal, d)?;
+            contact.lo = contact.lo.min(lo);
+            contact.hi = contact.hi.max(hi);
+            if contact.contained.is_none() && lo >= -eps && hi <= eps {
+                contact.contained = Some(eid);
+            }
+        }
+    }
+    Ok(contact)
+}
+
+/// A `2 * span` cube standing on the plane through `foot`, on the side
+/// `outward` points to, and its face on the plane.
+fn half_space_tool(
+    topo: &mut Topology,
+    foot: Point3,
+    outward: Vec3,
+    span: f64,
+) -> Result<(SolidId, FaceId), OperationsError> {
+    use remus_math::mat::Mat4;
+    use remus_topology::explorer::solid_faces;
+
+    // Right-handed: u x v = outward, so the box's local +z is `outward`.
+    let (u, v) = plane_basis(outward);
+    let corner = foot - (u + v) * span;
+    let tool = crate::primitives::make_box(topo, 2.0 * span, 2.0 * span, 2.0 * span)?;
+    crate::transform::transform_solid(
+        topo,
+        tool,
+        &Mat4([
+            [u.x(), v.x(), outward.x(), corner.x()],
+            [u.y(), v.y(), outward.y(), corner.y()],
+            [u.z(), v.z(), outward.z(), corner.z()],
+            [0.0, 0.0, 0.0, 1.0],
+        ]),
+    )?;
+    let cap = solid_faces(topo, tool)?
+        .into_iter()
+        .find(|&f| {
+            topo.face(f).is_ok_and(|face| {
+                face.effective_plane_normal()
+                    .is_some_and(|n| n.dot(outward) < -AXIS_PARALLEL_COSINE)
+            })
+        })
+        .ok_or_else(|| unsupported("the half-space tool has no face on the cutting plane"))?;
+    Ok((tool, cap))
+}
+
+/// Split by the two exact half-space booleans: each half is the body
+/// intersected with a box on its own side of the plane.
+///
+/// The boxes are sized from the body's conservative bounding box and oriented
+/// to the plane, so only their faces on the plane can meet the body. The
+/// booleans are exact-only and construction-tracked: an input face carried or
+/// trimmed into a half is `modified` from its source, and the box's face on
+/// the plane (the cap) is `unresolved` with no candidates, exactly as in the
+/// trimmer. Both halves pass the trimmer's own gates — valid, positive
+/// volume, and volumes that add back up to the body.
+fn half_space_split(
+    topo: &mut Topology,
+    solid: SolidId,
+    normal: Vec3,
+    d: f64,
+    tol: Tolerance,
+) -> Result<(SplitResult, SplitEvolution), OperationsError> {
+    use crate::boolean::BooleanOp;
+    use remus_topology::explorer::solid_faces;
+
+    let bounds = crate::measure::conservative_solid_bounding_box(topo, solid)?;
+    let center = bounds.min + (bounds.max - bounds.min) * 0.5;
+    let radius = (bounds.max - bounds.min).length() * 0.5;
+    // Every body point lies within `radius` of `center`, and the plane meets
+    // the body, so `center` lies within `radius` of the plane. With each box's
+    // sides `2 * radius` out from the foot of `center` on the plane and its
+    // far face `4 * radius` from the plane, every face but the cap sits
+    // strictly outside the body's box.
+    let span = 2.0 * radius;
+    if !span.is_finite() || span <= tol.linear {
+        return Err(unsupported(
+            "the body has no finite extent to size a half-space from",
+        ));
+    }
+    let foot = center - normal * (dot_normal_point(normal, center) - d);
+    let inputs: BTreeSet<usize> = solid_faces(topo, solid)?
+        .into_iter()
+        .map(remus_topology::arena::Id::index)
+        .collect();
+
+    let mut built = Vec::with_capacity(2);
+    for (side, outward) in [(Side::Pos, normal), (Side::Neg, -normal)] {
+        // Each half is an intersection with its own side's box: the same
+        // construction for both halves, so neither depends on the other's
+        // boolean succeeding first.
+        let (tool, cap) = half_space_tool(topo, foot, outward, span)?;
+        let (half, history) =
+            crate::boolean::boolean_with_evolution(topo, BooleanOp::Intersect, solid, tool)?;
+        // The tool was scaffolding: retire it so the session does not keep an
+        // orphan cube. Entities the half shares with it stay live. Best
+        // effort — a retirement refused over an unrelated session problem
+        // only leaves the orphan behind, as the other boolean tools do.
+        if let Err(error) = topo.delete_solid(tool) {
+            log::debug!("split: half-space tool left in the arena: {error}");
+        }
+        if !history.origin.is_exact() || !history.generated.is_empty() {
+            return Err(unsupported(format!(
+                "the half-space boolean for the {} half has no construction-derived \
+                 face history",
+                side.name()
+            )));
+        }
+        let mut evo = EvolutionMap::exact();
+        // Source order, so the map is built deterministically.
+        let sources: BTreeMap<usize, &Vec<usize>> = history
+            .modified
+            .iter()
+            .map(|(&src, out)| (src, out))
+            .collect();
+        for (src, outputs) in sources {
+            for &out in outputs {
+                if src == cap.index() {
+                    // The cap: synthesised by the operation, as in the trimmer.
+                    evo.add_unresolved(out, Vec::new());
+                } else if inputs.contains(&src) {
+                    evo.add_modified(src, out);
+                } else {
+                    return Err(unsupported(format!(
+                        "a side of the half-space tool entered the {} half",
+                        side.name()
+                    )));
+                }
+            }
+        }
+        for (&out, candidates) in &history.unresolved {
+            evo.add_unresolved(out, candidates.clone());
+        }
+        let volume = gate(topo, half, side)?;
+        built.push((half, volume, evo));
+    }
+    conserve(topo, solid, built, tol)
+}
+
+/// Require the halves to add back up to the body, and hand them back.
+///
+/// The halves are a decomposition of the input, so this identity is exact up
+/// to rounding. It is the strongest single check available here: it catches
+/// a filled hole, a dropped face and an inside-out cap alike.
+fn conserve(
+    topo: &Topology,
+    solid: SolidId,
+    mut built: Vec<(SolidId, f64, EvolutionMap)>,
+    tol: Tolerance,
+) -> Result<(SplitResult, SplitEvolution), OperationsError> {
+    let input_volume = crate::measure::solid_volume(topo, solid, VOLUME_DEFLECTION)?;
+    let sum: f64 = built.iter().map(|(_, v, _)| v).sum();
+    let slack = (input_volume.abs() * VOLUME_SUM_RELATIVE_SLACK).max(tol.linear);
+    if (sum - input_volume).abs() > slack {
+        return Err(unsupported(format!(
+            "the two halves enclose {sum} but the body encloses {input_volume}; \
+             the split did not conserve the model"
+        )));
+    }
+
+    if built.len() != 2 {
+        return Err(unsupported("split did not produce two halves"));
+    }
+    let (neg_solid, _, neg_evo) = built.pop().ok_or_else(|| unsupported("missing half"))?;
+    let (pos_solid, _, pos_evo) = built.pop().ok_or_else(|| unsupported("missing half"))?;
+    Ok((
+        SplitResult {
+            positive: pos_solid,
+            negative: neg_solid,
+        },
+        SplitEvolution {
+            positive: pos_evo,
+            negative: neg_evo,
+        },
+    ))
+}
+
+/// The native topology trimmer: carry, trim and cap the body's own faces.
+#[allow(clippy::too_many_arguments)]
+fn planar_split(
+    topo: &mut Topology,
+    solid: SolidId,
+    all_faces: &[FaceId],
+    normal: Vec3,
+    d: f64,
+    eps: f64,
+    tol: Tolerance,
+) -> Result<(SplitResult, SplitEvolution), OperationsError> {
+    let cuts = classify_edges(topo, all_faces, normal, d, eps, tol)?;
 
     let mut positive = Half {
         side: Side::Pos,
@@ -336,7 +634,7 @@ fn split_with_evolution_impl(
     };
     let mut straddled = 0usize;
 
-    for &fid in &all_faces {
+    for &fid in all_faces {
         match face_side(topo, fid, &cuts)? {
             // Untouched: surface, curved edges, orientation and every inner
             // wire travel through as topology rather than as positions.
@@ -391,35 +689,7 @@ fn split_with_evolution_impl(
         let volume = gate(topo, assembled, half.side)?;
         built.push((assembled, volume, evo));
     }
-
-    // The halves are a decomposition of the input, so this identity is exact
-    // up to rounding. It is the strongest single check available here: it
-    // catches a filled hole, a dropped face and an inside-out cap alike.
-    let input_volume = crate::measure::solid_volume(topo, solid, VOLUME_DEFLECTION)?;
-    let sum: f64 = built.iter().map(|(_, v, _)| v).sum();
-    let slack = (input_volume.abs() * VOLUME_SUM_RELATIVE_SLACK).max(tol.linear);
-    if (sum - input_volume).abs() > slack {
-        return Err(unsupported(format!(
-            "the two halves enclose {sum} but the body encloses {input_volume}; \
-             the split did not conserve the model"
-        )));
-    }
-
-    if built.len() != 2 {
-        return Err(unsupported("split did not produce two halves"));
-    }
-    let (neg_solid, _, neg_evo) = built.pop().ok_or_else(|| unsupported("missing half"))?;
-    let (pos_solid, _, pos_evo) = built.pop().ok_or_else(|| unsupported("missing half"))?;
-    Ok((
-        SplitResult {
-            positive: pos_solid,
-            negative: neg_solid,
-        },
-        SplitEvolution {
-            positive: pos_evo,
-            negative: neg_evo,
-        },
-    ))
+    conserve(topo, solid, built, tol)
 }
 
 /// Require a half to be a valid solid enclosing positive volume, and return

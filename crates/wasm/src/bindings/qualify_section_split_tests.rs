@@ -284,3 +284,96 @@ fn batch_split_plate_clear_of_hole_matches_closed_form() {
         1e-9,
     );
 }
+
+/// #1745: `split` through a cylinder's curved edges used to throw "crosses
+/// curved edge 0". It now returns both halves through the exact half-space
+/// boolean route, direct and batch bit-identical, each half valid with its
+/// closed-form volume.
+#[test]
+fn split_cylinder_through_curved_edges_returns_both_halves() {
+    let full = std::f64::consts::PI * 100.0 * 20.0;
+    let segment = (100.0 * 0.3_f64.acos() - 3.0 * 91.0_f64.sqrt()) * 20.0;
+    for (px, pos_expected, neg_expected) in [
+        (0.0, full / 2.0, full / 2.0),
+        (3.0, segment, full - segment),
+    ] {
+        let mut direct = RemusKernel::new();
+        let solid = direct.make_cylinder_solid(10.0, 20.0).unwrap();
+        let halves = direct
+            .split_solid(solid, px, 0.0, 0.0, 1.0, 0.0, 0.0)
+            .unwrap();
+        assert_eq!(halves.len(), 2, "split must return two halves");
+        let pos = direct.resolve_solid(halves[0]).unwrap();
+        let neg = direct.resolve_solid(halves[1]).unwrap();
+        let direct_pos = solid_volume(direct.topo(), pos, 0.01).unwrap();
+        let direct_neg = solid_volume(direct.topo(), neg, 0.01).unwrap();
+        assert_relative(&format!("x={px} pos"), direct_pos, pos_expected, 1e-9);
+        assert_relative(&format!("x={px} neg"), direct_neg, neg_expected, 1e-9);
+
+        // The fallback mints (and retires) its half-space tools, so the
+        // halves' handles come from the split's own answer, not from a
+        // presumed allocation order.
+        let mut batch = RemusKernel::new();
+        let program = serde_json::json!([
+            {"op": "makeCylinder", "args": {"radius": 10.0, "height": 20.0}},
+            {"op": "split", "args": {"solid": 0, "px": px, "py": 0.0, "pz": 0.0, "nx": 1.0, "ny": 0.0, "nz": 0.0}},
+        ])
+        .to_string();
+        let split = parse(&batch.execute_batch_v2(&program));
+        assert!(
+            split[1].get("error").is_none(),
+            "x={px}: batch split must succeed, got {split:?}"
+        );
+        let pos_handle = split[1]["ok"]["positive"]
+            .as_u64()
+            .expect("positive handle");
+        let neg_handle = split[1]["ok"]["negative"]
+            .as_u64()
+            .expect("negative handle");
+        let program = serde_json::json!([
+            {"op": "volume", "args": {"solid": pos_handle, "deflection": 0.01}},
+            {"op": "volume", "args": {"solid": neg_handle, "deflection": 0.01}},
+            {"op": "validateSolid", "args": {"solid": pos_handle}},
+            {"op": "validateSolid", "args": {"solid": neg_handle}},
+        ])
+        .to_string();
+        let response = parse(&batch.execute_batch_v2(&program));
+        let batch_pos = response[0]["ok"].as_f64().expect("batch pos");
+        let batch_neg = response[1]["ok"].as_f64().expect("batch neg");
+        assert!(
+            batch_pos.to_bits() == direct_pos.to_bits(),
+            "x={px}: batch pos {batch_pos} must equal direct {direct_pos}"
+        );
+        assert!(
+            batch_neg.to_bits() == direct_neg.to_bits(),
+            "x={px}: batch neg {batch_neg} must equal direct {direct_neg}"
+        );
+        assert_eq!(response[2]["ok"], serde_json::json!(0), "pos validates");
+        assert_eq!(response[3]["ok"], serde_json::json!(0), "neg validates");
+    }
+}
+
+/// A plane lying on a face of the body (z = 0 on a box based at z = 0) still
+/// refuses typed, and now says the plane does not cross the interior.
+#[test]
+fn batch_split_on_a_face_says_it_does_not_cross_the_interior() {
+    let mut kernel = RemusKernel::new();
+    let program = serde_json::json!([
+        {"op": "makeBox", "args": {"width": 4.0, "height": 4.0, "depth": 4.0}},
+        {"op": "split", "args": {"solid": 0, "px": 0.0, "py": 0.0, "pz": 0.0, "nx": 0.0, "ny": 0.0, "nz": 1.0}},
+        {"op": "volume", "args": {"solid": 0, "deflection": 0.01}},
+    ])
+    .to_string();
+    let response = parse(&kernel.execute_batch_v2(&program));
+    let message = response[1]["error"].to_string();
+    assert!(
+        message.contains("split") && message.contains("does not cross the solid's interior"),
+        "refusal must say the plane does not cross the interior, got {response:?}"
+    );
+    assert_relative(
+        "input volume after refused split",
+        response[2]["ok"].as_f64().expect("volume after refusal"),
+        64.0,
+        1e-9,
+    );
+}
