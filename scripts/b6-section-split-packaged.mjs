@@ -30,8 +30,10 @@
  * - `section` coincident => one-face outline success
  * - `section` edge-touch => `InvalidInput` ("no closed cross-section")
  * - `split` miss => `InvalidInput` ("entirely on one side")
- * - `split` cavity / inner-wire / edge-contained => `Unsupported` naming the
+ * - `split` cavity / edge-contained => `Unsupported` naming the
  *   configuration; every refusal rolls back and preserves handles
+ * - `split` through a hole's mouth turns the hole into a notch in each half,
+ *   built by the exact half-space boolean route (#1745): 96 + 96
  *
  * Direct and batch paths are exercised where supported (`section`/`split` both
  * have batch dispatch; `convexHull`-style direct-only gaps do not apply here).
@@ -457,17 +459,63 @@ export function runB6SectionSplitPackaged({ RemusKernel }) {
     console.log('ok - B6 packaged split: cavity Unsupported, session + handles preserved');
   }
 
-  // 9b. Typed split refusal through the hole mouth: inner-wire crossing (Unsupported).
+  // 9b. Split through the hole mouth: the hole becomes a notch in each half
+  // (#1745). The planar trimmer has no construction for that, so the split
+  // takes the exact half-space boolean route. Each half is 5x10x2 less a 1x2
+  // notch = 96, all-planar, with no inner wire left. The reference is the
+  // public `intersect` with an independently built box on each side of x=5.
+  // The fallback allocates (and retires) tool solids, so batch halves are
+  // read from the split's returned handles, never from allocation order.
   {
+    const HALF = 5 * 10 * 2 - 1 * 2 * 2;
+    const checkHalves = (kernel, holed, pos, neg, label) => {
+      for (const [half, side] of [[pos, 'positive'], [neg, 'negative']]) {
+        assert.equal(kernel.validateSolid(half), 0, `${label} ${side} validates`);
+        assertClose(kernel.volume(half, DEFLECTION), HALF, `${label} ${side} volume`);
+        const faces = Array.from(kernel.getSolidFaces(half));
+        assert.ok(faces.length > 0, `${label} ${side} has faces`);
+        for (const face of faces) {
+          // The stored surface, not a NURBS patch detected as planar.
+          assert.equal(
+            JSON.parse(kernel.getAnalyticSurfaceParams(face)).type,
+            'plane',
+            `${label} ${side} face ${face} stays an analytic plane`,
+          );
+          assert.equal(faceHoleCount(kernel, face), 0, `${label} ${side} face ${face}: the hole became a notch`);
+        }
+      }
+      assertClose(
+        kernel.volume(pos, DEFLECTION) + kernel.volume(neg, DEFLECTION),
+        kernel.volume(holed, DEFLECTION),
+        `${label} halves sum to input`,
+      );
+      // Material sides: x in (6, 10) is solid on the positive side only, and
+      // x in (0, 4) on the negative side only; the hole's mouth is empty.
+      assert.equal(kernel.classifyPoint(pos, 8, 5, 1, TOL), 'inside', `${label} positive holds x>5 material`);
+      assert.equal(kernel.classifyPoint(neg, 8, 5, 1, TOL), 'outside', `${label} negative excludes x>5 material`);
+      assert.equal(kernel.classifyPoint(neg, 2, 5, 1, TOL), 'inside', `${label} negative holds x<5 material`);
+      assert.equal(kernel.classifyPoint(pos, 2, 5, 1, TOL), 'outside', `${label} positive excludes x<5 material`);
+      assert.equal(kernel.classifyPoint(pos, 5.5, 5, 1, TOL), 'outside', `${label} positive notch is empty`);
+      assert.equal(kernel.classifyPoint(neg, 4.5, 5, 1, TOL), 'outside', `${label} negative notch is empty`);
+    };
+
     const direct = new RemusKernel();
     const { holed } = makeHoledPlateDirect(direct);
-    assert.throws(
-      () => direct.split(holed, 5, 0, 0, 1, 0, 0),
-      /inner wire/,
-      'direct inner-wire split must name the inner wire',
-    );
-    assertClose(direct.volume(holed, DEFLECTION), 192, 'plate preserved after inner-wire refusal');
-    assert.equal(direct.validateSolid(holed), 0, 'plate still validates');
+    const halves = Array.from(direct.split(holed, 5, 0, 0, 1, 0, 0));
+    assert.equal(halves.length, 2, 'notch split must return two halves');
+    const [pos, neg] = halves;
+    checkHalves(direct, holed, pos, neg, 'direct notch split');
+    assertClose(direct.volume(holed, DEFLECTION), 192, 'plate input preserved by the split');
+    assert.equal(direct.validateSolid(holed), 0, 'plate input still validates');
+
+    // Boolean reference: the plate intersected with a 20-unit box on each side.
+    const reference = (xMin) => {
+      const box = direct.makeBox(10, 20, 20);
+      direct.transformSolid(box, new Float64Array(translationMatrix(xMin, -5, -5)));
+      return direct.volume(direct.intersect(holed, box), DEFLECTION);
+    };
+    assertClose(direct.volume(pos, DEFLECTION), reference(5), 'positive half matches the x>5 intersect');
+    assertClose(direct.volume(neg, DEFLECTION), reference(-5), 'negative half matches the x<5 intersect');
 
     const batch = new RemusKernel();
     const program = JSON.stringify([
@@ -476,13 +524,27 @@ export function runB6SectionSplitPackaged({ RemusKernel }) {
       { op: 'transform', args: { solid: 1, matrix: translationMatrix(4, 4, -1) } },
       { op: 'cut', args: { solidA: 0, solidB: 1 } },
       { op: 'split', args: { solid: 2, px: 5, py: 0, pz: 0, nx: 1, ny: 0, nz: 0 } },
-      { op: 'volume', args: { solid: 2, deflection: DEFLECTION } },
     ]);
     const response = parseV2(batch.executeBatchV2(program));
-    const err = batchErr(response, 4, 'batch inner-wire split');
-    assert.match(err.message, /inner wire/, 'inner-wire refusal names the configuration');
-    assertClose(batchOk(response, 5, 'plate volume after refusal'), 192, 'batch session preserved');
-    console.log('ok - B6 packaged split: inner-wire Unsupported, through-hole session preserved');
+    const splitOut = batchOk(response, 4, 'batch notch split');
+    assert.ok(
+      typeof splitOut.positive === 'number' && typeof splitOut.negative === 'number',
+      `batch notch split returns handles, got ${JSON.stringify(splitOut)}`,
+    );
+    const batchHoled = batchOk(response, 3, 'batch holed plate');
+    checkHalves(batch, batchHoled, splitOut.positive, splitOut.negative, 'batch notch split');
+    // Direct/batch parity, bit for bit.
+    assert.equal(
+      batch.volume(splitOut.positive, DEFLECTION),
+      direct.volume(pos, DEFLECTION),
+      'notch split positive parity',
+    );
+    assert.equal(
+      batch.volume(splitOut.negative, DEFLECTION),
+      direct.volume(neg, DEFLECTION),
+      'notch split negative parity',
+    );
+    console.log('ok - B6 packaged split: hole-mouth split 96+96 as notches, boolean reference, direct+batch');
   }
 
   // 9c. Split miss refuses while section miss succeeds: the two contracts differ by design.
