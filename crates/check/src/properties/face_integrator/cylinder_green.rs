@@ -72,6 +72,9 @@ const AXIAL_ORDER: usize = 3;
 const NURBS_ON_SURFACE: f64 = 1e-3;
 /// Absolute floor of the on-surface bound, in model units.
 const NURBS_ON_SURFACE_ABS: f64 = 1e-3;
+/// Relative agreement a fitted trim's span-by-span and halved-span readings
+/// must reach, of the edge's terms (scaled by the radius's square and cube).
+const FITTED_CONVERGENCE: f64 = 1e-9;
 
 /// The edge's velocity `dP/dt` at `t` for an exact trim (line, circle,
 /// ellipse); `None` for anything else.
@@ -87,10 +90,26 @@ fn velocity(curve: &EdgeCurve, t: f64, start: Point3, end: Point3) -> Option<Vec
     }
 }
 
-/// Equal quadrature pieces of `[lo, hi]`.
-fn pieces(lo: f64, hi: f64) -> impl Iterator<Item = (f64, f64)> {
-    let step = (hi - lo) / EDGE_PIECES as f64;
-    (0..EDGE_PIECES).map(move |k| (step.mul_add(k as f64, lo), step.mul_add((k + 1) as f64, lo)))
+/// `[lo, hi]` cut at every distinct interior knot, each knot span then into
+/// `per_span` equal pieces.
+fn knot_pieces(knots: &[f64], lo: f64, hi: f64, per_span: usize) -> Vec<(f64, f64)> {
+    let mut breaks = vec![lo];
+    for &knot in knots {
+        if knot > lo && knot < hi && breaks.last().is_none_or(|&last| knot > last) {
+            breaks.push(knot);
+        }
+    }
+    breaks.push(hi);
+    breaks
+        .windows(2)
+        .flat_map(|w| pieces(w[0], w[1], per_span))
+        .collect()
+}
+
+/// `count` equal quadrature pieces of `[lo, hi]`.
+fn pieces(lo: f64, hi: f64, count: usize) -> impl Iterator<Item = (f64, f64)> {
+    let step = (hi - lo) / count as f64;
+    (0..count).map(move |k| (step.mul_add(k as f64, lo), step.mul_add((k + 1) as f64, lo)))
 }
 
 /// The face's contribution and vector area by Green's theorem.
@@ -107,28 +126,32 @@ pub(super) fn integrate<const AREA_ONLY: bool>(
     rule: &IntegrationRule<'_>,
     sign: f64,
 ) -> Result<Option<(FaceContribution, Vec3)>, CheckError> {
-    let mut acc = Accumulator {
+    let fresh = || Accumulator {
         volume_only: rule.volume_only,
         ..Accumulator::default()
     };
-    let mut scratch = DerivativeScratch::new();
-    let edge_points = gauss_legendre_points(EDGE_ORDER);
-    let axial_points = gauss_legendre_points(AXIAL_ORDER);
+    let mut acc = fresh();
     let Ok(axis) = cylinder.axis().normalize() else {
         return Ok(None);
     };
-    let off_surface_limit = (NURBS_ON_SURFACE * cylinder.radius()).max(NURBS_ON_SURFACE_ABS);
+    let reading = Reading {
+        cylinder,
+        axis,
+        reference: rule.reference,
+        off_surface_limit: (NURBS_ON_SURFACE * cylinder.radius()).max(NURBS_ON_SURFACE_ABS),
+    };
     // Fitted trims only for a reading no certificate qualifies (module docs).
     let fitted_trims_allowed = rule.flux.is_none();
+    let radius = cylinder.radius();
 
     for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
         for oriented in topo.wire(wire_id)?.edges() {
             let edge = topo.edge(oriented.edge())?;
-            let (start, end) = (
-                topo.vertex(edge.start())?.point(),
-                topo.vertex(edge.end())?.point(),
-            );
-            let curve = edge.curve();
+            let span = EdgeSpan {
+                curve: edge.curve(),
+                start: topo.vertex(edge.start())?.point(),
+                end: topo.vertex(edge.end())?.point(),
+            };
             let Ok((t0, t1)) = edge.strict_domain() else {
                 return Ok(None);
             };
@@ -139,51 +162,43 @@ pub(super) fn integrate<const AREA_ONLY: bool>(
             } else {
                 -1.0
             };
-            for (p0, p1) in pieces(lo, hi) {
-                let half = (p1 - p0) / 2.0;
-                let mid = p0 + half;
-                for gp in edge_points {
-                    let t = half.mul_add(gp.x, mid);
-                    let point = curve.evaluate_with_endpoints(t, start, end);
-                    let Some(dp_dt) = velocity(curve, t, start, end) else {
-                        return Ok(None);
-                    };
-                    // The angular rate of the projected point: ∂P/∂u has the
-                    // radius's length, so a point at radial distance ρ moves
-                    // in u at r/ρ times `dp·∂P/∂u / |∂P/∂u|²`. Exact trims
-                    // lie on the surface (ρ = r) and keep the plain quotient.
-                    let rate_scale = if matches!(curve, EdgeCurve::NurbsCurve(_)) {
-                        if !fitted_trims_allowed {
-                            return Ok(None);
-                        }
-                        let offset = point - cylinder.origin();
-                        let rho = (offset - axis * offset.dot(axis)).length();
-                        if (rho - cylinder.radius()).abs() > off_surface_limit {
-                            return Ok(None);
-                        }
-                        cylinder.radius() / rho
-                    } else {
-                        1.0
-                    };
-                    let (u, v) = cylinder.project_point(point);
-                    let (_, du_vec, _, _, _) =
-                        cylinder.span_hinted_point_and_partials_with_scratch(u, v, &mut scratch);
-                    let du_dt = rate_scale * dp_dt.dot(du_vec) / du_vec.dot(du_vec);
-                    // −∮ F du, F(u, v) = v ∫₀¹ f(u, v s) ds.
-                    let line_weight = -(direction * gp.w * half) * du_dt * v;
-                    for sp in axial_points {
-                        let s = 0.5 * (sp.x + 1.0);
-                        acc.add::<_, AREA_ONLY>(
-                            cylinder,
-                            u,
-                            v * s,
-                            line_weight * 0.5 * sp.w,
-                            rule.reference,
-                            &mut scratch,
-                        );
-                    }
+            if !matches!(span.curve, EdgeCurve::NurbsCurve(_)) {
+                let intervals: Vec<_> = pieces(lo, hi, EDGE_PIECES).collect();
+                if !reading.edge::<AREA_ONLY>(&span, direction, &intervals, &mut acc) {
+                    return Ok(None);
                 }
+                continue;
             }
+            if !fitted_trims_allowed {
+                return Ok(None);
+            }
+            // A fitted trim is a spline: the rule is exact-to-round-off only
+            // inside one knot span, and a parameterization that crowds its
+            // turn into a few spans is under-resolved by equal pieces. Read
+            // it span by span, then with every span halved, and keep it only
+            // where the two agree.
+            let EdgeCurve::NurbsCurve(nurbs) = span.curve else {
+                return Ok(None);
+            };
+            let (coarse_pieces, fine_pieces) = (
+                knot_pieces(nurbs.knots(), lo, hi, 1),
+                knot_pieces(nurbs.knots(), lo, hi, 2),
+            );
+            let (mut coarse, mut fine) = (fresh(), fresh());
+            if !reading.edge::<AREA_ONLY>(&span, direction, &coarse_pieces, &mut coarse)
+                || !reading.edge::<AREA_ONLY>(&span, direction, &fine_pieces, &mut fine)
+            {
+                return Ok(None);
+            }
+            let converged = (coarse.area - fine.area).abs()
+                <= FITTED_CONVERGENCE * (fine.area.abs() + radius * radius)
+                && (AREA_ONLY
+                    || (coarse.vol - fine.vol).abs()
+                        <= FITTED_CONVERGENCE * (fine.vol.abs() + radius * radius * radius));
+            if !converged {
+                return Ok(None);
+            }
+            acc.absorb(&fine);
         }
     }
     if !acc.area.is_finite() || acc.area <= 0.0 {
@@ -191,4 +206,80 @@ pub(super) fn integrate<const AREA_ONLY: bool>(
     }
     let flux = acc.flux(sign);
     Ok(Some((acc.finish(sign), flux)))
+}
+
+/// One boundary edge's curve and end points.
+struct EdgeSpan<'a> {
+    curve: &'a EdgeCurve,
+    start: Point3,
+    end: Point3,
+}
+
+/// What every edge of one face is read against.
+struct Reading<'a> {
+    cylinder: &'a CylindricalSurface,
+    axis: Vec3,
+    reference: Point3,
+    off_surface_limit: f64,
+}
+
+impl Reading<'_> {
+    /// Add `−∮ F du` along `span` over `intervals` (run in `direction`), one
+    /// Gauss–Legendre rule per interval. `false` when the edge is not a curve
+    /// this path reads, or a fitted point lies off the surface.
+    fn edge<const AREA_ONLY: bool>(
+        &self,
+        span: &EdgeSpan<'_>,
+        direction: f64,
+        intervals: &[(f64, f64)],
+        acc: &mut Accumulator,
+    ) -> bool {
+        let mut scratch = DerivativeScratch::new();
+        let edge_points = gauss_legendre_points(EDGE_ORDER);
+        let axial_points = gauss_legendre_points(AXIAL_ORDER);
+        let cylinder = self.cylinder;
+        for &(p0, p1) in intervals {
+            let half = (p1 - p0) / 2.0;
+            let mid = p0 + half;
+            for gp in edge_points {
+                let t = half.mul_add(gp.x, mid);
+                let point = span.curve.evaluate_with_endpoints(t, span.start, span.end);
+                let Some(dp_dt) = velocity(span.curve, t, span.start, span.end) else {
+                    return false;
+                };
+                // The angular rate of the projected point: ∂P/∂u has the
+                // radius's length, so a point at radial distance ρ moves in u
+                // at r/ρ times `dp·∂P/∂u / |∂P/∂u|²`. Exact trims lie on the
+                // surface (ρ = r) and keep the plain quotient.
+                let rate_scale = if matches!(span.curve, EdgeCurve::NurbsCurve(_)) {
+                    let offset = point - cylinder.origin();
+                    let rho = (offset - self.axis * offset.dot(self.axis)).length();
+                    if (rho - cylinder.radius()).abs() > self.off_surface_limit {
+                        return false;
+                    }
+                    cylinder.radius() / rho
+                } else {
+                    1.0
+                };
+                let (u, v) = cylinder.project_point(point);
+                let (_, du_vec, _, _, _) =
+                    cylinder.span_hinted_point_and_partials_with_scratch(u, v, &mut scratch);
+                let du_dt = rate_scale * dp_dt.dot(du_vec) / du_vec.dot(du_vec);
+                // −∮ F du, F(u, v) = v ∫₀¹ f(u, v s) ds.
+                let line_weight = -(direction * gp.w * half) * du_dt * v;
+                for sp in axial_points {
+                    let s = 0.5 * (sp.x + 1.0);
+                    acc.add::<_, AREA_ONLY>(
+                        cylinder,
+                        u,
+                        v * s,
+                        line_weight * 0.5 * sp.w,
+                        self.reference,
+                        &mut scratch,
+                    );
+                }
+            }
+        }
+        true
+    }
 }

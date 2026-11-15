@@ -449,7 +449,9 @@ fn operand_with_a_holed_and_a_bayed_wall_classifies_like_its_primitives() {
 }
 
 /// Before the fix: 4 edges used once (by id and by position), volume 319.757
-/// (above the 318.49 of the step-2 body it cut). Oracle 308.387.
+/// (above the 318.49 of the step-2 body it cut). Oracle 308.387. The pinned
+/// reading moved from 308.385322 to 308.386536 when the fitted bore-wall
+/// trims began integrating on their own boundary (closer to the oracle).
 #[test]
 fn coaxial_wider_half_tunnel() {
     let mut topo = Topology::new();
@@ -460,7 +462,7 @@ fn coaxial_wider_half_tunnel() {
         &(Mat4::translation(-1.0, 6.0, 2.0) * Mat4::rotation_y(FRAC_PI_2)),
     );
     let result = chain(&mut topo, third);
-    assert_review_measurements(&topo, result, 308.385_322, "coaxial wider half tunnel");
+    assert_review_measurements(&topo, result, 308.386_536, "coaxial wider half tunnel");
     assert_desired(
         &topo,
         result,
@@ -497,13 +499,15 @@ fn coaxial_wider_half_tunnel() {
 /// Before the fix: 7 edges not used twice (by id and by position): the exit
 /// loop used once on the bore wall, the old loop used three times, and the
 /// rim arc plus two marched sections at the x = 10 exit used once each.
-/// Volume 294.378. Oracle 307.568.
+/// Volume 294.378. Oracle 307.568. The pinned reading moved from 307.564244
+/// to 307.567421 when the fitted trims began integrating on their own
+/// boundary (closer to the oracle).
 #[test]
 fn oblique_tunnel_crossing() {
     let mut topo = Topology::new();
     let third = oblique_cutter(&mut topo);
     let result = chain(&mut topo, third);
-    assert_review_measurements(&topo, result, 307.564_244, "oblique tunnel crossing");
+    assert_review_measurements(&topo, result, 307.567_421, "oblique tunnel crossing");
     assert_desired(
         &topo,
         result,
