@@ -66,18 +66,19 @@ fn approximate_only_skips_the_exact_pipeline_and_discloses_quality() {
     assert!((v - 15.0).abs() < 1e-3, "mesh fuse volume {v}");
 }
 
-/// Two r 5 cylinders whose walls overlap by 1e-3 (centres 9.999 apart), the
-/// second raised 3 mm: the exact pipeline, `fuse_solids`' parallel-cylinder
-/// cluster included, cannot assemble their fuse, so they exercise the mesh
-/// fallback without corrupting an operand. The B21 boss a hair past a block
-/// side served until the exact pipeline learned it.
+/// Two r 5 cylinders whose walls overlap by 1e-6 (centres 9.999999 apart),
+/// the second raised 3 mm: the exact pipeline, `fuse_solids`'
+/// parallel-cylinder cluster included, cannot assemble their fuse, so they
+/// exercise the mesh fallback without corrupting an operand. The B21 boss a
+/// hair past a block side served until the exact pipeline learned it, and the
+/// same pair overlapping by 1e-3 until it learned thin cap lenses (#1742).
 fn near_tangent_cylinders(
     topo: &mut Topology,
 ) -> (remus_topology::SolidId, remus_topology::SolidId) {
     use remus_operations::primitives::make_cylinder;
     let a = make_cylinder(topo, 5.0, 10.0).unwrap();
     let b = make_cylinder(topo, 5.0, 10.0).unwrap();
-    transform_solid(topo, b, &Mat4::translation(9.999, 0.0, 3.0)).unwrap();
+    transform_solid(topo, b, &Mat4::translation(9.999_999, 0.0, 3.0)).unwrap();
     (a, b)
 }
 
@@ -187,7 +188,7 @@ fn optioned_outcome_discloses_the_fallback_it_was_allowed_to_take() {
         BooleanQuality::Approximate { deflection: 0.05 },
         "the permissive path must disclose the fallback and its budget"
     );
-    // Both cylinders less their 1e-3-wide lens (under 1e-3 mm³ over the
+    // Both cylinders less their 1e-6-wide lens (under 1e-6 mm³ over the
     // height), within mesh accuracy.
     let v = solid_volume(&topo, out.solid, 0.05).unwrap();
     let expected = 2.0 * std::f64::consts::PI * 250.0;
@@ -233,14 +234,14 @@ fn compound_cut_refuses_like_the_handle_entry_point() {
     use remus_operations::OperationsError;
     use remus_operations::boolean::{BooleanOptions, compound_cut};
     use remus_operations::primitives::make_cylinder;
-    // Two cylinders near-tangent (centers 9.999 apart, radii 5+5): both Fuse
+    // Two cylinders near-tangent (centers 9.999999 apart, radii 5+5): both Fuse
     // and Cut require the mesh fallback (verified via `boolean` refusing and
     // `boolean_with_context` reporting Approximate), so the bare-handle
     // `compound_cut` must refuse rather than hand back the fallback silently.
     let mut topo = Topology::new();
     let target = make_cylinder(&mut topo, 5.0, 10.0).unwrap();
     let tool = make_cylinder(&mut topo, 5.0, 10.0).unwrap();
-    transform_solid(&mut topo, tool, &Mat4::translation(9.999, 0.0, 0.0)).unwrap();
+    transform_solid(&mut topo, tool, &Mat4::translation(9.999_999, 0.0, 0.0)).unwrap();
     // Guard the fixture: exact Cut must still need the fallback.
     {
         let mut guard = topo.clone();

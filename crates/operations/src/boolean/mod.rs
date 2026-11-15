@@ -1981,6 +1981,18 @@ fn boolean_with_context_impl(
         }
     }
 
+    // Every exact path above declined. If phase FF dropped a closed circle
+    // that crosses into a planar face by more than the strict crossing depth
+    // (a thin cap lens, #1742), retry once with it kept. The retry runs only
+    // here, after the run above failed, so a result that run would have
+    // returned is returned unchanged.
+    if drops.thin_cap_lenses() > 0
+        && !remus_algo::gfa::ThinCapLensKeep::active()
+        && let Some(result) = retry_with_thin_cap_lenses(topo, op, a, b, context, opts)?
+    {
+        return Ok(result);
+    }
+
     // Mesh boolean fallback (no recursion). Under an exact-only policy
     // this is the refusal point: degrading to a mesh is declined with a
     // typed error rather than performed silently.
@@ -1989,6 +2001,43 @@ fn boolean_with_context_impl(
     };
     *used_fallback = true;
     run_mesh_fallback(topo, op, a, b, budget, tol, opts)
+}
+
+/// Re-run a boolean whose exact pipeline failed with phase FF's thin cap-lens
+/// keep held (see [`remus_algo::gfa::ThinCapLensKeep`]), exact-only.
+///
+/// `Some` only for an exact result. Anything else (a refusal, an error, a
+/// result that took a fallback) is rewound, so the caller continues on the
+/// path it would have taken without the retry. Cancellation still stops it.
+fn retry_with_thin_cap_lenses(
+    topo: &mut Topology,
+    op: BooleanOp,
+    a: SolidId,
+    b: SolidId,
+    context: &remus_math::context::OperationContext,
+    opts: &BooleanOptions,
+) -> Result<Option<SolidId>, crate::OperationsError> {
+    let snapshot = remus_topology::transaction::RollbackSnapshot::capture(topo);
+    let exact = context
+        .clone()
+        .with_fallback(remus_math::context::FallbackPolicy::ExactOnly);
+    let mut used_fallback = false;
+    let attempt = {
+        let _keep = remus_algo::gfa::ThinCapLensKeep::enter();
+        boolean_with_context_impl(topo, op, a, b, &exact, opts, &mut used_fallback)
+    };
+    match attempt {
+        Ok(result) if !used_fallback => {
+            snapshot.commit(topo);
+            log::info!("boolean {op:?}: exact after keeping thin cap-lens sections");
+            Ok(Some(result))
+        }
+        Ok(_) | Err(_) => {
+            snapshot.restore(topo);
+            context.check_cancelled()?;
+            Ok(None)
+        }
+    }
 }
 
 /// The mesh (co-refinement) fallback path, at an explicit deflection.

@@ -66,9 +66,10 @@ function overlappingBoxesBatch({ exactOnly = false } = {}) {
 }
 
 // Match fallback_policy::near_tangent_cylinders: two r5 h10 cylinders,
-// centres 9.999 apart with the second raised 3. The former boss fixture is
-// now exact, so it no longer exercises refusal or disclosed approximation.
-const nearTangentTranslation = Object.freeze([9.999, 0, 3]);
+// centres 9.999999 apart with the second raised 3. The former boss fixture,
+// and the same pair 9.999 apart (#1742), are now exact, so they no longer
+// exercise refusal or disclosed approximation.
+const nearTangentTranslation = Object.freeze([9.999999, 0, 3]);
 function nearTangentBatch({ exactOnly = false } = {}) {
   const batch = [
     { op: 'makeCylinder', args: { radius: 5, height: 10 } },
