@@ -1418,7 +1418,11 @@ fn validate_solid_observed(
     let scale = crate::measure::solid_bounding_box(topo, solid)
         .map_or(1.0, |bounds| (bounds.max - bounds.min).length());
     issues.extend(tangent_contact::tangent_line_contact_issues(
-        topo, &faces, tol, scale,
+        topo,
+        &faces,
+        &components,
+        tol,
+        scale,
     ));
     Ok(ValidationReport { issues })
 }
@@ -1786,7 +1790,6 @@ pub(crate) fn any_vertex_of(topo: &Topology, faces: &[FaceId]) -> Option<Point3>
 }
 
 mod tangent_contact;
-pub(crate) use tangent_contact::has_tangent_line_contact;
 
 #[cfg(test)]
 mod tests;

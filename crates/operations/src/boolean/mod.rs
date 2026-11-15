@@ -222,9 +222,6 @@ fn exact_result_is_acceptable(
                     || intersect_multi_region_semantically_safe(topo, result, a, b, tol))))
         && (!dropped_chains
             || material_witness::material_witnesses_agree(topo, op, a, b, &[result], tol))
-        // A cut that leaves a hole tangent to a wall along a line keeps the
-        // solid zero thick there with no edge to say so (#1739).
-        && !crate::validate::has_tangent_line_contact(topo, result)
 }
 
 /// A failed certificate on an admitted chart cannot be repaired by material
@@ -1727,7 +1724,6 @@ fn boolean_with_context_impl(
                     && result_within_operand_bounds(topo, op, result, a, b, tol)
                     && validate_boolean_result_with_tolerance(topo, result, tol).is_ok()
                     && material_ok(topo)
-                    && !crate::validate::has_tangent_line_contact(topo, result)
                 {
                     log::info!(
                         "GFA boolean succeeded in {:.1}ms ({result_faces} faces)",
@@ -1832,7 +1828,6 @@ fn boolean_with_context_impl(
                     && result_within_operand_bounds(topo, op, result, a, b, tol)
                     && validate_boolean_result_with_tolerance(topo, result, tol).is_ok()
                     && material_ok(topo)
-                    && !crate::validate::has_tangent_line_contact(topo, result)
                 {
                     log::info!(
                         "GFA multi-region succeeded in {:.1}ms ({result_faces} faces, {components} pieces)",

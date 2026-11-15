@@ -161,22 +161,40 @@ fn surface_census(topo: &Topology, s: SolidId) -> (usize, usize, usize) {
     census
 }
 
-/// Panics with the validator's own words if `solid` is not a valid solid, which
-/// for these results means closed and 2-manifold: zero free boundary edges and
-/// zero non-manifold edges.
+/// The validator's report for a tool tangent to the plate wall from inside
+/// the material: the hole wall and the wall touch along a line with no edge,
+/// so the body is zero thick there (#1739). Watertightness, which this file
+/// asserts, is a separate property.
+const TANGENT_CONTACT: &str = "touch along a line inside both faces";
+
+/// Panics with the validator's own words if `solid` is not closed and
+/// 2-manifold: zero free boundary edges and zero non-manifold edges, and no
+/// other validation error. The zero-thickness contact a tangent cut leaves
+/// (`TANGENT_CONTACT`) is not a watertightness defect; the tests that build
+/// one assert it separately.
 fn assert_watertight(topo: &Topology, solid: SolidId, what: &str) {
     let report = validate::validate_solid(topo, solid).expect("validate");
+    let errors: Vec<String> = report
+        .issues
+        .iter()
+        .filter(|i| i.severity == validate::Severity::Error)
+        .map(|i| i.description.clone())
+        .filter(|description| !description.contains(TANGENT_CONTACT))
+        .collect();
     assert!(
-        report.is_valid(),
+        errors.is_empty(),
         "{what}: not a valid solid: {}",
-        report
-            .issues
-            .iter()
-            .filter(|i| i.severity == validate::Severity::Error)
-            .map(|i| i.description.clone())
-            .collect::<Vec<_>>()
-            .join("; ")
+        errors.join("; ")
     );
+}
+
+/// Whether validation reports the zero-thickness tangent contact.
+fn reports_tangent_contact(topo: &Topology, solid: SolidId) -> bool {
+    validate::validate_solid(topo, solid)
+        .expect("validate")
+        .issues
+        .iter()
+        .any(|i| i.severity == validate::Severity::Error && i.description.contains(TANGENT_CONTACT))
 }
 
 /// The body's own volume, read off the exact per-face integral rather than a
@@ -286,6 +304,13 @@ fn a_tangent_boss_is_never_silently_dropped() {
         let what = format!("{name} of a tangent boss");
 
         assert_watertight(&topo, result, &what);
+        // The cut leaves the plate zero thick where the hole touches the wall
+        // (#1739): kept, never dropped, but not reported as a valid solid.
+        assert_eq!(
+            reports_tangent_contact(&topo, result),
+            op == BooleanOp::Cut,
+            "{what}: tangent contact"
+        );
 
         let want = expected(op, 0.0);
         let got = solid_volume(&topo, result, DEFLECTION).unwrap();

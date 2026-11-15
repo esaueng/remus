@@ -217,26 +217,24 @@ fn interior_contact(
     None
 }
 
-/// Whether `solid` has a plane–cylinder pair tangent along a line inside both
-/// faces: the exact boolean gate's reading of [`tangent_line_contact_issues`].
-pub fn has_tangent_line_contact(topo: &Topology, solid: remus_topology::solid::SolidId) -> bool {
-    let Ok(faces) = remus_topology::explorer::solid_faces(topo, solid) else {
-        return false;
-    };
-    let scale = crate::measure::solid_bounding_box(topo, solid)
-        .map_or(1.0, |bounds| (bounds.max - bounds.min).length());
-    !tangent_line_contact_issues(topo, &faces, Tolerance::new(), scale).is_empty()
-}
-
 /// Errors for every plane–cylinder pair of `faces` tangent along a line
 /// inside both faces. `scale` is the solid's size (its bounding-box
 /// diagonal), from which the edge clearance is taken.
 pub(super) fn tangent_line_contact_issues(
     topo: &Topology,
     faces: &[FaceId],
+    components: &[Vec<FaceId>],
     tol: Tolerance,
     scale: f64,
 ) -> Vec<ValidationIssue> {
+    // Separate closed components that touch along a line are a tangent
+    // union, which validation accepts per component; only faces of one
+    // edge-connected component can make that component zero thick.
+    let component_of: std::collections::HashMap<usize, usize> = components
+        .iter()
+        .enumerate()
+        .flat_map(|(index, component)| component.iter().map(move |face| (face.index(), index)))
+        .collect();
     let mut planes = Vec::new();
     let mut cylinders = Vec::new();
     for &id in faces {
@@ -273,6 +271,9 @@ pub(super) fn tangent_line_contact_issues(
     let mut issues = Vec::new();
     for cylinder in &cylinders {
         for plane in &planes {
+            if component_of.get(&cylinder.id.index()) != component_of.get(&plane.id.index()) {
+                continue;
+            }
             if let Some(point) = interior_contact(topo, plane, cylinder, tol, margin) {
                 issues.push(ValidationIssue {
                     severity: Severity::Error,

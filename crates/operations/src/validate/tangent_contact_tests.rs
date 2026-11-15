@@ -147,16 +147,44 @@ fn a_hole_tangent_to_the_wall_below_a_fillet_band_is_not_valid() {
 }
 
 #[test]
-fn the_exact_gate_refuses_the_tangent_cut_it_used_to_return() {
+fn validation_reports_the_tangent_cut_the_boolean_returns() {
+    // The boolean's contract for a tangent tool is pinned by
+    // `regress_boss_crossing_a_wall` (never dropped, closed-form volume), so
+    // the cut still comes back; strict validation is what refuses it as a
+    // valid solid, and consumers that hold cuts to it refuse by type.
     let mut topo = Topology::new();
     let target = stepped(&mut topo, false);
     let tool = hole(&mut topo, 23.0);
-    let refused = crate::boolean::boolean_with_options(
-        &mut topo,
-        BooleanOp::Cut,
-        target,
-        tool,
-        crate::boolean::BooleanOptions::default(),
+    let result = boolean(&mut topo, BooleanOp::Cut, target, tool).unwrap();
+    let report = validate_solid(&topo, result).unwrap();
+    assert!(!report.is_valid(), "{report:?}");
+    assert!(
+        report
+            .issues
+            .iter()
+            .any(|issue| issue.description.contains(CONTACT)),
+        "{report:?}"
     );
-    assert!(refused.is_err(), "{refused:?}");
+}
+
+#[test]
+fn a_tangent_union_of_separate_bodies_stays_valid() {
+    // A cylinder lying on a box along a line is a tangent union: two closed
+    // components that touch, which validation accepts per component.
+    let mut topo = Topology::new();
+    let block = placed_box(&mut topo, [40.0, 20.0, 10.0], [0.0, 0.0, 0.0]);
+    let roller = crate::primitives::make_cylinder(&mut topo, 3.0, 30.0).unwrap();
+    let along_x =
+        Mat4::translation(5.0, 10.0, 13.0) * Mat4::rotation_y(std::f64::consts::FRAC_PI_2);
+    crate::transform::transform_solid(&mut topo, roller, &along_x).unwrap();
+    if let Ok(result) = boolean(&mut topo, BooleanOp::Fuse, block, roller) {
+        let report = validate_solid(&topo, result).unwrap();
+        assert!(
+            report
+                .issues
+                .iter()
+                .all(|issue| !issue.description.contains(CONTACT)),
+            "{report:?}"
+        );
+    }
 }
