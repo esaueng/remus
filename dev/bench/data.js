@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794664366576,
+  "lastUpdate": 1794752537850,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -144705,6 +144705,304 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 58197,
             "range": "± 214",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Peter",
+            "username": "petertoday",
+            "email": "171875562+petertoday@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "60dc753b77e7f52572d81f73e4cedd625762c530",
+          "message": "fix(io): sample planar face bounds relative to the edge, so large parts read back (#1787)\n\n## Problem\n\nThe STEP reader cannot read back a file the STEP writer produced for a\nlarge part. A 60 × 60 × 20 box united with an r 6, h 30 cylinder reads\nback at 1× and 10×. At **100×** (an r 600 mm boss) and 1000× it fails:\n\n```\nparse error: FACE_BOUND curve exceeds the adaptive planar-classification sampling limit at 1.000000e-4 mm deflection\n```\n\n`sample_bound_edge` samples every curved planar bound edge to a fixed\n`FACE_BOUND_CLASSIFICATION_DEFLECTION` (1e-4 mm). A full circle of\nradius `R` needs about `π·√(R / 2e-4)` chords at that deflection. The\npower-of-two bisection of each of its eight seed intervals rounds that\nup to the 8,192-sample per-edge budget from `R ≈ 300 mm`.\n\nOpenZCAD's K10 combination matrix hits this as its last three untyped\nrefusals:\n`box×cylinder/aligned@1e3/{union,subtract,union-reversed}/no-modifier/step-roundtrip`.\n\n## Fix (`crates/io/src/step/reader.rs`)\n\n- `sample_bound_edge(edge, relative)` returns the polygon and the\ndeflection it sampled to.\n- On planar bounds (`relative = true`), that deflection is `max(1e-4 mm,\n1e-6 · extent)`, where the extent is the edge's nine seed points'\nbounding-box diagonal.\n- A full circle then takes 2,048 samples at any size, and every edge\nunder 100 mm samples exactly as before (same points, same order).\n- `sample_planar_bound` raises a `deflection` accumulator to the largest\nedge deflection.\n- Generic planar classification and winding repair sample at the\nabsolute deflection first, unchanged. Only when that refuses (past the\nsampling budget) do they sample relative to the edges, comparing\ncontainment at `deflection + tol.linear`. That relative pass refuses if\ntwo loops' areas differ by no more than their perimeters times the\ndeflection.\n- Periodic (UV) bounds still sample at the absolute deflection, with\ntheir margins unchanged.\n- The refusal message now names the deflection actually used.\n\n## Evidence\n\nNew `crates/io/tests/large_scale_step_roundtrip.rs`: box ∪ cylinder and\nbox − cylinder at 1×, 10×, 100× and 1000× are written with `write_step`,\nread back with `read_step`, and must give one solid whose volume matches\nto 1e-9 relative. Before the fix it fails at `scale 100 Fuse`; after,\nall eight cases pass.\n\n## Verification (local, Linux x86-64)\n\n- `cargo test -p remus-io --profile ci-test --lib` plus every\n`crates/io/tests/*step*` binary (74 targets): all pass, including the\nlib suite's 544.\n- `cargo clippy -p remus-io --all-targets --all-features -- -D\nwarnings`: clean.\n- `cargo fmt`, the wildcard-arm ratchet and the module map: clean.\n- Left to CI: the remaining binaries, WASM and translator parity.\n\n## Review\n\nIndependent read-only review: `gpt-6.1-sol` (medium effort, default\ntier).\n- **Fixed (latest commit), P1:** coarser chords could reorder loops. In\na thin annulus (outer r 200 in one edge, hole r 199.99995 in five arcs)\nthe hole's relative-deflection polygon came out larger and was picked as\nthe perimeter. Now, if any two loops' areas differ by no more than their\nperimeters times the deflection used, every loop is sampled again at the\nabsolute deflection and margin, so the face classifies exactly as\nbefore. Regression: `step/reader/bound_sampling_tests.rs` builds the\nreviewer's polygons and confirms the reordering is caught.\n- Re-check of that fix, **fixed (bd079ecf), two P2s**:\n- area separation does not certify containment under the relaxed margin\n(a small loop just outside a large circle could be accepted as a hole);\n  - the perimeter × deflection area bound is not a general certificate.\n\nThe structural answer is that classification and winding repair now\nsample at the **absolute deflection first**, exactly as before, and only\na face that refuses there is sampled relative to its edges. That pass\nstill refuses when two loops' areas are that close. Every face the\nreader could read before is classified bit for bit as before; the\nrelative path is reached only by faces it used to refuse.\n- Declined: none.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-11-15T14:08:43Z",
+          "url": "https://github.com/esaueng/remus/commit/60dc753b77e7f52572d81f73e4cedd625762c530"
+        },
+        "date": 1794752533235,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 943547,
+            "range": "± 13816",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 986147,
+            "range": "± 9842",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 21853,
+            "range": "± 48",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 6849231,
+            "range": "± 60238",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 6809544,
+            "range": "± 25014",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 6683897,
+            "range": "± 5918",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 21999,
+            "range": "± 24",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 3887343,
+            "range": "± 7951",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 23357937,
+            "range": "± 482788",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 28,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 89,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 67,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 187,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 167,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 675,
+            "range": "± 8",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 143,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 296,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 199,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 455,
+            "range": "± 9",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 850,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 2738,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 16,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 27,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 74,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 74,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "surface_projection/cached_grid/3",
+            "value": 18371,
+            "range": "± 22",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "surface_projection/cached_grid/9",
+            "value": 115514,
+            "range": "± 907",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/bilinear_hit",
+            "value": 3134,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_secant",
+            "value": 12482,
+            "range": "± 82",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_miss",
+            "value": 45986,
+            "range": "± 1324",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/quadratic_hit",
+            "value": 4213,
+            "range": "± 39",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 415700,
+            "range": "± 2678",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 2180484,
+            "range": "± 7291",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 117586,
+            "range": "± 94",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 237844,
+            "range": "± 459",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/plane_torus_grid",
+            "value": 287604,
+            "range": "± 520",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 49959,
+            "range": "± 261",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/narrow_bump_flank",
+            "value": 26880,
+            "range": "± 111",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_hit",
+            "value": 16244,
+            "range": "± 55",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_miss",
+            "value": 90140,
+            "range": "± 1245",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_grid_build",
+            "value": 112623,
+            "range": "± 98",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 498182,
+            "range": "± 44215",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 6778158,
+            "range": "± 111873",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 597220,
+            "range": "± 2542",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 921272,
+            "range": "± 1974",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 79848,
+            "range": "± 616",
             "unit": "ns/iter"
           }
         ]
