@@ -3486,6 +3486,9 @@ fn curved_section_within(outer: &SectionEdge, inner: &SectionEdge, band: f64) ->
     let mut multiplicity: std::collections::BTreeMap<u64, usize> =
         std::collections::BTreeMap::new();
     for &k in interior_breaks {
+        // `-0.0` and `+0.0` are one knot to evaluation, so they must count
+        // as one break here.
+        let k = if k == 0.0 { 0.0 } else { k };
         *multiplicity.entry(k.to_bits()).or_default() += 1;
     }
     if multiplicity.values().any(|&m| m > o.degree()) {

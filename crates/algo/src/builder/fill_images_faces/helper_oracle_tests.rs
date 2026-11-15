@@ -1290,3 +1290,26 @@ fn a_discontinuous_outer_section_does_not_cover_its_chord() {
         );
     }
 }
+
+/// Review counterexample (#1733): the same gap written with a signed-zero
+/// knot pair, `-0.0` then `+0.0`. Evaluation treats them as one knot of full
+/// multiplicity, so the continuity check must count them together.
+#[test]
+fn signed_zero_knots_do_not_hide_a_gap() {
+    let p = |x: f64| Point3::new(x, 0.0, 0.0);
+    let outer = polyline_section(
+        vec![-1.0, -1.0, -0.0, 0.0, 1.0, 1.0],
+        vec![p(0.0), p(1.0), p(3.0), p(4.0)],
+        (-1.0, 1.0),
+    );
+    let inner = polyline_section(vec![0.0, 0.0, 1.0, 1.0], vec![p(1.5), p(2.5)], (0.0, 1.0));
+    for order in [[inner.clone(), outer.clone()], [outer, inner]] {
+        let mut sections = order.to_vec();
+        dedup_collinear_sections(&mut sections, 1e-7);
+        assert_eq!(
+            sections.len(),
+            2,
+            "deleted a section inside the outer curve's gap (1, 3)"
+        );
+    }
+}
