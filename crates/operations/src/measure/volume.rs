@@ -7425,3 +7425,6 @@ mod torus_latitude_band_tests {
 
 #[cfg(test)]
 mod periodic_winding_tests;
+
+#[cfg(test)]
+mod crossing_cylinder_breakout_tests;

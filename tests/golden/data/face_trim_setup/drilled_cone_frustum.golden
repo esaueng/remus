@@ -14,9 +14,9 @@ face=8 kind=plane order=5 area_only=12.566370614359196 area=12.566370614359196 v
 face=8 kind=plane order=8 area_only=12.566370614359196 area=12.566370614359196 volume=25.13274122871839 digest=46771c78468e8b38
 face=8 kind=plane options=default area=12.566370614359196 volume=25.13274122871839 digest=46771c78468e8b38
 face=8 kind=plane options=refined area=12.566370614359196 volume=25.13274122871839 digest=46771c78468e8b38
-face=9 kind=cylinder order=1 area_only=29.61462997948241 area=29.61462997948241 volume=-6.544559439225516 digest=e87bd43b2cddecf2
-face=9 kind=cylinder order=5 area_only=29.61462997948241 area=29.61462997948241 volume=-6.544557161808876 digest=e7f48c686778e4c0
-face=9 kind=cylinder order=8 area_only=29.614629979486985 area=29.614629979486985 volume=-6.544557161807993 digest=a000c551d009224b
-face=9 kind=cylinder options=default area=29.61462997948241 volume=-6.544557161808876 digest=e7f48c686778e4c0
+face=9 kind=cylinder order=1 area_only=29.61463143937056 area=29.61463143937056 volume=-6.544526687322131 digest=abb26afc49ca4a14
+face=9 kind=cylinder order=5 area_only=29.61463143937056 area=29.61463143937056 volume=-6.544526687322131 digest=abb26afc49ca4a14
+face=9 kind=cylinder order=8 area_only=29.61463143937056 area=29.61463143937056 volume=-6.544526687322131 digest=abb26afc49ca4a14
+face=9 kind=cylinder options=default area=29.61463143937056 volume=-6.544526687322131 digest=abb26afc49ca4a14
 face=9 kind=cylinder options=refined area=29.61462997948246 volume=-6.544557161809216 digest=3bbe3b317ded63d0
-solid volume=163.97400672186936 area=207.38409029632828 measured_volume=163.97400672186936
+solid volume=163.97400633256677 area=207.38409175621643 measured_volume=163.97400633256677
