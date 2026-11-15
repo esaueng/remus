@@ -11746,3 +11746,80 @@ fn generic_face_wire_drops_a_reverse_repeat_on_a_non_periodic_face() {
         uses.to_vec()
     );
 }
+
+/// The two-face exception in the boolean result gate (#1790) admits an
+/// analytic curved face closed by a planar one, never a flat NURBS patch: a
+/// planar square and a coincident planar NURBS square sharing all four edges
+/// in opposite senses close on each other as a zero-volume double sheet, and
+/// must still be refused for having fewer than three faces.
+#[test]
+fn two_face_gate_refuses_a_flat_nurbs_double_sheet() {
+    use remus_math::nurbs::surface::NurbsSurface;
+    use remus_topology::shell::Shell;
+    use remus_topology::solid::Solid;
+
+    let mut topo = Topology::new();
+    let corners = [
+        Point3::new(0.0, 0.0, 0.0),
+        Point3::new(1.0, 0.0, 0.0),
+        Point3::new(1.0, 1.0, 0.0),
+        Point3::new(0.0, 1.0, 0.0),
+    ];
+    let vertices: Vec<_> = corners
+        .iter()
+        .map(|&p| topo.add_vertex(Vertex::new(p, 1e-7)))
+        .collect();
+    let edges: Vec<_> = (0..4)
+        .map(|i| {
+            topo.add_edge(Edge::new(
+                vertices[i],
+                vertices[(i + 1) % 4],
+                EdgeCurve::Line,
+            ))
+        })
+        .collect();
+    let forward = topo.add_wire(
+        Wire::new(
+            edges.iter().map(|&e| OrientedEdge::new(e, true)).collect(),
+            true,
+        )
+        .unwrap(),
+    );
+    let reversed = topo.add_wire(
+        Wire::new(
+            edges
+                .iter()
+                .rev()
+                .map(|&e| OrientedEdge::new(e, false))
+                .collect(),
+            true,
+        )
+        .unwrap(),
+    );
+    let flat_nurbs = NurbsSurface::new(
+        1,
+        1,
+        vec![0.0, 0.0, 1.0, 1.0],
+        vec![0.0, 0.0, 1.0, 1.0],
+        vec![vec![corners[0], corners[3]], vec![corners[1], corners[2]]],
+        vec![vec![1.0, 1.0], vec![1.0, 1.0]],
+    )
+    .unwrap();
+    let nurbs_face = topo.add_face(Face::new(forward, vec![], FaceSurface::Nurbs(flat_nurbs)));
+    let plane_face = topo.add_face(Face::new(
+        reversed,
+        vec![],
+        FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, -1.0),
+            d: 0.0,
+        },
+    ));
+    let shell = topo.add_shell(Shell::new(vec![nurbs_face, plane_face]).unwrap());
+    let solid = topo.add_solid(Solid::new(shell, vec![]));
+
+    let error = validate_boolean_result(&topo, solid).unwrap_err();
+    assert!(
+        error.to_string().contains("only 2 faces"),
+        "the flat double sheet must fail the face-count floor: {error}"
+    );
+}

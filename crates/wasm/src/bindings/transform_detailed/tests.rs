@@ -86,38 +86,30 @@ fn assert_ok_details<'a>(env: &'a Value, quality: &str) -> &'a Value {
     details
 }
 
-/// Build a sphere zone with an off-equator band face: sphere r=2 with
-/// everything above z=1.0 and below z=-1.0 cut away. GFA leaves a general
-/// sphere patch outside the exact class (fitted path / exact-only refusal)
-/// alongside exact hemispheres and discs.
+/// Build a sphere cap off the equator: sphere r=2 with everything above
+/// z=-1.0 cut away, leaving the lower cap closed by a disc. GFA leaves the cap
+/// as a general sphere patch outside the exact class (fitted path /
+/// exact-only refusal) alongside the exact disc.
+///
+/// This used to cut above z=1 and then below z=-1, but the second cut never
+/// applied: the ray-cast classifier read the trimmed sphere's interior as
+/// outside, so it silently returned its input (#1790), and the patch this
+/// test relies on was the lower cap that cut should have removed.
 fn make_trimmed_sphere(kernel: &mut RemusKernel) -> u32 {
     let sphere = kernel.make_sphere_solid(2.0, 16).unwrap();
-    let top_cutter = kernel.make_box_solid(20.0, 20.0, 20.0).unwrap();
+    let cutter = kernel.make_box_solid(20.0, 20.0, 20.0).unwrap();
     kernel
         .transform_solid_binding(
-            top_cutter,
+            cutter,
             vec![
                 1.0, 0.0, 0.0, -10.0, //
                 0.0, 1.0, 0.0, -10.0, //
-                0.0, 0.0, 1.0, 1.0, //
+                0.0, 0.0, 1.0, -1.0, //
                 0.0, 0.0, 0.0, 1.0,
             ],
         )
         .unwrap();
-    let top = kernel.cut(sphere, top_cutter).unwrap();
-    let bottom_cutter = kernel.make_box_solid(20.0, 20.0, 20.0).unwrap();
-    kernel
-        .transform_solid_binding(
-            bottom_cutter,
-            vec![
-                1.0, 0.0, 0.0, -10.0, //
-                0.0, 1.0, 0.0, -10.0, //
-                0.0, 0.0, 1.0, -21.0, //
-                0.0, 0.0, 0.0, 1.0,
-            ],
-        )
-        .unwrap();
-    kernel.cut(top, bottom_cutter).unwrap()
+    kernel.cut(sphere, cutter).unwrap()
 }
 
 // ── transformDetailed ────────────────────────────────────────────────────

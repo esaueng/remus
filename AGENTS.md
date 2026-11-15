@@ -198,6 +198,7 @@ Quick reference — find the right file for any task:
 | CDT (constrained Delaunay) | `cdt/` (mod, insert, locate, constraints, collinear, adjacency, tests, tests/collinear_index, tests/flood_batch, tests/hole_grid, tests/off_axis_cap, tests/u_bracket_floor) |
 | Exact integer in-circle sign for the CDT's undecided (cocircular) tests | `cdt/incircle.rs` |
 | Differential oracles for the integer in-circle sign and the scanned duplicate lookup against `robust::incircle` and the eager grid (tests) | `cdt/tests/predicate_oracle.rs` |
+| Differential oracle for constraint recovery: every CDT built again with the directed walk taken after `edge_exists` and the queue's crossings scanned from every triangle (`LEGACY_RECOVERY`), compared vertex, triangle and constraint for constraint on a cylinder-wall chart with sparse seams, random CDTs and the captured caps; fan and walk work counts (tests) | `cdt/tests/recovery_oracle.rs` |
 | Convex hull | `convex_hull.rs` |
 | Filtered exact predicates | `filtered.rs` |
 | Float tolerance | `tolerance.rs` |
@@ -486,7 +487,7 @@ Quick reference — find the right file for any task:
 | Bounded h-refinement on an already resolved rectangular analytic domain | `properties/face_integrator/adaptive.rs` |
 | Bucketed trim-loop segment lookup for trimmed quadrature (O06) | `properties/face_integrator/loop_index.rs` |
 | Exact boundary reduction (Green's theorem) of cylinder, cone, sphere and torus face areas behind `analytic_face_area`, with the trimmed quadrature as fallback | `properties/face_integrator/boundary_area.rs` |
-| Exact moments (volume, centroid, inertia) of a cylinder face trimmed only by lines, circles and ellipses, by Green's theorem on its own boundary; the sampled trim quadrature stays the guard and the path for fitted trims | `properties/face_integrator/cylinder_green.rs` |
+| Exact moments (volume, centroid, inertia) of a cylinder face trimmed by lines, circles, ellipses and fitted NURBS sections that lie on the cylinder, by Green's theorem on its own boundary read on the surface (fitted trims span by span, kept only where the halved-span reading agrees); the sampled trim quadrature stays the guard and the path for trims off the surface or unconverged, and fitted trims keep it for readings that collect the vector area (the volume certificates) | `properties/face_integrator/cylinder_green.rs` |
 | Bit-identity oracle for the NURBS row and grid quadrature (per-axis basis tables) against the verbatim per-abscissa `integrate_parametric` (tests) | `properties/face_integrator/nurbs_rows_oracle_tests.rs` |
 | Bit-identity oracle for `integrate_parametric` with its sliced request out of line and its knot-aligned path reached through `as_nurbs`, against the verbatim previous function (tests) | `properties/face_integrator/parametric_split_oracle_tests.rs` |
 | Full-turn cylinder bands with rims split into many arcs, integrated over their exact `(u, v)` rectangle past the trim budget (tests) | `properties/face_integrator/cylinder_band_tests.rs` |
@@ -616,10 +617,12 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Exact piecewise-analytic sweep tools joined across identical end sections | `chamfer/analytic_tools/joined_sweeps.rs` |
 | Rolling-ball arc stripe between a plane and a coaxial cylinder as an exact torus, or a sphere triangle at the band's own radius (a fillet riding an earlier band's end) | `fillet/arc_torus.rs` |
 | Two convex stripes mitred over a reflex corner whose concave edge stays sharp | `fillet/mitre.rs` |
+| Rolling-ball stripe between a plane and a cylinder that crosses it at a lean (an earlier round's end on a drafted body): closed-form sections between the round's two seams, where the neighbouring wall stripes hand over | `fillet/oblique_arc.rs` |
 | Lone straight rolling-ball stripes ending at a strictly convex planar corner: contacts run out past the vertex onto one side plane, or onto two (a chamfered box's mitred corner) with the end boundary kinked where the band crosses their shared edge | `fillet/rolling_ball/split_runout.rs` |
 | Spatial grid behind the rolling-ball Phase 5d vertex dedup and snap (the linear scans' winners and ties), with its oracle tests | `fillet/vertex_snap.rs` |
 | Shell (hollow solid) | `shell_op.rs` |
-| Draft (taper faces) | `draft.rs` |
+| Draft (taper faces): the sharp construction (corners relocated to three-plane intersections, only the wires they sit on rebuilt), which names the curved faces it refuses on | `draft.rs` |
+| Draft through blends: a box with rounded vertical edges drafted on four walls and on one (tilted planes, exact R5 bands along the tilted sections, closed-form volume, ray-cast probes, total face history), the sharp construction's own refusal naming the bands, the rounded-top-loop case as a typed refusal naming the blend step that stopped it with its ready repro, and a curved neighbour that is no blend keeping the sharp refusal (tests) | `draft/blend_tests.rs` |
 | Section / Split | `section.rs`, `split.rs` |
 | Exact solid-face imprint with journal history | `imprint.rs` |
 | Bounded interior planar polygon imprint with complete construction history | `imprint/polygon.rs`, `imprint/polygon/interval.rs` |
@@ -641,6 +644,8 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Certificate-implies-probe oracle, refusal cases and probe-mesh work guard (tests) | `measure/volume/planar_outline_tests.rs` |
 | Hash-map references for the sorted whole-mesh edge censuses (tests) | `measure/volume/edge_census_oracle_tests.rs` |
 | Long open spline arcs retain their real winding, rather than their chord's (tests) | `measure/volume/periodic_winding_tests.rs` |
+| A drill crossing a bar off its axis and breaking out through the bar's wall measures its closed-form cut and union volume wherever the bar's seam lies (tests) | `measure/volume/crossing_cylinder_breakout_tests.rs` |
+| A cylinder wall bounded by an ellipse (a plane section not normal to the axis) integrates exactly (tests) | `measure/volume/oblique_cylinder_tests.rs` |
 | Bounded opt-in exact-content scalar memo for trimmed NURBS face areas | `measure/nurbs_area_memo.rs`, `measure/nurbs_area_memo/tests.rs` |
 | 128-bit exact content digest of a single face (handle-free; lets a consumer keep what it derived from faces an edit left untouched) | `measure/face_digest.rs` |
 | Bounded opt-in exact-content memo of single-face bounding boxes (the move's swept-region refusal), and its bit-identity tests | `measure/face_box_memo.rs`, `measure/face_box_memo/tests.rs` |
@@ -747,6 +752,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Differential oracle: the group a route recognized on its private copy, carried back to the caller's solid, against recognizing the caller's solid again; boss resizes record the same history either way (tests) | `blend_cluster/edit/source_cluster_tests.rs` |
 | Prepared blend-group edits for live drags (`PreparedGroupEdit`): recognition, removal to sharp and the learned per-band/partial-turn refusal read once; preview frames clone the sharp arena and re-blend with display-only blends under a closed-shell + strict-validation gate; commits run the unprepared route under every guard (plain and journaled) | `blend_cluster/prepared.rs` |
 | Group edits on a body whose rounded cap was lowered into its shoulder with sampled permission: the cap is lifted clear on the private copy, the ordinary group route edits the lifted body, and the cap is lowered back with the permission read off its own sampled rim bands | `blend_cluster/joined_cap.rs` |
+| A draft through blend groups: the recognized groups the sharp draft refuses on (bands on the drafted faces, and bands ending on a face it re-trims) removed to sharp one refusal at a time, the sharp body drafted, the restored sharp edges found again between their drafted corners, and every group re-filleted at its recorded radii in one woven plan; a re-fillet that stops at a vertex blend in every order is a typed draft refusal naming it | `blend_cluster/draft_route.rs` |
 | Prepared band-radius and boss-diameter drags on the filleted Gentle-Gecko and the cumulative body: every frame equal to the unprepared edit (F/E/V, census, volume 1e-9) and on the verification bar, commits equal to the unprepared and journaled edits, cancel byte-identical, staleness and typed refusals (tests) | `tests/prepared_group_edit.rs` |
 | Per-phase timing of blend-group edits and prepared drags on the Gecko and the cumulative body (example) | `examples/blend_group_edit_profile.rs` |
 | Per-phase timing of every geometry generator (primitives, extrude, revolve, loft, sweep, pipe, helix, gears, threads): construction, display tessellation and `solid_volume` medians with face and triangle counts (example) | `examples/geometry_generation_profile.rs` |
@@ -768,6 +774,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Saved-shape analytic line/circle and plane/cylinder carriers, rigid location words, bounded placed occurrences, circular caps and cylindrical seam bands | `brep/reader/carriers.rs`, `brep/reader/locations.rs`, `brep/reader/placed.rs`, `brep/reader/curved.rs` |
 | STEP read/write | `step/reader.rs`, `step/writer.rs` |
 | Verbatim STEP string-decoder oracle, deterministic fuzz, linear-work guards and hostile-name imports (tests) | `step/reader/directive_oracle_tests.rs` |
+| Relative planar-bound sampling: loops whose areas the coarser chords cannot order are flagged for re-sampling at the absolute deflection (tests) | `step/reader/bound_sampling_tests.rs` |
 | STEP export seam placement: a cylindrical band whose seam runs through one of its own inner wires is written, on a private arena copy, with the seam and its rim vertices moved into the widest free angular gap | `step/writer/seam.rs` |
 | Whole-sphere `VERTEX_LOOP` faces: an independently produced one-face sphere imports as the native two-hemisphere sphere, framed and as a void; other vertex-loop layouts refuse atomically (tests) | `tests/step_vertex_loop_sphere.rs` |
 | Overlapping-cylinder unions export a seam clear of every window in both orders and after reload, from native and independently produced inputs (tests) | `tests/step_crossed_seam_export.rs` |

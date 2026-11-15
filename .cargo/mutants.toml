@@ -20,7 +20,8 @@ minimum_test_timeout = 120
 # Test cost, not mutant count, is what the weekly budget buys (B19). Measured
 # on the hosted runner (4 vCPU): the unmutated baseline took 7,483-7,812 s of
 # test time on 2026-09-13/16/20, 99.8% of its CPU in remus-operations, and a
-# single test (`exposed_boss_wall_matches_geometry_across_half_radius`) took
+# single test (`exposed_boss_wall_matches_geometry_across_half_radius`, since
+# split by boss radius into the four `..._r*` tests excluded below) took
 # 6,011-6,353 s and finished last. Those three runs examined 0, 0 and 1 of
 # 4,620 / 3,375 / 1,966 listed mutants before `timeout` stopped them.
 #
@@ -54,7 +55,7 @@ additional_cargo_test_args = [
   # fails `scripts/test-mutants-scope.py` instead of silently rejoining the
   # oracle.
   "-E",
-  "not (test(=exposed_boss_wall_matches_geometry_across_half_radius) | test(=the_reported_body_measures_its_closed_form) | test(=offset_torus_sphere_fuse_retains_both_operands) | test(=offset_torus_sphere_cut_matches_annulus_overlap) | test(=offset_torus_sphere_intersect_matches_annulus_overlap))",
+  "not (test(=exposed_boss_wall_matches_geometry_across_half_radius_r6) | test(=exposed_boss_wall_matches_geometry_across_half_radius_r5) | test(=exposed_boss_wall_matches_geometry_across_half_radius_r7) | test(=exposed_boss_wall_matches_geometry_across_half_radius_r4_5) | test(=the_reported_body_measures_its_closed_form) | test(=offset_torus_sphere_fuse_retains_both_operands) | test(=offset_torus_sphere_cut_matches_annulus_overlap) | test(=offset_torus_sphere_intersect_matches_annulus_overlap))",
 ]
 
 # The arguments above are nextest syntax; plain `cargo mutants` must use it too.

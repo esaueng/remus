@@ -7925,6 +7925,15 @@ export class RemusKernel {
      * permission such a wall refuses with category `quality_refused`
      * (`exact_only_unattainable`, `details.reason:
      * "approximate_reblend_not_permitted"`).
+     *
+     * A wall resized through the blend group it supports (the group is
+     * removed to sharp, the sharp wall resized, the group re-filleted) that
+     * cannot reach the diameter refuses with `details.kernelCode:
+     * "cylinder-diameter-unbuildable"` and `details.requestedDiameter`.
+     * `details.reason` names the step: `wall_meets_face` when the sharp wall
+     * would meet another face at that size (a size limit), or
+     * `group_reblend_failed` when the group's blends do not re-fillet on the
+     * resized body, which can hold at every diameter.
      * @param {number} solid
      * @param {number} face
      * @param {number} radius
@@ -9076,11 +9085,15 @@ export class RemusKernel {
     /**
      * Split a solid into two halves along a plane.
      *
-     * Returns `[positive_solid_handle, negative_solid_handle]`.
+     * Returns `[positive_solid_handle, negative_solid_handle]`. Cuts across
+     * curved edges, non-planar faces or a face's holes are built by the exact
+     * half-space booleans; the halves are exact either way.
      *
      * # Errors
      *
-     * Returns an error if the plane doesn't intersect the solid.
+     * Returns an error if the plane doesn't cross the solid's interior, or
+     * if neither the planar trimmer nor the exact booleans can build the
+     * halves (for example a cavity shell, or an elliptical section).
      * @param {number} solid
      * @param {number} px
      * @param {number} py

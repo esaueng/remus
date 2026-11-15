@@ -3491,10 +3491,10 @@ fn line_circle_cylinder_signed_volume(
             // line/circle cylinder this integrator is exact for. A closed
             // NURBS rim on a RECOGNIZED converted wall is the same geometry
             // (an exact rational circle at constant chart-v): integrate it
-            // through the wall chart instead of declining. Ellipse,
-            // hyperbola, parabola, and unrecognized NURBS decline
-            // explicitly, so a future curve variant cannot silently inherit
-            // this path.
+            // through the wall chart instead of declining. Hyperbola,
+            // parabola, unrecognized NURBS, and an ellipse that is not a
+            // plane section of this wall decline explicitly, so a future
+            // curve variant cannot silently inherit this path.
             //
             // Chart-v is the knot-domain blend factor bottom→top, NOT model
             // axial: rescale by the wall's model height (deg-1 linear in v,
@@ -3541,7 +3541,29 @@ fn line_circle_cylinder_signed_volume(
                 boundary_integral -= v * sweep * cylinder.radius();
                 signed_chart_area -= v * sweep;
             }
-            EdgeCurve::Ellipse(_) | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => {
+            // A plane cutting the wall obliquely (a fillet stripe running out on
+            // a cap its spine is not normal to) bounds it with an ellipse arc.
+            // Along a plane section the chart height is `a + b·cos u + c·sin u`,
+            // so both chart integrals have closed forms.
+            EdgeCurve::Ellipse(ellipse) => {
+                let (u0, u1, [a, b, c]) =
+                    planar_section_chart(topo, edge, oriented.is_forward(), cylinder, ellipse)?;
+                let (sin0, cos0) = u0.sin_cos();
+                let (sin1, cos1) = u1.sin_cos();
+                let sweep = u1 - u0;
+                let height = a.mul_add(sweep, b * (sin1 - sin0) - c * (cos1 - cos0));
+                let double_angle = 0.25 * (2.0 * u1).sin() - 0.25 * (2.0 * u0).sin();
+                let cos_sq = 0.5f64.mul_add(sweep, double_angle);
+                let sin_sq = 0.5f64.mul_add(sweep, -double_angle);
+                let sin_cos = 0.5 * (sin1 * sin1 - sin0 * sin0);
+                boundary_integral -= cylinder.radius() * height
+                    + a * (ox * (sin1 - sin0) + oy * (cos0 - cos1))
+                    + b * ox * cos_sq
+                    + b.mul_add(oy, c * ox) * sin_cos
+                    + c * oy * sin_sq;
+                signed_chart_area -= height;
+            }
+            EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => {
                 return None;
             }
         }
@@ -3650,6 +3672,70 @@ fn analytic_cylinder_signed_volume(
     let vol = (r / 3.0) * h * (ox * (sin2 - sin1) + oy * (-cos2 + cos1) + r * (u2 - u1));
 
     Ok(if face.is_reversed() { -vol } else { vol })
+}
+
+/// The chart run of an ellipse edge that is a plane section of `cylinder`:
+/// its start angle and its end angle, unwrapped by the arc's own sweep, in
+/// the wire's direction, and the coefficients `[a, b, c]` of its chart height
+/// `v(u) = a + b·cos u + c·sin u`.
+///
+/// On the wall `P = O + r(cos u·x + sin u·y) + v·axis`, the section plane
+/// `n·P = n·C` gives `v = (n·(C − O) − r(n·x) cos u − r(n·y) sin u) / (n·axis)`.
+/// `None` unless every sample of the arc lies on the wall and on that height
+/// law, so an ellipse that is not this wall's section declines instead of
+/// being integrated as one.
+fn planar_section_chart(
+    topo: &Topology,
+    edge: &remus_topology::edge::Edge,
+    forward: bool,
+    cylinder: &remus_math::surfaces::CylindricalSurface,
+    ellipse: &remus_math::curves::Ellipse3D,
+) -> Option<(f64, f64, [f64; 3])> {
+    use std::f64::consts::{PI, TAU};
+    const SAMPLES: u32 = 16;
+    let tolerance = remus_math::tolerance::Tolerance::new();
+    let normal = ellipse.normal();
+    let axial = normal.dot(cylinder.axis());
+    if axial.abs() <= tolerance.angular {
+        return None;
+    }
+    let radius = cylinder.radius();
+    let a = normal.dot(ellipse.center() - cylinder.origin()) / axial;
+    let b = -radius * normal.dot(cylinder.x_axis()) / axial;
+    let c = -radius * normal.dot(cylinder.y_axis()) / axial;
+    let start = topo.vertex(edge.start()).ok()?.point();
+    let end = topo.vertex(edge.end()).ok()?.point();
+    let (t0, t1) = edge.strict_domain().ok()?;
+    let mut angles = Vec::with_capacity(SAMPLES as usize + 1);
+    for i in 0..=SAMPLES {
+        let t = (t1 - t0).mul_add(f64::from(i) / f64::from(SAMPLES), t0);
+        let point = edge.curve().evaluate_with_endpoints(t, start, end);
+        let (u, v) = cylinder.project_point(point);
+        let offset = point - cylinder.origin();
+        let radial = (offset - cylinder.axis() * offset.dot(cylinder.axis())).length();
+        let height = c.mul_add(u.sin(), b.mul_add(u.cos(), a));
+        if (radial - radius).abs() > tolerance.linear || (height - v).abs() > tolerance.linear {
+            return None;
+        }
+        angles.push(u);
+    }
+    if !forward {
+        angles.reverse();
+    }
+    // Consecutive samples are a sixteenth of the arc apart, so each step
+    // unwraps unambiguously.
+    let sampled: f64 = angles
+        .windows(2)
+        .map(|w| (w[1] - w[0] + PI).rem_euclid(TAU) - PI)
+        .sum();
+    // Close the chart loop on the shared vertices, as the circle arm does;
+    // the samples only fix the turn and direction.
+    let (from, to) = if forward { (start, end) } else { (end, start) };
+    let (u_from, _) = cylinder.project_point(from);
+    let (u_to, _) = cylinder.project_point(to);
+    let chord = u_to - u_from;
+    let sweep = TAU.mul_add(((sampled - chord) / TAU).round(), chord);
+    Some((u_from, u_from + sweep, [a, b, c]))
 }
 
 /// Exact signed volume contribution of a PLANAR face whose boundary is made of
@@ -5398,6 +5484,9 @@ mod flat_loop_oracle_tests;
 
 #[cfg(test)]
 mod planar_outline_tests;
+
+#[cfg(test)]
+mod oblique_cylinder_tests;
 
 /// B56: the mesh sums are taken about a local reference point. The public
 /// routes are covered in `tests/regress_b56_volume_local_reference.rs`; these
@@ -7425,3 +7514,6 @@ mod torus_latitude_band_tests {
 
 #[cfg(test)]
 mod periodic_winding_tests;
+
+#[cfg(test)]
+mod crossing_cylinder_breakout_tests;

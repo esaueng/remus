@@ -85,6 +85,9 @@ struct SharpResult {
     edges: Vec<EdgeId>,
     face_map: HashMap<usize, FaceId>,
     boundary_history: Option<Vec<(EntityKey, Option<EntityKey>)>>,
+    /// Non-band faces the removal deleted with the band: the planar setback
+    /// caps that close a spherical corner patch (see [`setback_caps`]).
+    absorbed: Vec<FaceId>,
 }
 
 #[derive(Debug)]
@@ -1534,7 +1537,9 @@ pub(crate) fn remove_rebuild_prefix(
         for plan in &mut plans {
             remap_plan(plan, &sharp.face_map)?;
         }
-        remap_construction_lineage(&mut construction_map, &sharp.face_map, &band.faces)?;
+        let removed_faces: Vec<FaceId> =
+            band.faces.iter().chain(&sharp.absorbed).copied().collect();
+        remap_construction_lineage(&mut construction_map, &sharp.face_map, &removed_faces)?;
         let mapped_supports = remap_faces(&band.supports, &sharp.face_map, "blend support")?;
         let band_faces = remap_band_face_lineage(band_faces, &sharp.face_map)?;
         plans.push(BlendMovePlan {
@@ -5031,11 +5036,17 @@ fn heal_planar_band(
     // every surviving edge, wire, face, and pcurve untouched. Multi-face
     // bands and non-cylindrical carriers decline (`Ok(None)`) and fall back
     // to the positional defeature healer, which still owns those shapes on
-    // all-planar bodies.
-    let outcome = match heal_cylinder_plane_band_surgical(topo, solid, band)? {
-        Some(outcome) => outcome,
-        None => crate::defeature::defeature_blend_band(topo, solid, &band.faces)
-            .map_err(|error| reconstruction(format!("planar support heal failed: {error}")))?,
+    // all-planar bodies. The positional heal also deletes the planar
+    // setback caps that close the band's spherical corner patches: they are
+    // part of the blend's construction, and the sharp body has no face on
+    // their plane.
+    let absorbed = setback_caps(topo, solid, band)?;
+    let outcome = if let Some(outcome) = heal_cylinder_plane_band_surgical(topo, solid, band)? {
+        outcome
+    } else {
+        let removed: Vec<FaceId> = band.faces.iter().chain(&absorbed).copied().collect();
+        crate::defeature::defeature_blend_band(topo, solid, &removed)
+            .map_err(|error| reconstruction(format!("planar support heal failed: {error}")))?
     };
     let supports: HashSet<FaceId> = band
         .supports
@@ -5084,12 +5095,99 @@ fn heal_planar_band(
             edges.len()
         )));
     }
+    // The positional heal deletes every cap it is handed; one still mapped
+    // would sit on the sharp body.
+    if let Some(cap) = absorbed
+        .iter()
+        .find(|cap| outcome.face_map.contains_key(&cap.index()))
+    {
+        return Err(reconstruction(format!(
+            "setback cap face {} survived the planar support heal",
+            cap.index()
+        )));
+    }
     Ok(SharpResult {
         solid: outcome.solid,
         edges,
         face_map: outcome.face_map,
         boundary_history: outcome.boundary_history,
+        absorbed,
     })
+}
+
+/// Planar setback caps of a band's spherical corner patches.
+///
+/// Where two edge blends of an all-plane band meet at a corner whose third
+/// edge stays sharp, the fillet closes the corner with a sphere patch and a
+/// flat cap in the plane of the blend axes: on a box with only its top loop
+/// rounded, a triangle at `z = height - r` between the two walls and the
+/// sphere. The cap is no input face and is tangent to nothing, so it is
+/// neither band nor support. Left in place, its plane pins the walls'
+/// recovered corners `r` below the top and the healed top face falls away
+/// from them (issue #1741).
+///
+/// A cap here is a planar face with no hole, outside band and supports,
+/// whose every edge is shared with a sphere face of the band or with a
+/// support. Removing it with the band restores the sharp corner of the
+/// support planes.
+fn setback_caps(
+    topo: &Topology,
+    solid: SolidId,
+    band: &BandDescription,
+) -> Result<Vec<FaceId>, OperationsError> {
+    let band_faces: HashSet<FaceId> = band.faces.iter().copied().collect();
+    let supports: HashSet<FaceId> = band.supports.iter().copied().collect();
+    let spheres: HashSet<FaceId> = band
+        .faces
+        .iter()
+        .copied()
+        .filter(|face| {
+            topo.face(*face)
+                .ok()
+                .and_then(|face| blend_surface(face.surface()))
+                .is_some_and(|(kind, _)| kind == BlendKind::Sphere)
+        })
+        .collect();
+    if spheres.is_empty() {
+        return Ok(Vec::new());
+    }
+    let adjacency = solid_adjacency(topo, solid)?;
+    let mut candidates: Vec<FaceId> = Vec::new();
+    for &sphere in &band.faces {
+        if !spheres.contains(&sphere) {
+            continue;
+        }
+        for edge in face_edges(topo, sphere)? {
+            for face in distinct_faces(adjacency.faces_for_edge(edge)) {
+                if !band_faces.contains(&face) && !supports.contains(&face) {
+                    candidates.push(face);
+                }
+            }
+        }
+    }
+    candidates.compact_sort_unstable_by_key(|face| face.index());
+    candidates.dedup();
+    let mut caps = Vec::new();
+    'candidates: for face in candidates {
+        let data = topo.face(face)?;
+        if !matches!(data.surface(), FaceSurface::Plane { .. }) || !data.inner_wires().is_empty() {
+            continue;
+        }
+        for edge in face_edges(topo, face)? {
+            let others: Vec<FaceId> = distinct_faces(adjacency.faces_for_edge(edge))
+                .into_iter()
+                .filter(|other| *other != face)
+                .collect();
+            let [other] = others.as_slice() else {
+                continue 'candidates;
+            };
+            if !(spheres.contains(other) || supports.contains(other)) {
+                continue 'candidates;
+            }
+        }
+        caps.push(face);
+    }
+    Ok(caps)
 }
 
 fn shared_edges(
@@ -5530,6 +5628,8 @@ fn heal_plane_cylinder_band(
         edges: vec![sharp_edge],
         face_map,
         boundary_history: Some(boundary_history),
+
+        absorbed: Vec::new(),
     })
 }
 
@@ -6010,6 +6110,8 @@ fn heal_cylinder_cone_band(
         edges: vec![sharp_edge],
         face_map,
         boundary_history: Some(boundary_history),
+
+        absorbed: Vec::new(),
     })
 }
 

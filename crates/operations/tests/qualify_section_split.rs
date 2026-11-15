@@ -20,10 +20,12 @@
 //!   ("no closed cross-section could be assembled").
 //! * `split` decomposes the body into two validated halves whose volumes sum
 //!   to the input. A plane that misses the body is `InvalidInput`
-//!   ("entirely on one side"). A plane that contains an existing edge, that
-//!   crosses an inner wire, or that meets a solid with cavity shells is a
-//!   typed `Unsupported` refusal naming the configuration; refusals roll back
-//!   transactionally and preserve the input solid.
+//!   ("entirely on one side"). A plane that only touches the body along an
+//!   existing edge or face (it does not cross the interior), or that meets a
+//!   solid with cavity shells, is a typed `Unsupported` refusal naming the
+//!   configuration; refusals roll back transactionally and preserve the
+//!   input solid. A plane through a hole's mouth turns the hole into a notch
+//!   in each half, built by the exact half-space boolean route (#1745).
 //! * Section tolerance bands are fixed physical values (`coplanar 1e-5`,
 //!   endpoint `1e-6`, chain `1e-4` from `Tolerance::linear = 1e-7`); split
 //!   side classification uses the scaled slack
@@ -1037,9 +1039,10 @@ fn splits_decompose_volumes_and_preserve_material() {
     }
 }
 
-/// 15 cells: 5 refusal configurations x 3 scales. Misses are `InvalidInput`;
-/// cavity shells, inner-wire crossings, and edge-contained planes are typed
-/// `Unsupported`. Every refusal preserves the full logical session: the
+/// 15 cells: 4 refusal configurations and 1 notch split x 3 scales. Misses
+/// are `InvalidInput`; cavity shells and edge-contained planes are typed
+/// `Unsupported`; a plane through the hole's mouth now splits exactly
+/// (#1745) and leaves the input untouched. Every refusal preserves the full logical session: the
 /// input solid stays valid at its closed-form volume and its handles still
 /// resolve (allocated-slot counts may grow because rollback tombstones).
 #[test]
@@ -1087,33 +1090,41 @@ fn split_refusals_are_typed_and_preserve_the_session() {
             );
         }
         // Holed plate split through the hole mouth: the hole stops being a
-        // hole and becomes a notch, which has no exact construction.
+        // hole and becomes a notch in each half. The topology trimmer has no
+        // construction for that, so the split takes the exact half-space
+        // boolean route (#1745): both halves are 5 x 10 x 2 less a 1 x 2
+        // notch, all-planar, with no inner wire left, and the input is
+        // untouched.
         {
-            let label = format!("plate inner-wire refusal at scale {scale:e}");
+            let label = format!("plate notch split at scale {scale:e}");
             let mut topo = Topology::new();
             let (solid, expected_volume) = Fixture::HoledPlate.build(&mut topo, scale);
             let before_entities = solid_entity_counts(&topo, solid).unwrap();
-            let err = remus_operations::split::split(
+            let halves = remus_operations::split::split(
                 &mut topo,
                 solid,
                 Point3::new(5.0 * scale, 0.0, 0.0),
                 Vec3::new(1.0, 0.0, 0.0),
             )
-            .unwrap_err();
-            assert!(
-                matches!(
-                    err,
-                    OperationsError::Unsupported {
-                        operation: "split",
-                        ..
-                    }
-                ),
-                "{label}: must be typed split refusal, got {err:?}"
-            );
-            assert!(
-                format!("{err:?}").contains("inner wire"),
-                "{label}: refusal must name the inner wire, got {err:?}"
-            );
+            .unwrap_or_else(|err| panic!("{label}: split refused: {err:?}"));
+            let half_volume = (5.0 * PLATE_XY - 1.0 * HOLE) * PLATE_Z * scale.powi(3);
+            for (half, side) in [(halves.positive, "positive"), (halves.negative, "negative")] {
+                let side_label = format!("{label} {side}");
+                assert_half_valid_closed_mesh(&topo, half, half_volume, scale, &side_label);
+                assert_eq!(
+                    hole_count(&topo, half),
+                    0,
+                    "{side_label}: hole became a notch"
+                );
+                assert_eq!(
+                    surface_census(&topo, half)
+                        .keys()
+                        .copied()
+                        .collect::<Vec<_>>(),
+                    ["plane"],
+                    "{side_label}: all-planar"
+                );
+            }
             assert_input_valid(&topo, solid, expected_volume, 1, &label, scale);
             assert_eq!(
                 solid_entity_counts(&topo, solid).unwrap(),

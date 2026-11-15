@@ -358,69 +358,92 @@ fn the_reported_body_measures_its_closed_form() {
     }
 }
 
-#[test]
-fn exposed_boss_wall_matches_geometry_across_half_radius() {
+/// The boss of radius `r` seated just either side of half its radius: the
+/// fuse is exact and closed, its cylinder edges stay on their carriers, the
+/// mesh is watertight, and the volume and the exposed wall's meshed area
+/// are their closed forms.
+fn exposed_boss_wall_matches_geometry_across_half_radius_at(r: f64) {
     let _ = env_logger::try_init();
-    for r in [R, 5.0, 7.0, 4.5] {
-        for f in [0.5001, 0.5, 0.55, 0.4999, 0.45] {
-            let d = r * f;
-            let mut topo = Topology::new();
-            let plate = make_box(&mut topo, PLATE_X, PLATE_Y, PLATE_Z).unwrap();
-            let boss = make_cylinder(&mut topo, r, H).unwrap();
-            transform_solid(&mut topo, boss, &Mat4::translation(d, PLATE_Y / 2.0, 0.0)).unwrap();
-            let context = remus_math::context::OperationContext::new()
-                .with_fallback(remus_math::context::FallbackPolicy::ExactOnly);
-            let solid = remus_operations::boolean::boolean_with_context(
-                &mut topo,
-                BooleanOp::Fuse,
-                plate,
-                boss,
-                &context,
-            )
-            .unwrap()
-            .solid;
-            let what = format!("r={r}, axis at {f} R");
-            assert_closed_solid(&topo, solid, &what);
-            for fid in remus_topology::explorer::solid_faces(&topo, solid).unwrap() {
-                let face = topo.face(fid).unwrap();
-                if let remus_topology::face::FaceSurface::Cylinder(cylinder) = face.surface() {
-                    for oe in topo.wire(face.outer_wire()).unwrap().edges() {
-                        let edge = topo.edge(oe.edge()).unwrap();
-                        if matches!(edge.curve(), remus_topology::edge::EdgeCurve::Line) {
-                            let a = topo.vertex(edge.start()).unwrap().point();
-                            let b = topo.vertex(edge.end()).unwrap().point();
-                            let midpoint = a + (b - a) * 0.5;
-                            let delta = midpoint - cylinder.origin();
-                            let radial = delta - cylinder.axis() * delta.dot(cylinder.axis());
-                            let residual = (radial.length() - cylinder.radius()).abs();
-                            assert!(
-                                residual <= 1e-7,
-                                "{what}: cylinder edge {:?} leaves its carrier by {residual}",
-                                oe.edge()
-                            );
-                        }
+    for f in [0.5001, 0.5, 0.55, 0.4999, 0.45] {
+        let d = r * f;
+        let mut topo = Topology::new();
+        let plate = make_box(&mut topo, PLATE_X, PLATE_Y, PLATE_Z).unwrap();
+        let boss = make_cylinder(&mut topo, r, H).unwrap();
+        transform_solid(&mut topo, boss, &Mat4::translation(d, PLATE_Y / 2.0, 0.0)).unwrap();
+        let context = remus_math::context::OperationContext::new()
+            .with_fallback(remus_math::context::FallbackPolicy::ExactOnly);
+        let solid = remus_operations::boolean::boolean_with_context(
+            &mut topo,
+            BooleanOp::Fuse,
+            plate,
+            boss,
+            &context,
+        )
+        .unwrap()
+        .solid;
+        let what = format!("r={r}, axis at {f} R");
+        assert_closed_solid(&topo, solid, &what);
+        for fid in remus_topology::explorer::solid_faces(&topo, solid).unwrap() {
+            let face = topo.face(fid).unwrap();
+            if let remus_topology::face::FaceSurface::Cylinder(cylinder) = face.surface() {
+                for oe in topo.wire(face.outer_wire()).unwrap().edges() {
+                    let edge = topo.edge(oe.edge()).unwrap();
+                    if matches!(edge.curve(), remus_topology::edge::EdgeCurve::Line) {
+                        let a = topo.vertex(edge.start()).unwrap().point();
+                        let b = topo.vertex(edge.end()).unwrap().point();
+                        let midpoint = a + (b - a) * 0.5;
+                        let delta = midpoint - cylinder.origin();
+                        let radial = delta - cylinder.axis() * delta.dot(cylinder.axis());
+                        let residual = (radial.length() - cylinder.radius()).abs();
+                        assert!(
+                            residual <= 1e-7,
+                            "{what}: cylinder edge {:?} leaves its carrier by {residual}",
+                            oe.edge()
+                        );
                     }
                 }
             }
-            let mesh = tessellate_solid(&topo, solid, 1e-4).unwrap();
-            let quality = remus_operations::tessellate::welded_mesh_quality(&mesh);
-            assert!(quality.is_watertight(), "{what}: {quality:?}");
-            let segment = r * r * f.acos() - d * (r * r - d * d).sqrt();
-            let want_volume =
-                PLATE_X * PLATE_Y * PLATE_Z + PI * r * r * (H - PLATE_Z) + segment * PLATE_Z;
-            let got_volume = remus_operations::measure::mass_properties(&topo, solid)
-                .unwrap()
-                .mass;
-            assert!(
-                (got_volume - want_volume).abs() / want_volume < 1e-8,
-                "{what}: volume {got_volume} expected {want_volume}"
-            );
-            let got: f64 = cylinder_face_areas(&topo, solid, 1e-6).iter().sum();
-            let want = 2.0 * f.acos() * r * PLATE_Z + TAU * r * (H - PLATE_Z);
-            assert!(
-                (got - want).abs() / want < 1e-5,
-                "{what}: wall {got} expected {want}"
-            );
         }
+        let mesh = tessellate_solid(&topo, solid, 1e-4).unwrap();
+        let quality = remus_operations::tessellate::welded_mesh_quality(&mesh);
+        assert!(quality.is_watertight(), "{what}: {quality:?}");
+        let segment = r * r * f.acos() - d * (r * r - d * d).sqrt();
+        let want_volume =
+            PLATE_X * PLATE_Y * PLATE_Z + PI * r * r * (H - PLATE_Z) + segment * PLATE_Z;
+        let got_volume = remus_operations::measure::mass_properties(&topo, solid)
+            .unwrap()
+            .mass;
+        assert!(
+            (got_volume - want_volume).abs() / want_volume < 1e-8,
+            "{what}: volume {got_volume} expected {want_volume}"
+        );
+        let got: f64 = cylinder_face_areas(&topo, solid, 1e-6).iter().sum();
+        let want = 2.0 * f.acos() * r * PLATE_Z + TAU * r * (H - PLATE_Z);
+        assert!(
+            (got - want).abs() / want < 1e-5,
+            "{what}: wall {got} expected {want}"
+        );
     }
+}
+
+// One test per boss radius, so the four sweeps run in parallel.
+
+#[test]
+fn exposed_boss_wall_matches_geometry_across_half_radius_r6() {
+    exposed_boss_wall_matches_geometry_across_half_radius_at(R);
+}
+
+#[test]
+fn exposed_boss_wall_matches_geometry_across_half_radius_r5() {
+    exposed_boss_wall_matches_geometry_across_half_radius_at(5.0);
+}
+
+#[test]
+fn exposed_boss_wall_matches_geometry_across_half_radius_r7() {
+    exposed_boss_wall_matches_geometry_across_half_radius_at(7.0);
+}
+
+#[test]
+fn exposed_boss_wall_matches_geometry_across_half_radius_r4_5() {
+    exposed_boss_wall_matches_geometry_across_half_radius_at(4.5);
 }

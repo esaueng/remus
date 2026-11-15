@@ -3629,6 +3629,40 @@ pub fn blend_cross_sections(
     radius: f64,
     fractions: &[f64],
 ) -> Result<Vec<BlendCrossSection>, BlendError> {
+    blend_cross_sections_on_side(
+        topo,
+        edge_id,
+        surf1,
+        surf1_reversed,
+        surf2,
+        surf2_reversed,
+        radius,
+        fractions,
+        false,
+    )
+}
+
+/// [`blend_cross_sections`] with the ball on a stated side of the edge.
+///
+/// A convex edge is rounded by a ball inside the material, a concave one by
+/// a ball in the void beside it. `concave` selects the second: the ball then
+/// rolls on the outward side of both supports.
+///
+/// # Errors
+///
+/// Exactly [`blend_cross_sections`]'s errors.
+#[allow(clippy::too_many_arguments)]
+pub fn blend_cross_sections_on_side(
+    topo: &Topology,
+    edge_id: EdgeId,
+    surf1: &remus_topology::face::FaceSurface,
+    surf1_reversed: bool,
+    surf2: &remus_topology::face::FaceSurface,
+    surf2_reversed: bool,
+    radius: f64,
+    fractions: &[f64],
+    concave: bool,
+) -> Result<Vec<BlendCrossSection>, BlendError> {
     use remus_math::vec::Point3;
 
     if !radius.is_finite() || radius <= 0.0 {
@@ -3645,7 +3679,7 @@ pub fn blend_cross_sections(
         });
     }
 
-    {
+    if !concave {
         let edge = topo.edge(edge_id)?;
         let tol = remus_math::tolerance::Tolerance::new();
         if let Some(cap) = equal_radius_cap(
@@ -3673,16 +3707,14 @@ pub fn blend_cross_sections(
     let base1 = surface_ref_or_adapter(surf1, &mut adapter1);
     let base2 = surface_ref_or_adapter(surf2, &mut adapter2);
     // The walker places the ball centre on the `+normal` side of each surface,
-    // so feed it INWARD (toward-material) normals or it solves the external
-    // common-tangent branch (fillet outside the solid). The face's outward
-    // normal equals the surface normal when the face is not reversed, so flip
-    // then; keep it when the face is reversed.
+    // so a convex edge feeds it INWARD (toward-material) normals, or it solves
+    // the external common-tangent branch (fillet outside the solid), and a
+    // concave edge the outward ones. The face's outward normal equals the
+    // surface normal when the face is not reversed.
     let flip1 = FlippedNormalSurface::new(base1);
     let flip2 = FlippedNormalSurface::new(base2);
-    let ps1: &dyn remus_math::traits::ParametricSurface =
-        if surf1_reversed { base1 } else { &flip1 };
-    let ps2: &dyn remus_math::traits::ParametricSurface =
-        if surf2_reversed { base2 } else { &flip2 };
+    let ps1 = ball_side(base1, &flip1, surf1_reversed, concave);
+    let ps2 = ball_side(base2, &flip2, surf2_reversed, concave);
 
     let blend = ConstRadBlend { radius };
     let walker = Walker::new(&blend, ps1, ps2, &spine, topo, WalkerConfig::default());
