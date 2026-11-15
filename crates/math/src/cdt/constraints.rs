@@ -28,6 +28,29 @@ enum FanLookup {
     StaleHint,
 }
 
+/// Outcome of [`Cdt::next_crossing_edge`].
+enum NextCrossing {
+    /// This edge, `(triangle, local index of the opposite vertex)`,
+    /// properly crosses the segment.
+    Edge((usize, usize)),
+    /// The segment is a triangulation edge.
+    Recovered,
+    /// The segment is no edge, yet no crossing edge was found.
+    Unseen,
+}
+
+/// Outcome of [`Cdt::walk_toward`].
+enum FanWalk {
+    /// This edge, `(triangle, local index of the opposite vertex)`,
+    /// properly crosses the segment.
+    Crossing((usize, usize)),
+    /// The walk reached a triangle holding both ends: the segment is an
+    /// edge.
+    Reached,
+    /// The walk ended without finding either.
+    Lost,
+}
+
 /// Outcome of [`Cdt::recover_edge_by_queue`].
 enum QueueRecovery {
     /// The segment is a triangulation edge.
@@ -76,62 +99,56 @@ impl Cdt {
         let max_iter = self.triangles.len() * 4 + 100;
 
         for _ in 0..max_iter {
-            if self.edge_exists(v0, v1) {
+            let (ti, local) = match self.next_crossing_edge(v0, v1) {
+                NextCrossing::Edge(found) => found,
+                NextCrossing::Recovered => return Ok(()),
+                // No crossing edge could be found although the segment is no
+                // edge: near-degenerate geometry, where the walk and the
+                // scan fail to see the crossing. Fall through to the Steiner
+                // split rather than claiming success.
+                NextCrossing::Unseen => break,
+            };
+            let Some(adj) = self.triangles[ti].adj[local] else {
+                // Nothing changes before the next iteration, which
+                // would find this same edge again.
+                break;
+            };
+
+            let e0 = self.triangles[ti].v[(local + 1) % 3];
+            let e1 = self.triangles[ti].v[(local + 2) % 3];
+
+            // If the intersecting edge is constrained, split both edges
+            // at their intersection point rather than giving up.
+            if self.constraints.contains(&sorted_pair(e0, e1)) {
+                match self.split_at_constrained_crossing(v0, v1, e0, e1)? {
+                    CrossingSplit::Recovered => return Ok(()),
+                    // The crossed constraint no longer properly
+                    // crosses this segment. Retry the flip loop.
+                    CrossingSplit::OntoEndpoint => continue,
+                    CrossingSplit::NoIntersection => {}
+                }
+                // Intersection computation failed — give up gracefully.
+                if std::env::var("BK_CDT").is_ok() {
+                    log::debug!(
+                        "CDT recover_edge: constrained-crossing give-up, edge {v0}->{v1} exists={}",
+                        self.edge_exists(v0, v1)
+                    );
+                }
                 return Ok(());
             }
 
-            if let Some((ti, local)) = self.find_intersecting_edge(v0, v1) {
-                let Some(adj) = self.triangles[ti].adj[local] else {
-                    // Nothing changes before the next iteration, which
-                    // would find this same edge again.
-                    break;
-                };
+            let opp_local = self.find_shared_edge_local(adj, e0, e1).unwrap_or(0);
 
-                let e0 = self.triangles[ti].v[(local + 1) % 3];
-                let e1 = self.triangles[ti].v[(local + 2) % 3];
-
-                // If the intersecting edge is constrained, split both edges
-                // at their intersection point rather than giving up.
-                if self.constraints.contains(&sorted_pair(e0, e1)) {
-                    match self.split_at_constrained_crossing(v0, v1, e0, e1)? {
-                        CrossingSplit::Recovered => return Ok(()),
-                        // The crossed constraint no longer properly
-                        // crosses this segment. Retry the flip loop.
-                        CrossingSplit::OntoEndpoint => continue,
-                        CrossingSplit::NoIntersection => {}
-                    }
-                    // Intersection computation failed — give up gracefully.
-                    if std::env::var("BK_CDT").is_ok() {
-                        log::debug!(
-                            "CDT recover_edge: constrained-crossing give-up, edge {v0}->{v1} exists={}",
-                            self.edge_exists(v0, v1)
-                        );
-                    }
-                    return Ok(());
-                }
-
-                let opp_local = self.find_shared_edge_local(adj, e0, e1).unwrap_or(0);
-
-                // Check that flipping is valid (the quad is convex).
-                if self.is_convex_quad(ti, local, adj, opp_local) {
-                    self.flip_edge(ti, local, adj, opp_local);
-                } else if !self.flip_other_intersecting_edge(v0, v1, e0, e1) {
-                    // Neither edge this loop inspects can flip: the first
-                    // crossing seen from v0 and the one seen from v1. The
-                    // loop is a pure function of the triangulation, so every
-                    // later iteration would repeat this one verbatim until
-                    // `max_iter`. Stop here and let the queue look at every
-                    // crossing edge instead.
-                    break;
-                }
-            } else {
-                // No intersecting edge found. If the edge exists the
-                // recovery is done; if it does NOT, the walk failed to see
-                // the crossing (near-degenerate geometry) — fall through to
-                // the Steiner split rather than claiming success.
-                if self.edge_exists(v0, v1) {
-                    return Ok(());
-                }
+            // Check that flipping is valid (the quad is convex).
+            if self.is_convex_quad(ti, local, adj, opp_local) {
+                self.flip_edge(ti, local, adj, opp_local);
+            } else if !self.flip_other_intersecting_edge(v0, v1, e0, e1) {
+                // Neither edge this loop inspects can flip: the first
+                // crossing seen from v0 and the one seen from v1. The
+                // loop is a pure function of the triangulation, so every
+                // later iteration would repeat this one verbatim until
+                // `max_iter`. Stop here and let the queue look at every
+                // crossing edge instead.
                 break;
             }
         }
@@ -181,6 +198,45 @@ impl Cdt {
         self.recover_edge_depth(mid, v1, depth + 1)?;
         self.constraints.insert(sorted_pair(mid, v1));
         Ok(())
+    }
+
+    /// What the first-crossing loop does next for the segment `(v0, v1)`.
+    ///
+    /// The loop used to ask [`Cdt::edge_exists`] first and only then look for
+    /// a crossing edge. `edge_exists` walks the whole fan around `v0` when
+    /// the edge is missing, which is every iteration but the last; around a
+    /// vertex of high degree (a wall seam sampled only at its ends, beside a
+    /// dense grid column) that made recovering one long constraint quadratic.
+    /// The directed walk from `v0` toward `v1` is cheap, and when it finds an
+    /// edge that properly crosses the open segment, `(v0, v1)` cannot be an
+    /// edge: two edges of a triangulation never cross, and the crossing test
+    /// is exact. Nor can one cross it when the walk reaches a triangle holding
+    /// `v1`, which makes the segment an edge. So the walk's answer is taken
+    /// first, and the fan walk and the linear scan run only when it finds
+    /// neither, in the order the loop always ran them. The loop therefore
+    /// flips the same edges as before.
+    fn next_crossing_edge(&self, v0: usize, v1: usize) -> NextCrossing {
+        #[cfg(test)]
+        if super::work::legacy_recovery() {
+            if self.edge_exists(v0, v1) {
+                return NextCrossing::Recovered;
+            }
+            return self
+                .find_intersecting_edge(v0, v1)
+                .map_or(NextCrossing::Unseen, NextCrossing::Edge);
+        }
+        match self.walk_toward(v0, v1, None) {
+            FanWalk::Crossing(found) => return NextCrossing::Edge(found),
+            FanWalk::Reached => return NextCrossing::Recovered,
+            FanWalk::Lost => {}
+        }
+        if self.edge_exists(v0, v1) {
+            return NextCrossing::Recovered;
+        }
+        // The walk is a pure function of the triangulation and found
+        // nothing; this is `find_intersecting_edge`'s scan fallback.
+        self.scan_for_intersecting_edge(v0, v1)
+            .map_or(NextCrossing::Unseen, NextCrossing::Edge)
     }
 
     /// Split the segment `(v0, v1)` and the constraint `(e0, e1)` that
@@ -337,30 +393,18 @@ impl Cdt {
         v0: usize,
         v1: usize,
     ) -> Result<VecDeque<(usize, usize)>, (usize, usize)> {
-        let p0 = self.vertices[v0];
-        let p1 = self.vertices[v1];
-        let mut found: Vec<(f64, (usize, usize))> = Vec::new();
-        for tri in &self.triangles {
-            if tri.removed {
-                continue;
-            }
-            for local in 0..3 {
-                let edge = sorted_pair(tri.v[(local + 1) % 3], tri.v[(local + 2) % 3]);
-                let (a, b) = edge;
-                if a == v0 || a == v1 || b == v0 || b == v1 {
-                    continue;
-                }
-                let (pa, pb) = (self.vertices[a], self.vertices[b]);
-                if !segments_properly_intersect(p0, p1, pa, pb) {
-                    continue;
-                }
-                // Crossing parameter along (v0, v1). Both orientations are
-                // nonzero with opposite signs, so the denominator is too.
-                let s0 = orient2d(pa, pb, p0);
-                let s1 = orient2d(pa, pb, p1);
-                found.push((s0 / (s0 - s1), edge));
-            }
-        }
+        #[cfg(test)]
+        let corridor = if super::work::legacy_recovery() {
+            None
+        } else {
+            self.corridor_crossings(v0, v1)
+        };
+        #[cfg(not(test))]
+        let corridor = self.corridor_crossings(v0, v1);
+        let mut found = match corridor {
+            Some(found) => found,
+            None => self.scan_crossings(v0, v1),
+        };
         // hot: CDT constraint recovery inner loop (sort-heavy by construction on large triangulations).
         #[allow(clippy::disallowed_methods)]
         found.sort_by(|x, y| x.0.total_cmp(&y.0).then(x.1.cmp(&y.1)));
@@ -369,6 +413,109 @@ impl Cdt {
             return Err(edge);
         }
         Ok(found.into_iter().map(|(_, edge)| edge).collect())
+    }
+
+    /// `(t, edge)` for every live edge that properly crosses the open segment
+    /// `(v0, v1)`, `t` its crossing parameter along the segment, found by
+    /// testing every triangle (each interior edge is listed twice).
+    fn scan_crossings(&self, v0: usize, v1: usize) -> Vec<(f64, (usize, usize))> {
+        #[cfg(test)]
+        super::work::bump(&super::work::CROSSING_SCANS);
+        let mut found: Vec<(f64, (usize, usize))> = Vec::new();
+        for tri in &self.triangles {
+            if tri.removed {
+                continue;
+            }
+            for local in 0..3 {
+                let edge = sorted_pair(tri.v[(local + 1) % 3], tri.v[(local + 2) % 3]);
+                if let Some(t) = self.crossing_parameter(v0, v1, edge) {
+                    found.push((t, edge));
+                }
+            }
+        }
+        found
+    }
+
+    /// The parameter along `(v0, v1)` at which the edge `(a, b)` (sorted)
+    /// properly crosses it, or `None` when it shares an endpoint with the
+    /// segment or does not properly cross it.
+    fn crossing_parameter(&self, v0: usize, v1: usize, (a, b): (usize, usize)) -> Option<f64> {
+        if a == v0 || a == v1 || b == v0 || b == v1 {
+            return None;
+        }
+        let p0 = self.vertices[v0];
+        let p1 = self.vertices[v1];
+        let (pa, pb) = (self.vertices[a], self.vertices[b]);
+        if !segments_properly_intersect(p0, p1, pa, pb) {
+            return None;
+        }
+        // Crossing parameter along (v0, v1). Both orientations are nonzero
+        // with opposite signs, so the denominator is too.
+        let s0 = orient2d(pa, pb, p0);
+        let s1 = orient2d(pa, pb, p1);
+        Some(s0 / (s0 - s1))
+    }
+
+    /// [`Cdt::scan_crossings`]' edges, each once, found by walking the
+    /// corridor of triangles the segment `(v0, v1)` passes through, or
+    /// `None` when the walk cannot vouch for having found them all.
+    ///
+    /// With no vertex on the open segment, the segment leaves `v0` through
+    /// one triangle of its fan, crosses the interior of one edge into the
+    /// next triangle, and so on until it enters a triangle holding `v1`. The
+    /// edges it crosses on the way are exactly the edges that properly cross
+    /// it: such an edge meets the segment at an interior point of both,
+    /// which lies on the two triangles beside the edge, so on the corridor.
+    /// The walk tests each step with the same exact predicate as the scan,
+    /// and gives up, leaving the scan to answer, on anything else: no
+    /// crossing found from `v0`, a vertex exactly on the segment's line, an
+    /// exit edge that is not unique, a missing or removed neighbour, or a
+    /// walk longer than the triangulation. The caller sorts both answers the
+    /// same way, so the result does not depend on which one produced it.
+    fn corridor_crossings(&self, v0: usize, v1: usize) -> Option<Vec<(f64, (usize, usize))>> {
+        let p0 = self.vertices[v0];
+        let p1 = self.vertices[v1];
+        let (start, local) = self.walk_for_intersecting_edge(v0, v1, None)?;
+        let tri = &self.triangles[start];
+        let mut edge = (tri.v[(local + 1) % 3], tri.v[(local + 2) % 3]);
+        let mut next = tri.adj[local];
+        let mut found = Vec::new();
+        for _ in 0..self.triangles.len() {
+            let crossing = sorted_pair(edge.0, edge.1);
+            found.push((self.crossing_parameter(v0, v1, crossing)?, crossing));
+            let ti = next?;
+            let tri = self.triangles.get(ti)?;
+            if tri.removed {
+                return None;
+            }
+            let apex_local = (0..3).find(|&i| tri.v[i] != edge.0 && tri.v[i] != edge.1)?;
+            let apex = tri.v[apex_local];
+            if !tri.v.contains(&edge.0) || !tri.v.contains(&edge.1) {
+                return None;
+            }
+            if apex == v1 {
+                return Some(found);
+            }
+            if apex == v0 || orient2d(p0, p1, self.vertices[apex]) == 0.0 {
+                return None;
+            }
+            // The two edges through the apex: each is opposite one end of the
+            // edge just crossed.
+            let mut exits = [0, 1, 2]
+                .into_iter()
+                .filter(|&i| i != apex_local)
+                .map(|i| (i, (tri.v[(i + 1) % 3], tri.v[(i + 2) % 3])))
+                .filter(|&(_, (a, b))| {
+                    self.crossing_parameter(v0, v1, sorted_pair(a, b)).is_some()
+                });
+            let (exit_local, exit) = exits.next()?;
+            if exits.next().is_some() {
+                return None;
+            }
+            edge = exit;
+            next = tri.adj[exit_local];
+        }
+        None
     }
 
     /// A live triangle containing the edge `(a, b)`, with the local index
@@ -461,6 +608,8 @@ impl Cdt {
             let next = self.triangles[current].adj[(cur_v0_local + 1) % 3];
             match next {
                 Some(ni) if ni != start && !self.triangles[ni].removed => {
+                    #[cfg(test)]
+                    super::work::bump(&super::work::FAN_STEPS);
                     current = ni;
                     let t = &self.triangles[ni];
                     let Some(local) = t.v.iter().position(|&v| v == v0) else {
@@ -482,6 +631,8 @@ impl Cdt {
             let next = self.triangles[current].adj[(cur_v0_local + 2) % 3];
             match next {
                 Some(ni) if ni != start && !self.triangles[ni].removed => {
+                    #[cfg(test)]
+                    super::work::bump(&super::work::FAN_STEPS);
                     current = ni;
                     let t = &self.triangles[ni];
                     let Some(local) = t.v.iter().position(|&v| v == v0) else {
@@ -502,12 +653,20 @@ impl Cdt {
     /// Find a non-constrained edge that intersects segment (v0, v1).
     /// Walks from v0 toward v1 using triangle adjacency (O(k) where k =
     /// number of crossed edges) instead of scanning all triangles.
+    #[cfg(test)]
     fn find_intersecting_edge(&self, v0: usize, v1: usize) -> Option<(usize, usize)> {
         // Try walking from v0 first (O(degree) amortized).
         if let Some(result) = self.walk_for_intersecting_edge(v0, v1, None) {
             return Some(result);
         }
         // Fallback: linear scan (only when walk fails).
+        self.scan_for_intersecting_edge(v0, v1)
+    }
+
+    /// The first edge, in triangle order, that properly crosses the segment
+    /// `(v0, v1)`: [`Cdt::find_intersecting_edge`]'s fallback when the walk
+    /// from `v0` finds none.
+    fn scan_for_intersecting_edge(&self, v0: usize, v1: usize) -> Option<(usize, usize)> {
         let p0 = self.vertices[v0];
         let p1 = self.vertices[v1];
 
@@ -543,15 +702,34 @@ impl Cdt {
         v1: usize,
         skip: Option<(usize, usize)>,
     ) -> Option<(usize, usize)> {
+        match self.walk_toward(v0, v1, skip) {
+            FanWalk::Crossing(found) => Some(found),
+            FanWalk::Reached | FanWalk::Lost => None,
+        }
+    }
+
+    /// [`Cdt::walk_for_intersecting_edge`], also telling apart a walk that
+    /// reached a triangle holding `v1`.
+    ///
+    /// Such a triangle holds both `v0` and `v1`, so `(v0, v1)` is an edge and
+    /// no edge properly crosses the segment: the walk could never find one
+    /// further on. It used to carry on regardless, bouncing between the two
+    /// triangles beside the edge until it had taken as many steps as there
+    /// are triangles; it now stops there.
+    fn walk_toward(&self, v0: usize, v1: usize, skip: Option<(usize, usize)>) -> FanWalk {
+        #[cfg(test)]
+        let stop_at_v1 = !super::work::legacy_recovery();
+        #[cfg(not(test))]
+        let stop_at_v1 = true;
         if v0 >= self.vertex_tri.len() {
-            return None;
+            return FanWalk::Lost;
         }
         let start = self.vertex_tri[v0];
         if start >= self.triangles.len() || self.triangles[start].removed {
-            return None;
+            return FanWalk::Lost;
         }
         if !self.triangles[start].v.contains(&v0) {
-            return None;
+            return FanWalk::Lost;
         }
 
         let p0 = self.vertices[v0];
@@ -570,12 +748,15 @@ impl Cdt {
             };
             let ea = t.v[(v0_local + 1) % 3];
             let eb = t.v[(v0_local + 2) % 3];
+            if stop_at_v1 && (ea == v1 || eb == v1) {
+                return FanWalk::Reached;
+            }
             let should_skip = skip.is_some_and(|s| sorted_pair(ea, eb) == s);
             if ea != v1 && eb != v1 && !should_skip {
                 let pa = self.vertices[ea];
                 let pb = self.vertices[eb];
                 if segments_properly_intersect(p0, p1, pa, pb) {
-                    return Some((current, v0_local));
+                    return FanWalk::Crossing((current, v0_local));
                 }
             }
             // Walk in the direction that the target point lies.
@@ -588,13 +769,15 @@ impl Cdt {
             };
             match next_adj {
                 Some(ni) if ni != start && !self.triangles[ni].removed => {
+                    #[cfg(test)]
+                    super::work::bump(&super::work::WALK_STEPS);
                     current = ni;
                 }
                 _ => break,
             }
         }
 
-        None
+        FanWalk::Lost
     }
 
     /// Find an intersecting edge different from (skip_e0, skip_e1).
