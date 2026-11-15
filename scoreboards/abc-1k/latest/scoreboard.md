@@ -1,37 +1,37 @@
 # Remus gauntlet scoreboard
 
-Models: 166 passed / 1000 total (16.60%).
+Models: 167 passed / 1000 total (16.70%).
 
 | Stage | Passed | Failed | Pass rate |
 | --- | ---: | ---: | ---: |
 | read | 193 | 807 | 19.30% |
 | validate | 193 | 807 | 19.30% |
 | boolean | 168 | 832 | 16.80% |
-| tessellate | 166 | 834 | 16.60% |
-| round_trip | 166 | 834 | 16.60% |
+| tessellate | 167 | 833 | 16.70% |
+| round_trip | 167 | 833 | 16.70% |
 
 ## Boolean quality
 
-- Exact: 682
-- Approximate: 65
+- Exact: 683
+- Approximate: 64
 
 ## Failure taxonomy
 
-- `invalid_input`: 801
-- `invalid_topology`: 7
+- `invalid_input`: 770
+- `invalid_topology`: 8
 - `resource_limit`: 9
-- `tolerance_violation`: 2
-- `unsupported`: 15
+- `tolerance_violation`: 1
+- `unsupported`: 45
 
 ## First failure codes
 
-- `boolean` / `operation_invalid_input`: 18
-- `boolean` / `operation_invalid_topology`: 7
+- `boolean` / `operation_invalid_input`: 17
+- `boolean` / `operation_invalid_topology`: 8
 - `read` / `import_limit_exceeded`: 9
 - `read` / `step_contains_no_solids`: 10
-- `read` / `step_parse_error`: 773
-- `read` / `unsupported_step_entity`: 15
-- `tessellate` / `tessellation_not_watertight`: 2
+- `read` / `step_parse_error`: 743
+- `read` / `unsupported_step_entity`: 45
+- `tessellate` / `tessellation_not_watertight`: 1
 
 ## Import failure families (heuristic)
 
@@ -40,6 +40,6 @@ Triage hints only; these do not establish whether an input is valid.
 - `resource_limit`: 9
 - `endpoint_authority`: 39
 - `face_boundary`: 1
-- `unsupported_entity`: 15
+- `unsupported_entity`: 45
 - `no_solids`: 10
-- `unknown`: 733
+- `unknown`: 703
