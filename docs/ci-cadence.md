@@ -26,24 +26,26 @@ When this page and a workflow disagree, the workflow is right; fix the page.
 
 The first job, Classify Changes, runs `scripts/classify-ci-changes.py` on the
 diff (its module docstring and `scripts/test-classify-ci-changes.py` are the
-reference). Repository Policy and Secrets Scan start at once; every other
-job starts as soon as Classify Changes finishes. Nothing waits for Repository
-Policy or Secrets Scan.
+reference). Repository Policy starts at once; every other job starts as soon
+as Classify Changes finishes. Nothing waits for Repository Policy.
 
 | Tier | Jobs | Selected when |
 | --- | --- | --- |
-| always | Classify Changes, Repository Policy, Secrets Scan | every run |
-| `heavy` | Test, Native tests (1/8 to 8/8), Clippy, Complexity Guards, Approximation Census, WASM without optional I/O, Fuzz Targets Compile, Software Rendering | a PR or `main` push whose diff is neither only docs and metadata (docs, `.claude/`, `.github/` outside `workflows/`) nor only the committed packages |
+| always | Classify Changes, Repository Policy (the policy catalog, then a secrets scan of the run's new commits) | every run |
+| `heavy` | Test, Native tests (1/6 to 6/6), Clippy (also links the examples and compiles the fuzz targets), Complexity Guards, Approximation Census, WASM without optional I/O, Software Rendering | a PR or `main` push whose diff is neither only docs and metadata (docs, `.claude/`, `.github/` outside `workflows/`) nor only the committed packages |
 | `wasm` | WASM Build & Validate, WASM runtime suites, W9 Preflight, WASM Size Gate (PRs only) | a heavy run whose diff touches a WASM-affecting path: anything under `crates/`, `xtask/` or `tools/vs-bench/`, the root manifests and toolchain, the WASM-related workflows and scripts |
-| `full` | MSRV (1.88), Cargo Deny, Security Audit | a heavy run whose diff touches `Cargo.toml`, `Cargo.lock`, `deny.toml`, `clippy.toml`, `rust-toolchain.toml`, `.cargo/`, `.config/` or `.github/workflows/` |
+| `full` | MSRV (1.88), Cargo Deny (licenses, sources and the RustSec advisories) | a heavy run whose diff touches `Cargo.toml`, `Cargo.lock`, `deny.toml`, `clippy.toml`, `rust-toolchain.toml`, `.cargo/`, `.config/` or `.github/workflows/` |
 | `docs` | Documentation (rustdoc and the mdBook) | every heavy run, every merge group with a source change, and a diff that touches docs |
-| `coverage` | Coverage (instrumented, 60% line floor) | only on request: the `ci:coverage` label or the dispatch `coverage` input; never for fork PRs |
 
 The `ci:full` label and a manual dispatch select every tier whatever the
 diff. A diff confined to `crates/wasm/pkg/` and `crates/wasm-io/pkg/` (a
 package refresh PR) selects nothing here: `wasm-version.yml` rebuilds both
 packages and compares every committed file. A diff of only docs and
-metadata runs the light gates plus Documentation when docs changed.
+metadata runs the light gates plus Documentation when docs changed. An empty
+diff (a tree identical to its base) runs the light gates only.
+
+Instrumented coverage is not a CI tier: `coverage.yml` runs it nightly on
+`main` and on dispatch.
 
 `CI Pass` (`scripts/ci_gate.py`) fails unless every selected job succeeded.
 A job may be skipped only when its tier was not selected; a failure,
@@ -53,8 +55,8 @@ cancellation or missing result fails the gate.
 
 - **Pull request:** the tiers selected for the diff between the PR's base
   and its merge ref. A new push cancels the PR's running CI.
-- **Merge queue:** light gates only: Repository Policy, Secrets Scan and
-  Documentation in `CI Pass`, plus the privacy, dependency-review, OSV, WASM
+- **Merge queue:** light gates only: Repository Policy and Documentation in
+  `CI Pass`, plus the privacy, dependency-review, OSV, WASM
   version and performance-harness-contract workflows. The pull request
   already ran its tiers on its merge ref, and the `main` push of the squashed
   tree runs them again. Two PRs that pass alone but break together therefore
@@ -62,8 +64,7 @@ cancellation or missing result fails the gate.
   forward at once.
 - **Push to `main`:** the tiers selected for the pushed diff. Every `main`
   commit keeps its own run; nothing cancels it.
-- **Manual dispatch** of `ci.yml`: every tier; tick the `coverage` input to
-  add coverage.
+- **Manual dispatch** of `ci.yml`: every tier.
 
 A PR that changes the coverage tooling (`scripts/ci_coverage.py`, its tests,
 `.config/nextest.toml` or the coverage workflows) also runs
@@ -73,9 +74,8 @@ budget-sensitive instrumented replay.
 ## Labels
 
 - `ci:full` selects every tier on a PR.
-- Adding `ci:full` or `ci:coverage` does not start a run by itself. The label
-  is read by the next run: push a commit, or re-run CI.
-- `ci:coverage` adds the instrumented coverage job on a same-repository PR.
+- Adding `ci:full` does not start a run by itself. The label is read by the
+  next run: push a commit, or re-run CI.
 - `ci:benchmark` runs `benchmark.yml` (`Kernel perf` and its publisher) on a
   PR; later pushes keep benchmarking while the label stays.
 - `hold` marks a PR that waits for an owner decision; do not enqueue it.
@@ -89,7 +89,7 @@ All times UTC; scheduled runs use `main`.
 | `gauntlet.yml` | daily 03:17, Sunday 03:47 | CAD corpus gauntlet: the daily smoke tier, and the weekly `abc-1k` tier on Sunday |
 | `parity.yml` | daily 05:43 | native/WASM parity (also on PRs that touch its paths) |
 | `benchmark.yml` | daily 06:29 | baseline kernel benchmarks |
-| `daily-validation.yml` | daily 06:43 | Daily dependency validation: Cargo Deny, the advisory audit and MSRV against the committed lockfile |
+| `daily-validation.yml` | daily 06:43 | Daily dependency validation: Cargo Deny, the advisory audit and MSRV against the committed lockfile; a secrets scan of the whole history |
 | `coverage.yml` | daily 07:13 | complete instrumented coverage through `coverage-sharded.yml`, 60% line floor |
 | `history-privacy.yml` | daily 08:23 | history privacy audit |
 | `mutants.yml` | Sunday 02:00 | sharded mutation testing |
@@ -120,8 +120,10 @@ CI always runs the complete native suite. The Test job runs
 `tests/ci_harness_<n>.rs` in each package. Each harness includes that
 package's integration test files as modules, so a few dozen test binaries
 are linked instead of several hundred. Test also runs the doc tests. The
-eight Native tests jobs each run one partition of that archive with
-`ci_native.py run --shard <i> --total 8`.
+six Native tests jobs each run one partition of that archive with
+`ci_native.py run --shard <i> --total 6`. A test that runs for minutes sets
+the length of its partition unless it starts first: give it a priority
+override in `.config/nextest.toml`.
 
 Consequence for reading CI logs: a test from `crates/operations/tests/<foo>.rs`
 is reported as `remus-operations::ci_harness_<n> foo::test_name`, not
@@ -137,7 +139,7 @@ script) stays standalone automatically.
 `main` requires `checks / CI Pass` and every review conversation resolved;
 merges go through the merge queue. `gh pr merge <N>` enqueues a PR. The
 queue's template is `.github/merge-queue-ruleset.json`: squash merging (the
-only merge method the repository allows), `ALLGREEN`, at most four entries
+only merge method the repository allows), `ALLGREEN`, at most two entries
 built at once and a 240-minute check timeout. The full merge procedure is in
 the pr-workflow skill (`.claude/skills/pr-workflow/SKILL.md`).
 

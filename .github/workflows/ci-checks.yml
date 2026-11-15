@@ -7,10 +7,6 @@ name: CI checks
 # job succeeded (scripts/ci_gate.py).
 on:
   workflow_call:
-    inputs:
-      coverage:
-        type: boolean
-        default: false
     outputs:
       heavy:
         value: ${{ jobs.changes.outputs.heavy }}
@@ -35,7 +31,6 @@ jobs:
       heavy: ${{ steps.classify.outputs.heavy }}
       docs: ${{ steps.classify.outputs.docs }}
       full: ${{ steps.classify.outputs.full }}
-      coverage: ${{ steps.classify.outputs.coverage }}
       wasm: ${{ steps.classify.outputs.wasm }}
       mode: ${{ steps.classify.outputs.mode }}
     steps:
@@ -51,7 +46,6 @@ jobs:
           PUSH_BASE: ${{ github.event.before }}
           MERGE_BASE: ${{ github.event.merge_group.base_sha }}
           FORCE_FULL: ${{ contains(github.event.pull_request.labels.*.name, 'ci:full') }}
-          COVERAGE_REQUESTED: ${{ (inputs.coverage || contains(github.event.pull_request.labels.*.name, 'ci:coverage')) && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
         run: |
           # The default shell lacks pipefail, so a classifier failure would
           # otherwise hide behind tee's success and leave the outputs unset.
@@ -76,31 +70,27 @@ jobs:
           CHANGED_COUNT: ${{ steps.classify.outputs.changed_count }}
         run: echo "CI mode is ${MODE} for ${CHANGED_COUNT} changed path(s)." >> "$GITHUB_STEP_SUMMARY"
   repo-policy:
+    # The cheap repository checks and the secrets scan share one checkout.
     name: Repository Policy
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
+      # Every commit and tree, with file contents fetched on demand: the
+      # checks read history but few old blobs.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
+          filter: blob:none
       - uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
         with:
           tool: cargo-machete@0.9.1,taplo-cli@0.9.3
       - name: Run repository policy checks
         run: python3 scripts/ci_preflight.py
-  secrets-scan:
-    name: Secrets Scan
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 0 # full history — a leak in an old commit still counts
       # gitleaks-action requires a license for organization-owned repositories.
       # Install the official CLI archive directly and verify it before use.
       - name: Install Gitleaks
+        if: ${{ !cancelled() }}
         env:
           GITLEAKS_VERSION: 8.30.1
           GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
@@ -112,8 +102,15 @@ jobs:
           echo "${GITLEAKS_SHA256}  ${archive}" | sha256sum --check -
           tar -xzf "$archive" -C "$RUNNER_TEMP" gitleaks
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
-      # --redact keeps any match's secret material out of the job log.
-      - run: gitleaks git --log-opts="--all" --redact .
+      # Scans the commits this run adds. daily-validation.yml scans the whole
+      # history, so a leak in an old commit still counts.
+      - name: Scan the incoming commits for secrets
+        if: ${{ !cancelled() }}
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BASE: ${{ github.event.before }}
+          MERGE_BASE: ${{ github.event.merge_group.base_sha }}
+        run: python3 scripts/ci_secrets_scan.py
   test:
     # Builds the complete native suite once; the partitions below run it.
     name: Test
@@ -128,6 +125,8 @@ jobs:
       - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
         with:
           prefix-key: v1-native-workspace
+          # Complexity Guards restores this cache: same profile, same dependencies.
+          shared-key: ci-test
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
         with:
@@ -149,7 +148,7 @@ jobs:
       # nextest doesn't run doc tests, so run them separately
       - run: cargo test --workspace --profile ci-test --doc
   test-shards:
-    name: Native tests (${{ matrix.shard }}/8)
+    name: Native tests (${{ matrix.shard }}/6)
     needs: [changes, test]
     if: needs.changes.outputs.heavy == 'true'
     runs-on: ubuntu-24.04
@@ -157,7 +156,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+        shard: [1, 2, 3, 4, 5, 6]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -174,7 +173,7 @@ jobs:
       - name: Run this partition of the native suite
         env:
           SHARD: ${{ matrix.shard }}
-        run: python3 scripts/ci_native.py run --archive "$RUNNER_TEMP/native-tests.tar.zst" --shard "$SHARD" --total 8
+        run: python3 scripts/ci_native.py run --archive "$RUNNER_TEMP/native-tests.tar.zst" --shard "$SHARD" --total 6
   clippy:
     name: Clippy
     needs: changes
@@ -187,12 +186,17 @@ jobs:
           persist-credentials: false
       - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
         with:
-          prefix-key: v1-native-workspace
-          save-if: false
+          workspaces: |
+            . -> target
+            fuzz -> target
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo clippy --all-targets --all-features -- -D warnings
       # The native test build compiles no examples; link them here.
       - name: Link examples
         run: cargo build --workspace --examples --locked
+      # The fuzz crate is its own workspace; nothing above compiles it.
+      - name: Compile fuzz targets
+        run: cargo check --manifest-path fuzz/Cargo.toml --bins
   complexity-guards:
     # Deterministic work-counter tests that fail if a boolean hot path
     # regresses to O(N²) (issue #987). They need the `perf-counters` feature
@@ -206,9 +210,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The Test job saves this cache; see its rust-cache step.
       - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          prefix-key: v1-native-workspace
+          shared-key: ci-test
+          save-if: false
       - uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
         with:
           tool: nextest@0.9.150
@@ -231,41 +238,6 @@ jobs:
         run: python3 scripts/check-approx-census.py --self-test
       - name: Compare approximation census
         run: python3 scripts/check-approx-census.py
-  coverage:
-    name: Coverage
-    needs: changes
-    # The job holds id-token: write, which lets any process in it mint this
-    # repo's OIDC tokens. Never run it on fork-PR code.
-    if: ${{ needs.changes.outputs.coverage == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 180
-    env:
-      CARGO_INCREMENTAL: "0"
-    permissions:
-      contents: read
-      pull-requests: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
-        with:
-          tool: cargo-llvm-cov@0.9.1,nextest@0.9.150
-      - name: Generate coverage
-        run: |
-          cargo llvm-cov clean --workspace
-          cargo llvm-cov nextest --workspace --cargo-profile ci-test --no-report
-          cargo llvm-cov report --profile ci-test --lcov --output-path lcov.info
-          cargo llvm-cov report --profile ci-test --fail-under-lines 60
-      - uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
-        if: always()
-        with:
-          files: lcov.info
-          use_oidc: true
   msrv:
     name: MSRV (1.88)
     needs: changes
@@ -500,20 +472,6 @@ jobs:
           fi
           # 0 pass, 1 policy or growth failure, anything else a measurement error.
           exit "$status"
-  fuzz-check:
-    name: Fuzz Targets Compile
-    needs: changes
-    if: needs.changes.outputs.heavy == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo check --manifest-path fuzz/Cargo.toml --bins
   render:
     name: Software Rendering
     needs: changes
@@ -549,30 +507,6 @@ jobs:
         with:
           tool: cargo-deny@0.20.2
       - run: cargo deny --log-level warn --manifest-path ./Cargo.toml --all-features check
-  audit:
-    name: Security Audit
-    needs: changes
-    if: needs.changes.outputs.full == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      # Audit the committed Cargo.lock — the resolution consumers actually
-      # build — so a new dep release cannot fail an unrelated PR. New
-      # advisories against the pinned versions still fail (the advisory DB
-      # is fetched live), and dependabot bumps re-audit the updated lock.
-      #
-      # `cargo audit` fails on a vulnerability and prints informational
-      # advisories (unsound, unmaintained, yanked) without failing. The
-      # rustsec/audit-check action did the same, but reported a warning by
-      # creating a check run, which this job's read-only token cannot do, so
-      # any informational advisory failed the job.
-      - uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2.90.1
-        with:
-          tool: cargo-audit@0.23.0
-      - run: cargo audit
   docs:
     name: Documentation
     needs: changes
@@ -596,7 +530,7 @@ jobs:
   ci-pass:
     name: CI Pass
     if: always()
-    needs: [changes, repo-policy, secrets-scan, test, test-shards, clippy, complexity-guards, approx-census, coverage, msrv, wasm, wasm-runtime, w9-preflight, wasm-size-gate, wasm-no-io, fuzz-check, render, deny, audit, docs]
+    needs: [changes, repo-policy, test, test-shards, clippy, complexity-guards, approx-census, msrv, wasm, wasm-runtime, w9-preflight, wasm-size-gate, wasm-no-io, render, deny, docs]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -611,7 +545,6 @@ jobs:
           HEAVY: ${{ needs.changes.outputs.heavy }}
           DOCS: ${{ needs.changes.outputs.docs }}
           FULL: ${{ needs.changes.outputs.full }}
-          COVERAGE: ${{ needs.changes.outputs.coverage }}
           WASM: ${{ needs.changes.outputs.wasm }}
           EVENT: ${{ github.event_name }}
         run: python3 scripts/ci_gate.py

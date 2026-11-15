@@ -168,7 +168,7 @@ Run one target locally with nightly Rust and `cargo-fuzz`:
 cargo +nightly fuzz run nurbs_surface -- -max_total_time=60 -rss_limit_mb=2048
 ```
 
-CI's `Fuzz Targets Compile` job compiles every target on every PR and main
+CI's Clippy job (its `Compile fuzz targets` step) compiles every target on every PR and main
 push with a source change (the `heavy` tier, `docs/ci-cadence.md`). The
 scheduled `Fuzz Smoke` workflow runs the
 public model-reader (including `threemf_xml`, `brep_reader` and

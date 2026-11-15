@@ -140,20 +140,21 @@ class ClassifyCiChangesTests(unittest.TestCase):
         self.assertSelection(self.classify(["crates/algo/src/gfa.rs"], "push"), "main",
                              heavy=True, docs=True, wasm=True)
 
-    def test_label_dispatch_and_unknown_diffs_run_everything(self) -> None:
+    def test_label_and_dispatch_run_everything(self) -> None:
         everything = dict(heavy=True, docs=True, full=True, wasm=True)
         self.assertSelection(self.classify(["README.md"], force_full=True), "full", **everything)
         self.assertSelection(self.classify(["README.md"], "workflow_dispatch"), "full", **everything)
-        for event in ("pull_request", "push", "merge_group", "workflow_dispatch"):
-            with self.subTest(event=event):
-                self.assertSelection(self.classify([], event), "full", **everything)
+        self.assertSelection(self.classify([], "workflow_dispatch"), "full", **everything)
+        self.assertSelection(self.classify([], force_full=True), "full", **everything)
 
-    def test_coverage_runs_only_on_request_with_the_heavy_tier(self) -> None:
-        self.assertTrue(self.classify(["crates/math/src/lib.rs"], coverage=True)["coverage"])
-        self.assertTrue(self.classify(["README.md"], "workflow_dispatch", coverage=True)["coverage"])
-        self.assertFalse(self.classify(["crates/math/src/lib.rs"])["coverage"])
-        self.assertFalse(self.classify(["README.md"], coverage=True)["coverage"])
-        self.assertFalse(self.classify(["crates/math/src/lib.rs"], "merge_group", coverage=True)["coverage"])
+    def test_an_empty_diff_runs_the_light_gates_only(self) -> None:
+        for event in ("pull_request", "push", "merge_group"):
+            with self.subTest(event=event):
+                self.assertSelection(self.classify([], event), "empty")
+
+    def test_a_diff_git_cannot_compute_fails_instead_of_reading_as_empty(self) -> None:
+        with self.assertRaises(subprocess.CalledProcessError):
+            MODULE.changed_paths("0" * 40, "HEAD")
 
     def test_merge_group_runs_the_light_gates_only(self) -> None:
         for paths in (["crates/math/src/lib.rs"], PR_618_PATHS, ["Cargo.lock"],

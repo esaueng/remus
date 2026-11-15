@@ -96,7 +96,7 @@ Missing file panics with "Run with UPDATE_GOLDEN=1 to create it." New golden fil
 - Do not call wasm binding methods directly in tests. `JsError` cannot be constructed on non-wasm targets; go through `execute_batch` (see CLAUDE.md, Recipe 4).
 - Do not hand-edit `.proptest-regressions` files. proptest writes failing seeds there automatically; commit them, they are regression tests.
 - Do not leave a half-verified fix in the tree "for the next session". Revert and write the ready-repro instead.
-- Do not skip git hooks to get a red tree pushed. Pre-commit and pre-push gates are the contract.
+- Do not skip git hooks to get a red tree pushed. The pre-commit and commit-msg gates are the contract.
 
 ## Sibling skills
 

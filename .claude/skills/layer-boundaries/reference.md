@@ -63,7 +63,7 @@ Every call site that goes through a delegate is done once the delegate impl has 
   - Fail: one `VIOLATION: crates/<crate> depends on <dep> (not allowed)` per offense, then `❌ Boundary check failed.`, exit 1.
   - `SKIP: crates/<name>/Cargo.toml not found` means a crate was renamed or removed; update the script's `check_deps` calls.
 - Allowlist vs CLAUDE.md table: the script permits `remus-geometry` for `algo` and `blend`, and a direct `remus-blend` dep for `wasm` (the table allows blend only transitively, via operations; wasm's other deps, including offset and sketch, are allowed by both). None of the extra allowances are used in the actual Cargo.tomls today. If you find yourself needing one, it passes CI, but confirm the layering intent in review first; the CLAUDE.md table is the source of truth for intent.
-- Enforcement points: CI job `boundaries` in `.github/workflows/ci.yml`, gated into `ci-pass`. The `.husky/pre-push` hook runs nothing (it delegates to CI), and `.husky/pre-commit` runs fmt + clippy + taplo + machete only. So a boundary violation surfaces at PR time unless you run the script yourself.
+- Enforcement points: CI job `boundaries` in `.github/workflows/ci.yml`, gated into `ci-pass`. There is no pre-push hook (validation is delegated to CI), and `.husky/pre-commit` runs fmt + clippy + taplo + machete only. So a boundary violation surfaces at PR time unless you run the script yourself.
 
 ## Symptom-to-cause: boundary and cycle failures
 

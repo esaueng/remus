@@ -7,38 +7,34 @@ Deep catalog behind SKILL.md. Everything here was verified against the repo; whe
 `ci.yml` runs on `pull_request`, `merge_group`, pushes to `main` and `workflow_dispatch`. Its `checks` job calls `./.github/workflows/ci-checks.yml` from the same commit, so a CI change takes effect in its own PR. Every job runs on GitHub-hosted `ubuntu-24.04`. There, `ci-pass` (display name `CI Pass`) is an aggregate job whose `needs` list is, verbatim:
 
 ```
-[changes, repo-policy, secrets-scan, test, test-shards, clippy, complexity-guards, approx-census, coverage, msrv, wasm, wasm-runtime, w9-preflight, wasm-size-gate, wasm-no-io, fuzz-check, render, deny, audit, docs]
+[changes, repo-policy, test, test-shards, clippy, complexity-guards, approx-census, msrv, wasm, wasm-runtime, w9-preflight, wasm-size-gate, wasm-no-io, render, deny, docs]
 ```
 
-`scripts/ci_gate.py` requires `changes`, `repo-policy` and `secrets-scan` to succeed, and accepts a skipped job only when the classifier deselected its tier (`docs/ci-cadence.md`, "Tier selection"). Branch protection on `main` requires it under the context name `checks / CI Pass` (see "Repo merge settings"). The required status checks are `checks / CI Pass`, `Changed kernel requires a new version`, `commit-privacy`, `history-privacy` and `dependency-review`.
+`scripts/ci_gate.py` requires `changes` and `repo-policy` to succeed, and accepts a skipped job only when the classifier deselected its tier (`docs/ci-cadence.md`, "Tier selection"). Branch protection on `main` requires it under the context name `checks / CI Pass` (see "Repo merge settings"). The required status checks are `checks / CI Pass`, `Changed kernel requires a new version`, `commit-privacy`, `history-privacy` and `dependency-review`.
 
 Outside the fan-in: the `wasm-size` comment job and `public-commit-metadata` in `ci.yml`, and other workflows' checks such as the `WASM version guard` jobs (`wasm-version.yml`). Read them yourself. The size policy is enforced inside the fan-in by `wasm-size-gate`.
 
 | Job | Display name | In `CI Pass`? | What it runs |
 |-----|--------------|---------------|--------------|
 | `changes` | Classify Changes | yes (must succeed) | `scripts/classify-ci-changes.py`: selects the tiers |
-| `repo-policy` | Repository Policy | yes (must succeed) | `python3 scripts/ci_preflight.py` (its `CHECKS` catalog): Apache lineage, `cargo fmt --all -- --check`, layer boundaries, det-hash and wildcard-arm ratchets, documentation paths and module map, product naming, publish/gauntlet workflow contracts, CI classifier, gate and native-runner tests, privacy regressions, `cargo machete`, `taplo fmt --check` |
-| `secrets-scan` | Secrets Scan | yes (must succeed) | `gitleaks` over the full history |
+| `repo-policy` | Repository Policy | yes (must succeed) | `python3 scripts/ci_preflight.py` (its `CHECKS` catalog): Apache lineage, `cargo fmt --all -- --check`, layer boundaries, det-hash and wildcard-arm ratchets, documentation paths and module map, product naming, publish/gauntlet workflow contracts, CI classifier, gate and native-runner tests, privacy regressions, `cargo machete`, `taplo fmt --check`; then `scripts/ci_secrets_scan.py`: `gitleaks` over the commits the run adds (`daily-validation.yml` scans the whole history) |
 | `test` | Test | yes (heavy) | `scripts/ci_native.py archive`: builds the complete native suite into one archive; doc tests |
-| `test-shards` | Native tests (i/8) | yes (heavy) | `scripts/ci_native.py run --shard i --total 8`: one partition of that archive each |
-| `clippy` | Clippy | yes (heavy) | `cargo clippy --all-targets --all-features -- -D warnings` |
+| `test-shards` | Native tests (i/6) | yes (heavy) | `scripts/ci_native.py run --shard i --total 6`: one partition of that archive each |
+| `clippy` | Clippy | yes (heavy) | `cargo clippy --all-targets --all-features -- -D warnings`; links the examples; `cargo check --manifest-path fuzz/Cargo.toml --bins` |
 | `complexity-guards` | Complexity Guards | yes (heavy) | `perf-counters` `scaling_` tests in remus-operations |
 | `approx-census` | Approximation Census | yes (heavy) | `scripts/check-approx-census.py` |
-| `coverage` | Coverage | yes (only on request) | llvm-cov with a 60% line floor; `ci:coverage` label or dispatch input |
 | `msrv` | MSRV (1.88) | yes (`full` tier) | `cargo +1.88.0 check --workspace --all-features` |
 | `wasm-no-io` | WASM without optional I/O | yes (heavy) | clippy and tests for `remus-wasm --no-default-features` |
 | `wasm` | WASM Build & Validate | yes (`wasm` tier) | `cargo xtask wasm-build --defer-package-tests`, package contents |
 | `wasm-runtime` | WASM runtime (smoke, tarball-consumer; three parts each) | yes (`wasm` tier) | the package suites against the built archive |
 | `w9-preflight` | W9 Preflight | yes (`wasm` tier) | `scripts/test-w9-preflight.sh` |
 | `wasm-size-gate` | WASM Size Gate | yes (skips without a package build or outside PRs) | base commit's `scripts/wasm-size-gate.mjs`: kernel hard limits, and a `WASM-Size:` line for kernel growth above 64 KiB raw |
-| `fuzz-check` | Fuzz Targets Compile | yes (heavy) | `cargo check --manifest-path fuzz/Cargo.toml --bins` |
 | `render` | Software Rendering | yes (heavy) | `cargo test -p remus-render` on Mesa lavapipe |
-| `deny` | Cargo Deny | yes (`full` tier) | `cargo deny ... --all-features check` |
-| `audit` | Security Audit | yes (`full` tier) | `cargo audit` |
+| `deny` | Cargo Deny | yes (`full` tier) | `cargo deny ... --all-features check`: licenses, sources and the RustSec advisories |
 | `docs` | Documentation | yes | `cargo doc --no-deps --all-features`, `mdbook build book` |
 | `wasm-size` (`ci.yml`) | WASM Size Report | **no** | PR-only comment with the same report (`wasm-size-report.yml`); fails with the gate |
 
-There are no separate Format, Layer Boundaries, Unused Dependencies, TOML Format, Apache Lineage or Doc Paths jobs: those checks run inside Repository Policy, so a failure in one shows up as that job failing. In CI an integration test is reported under a generated harness binary, e.g. `remus-operations::ci_harness_3 foo::test_name` for a test in `crates/operations/tests/<foo>.rs`; locally `cargo test -p remus-operations --test foo` is unchanged (`docs/ci-cadence.md`, "Native tests in CI"). A merge-group run executes only the light gates (Repository Policy, Secrets Scan, Documentation).
+There are no separate Format, Layer Boundaries, Unused Dependencies, TOML Format, Apache Lineage or Doc Paths jobs: those checks run inside Repository Policy, so a failure in one shows up as that job failing. In CI an integration test is reported under a generated harness binary, e.g. `remus-operations::ci_harness_3 foo::test_name` for a test in `crates/operations/tests/<foo>.rs`; locally `cargo test -p remus-operations --test foo` is unchanged (`docs/ci-cadence.md`, "Native tests in CI"). A merge-group run executes only the light gates (Repository Policy, Documentation). Instrumented coverage is not a CI job: `coverage.yml` runs it nightly on `main` and on dispatch.
 
 `benchmark.yml` contributes `Kernel perf` plus `Publish benchmark` (main baseline runs) or `Compare benchmark` (PR runs, only with the `ci:benchmark` label); none is in `CI Pass`. `blacksmith-sh` posts a `[code]smith` entry that reports SKIPPED — it is a runner-provider App that no workflow here uses, not a reviewer or a quality check.
 
@@ -136,13 +132,13 @@ Supply-chain jobs can fail on a PR that never touched dependencies. `Cargo.lock`
 
 ### cargo-deny / audit / OSV advisories
 
-The `deny` job runs cargo-deny-action against `deny.toml`; the `audit` job runs `cargo audit` on a freshly generated lockfile. Both gate PRs through `CI Pass`. OSV lives in its own workflow (`.github/workflows/osv-scan.yml`): on PRs and merge-queue entries its `OSV Scan` check fails when the lockfiles add a vulnerability relative to the base commit, and it blocks a merge only while it is a required status check (a repository setting); pushes to `main` and the Monday 06:00 UTC schedule fail on any detected vulnerability.
+The `deny` job runs `cargo deny` against `deny.toml` and the committed lockfile, including the RustSec advisory database; it gates PRs through `CI Pass`. There is no separate `cargo audit` job in CI (`daily-validation.yml` still runs it daily). OSV lives in its own workflow (`.github/workflows/osv-scan.yml`): on PRs and merge-queue entries its `OSV Scan` check fails when the lockfiles add a vulnerability relative to the base commit, and it blocks a merge only while it is a required status check (a repository setting); pushes to `main` and the Monday 06:00 UTC schedule fail on any detected vulnerability.
 
 Policy: do NOT widen the `deny.toml` license allowlist and do NOT add blanket ignore entries to get green. Current state to preserve: `licenses.allow` has eight permissive entries, the four non-obvious ones (CC0-1.0, ISC, BSD-2-Clause, BSD-3-Clause) carrying a provenance comment that names the dependency tree pulling them in, and there is no `[advisories] ignore` list at all (`[advisories]` sets only `unmaintained` and `yanked`).
 
 Triage order when an advisory lands on your PR:
 
-1. Check whether a patched version exists (`cargo audit` output or the advisory page names it). Semver-compatible patches are picked up automatically by the fresh resolution, so a persistent failure usually means the fix is in a new major or minor. Raise the version requirement in the relevant `Cargo.toml` in a separate commit, not mixed into your feature diff.
+1. Check whether a patched version exists (the `cargo deny` output or the advisory page names it). Semver-compatible patches are picked up automatically by the fresh resolution, so a persistent failure usually means the fix is in a new major or minor. Raise the version requirement in the relevant `Cargo.toml` in a separate commit, not mixed into your feature diff.
 2. If no patched version exists, add a narrowly scoped `[advisories] ignore` entry to `deny.toml`: the specific advisory id, a comment explaining why it does not apply or cannot be fixed yet, and a concrete re-check trigger (e.g. "remove when <crate> X.Y ships"). State the ignore and its rationale in the PR body.
 3. If unsure whether the advisory is exploitable or how to scope it, stop and report per the blocked-state rule. Silencing a security check is never a way to unblock a PR.
 
@@ -200,8 +196,7 @@ Bumping wasm-bindgen is its own change with its own PR. Never bump it as a drive
 
 - "The review came back clean": no reviewer runs on this repo. An empty findings list means nobody looked, which is not the same as approval. Report which gate actually passed.
 - "The check I polled never reported problems, so there were none": a filter keyed to a nonexistent check name is silent forever and looks identical to a pass. List the rollup unfiltered before trusting any filter.
-- "The pre-push hook printed one line and passed, so the change is validated": the hook intentionally runs nothing. Validation is CI plus the local tests you ran yourself.
-- "CLAUDE.md says pre-push runs tests and cargo-deny": stale. The hook file delegates to CI; do not re-add local suites to it and do not cite the stale description.
+- "The push went through, so the change is validated": there is no pre-push hook. Validation is CI plus the local tests you ran yourself; do not add local suites as a push hook.
 - "High-risk change, better wait for a human": no gate of any kind will stop you, which is an argument for more self-review, not less.
 - "gh pr view showed no comments, so there are no findings": inline findings live on `pulls/<N>/comments` (the API), check both surfaces.
 - "Branch protection will catch it": protection checks only `CI Pass`, freshness and resolved threads, admins bypass it, and three checks sit outside it. It catches a red `CI Pass` or an open thread, nothing else.

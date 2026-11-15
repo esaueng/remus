@@ -22,6 +22,7 @@ def load(name):
 
 GATE = load("ci_gate")
 NATIVE = load("ci_native")
+SECRETS = load("ci_secrets_scan")
 
 
 def flags(**selected):
@@ -71,9 +72,13 @@ class GateTests(unittest.TestCase):
         # rustsec/audit-check reports an informational advisory by creating a
         # check run; with this workflow's read-only token that failed the job.
         self.assertNotIn("uses: rustsec/audit-check", CHECKS)
-        self.assertIn("      - run: cargo audit\n", CHECKS)
-        granted = set(re.findall(r"(?m)^ +([a-z-]+): write$", CHECKS))
-        self.assertEqual(granted, {"id-token"})  # coverage upload only
+        self.assertEqual(re.findall(r"(?m)^ +([a-z-]+): write$", CHECKS), [])
+
+    def test_advisories_are_checked_by_cargo_deny_alone(self):
+        # Cargo Deny reads the RustSec database `cargo audit` read; one job.
+        self.assertIn("cargo deny --log-level warn --manifest-path ./Cargo.toml --all-features check\n", CHECKS)
+        self.assertNotIn("cargo audit", CHECKS)
+        self.assertIn("[advisories]", (ROOT / "deny.toml").read_text(encoding="utf-8"))
 
     def test_malformed_input_fails_closed(self):
         with self.assertRaises(ValueError):
@@ -176,6 +181,26 @@ class NativeBuildTests(unittest.TestCase):
         self.assertIn("cargo test --workspace --profile ci-test --doc", CHECKS)
         # `cargo test` links examples by default; the merged build does not.
         self.assertIn("cargo build --workspace --examples --locked", CHECKS)
+        # The fuzz crate is outside the workspace; the Clippy job compiles it.
+        self.assertIn("cargo check --manifest-path fuzz/Cargo.toml --bins", CHECKS)
+
+
+class SecretsScanTests(unittest.TestCase):
+    BASE = "a" * 40
+
+    def test_the_first_usable_base_bounds_the_scan(self):
+        self.assertEqual(SECRETS.log_opts(["", self.BASE, "b" * 40], exists=lambda _: True), f"{self.BASE}..HEAD")
+
+    def test_a_missing_zero_unknown_or_malformed_base_scans_every_ref(self):
+        for bases, known in (([], True), (["", ""], True), (["0" * 40], True),
+                             ([self.BASE], False), (["main"], True), ([self.BASE + "\n--all"], True)):
+            with self.subTest(bases=bases, known=known):
+                self.assertEqual(SECRETS.log_opts(bases, exists=lambda _: known), SECRETS.ALL_REFS)
+
+    def test_ci_scans_incoming_commits_and_the_daily_run_scans_history(self):
+        self.assertIn("run: python3 scripts/ci_secrets_scan.py", CHECKS)
+        daily = (ROOT / ".github/workflows/daily-validation.yml").read_text(encoding="utf-8")
+        self.assertIn('gitleaks git --log-opts="--all" --redact .', daily)
 
 
 if __name__ == "__main__":

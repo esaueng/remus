@@ -1253,7 +1253,7 @@ Workspace-level strict lints:
 
 - Conventional commits enforced by commitlint
 - Pre-commit: fmt + clippy + taplo + machete in parallel (no tests)
-- Pre-push: delegates validation to CI (full test, deny, boundaries, lineage)
+- No pre-push hook: validation is delegated to CI (full test, deny, boundaries, lineage)
 - Branch: `main` is the primary Apache-2.0 branch
 - Never merge upstream v3 or later. Future upstream behavior must arrive under
   an explicit Apache-2.0 grant or be independently implemented.
