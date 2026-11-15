@@ -205,6 +205,107 @@ fn a_tiny_parameter_tail_with_a_large_excursion_cannot_be_skipped() {
     assert!(certify(&map, &[arc, crossing], &nodes, &cfg()).is_none());
 }
 
+/// A section that crosses a seam at its curve's own midpoint knot ends
+/// there up to rounding: the crossing parameter can land one step past the
+/// knot (0.5000000000000004 against a knot at 0.5000000000000003 on the
+/// tool wall of the hole at x = 35 in #1739). The piece then reaches about
+/// 1e-16 into the next span. With equal weights that sliver is the knot's
+/// point to 1e-13 of the span, so the piece is its spans up to the knot and
+/// the arrangement certifies.
+#[test]
+fn a_piece_ending_a_rounding_step_past_a_knot_ends_at_the_knot() {
+    let knot = 0.5_f64;
+    let curve = NurbsCurve::new(
+        3,
+        vec![0.0, 0.0, 0.0, 0.0, knot, 1.0, 1.0, 1.0, 1.0],
+        vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(1.0, 2.0, 0.0),
+            Point3::new(3.0, 3.0, 0.0),
+            Point3::new(5.0, 2.0, 0.0),
+            Point3::new(6.0, 0.0, 0.0),
+        ],
+        vec![1.0; 5],
+    )
+    .unwrap();
+    let after = f64::from_bits(knot.to_bits() + 1);
+    let before = f64::from_bits(knot.to_bits() - 1);
+    let map = plane_map();
+    let at_knot = map.local(curve.evaluate(knot));
+    let distance = |a: [f64; 3], b: [f64; 3]| {
+        a.into_iter()
+            .zip(b)
+            .fold(0.0_f64, |d, (x, y)| d.hypot(x - y))
+    };
+
+    // Ending past the knot, starting short of it, and the first reversed.
+    for (ta, tb, knot_is_end) in [
+        (0.0, after, true),
+        (before, 1.0, false),
+        (after, 0.0, false),
+    ] {
+        let mut nodes = Vec::new();
+        let piece = edge(
+            &mut nodes,
+            &map,
+            EdgeCurve::NurbsCurve(curve.clone()),
+            ta,
+            tb,
+        );
+        let geoms = piece_geoms(&map, &mut BezierCache::default(), &piece);
+        assert!(geoms.is_some(), "piece ({ta:e}, {tb:e}) must be covered");
+        let geoms = geoms.unwrap();
+        assert_eq!(geoms.len(), 1, "piece ({ta:e}, {tb:e}) is one span");
+        let got = if knot_is_end {
+            geoms[0].end()
+        } else {
+            geoms[0].start()
+        };
+        assert!(
+            distance(got, at_knot) < 1e-12,
+            "piece ({ta:e}, {tb:e}) must end at the knot's point"
+        );
+    }
+
+    // Both halves of the curve, meeting at the computed parameter.
+    let mut nodes = Vec::new();
+    let first = edge(
+        &mut nodes,
+        &map,
+        EdgeCurve::NurbsCurve(curve.clone()),
+        0.0,
+        after,
+    );
+    let second = edge(&mut nodes, &map, EdgeCurve::NurbsCurve(curve), after, 1.0);
+    let second = GraphEdge {
+        node_a: first.node_b,
+        ..second
+    };
+    assert!(
+        certify(&map, &[first, second], &nodes, &cfg()).is_some(),
+        "two pieces meeting a rounding step past a knot must certify"
+    );
+}
+
+/// The sliver rule bounds the weights as well as the fraction: a light end
+/// beside a heavy control point can leave it within any fraction, and that
+/// sliver is still refused.
+#[test]
+fn a_sliver_beside_a_heavy_control_point_is_not_skipped() {
+    let fraction = 1e-16;
+    let even = [[0.0, 0.0, 0.0, 1.0]; 4];
+    assert!(sliver_stays_at_end(&even, 0, fraction));
+    assert!(sliver_stays_at_end(&even, 3, fraction));
+    let mut heavy = even;
+    heavy[1][3] = 1e6;
+    assert!(!sliver_stays_at_end(&heavy, 0, fraction));
+    // Relative to the heaviest weight: scaling all of them changes nothing.
+    let scaled = even.map(|c| [c[0], c[1], c[2], 1e-9]);
+    assert!(sliver_stays_at_end(&scaled, 0, fraction));
+    // A wide fraction never passes, whatever the caller's own bound.
+    assert!(!sliver_stays_at_end(&even, 0, 1e-6));
+}
+
 fn torus() -> ToroidalSurface {
     ToroidalSurface::new(Point3::new(0.0, 0.0, 0.0), R, MINOR).unwrap()
 }

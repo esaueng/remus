@@ -965,6 +965,37 @@ impl BezierCache {
     }
 }
 
+/// Largest fraction of a Bezier span a piece may reach into without the
+/// span being split for it.
+const SLIVER_FRACTION: f64 = 1e-14;
+
+/// Relative distance within which a sliver counts as its span's end point:
+/// the bound [`same_point`] equates a Bezier end with the curve's value by.
+const SLIVER_REACH: f64 = 1e-12;
+
+/// Whether the part of a Bezier span within `fraction` of its end at control
+/// point `anchor` (the first or the last) stays within [`SLIVER_REACH`] of
+/// that control point, relative to the span's control polygon.
+///
+/// A piece's end parameter is computed, and one that should sit on a knot
+/// (a section crossing a seam at the curve's own midpoint knot) can land a
+/// rounding step past it. The piece then reaches a fraction near `1e-16`
+/// into the next span. For positive weights `w` and degree `n`, a point at
+/// local parameter `s` from the anchor `P` is
+/// `P + Σ_{i≠a} B_i w_i (P_i − P) / Σ B_i w_i`, so its distance from `P` is
+/// at most `D · (w_max / w_a) · (1 − (1−s)^n) / (1−s)^n`, with `D` the
+/// control polygon's diameter: about `D · (w_max / w_a) · n · s`. With
+/// equal weights that is `n · 1e-14` of `D` at most. A heavy neighbour of a
+/// light anchor defeats the bound, and such a sliver is not skipped.
+fn sliver_stays_at_end(cps: &[[f64; 4]], anchor: usize, fraction: f64) -> bool {
+    let heaviest = cps.iter().map(|c| c[3]).fold(0.0_f64, f64::max);
+    #[allow(clippy::cast_precision_loss)]
+    let degree = (cps.len() - 1) as f64;
+    // Twice the first-order bound covers `(1−s)^{-n}` for any `s` this small.
+    let reach = 2.0 * (heaviest / cps[anchor][3]) * degree * fraction;
+    reach.is_finite() && reach <= SLIVER_REACH
+}
+
 /// The exact geometry of a piece as spans in traversal order.
 fn piece_geoms(map: &ChartMap, cache: &mut BezierCache, e: &GraphEdge) -> Option<Vec<Geom>> {
     let p = &e.piece;
@@ -1006,10 +1037,29 @@ fn piece_geoms(map: &ChartMap, cache: &mut BezierCache, e: &GraphEdge) -> Option
                 }
                 let len = k1 - k0;
                 let kept = to - from;
-                if !len.is_finite() || !kept.is_finite() || kept / len <= 1e-14 {
-                    // A tiny parameter fraction can contain an arbitrarily
-                    // large geometric excursion under positive reweighting.
+                if !len.is_finite() || !kept.is_finite() {
                     return None;
+                }
+                if kept / len <= SLIVER_FRACTION {
+                    // A tiny parameter fraction can contain an arbitrarily
+                    // large geometric excursion under positive reweighting,
+                    // and its control points cannot be split off reliably.
+                    // It is left out only where it provably stays at the
+                    // span's own end (see `sliver_stays_at_end`); the piece
+                    // then ends at that knot, and its node must still be
+                    // within the mismatch cap of the knot's point.
+                    let anchor = if from <= *k0 && to < *k1 {
+                        0
+                    } else if to >= *k1 && from > *k0 {
+                        cps.len() - 1
+                    } else {
+                        return None;
+                    };
+                    if !sliver_stays_at_end(cps, anchor, kept / len) {
+                        return None;
+                    }
+                    covered = to;
+                    continue;
                 }
                 let mut seg = cps.clone();
                 if to < *k1 {
