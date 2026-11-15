@@ -265,9 +265,14 @@ fn batch_draft_rebuilds_rounded_vertical_edges() {
     let radii: Vec<f64> = solid_faces(k.topo(), solid)
         .expect("faces")
         .into_iter()
-        .filter_map(|face| match k.topo().face(face).expect("face").surface() {
-            remus_topology::face::FaceSurface::Cylinder(cylinder) => Some(cylinder.radius()),
-            _ => None,
+        .filter_map(|face| {
+            if let remus_topology::face::FaceSurface::Cylinder(cylinder) =
+                k.topo().face(face).expect("face").surface()
+            {
+                Some(cylinder.radius())
+            } else {
+                None
+            }
         })
         .collect();
     assert_eq!(radii.len(), 4, "four rebuilt bands, got {radii:?}");

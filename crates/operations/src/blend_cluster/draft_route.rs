@@ -325,11 +325,14 @@ fn blocking_group(topo: &Topology, solid: SolidId, curved: &[FaceId]) -> Option<
     })
 }
 
-/// The point halfway along `edge`'s parameter range.
-fn midpoint(edge: &Edge, start: Point3, end: Point3) -> Point3 {
-    let (t0, t1) = edge.domain_with_endpoints(start, end);
-    edge.curve()
-        .evaluate_with_endpoints(0.5 * (t0 + t1), start, end)
+/// The point halfway along `edge`'s authoritative parameter range, or
+/// `None` when a curved edge carries none.
+fn midpoint(edge: &Edge, start: Point3, end: Point3) -> Option<Point3> {
+    let (t0, t1) = edge.strict_domain().ok()?;
+    Some(
+        edge.curve()
+            .evaluate_with_endpoints(0.5 * (t0 + t1), start, end),
+    )
 }
 
 /// The edge of the drafted body (`live` are its edges) that `edge` of the
@@ -362,7 +365,11 @@ fn drafted_edge(
         let span: Vec3 = ends[1] - ends[0];
         ends[0] + span * 0.5
     } else {
-        midpoint(data, was[0], was[1])
+        midpoint(data, was[0], was[1]).ok_or_else(|| {
+            unsupported(
+                "a sharp edge restored for the draft has no parameter range to find                  it again by on the drafted body",
+            )
+        })?
     };
 
     let mut found = None;
@@ -374,7 +381,7 @@ fn drafted_edge(
         );
         let same_ends = (close(start, ends[0]) && close(end, ends[1]))
             || (close(start, ends[1]) && close(end, ends[0]));
-        if !same_ends || !close(midpoint(other, start, end), middle) {
+        if !same_ends || !midpoint(other, start, end).is_some_and(|point| close(point, middle)) {
             continue;
         }
         if found.replace(candidate).is_some() {
