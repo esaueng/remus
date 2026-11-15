@@ -1775,13 +1775,28 @@ pub fn fillet_rolling_ball_with_origins(
             let start = topo.vertex(edge.start())?.point();
             let end = topo.vertex(edge.end())?.point();
             let edge_len = (end - start).length();
-            let probe = radius.min(edge_len * 0.1).max(tol.linear * 10.0);
-            let side = match concavity.concavity(edge_id, faces[0], faces[1], probe)? {
-                crate::query::EdgeConcavity::Convex => -1.0,
-                crate::query::EdgeConcavity::Concave => 1.0,
-                crate::query::EdgeConcavity::Tangent | crate::query::EdgeConcavity::Unknown => {
-                    continue;
+            // The quadrant probe is only a local verdict while it stays inside
+            // the edge's own neighbourhood. One radius out can already reach
+            // the next feature: on a 2 mm shell an R5 probe lands on the inner
+            // wall, the verdict is unknown, and the stripe loses its exact
+            // two-plane section (#1740). A smaller probe only gets more local,
+            // so retry closer in before giving up.
+            let mut probe = radius.min(edge_len * 0.1).max(tol.linear * 10.0);
+            let mut side = None;
+            for _ in 0..4 {
+                match concavity.concavity(edge_id, faces[0], faces[1], probe)? {
+                    crate::query::EdgeConcavity::Convex => side = Some(-1.0),
+                    crate::query::EdgeConcavity::Concave => side = Some(1.0),
+                    crate::query::EdgeConcavity::Tangent => {}
+                    crate::query::EdgeConcavity::Unknown => {
+                        probe = (probe * 0.25).max(tol.linear * 10.0);
+                        continue;
+                    }
                 }
+                break;
+            }
+            let Some(side) = side else {
+                continue;
             };
             planar_edge_sides.insert(edge_id.index(), side);
         }
