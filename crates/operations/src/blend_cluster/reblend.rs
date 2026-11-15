@@ -405,8 +405,40 @@ pub(super) fn reblend_restoration_gated(
     plans: &[Vec<ReblendStage>],
     gate: Gate,
 ) -> Result<GroupReblend, OperationsError> {
+    reblend_restoration_attempts(topo, solid, sharp_edges, plans, gate)
+        .map_err(|refusal| refusal.error)
+}
+
+/// A refused [`reblend_restoration`] with every attempt's own error.
+pub(super) struct ReblendRefusal {
+    /// The refusal [`reblend_restoration`] reports.
+    pub(super) error: OperationsError,
+    /// The typed refusal of each attempted plan, in plan order. Empty when
+    /// the request was refused before any plan ran.
+    pub(super) attempts: Vec<OperationsError>,
+}
+
+impl From<OperationsError> for ReblendRefusal {
+    fn from(error: OperationsError) -> Self {
+        Self {
+            error,
+            attempts: Vec::new(),
+        }
+    }
+}
+
+/// [`reblend_restoration`] under `gate`, keeping each attempt's typed
+/// refusal beside the joined [`BlendClusterError::ReblendFailed`] text, for
+/// a caller that has to name why the group does not rebuild.
+pub(super) fn reblend_restoration_attempts(
+    topo: &mut Topology,
+    solid: SolidId,
+    sharp_edges: &[Vec<EdgeId>],
+    plans: &[Vec<ReblendStage>],
+    gate: Gate,
+) -> Result<GroupReblend, ReblendRefusal> {
     if plans.is_empty() {
-        return Err(invalid("no re-fillet plan"));
+        return Err(invalid("no re-fillet plan").into());
     }
     let mut carriers: Vec<Vec<SeedCarrier>> = Vec::with_capacity(sharp_edges.len());
     for (index, edges) in sharp_edges.iter().enumerate() {
@@ -423,6 +455,7 @@ pub(super) fn reblend_restoration_gated(
         carriers.push(found);
     }
     let mut refusals = Vec::with_capacity(plans.len());
+    let mut attempts = Vec::with_capacity(plans.len());
     for plan in plans {
         for stage in plan {
             if stage
@@ -433,7 +466,8 @@ pub(super) fn reblend_restoration_gated(
                 return Err(invalid(format!(
                     "a stage names sharp edges {:?} the body does not carry",
                     stage.sharp_edges
-                )));
+                ))
+                .into());
             }
         }
         let _attempt = crate::performance::span("blend_group.plan_attempt");
@@ -444,13 +478,19 @@ pub(super) fn reblend_restoration_gated(
             }),
         }) {
             Ok(result) => return Ok(result),
-            Err(error) => refusals.push(format!("{}: {error}", describe(plan))),
+            Err(error) => {
+                refusals.push(format!("{}: {error}", describe(plan)));
+                attempts.push(error);
+            }
         }
     }
-    Err(BlendClusterError::ReblendFailed {
-        reason: refusals.join("; "),
-    }
-    .into())
+    Err(ReblendRefusal {
+        error: BlendClusterError::ReblendFailed {
+            reason: refusals.join("; "),
+        }
+        .into(),
+        attempts,
+    })
 }
 
 fn invalid(reason: impl Into<String>) -> OperationsError {

@@ -19,6 +19,23 @@ historical predecessor-line records, retained for provenance. The
   primitive had quarter arcs. When the planned re-fillet orders refuse, the
   group is now removed again with every restored arc cut below a half turn
   and re-filleted the same way. Groups that already rebuilt are unchanged.
+* **operations,wasm:** `draft` and `draftJournaled` no longer refuse a
+  planar face that has a corner on a blend. A 40 x 40 x 20 box with its
+  vertical edges at R5, drafted by 2 degrees on four walls or on one
+  (#1744), was refused with "corner N of a drafted face also lies on a
+  curved face; re-trimming a curved neighbour against the drafted plane is
+  not implemented". The draft now goes through the recognized blend groups
+  in its way: each is removed to its sharp edges, the sharp body is drafted
+  exactly, and the groups are re-filleted at their recorded radii, so a
+  fillet between two drafted walls comes back as the exact cylinder of the
+  same radius along their new section. Blends the draft does not reach are
+  left alone, and a curved neighbour that is not a blend keeps the old
+  refusal. Where a group does not remove to sharp or does not re-fillet on
+  the drafted body, the draft refuses and names the step. A rounded top
+  loop on a box drafted on all four walls is still refused that way: its
+  corner patches sit over flat ledges that do not remove to sharp edges
+  yet, and the loop would not re-fillet at corners the taper leaves out of
+  square (#1743).
 * **operations,wasm:** a tapered thread fitted to its cylinder (no
   `majorDiameter`) no longer depends on `gaugeOffset`: its radii are taken
   from the cylinder on the start plane, and the gauge plane changes only the

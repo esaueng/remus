@@ -14,6 +14,7 @@ pub(crate) mod plane_trim;
 pub mod prepared;
 
 pub use edge::point_to_edge;
+pub use plane_trim::PlanarTrim;
 pub(crate) use plane_trim::plane_point_in_face;
 pub use prepared::{DistanceOptions, DistanceScratch, PreparedDistanceSolid};
 

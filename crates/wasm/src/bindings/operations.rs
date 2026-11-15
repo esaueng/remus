@@ -1431,11 +1431,15 @@ impl RemusKernel {
 
     /// Split a solid into two halves along a plane.
     ///
-    /// Returns `[positive_solid_handle, negative_solid_handle]`.
+    /// Returns `[positive_solid_handle, negative_solid_handle]`. Cuts across
+    /// curved edges, non-planar faces or a face's holes are built by the exact
+    /// half-space booleans; the halves are exact either way.
     ///
     /// # Errors
     ///
-    /// Returns an error if the plane doesn't intersect the solid.
+    /// Returns an error if the plane doesn't cross the solid's interior, or
+    /// if neither the planar trimmer nor the exact booleans can build the
+    /// halves (for example a cavity shell, or an elliptical section).
     #[wasm_bindgen(js_name = "split")]
     #[allow(clippy::too_many_arguments)]
     pub fn split_solid(
