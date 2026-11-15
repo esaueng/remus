@@ -211,7 +211,11 @@ pub(super) fn tangent_line_contact_issues(
                     });
                 }
             }
-            _ => {}
+            // Only a plane and a cylinder are tested for tangent line contact.
+            FaceSurface::Nurbs(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_) => {}
         }
     }
     let margin = (1e-6 * scale).max(100.0 * tol.linear);
