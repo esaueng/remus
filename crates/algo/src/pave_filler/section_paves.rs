@@ -162,6 +162,7 @@ impl Trace {
             EdgeCurve::NurbsCurve(_) => self.span.as_ref().and_then(|span| {
                 remus_math::nurbs::projection::project_point_to_curve(span, p, 1e-12)
                     .ok()
+                    .filter(|hit| in_span(hit.parameter))
                     .map(|hit| hit.point)
             }),
             EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => None,
@@ -1279,6 +1280,70 @@ mod tests {
         let riding = f.generator(1.0, 3.0, 4.0);
         f.run();
         assert!(f.untouched(riding), "{:?}", f.ranges(riding));
+    }
+
+    /// Review counterexample (#1733): the riding witness of a trimming NURBS
+    /// must stay inside the trim, however close the trim is to the domain
+    /// in parameter. The carrier below climbs to height 1 in its first 1e-13
+    /// of parameter; trimmed at 5e-14 it starts at height 0.5, so a point at
+    /// height 0.4999 is 1e-4 from it.
+    #[test]
+    fn a_riding_witness_stays_in_the_trimmed_span() {
+        let p = |z: f64| Point3::new(1.0, 0.0, z);
+        let n = NurbsCurve::new(
+            1,
+            vec![0.0, 0.0, 1e-13, 1.0, 1.0],
+            vec![p(0.0), p(1.0), p(2.0)],
+            vec![1.0; 3],
+        )
+        .unwrap();
+        let trace = Trace {
+            curve: EdgeCurve::NurbsCurve(n.clone()),
+            domain: (5e-14, 1.0),
+            ends: (n.evaluate(5e-14), n.evaluate(1.0)),
+            span: crate::chart_trim::nurbs_span(&n, (5e-14, 1.0)),
+        };
+        let distance = trace.witness_distance(p(0.4999));
+        assert!(
+            distance >= 0.000_099,
+            "witness {distance} understates the true 1e-4"
+        );
+    }
+
+    /// Review counterexample (#1733), through the production pass: a ruling
+    /// crossing from wall material onto the bay's left generator at its
+    /// floor corner is paved there, whether that generator is a line or the
+    /// trimmed span of the compressed NURBS above (the same geometry).
+    #[test]
+    fn a_trim_within_parameter_slack_does_not_suppress_a_real_pave() {
+        for compressed in [false, true] {
+            let mut f = seam_cut_scaled(true, 2.0, 0.5);
+            if compressed {
+                let n = NurbsCurve::new(
+                    1,
+                    vec![0.0, 0.0, 1e-13, 1.0, 1.0],
+                    vec![
+                        f.cyl.evaluate(1.0, 0.0),
+                        f.cyl.evaluate(1.0, 1.0),
+                        f.cyl.evaluate(1.0, 2.0),
+                    ],
+                    vec![1.0; 3],
+                )
+                .unwrap();
+                let left = f.trim[2];
+                let edge = f.topo.edge_mut(left).unwrap();
+                edge.set_curve(EdgeCurve::NurbsCurve(n));
+                edge.set_trim(Some((5e-14, 1.0)));
+                let block = f.arena.edge_pave_blocks[&left][0];
+                f.arena.pave_blocks.get_mut(block).unwrap().start.parameter = 5e-14;
+            }
+            let through = f.generator(1.0, 0.4998, 0.5002);
+            f.run();
+            assert!(
+                f.arena.curves[through].paved,
+                "compressed = {compressed}: the crossing was not paved"
+            );
+        }
     }
 
     /// Control at every height: an arc lying along the bay's floor through a

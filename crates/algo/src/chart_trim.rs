@@ -382,31 +382,35 @@ fn admitted_join(
     (within(a, tol_a) && within(b, tol_b) && gap <= tol_a.max(tol_b)).then_some(gap)
 }
 
-/// The part of `curve` over `range` (either order) as its own clamped NURBS,
-/// cut out by knot insertion at the range's ends, in the curve's own
-/// parameterisation. Its control polygon bounds exactly that span (with
-/// positive weights the span lies in the polygon's convex hull), and a
-/// projection onto it finds the nearest point of the span, never of the
-/// carrier outside it. `None` when the range is not inside the domain, a
-/// split fails, or a weight is not positive.
+/// The part of `curve` over exactly `range` (either order) as its own
+/// NURBS, cut out by knot insertion at every range end inside the domain, in
+/// the curve's own parameterisation. Its control polygon bounds exactly that
+/// span (with positive weights the span lies in the polygon's convex hull),
+/// and a projection onto it finds the nearest point of the span, never of
+/// the carrier outside it. The trim is honoured exactly: no parameter slack
+/// is allowed, because a short knot span can carry a long stretch of curve.
+/// `None` when the range leaves the domain, a split cannot represent it, or
+/// a weight is not positive. The result is clamped at a split end only: at
+/// an end the range shares with the domain it keeps the carrier's own knots,
+/// so callers must take its ends by evaluation.
 pub fn nurbs_span(curve: &NurbsCurve, range: (f64, f64)) -> Option<NurbsCurve> {
     let (lo, hi) = (range.0.min(range.1), range.0.max(range.1));
     let (d0, d1) = curve.domain();
-    let slack = 1e-12 * (d1 - d0).abs().max(1.0);
-    if !(lo.is_finite() && hi.is_finite()) || hi <= lo || lo < d0 - slack || hi > d1 + slack {
+    if !(lo.is_finite() && hi.is_finite()) || hi <= lo || lo < d0 || hi > d1 {
         return None;
     }
     let mut span = curve.clone();
-    if lo > d0 + slack {
+    if lo > d0 {
         span = curve_split(&span, lo).ok()?.1;
     }
-    if hi < span.domain().1 - slack {
+    if hi < d1 {
         span = curve_split(&span, hi).ok()?.0;
     }
-    span.weights()
-        .iter()
-        .all(|w| w.is_finite() && *w > 0.0)
-        .then_some(span)
+    // A split keeps the inserted knot value exactly: anything else means the
+    // span is not the trim.
+    #[allow(clippy::float_cmp)]
+    let exact = span.domain() == (lo, hi);
+    (exact && span.weights().iter().all(|w| w.is_finite() && *w > 0.0)).then_some(span)
 }
 
 /// Construct the same continuous chart lift for a certified model polyline.
@@ -654,6 +658,29 @@ mod tests {
             .unwrap(),
         );
         (topo, FaceSurface::Cylinder(cyl), wire)
+    }
+
+    /// Review counterexample (#1733): a degree-1 carrier whose first knot
+    /// span is 1e-13 long climbs a whole unit of height in it, so the trim
+    /// start 5e-14, though within any parameter slack of the domain start,
+    /// is half a unit up. The span must start there, not at the carrier's
+    /// start.
+    #[test]
+    fn a_span_honours_a_trim_within_parameter_slack_of_the_domain() {
+        let p = |z: f64| Point3::new(0.0, 0.0, z);
+        let n = NurbsCurve::new(
+            1,
+            vec![0.0, 0.0, 1e-13, 1.0, 1.0],
+            vec![p(0.0), p(1.0), p(2.0)],
+            vec![1.0; 3],
+        )
+        .unwrap();
+        let span = nurbs_span(&n, (5e-14, 1.0)).unwrap();
+        let start = span.evaluate(span.domain().0);
+        assert!(
+            (start - n.evaluate(5e-14)).length() < 1e-7,
+            "span starts at {start:?}"
+        );
     }
 
     /// The section-pave pass's exclusion budget, `100 tol / 8`.

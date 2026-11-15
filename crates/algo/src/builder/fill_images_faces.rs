@@ -3458,14 +3458,18 @@ fn dedup_collinear_sections(sections: &mut Vec<SectionEdge>, tol: f64) {
 }
 
 /// Whether `inner` is CERTIFIED to lie within `2 * band` of `outer`'s own
-/// curve. Only straight NURBS spans qualify: `outer`'s span, cut out of its
-/// carrier, has its whole control polygon within `band` of the line through
-/// its ends, so the span lies along that line and (being continuous) passes
-/// within `band` of every point of its end chord; `inner`'s span has its
-/// whole control polygon within `band` of that chord, so its convex hull, and
-/// the curve with it, does too. Every other pair is kept: no sampling proves
-/// containment (a bump narrower than the samples slips between them), and
-/// the projection of a whole carrier can land outside a trimmed span.
+/// curve. Only straight NURBS spans qualify. `outer`'s span (exactly its
+/// trim, cut out of its carrier) must be continuous, with no interior knot
+/// of multiplicity above its degree, and its whole control polygon must lie
+/// within `band` of the line through its EVALUATED ends (a span need not be
+/// clamped, so its first and last control points need not be its ends).
+/// Then the span lies along that line and, being continuous, passes within
+/// `band` of every point of its end chord. `inner`'s span must have its
+/// whole control polygon within `band` of that chord, so its convex hull,
+/// and the curve with it, does too. Every other pair is kept: no sampling
+/// proves containment (a bump narrower than the samples slips between
+/// them), and the projection of a whole carrier can land outside a trimmed
+/// span.
 fn curved_section_within(outer: &SectionEdge, inner: &SectionEdge, band: f64) -> bool {
     let (EdgeCurve::NurbsCurve(o), EdgeCurve::NurbsCurve(i)) = (&outer.curve_3d, &inner.curve_3d)
     else {
@@ -3477,9 +3481,17 @@ fn curved_section_within(outer: &SectionEdge, inner: &SectionEdge, band: f64) ->
     ) else {
         return false;
     };
-    let (Some(&a), Some(&b)) = (o.control_points().first(), o.control_points().last()) else {
+    let (t0, t1) = o.domain();
+    let interior_breaks = o.knots().iter().filter(|&&k| k > t0 && k < t1);
+    let mut multiplicity: std::collections::BTreeMap<u64, usize> =
+        std::collections::BTreeMap::new();
+    for &k in interior_breaks {
+        *multiplicity.entry(k.to_bits()).or_default() += 1;
+    }
+    if multiplicity.values().any(|&m| m > o.degree()) {
         return false;
-    };
+    }
+    let (a, b) = (o.evaluate(t0), o.evaluate(t1));
     let d = b - a;
     let len_sq = d.length_squared();
     if len_sq.is_nan() || len_sq <= band * band {

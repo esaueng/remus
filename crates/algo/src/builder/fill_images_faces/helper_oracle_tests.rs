@@ -1230,3 +1230,63 @@ fn a_straight_subset_of_a_trimmed_nurbs_span_is_deduped() {
     assert_eq!(sections.len(), 1, "the straight subset survived");
     assert!((sections[0].start - p(4.0)).length() < 1e-12);
 }
+
+/// Review counterexample (#1733): an UNCLAMPED degree-2 outer section,
+/// knots [0..6] and control x 0, 2, 4, 6, traces only x in [1, 5] over its
+/// domain [2, 4]; its first and last control points are not its ends. A
+/// shorter section from x = 2 to x = 4 that reaches x = 6 inside is not a
+/// subset of it, in either order.
+#[test]
+fn an_unclamped_outer_section_is_not_its_control_chord() {
+    let p = |x: f64| Point3::new(x, 0.0, 0.0);
+    let n = NurbsCurve::new(
+        2,
+        vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+        vec![p(0.0), p(2.0), p(4.0), p(6.0)],
+        vec![1.0; 4],
+    )
+    .unwrap();
+    let ends = (n.evaluate(2.0), n.evaluate(4.0));
+    assert!(
+        (ends.0.x() - 1.0).abs() < 1e-12 && (ends.1.x() - 5.0).abs() < 1e-12,
+        "{ends:?}"
+    );
+    let outer = dedup_section(EdgeCurve::NurbsCurve(n), Some((2.0, 4.0)), ends);
+    let inner = polyline_section(
+        vec![0.0, 0.0, 0.5, 1.0, 1.0],
+        vec![p(2.0), p(6.0), p(4.0)],
+        (0.0, 1.0),
+    );
+    for order in [[inner.clone(), outer.clone()], [outer, inner]] {
+        let mut sections = order.to_vec();
+        dedup_collinear_sections(&mut sections, 1e-7);
+        assert_eq!(
+            sections.len(),
+            2,
+            "deleted a section reaching x = 6, past the outer span's x = 5"
+        );
+    }
+}
+
+/// Review counterexample (#1733): a degree-1 outer section with a full
+/// multiplicity interior knot jumps from x = 1 to x = 3, so it does not
+/// cover its end chord; a section inside that gap is no subset of it.
+#[test]
+fn a_discontinuous_outer_section_does_not_cover_its_chord() {
+    let p = |x: f64| Point3::new(x, 0.0, 0.0);
+    let outer = polyline_section(
+        vec![0.0, 0.0, 1.0, 1.0, 2.0, 2.0],
+        vec![p(0.0), p(1.0), p(3.0), p(4.0)],
+        (0.0, 2.0),
+    );
+    let inner = polyline_section(vec![0.0, 0.0, 1.0, 1.0], vec![p(1.5), p(2.5)], (0.0, 1.0));
+    for order in [[inner.clone(), outer.clone()], [outer, inner]] {
+        let mut sections = order.to_vec();
+        dedup_collinear_sections(&mut sections, 1e-7);
+        assert_eq!(
+            sections.len(),
+            2,
+            "deleted a section inside the outer curve's gap (1, 3)"
+        );
+    }
+}
