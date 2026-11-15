@@ -17,6 +17,12 @@ threads-required = "num-test-threads"
 filter = 'test(exposed_boss_wall_matches_geometry_across_half_radius) | test(b53_tangent_rim_general_position_neighbours)'
 priority = 100
 
+# Minutes each at CI's optimization level: started late, one of these alone
+# set the length of its partition.
+[[profile.default.overrides]]
+filter = 'test(canonical_circle_coil_fillets_keep_input_and_remove_material_for_each_cap) | test(an_eccentric_section_well_past_a_hole_edge_is_exact) | test(sphere_boss_wall_resizes_both_ways_across_scales)'
+priority = 100
+
 [[profile.default.overrides]]
 filter = 'test(offset_torus_sphere_cut_matches_annulus_overlap) | test(offset_torus_sphere_fuse_retains_both_operands)'
 priority = 100

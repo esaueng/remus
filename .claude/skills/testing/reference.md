@@ -165,7 +165,7 @@ Failure shapes worth recognizing:
 - A proptest failure prints the minimal failing input and writes a seed to the `.proptest-regressions` file; commit that file.
 - `test result: ok` but a scenario silently fell back to mesh: no test failure at all unless a face-count assertion exists. This is why fixtures assert face counts.
 
-Hooks (see `.husky/pre-commit` and `.husky/pre-push` for the authoritative contents): pre-commit runs fast checks only, fmt + clippy + taplo + cargo-machete in parallel, and runs no tests. Pre-push runs nothing locally; all validation (nextest, deny, boundaries, and more) is delegated to CI in `.github/workflows/ci.yml`, gated by the `ci-pass` job. Nothing on the local path runs the test suite for you: run tests manually before pushing. Never bypass the hooks.
+Hooks (see `.husky/pre-commit` for the authoritative contents): pre-commit runs fast checks only, fmt + clippy + taplo + cargo-machete in parallel, and runs no tests. There is no pre-push hook; all validation (nextest, deny, boundaries, and more) is delegated to CI in `.github/workflows/ci.yml`, gated by the `ci-pass` job. Nothing on the local path runs the test suite for you: run tests manually before pushing. Never bypass the hooks.
 
 ## 5. Glossary
 

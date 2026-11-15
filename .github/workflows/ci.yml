@@ -13,10 +13,6 @@ on:
         required: true
         default: main
         type: string
-      coverage:
-        description: Also run complete instrumented coverage
-        type: boolean
-        default: false
 
 concurrency:
   # Shared groups replace pending runs even when running cancellation is off.
@@ -84,12 +80,9 @@ jobs:
 
   checks:
     permissions:
-      id-token: write
       contents: read
       pull-requests: read
     uses: ./.github/workflows/ci-checks.yml
-    with:
-      coverage: ${{ inputs.coverage || false }}
 
   # Posts the WASM size report as a PR comment. It needs a write token, so it
   # stays outside `checks`; the same policy gates CI Pass through

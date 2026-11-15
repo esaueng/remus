@@ -46,11 +46,7 @@ fn build_packages(simd: bool, kernel_io: bool, defer_package_tests: bool) -> any
     wasm::check_tools()?;
     wasm::check_versions_match()?;
     wasm::test_size_policy()?;
-    for spec in wasm::packages(kernel_io) {
-        wasm::build_both_targets(&spec, simd)?;
-        wasm::merge_packages(&spec)?;
-        wasm::validate_output(&spec)?;
-    }
+    build_in_parallel(&wasm::packages(kernel_io), simd)?;
     wasm::version_packages()?;
     if defer_package_tests {
         println!(
@@ -60,6 +56,33 @@ fn build_packages(simd: bool, kernel_io: bool, defer_package_tests: bool) -> any
     } else {
         wasm::run_package_tests()
     }
+}
+
+/// Build, merge, and validate each package on its own thread.
+///
+/// Cargo's build-directory lock still compiles the crates one after the
+/// other; what overlaps is each package's `wasm-opt` pass, most of the build.
+/// The packages write to separate directories, and wasm-pack takes a file
+/// lock around its tool cache, so the output does not depend on the timing.
+fn build_in_parallel(specs: &[wasm::PackageSpec], simd: bool) -> anyhow::Result<()> {
+    std::thread::scope(|scope| {
+        let builds: Vec<_> = specs
+            .iter()
+            .map(|spec| {
+                scope.spawn(move || -> anyhow::Result<()> {
+                    wasm::build_both_targets(spec, simd)?;
+                    wasm::merge_packages(spec)?;
+                    wasm::validate_output(spec)
+                })
+            })
+            .collect();
+        // Join every build before reporting, so no thread outlives an error.
+        let outcomes: Vec<_> = builds.into_iter().map(|build| build.join()).collect();
+        for outcome in outcomes {
+            outcome.map_err(|_| anyhow::anyhow!("a package build thread panicked"))??;
+        }
+        Ok(())
+    })
 }
 
 fn main() -> anyhow::Result<()> {

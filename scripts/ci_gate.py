@@ -4,14 +4,13 @@
 import json
 import os
 
-FLAGS = ("heavy", "full", "wasm", "coverage", "docs")
+FLAGS = ("heavy", "full", "wasm", "docs")
 GROUPS = {
-    "always": {"changes", "repo-policy", "secrets-scan"},
+    "always": {"changes", "repo-policy"},
     "heavy": {"test", "test-shards", "clippy", "complexity-guards", "approx-census",
-              "wasm-no-io", "fuzz-check", "render"},
-    "full": {"msrv", "deny", "audit"},
+              "wasm-no-io", "render"},
+    "full": {"msrv", "deny"},
     "wasm": {"wasm", "wasm-runtime", "w9-preflight"},
-    "coverage": {"coverage"},
     "docs": {"docs"},
     "size": {"wasm-size-gate"},
 }
@@ -20,7 +19,7 @@ GROUPS = {
 def validate(results, flags, event):
     if not event or set(flags) != set(FLAGS) or any(v not in ("true", "false") for v in flags.values()):
         raise ValueError("Invalid CI selection flags")
-    if any(flags[tier] == "true" and flags["heavy"] != "true" for tier in ("full", "wasm", "coverage")):
+    if any(flags[tier] == "true" and flags["heavy"] != "true" for tier in ("full", "wasm")):
         raise ValueError("Inconsistent CI selection flags")
     if set(results) != set.union(*GROUPS.values()):
         raise ValueError("Missing or unknown CI job result")

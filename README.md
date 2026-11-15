@@ -246,7 +246,7 @@ and CI enforces the boundaries with `scripts/check-boundaries.sh`.
 | L5    | `remus`            | Native Rust facade: owned model session, explicit operation policy, curated modeling and I/O API  |
 
 The layer DAG is a program invariant: preserving it is a constraint on every
-change, and a violation fails both the pre-push hook and CI.
+change, and a violation fails CI (the `Layer boundaries` check of Repository Policy).
 
 ## Performance
 

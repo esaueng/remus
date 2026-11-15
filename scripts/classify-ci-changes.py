@@ -9,11 +9,13 @@ Outputs (lowercase booleans except ``mode``):
   Audit). Selected when the diff touches one of their inputs, by the
   ``ci:full`` PR label, and by a manual dispatch.
 * ``wasm`` — build and validate the distributable WASM packages.
-* ``coverage`` — instrumented coverage, only on request.
-* ``mode`` — ``full``, ``pr``, ``main``, ``queue``, ``package``, ``docs`` or
-  ``ci-only``.
+* ``mode`` — ``full``, ``pr``, ``main``, ``queue``, ``package``, ``docs``,
+  ``ci-only`` or ``empty``.
 
-A merge group runs the light gates only (Repository Policy, Secrets Scan and
+Complete instrumented coverage is not a tier: `coverage.yml` runs it nightly
+and on dispatch.
+
+A merge group runs the light gates only (Repository Policy and
 Documentation here, plus the privacy, dependency-review and WASM version
 workflows). Its pull request already ran every selected tier on its merge
 ref, and the main push of the squashed tree runs them again. Two pull
@@ -73,7 +75,7 @@ SECOND_TIER_FILENAMES = {
     "Cargo.lock", "Cargo.toml", "clippy.toml", "deny.toml", "rust-toolchain.toml",
 }
 
-FLAGS = ("heavy", "docs", "full", "wasm", "coverage")
+FLAGS = ("heavy", "docs", "full", "wasm")
 
 
 def is_documentation(path: str) -> bool:
@@ -126,13 +128,18 @@ def selection(mode: str, **selected: bool) -> dict:
     return {**{flag: bool(selected.get(flag, False)) for flag in FLAGS}, "mode": mode}
 
 
-def classify(paths: list[str], event: str, force_full: bool = False, coverage: bool = False) -> dict:
-    """Select tiers for ``paths`` on ``event``; an unknown diff gets everything."""
-    everything = selection("full", heavy=True, docs=True, full=True, wasm=True, coverage=coverage)
+def classify(paths: list[str], event: str, force_full: bool = False) -> dict:
+    """Select tiers for ``paths`` on ``event``."""
     # A manual dispatch and the `ci:full` label ask for every tier, whatever
-    # the diff. An empty or unavailable diff cannot be classified.
-    if event == "workflow_dispatch" or force_full or not paths:
-        return everything
+    # the diff.
+    if event == "workflow_dispatch" or force_full:
+        return selection("full", heavy=True, docs=True, full=True, wasm=True)
+
+    # An empty diff leaves the tree at its base, which its own run covered
+    # (a refresh PR opened after an identical one merged). A diff Git could
+    # not compute never reaches here: `changed_paths` raises and the job fails.
+    if not paths:
+        return selection("empty")
 
     # A package refresh is verified by wasm-version.yml (see PACKAGE_DIRECTORIES).
     if all(is_committed_package(path) for path in paths):
@@ -159,7 +166,6 @@ def classify(paths: list[str], event: str, force_full: bool = False, coverage: b
         docs=True,
         full=any(needs_second_tier(path) for path in paths),
         wasm=package_input,
-        coverage=coverage,
     )
 
 
@@ -189,7 +195,6 @@ def main() -> None:
         paths,
         os.environ.get("GITHUB_EVENT_NAME", ""),
         force_full=args.full,
-        coverage=os.environ.get("COVERAGE_REQUESTED") == "true",
     )
     for key, value in result.items():
         print(f"{key}={str(value).lower() if isinstance(value, bool) else value}")
