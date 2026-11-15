@@ -618,32 +618,35 @@ enum Step {
 /// The filleted Gecko taken through `steps` (A2 at `band`), each step
 /// verified.
 fn workflow(steps: &[Step], band: f64) -> (Topology, SolidId) {
-    let (mut topo, mut solid) = gecko();
+    let (mut topo, solid) = gecko();
+    let solid = workflow_from(&mut topo, solid, steps, band);
+    (topo, solid)
+}
+
+/// [`workflow`] continued from `solid`: `steps` taken in `topo`, each step
+/// verified. Returns the last body.
+fn workflow_from(topo: &mut Topology, mut solid: SolidId, steps: &[Step], band: f64) -> SolidId {
     for step in steps {
         solid = match step {
             Step::A2 => {
-                let face = x0_band(&topo, solid);
-                resize_blend(&mut topo, solid, face, 4.0, band)
-                    .unwrap()
-                    .solid
+                let face = x0_band(topo, solid);
+                resize_blend(topo, solid, face, 4.0, band).unwrap().solid
             }
             Step::A3 => {
-                let pick = a3_pick(&topo, solid);
-                fillet_cascade(&mut topo, solid, &[pick], 1.0)
-                    .unwrap()
-                    .solid
+                let pick = a3_pick(topo, solid);
+                fillet_cascade(topo, solid, &[pick], 1.0).unwrap().solid
             }
             Step::A4 => {
-                let pick = a4_pick(&topo, solid);
-                chamfer_v2_tangent_chain(&mut topo, solid, &[pick], FREE_END, FREE_END)
+                let pick = a4_pick(topo, solid);
+                chamfer_v2_tangent_chain(topo, solid, &[pick], FREE_END, FREE_END)
                     .unwrap()
                     .solid
             }
-            Step::A6 => bottom_chamfer(&mut topo, solid),
+            Step::A6 => bottom_chamfer(topo, solid),
         };
-        verify(&topo, solid, &format!("{step:?}"));
+        verify(topo, solid, &format!("{step:?}"));
     }
-    (topo, solid)
+    solid
 }
 
 /// Fresh construction of `steps` from the sharp Gecko with its boss at
@@ -1005,21 +1008,28 @@ fn corner_overlap(a: f64, b: f64) -> f64 {
 /// stripe and runs on into the free end face. Both orders give one body:
 /// the union of the two chamfers, so the removed volume is each chain's own
 /// less the two corner wedges both would take.
+///
+/// A2 and A3 are built once, and each chamfer branches from a copy of the
+/// arena: the same operations on the same state as building each sequence
+/// from the start, with each distinct body verified once.
 #[test]
 fn free_end_and_bottom_chamfers_meet_in_either_order() {
     let (topo_a3, a3) = workflow(&[Step::A2, Step::A3], 1.9);
-    let (topo_a4, a4) = workflow(&[Step::A2, Step::A3, Step::A4], 1.9);
-    let (topo_a6, a6) = workflow(&[Step::A2, Step::A3, Step::A6], 1.9);
+    let mut topo_a4 = topo_a3.clone();
+    let a4 = workflow_from(&mut topo_a4, a3, &[Step::A4], 1.9);
+    let mut topo_a6 = topo_a3.clone();
+    let a6 = workflow_from(&mut topo_a6, a3, &[Step::A6], 1.9);
     let volume = |topo: &Topology, solid| solid_volume(topo, solid, 1e-3).unwrap();
     let expected = volume(&topo_a4, a4) + volume(&topo_a6, a6) - volume(&topo_a3, a3)
         + 2.0 * corner_overlap(FREE_END, BOTTOM);
     let mut bodies = Vec::new();
-    for steps in [
-        [Step::A2, Step::A3, Step::A4, Step::A6],
-        [Step::A2, Step::A3, Step::A6, Step::A4],
+    for (steps, topo, first) in [
+        ([Step::A2, Step::A3, Step::A4, Step::A6], &topo_a4, a4),
+        ([Step::A2, Step::A3, Step::A6, Step::A4], &topo_a6, a6),
     ] {
         let label = format!("{steps:?}");
-        let (mut topo, solid) = workflow(&steps, 1.9);
+        let mut topo = topo.clone();
+        let solid = workflow_from(&mut topo, first, &steps[3..], 1.9);
         let measured = volume(&topo, solid);
         assert!(
             (measured - expected).abs() <= 1e-9 * expected,

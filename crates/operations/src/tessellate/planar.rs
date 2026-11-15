@@ -308,6 +308,119 @@ impl ConstraintIndex {
     }
 }
 
+/// One pocket outline of a cylindrical chart, its edges bucketed along `v` so
+/// that a containment query reads only the edges spanning the point's row.
+///
+/// [`remus_math::predicates::point_in_polygon`] counts an edge only when its
+/// two ends lie on either side of the point's `v`, and every such edge is in
+/// the point's bucket: the query sums the same exact `orient2d` signs over
+/// the same edges, so it returns the same answer as the scan of the whole
+/// outline, which a tall trimmed wall otherwise repeats for every triangle.
+struct PocketIndex<'a> {
+    polygon: &'a [remus_math::vec::Point2],
+    /// Edge `i` runs from vertex `i` to vertex `i + 1` (cyclically). Empty
+    /// when the outline is scanned whole.
+    buckets: Vec<Vec<usize>>,
+    v_min: f64,
+    v_max: f64,
+    inv_bucket: f64,
+}
+
+impl<'a> PocketIndex<'a> {
+    fn new(polygon: &'a [remus_math::vec::Point2]) -> Self {
+        let scanned = |v_min, v_max| Self {
+            polygon,
+            buckets: Vec::new(),
+            v_min,
+            v_max,
+            inv_bucket: 0.0,
+        };
+        let n = polygon.len();
+        let (v_min, v_max) = polygon
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| {
+                (lo.min(p.y()), hi.max(p.y()))
+            });
+        if n < 3 || !polygon.iter().all(|p| p.y().is_finite()) {
+            return scanned(v_min, v_max);
+        }
+        // Halve the bucket count until the stored references fit the budget:
+        // edges running far along `v` would otherwise be repeated in every
+        // bucket they cross.
+        let mut bucket_count = n.min(4096);
+        loop {
+            #[allow(clippy::cast_precision_loss)]
+            let inv_bucket = bucket_count as f64 / (v_max - v_min);
+            if bucket_count == 1 || !inv_bucket.is_finite() {
+                return scanned(v_min, v_max);
+            }
+            let last = bucket_count - 1;
+            let bucket_of = |v: f64| -> usize {
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let b = ((v - v_min) * inv_bucket).floor() as usize;
+                b.min(last)
+            };
+            let span = |i: usize| {
+                let (a, b) = (polygon[i].y(), polygon[(i + 1) % n].y());
+                (bucket_of(a.min(b)), bucket_of(a.max(b)))
+            };
+            let entries: usize = (0..n)
+                .map(|i| {
+                    let (lo, hi) = span(i);
+                    hi - lo + 1
+                })
+                .sum();
+            if entries > MAX_CONSTRAINT_INDEX_ENTRIES {
+                bucket_count /= 2;
+                continue;
+            }
+            let mut buckets = vec![Vec::new(); bucket_count];
+            for i in 0..n {
+                let (lo, hi) = span(i);
+                for bucket in &mut buckets[lo..=hi] {
+                    bucket.push(i);
+                }
+            }
+            return Self {
+                polygon,
+                buckets,
+                v_min,
+                v_max,
+                inv_bucket,
+            };
+        }
+    }
+
+    /// [`remus_math::predicates::point_in_polygon`] of `point` in the outline.
+    fn contains(&self, point: remus_math::vec::Point2) -> bool {
+        use remus_math::predicates::orient2d;
+
+        if self.buckets.is_empty() {
+            return remus_math::predicates::point_in_polygon(point, self.polygon);
+        }
+        // No edge has its ends on either side of a row outside the outline's.
+        if !(point.y() >= self.v_min && point.y() <= self.v_max) {
+            return false;
+        }
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let bucket = (((point.y() - self.v_min) * self.inv_bucket).floor() as usize)
+            .min(self.buckets.len() - 1);
+        let n = self.polygon.len();
+        let mut winding = 0_i32;
+        for &i in &self.buckets[bucket] {
+            let (vi, vj) = (self.polygon[i], self.polygon[(i + 1) % n]);
+            if vi.y() <= point.y() {
+                if vj.y() > point.y() && orient2d(vi, vj, point) > 0.0 {
+                    winding += 1;
+                }
+            } else if vj.y() <= point.y() && orient2d(vi, vj, point) < 0.0 {
+                winding -= 1;
+            }
+        }
+        winding != 0
+    }
+}
+
 /// Sample one cylindrical face wire into exact 3D boundary positions and a
 /// continuous UV loop.
 fn sample_cylinder_wire(
@@ -924,6 +1037,10 @@ pub(super) fn tessellate_revolved_with_holes(
         .collect();
     cdt.remove_exterior(&outer_constraints);
 
+    let pockets: Vec<PocketIndex> = pocket_ranges
+        .iter()
+        .map(|&(start, end)| PocketIndex::new(&pts2d[start..end]))
+        .collect();
     let triangles: Vec<(usize, usize, usize)> = cdt
         .triangles()
         .into_iter()
@@ -934,11 +1051,9 @@ pub(super) fn tessellate_revolved_with_holes(
             let u = (pa.x() + pb.x() + pc.x()) / (3.0 * radius);
             let v = (pa.y() + pb.y() + pc.y()) / 3.0;
             let centroid = Point2::new(radius * u, v);
-            let pocket_depth = pocket_ranges
+            let pocket_depth = pockets
                 .iter()
-                .filter(|&&(start, end)| {
-                    remus_math::predicates::point_in_polygon(centroid, &pts2d[start..end])
-                })
+                .filter(|pocket| pocket.contains(centroid))
                 .count();
             pocket_depth.is_multiple_of(2)
                 && band_ranges
@@ -2484,6 +2599,133 @@ mod tests {
 
         assert!(entries <= MAX_CONSTRAINT_INDEX_ENTRIES);
         assert!(index.contains(Point2::new(0.5, 0.5)));
+    }
+
+    /// A deterministic stream of values in `[0, 1)`.
+    fn unit_stream(mut state: u64) -> impl FnMut() -> f64 {
+        move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            #[allow(clippy::cast_precision_loss)]
+            let unit = (state >> 11) as f64 / (1_u64 << 53) as f64;
+            unit
+        }
+    }
+
+    /// The bucketed pocket query against the scan of the whole outline it
+    /// replaces, on outlines of every shape the wall chart can hold (round,
+    /// folded back on themselves, with level and repeated edges), at points
+    /// in general position, on the rows of the outline's own vertices, on
+    /// the vertices themselves and outside the outline's rows.
+    #[test]
+    fn pocket_index_answers_like_the_whole_outline_scan() {
+        use remus_math::predicates::point_in_polygon;
+        use remus_math::vec::Point2;
+
+        let mut next = unit_stream(0x9E37_79B9_7F4A_7C15);
+        let mut indexed = 0_usize;
+        let mut inside = 0_usize;
+        for case in 0..60 {
+            let n = 3 + (next() * 400.0) as usize;
+            let (cx, cy) = (next() * 20.0 - 10.0, next() * 2000.0 - 1000.0);
+            let (rx, ry) = (0.1 + next() * 6.0, 0.1 + next() * 500.0);
+            let mut polygon: Vec<Point2> = (0..n)
+                .map(|i| {
+                    #[allow(clippy::cast_precision_loss)]
+                    let angle = std::f64::consts::TAU * i as f64 / n as f64;
+                    // Every third outline is star-shaped, the next folds
+                    // over itself, the last is a plain ellipse.
+                    let radius = match case % 3 {
+                        0 => 0.3 + 0.7 * next(),
+                        1 => 1.0 + 0.5 * (7.0 * angle).sin(),
+                        _ => 1.0,
+                    };
+                    let turn = if case % 3 == 1 { 2.0 * angle } else { angle };
+                    Point2::new(
+                        (rx * radius).mul_add(turn.cos(), cx),
+                        (ry * radius).mul_add(turn.sin(), cy),
+                    )
+                })
+                .collect();
+            if case % 4 == 0 {
+                // A level edge and a repeated vertex.
+                let level = polygon[1].y();
+                polygon[2] = Point2::new(polygon[2].x(), level);
+                polygon.push(polygon[n - 1]);
+            }
+            let index = super::PocketIndex::new(&polygon);
+            indexed += usize::from(!index.buckets.is_empty());
+            let mut probes: Vec<Point2> = (0..400)
+                .map(|_| {
+                    Point2::new(
+                        (3.0 * rx).mul_add(next() - 0.5, cx),
+                        (3.0 * ry).mul_add(next() - 0.5, cy),
+                    )
+                })
+                .collect();
+            for &vertex in &polygon {
+                probes.push(vertex);
+                probes.push(Point2::new(cx, vertex.y()));
+                probes.push(Point2::new(vertex.x() + 1e-9, vertex.y()));
+            }
+            for probe in probes {
+                let expected = point_in_polygon(probe, &polygon);
+                assert_eq!(
+                    index.contains(probe),
+                    expected,
+                    "case {case} ({n} vertices) at {probe:?}"
+                );
+                inside += usize::from(expected);
+            }
+        }
+        // The comparison is of the bucketed path, on both verdicts.
+        assert_eq!(indexed, 60);
+        assert!(inside > 5_000, "{inside} probes inside");
+    }
+
+    /// Edges that each run the outline's whole height would be repeated in
+    /// every bucket: the index shrinks to fit its budget and still answers
+    /// like the scan. Degenerate outlines are scanned whole.
+    #[test]
+    fn pocket_index_bounds_long_edge_amplification() {
+        use remus_math::predicates::point_in_polygon;
+        use remus_math::vec::Point2;
+
+        let zigzag: Vec<Point2> = (0..20_000)
+            .map(|i| {
+                #[allow(clippy::cast_precision_loss)]
+                let x = i as f64;
+                Point2::new(x, if i % 2 == 0 { 0.0 } else { 1.0 })
+            })
+            .collect();
+        let index = super::PocketIndex::new(&zigzag);
+        let entries: usize = index.buckets.iter().map(Vec::len).sum();
+        assert!(entries <= MAX_CONSTRAINT_INDEX_ENTRIES);
+        assert!(!index.buckets.is_empty());
+        let mut next = unit_stream(0x2545_F491_4F6C_DD1D);
+        for _ in 0..200 {
+            let probe = Point2::new(next() * 20_000.0, next() * 1.2 - 0.1);
+            assert_eq!(index.contains(probe), point_in_polygon(probe, &zigzag));
+        }
+
+        let level = [
+            Point2::new(0.0, 2.0),
+            Point2::new(1.0, 2.0),
+            Point2::new(2.0, 2.0),
+        ];
+        let not_finite = [
+            Point2::new(0.0, 0.0),
+            Point2::new(1.0, f64::NAN),
+            Point2::new(2.0, 1.0),
+        ];
+        for outline in [&level[..], &not_finite[..], &level[..2]] {
+            let index = super::PocketIndex::new(outline);
+            assert!(index.buckets.is_empty());
+            for probe in [Point2::new(0.5, 2.0), Point2::new(1.0, 0.5)] {
+                assert_eq!(index.contains(probe), point_in_polygon(probe, outline));
+            }
+        }
     }
 
     #[test]

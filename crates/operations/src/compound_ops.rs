@@ -125,7 +125,13 @@ struct SimpleCylinder {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CylinderRelation {
     Separated,
+    /// Contact on a set of zero area: walls tangent along a line, or rims
+    /// meeting at a point. Shell-merging the two keeps both bodies exact.
     Touching,
+    /// Caps on one plane whose discs overlap over positive area. The contact
+    /// disc must be fused away; shell-merging would keep it as an internal
+    /// double wall (#1738).
+    CapContact,
     PositiveOverlap,
 }
 
@@ -146,8 +152,10 @@ fn cylinder_relation(
     let axial_overlap = a.axial_max.min(b.axial_max) - a.axial_min.max(b.axial_min);
     if radial_overlap < -margin || axial_overlap < -margin {
         Some(CylinderRelation::Separated)
-    } else if radial_overlap <= margin || axial_overlap <= margin {
+    } else if radial_overlap <= margin {
         Some(CylinderRelation::Touching)
+    } else if axial_overlap <= margin {
+        Some(CylinderRelation::CapContact)
     } else {
         Some(CylinderRelation::PositiveOverlap)
     }
@@ -701,9 +709,11 @@ fn partition_touching(
             if !bboxes[i].intersects(bboxes[j]) {
                 continue;
             }
-            // Only a proved gap or contact keeps two cylinders apart. `None`
-            // (axes not parallel) proves nothing: crossing bars read as apart
-            // were shell-merged unsplit into one invalid solid.
+            // Only a proved gap or zero-area contact keeps two cylinders
+            // apart. `None` (axes not parallel) proves nothing: crossing bars
+            // read as apart were shell-merged unsplit into one invalid solid.
+            // Caps meeting over a disc (`CapContact`) are face contact and
+            // must fuse, or both discs stay behind as an internal wall.
             if let (Some(a), Some(b)) = (&cylinder_bounds[i], &cylinder_bounds[j])
                 && matches!(
                     cylinder_relation(a, b, margin),
@@ -1201,21 +1211,103 @@ mod tests {
         weighted * dx / 3.0
     }
 
+    /// #1738: two cylinders whose caps touch share a disc of contact. `fuse_all`
+    /// shell-merged them as disjoint, keeping both coincident cap discs as an
+    /// internal double wall (6 faces). The fused body must match pairwise
+    /// `fuse`: 5 faces, the lower top an annulus, no internal face.
+    #[test]
+    fn fuse_all_cap_to_cap_cylinders_merge_the_contact_disc() {
+        use remus_math::mat::Mat4;
+        use remus_topology::face::FaceSurface;
+        use std::f64::consts::PI;
+
+        // (lower radius, upper radius, upper x offset, union is one cylinder)
+        for (r_low, r_up, dx, one_cylinder) in [
+            (40.0, 20.0, 0.0, false),
+            (40.0, 20.0, 10.0, false),
+            (20.0, 20.0, 0.0, true),
+        ] {
+            for upper_first in [false, true] {
+                let mut topo = Topology::new();
+                let lower = crate::primitives::make_cylinder(&mut topo, r_low, 10.0).unwrap();
+                let upper = crate::primitives::make_cylinder(&mut topo, r_up, 30.0).unwrap();
+                crate::transform::transform_solid(
+                    &mut topo,
+                    upper,
+                    &Mat4::translation(dx, 0.0, 10.0),
+                )
+                .unwrap();
+                let order = if upper_first {
+                    [upper, lower]
+                } else {
+                    [lower, upper]
+                };
+                let cid = topo.add_compound(Compound::new(order.to_vec()));
+                let fused = fuse_all(&mut topo, cid).unwrap();
+                let case = format!("r{r_low}/r{r_up} dx {dx} upper_first {upper_first}");
+
+                let volume = crate::measure::solid_volume(&topo, fused, 1e-3).unwrap();
+                let expected = PI * (r_low * r_low * 10.0 + r_up * r_up * 30.0);
+                assert!(
+                    (volume - expected).abs() / expected < 1e-6,
+                    "{case}: volume {volume} vs {expected}"
+                );
+
+                let faces = remus_topology::explorer::solid_faces(&topo, fused).unwrap();
+                let mut plane_areas: Vec<f64> = faces
+                    .iter()
+                    .filter(|&&f| {
+                        matches!(topo.face(f).unwrap().surface(), FaceSurface::Plane { .. })
+                    })
+                    .map(|&f| crate::measure::face_area(&topo, f, 1e-3).unwrap())
+                    .collect();
+                plane_areas.sort_by(f64::total_cmp);
+                if one_cylinder {
+                    // Equal coaxial radii: the walls are same-domain and the
+                    // union is one cylinder.
+                    assert_eq!(faces.len(), 3, "{case}: faces, plane areas {plane_areas:?}");
+                    let disc = PI * r_low * r_low;
+                    for area in &plane_areas {
+                        assert!((area - disc).abs() / disc < 1e-6, "{case}: {plane_areas:?}");
+                    }
+                } else {
+                    assert_eq!(faces.len(), 5, "{case}: faces, plane areas {plane_areas:?}");
+                    let expected_areas = [
+                        PI * r_up * r_up,
+                        PI * (r_low * r_low - r_up * r_up),
+                        PI * r_low * r_low,
+                    ];
+                    assert_eq!(plane_areas.len(), 3, "{case}: {plane_areas:?}");
+                    for (area, want) in plane_areas.iter().zip(expected_areas) {
+                        assert!(
+                            (area - want).abs() / want < 1e-6,
+                            "{case}: plane areas {plane_areas:?} vs {expected_areas:?}"
+                        );
+                    }
+                }
+                assert_cylinder_union_health(&topo, fused);
+            }
+        }
+    }
+
     #[test]
     fn simple_cylinders_classify_separated_touching_and_overlap() {
         use remus_math::mat::Mat4;
 
         let mut topo = Topology::new();
-        let make_at = |topo: &mut Topology, x: f64| {
+        let make_at = |topo: &mut Topology, x: f64, z: f64| {
             let solid = crate::primitives::make_cylinder(topo, 5.0, 10.0).unwrap();
-            crate::transform::transform_solid(topo, solid, &Mat4::translation(x, 0.0, 0.0))
-                .unwrap();
+            crate::transform::transform_solid(topo, solid, &Mat4::translation(x, 0.0, z)).unwrap();
             simple_cylinder(topo, solid).unwrap()
         };
-        let origin = make_at(&mut topo, 0.0);
-        let separated = make_at(&mut topo, 10.1);
-        let touching = make_at(&mut topo, 10.0);
-        let overlapping = make_at(&mut topo, 9.9);
+        let origin = make_at(&mut topo, 0.0, 0.0);
+        let separated = make_at(&mut topo, 10.1, 0.0);
+        let touching = make_at(&mut topo, 10.0, 0.0);
+        // Stacked cap to cap, sharing a disc of contact (#1738), and stacked
+        // with only the rims meeting at a point.
+        let cap_contact = make_at(&mut topo, 3.0, 10.0);
+        let rim_point = make_at(&mut topo, 10.0, 10.0);
+        let overlapping = make_at(&mut topo, 9.9, 0.0);
         let margin = remus_math::tolerance::Tolerance::new().linear;
         assert_eq!(
             cylinder_relation(&origin, &separated, margin),
@@ -1223,6 +1315,14 @@ mod tests {
         );
         assert_eq!(
             cylinder_relation(&origin, &touching, margin),
+            Some(CylinderRelation::Touching)
+        );
+        assert_eq!(
+            cylinder_relation(&origin, &cap_contact, margin),
+            Some(CylinderRelation::CapContact)
+        );
+        assert_eq!(
+            cylinder_relation(&origin, &rim_point, margin),
             Some(CylinderRelation::Touching)
         );
         assert_eq!(

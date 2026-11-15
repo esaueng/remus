@@ -940,6 +940,22 @@ mod work {
         pub(super) static LEGACY_PREDICATES: Cell<bool> = const { Cell::new(false) };
         /// In-circle tests the float filter left to `robust::incircle`.
         pub(super) static ROBUST_IN_CIRCLE: Cell<usize> = const { Cell::new(0) };
+        /// `true` makes constraint recovery look for crossing edges as it
+        /// did before the walks were taken first: `edge_exists` before every
+        /// crossing lookup, and a scan of every triangle for the queue. The
+        /// reference the recovery differential tests compare against.
+        pub(super) static LEGACY_RECOVERY: Cell<bool> = const { Cell::new(false) };
+        /// Triangles visited by the fan walks of `edge_exists`.
+        pub(super) static FAN_STEPS: Cell<usize> = const { Cell::new(0) };
+        /// Steps taken by the directed walks toward a constraint's far end.
+        pub(super) static WALK_STEPS: Cell<usize> = const { Cell::new(0) };
+        /// Whole-triangulation scans for the queue's crossing edges.
+        pub(super) static CROSSING_SCANS: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// Whether [`LEGACY_RECOVERY`] is set on this thread.
+    pub(super) fn legacy_recovery() -> bool {
+        LEGACY_RECOVERY.with(Cell::get)
     }
 
     /// Whether [`LEGACY_PREDICATES`] is set on this thread.
