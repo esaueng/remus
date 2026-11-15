@@ -8,6 +8,21 @@ historical predecessor-line records, retained for provenance. The
 
 ### Fixed
 
+* **operations,wasm:** `fillet` no longer refuses two rounds that meet at a
+  corner whose third edge stays sharp unless that corner is convex and
+  square, nor a chain that crosses the tangent seam of an earlier round on
+  a concave or drafted body (#1743). A pocket's floor loop, or two adjacent
+  floor edges, and the top or bottom loop of a drafted box were refused at
+  every radius with `unsupported-vertex-blend` ("2 stripes meet"); the same
+  loops after rounding the pocket's wall corners or the box's drafted
+  uprights were refused with `unsupported-seam-crossing`. The corner is now
+  the ball tangent to its three faces at any angles, convex or concave: a
+  sphere patch and a planar ledge where the sharp edge resumes. A floor loop
+  under rounded wall corners builds as cylinders and tori, and a loop over
+  rounds that lean builds each stripe over a round between that round's
+  seams, bounded by the exact contact ellipses, with the stripe itself a
+  NURBS surface (it has no closed form). Chamfering a loop over leaning
+  rounds is still refused with `trimming-failure`.
 * **operations,wasm:** resizing a filleted boss through its blend group
   (`resizeCylindricalFace`, `resizeCylindricalFaceDetailed`) and resizing a
   band of such a group (`resizeBlend`) no longer refuse a group whose

@@ -885,6 +885,215 @@ impl CapChain {
     }
 }
 
+/// Sections of an oblique arc stripe ([`crate::fillet::oblique_arc`]).
+///
+/// The stripe is lofted through them with cubic spans. On the drafted box of
+/// #1743 (radius-5 rounds leaning 2.8 degrees, radius-2 fillet) the loft
+/// stays within 1e-6 of the true canal surface, sampled on a 9 x 65 grid.
+const OBLIQUE_ARC_STATIONS: usize = 33;
+
+/// The tangent ball of a two-stripe corner whose third edge stays sharp
+/// (see [`setback_corner`]).
+#[derive(Clone, Copy)]
+struct SetbackCorner {
+    /// Centre of the ball tangent to the vertex's three planes.
+    center: Point3,
+    /// How far along the sharp edge, from the vertex, the ball's station is:
+    /// the sharp edge survives from there on.
+    reach: f64,
+}
+
+/// Qualify a vertex where two straight stripes of one side meet and the
+/// third edge stays sharp, and solve its tangent ball.
+///
+/// The qualified cell is the trihedral corner that bends one way: the vertex
+/// is bounded by exactly three planar faces, the stripes share one of them
+/// (the cap) and each has one of the others as its second support, and the
+/// third edge, between those two walls, is straight, unselected and convex
+/// when the stripes are convex, concave when they are concave. The planes may
+/// meet at any angles.
+///
+/// One ball of the fillet radius is then tangent to all three planes on the
+/// stripes' side. Each stripe's centreline passes through its centre, so the
+/// stripes stop at its stations and their end sections are great circles of
+/// it; the corner is the ball's patch between the three contacts. Without a
+/// stripe on the third edge the patch's third side, the great circle in the
+/// plane across that edge, bounds a planar ledge back to the point where the
+/// sharp edge resumes ([`build_two_edge_corner_exact`]).
+///
+/// `None` outside the cell: a mixed corner is [`ledge_corner`]'s or
+/// [`mitre_corner`]'s, and anything else keeps the angle-estimated setback.
+#[allow(clippy::too_many_arguments)]
+fn setback_corner(
+    topo: &Topology,
+    solid: SolidId,
+    vertex_index: usize,
+    incident_edges: &[EdgeId],
+    edge_to_faces: &HashMap<usize, Vec<FaceId>>,
+    vertex_faces: &HashMap<usize, Vec<FaceId>>,
+    planar_edge_sides: &HashMap<usize, f64>,
+    radius: f64,
+    tol: Tolerance,
+) -> Result<Option<SetbackCorner>, crate::OperationsError> {
+    let [first, second] = incident_edges else {
+        return Ok(None);
+    };
+    let (Some(&side), Some(&side_second)) = (
+        planar_edge_sides.get(&first.index()),
+        planar_edge_sides.get(&second.index()),
+    ) else {
+        return Ok(None);
+    };
+    if (side - side_second).abs() > tol.angular {
+        return Ok(None);
+    }
+    let (Some(faces_a), Some(faces_b)) = (
+        edge_to_faces.get(&first.index()),
+        edge_to_faces.get(&second.index()),
+    ) else {
+        return Ok(None);
+    };
+    let ([a0, a1], [b0, b1]) = (faces_a.as_slice(), faces_b.as_slice()) else {
+        return Ok(None);
+    };
+    let (cap, wall_a, wall_b) = if a0 == b0 {
+        (*a0, *a1, *b1)
+    } else if a0 == b1 {
+        (*a0, *a1, *b0)
+    } else if a1 == b0 {
+        (*a1, *a0, *b1)
+    } else if a1 == b1 {
+        (*a1, *a0, *b0)
+    } else {
+        return Ok(None);
+    };
+    let mut at_vertex: Vec<usize> = vertex_faces
+        .get(&vertex_index)
+        .map_or(&[][..], Vec::as_slice)
+        .iter()
+        .map(|face| face.index())
+        .collect();
+    at_vertex.compact_sort_by_key(|face| *face);
+    at_vertex.dedup();
+    let mut expected = vec![cap.index(), wall_a.index(), wall_b.index()];
+    expected.compact_sort_by_key(|face| *face);
+    if wall_a == wall_b || at_vertex != expected {
+        return Ok(None);
+    }
+
+    // The third edge: the only other edge at the vertex, between the walls.
+    let mut third: Option<EdgeId> = None;
+    for face in [wall_a, wall_b] {
+        let face_data = topo.face(face)?;
+        for wire in
+            std::iter::once(face_data.outer_wire()).chain(face_data.inner_wires().iter().copied())
+        {
+            for oe in topo.wire(wire)?.edges() {
+                let edge_id = oe.edge();
+                if edge_id == *first || edge_id == *second || third == Some(edge_id) {
+                    continue;
+                }
+                let edge = topo.edge(edge_id)?;
+                if edge.start().index() != vertex_index && edge.end().index() != vertex_index {
+                    continue;
+                }
+                if third.replace(edge_id).is_some() {
+                    return Ok(None);
+                }
+            }
+        }
+    }
+    let Some(third) = third else {
+        return Ok(None);
+    };
+    let third_edge = topo.edge(third)?;
+    let third_faces = edge_to_faces
+        .get(&third.index())
+        .map_or(&[][..], Vec::as_slice);
+    let between_walls = matches!(third_faces, [x, y]
+        if (*x == wall_a && *y == wall_b) || (*x == wall_b && *y == wall_a));
+    if !matches!(third_edge.curve(), EdgeCurve::Line)
+        || third_edge.start() == third_edge.end()
+        || !between_walls
+    {
+        return Ok(None);
+    }
+
+    let normal = |face: FaceId| -> Result<Option<Vec3>, crate::OperationsError> {
+        Ok(topo
+            .face(face)?
+            .effective_plane_normal()
+            .and_then(|n| n.normalize().ok()))
+    };
+    // Vertex position, unit direction away from it, and length of an edge.
+    let away = |edge: EdgeId| -> Result<Option<(Point3, Vec3, f64)>, crate::OperationsError> {
+        let data = topo.edge(edge)?;
+        let (start, end) = (
+            topo.vertex(data.start())?.point(),
+            topo.vertex(data.end())?.point(),
+        );
+        let (from, to) = if data.start().index() == vertex_index {
+            (start, end)
+        } else {
+            (end, start)
+        };
+        Ok((to - from)
+            .normalize()
+            .ok()
+            .map(|dir| (from, dir, (to - from).length())))
+    };
+    let (
+        Some(cap_n),
+        Some(wall_a_n),
+        Some(wall_b_n),
+        Some((vertex, dir_a, _)),
+        Some((_, dir_b, _)),
+        Some((_, dir_sharp, sharp_len)),
+    ) = (
+        normal(cap)?,
+        normal(wall_a)?,
+        normal(wall_b)?,
+        away(*first)?,
+        away(*second)?,
+        away(third)?,
+    )
+    else {
+        return Ok(None);
+    };
+    let Some(center) = solve_planar_corner_ball(
+        vertex,
+        &[(cap_n, side), (wall_a_n, side), (wall_b_n, side)],
+        radius,
+        tol,
+    ) else {
+        return Ok(None);
+    };
+    // The ball must sit along all three edges, and leave some of the sharp
+    // one: a corner that bends the other way about any edge puts its station
+    // behind the vertex.
+    let station = |dir: Vec3| (center - vertex).dot(dir);
+    let reach = station(dir_sharp);
+    if station(dir_a) <= tol.linear
+        || station(dir_b) <= tol.linear
+        || reach <= tol.linear
+        || reach >= sharp_len - tol.linear
+    {
+        return Ok(None);
+    }
+    let probe = radius.min(sharp_len * 0.1).max(tol.linear * 10.0);
+    let wanted = if side < 0.0 {
+        crate::query::EdgeConcavity::Convex
+    } else {
+        crate::query::EdgeConcavity::Concave
+    };
+    if crate::query::ConcavityProbe::new(topo, solid).concavity(third, wall_a, wall_b, probe)?
+        != wanted
+    {
+        return Ok(None);
+    }
+    Ok(Some(SetbackCorner { center, reach }))
+}
+
 /// Qualify a vertex where exactly one concave and one convex straight
 /// stripe meet, and solve its corner.
 ///
@@ -1313,6 +1522,7 @@ fn trim_support_corner(
     cap_chains: &remus_math::det_hash::DetHashMap<usize, CapChain>,
     line_paired_runout: bool,
     radius: f64,
+    reach: f64,
     tol: Tolerance,
 ) -> Result<Vec<Point3>, crate::OperationsError> {
     // A torus corner owns the whole cap-plane neighbourhood of its vertex,
@@ -1448,7 +1658,7 @@ fn trim_support_corner(
                 let splits = edge_tangency_splits(pos, next_pos, qs, tol);
                 if splits.is_empty() {
                     if let Ok(dir) = (next_pos - pos).normalize() {
-                        let p = pos + dir * radius;
+                        let p = pos + dir * reach;
                         out.push(p);
                         corner_preserved.entry(vi).or_insert(p);
                     }
@@ -1466,7 +1676,7 @@ fn trim_support_corner(
                 let mut splits = edge_tangency_splits(pos, prev_pos, qs, tol);
                 if splits.is_empty() {
                     if let Ok(dir) = (prev_pos - pos).normalize() {
-                        let p = pos + dir * radius;
+                        let p = pos + dir * reach;
                         out.push(p);
                         corner_preserved.entry(vi).or_insert(p);
                     }
@@ -1757,25 +1967,36 @@ pub fn fillet_rolling_ball_with_origins(
         // plane constraints, so a stripe endpoint and its corner ball cannot
         // disagree about which side of a support face contains the result.
         let mut planar_edge_sides: HashMap<usize, f64> = HashMap::default();
+        // Every other open edge found concave: a curved stripe's ball rolls
+        // in the void there, not in the material.
+        let mut concave_curved_edges: HashSet<usize> = HashSet::default();
         let mut concavity = crate::query::ConcavityProbe::new(topo, solid);
         for &edge_id in &filtered_edges {
             let edge = topo.edge(edge_id)?;
-            if !matches!(edge.curve(), EdgeCurve::Line) {
-                continue;
-            }
             let Some(faces) = edge_to_faces.get(&edge_id.index()) else {
                 continue;
             };
-            if faces.len() != 2
-                || topo.face(faces[0])?.effective_plane_normal().is_none()
-                || topo.face(faces[1])?.effective_plane_normal().is_none()
-            {
+            if faces.len() != 2 {
                 continue;
             }
             let start = topo.vertex(edge.start())?.point();
             let end = topo.vertex(edge.end())?.point();
             let edge_len = (end - start).length();
             let probe = radius.min(edge_len * 0.1).max(tol.linear * 10.0);
+            if !matches!(edge.curve(), EdgeCurve::Line)
+                || topo.face(faces[0])?.effective_plane_normal().is_none()
+                || topo.face(faces[1])?.effective_plane_normal().is_none()
+            {
+                if edge.start() != edge.end()
+                    && matches!(
+                        concavity.concavity(edge_id, faces[0], faces[1], probe),
+                        Ok(crate::query::EdgeConcavity::Concave)
+                    )
+                {
+                    concave_curved_edges.insert(edge_id.index());
+                }
+                continue;
+            }
             let side = match concavity.concavity(edge_id, faces[0], faces[1], probe)? {
                 crate::query::EdgeConcavity::Convex => -1.0,
                 crate::query::EdgeConcavity::Concave => 1.0,
@@ -1791,7 +2012,7 @@ pub fn fillet_rolling_ball_with_origins(
         // planar face. Store it before computing setbacks: projecting this
         // centre onto each sharp edge gives the exact station where that edge's
         // rolling-ball centreline reaches the common corner ball.
-        let exact_corner_balls: HashMap<usize, Point3> = vertex_fillet_edges
+        let mut exact_corner_balls: HashMap<usize, Point3> = vertex_fillet_edges
             .iter()
             .filter_map(|(&vertex_index, incident_edges)| {
                 exact_planar_corner_ball(
@@ -1806,6 +2027,28 @@ pub fn fillet_rolling_ball_with_origins(
                 .map(|center| (vertex_index, center))
             })
             .collect();
+        // Two stripes of one side over a trihedral corner whose third edge
+        // stays sharp have the same tangent ball, whatever angles the planes
+        // meet at; it stations them exactly as it does an N-way corner. The
+        // sharp edge resumes at the ball's station on it.
+        let mut setback_reach: HashMap<usize, f64> = HashMap::default();
+        for (&vertex_index, incident_edges) in &vertex_fillet_edges {
+            if let Some(corner) = setback_corner(
+                topo,
+                solid,
+                vertex_index,
+                incident_edges,
+                &edge_to_faces,
+                &vertex_faces,
+                &planar_edge_sides,
+                radius,
+                tol,
+            )? {
+                exact_corner_balls.insert(vertex_index, corner.center);
+                setback_reach.insert(vertex_index, corner.reach);
+            }
+        }
+        let exact_corner_balls = exact_corner_balls;
 
         // Mixed-side notch vertices (two convex + one concave planar edge
         // over a 90-degree rectangular corner) close with an exact torus
@@ -2896,15 +3139,224 @@ pub fn fillet_rolling_ball_with_origins(
             }
         }
 
-        // Convert a setback distance into a normalised edge parameter for a line
-        // edge of given length.  For curved edges the strip is still sampled in
-        // normalised t, so the fraction is an approximation adequate for the gap.
-        let setback_fraction = |sb: f64, edge_len: f64| -> f64 {
-            if edge_len > tol.linear {
-                (sb / edge_len).clamp(0.0, 0.49)
-            } else {
-                0.0
+        // Oblique arc stripes: a curved edge between a plane and a cylinder
+        // that crosses it at a lean, running from one of the cylinder's
+        // tangent flanks to the other (an earlier round's end on a drafted
+        // body). Its sections are solved in closed form over the band's
+        // whole angle between its seams, and each neighbouring wall stripe
+        // ends on its first or last section: the ball changes supports where
+        // its contact reaches the seam, not at the chain's vertex.
+        //
+        // Per edge: the sections in the edge's own face order and direction.
+        let mut oblique_arcs: HashMap<usize, Vec<remus_blend::fillet_builder::BlendCrossSection>> =
+            HashMap::default();
+        // Per (wall edge, vertex): the wall stripe's station there, as a
+        // fraction of the edge, which may lie past either end.
+        let mut handover_fractions: HashMap<(usize, usize), f64> = HashMap::default();
+        for &edge_id in &filtered_edges {
+            let edge = topo.edge(edge_id)?;
+            if matches!(edge.curve(), EdgeCurve::Line) || edge.start() == edge.end() {
+                continue;
             }
+            let Some(&[f1, f2]) = edge_to_faces.get(&edge_id.index()).map(Vec::as_slice) else {
+                continue;
+            };
+            let (Some(s1), Some(s2)) = (
+                face_surfaces.get(&f1.index()),
+                face_surfaces.get(&f2.index()),
+            ) else {
+                continue;
+            };
+            let (plane_face, plane, band_face, band, plane_first) =
+                if let (FaceSurface::Plane { normal, d }, FaceSurface::Cylinder(band)) = (s1, s2) {
+                    (f1, (*normal, *d), f2, band, true)
+                } else if let (FaceSurface::Cylinder(band), FaceSurface::Plane { normal, d }) =
+                    (s1, s2)
+                {
+                    (f2, (*normal, *d), f1, band, false)
+                } else {
+                    continue;
+                };
+            // Square to the plane, the band's end is a circle and the stripe
+            // an exact torus or sphere.
+            if band.axis().cross(plane.0).length() <= tol.angular.max(1e-9) {
+                continue;
+            }
+            let band_outward_radial = !face_reversed
+                .get(&band_face.index())
+                .copied()
+                .unwrap_or(false);
+            let side = if concave_curved_edges.contains(&edge_id.index()) {
+                1.0
+            } else {
+                -1.0
+            };
+            // The wall stripe the chain continues on at each end: a straight
+            // two-plane stripe of the same side, between this plane and a
+            // wall tangent to the band along the ruling through the vertex.
+            let flank =
+                |vertex: VertexId| -> Result<Option<(EdgeId, Vec3)>, crate::OperationsError> {
+                    if !g1_chain_vertices.contains(&vertex.index()) {
+                        return Ok(None);
+                    }
+                    let Some(&(wall_edge, _, _)) = vertex_fillet_adjacency
+                        .get(&vertex.index())
+                        .and_then(|adjacent| {
+                            adjacent.iter().find(|(other, _, _)| *other != edge_id)
+                        })
+                    else {
+                        return Ok(None);
+                    };
+                    if planar_edge_sides
+                        .get(&wall_edge.index())
+                        .is_none_or(|wall_side| (*wall_side - side).abs() > tol.angular)
+                    {
+                        return Ok(None);
+                    }
+                    let Some(&[w1, w2]) = edge_to_faces.get(&wall_edge.index()).map(Vec::as_slice)
+                    else {
+                        return Ok(None);
+                    };
+                    let wall = if w1 == plane_face {
+                        w2
+                    } else if w2 == plane_face {
+                        w1
+                    } else {
+                        return Ok(None);
+                    };
+                    let Some(FaceSurface::Plane { normal, .. }) = face_surfaces.get(&wall.index())
+                    else {
+                        return Ok(None);
+                    };
+                    let Ok(normal) = normal.normalize() else {
+                        return Ok(None);
+                    };
+                    // Tangent along the ruling through the vertex: the band's
+                    // face normal there is the wall's.
+                    let offset = topo.vertex(vertex)?.point() - band.origin();
+                    let radial = offset - band.axis() * offset.dot(band.axis());
+                    let band_normal = if band_outward_radial { radial } else { -radial };
+                    let eps = (band.radius() * 1e-9).max(tol.linear);
+                    if (band_normal - normal * band.radius()).length() > eps {
+                        return Ok(None);
+                    }
+                    Ok(Some((wall_edge, normal)))
+                };
+            let (Some((wall_start, flank_start)), Some((wall_end, flank_end))) =
+                (flank(edge.start())?, flank(edge.end())?)
+            else {
+                continue;
+            };
+            let Some(sections) = crate::fillet::oblique_arc::sections(
+                plane,
+                band,
+                band_outward_radial,
+                side,
+                radius,
+                flank_start,
+                flank_end,
+                OBLIQUE_ARC_STATIONS,
+                tol,
+            ) else {
+                continue;
+            };
+            // Each wall stripe's station at the shared vertex is the foot of
+            // the handover centre on its edge.
+            let mut stations = Vec::with_capacity(2);
+            for (wall_edge, vertex, section) in [
+                (wall_start, edge.start(), sections.first()),
+                (wall_end, edge.end(), sections.last()),
+            ] {
+                let Some(section) = section else { continue };
+                let wall = topo.edge(wall_edge)?;
+                let from = topo.vertex(wall.start())?.point();
+                let delta = topo.vertex(wall.end())?.point() - from;
+                let length_sq = delta.dot(delta);
+                if length_sq <= tol.linear * tol.linear {
+                    continue;
+                }
+                let fraction = (section.centre - from).dot(delta) / length_sq;
+                // The wall stripe must keep some length of its own.
+                let inside = if wall.start() == vertex {
+                    fraction < 0.5
+                } else {
+                    fraction > 0.5
+                };
+                if inside {
+                    stations.push(((wall_edge.index(), vertex.index()), fraction));
+                }
+            }
+            if stations.len() != 2 {
+                continue;
+            }
+            handover_fractions.extend(stations);
+            oblique_arcs.insert(
+                edge_id.index(),
+                sections
+                    .iter()
+                    .map(|section| {
+                        let (contact1, contact2) = if plane_first {
+                            (section.plane, section.band)
+                        } else {
+                            (section.band, section.plane)
+                        };
+                        // The arc's middle control point is where its end
+                        // tangents cross: along the bisector, 1 / cos² of the
+                        // half angle times as far as the chord's midpoint.
+                        let mid = Point3::new(
+                            (contact1.x() + contact2.x()) * 0.5,
+                            (contact1.y() + contact2.y()) * 0.5,
+                            (contact1.z() + contact2.z()) * 0.5,
+                        );
+                        let weight = ((mid - section.centre).length() / radius).clamp(0.0, 1.0);
+                        let apex = if weight > 1e-9 {
+                            section.centre + (mid - section.centre) * (1.0 / (weight * weight))
+                        } else {
+                            mid
+                        };
+                        remus_blend::fillet_builder::BlendCrossSection {
+                            contact1,
+                            apex,
+                            contact2,
+                            weight,
+                        }
+                    })
+                    .collect(),
+            );
+        }
+        // A stripe's sampled interval on its edge: its setbacks as fractions
+        // of the edge (for a curved edge the strip is still sampled in
+        // normalised t, an approximation adequate for the gap), or the
+        // handover station where it meets an oblique arc.
+        let stripe_span = |edge_id: EdgeId,
+                           start: VertexId,
+                           end: VertexId,
+                           edge_len: f64,
+                           setback_map: &HashMap<(usize, usize), f64>|
+         -> (f64, f64) {
+            let fraction = |sb: f64| -> f64 {
+                if edge_len > tol.linear {
+                    (sb / edge_len).clamp(0.0, 0.49)
+                } else {
+                    0.0
+                }
+            };
+            let setback = |vertex: VertexId| {
+                setback_map
+                    .get(&(edge_id.index(), vertex.index()))
+                    .copied()
+                    .unwrap_or(0.0)
+            };
+            (
+                handover_fractions
+                    .get(&(edge_id.index(), start.index()))
+                    .copied()
+                    .unwrap_or_else(|| fraction(setback(start))),
+                handover_fractions
+                    .get(&(edge_id.index(), end.index()))
+                    .copied()
+                    .unwrap_or_else(|| 1.0 - fraction(setback(end))),
+            )
         };
 
         // Station fractions Phase 4 samples for an edge: `n_v` points evenly spaced
@@ -2920,16 +3372,8 @@ pub fn fillet_rolling_ball_with_origins(
                 return Vec::new();
             };
             let edge_len = (b.point() - a.point()).length();
-            let sb_start = setback_map
-                .get(&(edge_id.index(), edge.start().index()))
-                .copied()
-                .unwrap_or(0.0);
-            let sb_end = setback_map
-                .get(&(edge_id.index(), edge.end().index()))
-                .copied()
-                .unwrap_or(0.0);
-            let t_lo = setback_fraction(sb_start, edge_len);
-            let t_hi = 1.0 - setback_fraction(sb_end, edge_len);
+            let (t_lo, t_hi) =
+                stripe_span(edge_id, edge.start(), edge.end(), edge_len, &setback_map);
             (0..n_v)
                 .map(|s| {
                     #[allow(clippy::cast_precision_loss)]
@@ -2975,6 +3419,10 @@ pub fn fillet_rolling_ball_with_origins(
                 if both_planar {
                     continue; // exact planar path handles these
                 }
+                if let Some(sections) = oblique_arcs.get(&edge_id.index()) {
+                    cache.insert(edge_id.index(), sections.clone());
+                    continue;
+                }
                 let n_v = edge_v_samples(&edge_curve).max(7);
                 let fractions = station_fractions(edge_id, n_v);
                 if fractions.len() != n_v {
@@ -2982,8 +3430,16 @@ pub fn fillet_rolling_ball_with_origins(
                 }
                 let r1 = face_reversed.get(&f1.index()).copied().unwrap_or(false);
                 let r2 = face_reversed.get(&f2.index()).copied().unwrap_or(false);
-                if let Ok(sections) = remus_blend::fillet_builder::blend_cross_sections(
-                    topo, edge_id, s1, r1, s2, r2, radius, &fractions,
+                if let Ok(sections) = remus_blend::fillet_builder::blend_cross_sections_on_side(
+                    topo,
+                    edge_id,
+                    s1,
+                    r1,
+                    s2,
+                    r2,
+                    radius,
+                    &fractions,
+                    concave_curved_edges.contains(&edge_id.index()),
                 ) {
                     cache.insert(edge_id.index(), sections);
                 }
@@ -3056,16 +3512,8 @@ pub fn fillet_rolling_ball_with_origins(
                 }
 
                 // Compute contacts at the setback stations near start and end.
-                let sb_start = setback_map
-                    .get(&(edge_id.index(), edge.start().index()))
-                    .copied()
-                    .unwrap_or(0.0);
-                let sb_end = setback_map
-                    .get(&(edge_id.index(), edge.end().index()))
-                    .copied()
-                    .unwrap_or(0.0);
-                let t_lo = setback_fraction(sb_start, edge_len);
-                let t_hi = 1.0 - setback_fraction(sb_end, edge_len);
+                let (t_lo, t_hi) =
+                    stripe_span(edge_id, edge.start(), edge.end(), edge_len, &setback_map);
                 for &(t, vid) in &[(t_lo, edge.start()), (t_hi, edge.end())] {
                     let p = sample_edge_point(&edge_curve, p_start, p_end, t);
                     let tan = sample_edge_tangent(&edge_curve, p_start, p_end, t);
@@ -3813,7 +4261,8 @@ pub fn fillet_rolling_ball_with_origins(
                             if setback_map.contains_key(&(ei, vi))
                                 && let Ok(dir) = (next_pos - pos).normalize()
                             {
-                                let p = pos + dir * radius;
+                                let p =
+                                    pos + dir * setback_reach.get(&vi).copied().unwrap_or(radius);
                                 trimmed_verts.push(p);
                                 corner_preserved.entry(vi).or_insert(p);
                             }
@@ -3825,7 +4274,8 @@ pub fn fillet_rolling_ball_with_origins(
                             if setback_map.contains_key(&(ei, vi))
                                 && let Ok(dir) = (prev_pos - pos).normalize()
                             {
-                                let p = pos + dir * radius;
+                                let p =
+                                    pos + dir * setback_reach.get(&vi).copied().unwrap_or(radius);
                                 trimmed_verts.push(p);
                                 corner_preserved.entry(vi).or_insert(p);
                             }
@@ -3983,6 +4433,7 @@ pub fn fillet_rolling_ball_with_origins(
                     &cap_chains,
                     line_paired_runouts.contains(&vi),
                     radius,
+                    setback_reach.get(&vi).copied().unwrap_or(radius),
                     tol,
                 )?);
             }
@@ -4055,6 +4506,10 @@ pub fn fillet_rolling_ball_with_origins(
                             &cap_chains,
                             line_paired_runouts.contains(&ids[j].index()),
                             radius,
+                            setback_reach
+                                .get(&ids[j].index())
+                                .copied()
+                                .unwrap_or(radius),
                             tol,
                         )?);
                     }
@@ -4207,20 +4662,15 @@ pub fn fillet_rolling_ball_with_origins(
             } else {
                 edge_v_samples(&edge_curve).max(7)
             };
+            // An oblique arc brings its own sections.
+            let oblique_arc = oblique_arcs.get(&edge_id.index());
+            let n_v = oblique_arc.map_or(n_v, Vec::len);
 
             // Setback-trim the swept interval so the strip stops short of any
             // multi-fillet junction vertex, leaving room for the corner patch.
             let edge_len = (p_end - p_start).length();
-            let sb_start = setback_map
-                .get(&(edge_id.index(), edge.start().index()))
-                .copied()
-                .unwrap_or(0.0);
-            let sb_end = setback_map
-                .get(&(edge_id.index(), edge.end().index()))
-                .copied()
-                .unwrap_or(0.0);
-            let t_lo = setback_fraction(sb_start, edge_len);
-            let t_hi = 1.0 - setback_fraction(sb_end, edge_len);
+            let (t_lo, t_hi) =
+                stripe_span(edge_id, edge.start(), edge.end(), edge_len, &setback_map);
 
             // Sample cross-section geometry at each v-station along the edge curve.
             let mut grid: Vec<[Point3; 3]> = Vec::with_capacity(n_v);
@@ -4245,8 +4695,14 @@ pub fn fillet_rolling_ball_with_origins(
                             (sec.contact1.y() + sec.contact2.y()) * 0.5,
                             (sec.contact1.z() + sec.contact2.z()) * 0.5,
                         );
-                        // Points from the apex (convex/edge side) into the material.
-                        bisector_ref = (mid - sec.apex).normalize().unwrap_or(d1_ref);
+                        // Points from the edge into the material: toward the
+                        // ball on a convex edge, away from it on a concave one.
+                        let toward_ball = (mid - sec.apex).normalize().unwrap_or(d1_ref);
+                        bisector_ref = if concave_curved_edges.contains(&edge_id.index()) {
+                            -toward_ball
+                        } else {
+                            toward_ball
+                        };
                     }
                 }
             } else {
@@ -4692,7 +5148,94 @@ pub fn fillet_rolling_ball_with_origins(
             // and lands inside the volume envelope. (Quarter arcs of a rim
             // filleted at half its radius or more reached here until the
             // torus branch took spindle tori.) Refuse it.
-            if n_v > 2 {
+            // An oblique arc is bounded by its two contact ellipses instead:
+            // the plane's, cut from the cylinder the plane contacts lie on,
+            // and the band's, cut from the band by the plane its contacts
+            // lie in.
+            if oblique_arc.is_some() {
+                let (plane, band, band_face, plane_ends, band_ends, band_mid) =
+                    if let (FaceSurface::Plane { normal, d }, FaceSurface::Cylinder(band)) =
+                        (surf1, surf2)
+                    {
+                        (
+                            (*normal, *d),
+                            band,
+                            f2,
+                            (contact1_start, contact1_end),
+                            (contact2_start, contact2_end),
+                            grid[n_v / 2][2],
+                        )
+                    } else if let (FaceSurface::Cylinder(band), FaceSurface::Plane { normal, d }) =
+                        (surf1, surf2)
+                    {
+                        (
+                            (*normal, *d),
+                            band,
+                            f1,
+                            (contact2_start, contact2_end),
+                            (contact1_start, contact1_end),
+                            grid[n_v / 2][0],
+                        )
+                    } else {
+                        return Err(crate::OperationsError::InvalidInput {
+                            reason: "oblique arc stripe lost its plane and band".into(),
+                        });
+                    };
+                let band_outward_radial = !face_reversed
+                    .get(&band_face.index())
+                    .copied()
+                    .unwrap_or(false);
+                let side = if concave_curved_edges.contains(&edge_id.index()) {
+                    1.0
+                } else {
+                    -1.0
+                };
+                let plane_ellipse = crate::fillet::oblique_arc::plane_contact_cylinder(
+                    band,
+                    band_outward_radial,
+                    plane.0,
+                    side,
+                    radius,
+                )
+                .and_then(|carrier| {
+                    cylinder_plane_ellipse(&carrier, plane, plane_ends.0, plane_ends.1, tol)
+                });
+                let band_ellipse = (band_mid - band_ends.0)
+                    .cross(band_ends.1 - band_ends.0)
+                    .normalize()
+                    .ok()
+                    .and_then(|normal| {
+                        cylinder_plane_ellipse(
+                            band,
+                            (normal, dot_normal_point(normal, band_ends.0)),
+                            band_ends.0,
+                            band_ends.1,
+                            tol,
+                        )
+                    });
+                let (Some((plane_curve, plane_trim)), Some((band_curve, band_trim))) =
+                    (plane_ellipse, band_ellipse)
+                else {
+                    return Err(crate::OperationsError::InvalidInput {
+                        reason: "oblique arc stripe contacts are not the ellipses of its \
+                                 plane and band"
+                            .into(),
+                    });
+                };
+                analytic_boundary_curves.push(crate::boolean::BoundaryCurveOverride {
+                    start: plane_ends.0,
+                    end: plane_ends.1,
+                    curve: plane_curve,
+                    trim: plane_trim,
+                });
+                analytic_boundary_curves.push(crate::boolean::BoundaryCurveOverride {
+                    start: band_ends.0,
+                    end: band_ends.1,
+                    curve: band_curve,
+                    trim: band_trim,
+                });
+            }
+            if n_v > 2 && oblique_arc.is_none() {
                 let limit = (radius * 1e-3).max(1e-6);
                 for (side, surface) in [(0, surf1), (2, surf2)] {
                     if !matches!(surface, FaceSurface::Plane { .. }) {
@@ -5799,27 +6342,32 @@ pub(super) fn build_sphere_cap(
 /// Build the EXACT corner where two filleted edges meet at a vertex whose third
 /// edge stays sharp.
 ///
-/// Once both bands are set back by `radius / tan(θ/2)`, the ball sits nestled in
-/// the corner tangent to all three faces and the blend surface is the octant of
-/// it facing the corner — the same spherical patch a 3-edge vertex blend uses.
-/// Its three boundary arcs are the two band-end sections (`near1`→`far`,
-/// `near2`→`far`) and a third arc `near1`→`near2` lying one radius in from the
-/// shared face. When the third edge is filleted too, its band consumes that
-/// third arc. Here it is not, so the material along it survives right up to
-/// that plane and the arc instead bounds a planar LEDGE: the arc plus two
-/// straight legs back to `p`, the point where the two side faces trimmed the
-/// unfilleted edge.
+/// Once both bands are set back to the stations of the ball tangent to the
+/// corner's three faces, the blend surface is the patch of that ball facing
+/// the corner: the same spherical patch a 3-edge vertex blend uses. Its three
+/// boundary arcs are the two band-end sections (`near1`→`far`, `near2`→`far`)
+/// and a third arc `near1`→`near2`, the ball's great circle in the plane
+/// across the third edge. When the third edge is filleted too, its band
+/// consumes that third arc. Here it is not, so the body along it survives
+/// right up to that plane and the arc instead bounds a planar LEDGE: the arc
+/// plus two straight legs back to `p`, the point where the two side faces
+/// trimmed the unfilleted edge.
 ///
 /// Emitting those two exact faces rather than one patch spanning both keeps the
 /// corner analytic. The sphere shares its arcs with the cylindrical band ends
 /// (the assembler mints arc edges before polygonal ones, so the ledge picks the
-/// third arc up instead of cutting a chord across it), and the material the
-/// corner removes is exactly the `radius` cube minus the ball octant,
-/// `r³(1 − π/6)`.
+/// third arc up instead of cutting a chord across it). At a square convex
+/// corner the material removed is exactly the `radius` cube minus the ball
+/// octant, `r³(1 − π/6)`; a square concave corner adds the same.
+///
+/// A convex corner's ledge faces the removed vertex, the side the ball touches
+/// the shared face on; a concave corner's faces the other way, with the added
+/// material behind it.
 ///
 /// Returns `None` unless the corner really is that shape — every contact one
-/// radius from the ball centre, and `p` coplanar with the two near contacts —
-/// so an oblique or concave corner keeps the approximating patch it had.
+/// radius from the ball centre, and the centre in the plane of `p` and the two
+/// near contacts — so a corner stationed off its tangent ball keeps the
+/// approximating patch it had.
 #[allow(clippy::too_many_arguments)]
 fn build_two_edge_corner_exact(
     p: Point3,
@@ -5831,11 +6379,6 @@ fn build_two_edge_corner_exact(
     is_concave: bool,
     tol: Tolerance,
 ) -> Option<Vec<FaceSpec>> {
-    if is_concave {
-        // A concave corner adds material; the ledge is not the sharp edge's
-        // run-out plane there. Leave it to the approximating patch.
-        return Option::None;
-    }
     let radial = |q: Point3| q - sphere_center;
     let radius_tol = radius * 1e-6;
     for q in [near1, near2, far] {
@@ -5844,19 +6387,25 @@ fn build_two_edge_corner_exact(
         }
     }
 
-    // The shared face's outward normal is the ball's radial at the point where
-    // it touches that face — and the ledge, one radius in from it, is parallel.
-    let ledge_normal = radial(far).normalize().ok()?;
+    // The ledge lies in the plane across the sharp edge through the ball's
+    // centre, where the third arc is a great circle. Convex, it faces the
+    // side the shared-face contact is on; concave, the other.
+    let across = (near1 - p).cross(near2 - p).normalize().ok()?;
+    let toward_far = if across.dot(radial(far)) >= 0.0 {
+        across
+    } else {
+        -across
+    };
+    let ledge_normal = if is_concave { -toward_far } else { toward_far };
     let ledge_d = dot_normal_point(ledge_normal, p);
     let plane_tol = tol.linear * 100.0;
-    for q in [near1, near2] {
-        if (dot_normal_point(ledge_normal, q) - ledge_d).abs() > plane_tol {
-            return Option::None;
-        }
+    if (dot_normal_point(ledge_normal, sphere_center) - ledge_d).abs() > plane_tol {
+        return Option::None;
     }
 
-    // The ball octant, wound counter-clockwise about the sphere's own outward
-    // (radial) normal, which is the winding `SphereCapFace` stores.
+    // The ball patch, wound counter-clockwise about the sphere's own outward
+    // (radial) normal, which is the winding `SphereCapFace` stores; a concave
+    // corner's face is marked reversed over that same wire.
     let mean = (radial(near1) + radial(far) + radial(near2))
         .normalize()
         .ok()?;
