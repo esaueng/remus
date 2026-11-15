@@ -700,9 +700,7 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
                         || (exact.volume - sampled.volume).abs()
                             <= 1e-3 * sampled.volume.abs().max(scale * s.radius()));
                 if agrees {
-                    // A fitted trim keeps the sampled reading's vector area
-                    // (see `cylinder_green::integrate`).
-                    if !AREA_ONLY && let Some(flux) = flux {
+                    if !AREA_ONLY {
                         rule.record_flux(flux);
                     }
                     return Ok(exact);

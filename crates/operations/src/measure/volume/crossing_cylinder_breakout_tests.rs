@@ -25,10 +25,9 @@ const BAR_LEN: f64 = 60.0;
 const OFFSET: f64 = 3.0;
 /// The trims are fitted NURBS sections that lie up to 1.4e-3 off the walls,
 /// so the B-rep itself is only that close to the closed form: the readings
-/// land within 0.043 mm³ of it (they were 2.0–2.7 mm³ high once the drill
-/// reached the bar's top). This is the K10 matrix's volume tolerance at
-/// unit scale.
-const VOLUME_TOLERANCE: f64 = 0.05;
+/// land within 0.022 mm³ of it (they were 2.0–2.7 mm³ high once the drill
+/// reached the bar's top). The K10 matrix allows 0.05 at unit scale.
+const VOLUME_TOLERANCE: f64 = 0.03;
 
 /// Volume common to the bar and a drill of radius `r`: over the drill's
 /// footprint `x² + (y − OFFSET)² < r²`, the bar's chord `2√(R² − y²)`

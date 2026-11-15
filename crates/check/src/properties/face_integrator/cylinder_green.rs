@@ -10,11 +10,19 @@
 //! Exact trims (lines, circles, ellipses) take this path, and so does a
 //! fitted NURBS trim (the quartic section of unequal crossing cylinders)
 //! whose every quadrature point lies on the cylinder within
-//! [`NURBS_ON_SURFACE`] of its radius (and at least [`NURBS_ON_SURFACE_ABS`]). Each point is projected onto the
-//! cylinder before it is integrated, so the face is measured on the trim the
-//! B-rep stores, read on its own surface. A fitted trim further off the
-//! surface than that has no boundary on the cylinder to integrate, and the
-//! sampled path keeps measuring it.
+//! [`NURBS_ON_SURFACE`] of its radius (and at least [`NURBS_ON_SURFACE_ABS`]).
+//! Such a trim is read on the surface: each point is projected onto the
+//! cylinder and its angular rate taken at the projected radius, so the face
+//! is measured on the trim the B-rep stores. A fitted trim further off the
+//! surface has no boundary on the cylinder to integrate, and the sampled
+//! path keeps measuring it.
+//!
+//! Fitted trims are read here only when the caller does not collect the
+//! vector area. The callers that do (the shell-closure and order-convergence
+//! certificates of `solid_volume`) qualify the reading they are handed, and a
+//! fitted trim read on the surface sits up to its fit error off the
+//! neighbouring face's own edge, so its vector area would not cancel to their
+//! tolerance. They keep the sampled reading and its checks unchanged.
 //!
 //! The sampled path cannot be trusted on such trims either: when two
 //! unequal crossing cylinders cut a single closed loop (a drill r 7.3 at
@@ -85,19 +93,11 @@ fn pieces(lo: f64, hi: f64) -> impl Iterator<Item = (f64, f64)> {
     (0..EDGE_PIECES).map(move |k| (step.mul_add(k as f64, lo), step.mul_add((k + 1) as f64, lo)))
 }
 
-/// The face's contribution by Green's theorem, with its vector area when the
-/// boundary is exact.
+/// The face's contribution and vector area by Green's theorem.
 ///
-/// The vector area is `None` for a face with a fitted NURBS trim. Read on
-/// the cylinder, such a trim sits up to its fit error off the neighbouring
-/// face's own edge, so this face's vector area no longer cancels against
-/// its neighbours' to the closure certificate's tolerance (a filleted
-/// off-seam cross drill closed to 3.2e-5 of its area). The caller keeps the
-/// sampled reading's vector area then: it closes as it always has, and only
-/// the volume comes from the boundary.
-///
-/// `None` when a boundary edge is not a line, circle, ellipse or on-surface
-/// NURBS curve, has no stored domain, or the boundary does not
+/// `None` when a boundary edge is not a line, circle or ellipse (or, for a
+/// caller that does not collect the vector area, an on-surface NURBS curve;
+/// see the module docs), has no stored domain, or the boundary does not
 /// enclose positive area (an orientation outside the convention this relies
 /// on): the caller keeps its sampled path then.
 pub(super) fn integrate<const AREA_ONLY: bool>(
@@ -106,7 +106,7 @@ pub(super) fn integrate<const AREA_ONLY: bool>(
     cylinder: &CylindricalSurface,
     rule: &IntegrationRule<'_>,
     sign: f64,
-) -> Result<Option<(FaceContribution, Option<Vec3>)>, CheckError> {
+) -> Result<Option<(FaceContribution, Vec3)>, CheckError> {
     let mut acc = Accumulator {
         volume_only: rule.volume_only,
         ..Accumulator::default()
@@ -118,7 +118,8 @@ pub(super) fn integrate<const AREA_ONLY: bool>(
         return Ok(None);
     };
     let off_surface_limit = (NURBS_ON_SURFACE * cylinder.radius()).max(NURBS_ON_SURFACE_ABS);
-    let mut fitted_trim = false;
+    // Fitted trims only for a reading no certificate qualifies (module docs).
+    let fitted_trims_allowed = rule.flux.is_none();
 
     for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
         for oriented in topo.wire(wire_id)?.edges() {
@@ -147,18 +148,27 @@ pub(super) fn integrate<const AREA_ONLY: bool>(
                     let Some(dp_dt) = velocity(curve, t, start, end) else {
                         return Ok(None);
                     };
-                    if matches!(curve, EdgeCurve::NurbsCurve(_)) {
-                        fitted_trim = true;
-                        let offset = point - cylinder.origin();
-                        let radial = offset - axis * offset.dot(axis);
-                        if (radial.length() - cylinder.radius()).abs() > off_surface_limit {
+                    // The angular rate of the projected point: ∂P/∂u has the
+                    // radius's length, so a point at radial distance ρ moves
+                    // in u at r/ρ times `dp·∂P/∂u / |∂P/∂u|²`. Exact trims
+                    // lie on the surface (ρ = r) and keep the plain quotient.
+                    let rate_scale = if matches!(curve, EdgeCurve::NurbsCurve(_)) {
+                        if !fitted_trims_allowed {
                             return Ok(None);
                         }
-                    }
+                        let offset = point - cylinder.origin();
+                        let rho = (offset - axis * offset.dot(axis)).length();
+                        if (rho - cylinder.radius()).abs() > off_surface_limit {
+                            return Ok(None);
+                        }
+                        cylinder.radius() / rho
+                    } else {
+                        1.0
+                    };
                     let (u, v) = cylinder.project_point(point);
                     let (_, du_vec, _, _, _) =
                         cylinder.span_hinted_point_and_partials_with_scratch(u, v, &mut scratch);
-                    let du_dt = dp_dt.dot(du_vec) / du_vec.dot(du_vec);
+                    let du_dt = rate_scale * dp_dt.dot(du_vec) / du_vec.dot(du_vec);
                     // −∮ F du, F(u, v) = v ∫₀¹ f(u, v s) ds.
                     let line_weight = -(direction * gp.w * half) * du_dt * v;
                     for sp in axial_points {
@@ -179,6 +189,6 @@ pub(super) fn integrate<const AREA_ONLY: bool>(
     if !acc.area.is_finite() || acc.area <= 0.0 {
         return Ok(None);
     }
-    let flux = (!fitted_trim).then(|| acc.flux(sign));
+    let flux = acc.flux(sign);
     Ok(Some((acc.finish(sign), flux)))
 }
