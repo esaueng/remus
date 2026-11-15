@@ -8,6 +8,14 @@
 //! other face — and every hole in every face — is carried through verbatim.
 //! Anything it cannot re-trim exactly is refused by name rather than
 //! approximated.
+//!
+//! A blend on a drafted face (a fillet along one of its edges) is not
+//! re-trimmed either: its carrier no longer fits the tilted plane. When a
+//! recognized blend group is what stands in the way, the draft goes through
+//! the group instead ([`crate::blend_cluster::draft_through_blend_groups`]):
+//! the group is removed to its sharp edges, the sharp body is drafted by the
+//! construction above, and the group is re-filleted at its recorded radii
+//! against the tilted planes.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -103,8 +111,19 @@ impl Plane {
 /// wire, the operation is refused, because a hole rim that moves off the wall
 /// that owns it cannot be rebuilt from outer-wire positions.
 ///
+/// Blends in the way are rebuilt, not re-trimmed. When a recognized blend
+/// group (fillets, their corner patches, equal-distance chamfers) meets a
+/// drafted corner, or ends on a face the draft has to re-trim, the group is
+/// removed to its sharp edges, the sharp body is drafted as above, and the
+/// group is re-filleted at its recorded radii against the tilted planes: a
+/// fillet between two drafted walls comes back as the exact cylinder of the
+/// same radius along their new section. A blend the draft does not reach is
+/// carried through untouched.
+///
 /// The result is checked with [`crate::validate::validate_solid`] and required
-/// to enclose positive volume before it is returned.
+/// to enclose positive volume before it is returned; a result that went
+/// through a blend group must also mesh watertight with its mesh volume
+/// agreeing with its measured one.
 ///
 /// # Errors
 ///
@@ -115,11 +134,17 @@ impl Plane {
 /// Returns [`OperationsError::Unsupported`] if the taper has no exact
 /// construction here — the solid has cavity shells, a drafted face carries an
 /// inner wire, a drafted face lies on the parting plane, a relocated corner
-/// also lies on a curved face or on fewer than three distinct planes, a wire
-/// that must be rebuilt carries a curved edge, a relocated corner would leave
-/// its own face's plane or travel implausibly far, the taper slides two
-/// corners of a rebuilt wire past each other (the face would fold over its
-/// neighbours), or the drafted shell fails validation.
+/// also lies on a curved face that is not a recognized blend or on fewer
+/// than three distinct planes, a wire that must be rebuilt carries a curved
+/// edge that is not a blend's, a relocated corner would leave its own face's
+/// plane or travel implausibly far, the taper slides two corners of a
+/// rebuilt wire past each other (the face would fold over its neighbours),
+/// or the drafted shell fails validation. Through a blend group it is also
+/// returned when the group does not remove to its sharp edges, or does not
+/// re-fillet on the drafted body; the refusal names the step, and names the
+/// vertex blend when every re-fillet order stops at one (rounded edges that
+/// meet at a corner the taper leaves out of square); such a refusal leaves
+/// the topology as it was.
 pub fn draft(
     topo: &mut Topology,
     solid: SolidId,
@@ -139,13 +164,20 @@ pub fn draft(
     .0)
 }
 
-/// [`draft`] with construction-derived face evolution.
+/// [`draft`] with face evolution.
 ///
-/// Every result face derives from exactly one input face — drafted faces are
-/// rebuilt on their tilted plane, re-trimmed neighbours keep their surface
-/// with a substituted boundary, and untouched faces are copied — so the map
-/// records each as `modified`, straight from the construction, never from
-/// geometric matching.
+/// On a body the draft re-trims directly, every result face derives from
+/// exactly one input face — drafted faces are rebuilt on their tilted plane,
+/// re-trimmed neighbours keep their surface with a substituted boundary, and
+/// untouched faces are copied — so the map records each as `modified`,
+/// straight from the construction, never from geometric matching.
+///
+/// Through a blend group the retained faces are still construction-derived,
+/// composed over the removal, the sharp draft and the re-fillet. A removed
+/// blend that has exactly one successor between the images of its supports
+/// keeps its identity as `modified`; that correspondence is an inference
+/// from support incidence, and the map says so in its origin. Any other
+/// blend is `deleted` and its replacement `generated`.
 ///
 /// # Errors
 ///
@@ -172,8 +204,89 @@ pub fn draft_with_evolution(
     }
 
     let pull = pull_direction.normalize()?;
-    // Neutral plane: passes through neutral_point with normal = pull direction.
-    let neutral_d = dot_normal_point(pull, neutral_point);
+    let taper = Taper {
+        pull,
+        // Neutral plane: passes through neutral_point with normal = pull
+        // direction.
+        neutral_d: dot_normal_point(pull, neutral_point),
+        tan_angle: angle_radians.tan(),
+    };
+
+    match draft_sharp(topo, solid, draft_faces, taper) {
+        Ok(sharp) => Ok((sharp.solid, sharp.evolution)),
+        // A curved face in the way may be a blend the draft can go through;
+        // anything else is the sharp construction's own refusal.
+        Err(refusal) if refusal.curved.is_empty() => Err(refusal.error),
+        Err(refusal) => {
+            crate::blend_cluster::draft_through_blend_groups(topo, solid, draft_faces, taper)?
+                .ok_or(refusal.error)
+        }
+    }
+}
+
+/// The taper a draft applies: a point at signed height `h` above the neutral
+/// plane (`pull · p = neutral_d`) is displaced along its face's outward
+/// normal by `h * tan_angle`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Taper {
+    /// Unit pull direction.
+    pull: Vec3,
+    /// The neutral plane's `d` in `pull · p = d`.
+    neutral_d: f64,
+    /// Tangent of the draft angle.
+    tan_angle: f64,
+}
+
+/// A body drafted by the sharp construction.
+pub(crate) struct SharpDraft {
+    /// The drafted solid.
+    pub(crate) solid: SolidId,
+    /// Construction-derived face evolution: every face `modified`.
+    pub(crate) evolution: EvolutionMap,
+    /// Every corner the draft relocated: source vertex index to drafted
+    /// position. A vertex without an entry kept its position.
+    pub(crate) moved: BTreeMap<usize, Point3>,
+}
+
+/// A refusal of the sharp construction.
+pub(crate) struct SharpRefusal {
+    /// The refusal [`draft`] reports.
+    pub(crate) error: OperationsError,
+    /// The curved faces that caused it: those meeting a drafted corner, or
+    /// lying across a curved edge of a boundary the draft has to rebuild.
+    /// Empty when the refusal has any other cause.
+    pub(crate) curved: Vec<FaceId>,
+}
+
+/// Draft `draft_faces` of `solid` by relocating corners and rebuilding the
+/// wires they sit on. Every face meeting a relocated corner must be planar
+/// and every rebuilt wire straight-edged; a refusal for that reason names
+/// the curved faces in the way.
+pub(crate) fn draft_sharp(
+    topo: &mut Topology,
+    solid: SolidId,
+    draft_faces: &[FaceId],
+    taper: Taper,
+) -> Result<SharpDraft, SharpRefusal> {
+    let mut curved = Vec::new();
+    draft_sharp_inner(topo, solid, draft_faces, taper, &mut curved)
+        .map_err(|error| SharpRefusal { error, curved })
+}
+
+/// [`draft_sharp`]; a refusal caused by curved faces pushes them to `curved`.
+fn draft_sharp_inner(
+    topo: &mut Topology,
+    solid: SolidId,
+    draft_faces: &[FaceId],
+    taper: Taper,
+    curved: &mut Vec<FaceId>,
+) -> Result<SharpDraft, OperationsError> {
+    let tol = Tolerance::new();
+    let Taper {
+        pull,
+        neutral_d,
+        tan_angle,
+    } = taper;
 
     let solid_data = topo.solid(solid)?;
     if !solid_data.inner_shells().is_empty() {
@@ -201,7 +314,6 @@ pub fn draft_with_evolution(
     }
 
     let mut planes = face_planes(topo, &all_faces)?;
-    let tan_angle = angle_radians.tan();
 
     for (pos, &fid) in all_faces.iter().enumerate() {
         if !drafted[pos] {
@@ -223,7 +335,7 @@ pub fn draft_with_evolution(
                 face.inner_wires().len()
             )));
         }
-        require_line_wire(topo, face.outer_wire(), fid)?;
+        require_line_wire(topo, solid, face.outer_wire(), fid, curved)?;
         planes[pos] = Some(tilt(plane, pull, neutral_d, tan_angle, fid)?);
     }
 
@@ -251,7 +363,7 @@ pub fn draft_with_evolution(
             let at = faces_at
                 .get(&vid.index())
                 .ok_or_else(|| unsupported(format!("vertex {} belongs to no face", vid.index())))?;
-            let corner = resolve_corner(at, &planes, vid.index(), eps)?;
+            let corner = resolve_corner(at, &planes, &all_faces, vid.index(), eps, curved)?;
             let travel = (corner - original).length();
             if travel > max_travel {
                 return Err(unsupported(format!(
@@ -269,7 +381,9 @@ pub fn draft_with_evolution(
         }
     }
 
-    let specs = build_specs(topo, &all_faces, &drafted, &planes, &moved, eps, tol)?;
+    let specs = build_specs(
+        topo, solid, &all_faces, &drafted, &planes, &moved, eps, tol, curved,
+    )?;
     debug_assert_eq!(specs.len(), all_faces.len());
     let assembly = assemble_solid_mixed_with_history(topo, &specs, tol)?;
     let result = assembly.solid;
@@ -302,7 +416,11 @@ pub fn draft_with_evolution(
         )));
     }
 
-    Ok((result, evolution))
+    Ok(SharpDraft {
+        solid: result,
+        evolution,
+        moved,
+    })
 }
 
 /// Every face's outward plane, or `None` where the face is not planar.
@@ -421,12 +539,19 @@ fn model_span(
 fn resolve_corner(
     at: &BTreeSet<usize>,
     planes: &[Option<Plane>],
+    all_faces: &[FaceId],
     vertex: usize,
     eps: f64,
+    curved: &mut Vec<FaceId>,
 ) -> Result<Point3, OperationsError> {
     let mut distinct: Vec<Plane> = Vec::new();
     for &pos in at {
         let Some(plane) = planes[pos] else {
+            curved.extend(
+                at.iter()
+                    .filter(|&&pos| planes[pos].is_none())
+                    .map(|&pos| all_faces[pos]),
+            );
             return Err(unsupported(format!(
                 "corner {vertex} of a drafted face also lies on a curved face; \
                  re-trimming a curved neighbour against the drafted plane is not \
@@ -498,12 +623,14 @@ fn resolve_corner(
 #[allow(clippy::too_many_arguments)]
 fn build_specs(
     topo: &Topology,
+    solid: SolidId,
     all_faces: &[FaceId],
     drafted: &[bool],
     planes: &[Option<Plane>],
     moved: &BTreeMap<usize, Point3>,
     eps: f64,
     tol: Tolerance,
+    curved: &mut Vec<FaceId>,
 ) -> Result<Vec<FaceSpec>, OperationsError> {
     let mut specs = Vec::with_capacity(all_faces.len());
 
@@ -574,7 +701,7 @@ fn build_specs(
             continue;
         }
 
-        require_line_wire(topo, face.outer_wire(), fid)?;
+        require_line_wire(topo, solid, face.outer_wire(), fid, curved)?;
         let outer = substitute_wire(topo, face.outer_wire(), fid, moved, tol)?;
         if outer.len() < 3 {
             return Err(unsupported(format!(
@@ -634,19 +761,38 @@ fn wire_is_touched(
 }
 
 /// Refuse a wire the assembler would have to rebuild from straight chords when
-/// it does not consist of straight edges to begin with.
-fn require_line_wire(topo: &Topology, wire: WireId, fid: FaceId) -> Result<(), OperationsError> {
+/// it does not consist of straight edges to begin with, pushing the faces of
+/// `solid` across its curved edges to `curved`.
+fn require_line_wire(
+    topo: &Topology,
+    solid: SolidId,
+    wire: WireId,
+    fid: FaceId,
+    curved: &mut Vec<FaceId>,
+) -> Result<(), OperationsError> {
+    let mut bent = Vec::new();
     for oe in topo.wire(wire)?.edges() {
         if !matches!(topo.edge(oe.edge())?.curve(), EdgeCurve::Line) {
-            return Err(unsupported(format!(
-                "the draft has to rebuild the boundary of face {}, which carries a \
-                 curved edge; re-trimming a curved boundary against the taper is \
-                 not implemented",
-                fid.index()
-            )));
+            bent.push(oe.edge());
         }
     }
-    Ok(())
+    if bent.is_empty() {
+        return Ok(());
+    }
+    let adjacency = topo.build_adjacency(solid)?;
+    for edge in bent {
+        for &other in adjacency.faces_for_edge(edge) {
+            if other != fid && !curved.contains(&other) {
+                curved.push(other);
+            }
+        }
+    }
+    Err(unsupported(format!(
+        "the draft has to rebuild the boundary of face {}, which carries a \
+         curved edge; re-trimming a curved boundary against the taper is \
+         not implemented",
+        fid.index()
+    )))
 }
 
 /// Walk a wire's vertices, substituting relocated corners and dropping corners
@@ -1028,3 +1174,6 @@ mod tests {
         assert!(refused > 0, "the fuzz facet is expected to be refused");
     }
 }
+
+#[cfg(test)]
+mod blend_tests;

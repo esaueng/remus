@@ -182,6 +182,116 @@ fn batch_draft_volume_matches_closed_form() {
     );
 }
 
+/// Draft through the batch API goes through the blends on the drafted walls
+/// (#1744): the 40 x 40 x 20 box with its vertical edges at R5, all four
+/// walls drafted by 2 degrees. It used to be refused with "corner N of a
+/// drafted face also lies on a curved face". The result is the frustum less
+/// its four rounded corner prisms, with the bands back as R5 cylinders.
+#[test]
+fn batch_draft_rebuilds_rounded_vertical_edges() {
+    let (side, height, radius) = (40.0_f64, 20.0_f64, 5.0_f64);
+    let mut k = RemusKernel::new();
+    let rounded = {
+        let topo = k.topo_mut();
+        let body = make_box(topo, side, side, height).expect("box");
+        let vertical: Vec<_> = solid_edges(topo, body)
+            .expect("edges")
+            .into_iter()
+            .filter(|edge| {
+                let edge = topo.edge(*edge).expect("edge");
+                let start = topo.vertex(edge.start()).expect("start").point();
+                let end = topo.vertex(edge.end()).expect("end").point();
+                (start.z() - end.z()).abs() > 10.0
+            })
+            .collect();
+        assert_eq!(vertical.len(), 4);
+        let rounded = remus_operations::blend_ops::fillet_cascade(topo, body, &vertical, radius)
+            .expect("round the vertical edges")
+            .solid;
+        crate::handles::solid_id_to_u32(rounded)
+    };
+    let walls: Vec<u32> = [
+        [1.0, 0.0, 0.0],
+        [-1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, -1.0, 0.0],
+    ]
+    .into_iter()
+    .map(|normal| wall_by_normal(&mut k, rounded, normal))
+    .collect();
+
+    let out = run_all_ok(
+        &mut k,
+        &[op(
+            "draft",
+            serde_json::json!({
+                "solid": rounded, "faces": walls, "angle": 2.0,
+                "dirX": 0.0, "dirY": 0.0, "dirZ": 1.0,
+                "neutralX": 0.0, "neutralY": 0.0, "neutralZ": 0.0,
+            }),
+        )],
+    );
+    let drafted = as_u32(&out[0]);
+
+    let out = run_all_ok(
+        &mut k,
+        &[
+            op("validateSolid", serde_json::json!({"solid": drafted})),
+            op(
+                "volume",
+                serde_json::json!({"solid": drafted, "deflection": 0.0005}),
+            ),
+        ],
+    );
+    assert_eq!(out[0].as_u64(), Some(0), "the drafted body must validate");
+
+    // The frustum between the tilted walls, less four corner prisms: the
+    // section a ball of `radius` leaves in a corner of interior angle
+    // `theta`, along the slanted edge between the parallel caps.
+    let (sin, cos) = 2.0_f64.to_radians().sin_cos();
+    let tan = sin / cos;
+    let frustum = ((side + 2.0 * tan * height).powi(3) - side.powi(3)) / (6.0 * tan);
+    let theta = std::f64::consts::PI - (sin * sin).acos();
+    let section = radius * radius * (1.0 / (theta / 2.0).tan() - (sin * sin).acos() / 2.0);
+    let edge_z = cos / (1.0 + sin * sin).sqrt();
+    let expected = frustum - 4.0 * section * height / edge_z;
+    let volume = out[1].as_f64().unwrap();
+    assert!(
+        ((volume - expected) / expected).abs() < 1e-4,
+        "expected {expected}, got {volume}"
+    );
+
+    let solid = k.resolve_solid(drafted).expect("solid handle");
+    let radii: Vec<f64> = solid_faces(k.topo(), solid)
+        .expect("faces")
+        .into_iter()
+        .filter_map(|face| match k.topo().face(face).expect("face").surface() {
+            remus_topology::face::FaceSurface::Cylinder(cylinder) => Some(cylinder.radius()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(radii.len(), 4, "four rebuilt bands, got {radii:?}");
+    assert!(radii.iter().all(|r| (r - radius).abs() < 1e-9), "{radii:?}");
+
+    // The journaled twin makes the same edit and records it.
+    let out = run_all_ok(
+        &mut k,
+        &[op(
+            "draftJournaled",
+            serde_json::json!({
+                "solid": rounded, "faces": walls,
+                "pullDirection": [0.0, 0.0, 1.0], "neutralPoint": [0.0, 0.0, 0.0],
+                "angleDegrees": 2.0,
+            }),
+        )],
+    );
+    let journaled = kernel_volume(&k, as_u32(&out[0]["solid"]));
+    assert!(
+        ((journaled - expected) / expected).abs() < 1e-4,
+        "journaled draft: expected {expected}, got {journaled}"
+    );
+}
+
 /// Defeature through the batch API: removing a through-hole's walls
 /// restores the plain box volume exactly.
 #[test]

@@ -70,6 +70,7 @@
 //! WASM module tier: `core` once bound (it reads the live session's handles);
 //! no binding yet.
 
+mod draft_route;
 mod edit;
 mod joined_cap;
 mod prepared;
@@ -94,6 +95,7 @@ use crate::OperationsError;
 use crate::query::{edge_normal_angle, effective_face_normal};
 
 pub use crate::error_payloads::{BlendClusterError, DiameterRefusalCause};
+pub(crate) use draft_route::draft_through_blend_groups;
 pub(crate) use edit::group_fillet_result;
 pub use edit::{
     GroupEdit, fillet_through_blend_group, resize_band_through_group, resize_cylinder_through_group,
