@@ -1022,7 +1022,14 @@ fn ensure_specs_connected(
             for dx in -1..=1 {
                 for dy in -1..=1 {
                     for dz in -1..=1 {
-                        let Some(entries) = grid.get(&(x + dx, y + dy, z + dz)) else {
+                        // Far from the origin the cell index saturates at the
+                        // i64 bounds; a neighbour past them does not exist.
+                        let (Some(nx), Some(ny), Some(nz)) =
+                            (x.checked_add(dx), y.checked_add(dy), z.checked_add(dz))
+                        else {
+                            continue;
+                        };
+                        let Some(entries) = grid.get(&(nx, ny, nz)) else {
                             continue;
                         };
                         for &(q, other) in entries {
@@ -1044,7 +1051,7 @@ fn ensure_specs_connected(
         .collect();
     if roots.len() > 1 {
         return Err(unsupported(format!(
-            "the healed faces split into {} groups that share no corner; the              extended faces do not meet over the gap",
+            "the healed faces split into {} groups that share no corner; the extended faces do not meet over the gap",
             roots.len()
         )));
     }
@@ -1488,6 +1495,21 @@ mod tests {
     use remus_math::curves::Circle3D;
     use remus_topology::edge::Edge;
     use remus_topology::vertex::Vertex;
+
+    #[test]
+    fn corner_grid_far_from_the_origin_does_not_overflow() {
+        // At 2e12 with a 1e-7 tolerance the cell index saturates at i64::MAX;
+        // stepping to a neighbour cell overflowed and panicked.
+        let far = Point3::new(2e12, -2e12, 2e12);
+        let near = Point3::new(1.0, 2.0, 3.0);
+        let joined = vec![vec![far, near], vec![far]];
+        assert!(ensure_specs_connected(&joined, 1e-7).is_ok());
+        let apart = vec![vec![far], vec![near]];
+        let err = ensure_specs_connected(&apart, 1e-7)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("share no corner; the extended faces"), "{err}");
+    }
 
     #[test]
     fn stale_assembly_boundary_maps_leave_references_unresolved() {
