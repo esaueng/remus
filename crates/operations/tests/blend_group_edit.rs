@@ -34,7 +34,8 @@ use remus_math::compact_sort::CompactSort;
 use remus_math::vec::{Point3, Vec3};
 use remus_operations::OperationsError;
 use remus_operations::blend_cluster::{
-    Convexity, recognize_blend_cluster, resize_band_through_group, resize_cylinder_through_group,
+    BlendClusterError, Convexity, DiameterRefusalCause, recognize_blend_cluster,
+    resize_band_through_group, resize_cylinder_through_group,
 };
 use remus_operations::blend_ops::fillet_cascade;
 use remus_operations::measure::solid_volume;
@@ -678,7 +679,17 @@ fn oversized_boss_diameters_are_refused_and_leave_the_body_alone() {
     // refuses the topology change.
     let error = resize_cylindrical_face(&mut topo, solid, boss, 20.0).unwrap_err();
     assert!(
-        matches!(&error, OperationsError::BlendCluster(inner) if inner.code() == "cylinder-diameter-unbuildable"),
+        matches!(
+            &error,
+            OperationsError::BlendCluster(BlendClusterError::DiameterUnbuildable {
+                cause: DiameterRefusalCause::WallMeetsFace,
+                ..
+            })
+        ),
+        "{error}"
+    );
+    assert!(
+        error.to_string().contains("try a smaller diameter"),
         "{error}"
     );
     assert_eq!(fingerprint(&topo, solid), before);
@@ -686,7 +697,17 @@ fn oversized_boss_diameters_are_refused_and_leave_the_body_alone() {
     // x = 0 face that no R4 round fits: the re-fillet refuses.
     let error = resize_cylindrical_face(&mut topo, solid, boss, 17.0).unwrap_err();
     assert!(
-        matches!(&error, OperationsError::BlendCluster(inner) if inner.code() == "cylinder-diameter-unbuildable"),
+        matches!(
+            &error,
+            OperationsError::BlendCluster(BlendClusterError::DiameterUnbuildable {
+                cause: DiameterRefusalCause::GroupReblendFailed,
+                ..
+            })
+        ),
+        "{error}"
+    );
+    assert!(
+        !error.to_string().contains("try a smaller diameter"),
         "{error}"
     );
     assert_eq!(fingerprint(&topo, solid), before);

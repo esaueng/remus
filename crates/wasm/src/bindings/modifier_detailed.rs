@@ -380,6 +380,15 @@ impl RemusKernel {
     /// permission such a wall refuses with category `quality_refused`
     /// (`exact_only_unattainable`, `details.reason:
     /// "approximate_reblend_not_permitted"`).
+    ///
+    /// A wall resized through the blend group it supports (the group is
+    /// removed to sharp, the sharp wall resized, the group re-filleted) that
+    /// cannot reach the diameter refuses with `details.kernelCode:
+    /// "cylinder-diameter-unbuildable"` and `details.requestedDiameter`.
+    /// `details.reason` names the step: `wall_meets_face` when the sharp wall
+    /// would meet another face at that size (a size limit), or
+    /// `group_reblend_failed` when the group's blends do not re-fillet on the
+    /// resized body, which can hold at every diameter.
     #[wasm_bindgen(js_name = "resizeCylindricalFaceDetailed")]
     pub fn resize_cylindrical_face_detailed(
         &mut self,
