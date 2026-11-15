@@ -74,7 +74,7 @@ const NURBS_ON_SURFACE: f64 = 1e-3;
 /// Absolute floor of the on-surface bound, in model units.
 const NURBS_ON_SURFACE_ABS: f64 = 1e-3;
 /// Relative agreement a fitted trim's span-by-span and halved-span readings
-/// must reach, of the edge's terms (scaled by the radius's square and cube).
+/// must reach in every term (see `readings_agree`).
 const FITTED_CONVERGENCE: f64 = 1e-9;
 
 /// The edge's velocity `dP/dt` at `t` for an exact trim (line, circle,
@@ -145,7 +145,9 @@ pub(super) fn integrate<const AREA_ONLY: bool>(
     // docs). An area-only reading keeps the sampled path: the area entry point
     // (`analytic_face_area`) already reduces fitted trims to the boundary.
     let fitted_trims_allowed = !AREA_ONLY && rule.flux.is_none();
-    let radius = cylinder.radius();
+    // Every term compared at its own dimension of this length: the radius,
+    // plus how far the integration reference lies from the cylinder.
+    let length_scale = cylinder.radius() + (cylinder.origin() - rule.reference).length();
 
     for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
         for oriented in topo.wire(wire_id)?.edges() {
@@ -193,11 +195,7 @@ pub(super) fn integrate<const AREA_ONLY: bool>(
             {
                 return Ok(None);
             }
-            let converged = (coarse.area - fine.area).abs()
-                <= FITTED_CONVERGENCE * (fine.area.abs() + radius * radius)
-                && (AREA_ONLY
-                    || (coarse.vol - fine.vol).abs()
-                        <= FITTED_CONVERGENCE * (fine.vol.abs() + radius * radius * radius));
+            let converged = readings_agree(&coarse, &fine, length_scale);
             if !converged {
                 return Ok(None);
             }
@@ -209,6 +207,35 @@ pub(super) fn integrate<const AREA_ONLY: bool>(
     }
     let flux = acc.flux(sign);
     Ok(Some((acc.finish(sign), flux)))
+}
+
+/// Whether two readings of one fitted edge agree in every term they carry
+/// to [`FITTED_CONVERGENCE`], each against its own dimension of `length`:
+/// area and vector area as length², volume and the surface-centroid sums as
+/// length³, the first volume moments as length⁴ and the second as length⁵.
+/// Comparing every term, not only area and volume, keeps a reading whose
+/// higher moments are under-resolved from passing on a lucky cancellation.
+fn readings_agree(coarse: &Accumulator, fine: &Accumulator, length: f64) -> bool {
+    let close = |a: f64, b: f64, power: i32| {
+        (a - b).abs() <= FITTED_CONVERGENCE * (b.abs() + length.powi(power))
+    };
+    close(coarse.area, fine.area, 2)
+        && close(coarse.nx, fine.nx, 2)
+        && close(coarse.ny, fine.ny, 2)
+        && close(coarse.nz, fine.nz, 2)
+        && close(coarse.vol, fine.vol, 3)
+        && close(coarse.cx, fine.cx, 3)
+        && close(coarse.cy, fine.cy, 3)
+        && close(coarse.cz, fine.cz, 3)
+        && close(coarse.mx, fine.mx, 4)
+        && close(coarse.my, fine.my, 4)
+        && close(coarse.mz, fine.mz, 4)
+        && close(coarse.qxx, fine.qxx, 5)
+        && close(coarse.qyy, fine.qyy, 5)
+        && close(coarse.qzz, fine.qzz, 5)
+        && close(coarse.qxy, fine.qxy, 5)
+        && close(coarse.qxz, fine.qxz, 5)
+        && close(coarse.qyz, fine.qyz, 5)
 }
 
 /// One boundary edge's curve and end points.
