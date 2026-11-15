@@ -74,7 +74,13 @@ fn boundary_edges(topo: &Topology, face: FaceId) -> Option<Vec<remus_topology::e
     let face = topo.face(face).ok()?;
     let mut edges = Vec::new();
     for wire in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
-        edges.extend(topo.wire(wire).ok()?.edges().iter().map(|oe| oe.edge()));
+        edges.extend(
+            topo.wire(wire)
+                .ok()?
+                .edges()
+                .iter()
+                .map(remus_topology::OrientedEdge::edge),
+        );
     }
     Some(edges)
 }
@@ -162,10 +168,7 @@ fn interior_contact(
 
 /// Whether `solid` has a plane–cylinder pair tangent along a line inside both
 /// faces: the exact boolean gate's reading of [`tangent_line_contact_issues`].
-pub(crate) fn has_tangent_line_contact(
-    topo: &Topology,
-    solid: remus_topology::solid::SolidId,
-) -> bool {
+pub fn has_tangent_line_contact(topo: &Topology, solid: remus_topology::solid::SolidId) -> bool {
     let Ok(faces) = remus_topology::explorer::solid_faces(topo, solid) else {
         return false;
     };
