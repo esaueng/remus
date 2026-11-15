@@ -12,7 +12,7 @@
 //! A blend on a drafted face (a fillet along one of its edges) is not
 //! re-trimmed either: its carrier no longer fits the tilted plane. When a
 //! recognized blend group is what stands in the way, the draft goes through
-//! the group instead ([`crate::blend_cluster::draft_through_blend_groups`]):
+//! the group instead (`blend_cluster/draft_route.rs`):
 //! the group is removed to its sharp edges, the sharp body is drafted by the
 //! construction above, and the group is re-filleted at its recorded radii
 //! against the tilted planes.
