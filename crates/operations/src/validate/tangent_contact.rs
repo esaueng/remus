@@ -101,6 +101,47 @@ fn clear_of_edges(
     Some(true)
 }
 
+/// Whether every boundary edge of the cylinder face is an axial line or a
+/// circle square to its axis, centred on it, at its radius: the trims that
+/// are straight lines in the face's (u, v) domain. `None` when an entity is
+/// missing.
+fn cylinder_trims_are_parametric_lines(
+    topo: &Topology,
+    cylinder: &CylinderFace,
+    tol: Tolerance,
+) -> Option<bool> {
+    let face = topo.face(cylinder.id).ok()?;
+    for wire in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+        for oriented in topo.wire(wire).ok()?.edges() {
+            let edge = topo.edge(oriented.edge()).ok()?;
+            let rectilinear = match edge.curve() {
+                EdgeCurve::Line => {
+                    let start = topo.vertex(edge.start()).ok()?.point();
+                    let end = topo.vertex(edge.end()).ok()?.point();
+                    (end - start).cross(cylinder.axis).length() <= tol.linear
+                }
+                EdgeCurve::Circle(circle) => {
+                    let offset = circle.center() - cylinder.origin;
+                    circle
+                        .normal()
+                        .normalize()
+                        .is_ok_and(|n| n.cross(cylinder.axis).length() <= tol.angular)
+                        && offset.cross(cylinder.axis).length() <= tol.linear
+                        && (circle.radius() - cylinder.radius).abs() <= tol.linear
+                }
+                EdgeCurve::Ellipse(_)
+                | EdgeCurve::NurbsCurve(_)
+                | EdgeCurve::Hyperbola(_)
+                | EdgeCurve::Parabola(_) => false,
+            };
+            if !rectilinear {
+                return Some(false);
+            }
+        }
+    }
+    Some(true)
+}
+
 /// A point on the line where `plane` touches `cylinder` that lies inside both
 /// faces and clear of their edges, if the two are tangent along a line.
 fn interior_contact(
@@ -133,6 +174,17 @@ fn interior_contact(
     }
     edges.extend(cylinder_edges);
 
+    // Membership must be exact, never a sampled polygon: a sample in the
+    // sliver between a hole's arc and its chord would read as material. The
+    // plane's trims are read exactly (lines and circles; anything else
+    // refuses, and is left unreported). The cylinder's are trusted only when
+    // they are axial lines and circles square to the axis, which are straight
+    // lines in its (u, v) domain, so its sampled outline is exact there.
+    if !cylinder_trims_are_parametric_lines(topo, cylinder, tol)? {
+        return None;
+    }
+    let plane_trim = remus_check::distance::PlanarTrim::build(topo, plane.id, plane.normal).ok()?;
+
     // The tangent line: the axis moved one radius toward the plane.
     let foot = cylinder.origin - plane.normal * axis_distance;
 
@@ -156,8 +208,7 @@ fn interior_contact(
         #[allow(clippy::cast_precision_loss)]
         let t = (hi - lo).mul_add(k as f64 / LINE_SAMPLES as f64, lo);
         let point = foot + cylinder.axis * t;
-        let inside_both = remus_check::classify::surface_point_in_face(topo, plane.id, point)
-            .ok()?
+        let inside_both = plane_trim.contains(point).ok()?
             && remus_check::classify::surface_point_in_face(topo, cylinder.id, point).ok()?;
         if inside_both && clear_of_edges(topo, point, &edges, margin)? {
             return Some(point);
