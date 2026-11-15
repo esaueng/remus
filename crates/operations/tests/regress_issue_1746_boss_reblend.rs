@@ -2,29 +2,36 @@
 //! with the two box top edges that run into it, then R1 on the boss rim and
 //! three more box edges, one fillet each (the later R1 fillets run on round
 //! the block's bottom loop and vertical edges). `fillet_cascade` builds every
-//! one of those fillets, but the dependent blend group does not re-fillet on
-//! the sharp body in any planned stage order: the R1 stage meets the block's
-//! far top corner as two stripes at a sharp vertex. That holds at the
-//! unchanged diameter too, so the refusal must say the group failed to
-//! re-fillet and must not advise a smaller diameter.
+//! one of those fillets, and the boss diameter edit rebuilds the group they
+//! form.
+//!
+//! The group's removal restores the boss rim as one closed circle and its
+//! bottom arc as one 270-degree arc, where the primitive had quarter arcs.
+//! On those edges no planned stage order re-fillets the group, at the
+//! unchanged diameter too (the R1 stage refuses with two stripes meeting at
+//! the block's far top corner). The route then removes the group again with
+//! every restored arc cut below a half turn, and the planned order builds.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use remus_math::compact_sort::CompactSort;
 use remus_math::vec::{Point3, Vec3};
-use remus_operations::OperationsError;
 use remus_operations::blend_cluster::{
-    BlendClusterError, DiameterRefusalCause, resize_cylinder_through_group,
+    BlendCluster, BlendMemberForm, Convexity, recognize_blend_cluster, resize_band_through_group,
+    resize_cylinder_through_group,
 };
 use remus_operations::blend_ops::fillet_cascade;
 use remus_operations::boolean::{BooleanOp, boolean};
 use remus_operations::measure::solid_volume;
 use remus_operations::primitives::{make_box, make_cylinder};
 use remus_operations::query::filter_filletable_edges;
+use remus_operations::tessellate::{edge_census, tessellate_solid};
 use remus_topology::Topology;
 use remus_topology::edge::{EdgeCurve, EdgeId};
 use remus_topology::explorer::{solid_edges, solid_entity_counts, solid_faces};
 use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::solid::SolidId;
+use std::f64::consts::PI;
 
 const EPS: f64 = 1e-6;
 
@@ -94,49 +101,144 @@ fn part() -> (Topology, SolidId) {
     (topo, solid)
 }
 
-fn boss_wall(topo: &Topology, solid: SolidId) -> FaceId {
+/// The boss wall: the one cylinder of `radius` about the z axis.
+fn boss_wall(topo: &Topology, solid: SolidId, radius: f64) -> FaceId {
     let walls: Vec<FaceId> = solid_faces(topo, solid)
         .unwrap()
         .into_iter()
         .filter(|&face| {
             matches!(topo.face(face).unwrap().surface(), FaceSurface::Cylinder(c)
-                if near(c.radius(), 6.0)
+                if near(c.radius(), radius)
                     && c.axis().cross(Vec3::new(0.0, 0.0, 1.0)).length() < 1e-9
                     && c.origin().x().abs() < 1e-9
                     && c.origin().y().abs() < 1e-9)
         })
         .collect();
-    assert_eq!(walls.len(), 1, "boss wall");
+    assert_eq!(walls.len(), 1, "boss wall of radius {radius}");
     walls[0]
 }
 
+/// Each member's kind, side, radius and exactness, sorted: what a rebuild at
+/// the recorded radii must reproduce.
+fn signature(cluster: &BlendCluster) -> Vec<String> {
+    let mut members: Vec<String> = cluster
+        .members
+        .iter()
+        .map(|member| {
+            format!(
+                "{:?} {:?} R{:.6} exact={}",
+                member.kind,
+                member.convexity,
+                member.radius,
+                member.form.is_exact()
+            )
+        })
+        .collect();
+    members.compact_sort_unstable();
+    members
+}
+
+/// Strict validation, and a closed manifold mesh whose volume agrees with
+/// the API volume.
+fn assert_sound(topo: &Topology, solid: SolidId, label: &str) -> f64 {
+    let report = remus_check::validate::validate_solid(
+        topo,
+        solid,
+        &remus_check::validate::ValidateOptions::default(),
+    )
+    .unwrap();
+    assert!(report.is_valid(), "{label}: {:?}", report.issues);
+    let mesh = tessellate_solid(topo, solid, 0.01).unwrap();
+    let census = edge_census(&mesh);
+    assert_eq!(census.boundary_edges, 0, "{label}: open mesh");
+    assert_eq!(census.non_manifold_edges, 0, "{label}: non-manifold mesh");
+    let origin = mesh.positions[0];
+    let meshed: f64 = mesh
+        .indices
+        .chunks_exact(3)
+        .map(|t| {
+            let a = mesh.positions[t[0] as usize] - origin;
+            let b = mesh.positions[t[1] as usize] - origin;
+            let c = mesh.positions[t[2] as usize] - origin;
+            a.dot(b.cross(c)) / 6.0
+        })
+        .sum();
+    let volume = solid_volume(topo, solid, 0.01).unwrap();
+    assert!(
+        (meshed - volume).abs() <= 1e-3 * volume,
+        "{label}: mesh volume {meshed} against {volume}"
+    );
+    volume
+}
+
 #[test]
-fn group_reblend_failure_is_not_reported_as_a_size_limit() {
-    let (mut topo, solid) = part();
-    let wall = boss_wall(&topo, solid);
+fn boss_diameter_rebuilds_the_group_it_carries() {
+    let (topo, solid) = part();
+    let wall = boss_wall(&topo, solid, 6.0);
+    let before = recognize_blend_cluster(&topo, solid, wall).unwrap();
+    assert_eq!(before.members.len(), 26);
     let counts = solid_entity_counts(&topo, solid).unwrap();
-    let volume = solid_volume(&topo, solid, 0.01).unwrap();
-    for radius in [6.2, 7.0] {
-        let error = resize_cylinder_through_group(&mut topo, solid, wall, radius).unwrap_err();
-        assert!(
-            matches!(
-                &error,
-                OperationsError::BlendCluster(BlendClusterError::DiameterUnbuildable {
-                    cause: DiameterRefusalCause::GroupReblendFailed,
-                    ..
-                })
-            ),
-            "R{radius}: {error}"
+    let volume = assert_sound(&topo, solid, "input");
+    for radius in [6.2, 7.0, 5.5, 14.0] {
+        let mut edited = topo.clone();
+        let edit = resize_cylinder_through_group(&mut edited, solid, wall, radius)
+            .unwrap_or_else(|error| panic!("R{radius}: {error}"))
+            .expect("the boss wall carries a blend group");
+        let label = format!("R{radius}");
+        let result = assert_sound(&edited, edit.solid, &label);
+        // The wall is at the new radius, and the group it carries has every
+        // member back at its recorded radius, side and exactness.
+        let new_wall = boss_wall(&edited, edit.solid, radius);
+        let after = recognize_blend_cluster(&edited, edit.solid, new_wall).unwrap();
+        assert_eq!(signature(&after), signature(&before), "{label}");
+        assert_eq!(
+            solid_entity_counts(&edited, edit.solid).unwrap().0,
+            counts.0,
+            "{label}"
         );
-        let OperationsError::BlendCluster(inner) = &error else {
-            unreachable!()
-        };
-        assert_eq!(inner.code(), "cylinder-diameter-unbuildable");
-        let message = error.to_string();
-        assert!(!message.contains("try a smaller diameter"), "{message}");
-        assert!(message.contains("do not re-fillet"), "{message}");
-        // The refusal edits nothing.
-        assert_eq!(solid_entity_counts(&topo, solid).unwrap(), counts);
-        assert!(near(solid_volume(&topo, solid, 0.01).unwrap(), volume));
+        // Only the boss changed: its full turn above the block and its three
+        // quarters outside it, to within the blends' share of the change.
+        let area = PI * (radius * radius - 36.0);
+        let expected = area * (28.0 - 12.5) + 0.75 * area * 12.5;
+        assert!(
+            ((result - volume) - expected).abs() <= 0.01 * expected.abs() + 1.0,
+            "{label}: volume {volume} -> {result}, expected a change of {expected}"
+        );
+        // The source is untouched.
+        assert_eq!(solid_entity_counts(&edited, solid).unwrap(), counts);
     }
+}
+
+#[test]
+fn joint_radius_rebuilds_the_group_it_belongs_to() {
+    let (mut edited, solid) = part();
+    let wall = boss_wall(&edited, solid, 6.0);
+    let before = recognize_blend_cluster(&edited, solid, wall).unwrap();
+    // The joint's arc round the boss foot on the block top.
+    let joint = before
+        .members
+        .iter()
+        .find(|member| {
+            member.form == BlendMemberForm::Torus && member.convexity == Convexity::Concave
+        })
+        .expect("the R2 joint band");
+    assert!(near(joint.radius, 2.0));
+    let result = resize_band_through_group(&mut edited, solid, joint.faces[0], 2.0, 2.5)
+        .unwrap_or_else(|error| panic!("R2.5 joint: {error}"))
+        .expect("the joint is a band of a recognized group");
+    assert_sound(&edited, result.solid, "R2.5 joint");
+    let after =
+        recognize_blend_cluster(&edited, result.solid, boss_wall(&edited, result.solid, 6.0))
+            .unwrap();
+    assert_eq!(after.members.len(), before.members.len());
+    let joints = after
+        .members
+        .iter()
+        .filter(|member| {
+            member.form == BlendMemberForm::Torus && member.convexity == Convexity::Concave
+        })
+        .map(|member| member.radius)
+        .collect::<Vec<_>>();
+    assert_eq!(joints.len(), 1);
+    assert!(near(joints[0], 2.5), "{joints:?}");
 }

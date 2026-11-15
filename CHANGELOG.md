@@ -8,6 +8,17 @@ historical predecessor-line records, retained for provenance. The
 
 ### Fixed
 
+* **operations,wasm:** resizing a filleted boss through its blend group
+  (`resizeCylindricalFace`, `resizeCylindricalFaceDetailed`) and resizing a
+  band of such a group (`resizeBlend`) no longer refuse a group whose
+  removal restored a closed rim or an arc of a half turn or more. A boss on
+  a block corner, its joint rounded R2 and its rim and the block edges R1
+  (#1746), was refused at every diameter with
+  `cylinder-diameter-unbuildable` / `group_reblend_failed`, because the
+  restored rim and 270-degree bottom arc were single edges where the
+  primitive had quarter arcs. When the planned re-fillet orders refuse, the
+  group is now removed again with every restored arc cut below a half turn
+  and re-filleted the same way. Groups that already rebuilt are unchanged.
 * **operations,wasm:** a tapered thread fitted to its cylinder (no
   `majorDiameter`) no longer depends on `gaugeOffset`: its radii are taken
   from the cylinder on the start plane, and the gauge plane changes only the

@@ -21,6 +21,14 @@
 //!   history, and they join the re-fillet plan as one more stage, placed in
 //!   the planner's order (concave before convex, larger radii first).
 //!
+//! The removal restores a rim as one closed circle and an arc as one edge.
+//! When no planned order re-fillets the group on that body, the band and
+//! cylinder routes remove the group once more with every restored arc cut
+//! below a half turn, as a primitive's circle is cut, and run the same edit,
+//! plans and postconditions on it (#1746: a boss rim and a 270-degree bottom
+//! arc that rebuild only as quarter-like arcs). Groups the first restoration
+//! rebuilds never reach this retry.
+//!
 //! A body whose rounded cap was lowered into its shoulder with sampled
 //! permission has no group recognizable as it stands (its rim bands roll on
 //! sampled corner patches); the band and cylinder routes edit it with the cap
@@ -60,7 +68,7 @@ use super::reblend::{
     Gate, ReblendStage, compose_evolution, plan_reblend, reblend_restoration,
     reblend_restoration_gated,
 };
-use super::remove::remove_freshly_recognized_cluster;
+use super::remove::{RestoredArcs, has_long_arc, remove_freshly_recognized_cluster};
 use super::{
     BlendCluster, BlendClusterError, BlendMemberKind, Convexity, SharpRestoration, StageBlend,
     recognize_blend_cluster,
@@ -114,6 +122,74 @@ pub(super) struct SharpGroup {
     /// recognized, when the body's cap had been lowered into it
     /// (`joined_cap`); the edit lowers it back.
     pub(super) lift: Option<CapLift>,
+    /// The body the group was recognized on (the copy, or the copy with its
+    /// cap lifted), unchanged in [`Self::work`], and the seed's image there.
+    pub(super) recognized: (SolidId, FaceId),
+}
+
+impl SharpGroup {
+    /// The group removed again from the body it was recognized on, in
+    /// `work` (the group's arena or a clone of it), with every restored arc
+    /// cut below a half turn ([`RestoredArcs::UnderHalfTurn`]). `None` when
+    /// [`Self::restoration`] restored no arc that would be cut.
+    fn cut_restoration(
+        &self,
+        work: &mut Topology,
+    ) -> Result<Option<SharpRestoration>, OperationsError> {
+        if !has_long_arc(work, &self.restoration)? {
+            return Ok(None);
+        }
+        remove_freshly_recognized_cluster(
+            work,
+            self.recognized.0,
+            &self.cluster,
+            RestoredArcs::UnderHalfTurn,
+        )
+        .map(Some)
+    }
+
+    /// The image of the seed on `restoration`'s sharp body.
+    fn seed_on(&self, restoration: &SharpRestoration) -> Result<FaceId, OperationsError> {
+        restoration
+            .faces
+            .iter()
+            .find_map(|&(source, result)| (source == self.recognized.1).then_some(result))
+            .ok_or_else(|| lost("the edited wall did not survive the group removal"))
+    }
+}
+
+/// `rebuild` on the group's restoration and, only when that refuses because
+/// the group does not re-fillet ([`BlendClusterError::ReblendFailed`]) and
+/// that restoration carries a closed or half-turn arc, once more on the group
+/// removed with its restored arcs cut below a half turn. Nothing else
+/// changes: the same sharp body, edit, plans and postconditions. When both
+/// refuse, the refusal names both.
+fn with_cut_arcs(
+    group: &SharpGroup,
+    work: &mut Topology,
+    rebuild: impl Fn(&mut Topology, &SharpRestoration) -> Result<Built, OperationsError>,
+) -> Result<Built, OperationsError> {
+    let first = match rebuild(work, &group.restoration) {
+        Ok(built) => return Ok(built),
+        Err(error) => error,
+    };
+    let OperationsError::BlendCluster(BlendClusterError::ReblendFailed { reason }) = &first else {
+        return Err(first);
+    };
+    let Ok(Some(cut)) = group.cut_restoration(work) else {
+        return Err(first);
+    };
+    let _span = crate::performance::span("blend_group.cut_arcs");
+    match rebuild(work, &cut) {
+        Ok(built) => Ok(built),
+        Err(OperationsError::BlendCluster(BlendClusterError::ReblendFailed { reason: again })) => {
+            Err(BlendClusterError::ReblendFailed {
+                reason: format!("{reason}; with the restored arcs cut below a half turn: {again}"),
+            }
+            .into())
+        }
+        Err(_) => Err(first),
+    }
 }
 
 /// The group a route edits: the solid it was recognized on (the copy, or the
@@ -217,7 +293,9 @@ pub(super) fn band_group(
     }
     // A group that cannot be removed to sharp is not this route's to
     // answer: the caller keeps its own refusal.
-    let Ok(restoration) = remove_freshly_recognized_cluster(&mut work, solid, &cluster) else {
+    let Ok(restoration) =
+        remove_freshly_recognized_cluster(&mut work, solid, &cluster, RestoredArcs::Predicted)
+    else {
         return Ok(None);
     };
     Ok(Some((
@@ -228,6 +306,7 @@ pub(super) fn band_group(
             cluster,
             restoration,
             lift,
+            recognized: (solid, lifted_seed),
         },
         member,
     )))
@@ -268,25 +347,22 @@ pub(super) fn cylinder_group(
     }
     // A group that cannot be removed to sharp is not this route's to
     // answer: the caller keeps its own refusal.
-    let Ok(restoration) = remove_freshly_recognized_cluster(&mut work, solid, &cluster) else {
+    let Ok(restoration) =
+        remove_freshly_recognized_cluster(&mut work, solid, &cluster, RestoredArcs::Predicted)
+    else {
         return Ok(None);
     };
-    let wall = restoration
-        .faces
-        .iter()
-        .find_map(|&(source, result)| (source == lifted_seed).then_some(result))
-        .ok_or_else(|| lost("the edited wall did not survive the group removal"))?;
-    Ok(Some((
-        SharpGroup {
-            work,
-            inputs,
-            seed,
-            cluster,
-            restoration,
-            lift,
-        },
-        wall,
-    )))
+    let group = SharpGroup {
+        work,
+        inputs,
+        seed,
+        cluster,
+        restoration,
+        lift,
+        recognized: (solid, lifted_seed),
+    };
+    let wall = group.seed_on(&group.restoration)?;
+    Ok(Some((group, wall)))
 }
 
 /// Re-fillet `group` on `work` (its arena, or a clone of it) with band
@@ -298,23 +374,24 @@ pub(super) fn build_band(
     new_radius: f64,
     gate: Gate,
 ) -> Result<(Topology, Built), OperationsError> {
-    let restoration = &group.restoration;
     let radii = BTreeMap::from([(member, new_radius)]);
-    let plans = plan_reblend(&group.cluster, &restoration.removed, &radii)?;
-    let rebuilt = reblend_restoration_gated(
-        &mut work,
-        restoration.solid,
-        &restoration.sharp_edges,
-        &plans,
-        gate,
-    )?;
-    let built = Built {
-        solid: rebuilt.solid,
-        seed: group.seed,
-        evolution: compose_evolution(&restoration.evolution, &rebuilt.evolution),
-        stages: rebuilt.stages,
-        engines: rebuilt.engines,
-    };
+    let built = with_cut_arcs(group, &mut work, |work, restoration| {
+        let plans = plan_reblend(&group.cluster, &restoration.removed, &radii)?;
+        let rebuilt = reblend_restoration_gated(
+            work,
+            restoration.solid,
+            &restoration.sharp_edges,
+            &plans,
+            gate,
+        )?;
+        Ok(Built {
+            solid: rebuilt.solid,
+            seed: group.seed,
+            evolution: compose_evolution(&restoration.evolution, &rebuilt.evolution),
+            stages: rebuilt.stages,
+            engines: rebuilt.engines,
+        })
+    })?;
     let built = finish(group, &mut work, built)?;
     Ok((work, built))
 }
@@ -328,16 +405,38 @@ pub(super) fn build_cylinder(
     new_radius: f64,
     gate: Gate,
 ) -> Result<(Topology, Built), OperationsError> {
-    let restoration = &group.restoration;
+    let built = with_cut_arcs(group, &mut work, |work, restoration| {
+        let wall = if restoration.solid == group.restoration.solid {
+            wall
+        } else {
+            group.seed_on(restoration)?
+        };
+        resize_and_reblend(group, work, restoration, wall, new_radius, gate)
+    })
+    .map_err(|error| diameter_refusal(error, new_radius))?;
+    let built =
+        finish(group, &mut work, built).map_err(|error| diameter_refusal(error, new_radius))?;
+    Ok((work, built))
+}
+
+/// Resize the sharp `wall` of `restoration` to `new_radius` and re-fillet
+/// `group` on it at its recorded radii.
+fn resize_and_reblend(
+    group: &SharpGroup,
+    work: &mut Topology,
+    restoration: &SharpRestoration,
+    wall: FaceId,
+    new_radius: f64,
+    gate: Gate,
+) -> Result<Built, OperationsError> {
     let (edited, pairs) = crate::performance::timed("blend_group.sharp_edit", || {
         crate::push_pull::resize_cylindrical_face_with_entity_evolution(
-            &mut work,
+            work,
             restoration.solid,
             wall,
             new_radius,
         )
-    })
-    .map_err(|error| diameter_refusal(error, new_radius))?;
+    })?;
     let edge_images: BTreeMap<usize, usize> = pairs
         .iter()
         .filter(|(source, target)| {
@@ -363,9 +462,8 @@ pub(super) fn build_cylinder(
         sharp_edges.push(carried);
     }
     let plans = plan_reblend(&group.cluster, &restoration.removed, &BTreeMap::new())?;
-    let rebuilt = reblend_restoration_gated(&mut work, edited.solid, &sharp_edges, &plans, gate)
-        .map_err(|error| diameter_refusal(error, new_radius))?;
-    let built = Built {
+    let rebuilt = reblend_restoration_gated(work, edited.solid, &sharp_edges, &plans, gate)?;
+    Ok(Built {
         solid: rebuilt.solid,
         seed: group.seed,
         evolution: compose_evolution(
@@ -374,10 +472,7 @@ pub(super) fn build_cylinder(
         ),
         stages: rebuilt.stages,
         engines: rebuilt.engines,
-    };
-    let built =
-        finish(group, &mut work, built).map_err(|error| diameter_refusal(error, new_radius))?;
-    Ok((work, built))
+    })
 }
 
 /// Change the radius of the band containing `face` by removing its whole
@@ -605,7 +700,9 @@ fn group_fillet_as_is(
             return Ok(None);
         }
     }
-    let Ok(restoration) = remove_freshly_recognized_cluster(work, solid, &cluster) else {
+    let Ok(restoration) =
+        remove_freshly_recognized_cluster(work, solid, &cluster, RestoredArcs::Predicted)
+    else {
         return Ok(None);
     };
     // The selected edges on the sharp body, through the removal's history.

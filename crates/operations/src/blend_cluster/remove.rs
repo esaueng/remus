@@ -15,7 +15,10 @@
 //!   or a plane/cylinder circle) between the predicted sharp vertices, which
 //!   are three-face intersections. A closed sharp circle (a rim) is one
 //!   closed edge, split only where a retained edge (a cylinder seam) lands on
-//!   it.
+//!   it. A re-fillet that refuses on that restoration may ask for it again
+//!   with every restored arc split into equal pieces shorter than a half
+//!   turn ([`RestoredArcs::UnderHalfTurn`]): the same sharp body, cut as a
+//!   primitive's circle is (see `edit`).
 //! - **Retained wires are re-cut, not re-derived.** Each retained face's new
 //!   loop is its old loop in the old order: an edge between two retained
 //!   faces is kept on its own carrier with the endpoints that touched the
@@ -149,10 +152,70 @@ pub(super) fn remove_freshly_recognized_cluster(
     topo: &mut Topology,
     solid: SolidId,
     cluster: &BlendCluster,
+    arcs: RestoredArcs,
 ) -> Result<SharpRestoration, OperationsError> {
     let _span = crate::performance::span("blend_group.remove");
     let all: Vec<usize> = (0..cluster.members.len()).collect();
-    remove_members(topo, solid, cluster, &all, Freshness::Recognized)
+    remove_members(topo, solid, cluster, &all, Freshness::Recognized, arcs)
+}
+
+/// How the removal cuts the circular sharp edges it restores. Either way the
+/// sharp body is the same point set with the same faces; only the vertices
+/// along its restored arcs differ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RestoredArcs {
+    /// One edge per arc between the predicted sharp vertices and the points
+    /// retained edges land on; a closed circle with none is one closed edge.
+    Predicted,
+    /// Each of those arcs further split into the fewest equal pieces that are
+    /// each shorter than a half turn (a closed circle into three). The
+    /// rolling-ball engine mints a band's contact and end arcs as the short
+    /// arc between their ends, and the walking engine builds a closed
+    /// single-edge rim as one seamed torus that a later rolling-ball stage
+    /// cannot carry, so a group whose restored arcs are long can re-fillet
+    /// only with them cut, as a primitive's circle is cut.
+    UnderHalfTurn,
+}
+
+impl RestoredArcs {
+    /// Angles (from the arc's start) of the cut points `self` adds to an arc
+    /// spanning `span`.
+    fn cuts(self, span: f64) -> Vec<f64> {
+        match self {
+            Self::Predicted => Vec::new(),
+            Self::UnderHalfTurn => {
+                if span < PI - Tolerance::new().angular {
+                    return Vec::new();
+                }
+                // The fewest equal pieces each shorter than a half turn.
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let pieces = (span / PI).floor() as usize + 1;
+                #[allow(clippy::cast_precision_loss)]
+                (1..pieces)
+                    .map(|k| span * k as f64 / pieces as f64)
+                    .collect()
+            }
+        }
+    }
+}
+
+/// Whether `restoration` restored an arc that [`RestoredArcs::UnderHalfTurn`]
+/// would cut: a closed circle or an arc of at least a half turn.
+pub(super) fn has_long_arc(
+    topo: &Topology,
+    restoration: &SharpRestoration,
+) -> Result<bool, OperationsError> {
+    for &edge in restoration.sharp_edges.iter().flatten() {
+        let data = topo.edge(edge)?;
+        if !matches!(data.curve(), EdgeCurve::Circle(_)) {
+            continue;
+        }
+        let span = data.trim().map_or(TAU, |(t0, t1)| (t1 - t0).abs());
+        if data.start() == data.end() || !RestoredArcs::UnderHalfTurn.cuts(span).is_empty() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Whether [`plan`] re-recognizes the cluster before trusting it.
@@ -190,7 +253,14 @@ pub fn remove_blend_members(
     cluster: &BlendCluster,
     members: &[usize],
 ) -> Result<SharpRestoration, OperationsError> {
-    remove_members(topo, solid, cluster, members, Freshness::Check)
+    remove_members(
+        topo,
+        solid,
+        cluster,
+        members,
+        Freshness::Check,
+        RestoredArcs::Predicted,
+    )
 }
 
 fn remove_members(
@@ -199,12 +269,14 @@ fn remove_members(
     cluster: &BlendCluster,
     members: &[usize],
     freshness: Freshness,
+    arcs: RestoredArcs,
 ) -> Result<SharpRestoration, OperationsError> {
     let removed = plan(topo, solid, cluster, members, freshness)?;
     let source_faces = remus_topology::explorer::solid_faces(topo, solid)?;
     let mut work = Topology::new();
     let copied = copy_solid_between_with_entity_map(topo, &mut work, solid)?;
-    let built = Rebuild::new(&work, &copied, &source_faces, cluster, &removed)?.run(&mut work)?;
+    let built =
+        Rebuild::new(&work, &copied, &source_faces, cluster, &removed, arcs)?.run(&mut work)?;
     postconditions(&work, built.solid)?;
     let output = remus_topology::transaction::run_transacted(topo, |topo| {
         copy_solid_between_with_entity_map(&work, topo, built.solid)
@@ -408,6 +480,8 @@ struct Built {
 struct Rebuild<'a> {
     cluster: &'a BlendCluster,
     removed: &'a [usize],
+    /// How restored arcs are cut.
+    arcs: RestoredArcs,
     /// Source face -> work face.
     source_to_work: BTreeMap<FaceId, FaceId>,
     /// Work face -> source face.
@@ -429,6 +503,7 @@ impl<'a> Rebuild<'a> {
         source_faces: &[FaceId],
         cluster: &'a BlendCluster,
         removed: &'a [usize],
+        arcs: RestoredArcs,
     ) -> Result<Self, OperationsError> {
         let mut source_to_work = BTreeMap::new();
         let mut work_to_source = BTreeMap::new();
@@ -467,6 +542,7 @@ impl<'a> Rebuild<'a> {
         Ok(Self {
             cluster,
             removed,
+            arcs,
             source_to_work,
             work_to_source,
             shell,
@@ -592,7 +668,7 @@ impl<'a> Rebuild<'a> {
                         return Err(ambiguous(format!("sharp arc {index} has no extent")));
                     }
                     let interior = closed_points.get(&index).cloned().unwrap_or_default();
-                    open_pieces(work, &circle, (start, t0), (end, span), interior)?
+                    open_pieces(work, &circle, (start, t0), (end, span), interior, self.arcs)?
                 }
                 (
                     None,
@@ -612,7 +688,7 @@ impl<'a> Rebuild<'a> {
                         let anchor = self.closed_anchor(work, member, &circle)?;
                         points.push((anchor, work.add_vertex(Vertex::new(anchor, tol))));
                     }
-                    closed_pieces(work, &circle, points)?
+                    closed_pieces(work, &circle, points, self.arcs)?
                 }
                 (None, SharpCarrier::Line { .. }) => {
                     return Err(ambiguous(format!("sharp line {index} has no ends")));
@@ -1028,6 +1104,7 @@ fn open_pieces(
     (start, t0): (VertexId, f64),
     (end, span): (VertexId, f64),
     interior: Vec<(Point3, VertexId)>,
+    arcs: RestoredArcs,
 ) -> Result<Vec<EdgeId>, OperationsError> {
     let mut stops: Vec<(f64, VertexId)> = interior
         .into_iter()
@@ -1036,6 +1113,7 @@ fn open_pieces(
     stops.compact_sort_by(|a, b| a.0.total_cmp(&b.0));
     stops.insert(0, (0.0, start));
     stops.push((span, end));
+    let stops = cut_arcs(work, circle, t0, &stops, arcs);
     let mut pieces = Vec::with_capacity(stops.len() - 1);
     for pair in stops.windows(2) {
         let [(a, from), (b, to)] = [pair[0], pair[1]];
@@ -1051,13 +1129,55 @@ fn open_pieces(
     Ok(pieces)
 }
 
+/// `stops` (angles from `t0`, ascending, with their vertices) with the cut
+/// points `arcs` adds between each neighbouring pair, each a new vertex on
+/// `circle`.
+fn cut_arcs(
+    work: &mut Topology,
+    circle: &Circle3D,
+    t0: f64,
+    stops: &[(f64, VertexId)],
+    arcs: RestoredArcs,
+) -> Vec<(f64, VertexId)> {
+    let tol = Tolerance::new().linear;
+    let mut out = Vec::with_capacity(stops.len());
+    for pair in stops.windows(2) {
+        let [(a, from), (b, _)] = [pair[0], pair[1]];
+        out.push((a, from));
+        for cut in arcs.cuts(b - a) {
+            let point = circle.evaluate(t0 + a + cut);
+            out.push((a + cut, work.add_vertex(Vertex::new(point, tol))));
+        }
+    }
+    if let Some(&last) = stops.last() {
+        out.push(last);
+    }
+    out
+}
+
 /// Pieces of a closed circle split at `points`, counter-clockwise.
 fn closed_pieces(
     work: &mut Topology,
     circle: &Circle3D,
     mut points: Vec<(Point3, VertexId)>,
+    arcs: RestoredArcs,
 ) -> Result<Vec<EdgeId>, OperationsError> {
     points.compact_sort_by(|a, b| circle.project(a.0).total_cmp(&circle.project(b.0)));
+    if arcs != RestoredArcs::Predicted && !points.is_empty() {
+        // Every piece, the closing one included, cut from its own start.
+        let t0 = circle.project(points[0].0);
+        let mut stops: Vec<(f64, VertexId)> = points
+            .iter()
+            .map(|&(point, vertex)| ((circle.project(point) - t0).rem_euclid(TAU), vertex))
+            .collect();
+        stops.push((TAU, points[0].1));
+        let mut cut = cut_arcs(work, circle, t0, &stops, arcs);
+        cut.pop();
+        points = cut
+            .into_iter()
+            .map(|(angle, vertex)| (circle.evaluate(t0 + angle), vertex))
+            .collect();
+    }
     if points.len() == 1 {
         let t0 = circle.project(points[0].0);
         let mut edge = Edge::new(points[0].1, points[0].1, EdgeCurve::Circle(circle.clone()));
