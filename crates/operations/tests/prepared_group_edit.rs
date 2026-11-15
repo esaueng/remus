@@ -437,30 +437,63 @@ fn unprepared(
     (topo, result)
 }
 
+/// The unprepared edit a drag's last frame was compared with: its value,
+/// and the body in its own copy of the session.
+struct LastFrame {
+    value: f64,
+    topo: Topology,
+    reference: SolidId,
+}
+
 /// Preview each of `values` (source-relative, as a drag does), checking
 /// every frame against the unprepared edit and the verification bar, then
-/// cancel: the source is byte-identical.
-fn drag(topo: &mut Topology, prepared: &PreparedGroupEdit, values: &[f64], label: &str) {
+/// cancel: the source is byte-identical. Returns the last frame's
+/// reference.
+fn drag(
+    topo: &mut Topology,
+    prepared: &PreparedGroupEdit,
+    values: &[f64],
+    label: &str,
+) -> LastFrame {
     let (solid, face, kind) = (prepared.solid(), prepared.face(), prepared.kind());
     let before = fingerprint(topo, solid);
+    let mut last = None;
     for &value in values {
         let label = format!("{label}: frame {value}");
         let frame = prepared.preview(topo, value).unwrap();
         verify(topo, frame, &label);
         let (reference_topo, reference) = unprepared(topo, solid, face, kind, value);
-        assert_same_body(topo, frame, &reference_topo, reference.unwrap(), &label);
+        let reference = reference.unwrap();
+        assert_same_body(topo, frame, &reference_topo, reference, &label);
         assert_eq!(fingerprint(topo, solid), before, "{label}: source");
+        last = Some(LastFrame {
+            value,
+            topo: reference_topo,
+            reference,
+        });
     }
+    last.expect("a drag has frames")
 }
 
-/// Commit `value`: the result equals the unprepared edit and meets the bar;
-/// the journaled commit equals the unprepared journaled edit.
-fn commit(topo: &mut Topology, prepared: &PreparedGroupEdit, value: f64, label: &str) -> SolidId {
+/// Commit `value` after a drag whose last frame was `value`: the result
+/// equals the unprepared edit and meets the bar; the journaled commit equals
+/// the unprepared journaled edit.
+///
+/// The unprepared edit is the drag's last reference. It was made at the same
+/// value, from a copy of this session in the state it is still in (nothing
+/// changes the session between the last frame and the commit), so making it
+/// again would give the same body.
+fn commit(
+    topo: &mut Topology,
+    prepared: &PreparedGroupEdit,
+    last: LastFrame,
+    label: &str,
+) -> SolidId {
     let (solid, face, kind) = (prepared.solid(), prepared.face(), prepared.kind());
+    let value = last.value;
     let label = format!("{label}: commit {value}");
     let before = fingerprint(topo, solid);
-    let (reference_topo, reference) = unprepared(topo, solid, face, kind, value);
-    let reference = reference.unwrap();
+    let (reference_topo, reference) = (last.topo, last.reference);
 
     let mut journaled_topo = topo.clone();
     let journaled =
@@ -511,8 +544,8 @@ fn band_drag(mut topo: Topology, solid: SolidId, label: &str) {
     let radius = band_radius(&topo, band);
     let prepared = PreparedGroupEdit::prepare_band(&topo, solid, band, radius).unwrap();
     assert!(prepared.learned_refusal(), "{label}: {prepared:?}");
-    drag(&mut topo, &prepared, &[1.5, 1.9, 1.5], label);
-    commit(&mut topo, &prepared, 1.5, label);
+    let last = drag(&mut topo, &prepared, &[1.5, 1.9, 1.5], label);
+    commit(&mut topo, &prepared, last, label);
 }
 
 #[test]
@@ -531,17 +564,56 @@ fn band_radius_drag_on_the_cumulative_body() {
 // A7: the boss diameter, dragged and committed in the video's order
 // (14.6, 17, a 21.1 preview that is cancelled, 14.7).
 
+/// One A7 step on `solid`: the boss dragged to `diameter`, every frame
+/// checked, then committed when `keep` (the body after the step).
+fn boss_step(
+    topo: &mut Topology,
+    solid: SolidId,
+    diameter: f64,
+    keep: bool,
+    label: &str,
+) -> SolidId {
+    let label = format!("{label} Ø{diameter}");
+    let boss = boss_of(topo, solid);
+    let prepared = PreparedGroupEdit::prepare_cylinder(topo, solid, boss).unwrap();
+    assert!(prepared.learned_refusal(), "{label}: {prepared:?}");
+    let last = drag(topo, &prepared, &[diameter / 2.0], &label);
+    if keep {
+        commit(topo, &prepared, last, &label)
+    } else {
+        solid
+    }
+}
+
 fn boss_drags(mut topo: Topology, mut solid: SolidId, label: &str) {
     for (diameter, keep) in [(14.6, true), (17.0, true), (21.1, false), (14.7, true)] {
-        let label = format!("{label} Ø{diameter}");
-        let boss = boss_of(&topo, solid);
-        let prepared = PreparedGroupEdit::prepare_cylinder(&topo, solid, boss).unwrap();
-        assert!(prepared.learned_refusal(), "{label}: {prepared:?}");
-        drag(&mut topo, &prepared, &[diameter / 2.0], &label);
-        if keep {
-            solid = commit(&mut topo, &prepared, diameter / 2.0, &label);
-        }
+        solid = boss_step(&mut topo, solid, diameter, keep, label);
     }
+}
+
+/// The boss at each of `diameters` as the application builds it (prepared,
+/// previewed, committed) with no checks.
+fn built_boss(topo: &mut Topology, mut solid: SolidId, diameters: &[f64]) -> SolidId {
+    for &diameter in diameters {
+        let boss = boss_of(topo, solid);
+        let prepared = PreparedGroupEdit::prepare_cylinder(topo, solid, boss).unwrap();
+        prepared.preview(topo, diameter / 2.0).unwrap();
+        solid = prepared.commit(topo, diameter / 2.0).unwrap();
+    }
+    solid
+}
+
+/// [`boss_step`] committing `diameter` on `solid`, and [`built_boss`] giving
+/// the same body byte for byte from the same session.
+fn boss_step_matching_the_build(topo: &mut Topology, solid: SolidId, diameter: f64, label: &str) {
+    let mut built_topo = topo.clone();
+    let checked = boss_step(topo, solid, diameter, true, label);
+    let built = built_boss(&mut built_topo, solid, &[diameter]);
+    assert_eq!(
+        fingerprint(&built_topo, built),
+        fingerprint(topo, checked),
+        "{label} Ø{diameter}: built"
+    );
 }
 
 #[test]
@@ -550,10 +622,35 @@ fn boss_diameter_drags_on_the_filleted_gecko() {
     boss_drags(topo, solid, "gecko A7");
 }
 
+// The cumulative body's steps run as separate tests, each from the body the
+// steps before it commit, built by `built_boss`; the tests of those steps
+// assert that the build gives the checked commit byte for byte.
+
 #[test]
-fn boss_diameter_drags_on_the_cumulative_body() {
-    let (topo, solid) = cumulative();
-    boss_drags(topo, solid, "cumulative A7");
+fn boss_diameter_14_6_drag_on_the_cumulative_body() {
+    let (mut topo, solid) = cumulative();
+    boss_step_matching_the_build(&mut topo, solid, 14.6, "cumulative A7");
+}
+
+#[test]
+fn boss_diameter_17_drag_after_14_6_on_the_cumulative_body() {
+    let (mut topo, solid) = cumulative();
+    let solid = built_boss(&mut topo, solid, &[14.6]);
+    boss_step_matching_the_build(&mut topo, solid, 17.0, "cumulative A7");
+}
+
+#[test]
+fn boss_diameter_21_1_preview_after_17_on_the_cumulative_body() {
+    let (mut topo, solid) = cumulative();
+    let solid = built_boss(&mut topo, solid, &[14.6, 17.0]);
+    boss_step(&mut topo, solid, 21.1, false, "cumulative A7");
+}
+
+#[test]
+fn boss_diameter_14_7_drag_after_17_on_the_cumulative_body() {
+    let (mut topo, solid) = cumulative();
+    let solid = built_boss(&mut topo, solid, &[14.6, 17.0]);
+    boss_step(&mut topo, solid, 14.7, true, "cumulative A7");
 }
 
 // ---------------------------------------------------------------------------
