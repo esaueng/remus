@@ -27,8 +27,8 @@ test('refusal and approximation use the native guarded fixture on batch and dire
   const fixture = native.match(/fn near_tangent_cylinders\([\s\S]*?\n\}/)?.[0];
   assert.ok(fixture, 'the native refusal witness must still exist');
   assert.equal((fixture.match(/make_cylinder\(topo, 5\.0, 10\.0\)/g) ?? []).length, 2);
-  assert.match(fixture, /Mat4::translation\(9\.999, 0\.0, 3\.0\)/);
-  const expected = [1, 0, 0, 9.999, 0, 1, 0, 0, 0, 0, 1, 3, 0, 0, 0, 1];
+  assert.match(fixture, /Mat4::translation\(9\.999_999, 0\.0, 3\.0\)/);
+  const expected = [1, 0, 0, 9.999999, 0, 1, 0, 0, 0, 0, 1, 3, 0, 0, 0, 1];
   const root = mkdtempSync(resolve(tmpdir(), 'remus fallback fixture '));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const entry = resolve(root, 'kernel.cjs');

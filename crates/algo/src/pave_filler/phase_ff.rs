@@ -4755,10 +4755,11 @@ fn trim_torus_oval_to_box_face(
 ///
 /// The plane face's loops are read against the circle exactly
 /// ([`plane_section_certificate::points_entered_through_outline`]): the
-/// circle must cross the outline and run inside it, clear of every hole,
-/// farther than the band from the loops, at a point the partner face's
-/// extent also holds. A tangency graze touches the outline without crossing
-/// it, or crosses only into the partner's margin band, and stays dropped.
+/// circle must cross the outline and run inside it, more than the strict
+/// crossing depth (`100 · tol.linear`) clear of the outline and every hole,
+/// at a point the partner face's extent also holds. A tangency graze touches
+/// the outline without crossing it, or crosses only into the partner's margin
+/// band, and stays dropped; so does a lens shallower than that depth.
 /// Pairs without exactly one planar face, and circles not lying in that
 /// face's plane, are left to the sampled test.
 fn closed_circle_enters_plane_face(
@@ -4771,18 +4772,18 @@ fn closed_circle_enters_plane_face(
         return false;
     };
     let [first, second] = faces;
-    let ((plane_face, normal, d), partner) = match (first.1, second.1) {
-        (FaceSurface::Plane { normal, d }, other)
-            if !matches!(other, FaceSurface::Plane { .. }) =>
-        {
-            ((first.0, *normal, *d), second.2)
-        }
-        (other, FaceSurface::Plane { normal, d })
-            if !matches!(other, FaceSurface::Plane { .. }) =>
-        {
-            ((second.0, *normal, *d), first.2)
-        }
-        _ => return false,
+    let plane_of = |surface: &FaceSurface| match surface {
+        FaceSurface::Plane { normal, d } => Some((*normal, *d)),
+        FaceSurface::Nurbs(_)
+        | FaceSurface::Cylinder(_)
+        | FaceSurface::Cone(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => None,
+    };
+    let ((plane_face, (normal, d)), partner) = match (plane_of(first.1), plane_of(second.1)) {
+        (Some(plane), None) => ((first.0, plane), second.2),
+        (None, Some(plane)) => ((second.0, plane), first.2),
+        (Some(_), Some(_)) | (None, None) => return false,
     };
     let length = normal.length();
     if !length.is_finite() || length <= 0.0 {
@@ -4795,9 +4796,16 @@ fn closed_circle_enters_plane_face(
     {
         return false;
     }
-    plane_section_certificate::points_entered_through_outline(topo, plane_face, &raw.curve, tol)
-        .into_iter()
-        .any(|p| partner.contains(p))
+    // The strict depth `rescue_corner_crossing` holds a real crossing to. A
+    // lens shallower than that (two r5 walls overlapping by 1e-6) is left to
+    // the sampled test: kept, it assembled with a periodic-seam warning, or
+    // not at all, where the previous handling cut it exactly or refused.
+    let depth = tol.linear * 100.0;
+    plane_section_certificate::points_entered_through_outline(
+        topo, plane_face, &raw.curve, depth, tol,
+    )
+    .into_iter()
+    .any(|p| partner.contains(p))
 }
 
 /// Rescue a real-but-tiny corner crossing from the graze-drop.

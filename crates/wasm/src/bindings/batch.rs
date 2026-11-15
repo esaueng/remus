@@ -4764,7 +4764,7 @@ mod batch_contract_tests {
         // B21: `fuse`, `cut`, `intersect`, and the `*WithOptions` /
         // `*WithEvolution` forms return a bare handle, so they can never
         // disclose a mesh fallback. On a near-tangent cylinder pair (walls
-        // overlapping by 1e-3, the second raised 3 mm, the native fallback
+        // overlapping by 1e-6, the second raised 3 mm, the native fallback
         // fixture) they must refuse with the typed exact-only code and leave
         // the operands untouched; `booleanWithQuality` remains the opt-in,
         // disclosed path. `fuseAll` joins this pin: it returns a bare handle
@@ -4781,7 +4781,7 @@ mod batch_contract_tests {
                 r#"[
                     {{"op":"makeCylinder","args":{{"radius":5,"height":10}}}},
                     {{"op":"makeCylinder","args":{{"radius":5,"height":10}}}},
-                    {{"op":"transform","args":{{"solid":1,"matrix":[1,0,0,9.999,0,1,0,0,0,0,1,3,0,0,0,1]}}}},
+                    {{"op":"transform","args":{{"solid":1,"matrix":[1,0,0,9.999999,0,1,0,0,0,0,1,3,0,0,0,1]}}}},
                     {op},
                     {{"op":"volume","args":{{"solid":0,"deflection":0.01}}}},
                     {{"op":"booleanWithQuality","args":{{"operation":"fuse","solidA":0,"solidB":1}}}}
@@ -4809,7 +4809,7 @@ mod batch_contract_tests {
     fn compound_cut_batch_refuses_instead_of_silently_approximating() {
         // Contract-audit gap pin: `compoundCut` returns a bare handle, so it
         // runs exact-only like every other bare-handle Boolean. Two cylinders
-        // near-tangent (centers 9.999 apart, radii 5+5) need the mesh fallback
+        // near-tangent (centers 9.999999 apart, radii 5+5) need the mesh fallback
         // for Cut — verified natively — so batch must refuse typed with
         // rollback, while `booleanWithQuality` without `exactOnly` discloses
         // the approximation on the same pair.
@@ -4818,7 +4818,7 @@ mod batch_contract_tests {
             r#"[
                 {"op":"makeCylinder","args":{"radius":5,"height":10}},
                 {"op":"makeCylinder","args":{"radius":5,"height":10}},
-                {"op":"transform","args":{"solid":1,"matrix":[1,0,0,9.999,0,1,0,0,0,0,1,0,0,0,0,1]}},
+                {"op":"transform","args":{"solid":1,"matrix":[1,0,0,9.999999,0,1,0,0,0,0,1,0,0,0,0,1]}},
                 {"op":"compoundCut","args":{"target":0,"tools":[1]}},
                 {"op":"booleanWithQuality","args":{"operation":"cut","solidA":0,"solidB":1}}
             ]"#,
@@ -4846,7 +4846,7 @@ mod batch_contract_tests {
             r#"[
                 {"op":"makeCylinder","args":{"radius":5,"height":10}},
                 {"op":"makeCylinder","args":{"radius":5,"height":10}},
-                {"op":"transform","args":{"solid":1,"matrix":[1,0,0,9.999,0,1,0,0,0,0,1,3,0,0,0,1]}},
+                {"op":"transform","args":{"solid":1,"matrix":[1,0,0,9.999999,0,1,0,0,0,0,1,3,0,0,0,1]}},
                 {"op":"booleanWithQuality","args":{"operation":"fuse","solidA":0,"solidB":1,"exactOnly":true}},
                 {"op":"volume","args":{"solid":0,"deflection":0.01}},
                 {"op":"booleanWithQuality","args":{"operation":"fuse","solidA":0,"solidB":1}},
@@ -4876,9 +4876,9 @@ mod batch_contract_tests {
         );
         assert_eq!(response[5]["ok"]["quality"], "approximate");
         assert_eq!(response[5]["ok"]["deflection"], 0.1);
-        // Both cylinders less their lens, 1e-3 wide over the 7 mm they share.
+        // Both cylinders less their lens, 1e-6 wide over the 7 mm they share.
         let volume = response[6]["ok"].as_f64().expect("numeric volume");
-        let (radius, d) = (5.0_f64, 9.999_f64);
+        let (radius, d) = (5.0_f64, 9.999_999_f64);
         let lens = 2.0 * radius.powi(2) * (d / (2.0 * radius)).acos()
             - 0.5 * d * 4.0_f64.mul_add(radius.powi(2), -(d * d)).sqrt();
         let expected = 2.0 * std::f64::consts::PI * radius.powi(2) * 10.0 - lens * 7.0;

@@ -100,3 +100,59 @@ fn pairwise_fuse_of_parallel_cylinders_with_thin_lens_is_exact() {
 fn fuse_solids_of_parallel_cylinders_with_thin_lens_is_exact() {
     each_case(|topo, a, b| fuse_solids(topo, &[a, b]), "fuse_solids");
 }
+
+/// The former mesh-fallback fixture of `fallback_policy.rs` and the batch
+/// contract tests: two r5 h10 cylinders whose walls overlap by 1e-3, caps
+/// flush or the second raised 3. Its lens is about 1e-6 of either volume, so
+/// the result is held to the lens itself: the volume each Boolean removes
+/// (or keeps, for the intersection) by exact integration against the closed
+/// form, and the lens's middle classified on the right side.
+#[test]
+fn former_near_tangent_fallback_fixture_is_exact_and_right() {
+    use remus_check::classify::{ClassifyOptions, PointClassification, classify_point};
+    use remus_math::vec::Point3;
+    use remus_operations::boolean::{BooleanOptions, compound_cut};
+
+    const RADIUS: f64 = 5.0;
+    const HEIGHT: f64 = 10.0;
+    const D: f64 = 9.999;
+    for dz in [0.0, 3.0] {
+        let lens_volume = lens(RADIUS, D) * (HEIGHT - dz);
+        let middle = Point3::new(D / 2.0, 0.0, dz + 0.5 * (HEIGHT - dz));
+        for op in ["fuse", "cut", "intersect", "fuse_solids", "compound_cut"] {
+            let what = format!("{op} dz={dz}");
+            let mut topo = Topology::new();
+            let a = make_cylinder(&mut topo, RADIUS, HEIGHT).unwrap();
+            let b = make_cylinder(&mut topo, RADIUS, HEIGHT).unwrap();
+            transform_solid(&mut topo, b, &Mat4::translation(D, 0.0, dz)).unwrap();
+            let operand = mass_properties(&topo, a).unwrap().mass;
+            let result = match op {
+                "fuse" => boolean(&mut topo, BooleanOp::Fuse, a, b),
+                "cut" => boolean(&mut topo, BooleanOp::Cut, a, b),
+                "intersect" => boolean(&mut topo, BooleanOp::Intersect, a, b),
+                "fuse_solids" => fuse_solids(&mut topo, &[a, b]),
+                _ => compound_cut(&mut topo, a, &[b], BooleanOptions::default()),
+            }
+            .unwrap_or_else(|e| panic!("{what} refused: {e}"));
+            let report = validate_solid(&topo, result).unwrap();
+            assert!(report.is_valid(), "{what}: {:?}", report.issues);
+            let volume = mass_properties(&topo, result).unwrap().mass;
+            let (lens_seen, middle_inside) = match op {
+                "fuse" | "fuse_solids" => (2.0 * operand - volume, true),
+                "intersect" => (volume, true),
+                _ => (operand - volume, false),
+            };
+            assert!(
+                ((lens_seen - lens_volume) / lens_volume).abs() < 1e-6,
+                "{what}: lens volume {lens_seen:e}, expected {lens_volume:e}"
+            );
+            let side = classify_point(&topo, result, middle, &ClassifyOptions::default()).unwrap();
+            let wanted = if middle_inside {
+                PointClassification::Inside
+            } else {
+                PointClassification::Outside
+            };
+            assert_eq!(side, wanted, "{what}: the lens's middle");
+        }
+    }
+}

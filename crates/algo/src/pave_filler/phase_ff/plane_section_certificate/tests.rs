@@ -979,12 +979,15 @@ fn a_vertex_on_a_hole_edge_that_is_no_crossing_is_refused() {
 }
 
 /// #1742: a section circle that crosses a disc's rim enters the disc along
-/// a lens arc however thin, and the point reported lies inside both circles;
-/// a tangent circle, one that misses, one that runs along the rim, one that
-/// stays inside, and one whose lens lies in a hole report nothing.
+/// a lens arc down to the requested depth, and the point reported lies
+/// inside both circles; a tangent circle, one that misses, one that runs
+/// along the rim, one that stays inside, one whose lens is shallower than
+/// the depth, and one whose lens lies in a hole report nothing.
 #[test]
 fn a_thin_lens_crossing_enters_the_disc_and_a_tangency_does_not() {
     const R: f64 = 20.0;
+    /// The depth phase FF asks for: `100 · tol.linear`.
+    const DEPTH: f64 = 1e-5;
     let tol = Tolerance::new();
     let disc = |topo: &mut Topology, hole: Option<Circle3D>| {
         let rim = Circle3D::new(Point3::new(0.0, 0.0, 0.0), Z, R).unwrap();
@@ -1003,7 +1006,7 @@ fn a_thin_lens_crossing_enters_the_disc_and_a_tangency_does_not() {
     for d in [30.0, 39.0, 39.5, 39.9, 39.99, 39.999] {
         let mut topo = Topology::new();
         let face = disc(&mut topo, None);
-        let points = points_entered_through_outline(&topo, face, &section(along(d), R), tol);
+        let points = points_entered_through_outline(&topo, face, &section(along(d), R), DEPTH, tol);
         assert_eq!(points.len(), 1, "d = {d}: {points:?}");
         let p = points[0];
         let (cx, cy) = along(d);
@@ -1019,10 +1022,13 @@ fn a_thin_lens_crossing_enters_the_disc_and_a_tangency_does_not() {
         ("missing", along(2.0 * R + 1e-3), R),
         ("along the rim", (0.0, 0.0), R),
         ("inside", (3.0, -2.0), 5.0),
+        // The circles overlap by half the depth: the lens's middle lies
+        // that far inside the disc.
+        ("shallower than the depth", along(2.0 * R - 0.5 * DEPTH), R),
     ] {
         let mut topo = Topology::new();
         let face = disc(&mut topo, None);
-        let points = points_entered_through_outline(&topo, face, &section(center, r), tol);
+        let points = points_entered_through_outline(&topo, face, &section(center, r), DEPTH, tol);
         assert!(points.is_empty(), "{what}: {points:?}");
     }
 
@@ -1031,6 +1037,6 @@ fn a_thin_lens_crossing_enters_the_disc_and_a_tangency_does_not() {
     let mut topo = Topology::new();
     let hole = Circle3D::new(Point3::new(19.0, 0.0, 0.0), Z, 0.5).unwrap();
     let face = disc(&mut topo, Some(hole));
-    let points = points_entered_through_outline(&topo, face, &section((39.0, 0.0), R), tol);
+    let points = points_entered_through_outline(&topo, face, &section((39.0, 0.0), R), DEPTH, tol);
     assert!(points.is_empty(), "in a hole: {points:?}");
 }

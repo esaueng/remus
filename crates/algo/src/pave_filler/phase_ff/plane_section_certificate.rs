@@ -1606,20 +1606,23 @@ pub(super) fn certify_hole(
     (!certificate.coincident).then_some(certificate)
 }
 
-/// Points of a closed `section` lying in its plane's face `face`, one for
-/// each stretch of the section that runs inside the outline between two of
-/// its crossings: a gap of the outline's certificate decided inside, probed
-/// at its middle, and outside every hole of the face.
+/// Points of a closed `section` lying in its plane's face `face`, more than
+/// `depth` clear of every loop: one for each stretch of the section that
+/// runs inside the outline between two of its crossings (a gap of the
+/// outline's certificate decided inside), probed at its middle and kept
+/// when it lies farther than `depth` inside the outline and outside every
+/// hole.
 ///
-/// This is the exact form of "the section enters the face". A section that
-/// only touches the outline, runs along it, or stays on one side of it
-/// yields nothing; so does any face whose loops cannot all be read, or
-/// whose outline's sides do not alternate at its crossings. Each point lies
-/// farther than the band from the outline and from every hole.
+/// This is the exact form of "the section enters the face by more than
+/// `depth`". A section that only touches the outline, runs along it, stays
+/// on one side of it, or dips in by no more than `depth` yields nothing; so
+/// does any face whose loops cannot all be read, or whose outline's sides
+/// do not alternate at its crossings.
 pub(super) fn points_entered_through_outline(
     topo: &Topology,
     face: FaceId,
     section: &EdgeCurve,
+    depth: f64,
     tol: Tolerance,
 ) -> Vec<Point3> {
     let Some(conic) = SectionConic::of_curve(section) else {
@@ -1646,6 +1649,9 @@ pub(super) fn points_entered_through_outline(
         };
         holes.push(read.outline);
     }
+    // `loop_side` abstains within its `eps` of a loop, so a side decided at
+    // `clearance` is also a proof of that clearance.
+    let clearance = depth.max(0.5 * model.band);
     outline
         .gaps
         .iter()
@@ -1653,9 +1659,10 @@ pub(super) fn points_entered_through_outline(
         .map(|gap| conic.point(f64::midpoint(gap.span.lo, gap.span.hi)))
         .filter(|&p| {
             let uv = frame.project(p);
-            holes
-                .iter()
-                .all(|hole| loop_side(uv, hole, 0.5 * model.band) == Some(false))
+            loop_side(uv, &outline.outline, clearance) == Some(true)
+                && holes
+                    .iter()
+                    .all(|hole| loop_side(uv, hole, clearance) == Some(false))
         })
         .collect()
 }
