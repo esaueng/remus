@@ -10377,6 +10377,59 @@ fn fuse_acceptance_detects_small_tool_lost_from_long_blank() {
 }
 
 #[test]
+fn probe_meshes_keep_their_deflection_up_to_a_thousand_units_and_scale_past_it() {
+    for diagonal in [0.0, 1e-3, 1.0, 999.0, 1000.0] {
+        assert_eq!(probe_deflection(diagonal).to_bits(), 0.1_f64.to_bits());
+    }
+    assert!((probe_deflection(2000.0) - 0.2).abs() < 1e-15);
+    assert!((probe_deflection(1.5e7) - 1500.0).abs() < 1e-9);
+}
+
+/// A cut that hands the blank back untouched is refused at any size, and the
+/// probes behind that answer mesh a large tool with a bounded number of
+/// triangles: at a fixed 0.1 the tool of radius 5e6 took tens of thousands
+/// of chords round (524 triangles here once the deflection follows the tool).
+#[test]
+fn cut_acceptance_detects_a_lost_tool_at_any_size_on_a_bounded_probe_mesh() {
+    let mut triangles = Vec::new();
+    for s in [1.0, 1e6] {
+        let mut topo = Topology::new();
+        let blank = crate::primitives::make_box(&mut topo, 20.0 * s, 20.0 * s, 2.0 * s).unwrap();
+        let tool = crate::primitives::make_cylinder(&mut topo, 5.0 * s, 1.0 * s).unwrap();
+        crate::transform::transform_solid(
+            &mut topo,
+            tool,
+            &remus_math::mat::Mat4::translation(10.0 * s, 10.0 * s, 0.5 * s),
+        )
+        .unwrap();
+        assert!(
+            !operands_are_represented(
+                &topo,
+                BooleanOp::Cut,
+                blank,
+                blank,
+                tool,
+                Tolerance::default()
+            ),
+            "scale {s}"
+        );
+        let tool_box = crate::measure::solid_bounding_box(&topo, tool).unwrap();
+        let mesh = crate::tessellate::tessellate_solid_for_analysis(
+            &topo,
+            tool,
+            probe_deflection((tool_box.max - tool_box.min).length()),
+            remus_math::chord::DEFAULT_ANGULAR_TOL,
+        )
+        .unwrap();
+        triangles.push(mesh.indices.len() / 3);
+    }
+    assert!(
+        triangles.iter().all(|&n| n <= 2_000),
+        "probe mesh triangles at scales 1 and 1e6: {triangles:?}"
+    );
+}
+
+#[test]
 fn internal_queries_preserve_display_meshes_and_query_results() {
     use crate::tessellate::{
         disable_face_mesh_cache, enable_face_mesh_cache, enable_face_mesh_cache_with_limits,

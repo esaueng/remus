@@ -3645,8 +3645,9 @@ fn operands_are_represented(
             }
             // One classifier per operand: each tessellates its solid once for
             // all seven probes instead of once per probe point.
-            let mut in_b = crate::classify::RobustClassifier::new(topo, b, 0.1, tol.linear);
-            let mut in_a = crate::classify::RobustClassifier::new(topo, a, 0.1, tol.linear);
+            let deflection = probe_deflection((b_box.max - b_box.min).length());
+            let mut in_b = crate::classify::RobustClassifier::new(topo, b, deflection, tol.linear);
+            let mut in_a = crate::classify::RobustClassifier::new(topo, a, deflection, tol.linear);
             let inside = |classifier: &mut crate::classify::RobustClassifier<'_>, p: Point3| {
                 matches!(
                     classifier.classify(p),
@@ -3678,6 +3679,26 @@ fn operands_are_represented(
     }
 }
 
+/// Deflection, in model units, of the classification meshes behind
+/// [`operands_are_represented`]'s probes.
+const PROBE_DEFLECTION: f64 = 0.1;
+/// Past this many model units across, the probed region's meshes keep
+/// [`PROBE_DEFLECTION`]'s share of the region instead of its absolute size.
+const PROBE_REGION: f64 = 1000.0;
+
+/// Deflection of the classification meshes for probes spread over a region
+/// `diagonal` across: [`PROBE_DEFLECTION`], and the same fraction of the
+/// diagonal once the region is more than [`PROBE_REGION`] across.
+///
+/// The probes sit at fixed fractions of the region, so what keeps a chordal
+/// mesh from misreading them is its deflection relative to the region, not
+/// in model units. At a fixed 0.1 a cylinder of radius 5e6 was meshed with
+/// tens of thousands of chords round, four times per cut: 100 s for a
+/// boolean that otherwise takes milliseconds.
+fn probe_deflection(diagonal: f64) -> f64 {
+    PROBE_DEFLECTION * (diagonal / PROBE_REGION).max(1.0)
+}
+
 /// Points per axis of [`overlap_grid_witnesses_material`]'s probe grid.
 const OVERLAP_GRID: usize = 5;
 
@@ -3692,7 +3713,6 @@ fn overlap_grid_witnesses_material(
     b_box: remus_math::aabb::Aabb3,
     tol: remus_math::tolerance::Tolerance,
 ) -> bool {
-    const DEFLECTION: f64 = 0.1;
     let lo = Point3::new(
         a_box.min.x().max(b_box.min.x()),
         a_box.min.y().max(b_box.min.y()),
@@ -3709,9 +3729,10 @@ fn overlap_grid_witnesses_material(
     }
     // A boundary margin of twice the deflection keeps every counted probe
     // outside the band where the chordal mesh and the exact surface disagree.
-    let margin = (2.0 * DEFLECTION).max(tol.linear);
-    let mut in_a = crate::classify::RobustClassifier::new(topo, a, DEFLECTION, margin);
-    let mut in_b = crate::classify::RobustClassifier::new(topo, b, DEFLECTION, margin);
+    let deflection = probe_deflection(extent.length());
+    let margin = (2.0 * deflection).max(tol.linear);
+    let mut in_a = crate::classify::RobustClassifier::new(topo, a, deflection, margin);
+    let mut in_b = crate::classify::RobustClassifier::new(topo, b, deflection, margin);
     #[allow(clippy::cast_precision_loss)]
     let at = |i: usize| (i as f64 + 0.5) / OVERLAP_GRID as f64;
     for i in 0..OVERLAP_GRID {
