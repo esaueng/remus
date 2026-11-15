@@ -85,6 +85,9 @@ fn fuse_solids_impl(
     let cylinder_bounds: Vec<Option<SimpleCylinder>> =
         solids.iter().map(|&s| simple_cylinder(topo, s)).collect();
 
+    // Stage 1: groups of interpenetrating solids, with cylinders whose caps
+    // only meet over a disc (`CapContact`) kept apart, so a cluster of
+    // overlapping parallel cylinders still reaches its dedicated path.
     let groups = partition_touching(&bboxes, &poly_bounds, &cylinder_bounds, margin);
 
     let mut group_results: Vec<SolidId> = Vec::new();
@@ -105,6 +108,23 @@ fn fuse_solids_impl(
         // a growing accumulator O(n²).
         group_results.push(crate::boolean::fuse_cluster(topo, &group_solids)?);
     }
+
+    // Stage 2: stage-1 results joined by a cap-to-cap contact are face
+    // contact and must fuse, or both contact discs stay behind as an internal
+    // wall (#1738). Fusing the already-fused groups keeps a flange carrying
+    // two overlapping bosses on the parallel-cylinder path for the bosses
+    // (fusing all three in one cluster refused exact-only).
+    let joined = join_cap_contact_groups(&groups, &bboxes, &cylinder_bounds, margin);
+    let mut joined_results: Vec<SolidId> = Vec::with_capacity(joined.len());
+    for set in &joined {
+        let members: Vec<SolidId> = set.iter().map(|&g| group_results[g]).collect();
+        if members.len() == 1 {
+            joined_results.push(members[0]);
+        } else {
+            joined_results.push(crate::boolean::fuse_cluster(topo, &members)?);
+        }
+    }
+    let group_results = joined_results;
 
     if group_results.len() == 1 {
         return Ok(group_results[0]);
@@ -709,15 +729,19 @@ fn partition_touching(
             if !bboxes[i].intersects(bboxes[j]) {
                 continue;
             }
-            // Only a proved gap or zero-area contact keeps two cylinders
-            // apart. `None` (axes not parallel) proves nothing: crossing bars
-            // read as apart were shell-merged unsplit into one invalid solid.
-            // Caps meeting over a disc (`CapContact`) are face contact and
-            // must fuse, or both discs stay behind as an internal wall.
+            // Only a proved gap or contact keeps two cylinders apart here.
+            // `None` (axes not parallel) proves nothing: crossing bars read
+            // as apart were shell-merged unsplit into one invalid solid.
+            // Caps meeting over a disc (`CapContact`) are face contact; they
+            // are joined after each group is fused (`join_cap_contact_groups`).
             if let (Some(a), Some(b)) = (&cylinder_bounds[i], &cylinder_bounds[j])
                 && matches!(
                     cylinder_relation(a, b, margin),
-                    Some(CylinderRelation::Separated | CylinderRelation::Touching)
+                    Some(
+                        CylinderRelation::Separated
+                            | CylinderRelation::Touching
+                            | CylinderRelation::CapContact
+                    )
                 )
             {
                 continue;
@@ -751,6 +775,51 @@ fn partition_touching(
         groups[slot_of_root[root]].push(i);
     }
     groups
+}
+
+/// Sets of `groups` (by index) joined by a cap-to-cap contact between any of
+/// their cylinders, each set ascending and ordered by its smallest group, so
+/// the result depends only on the inputs.
+fn join_cap_contact_groups(
+    groups: &[Vec<usize>],
+    bboxes: &[Aabb3],
+    cylinder_bounds: &[Option<SimpleCylinder>],
+    margin: f64,
+) -> Vec<Vec<usize>> {
+    let mut group_of = vec![0usize; bboxes.len()];
+    for (g, group) in groups.iter().enumerate() {
+        for &member in group {
+            group_of[member] = g;
+        }
+    }
+    let mut parent: Vec<usize> = (0..groups.len()).collect();
+    for i in 0..bboxes.len() {
+        for j in (i + 1)..bboxes.len() {
+            if group_of[i] == group_of[j] || !bboxes[i].intersects(bboxes[j]) {
+                continue;
+            }
+            if let (Some(a), Some(b)) = (&cylinder_bounds[i], &cylinder_bounds[j])
+                && cylinder_relation(a, b, margin) == Some(CylinderRelation::CapContact)
+            {
+                let ri = uf_find(&mut parent, group_of[i]);
+                let rj = uf_find(&mut parent, group_of[j]);
+                if ri != rj {
+                    parent[ri.max(rj)] = ri.min(rj);
+                }
+            }
+        }
+    }
+    let mut slot_of_root = vec![usize::MAX; groups.len()];
+    let mut sets: Vec<Vec<usize>> = Vec::new();
+    for g in 0..groups.len() {
+        let root = uf_find(&mut parent, g);
+        if slot_of_root[root] == usize::MAX {
+            slot_of_root[root] = sets.len();
+            sets.push(Vec::new());
+        }
+        sets[slot_of_root[root]].push(g);
+    }
+    sets
 }
 
 /// Merge disjoint solids into a single solid by combining all faces.
@@ -1284,6 +1353,88 @@ mod tests {
                             "{case}: plane areas {plane_areas:?} vs {expected_areas:?}"
                         );
                     }
+                }
+                assert_cylinder_union_health(&topo, fused);
+            }
+        }
+    }
+
+    /// #1738 follow-up: a flange carrying two bosses that overlap each other
+    /// and stand cap to cap on it. Fusing all three in one cluster refused
+    /// exact-only once cap contact joined the flange to the bosses' group;
+    /// the bosses must fuse on their parallel-cylinder path first and then
+    /// join the flange.
+    #[test]
+    fn fuse_all_flange_with_two_overlapping_bosses_merges_every_contact() {
+        use remus_math::mat::Mat4;
+        use remus_topology::face::FaceSurface;
+        use std::f64::consts::PI;
+
+        let (r_flange, r_boss) = (40.0_f64, 20.0_f64);
+        for half_gap in [18.0_f64, 19.5] {
+            let d = 2.0 * half_gap;
+            let lens = 2.0 * r_boss * r_boss * (d / (2.0 * r_boss)).acos()
+                - (d / 2.0) * (4.0 * r_boss * r_boss - d * d).sqrt();
+            let bosses = 2.0 * PI * r_boss * r_boss - lens;
+            for order in [
+                [0, 1, 2],
+                [0, 2, 1],
+                [1, 0, 2],
+                [1, 2, 0],
+                [2, 0, 1],
+                [2, 1, 0],
+            ] {
+                let mut topo = Topology::new();
+                let flange = crate::primitives::make_cylinder(&mut topo, r_flange, 10.0).unwrap();
+                let mut parts = vec![flange];
+                for x in [-half_gap, half_gap] {
+                    let boss = crate::primitives::make_cylinder(&mut topo, r_boss, 30.0).unwrap();
+                    crate::transform::transform_solid(
+                        &mut topo,
+                        boss,
+                        &Mat4::translation(x, 0.0, 10.0),
+                    )
+                    .unwrap();
+                    parts.push(boss);
+                }
+                let ordered: Vec<_> = order.iter().map(|&i| parts[i]).collect();
+                let cid = topo.add_compound(Compound::new(ordered));
+                let case = format!("bosses at ±{half_gap}, order {order:?}");
+                let fused = fuse_all(&mut topo, cid);
+                assert!(fused.is_ok(), "{case}: {fused:?}");
+                let fused = fused.unwrap();
+
+                let volume = crate::measure::solid_volume(&topo, fused, 1e-3).unwrap();
+                let expected = PI * r_flange * r_flange * 10.0 + bosses * 30.0;
+                assert!(
+                    (volume - expected).abs() / expected < 1e-6,
+                    "{case}: volume {volume} vs {expected}"
+                );
+
+                let faces = remus_topology::explorer::solid_faces(&topo, fused).unwrap();
+                let mut plane_areas: Vec<f64> = faces
+                    .iter()
+                    .filter(|&&f| {
+                        matches!(topo.face(f).unwrap().surface(), FaceSurface::Plane { .. })
+                    })
+                    .map(|&f| crate::measure::face_area(&topo, f, 1e-3).unwrap())
+                    .collect();
+                plane_areas.sort_by(f64::total_cmp);
+                // Boss tops, the flange top around both feet, the flange bottom:
+                // no contact disc left inside.
+                let expected_areas = [
+                    bosses,
+                    PI * r_flange * r_flange - bosses,
+                    PI * r_flange * r_flange,
+                ];
+                let mut want = expected_areas;
+                want.sort_by(f64::total_cmp);
+                assert_eq!(plane_areas.len(), 3, "{case}: plane areas {plane_areas:?}");
+                for (area, want) in plane_areas.iter().zip(want) {
+                    assert!(
+                        (area - want).abs() / want < 1e-6,
+                        "{case}: {plane_areas:?} vs {want:?}"
+                    );
                 }
                 assert_cylinder_union_health(&topo, fused);
             }
