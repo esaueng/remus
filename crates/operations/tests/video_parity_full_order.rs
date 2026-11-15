@@ -50,6 +50,13 @@
 //! edit goes through the prepared API as the application drives it: a
 //! preview the kernel returns must commit (the preview/commit contract), and
 //! the commit is the unprepared call's result.
+//!
+//! The order is split into tests that run in parallel: A1 to A3, A4 to A6,
+//! and four stretches of A7. Each step is checked in one test; the tests
+//! after it start from the same body built with only the edits the
+//! application keeps (`built_a3`, `built_a6`, `built_diameters`), and the
+//! tests that check the steps assert that those builders give the verified
+//! bodies byte for byte.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -647,6 +654,44 @@ fn group_edit(
     result
 }
 
+/// A group edit as the application runs it and nothing more: prepared,
+/// previewed and committed (the unprepared call when it does not prepare).
+/// The builders below use it; [`group_edit`] checks the same edits.
+fn app_edit(
+    topo: &mut Topology,
+    solid: SolidId,
+    face: FaceId,
+    kind: GroupEditKind,
+    value: f64,
+    label: &str,
+) -> SolidId {
+    let prepared = match kind {
+        GroupEditKind::BandRadius { expected_radius } => {
+            PreparedGroupEdit::prepare_band(topo, solid, face, expected_radius)
+        }
+        GroupEditKind::CylinderRadius { .. } => {
+            PreparedGroupEdit::prepare_cylinder(topo, solid, face)
+        }
+    };
+    let built = match prepared {
+        Ok(prepared) => {
+            prepared
+                .preview(topo, value)
+                .unwrap_or_else(|error| panic!("{label}: preview: {error}"));
+            prepared.commit(topo, value)
+        }
+        Err(_) => match kind {
+            GroupEditKind::BandRadius { expected_radius } => {
+                resize_blend(topo, solid, face, expected_radius, value).map(|result| result.solid)
+            }
+            GroupEditKind::CylinderRadius { .. } => {
+                resize_cylindrical_face(topo, solid, face, value)
+            }
+        },
+    };
+    built.unwrap_or_else(|error| panic!("{label}: {error}"))
+}
+
 /// [`group_edit`] that must build.
 fn group_edit_ok(
     topo: &mut Topology,
@@ -770,12 +815,9 @@ fn a1_to_a3() -> (Topology, SolidId) {
     (topo, a3)
 }
 
-/// [`a1_to_a3`], then A5, A4 and A6 on the same body, each step verified.
-/// Returns the A6 body and the A4 body before it (for the application's
-/// twelve-edge A6 selection).
-fn a1_to_a6() -> (Topology, SolidId, SolidId) {
-    let (mut topo, a3) = a1_to_a3();
-
+/// A5, A4 and A6 on the A3 body `a3`, each step verified. Returns the A6
+/// body and the A4 body before it.
+fn a4_to_a6(mut topo: Topology, a3: SolidId) -> (Topology, SolidId, SolidId) {
     // A5 (the video's step 9, before its A4 edits): a negative radius on
     // the free-end top edge refuses and leaves the body as it was.
     let before = fingerprint(&topo, a3);
@@ -881,64 +923,221 @@ fn a1_to_a6() -> (Topology, SolidId, SolidId) {
     (topo, a6, a4)
 }
 
-/// A1 -> A2 convex 1.5 -> A2 concave 2 -> A3 -> A4 -> A5 -> A6 -> A7
-/// Ø14.6 -> 17 -> (21.1 previewed) -> 14.7 on one body, then an oversize Ø60:
-/// every step builds and verifies (the oversize refuses typed, editing
-/// nothing); the joined cap stays at z26 with its rim throughout.
-#[test]
-fn full_video_order_at_spec_values() {
-    let (mut topo, mut solid, _) = a1_to_a6();
-    let census_before = census(&topo, solid);
-    for diameter in [14.6_f64, 17.0, 21.1, 14.7] {
-        let label = format!("A7 diameter {diameter}");
-        let radius = diameter / 2.0;
-        let before = fingerprint(&topo, solid);
-        let boss = boss_of(&topo, solid);
-        let kind = GroupEditKind::CylinderRadius {
-            radius: boss_radius(&topo, boss),
-        };
-        if (diameter - 21.1).abs() < 1e-12 {
-            // Previewed through the prepared API, then cancelled.
-            let prepared = PreparedGroupEdit::prepare_cylinder(&topo, solid, boss)
-                .unwrap_or_else(|error| panic!("{label}: {error}"));
-            let preview = prepared
-                .preview(&mut topo, radius)
-                .unwrap_or_else(|error| panic!("{label}: {error}"));
-            assert_eq!(fingerprint(&topo, solid), before, "{label}: source");
-            assert_boss_wall(&topo, preview, radius, &label);
-            assert_eq!(census(&topo, preview), census_before, "{label}: census");
-            let mesh = tessellate_solid(&topo, preview, 0.05).unwrap();
-            assert_eq!(boundary_edge_count(&mesh), 0, "{label}");
-            assert_eq!(non_manifold_edge_count(&mesh), 0, "{label}");
-            // The cancelled preview commits too.
-            let committed = prepared
-                .commit(&mut topo, radius)
-                .unwrap_or_else(|error| panic!("{label}: previewed, commit refused: {error}"));
-            verify(&topo, committed, &label);
-            continue;
-        }
-        let result = group_edit_ok(&mut topo, solid, boss, kind, radius, &label);
-        verify(&topo, result, &label);
-        assert_eq!(census(&topo, result), census_before, "{label}: census");
-        assert_boss_wall(&topo, result, radius, &label);
-        assert_cap_at_26(&topo, result, radius, &label);
-        // The bottom chain, the free-end chain and the A3 round are re-cut.
-        probe(
-            &topo,
-            result,
-            &[
-                (Point3::new(15.0, 0.2, 0.2), false),
-                (Point3::new(29.8, 9.0, 23.8), false),
-                (Point3::new(0.15, 17.85, 12.0), false),
-                (Point3::new(15.0, 9.0, 12.0), true),
-            ],
-            &label,
-        );
-        solid = result;
-    }
+// ---------------------------------------------------------------------------
+// The order as the application builds it.
+//
+// Every step's checks run once, in the test that owns the step. Later tests
+// build the same body with only the edits the application keeps (group
+// edits prepared, previewed and committed), not the refusals, the discarded
+// A4 fillets or the checks, which leave the body as it was; the owning tests
+// assert that the builders give the verified bodies byte for byte (the STEP
+// fingerprint). That keeps the steps' tests apart, so they run in parallel.
 
-    // An oversize diameter refuses with the diameter-fit refusal, editing
-    // nothing.
+/// A0 to A3 as the application builds them.
+fn built_a3() -> (Topology, SolidId) {
+    let (mut topo, a0) = a0();
+    let cap = top_at(&topo, a0, 36.0);
+    let long = move_faces_with_quality(&mut topo, a0, &[cap], 25.2, SAMPLED)
+        .unwrap()
+        .result
+        .solid;
+    let cap = top_at(&topo, long, 61.2);
+    let a1 = move_faces_with_quality(&mut topo, long, &[cap], 26.0 - 61.2, SAMPLED)
+        .unwrap()
+        .result
+        .solid;
+    let convex = GroupEditKind::BandRadius {
+        expected_radius: 4.0,
+    };
+    let band = x0_band(&topo, a1);
+    let a2 = app_edit(&mut topo, a1, band, convex, BAND, "A2 convex");
+    let seam = y0_seam(&topo, a2);
+    let a2 = app_edit(&mut topo, a2, seam, convex, SEAM, "A2 concave");
+    let pick = a3_pick(&topo, a2);
+    let a3 = fillet_cascade(&mut topo, a2, &[pick], 1.0).unwrap().solid;
+    (topo, a3)
+}
+
+/// A4 and A6 on the A3 body `a3` as the application builds them. Returns the
+/// A6 body and the A4 body before it.
+fn built_a4_to_a6(topo: &mut Topology, a3: SolidId) -> (SolidId, SolidId) {
+    let pick = a4_pick(topo, a3);
+    let a4 = chamfer_v2_tangent_chain(topo, a3, &[pick], FREE_END, FREE_END)
+        .unwrap()
+        .solid;
+    let pick = bottom_pick(topo, a4);
+    let a6 = chamfer_v2_tangent_chain(topo, a4, &[pick], BOTTOM, BOTTOM)
+        .unwrap()
+        .solid;
+    (a6, a4)
+}
+
+/// A0 to A6 as the application builds them. Returns the A6 body and the A4
+/// body before it (for the application's twelve-edge A6 selection).
+fn built_a6() -> (Topology, SolidId, SolidId) {
+    let (mut topo, a3) = built_a3();
+    let (a6, a4) = built_a4_to_a6(&mut topo, a3);
+    (topo, a6, a4)
+}
+
+/// A7's boss diameters as the application builds them, from `solid`.
+fn built_diameters(topo: &mut Topology, mut solid: SolidId, diameters: &[f64]) -> SolidId {
+    for &diameter in diameters {
+        let boss = boss_of(topo, solid);
+        let kind = GroupEditKind::CylinderRadius {
+            radius: boss_radius(topo, boss),
+        };
+        let label = format!("A7 diameter {diameter}");
+        solid = app_edit(topo, solid, boss, kind, diameter / 2.0, &label);
+    }
+    solid
+}
+
+/// A0 to A3 on one body: A1 lengthened and shortened, A2 convex 1.5, A2
+/// concave 2 beside the band refused and on the y = 0 face, A3, every step
+/// verified; and [`built_a3`] builds the same body.
+#[test]
+fn a1_to_a3_verify_at_every_step() {
+    let (topo, a3) = a1_to_a3();
+    let (built_topo, built) = built_a3();
+    assert_eq!(
+        fingerprint(&built_topo, built),
+        fingerprint(&topo, a3),
+        "built A3"
+    );
+}
+
+/// A5, A4 (the free-end fillets built and discarded, then the chamfer chain)
+/// and A6 on the A3 body, every step verified; and [`built_a4_to_a6`] builds
+/// the same A4 and A6 bodies.
+#[test]
+fn a4_to_a6_verify_at_every_step() {
+    let (topo, a3) = built_a3();
+    let mut built_topo = topo.clone();
+    let (topo, a6, a4) = a4_to_a6(topo, a3);
+    let (built_a6, built_a4) = built_a4_to_a6(&mut built_topo, a3);
+    assert_eq!(
+        fingerprint(&built_topo, built_a4),
+        fingerprint(&topo, a4),
+        "built A4"
+    );
+    assert_eq!(
+        fingerprint(&built_topo, built_a6),
+        fingerprint(&topo, a6),
+        "built A6"
+    );
+}
+
+/// One committed A7 boss diameter on `solid`, as the application drives it:
+/// it builds and verifies, keeps A6's face census (`census_a6`), moves the
+/// boss wall, keeps the cap at z26 with its rim, and re-cuts the bottom
+/// chain, the free-end chain and the A3 round. Returns the edited body.
+fn a7_diameter(
+    topo: &mut Topology,
+    solid: SolidId,
+    diameter: f64,
+    census_a6: &BTreeMap<&'static str, usize>,
+) -> SolidId {
+    let label = format!("A7 diameter {diameter}");
+    let radius = diameter / 2.0;
+    let boss = boss_of(topo, solid);
+    let kind = GroupEditKind::CylinderRadius {
+        radius: boss_radius(topo, boss),
+    };
+    let result = group_edit_ok(topo, solid, boss, kind, radius, &label);
+    verify(topo, result, &label);
+    assert_eq!(&census(topo, result), census_a6, "{label}: census");
+    assert_boss_wall(topo, result, radius, &label);
+    assert_cap_at_26(topo, result, radius, &label);
+    // The bottom chain, the free-end chain and the A3 round are re-cut.
+    probe(
+        topo,
+        result,
+        &[
+            (Point3::new(15.0, 0.2, 0.2), false),
+            (Point3::new(29.8, 9.0, 23.8), false),
+            (Point3::new(0.15, 17.85, 12.0), false),
+            (Point3::new(15.0, 9.0, 12.0), true),
+        ],
+        &label,
+    );
+    result
+}
+
+/// A7's first diameter on the A6 body: Ø12 -> 14.6, verified; and
+/// [`built_diameters`] builds the same body.
+#[test]
+fn a7_boss_diameter_14_6() {
+    let (mut topo, a6, _) = built_a6();
+    let census_a6 = census(&topo, a6);
+    let mut built_topo = topo.clone();
+    let verified = a7_diameter(&mut topo, a6, 14.6, &census_a6);
+    let built = built_diameters(&mut built_topo, a6, &[14.6]);
+    assert_eq!(
+        fingerprint(&built_topo, built),
+        fingerprint(&topo, verified),
+        "built A7 Ø14.6"
+    );
+}
+
+/// A7's second diameter, after Ø14.6: Ø14.6 -> 17, verified; and
+/// [`built_diameters`] builds the same body.
+#[test]
+fn a7_boss_diameter_17_after_14_6() {
+    let (mut topo, a6, _) = built_a6();
+    let census_a6 = census(&topo, a6);
+    let at_14_6 = built_diameters(&mut topo, a6, &[14.6]);
+    let mut built_topo = topo.clone();
+    let verified = a7_diameter(&mut topo, at_14_6, 17.0, &census_a6);
+    let built = built_diameters(&mut built_topo, at_14_6, &[17.0]);
+    assert_eq!(
+        fingerprint(&built_topo, built),
+        fingerprint(&topo, verified),
+        "built A7 Ø17"
+    );
+}
+
+/// A7 after Ø14.6 and Ø17: Ø21.1 previewed through the prepared API and
+/// cancelled, as the video does it. The preview leaves the source unchanged,
+/// moves the boss wall and keeps A6's census with a closed mesh, and the
+/// cancelled preview commits too.
+#[test]
+fn a7_boss_diameter_21_1_previewed_then_cancelled() {
+    let (mut topo, a6, _) = built_a6();
+    let census_a6 = census(&topo, a6);
+    let solid = built_diameters(&mut topo, a6, &[14.6, 17.0]);
+    let label = "A7 diameter 21.1";
+    let radius = 21.1 / 2.0;
+    let before = fingerprint(&topo, solid);
+    let boss = boss_of(&topo, solid);
+    let prepared = PreparedGroupEdit::prepare_cylinder(&topo, solid, boss)
+        .unwrap_or_else(|error| panic!("{label}: {error}"));
+    let preview = prepared
+        .preview(&mut topo, radius)
+        .unwrap_or_else(|error| panic!("{label}: {error}"));
+    assert_eq!(fingerprint(&topo, solid), before, "{label}: source");
+    assert_boss_wall(&topo, preview, radius, label);
+    assert_eq!(census(&topo, preview), census_a6, "{label}: census");
+    let mesh = tessellate_solid(&topo, preview, 0.05).unwrap();
+    assert_eq!(boundary_edge_count(&mesh), 0, "{label}");
+    assert_eq!(non_manifold_edge_count(&mesh), 0, "{label}");
+    // The cancelled preview commits too.
+    let committed = prepared
+        .commit(&mut topo, radius)
+        .unwrap_or_else(|error| panic!("{label}: previewed, commit refused: {error}"));
+    verify(&topo, committed, label);
+}
+
+/// A7 after Ø14.6 and Ø17 (Ø21.1 was only previewed): Ø14.7 builds and
+/// verifies, and an oversize Ø60 then refuses with the diameter-fit refusal,
+/// editing nothing.
+#[test]
+fn a7_boss_diameter_14_7_then_an_oversize_refusal() {
+    let (mut topo, a6, _) = built_a6();
+    let census_a6 = census(&topo, a6);
+    let solid = built_diameters(&mut topo, a6, &[14.6, 17.0]);
+    let solid = a7_diameter(&mut topo, solid, 14.7, &census_a6);
+
     let before = fingerprint(&topo, solid);
     let boss = boss_of(&topo, solid);
     let kind = GroupEditKind::CylinderRadius {
@@ -973,7 +1172,7 @@ fn closed_bottom_outline_after_the_free_end_chamfer() {
     for shortened in [false, true] {
         let label = if shortened { "after A1" } else { "without A1" };
         let (mut topo, a4) = if shortened {
-            let (topo, _, a4) = a1_to_a6();
+            let (topo, _, a4) = built_a6();
             (topo, a4)
         } else {
             let (mut topo, mut solid) = a0();
