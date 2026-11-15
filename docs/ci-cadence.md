@@ -19,8 +19,8 @@ When this page and a workflow disagree, the workflow is right; fix the page.
   package publisher (`publish.yml`, see the release-flow skill).
 - Other workflows (`wasm-version.yml`, `dependency-review.yml`, the
   history-privacy workflows, `benchmark.yml`, `parity.yml`, `osv-scan.yml`,
-  `mutation-scope.yml`, `codeql.yml` and the scheduled ones below) are each
-  one self-contained file.
+  `mutation-scope.yml` and the scheduled ones below) are each one
+  self-contained file.
 
 ## Tier selection
 
@@ -95,7 +95,6 @@ All times UTC; scheduled runs use `main`.
 | `mutants.yml` | Sunday 02:00 | sharded mutation testing |
 | `fuzz.yml` | Sunday 03:30 | fuzz targets |
 | `opseq81-campaign.yml` | Sunday 04:30 | bounded operation-sequence campaign |
-| `codeql.yml` | Monday 09:37 | CodeQL analysis of the workflows, scripts and Rust sources (also on every `main` push; never on PRs) |
 | `osv-scan.yml` | Monday 06:00 | OSV scan (also on `main` pushes, and on PRs and merge groups, where it fails on newly introduced vulnerabilities) |
 
 There is no daily full native run: every `main` push with a source change
