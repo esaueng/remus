@@ -725,6 +725,9 @@ fn heal_by_extending(
     // face-evolution contract (face_map) stays total.
     let mut specs: Vec<FaceSpec> = Vec::with_capacity(kept_positions.len());
     let mut sources: Vec<FaceId> = Vec::with_capacity(kept_positions.len());
+    // Boundary corners of each spec, in spec order, for the connectivity
+    // check that runs before assembly.
+    let mut spec_corners: Vec<Vec<Point3>> = Vec::with_capacity(kept_positions.len());
     let mut vertex_sources = Vec::new();
     let mut retained_edges = BTreeSet::new();
     for &pos in kept_positions {
@@ -750,6 +753,7 @@ fn heal_by_extending(
                         .map(remus_topology::OrientedEdge::edge),
                 );
             }
+            spec_corners.push(face_corner_points(topo, fid, None)?);
             specs.push(FaceSpec::Existing {
                 face: fid,
                 outer: None,
@@ -830,6 +834,7 @@ fn heal_by_extending(
                         .map(remus_topology::OrientedEdge::edge),
                 );
             }
+            spec_corners.push(face_corner_points(topo, fid, Some(&outer))?);
             specs.push(FaceSpec::Existing {
                 face: fid,
                 outer: Some(outer),
@@ -898,6 +903,13 @@ fn heal_by_extending(
             _ => return Err(unsupported("kept face is not planar")),
         };
         let d = dot_normal_point(normal, outer[0]);
+        spec_corners.push(
+            outer
+                .iter()
+                .chain(inner_wires.iter().flatten())
+                .copied()
+                .collect(),
+        );
         specs.push(if face.is_reversed() {
             FaceSpec::Surface {
                 vertices: outer,
@@ -925,6 +937,8 @@ fn heal_by_extending(
         )));
     }
 
+    ensure_specs_connected(&spec_corners, tol.linear)?;
+
     let assembly = assemble_solid_mixed_with_boundary_history(topo, &specs, tol)?;
     let boundary_history =
         extended_boundary_history(topo, all_faces, &vertex_sources, &retained_edges, &assembly)?;
@@ -938,6 +952,110 @@ fn heal_by_extending(
         face_map,
         boundary_history: Some(boundary_history),
     })
+}
+
+/// Corner positions of a kept face as the heal will emit it: `outer` when
+/// the outer wire was re-trimmed, else the face's own outer wire, plus every
+/// inner wire verbatim.
+fn face_corner_points(
+    topo: &Topology,
+    face: FaceId,
+    outer: Option<&[Point3]>,
+) -> Result<Vec<Point3>, OperationsError> {
+    let face = topo.face(face)?;
+    let mut points: Vec<Point3> = Vec::new();
+    let mut wires = face.inner_wires().to_vec();
+    match outer {
+        Some(outer) => points.extend_from_slice(outer),
+        None => wires.push(face.outer_wire()),
+    }
+    for wire in wires {
+        for oe in topo.wire(wire)?.edges() {
+            let edge = topo.edge(oe.edge())?;
+            points.push(topo.vertex(oe.oriented_start(edge))?.point());
+        }
+    }
+    Ok(points)
+}
+
+/// Union-find root of `node`, halving the path on the way.
+fn find(parent: &mut [usize], mut node: usize) -> usize {
+    while parent[node] != node {
+        parent[node] = parent[parent[node]];
+        node = parent[node];
+    }
+    node
+}
+
+/// Refuse a heal whose faces would fall apart into separate shells.
+///
+/// Faces of one closed shell are connected through shared edges, so they
+/// are connected through shared corners too. Faces that share no corner
+/// with the rest (a lone face stranded above walls that stopped short of it)
+/// can never assemble into one closed shell, and the heal is refused before
+/// anything is assembled. Sharing corners is necessary, not sufficient: a
+/// connected but still open arrangement is left to the strict validation
+/// after assembly.
+fn ensure_specs_connected(
+    spec_corners: &[Vec<Point3>],
+    tolerance: f64,
+) -> Result<(), OperationsError> {
+    if spec_corners.len() < 2 {
+        return Ok(());
+    }
+    // Corners are snapped to a grid twice the tolerance wide; two corners
+    // within tolerance fall in the same or an adjacent cell.
+    let cell = (2.0 * tolerance).max(f64::MIN_POSITIVE);
+    #[allow(clippy::cast_possible_truncation)]
+    let key = |p: Point3| {
+        (
+            (p.x() / cell).floor() as i64,
+            (p.y() / cell).floor() as i64,
+            (p.z() / cell).floor() as i64,
+        )
+    };
+    let mut parent: Vec<usize> = (0..spec_corners.len()).collect();
+    let mut grid: BTreeMap<(i64, i64, i64), Vec<(Point3, usize)>> = BTreeMap::new();
+    for (spec, corners) in spec_corners.iter().enumerate() {
+        for &p in corners {
+            let (x, y, z) = key(p);
+            for dx in -1..=1 {
+                for dy in -1..=1 {
+                    for dz in -1..=1 {
+                        // Far from the origin the cell index saturates at the
+                        // i64 bounds; a neighbour past them does not exist.
+                        let (Some(nx), Some(ny), Some(nz)) =
+                            (x.checked_add(dx), y.checked_add(dy), z.checked_add(dz))
+                        else {
+                            continue;
+                        };
+                        let Some(entries) = grid.get(&(nx, ny, nz)) else {
+                            continue;
+                        };
+                        for &(q, other) in entries {
+                            if (p - q).length() <= tolerance {
+                                let (a, b) = (find(&mut parent, spec), find(&mut parent, other));
+                                if a != b {
+                                    parent[a] = b;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            grid.entry((x, y, z)).or_default().push((p, spec));
+        }
+    }
+    let roots: BTreeSet<usize> = (0..spec_corners.len())
+        .map(|spec| find(&mut parent, spec))
+        .collect();
+    if roots.len() > 1 {
+        return Err(unsupported(format!(
+            "the healed faces split into {} groups that share no corner; the extended faces do not meet over the gap",
+            roots.len()
+        )));
+    }
+    Ok(())
 }
 
 fn extended_boundary_history(
@@ -1377,6 +1495,21 @@ mod tests {
     use remus_math::curves::Circle3D;
     use remus_topology::edge::Edge;
     use remus_topology::vertex::Vertex;
+
+    #[test]
+    fn corner_grid_far_from_the_origin_does_not_overflow() {
+        // At 2e12 with a 1e-7 tolerance the cell index saturates at i64::MAX;
+        // stepping to a neighbour cell overflowed and panicked.
+        let far = Point3::new(2e12, -2e12, 2e12);
+        let near = Point3::new(1.0, 2.0, 3.0);
+        let joined = vec![vec![far, near], vec![far]];
+        assert!(ensure_specs_connected(&joined, 1e-7).is_ok());
+        let apart = vec![vec![far], vec![near]];
+        let err = ensure_specs_connected(&apart, 1e-7)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("share no corner; the extended faces"), "{err}");
+    }
 
     #[test]
     fn stale_assembly_boundary_maps_leave_references_unresolved() {
