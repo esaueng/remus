@@ -487,7 +487,7 @@ Quick reference — find the right file for any task:
 | Bounded h-refinement on an already resolved rectangular analytic domain | `properties/face_integrator/adaptive.rs` |
 | Bucketed trim-loop segment lookup for trimmed quadrature (O06) | `properties/face_integrator/loop_index.rs` |
 | Exact boundary reduction (Green's theorem) of cylinder, cone, sphere and torus face areas behind `analytic_face_area`, with the trimmed quadrature as fallback | `properties/face_integrator/boundary_area.rs` |
-| Exact moments (volume, centroid, inertia) of a cylinder face trimmed only by lines, circles and ellipses, by Green's theorem on its own boundary; the sampled trim quadrature stays the guard and the path for fitted trims | `properties/face_integrator/cylinder_green.rs` |
+| Exact moments (volume, centroid, inertia) of a cylinder face trimmed by lines, circles, ellipses and fitted NURBS sections that lie on the cylinder, by Green's theorem on its own boundary read on the surface (fitted trims span by span, kept only where the halved-span reading agrees); the sampled trim quadrature stays the guard and the path for trims off the surface or unconverged, and fitted trims keep it for readings that collect the vector area (the volume certificates) | `properties/face_integrator/cylinder_green.rs` |
 | Bit-identity oracle for the NURBS row and grid quadrature (per-axis basis tables) against the verbatim per-abscissa `integrate_parametric` (tests) | `properties/face_integrator/nurbs_rows_oracle_tests.rs` |
 | Bit-identity oracle for `integrate_parametric` with its sliced request out of line and its knot-aligned path reached through `as_nurbs`, against the verbatim previous function (tests) | `properties/face_integrator/parametric_split_oracle_tests.rs` |
 | Full-turn cylinder bands with rims split into many arcs, integrated over their exact `(u, v)` rectangle past the trim budget (tests) | `properties/face_integrator/cylinder_band_tests.rs` |
@@ -644,6 +644,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Certificate-implies-probe oracle, refusal cases and probe-mesh work guard (tests) | `measure/volume/planar_outline_tests.rs` |
 | Hash-map references for the sorted whole-mesh edge censuses (tests) | `measure/volume/edge_census_oracle_tests.rs` |
 | Long open spline arcs retain their real winding, rather than their chord's (tests) | `measure/volume/periodic_winding_tests.rs` |
+| A drill crossing a bar off its axis and breaking out through the bar's wall measures its closed-form cut and union volume wherever the bar's seam lies (tests) | `measure/volume/crossing_cylinder_breakout_tests.rs` |
 | A cylinder wall bounded by an ellipse (a plane section not normal to the axis) integrates exactly (tests) | `measure/volume/oblique_cylinder_tests.rs` |
 | Bounded opt-in exact-content scalar memo for trimmed NURBS face areas | `measure/nurbs_area_memo.rs`, `measure/nurbs_area_memo/tests.rs` |
 | 128-bit exact content digest of a single face (handle-free; lets a consumer keep what it derived from faces an edit left untouched) | `measure/face_digest.rs` |

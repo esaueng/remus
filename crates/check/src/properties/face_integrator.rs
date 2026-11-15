@@ -4545,6 +4545,27 @@ struct Accumulator {
 }
 
 impl Accumulator {
+    /// Add every sum of `other`, a reading of more of the same face.
+    fn absorb(&mut self, other: &Self) {
+        self.area += other.area;
+        self.vol += other.vol;
+        self.mx += other.mx;
+        self.my += other.my;
+        self.mz += other.mz;
+        self.qxx += other.qxx;
+        self.qyy += other.qyy;
+        self.qzz += other.qzz;
+        self.qxy += other.qxy;
+        self.qxz += other.qxz;
+        self.qyz += other.qyz;
+        self.cx += other.cx;
+        self.cy += other.cy;
+        self.cz += other.cz;
+        self.nx += other.nx;
+        self.ny += other.ny;
+        self.nz += other.nz;
+    }
+
     /// Add one abscissa's contribution, weighted by `w` (which already carries
     /// the map from the reference interval to the patch), with every
     /// positional integrand taken about `reference`.
