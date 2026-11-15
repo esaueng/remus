@@ -3067,6 +3067,23 @@ impl PcurveTransform {
     }
 }
 
+/// How a face's planar bounds are being sampled: whether long edges may
+/// sample relative to their extent, and the largest chordal deflection any
+/// edge has used so far.
+struct BoundSampling {
+    relative: bool,
+    deflection: f64,
+}
+
+impl BoundSampling {
+    const fn new(relative: bool) -> Self {
+        Self {
+            relative,
+            deflection: FACE_BOUND_CLASSIFICATION_DEFLECTION,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct FaceBoundLoop {
     candidate_index: usize,
@@ -4272,14 +4289,13 @@ impl<'a> StepBuilder<'a> {
             }
             return Ok(bound.shape);
         }
-        let mut deflection = FACE_BOUND_CLASSIFICATION_DEFLECTION;
         let polygon = self.sample_planar_bound(
             face_ref,
             candidate,
             frame,
             sampled_points,
             None,
-            &mut deflection,
+            &mut BoundSampling::new(true),
         )?;
         Ok(PlanarBoundShape::of(&polygon))
     }
@@ -4385,64 +4401,81 @@ impl<'a> StepBuilder<'a> {
                 ),
             })?;
 
-        let mut loops = Vec::with_capacity(candidates.len());
-        let mut edge_samples = Vec::with_capacity(candidates.len());
-        let mut sampled_points = 0;
-        let mut deflection = FACE_BOUND_CLASSIFICATION_DEFLECTION;
-        for (candidate_index, candidate) in candidates.iter().enumerate() {
-            let mut bound_edge_samples = Vec::new();
-            let polygon = self.sample_planar_bound(
-                face_ref,
-                *candidate,
-                &frame,
-                &mut sampled_points,
-                Some(&mut bound_edge_samples),
-                &mut deflection,
-            )?;
-            edge_samples.push(bound_edge_samples);
-            let bounds = Aabb2::try_from_points(polygon.iter().copied()).ok_or_else(|| {
-                IoError::ParseError {
-                    reason: format!(
-                        "ADVANCED_FACE #{face_ref} bound #{} at position {} has no sampled points",
-                        candidate.bound_ref, candidate.source_position
-                    ),
+        // Sample every loop relative to its edges first. If that leaves two
+        // loops whose areas the coarser chords cannot order (their difference
+        // within the loops' perimeters times the deflection), sample again at
+        // the absolute deflection, so such a face classifies exactly as it
+        // always has.
+        let mut relative = true;
+        let (loops, edge_samples, deflection) = loop {
+            let mut loops = Vec::with_capacity(candidates.len());
+            let mut edge_samples = Vec::with_capacity(candidates.len());
+            let mut sampled_points = 0;
+            let mut sampling = BoundSampling::new(relative);
+            for (candidate_index, candidate) in candidates.iter().enumerate() {
+                let mut bound_edge_samples = Vec::new();
+                let polygon = self.sample_planar_bound(
+                    face_ref,
+                    *candidate,
+                    &frame,
+                    &mut sampled_points,
+                    Some(&mut bound_edge_samples),
+                    &mut sampling,
+                )?;
+                edge_samples.push(bound_edge_samples);
+                let bounds = Aabb2::try_from_points(polygon.iter().copied()).ok_or_else(|| {
+                    IoError::ParseError {
+                        reason: format!(
+                            "ADVANCED_FACE #{face_ref} bound #{} at position {} has no sampled points",
+                            candidate.bound_ref, candidate.source_position
+                        ),
+                    }
+                })?;
+                let signed_area = polygon_signed_area(&polygon);
+                let perimeter = polygon_perimeter(&polygon);
+                if polygon.len() < 3
+                    || !signed_area.is_finite()
+                    || !perimeter.is_finite()
+                    || perimeter <= tol.linear
+                    || signed_area.abs() <= perimeter * tol.linear
+                {
+                    return Err(IoError::ParseError {
+                        reason: format!(
+                            "ADVANCED_FACE #{face_ref} bound #{} at position {} is degenerate for \
+                             planar outer-loop classification",
+                            candidate.bound_ref, candidate.source_position
+                        ),
+                    });
                 }
-            })?;
-            let signed_area = polygon_signed_area(&polygon);
-            let perimeter = polygon_perimeter(&polygon);
-            if polygon.len() < 3
-                || !signed_area.is_finite()
-                || !perimeter.is_finite()
-                || perimeter <= tol.linear
-                || signed_area.abs() <= perimeter * tol.linear
-            {
-                return Err(IoError::ParseError {
-                    reason: format!(
-                        "ADVANCED_FACE #{face_ref} bound #{} at position {} is degenerate for \
-                         planar outer-loop classification",
-                        candidate.bound_ref, candidate.source_position
-                    ),
+                let probe = polygon_interior_probe(&polygon, bounds).ok_or_else(|| {
+                    IoError::ParseError {
+                        reason: format!(
+                            "ADVANCED_FACE #{face_ref} bound #{} at position {} has no reliable \
+                             planar interior probe",
+                            candidate.bound_ref, candidate.source_position
+                        ),
+                    }
+                })?;
+                loops.push(FaceBoundLoop {
+                    candidate_index,
+                    polygon,
+                    bounds,
+                    signed_area,
+                    perimeter,
+                    probe,
+                    seam_flexible_u: false,
+                    seam_flexible_v: false,
                 });
             }
-            let probe =
-                polygon_interior_probe(&polygon, bounds).ok_or_else(|| IoError::ParseError {
-                    reason: format!(
-                        "ADVANCED_FACE #{face_ref} bound #{} at position {} has no reliable \
-                         planar interior probe",
-                        candidate.bound_ref, candidate.source_position
-                    ),
-                })?;
-            loops.push(FaceBoundLoop {
-                candidate_index,
-                polygon,
-                bounds,
-                signed_area,
-                perimeter,
-                probe,
-                seam_flexible_u: false,
-                seam_flexible_v: false,
-            });
-        }
+            if relative
+                && sampling.deflection > FACE_BOUND_CLASSIFICATION_DEFLECTION
+                && planar_loop_areas_ambiguous(&loops, sampling.deflection)
+            {
+                relative = false;
+                continue;
+            }
+            break (loops, edge_samples, sampling.deflection);
+        };
 
         // Every loop's chords lie within `deflection` of its curve.
         let margin = deflection + tol.linear;
@@ -5175,8 +5208,10 @@ impl<'a> StepBuilder<'a> {
     }
 
     /// `edge_samples`, when given, receives each edge's raw sample count in
-    /// the order they are charged to `sampled_points`. `deflection` is raised
-    /// to the largest chordal deflection any edge was sampled to.
+    /// the order they are charged to `sampled_points`. `sampling` says
+    /// whether long edges may sample relative to their extent (see
+    /// [`Self::sample_bound_edge`]) and is raised to the largest deflection
+    /// any edge used.
     fn sample_planar_bound(
         &self,
         face_ref: u64,
@@ -5184,7 +5219,7 @@ impl<'a> StepBuilder<'a> {
         frame: &Frame3,
         sampled_points: &mut usize,
         mut edge_samples: Option<&mut Vec<usize>>,
-        deflection: &mut f64,
+        sampling: &mut BoundSampling,
     ) -> Result<Vec<Point2>, IoError> {
         #[cfg(test)]
         tests::count_planar_bound_sampling();
@@ -5208,8 +5243,9 @@ impl<'a> StepBuilder<'a> {
                         candidate.bound_ref
                     ),
                 })?;
-            let (mut edge_points, edge_deflection) = self.sample_bound_edge(edge, true)?;
-            *deflection = deflection.max(edge_deflection);
+            let (mut edge_points, edge_deflection) =
+                self.sample_bound_edge(edge, sampling.relative)?;
+            sampling.deflection = sampling.deflection.max(edge_deflection);
             charge_face_bound_samples(sampled_points, edge_points.len())?;
             if let Some(edge_samples) = edge_samples.as_mut() {
                 edge_samples.push(edge_points.len());
@@ -9443,6 +9479,19 @@ fn bounds_contain(outer: Aabb2, inner: Aabb2, margin: f64) -> bool {
 
 /// `parent_index` caches `parent`'s winding index across the children it is
 /// tested against; it is built only once a child passes the bounds gate.
+/// Whether two of `loops` have areas their chords, each within `deflection`
+/// of its curve, cannot order: a polygon's area moves by at most its
+/// perimeter times the deflection, so a smaller difference than the two
+/// perimeters' share could pick the wrong outer loop.
+fn planar_loop_areas_ambiguous(loops: &[FaceBoundLoop], deflection: f64) -> bool {
+    loops.iter().enumerate().any(|(index, first)| {
+        loops[index + 1..].iter().any(|second| {
+            (first.signed_area.abs() - second.signed_area.abs()).abs()
+                <= (first.perimeter + second.perimeter) * deflection
+        })
+    })
+}
+
 fn planar_loop_contains<'a>(
     parent: &'a FaceBoundLoop,
     parent_index: &mut Option<IndexedBoundPolygon<'a>>,
@@ -13131,6 +13180,10 @@ fn parse_bspline_curve_attrs(attrs: &str) -> Option<(usize, Vec<u64>, Vec<u32>, 
 mod directive_oracle_tests;
 
 #[cfg(test)]
+#[path = "reader/bound_sampling_tests.rs"]
+mod bound_sampling_tests;
+
+#[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -14228,7 +14281,7 @@ mod tests {
                     &frame,
                     &mut sampled_points,
                     None,
-                    &mut 0.0,
+                    &mut BoundSampling::new(true),
                 )
                 .unwrap();
             let inner = builder
@@ -14238,7 +14291,7 @@ mod tests {
                     &frame,
                     &mut sampled_points,
                     None,
-                    &mut 0.0,
+                    &mut BoundSampling::new(true),
                 )
                 .unwrap();
             assert_ne!(
