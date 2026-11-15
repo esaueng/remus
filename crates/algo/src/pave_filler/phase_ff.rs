@@ -3552,6 +3552,24 @@ fn restrict_curves_to_faces(
                 out.push(raw);
                 continue;
             };
+            // Sampling cannot tell a short real crossing from a graze. For a
+            // closed circle lying in a planar face of the pair it is decided
+            // exactly instead: two parallel r20 cylinders 39 apart meet each
+            // other's cap in a circle that enters the cap for a 26° arc,
+            // which neither sample density resolved, so the caps were never
+            // split and the fuse was refused (#1742).
+            if !nurbs_pair
+                && closed
+                && closed_circle_enters_plane_face(
+                    topo,
+                    [(fa, surf_a, ext_a), (fb, surf_b, ext_b)],
+                    &raw,
+                    tol,
+                )
+            {
+                out.push(raw);
+                continue;
+            }
             if n_fine <= N {
                 out.extend(rescue_corner_crossing(
                     topo, fa, fb, &raw, ext_a, ext_b, &inb, tol, junctions,
@@ -4729,6 +4747,57 @@ fn trim_torus_oval_to_box_face(
         return None;
     }
     Some(out_arcs)
+}
+
+/// Whether a closed section circle really crosses into the planar face of
+/// its pair, where the sampled graze test in [`restrict_curves_to_faces`]
+/// saw too short an in-both run to tell.
+///
+/// The plane face's loops are read against the circle exactly
+/// ([`plane_section_certificate::points_entered_through_outline`]): the
+/// circle must cross the outline and run inside it, clear of every hole,
+/// farther than the band from the loops, at a point the partner face's
+/// extent also holds. A tangency graze touches the outline without crossing
+/// it, or crosses only into the partner's margin band, and stays dropped.
+/// Pairs without exactly one planar face, and circles not lying in that
+/// face's plane, are left to the sampled test.
+fn closed_circle_enters_plane_face(
+    topo: &Topology,
+    faces: [(FaceId, &FaceSurface, &FaceExtent); 2],
+    raw: &RawCurve,
+    tol: Tolerance,
+) -> bool {
+    let EdgeCurve::Circle(circle) = &raw.curve else {
+        return false;
+    };
+    let [first, second] = faces;
+    let ((plane_face, normal, d), partner) = match (first.1, second.1) {
+        (FaceSurface::Plane { normal, d }, other)
+            if !matches!(other, FaceSurface::Plane { .. }) =>
+        {
+            ((first.0, *normal, *d), second.2)
+        }
+        (other, FaceSurface::Plane { normal, d })
+            if !matches!(other, FaceSurface::Plane { .. }) =>
+        {
+            ((second.0, *normal, *d), first.2)
+        }
+        _ => return false,
+    };
+    let length = normal.length();
+    if !length.is_finite() || length <= 0.0 {
+        return false;
+    }
+    let offset = (normal.dot(circle.center() - Point3::new(0.0, 0.0, 0.0)) - d) / length;
+    if offset.is_nan()
+        || offset.abs() > tol.linear
+        || circle.normal().cross(normal * (1.0 / length)).length() > tol.angular
+    {
+        return false;
+    }
+    plane_section_certificate::points_entered_through_outline(topo, plane_face, &raw.curve, tol)
+        .into_iter()
+        .any(|p| partner.contains(p))
 }
 
 /// Rescue a real-but-tiny corner crossing from the graze-drop.

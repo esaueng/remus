@@ -1606,6 +1606,60 @@ pub(super) fn certify_hole(
     (!certificate.coincident).then_some(certificate)
 }
 
+/// Points of a closed `section` lying in its plane's face `face`, one for
+/// each stretch of the section that runs inside the outline between two of
+/// its crossings: a gap of the outline's certificate decided inside, probed
+/// at its middle, and outside every hole of the face.
+///
+/// This is the exact form of "the section enters the face". A section that
+/// only touches the outline, runs along it, or stays on one side of it
+/// yields nothing; so does any face whose loops cannot all be read, or
+/// whose outline's sides do not alternate at its crossings. Each point lies
+/// farther than the band from the outline and from every hole.
+pub(super) fn points_entered_through_outline(
+    topo: &Topology,
+    face: FaceId,
+    section: &EdgeCurve,
+    tol: Tolerance,
+) -> Vec<Point3> {
+    let Some(conic) = SectionConic::of_curve(section) else {
+        return Vec::new();
+    };
+    let model = conic.tolerance(tol);
+    let [(u, _), (v, _)] = conic.axes;
+    let frame = PlaneFrame::from_normal_and_point(u.cross(v), conic.center);
+    let Ok(face_data) = topo.face(face) else {
+        return Vec::new();
+    };
+    let wire = face_data.outer_wire();
+    let Some(read) = read_loop(topo, wire, section, &conic, &frame, tol, model) else {
+        return Vec::new();
+    };
+    let outline = certify_loop(read, wire, &conic, &frame, model, None);
+    if outline.coincident || outline.crossings().next().is_none() || outline.alternates().is_err() {
+        return Vec::new();
+    }
+    let mut holes = Vec::with_capacity(face_data.inner_wires().len());
+    for &hole in face_data.inner_wires() {
+        let Some(read) = read_loop(topo, hole, section, &conic, &frame, tol, model) else {
+            return Vec::new();
+        };
+        holes.push(read.outline);
+    }
+    outline
+        .gaps
+        .iter()
+        .filter(|gap| gap.side == Some(true))
+        .map(|gap| conic.point(f64::midpoint(gap.span.lo, gap.span.hi)))
+        .filter(|&p| {
+            let uv = frame.project(p);
+            holes
+                .iter()
+                .all(|hole| loop_side(uv, hole, 0.5 * model.band) == Some(false))
+        })
+        .collect()
+}
+
 // ── The planar face ─────────────────────────────────────────────────────
 
 /// A closed section against every loop of the planar face it lies in.

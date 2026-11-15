@@ -977,3 +977,60 @@ fn a_vertex_on_a_hole_edge_that_is_no_crossing_is_refused() {
         "{error}"
     );
 }
+
+/// #1742: a section circle that crosses a disc's rim enters the disc along
+/// a lens arc however thin, and the point reported lies inside both circles;
+/// a tangent circle, one that misses, one that runs along the rim, one that
+/// stays inside, and one whose lens lies in a hole report nothing.
+#[test]
+fn a_thin_lens_crossing_enters_the_disc_and_a_tangency_does_not() {
+    const R: f64 = 20.0;
+    let tol = Tolerance::new();
+    let disc = |topo: &mut Topology, hole: Option<Circle3D>| {
+        let rim = Circle3D::new(Point3::new(0.0, 0.0, 0.0), Z, R).unwrap();
+        let outer = circle_wire(topo, &rim, true);
+        let inner = hole
+            .map(|hole| vec![circle_wire(topo, &hole, false)])
+            .unwrap_or_default();
+        topo.add_face(Face::new(outer, inner, plane_at(0.0)))
+    };
+    let section = |center: (f64, f64), r: f64| {
+        EdgeCurve::Circle(Circle3D::new(Point3::new(center.0, center.1, 0.0), Z, r).unwrap())
+    };
+    let direction = 37.0_f64.to_radians();
+    let along = |d: f64| (d * direction.cos(), d * direction.sin());
+
+    for d in [30.0, 39.0, 39.5, 39.9, 39.99, 39.999] {
+        let mut topo = Topology::new();
+        let face = disc(&mut topo, None);
+        let points = points_entered_through_outline(&topo, face, &section(along(d), R), tol);
+        assert_eq!(points.len(), 1, "d = {d}: {points:?}");
+        let p = points[0];
+        let (cx, cy) = along(d);
+        assert!(p.x().hypot(p.y()) < R, "d = {d}: {p:?} outside the disc");
+        assert!(
+            ((p.x() - cx).hypot(p.y() - cy) - R).abs() < 1e-9,
+            "d = {d}: {p:?} off the section"
+        );
+    }
+
+    for (what, center, r) in [
+        ("tangent", along(2.0 * R), R),
+        ("missing", along(2.0 * R + 1e-3), R),
+        ("along the rim", (0.0, 0.0), R),
+        ("inside", (3.0, -2.0), 5.0),
+    ] {
+        let mut topo = Topology::new();
+        let face = disc(&mut topo, None);
+        let points = points_entered_through_outline(&topo, face, &section(center, r), tol);
+        assert!(points.is_empty(), "{what}: {points:?}");
+    }
+
+    // The lens of the circle 39 away along +x lies about (19, 0); a hole
+    // there takes the only point the outline gives.
+    let mut topo = Topology::new();
+    let hole = Circle3D::new(Point3::new(19.0, 0.0, 0.0), Z, 0.5).unwrap();
+    let face = disc(&mut topo, Some(hole));
+    let points = points_entered_through_outline(&topo, face, &section((39.0, 0.0), R), tol);
+    assert!(points.is_empty(), "in a hole: {points:?}");
+}
