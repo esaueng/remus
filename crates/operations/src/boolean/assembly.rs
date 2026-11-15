@@ -1857,9 +1857,15 @@ pub(super) fn validate_boolean_result_with_tolerance(
     Ok(())
 }
 
-/// Whether two faces are one curved face closed by one planar face: every
-/// edge either joins the two faces, used once by each in opposite senses, or
-/// is a seam of the curved face, used twice by it in opposite senses.
+/// Whether two faces are one analytic curved face (cylinder, cone, sphere or
+/// torus) closed by one planar face: every edge either joins the two faces,
+/// used once by each in opposite effective senses, or is a seam of the curved
+/// face, used twice by it in opposite senses.
+///
+/// The curved face must be analytic, not merely non-`Plane`: a NURBS patch
+/// can be geometrically flat, and a flat patch coincident with the planar
+/// face would close on it as a zero-volume double sheet. None of the
+/// analytic curved surfaces can lie in a plane.
 fn is_planar_capped_curved_face(
     topo: &Topology,
     faces: &[remus_topology::face::FaceId],
@@ -1868,12 +1874,17 @@ fn is_planar_capped_curved_face(
         return Ok(false);
     };
     let (a, b) = (topo.face(*first)?, topo.face(*second)?);
-    let (plane, curved) = match (a.surface().is_planar(), b.surface().is_planar()) {
-        (true, false) => (*first, *second),
-        (false, true) => (*second, *first),
-        _ => return Ok(false),
+    let curved_analytic =
+        |surface: &remus_topology::face::FaceSurface| surface.as_analytic().is_some();
+    let (plane, curved) = if a.surface().is_planar() && curved_analytic(b.surface()) {
+        (*first, *second)
+    } else if b.surface().is_planar() && curved_analytic(a.surface()) {
+        (*second, *first)
+    } else {
+        return Ok(false);
     };
-    // Per edge: the (is planar face, is forward) of each use.
+    // Per edge: the (is planar face, effective sense) of each use. A face
+    // kept reversed (a cut's tool face) flips its stored edge senses.
     let mut uses: HashMap<usize, Vec<(bool, bool)>> = HashMap::default();
     for fid in [plane, curved] {
         let face = topo.face(fid)?;
@@ -1881,7 +1892,7 @@ fn is_planar_capped_curved_face(
             for oe in topo.wire(wid)?.edges() {
                 uses.entry(oe.edge().index())
                     .or_default()
-                    .push((fid == plane, oe.is_forward()));
+                    .push((fid == plane, oe.is_forward() != face.is_reversed()));
             }
         }
     }
@@ -1913,8 +1924,8 @@ fn validate_boolean_result_lenient_with_tolerance(
 
     // A closed shell bounded by planes alone needs at least four faces, and
     // MIN_SOLID_FACES (a cylinder) is the floor once one face is curved. One
-    // two-face solid is legitimate, though: a curved face closed by a single
-    // planar face, such as the spherical cap and disc a plane cuts from a
+    // two-face solid is legitimate, though: an analytic curved face closed by
+    // a single planar face, such as the spherical cap and disc a plane cuts from a
     // sphere (#1790). Only that shape is let through, and only when the two
     // faces close on each other with consistent orientation; any other
     // two-face result is still refused.

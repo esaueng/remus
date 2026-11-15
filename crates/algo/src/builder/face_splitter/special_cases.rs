@@ -3865,19 +3865,13 @@ pub(super) fn split_face_with_internal_loops(
             );
             // With nested holes the sub-face is an annulus, and the loop
             // centroid falls in the hole rather than on the kept material.
-            // On a cylinder/cone wall the centroid of a window cut into it
-            // lies off the wall altogether (inside the bore), where it says
-            // nothing about the window: search the loop's own region instead.
-            // The same holds on a sphere: a latitude loop's centroid is the
-            // centre of its circle, inside the ball, and a box ∩ sphere whose
-            // box plane cut the lower hemisphere classified the cap from that
-            // point on the box face and dropped it (esaueng/remus#1790).
-            let centroid = match nested_interior_by_loop[li] {
-                Some(interior) => interior,
-                None => cylinder_cone_loop_interior(surface, loop_edges)
-                    .or_else(|| sphere_closed_loop_interior(surface, loop_edges))
-                    .unwrap_or(centroid),
-            };
+            // On a cylinder, cone or sphere wall a loop's centroid lies off the
+            // wall (inside the bore or ball), where it says nothing about the
+            // region it bounds: search the loop's own region instead (#1790).
+            let centroid = nested_interior_by_loop[li]
+                .or_else(|| cylinder_cone_loop_interior(surface, loop_edges))
+                .or_else(|| sphere_closed_loop_interior(surface, loop_edges))
+                .unwrap_or(centroid);
             // Offset along the face normal by a small amount to ensure
             // the point is clearly inside the opposing solid (not on the
             // coplanar boundary). Use the surface normal direction.

@@ -147,3 +147,70 @@ fn intersect_is_the_lower_cap_closed_by_a_disc() {
         );
     }
 }
+
+/// A radius-2 sphere already cut above z = 1, then cut below z = -1. On main
+/// the second cut silently returned its input (volume of the top-trimmed
+/// sphere, not the slab): the ray-cast classifier approximates each sphere
+/// face by its boundary polygon, so it read the trimmed sphere's interior as
+/// outside and dropped the closing disc, while the centroid fallback kept the
+/// lower cap. With the cap now classified on the sphere, the dropped disc
+/// leaves an open shell and the exact-only boolean refuses. The cut must
+/// either refuse with the typed exact-only reason or build the slab.
+#[test]
+fn second_cut_of_a_trimmed_sphere_refuses_or_builds_the_slab() {
+    let mut topo = Topology::new();
+    let sphere = make_sphere(&mut topo, 2.0, 16).unwrap();
+    let above = make_box(&mut topo, 20.0, 20.0, 20.0).unwrap();
+    transform_solid(&mut topo, above, &Mat4::translation(-10.0, -10.0, 1.0)).unwrap();
+    let trimmed = boolean(&mut topo, BooleanOp::Cut, sphere, above).unwrap();
+    // The first cut is exact: the sphere less its cap of height 1.
+    let sphere_volume = 4.0 * PI * 8.0 / 3.0;
+    let cap = PI * 1.0 * (3.0 * 2.0 - 1.0) / 3.0;
+    assert_rel(
+        mass_properties(&topo, trimmed).unwrap().mass,
+        sphere_volume - cap,
+        "top-trimmed sphere",
+    );
+
+    let below = make_box(&mut topo, 20.0, 20.0, 20.0).unwrap();
+    transform_solid(&mut topo, below, &Mat4::translation(-10.0, -10.0, -21.0)).unwrap();
+    match boolean(&mut topo, BooleanOp::Cut, trimmed, below) {
+        Ok(slab) => assert_rel(
+            mass_properties(&topo, slab).unwrap().mass,
+            sphere_volume - 2.0 * cap,
+            "slab between z = -1 and z = 1",
+        ),
+        Err(error) => assert!(
+            matches!(
+                error,
+                remus_operations::OperationsError::ExactOnlyUnattainable
+            ),
+            "a refusal must be the typed exact-only one: {error:?}"
+        ),
+    }
+}
+
+/// The sphere as the object: a radius-2 sphere at the origin cut by a box
+/// covering everything above z = c, or intersected with one covering
+/// everything below it, keeps the cap below z = c. Below the centre that cap
+/// and the disc closing it are a two-face solid whose disc is the tool's face
+/// kept reversed (so its stored edge senses match the cap's), which the face-
+/// count gate must accept by effective sense.
+#[test]
+fn a_sphere_keeps_the_cap_below_a_box() {
+    let r = 2.0_f64;
+    for c in [-1.5, -1.0, -0.5, 0.5, 1.0] {
+        let h = c + r;
+        let want = PI * h * h * (3.0 * r - h) / 3.0;
+        for (op, floor) in [(BooleanOp::Cut, c), (BooleanOp::Intersect, c - 20.0)] {
+            let what = format!("{op:?} with the box from z = {floor}");
+            let mut topo = Topology::new();
+            let sphere = make_sphere(&mut topo, r, 16).unwrap();
+            let block = make_box(&mut topo, 20.0, 20.0, 20.0).unwrap();
+            transform_solid(&mut topo, block, &Mat4::translation(-10.0, -10.0, floor)).unwrap();
+            let body =
+                boolean(&mut topo, op, sphere, block).unwrap_or_else(|e| panic!("{what}: {e}"));
+            assert_rel(mass_properties(&topo, body).unwrap().mass, want, &what);
+        }
+    }
+}
