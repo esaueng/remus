@@ -1453,3 +1453,35 @@ fn zero_area_contact_shell_merge_is_not_an_internal_wall() {
         report.issues
     );
 }
+
+#[test]
+fn tilted_face_clear_of_its_neighbour_is_not_an_internal_wall() {
+    // Two faces with near-opposite normals whose planes both pass through the
+    // origin, so normals and offsets match, but one is tilted 1e-5 rad and sits
+    // 1e-5 to 2e-5 clear of the other over their projected overlap. Projected
+    // trim membership alone read that gap as a shared patch.
+    let mut topo = Topology::new();
+    let small = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+    crate::transform::transform_solid(
+        &mut topo,
+        small,
+        &remus_math::mat::Mat4::translation(1.0, 0.0, -1.0),
+    )
+    .unwrap();
+    let tilted = crate::primitives::make_box(&mut topo, 20.0, 1.0, 1.0).unwrap();
+    crate::transform::transform_solid(
+        &mut topo,
+        tilted,
+        &remus_math::mat::Mat4::translation(-10.0, 0.0, 0.0),
+    )
+    .unwrap();
+    crate::transform::transform_solid(&mut topo, tilted, &remus_math::mat::Mat4::rotation_y(-1e-5))
+        .unwrap();
+    let merged = crate::compound_ops::merge_disjoint_solids(&mut topo, &[small, tilted]).unwrap();
+    let report = validate_solid(&topo, merged).unwrap();
+    assert!(
+        !has_internal_wall_issue(&report),
+        "a 1e-5 gap is not a wall: {:?}",
+        report.issues
+    );
+}

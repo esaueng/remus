@@ -390,7 +390,8 @@ fn outer_components_materially_overlap(
 ///
 /// Points are triangle centroids of each face's own mesh, so they lie in that
 /// face's interior; a pair is a wall only when a centroid of one face is inside
-/// BOTH trims, by the exact line-and-circle trim test. A centroid strictly
+/// BOTH trims, by the exact line-and-circle trim test, and on both planes
+/// within linear tolerance. A centroid strictly
 /// inside one face and inside the other means an open patch of contact, so
 /// faces that meet only along an edge are never reported. The check adds an
 /// error, so whatever it cannot decide (curved trims, an unresolved ray event,
@@ -496,8 +497,19 @@ fn outer_components_internal_wall(
                 let Some(points) = samples(probe, bbox) else {
                     continue;
                 };
+                // The pair filter compares normals and one offset each, which a
+                // slightly tilted face through the same reference point passes
+                // while sitting clear of the other face. `PlanarTrim::contains`
+                // tests projected membership only, so a shared point must also
+                // lie on both planes.
+                let on_plane = |f: &PlanarFace, p: Point3| {
+                    (f.normal.dot(p - Point3::new(0.0, 0.0, 0.0)) - f.offset).abs() <= tol
+                };
                 if points.into_iter().any(|p| {
-                    matches!(trim_a.contains(p), Ok(true)) && matches!(trim_b.contains(p), Ok(true))
+                    on_plane(a, p)
+                        && on_plane(b, p)
+                        && matches!(trim_a.contains(p), Ok(true))
+                        && matches!(trim_b.contains(p), Ok(true))
                 }) {
                     return Ok(Some((a.face, b.face)));
                 }
