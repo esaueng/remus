@@ -2100,6 +2100,15 @@ pub(super) fn ear_clip_triangulate(points: &[remus_math::vec::Point2]) -> Option
                 }
                 point_tests += 1;
                 let point = points[candidate];
+                // An outline can pass through one vertex twice (a hole's rim
+                // touching the face boundary at a point). The other visit
+                // sits exactly on a corner of the ear: it is that corner,
+                // not a vertex inside the triangle. Counting it blocked every
+                // ear at the vertex, and the fan fallback then covered the
+                // hole with triangles whose signed areas cancel (#1739).
+                if point == points[previous] || point == points[current] || point == points[next] {
+                    continue;
+                }
                 let a = orient2d(points[previous], points[current], point);
                 let b = orient2d(points[current], points[next], point);
                 let c = orient2d(points[next], points[previous], point);

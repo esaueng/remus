@@ -148,7 +148,11 @@ does not itself promote or demote anything.
   1e-3 and unit tangent cells are exact, while the 1e3 tangent cell refuses
   under `ExactOnly` and succeeds only with disclosed approximation quality.
   Native, direct WASM, batch-v2, and versioned repro coverage all retain the
-  operand. The OpenZCAD cross-drilled shaft sequence is qualified at
+  operand. Since esaueng/remus#1739 the tangent Cut cell is refused at every
+  scale and under either fallback policy: its bore leaves a zero-thickness
+  wall along the contact line, which the earlier oracles (validation,
+  analytic surfaces, closed-form volume) could not see. The tangent Fuse
+  cell, a point contact, stays exact. The OpenZCAD cross-drilled shaft sequence is qualified at
   bore/shaft radius ratios 1, 2/3, and 1/3 and scales 0.1, 1, and 10:
   independent orthogonal-cylinder volume oracles match, and coarse/fine
   display meshes are non-empty, closed, and manifold through the deterministic

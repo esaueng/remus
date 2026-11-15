@@ -154,6 +154,11 @@ pub(super) fn try_store_local_boolean(
                 reason: "store-local result is not one connected shell".into(),
             });
         }
+        if super::tangent_contact::result_touches_itself_along_a_line(topo, a, b, result, tol)? {
+            return Err(crate::OperationsError::InvalidInput {
+                reason: "store-local result touches itself along a tangent line".into(),
+            });
+        }
         Ok::<_, crate::OperationsError>(result)
     });
     match attempt {

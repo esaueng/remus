@@ -126,6 +126,72 @@ fn concave_comb_planar_face_has_no_overlapping_triangles() {
     assert_eq!(ear_indices.len(), indices.len());
 }
 
+/// An outline that passes through one vertex twice: a 4×4 square whose left
+/// edge is touched at (0, 2) by a diamond-shaped opening, the outline running
+/// round the opening before it continues down the edge (the floor of a step
+/// touched by a drilled hole's rim, #1739). The region is the square less
+/// the diamond, 14 square units, and no triangle may lie in the opening. The
+/// ear clipper used to count the second visit of the vertex as a point
+/// inside every ear at it, and the fan fallback covered the opening with
+/// triangles whose signed areas cancel.
+#[test]
+fn planar_outline_through_one_vertex_twice_is_triangulated_around_its_opening() {
+    let outline = [
+        (0.0, 0.0),
+        (4.0, 0.0),
+        (4.0, 4.0),
+        (0.0, 4.0),
+        (0.0, 2.0),
+        (1.0, 3.0),
+        (2.0, 2.0),
+        (1.0, 1.0),
+        (0.0, 2.0),
+    ];
+    let positions: Vec<Point3> = outline
+        .iter()
+        .map(|&(x, y)| Point3::new(x, y, 0.0))
+        .collect();
+    let normal = Vec3::new(0.0, 0.0, 1.0);
+    let projected: Vec<_> = positions
+        .iter()
+        .map(|point| super::planar::project_by_normal(*point, normal))
+        .collect();
+
+    let ear_clipped = super::planar::ear_clip_triangulate(&projected);
+    assert!(
+        ear_clipped.is_some(),
+        "the outline is weakly simple and must ear-clip"
+    );
+    for (label, indices) in [
+        ("ear clipping", ear_clipped.unwrap()),
+        (
+            "face triangulation",
+            super::planar::cdt_triangulate_simple(&positions, normal),
+        ),
+    ] {
+        let mut area = 0.0;
+        for triangle in indices.chunks_exact(3) {
+            let [a, b, c] = [0, 1, 2].map(|k| positions[triangle[k] as usize]);
+            let signed = (b - a).cross(c - a).z() / 2.0;
+            assert!(
+                signed > 0.0,
+                "{label}: triangle {triangle:?} is not counter-clockwise"
+            );
+            area += signed;
+            // Inside the diamond |x − 1| + |y − 2| < 1 is the opening.
+            let (x, y) = ((a.x() + b.x() + c.x()) / 3.0, (a.y() + b.y() + c.y()) / 3.0);
+            assert!(
+                (x - 1.0).abs() + (y - 2.0).abs() >= 1.0,
+                "{label}: triangle {triangle:?} lies in the opening"
+            );
+        }
+        assert!(
+            (area - 14.0).abs() < 1e-12,
+            "{label}: triangles cover {area} square units of a 14-square-unit face"
+        );
+    }
+}
+
 #[test]
 fn planar_tessellation_rejects_excessive_circle_trim_sampling() {
     let mut topo = Topology::new();

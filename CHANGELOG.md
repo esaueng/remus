@@ -23,6 +23,36 @@ historical predecessor-line records, retained for provenance. The
   seams, bounded by the exact contact ellipses, with the stripe itself a
   NURBS surface (it has no closed form). Chamfering a loop over leaning
   rounds is still refused with `trimming-failure`.
+* **algo,operations:** an exact cut of a drilled hole tangent to a wall, or
+  crossing a fillet band, no longer depends on where the tool's seam sits
+  (#1739). A hole tangent to a wall from the inside leaves a wall of zero
+  thickness along a line; one orientation used to return it as `exact`,
+  touching itself with every edge on two faces and validation passing. An
+  exact result in which a tangent line of the two operands (a plane holding
+  a cylinder ruling, or two parallel cylinders touching) runs through the
+  interior of two faces of one piece is now refused, in both orientations and
+  under both policies: `exact-only policy` when exact-only, `non-manifold
+  result` otherwise, never an approximation. Two holes drilled tangent to
+  each other are refused the same way. **Behavior change:** this includes
+  a bore drilled exactly tangent to a blank's outer side (the tangent-boss
+  Cut cell of `regress_boss_crossing_a_wall.rs`, d/r = 0), which used to
+  return that body as exact; a bore any distance inside the side, down to
+  1e-7, and the tangent fuse are unchanged. A hole that touches a wall or a
+  fillet's spring line at one point is a solid and now builds exact in both
+  orientations: a rim whose own vertex is the touch point joins its face's
+  outline instead of becoming a hole wire that shares a vertex with it.
+  Holes crossing an R4 fillet band build exact at every position but the
+  wall tangency (x = 33, 34, 35 and 39 were refused): a section piece
+  ending one rounding step past a spline knot no longer fails the chart
+  certificate, and a cylinder patch whose sections meet at one point of its
+  boundary is split there.
+* **tessellate:** a planar face whose outline passes through one vertex
+  twice (a hole's rim touching the face boundary at a point) is triangulated
+  around its opening. The ear clipper counted the second visit of the vertex
+  as a point inside every ear at it, and the fan fallback covered the
+  opening with triangles whose signed areas cancel: the volume read right
+  while the mesh had an edge on four triangles. This affected the
+  point-contact cut that was already exact before #1739 as well.
 * **operations,wasm:** resizing a filleted boss through its blend group
   (`resizeCylindricalFace`, `resizeCylindricalFaceDetailed`) and resizing a
   band of such a group (`resizeBlend`) no longer refuse a group whose

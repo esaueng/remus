@@ -9,6 +9,7 @@ mod local_cut;
 mod material_witness;
 mod nary;
 mod store_local;
+mod tangent_contact;
 mod types;
 pub(crate) use assembly::{
     BoundaryCurveOverride, assemble_solid_mixed, assemble_solid_mixed_with_history,
@@ -222,6 +223,54 @@ fn exact_result_is_acceptable(
                     || intersect_multi_region_semantically_safe(topo, result, a, b, tol))))
         && (!dropped_chains
             || material_witness::material_witnesses_agree(topo, op, a, b, &[result], tol))
+        && free_of_tangent_line_contact(topo, a, b, result, tol)
+}
+
+/// Whether `result` keeps no line along which a face of `a` is tangent to a
+/// face of `b` inside two faces of one piece (see [`tangent_contact`]): such
+/// a boundary touches itself and is not a solid. A failed lookup accepts;
+/// the structural gates beside this one own malformed topology.
+fn free_of_tangent_line_contact(
+    topo: &Topology,
+    a: SolidId,
+    b: SolidId,
+    result: SolidId,
+    tol: remus_math::tolerance::Tolerance,
+) -> bool {
+    !tangent_contact::result_touches_itself_along_a_line(topo, a, b, result, tol).unwrap_or(false)
+}
+
+/// Refuse an otherwise accepted exact result that fails
+/// [`free_of_tangent_line_contact`].
+///
+/// The refusal is final under every policy. The mesh fallback has no better
+/// answer for a boundary that touches itself: it either welds the contact
+/// into non-manifold edges and errors, or leaves a sliver wall whose
+/// thickness is the tessellation's chord error, and which of the two
+/// depended on where the tool's seam happened to sit (#1739). An exact-only
+/// caller gets the policy's typed refusal, as for any pair the exact
+/// pipeline cannot build; a permissive caller gets the error the fallback
+/// reports for a welded contact.
+fn refuse_tangent_line_contact(
+    topo: &Topology,
+    a: SolidId,
+    b: SolidId,
+    result: SolidId,
+    context: &remus_math::context::OperationContext,
+) -> Result<(), crate::OperationsError> {
+    if free_of_tangent_line_contact(topo, a, b, result, context.tolerance) {
+        return Ok(());
+    }
+    log::warn!("exact boolean result refused: its boundary touches itself along a tangent line");
+    Err(match context.fallback {
+        remus_math::context::FallbackPolicy::ExactOnly => {
+            crate::OperationsError::ExactOnlyUnattainable
+        }
+        remus_math::context::FallbackPolicy::AllowApproximate { .. }
+        | remus_math::context::FallbackPolicy::ApproximateOnly { .. } => {
+            crate::OperationsError::NonManifoldResult
+        }
+    })
 }
 
 /// A failed certificate on an admitted chart cannot be repaired by material
@@ -1725,6 +1774,7 @@ fn boolean_with_context_impl(
                     && validate_boolean_result_with_tolerance(topo, result, tol).is_ok()
                     && material_ok(topo)
                 {
+                    refuse_tangent_line_contact(topo, a, b, result, context)?;
                     log::info!(
                         "GFA boolean succeeded in {:.1}ms ({result_faces} faces)",
                         timer_elapsed_ms(gfa_start)
@@ -1829,6 +1879,7 @@ fn boolean_with_context_impl(
                     && validate_boolean_result_with_tolerance(topo, result, tol).is_ok()
                     && material_ok(topo)
                 {
+                    refuse_tangent_line_contact(topo, a, b, result, context)?;
                     log::info!(
                         "GFA multi-region succeeded in {:.1}ms ({result_faces} faces, {components} pieces)",
                         timer_elapsed_ms(gfa_start)
@@ -7732,6 +7783,8 @@ mod local_cut_tests;
 mod nway_pairs_tests;
 #[cfg(test)]
 mod store_local_tests;
+#[cfg(test)]
+mod tangent_contact_tests;
 #[cfg(test)]
 mod tests;
 

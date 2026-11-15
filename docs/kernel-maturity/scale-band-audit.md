@@ -111,7 +111,9 @@ result and unchanged operand geometry; the other refusal/rollback tests remain.
   interior anchors near the endpoints and near one another. The existing
   tangent-boss Fuse/Cut matrix now also passes exactly at 1e3 scale; its
   former refusal expectation is replaced by the same watertightness, analytic
-  surface, and 1e-9 closed-form volume oracles used at smaller scales.
+  surface, and 1e-9 closed-form volume oracles used at smaller scales. The
+  Cut cell at exact tangency is the exception since esaueng/remus#1739: it
+  leaves a zero-thickness wall and is refused at all three scales.
 - Curved and periodic face bands, including the cases where endpoint bounds
   do not represent the carrier's extent.
 - Further anisotropic and embedded-feature families beyond the declared box/tool
