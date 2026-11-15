@@ -198,6 +198,7 @@ Quick reference — find the right file for any task:
 | CDT (constrained Delaunay) | `cdt/` (mod, insert, locate, constraints, collinear, adjacency, tests, tests/collinear_index, tests/flood_batch, tests/hole_grid, tests/off_axis_cap, tests/u_bracket_floor) |
 | Exact integer in-circle sign for the CDT's undecided (cocircular) tests | `cdt/incircle.rs` |
 | Differential oracles for the integer in-circle sign and the scanned duplicate lookup against `robust::incircle` and the eager grid (tests) | `cdt/tests/predicate_oracle.rs` |
+| Differential oracle for constraint recovery: every CDT built again with the directed walk taken after `edge_exists` and the queue's crossings scanned from every triangle (`LEGACY_RECOVERY`), compared vertex, triangle and constraint for constraint on a cylinder-wall chart with sparse seams, random CDTs and the captured caps; fan and walk work counts (tests) | `cdt/tests/recovery_oracle.rs` |
 | Convex hull | `convex_hull.rs` |
 | Filtered exact predicates | `filtered.rs` |
 | Float tolerance | `tolerance.rs` |
