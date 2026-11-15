@@ -4289,14 +4289,32 @@ impl<'a> StepBuilder<'a> {
             }
             return Ok(bound.shape);
         }
-        let polygon = self.sample_planar_bound(
+        // Absolute first, as the classification samples; relative only for a
+        // bound the absolute deflection cannot sample within budget.
+        let mut absolute_points = *sampled_points;
+        let polygon = match self.sample_planar_bound(
             face_ref,
             candidate,
             frame,
-            sampled_points,
+            &mut absolute_points,
             None,
-            &mut BoundSampling::new(true),
-        )?;
+            &mut BoundSampling::new(false),
+        ) {
+            Ok(polygon) => {
+                *sampled_points = absolute_points;
+                polygon
+            }
+            Err(absolute_error) => self
+                .sample_planar_bound(
+                    face_ref,
+                    candidate,
+                    frame,
+                    sampled_points,
+                    None,
+                    &mut BoundSampling::new(true),
+                )
+                .map_err(|_| absolute_error)?,
+        };
         Ok(PlanarBoundShape::of(&polygon))
     }
 
@@ -4401,80 +4419,96 @@ impl<'a> StepBuilder<'a> {
                 ),
             })?;
 
-        // Sample every loop relative to its edges first. If that leaves two
-        // loops whose areas the coarser chords cannot order (their difference
-        // within the loops' perimeters times the deflection), sample again at
-        // the absolute deflection, so such a face classifies exactly as it
-        // always has.
-        let mut relative = true;
+        // Sample every loop at the absolute deflection first, exactly as this
+        // reader always has. Only a face that refuses there (a long curved
+        // bound past the sampling budget) is sampled again relative to its
+        // edges, and even then is refused rather than classified when two
+        // loops' areas lie within the coarser chords' reach of each other.
+        // A face the absolute pass reads is therefore classified bit for bit
+        // as before.
+        let mut absolute_error = None;
+        let mut passes = [false, true].into_iter();
         let (loops, edge_samples, deflection) = loop {
-            let mut loops = Vec::with_capacity(candidates.len());
-            let mut edge_samples = Vec::with_capacity(candidates.len());
-            let mut sampled_points = 0;
-            let mut sampling = BoundSampling::new(relative);
-            for (candidate_index, candidate) in candidates.iter().enumerate() {
-                let mut bound_edge_samples = Vec::new();
-                let polygon = self.sample_planar_bound(
-                    face_ref,
-                    *candidate,
-                    &frame,
-                    &mut sampled_points,
-                    Some(&mut bound_edge_samples),
-                    &mut sampling,
-                )?;
-                edge_samples.push(bound_edge_samples);
-                let bounds = Aabb2::try_from_points(polygon.iter().copied()).ok_or_else(|| {
-                    IoError::ParseError {
-                        reason: format!(
-                            "ADVANCED_FACE #{face_ref} bound #{} at position {} has no sampled points",
-                            candidate.bound_ref, candidate.source_position
-                        ),
+            let Some(relative) = passes.next() else {
+                return Err(absolute_error.unwrap_or_else(|| IoError::ParseError {
+                    reason: format!("ADVANCED_FACE #{face_ref} bounds could not be sampled"),
+                }));
+            };
+            let attempt = (|| -> Result<_, IoError> {
+                let mut loops = Vec::with_capacity(candidates.len());
+                let mut edge_samples = Vec::with_capacity(candidates.len());
+                let mut sampled_points = 0;
+                let mut sampling = BoundSampling::new(relative);
+                for (candidate_index, candidate) in candidates.iter().enumerate() {
+                    let mut bound_edge_samples = Vec::new();
+                    let polygon = self.sample_planar_bound(
+                        face_ref,
+                        *candidate,
+                        &frame,
+                        &mut sampled_points,
+                        Some(&mut bound_edge_samples),
+                        &mut sampling,
+                    )?;
+                    edge_samples.push(bound_edge_samples);
+                    let bounds = Aabb2::try_from_points(polygon.iter().copied()).ok_or_else(|| {
+                        IoError::ParseError {
+                            reason: format!(
+                                "ADVANCED_FACE #{face_ref} bound #{} at position {} has no sampled points",
+                                candidate.bound_ref, candidate.source_position
+                            ),
+                        }
+                    })?;
+                    let signed_area = polygon_signed_area(&polygon);
+                    let perimeter = polygon_perimeter(&polygon);
+                    if polygon.len() < 3
+                        || !signed_area.is_finite()
+                        || !perimeter.is_finite()
+                        || perimeter <= tol.linear
+                        || signed_area.abs() <= perimeter * tol.linear
+                    {
+                        return Err(IoError::ParseError {
+                            reason: format!(
+                                "ADVANCED_FACE #{face_ref} bound #{} at position {} is degenerate for \
+                                 planar outer-loop classification",
+                                candidate.bound_ref, candidate.source_position
+                            ),
+                        });
                     }
-                })?;
-                let signed_area = polygon_signed_area(&polygon);
-                let perimeter = polygon_perimeter(&polygon);
-                if polygon.len() < 3
-                    || !signed_area.is_finite()
-                    || !perimeter.is_finite()
-                    || perimeter <= tol.linear
-                    || signed_area.abs() <= perimeter * tol.linear
-                {
-                    return Err(IoError::ParseError {
-                        reason: format!(
-                            "ADVANCED_FACE #{face_ref} bound #{} at position {} is degenerate for \
-                             planar outer-loop classification",
-                            candidate.bound_ref, candidate.source_position
-                        ),
+                    let probe = polygon_interior_probe(&polygon, bounds).ok_or_else(|| {
+                        IoError::ParseError {
+                            reason: format!(
+                                "ADVANCED_FACE #{face_ref} bound #{} at position {} has no reliable \
+                                 planar interior probe",
+                                candidate.bound_ref, candidate.source_position
+                            ),
+                        }
+                    })?;
+                    loops.push(FaceBoundLoop {
+                        candidate_index,
+                        polygon,
+                        bounds,
+                        signed_area,
+                        perimeter,
+                        probe,
+                        seam_flexible_u: false,
+                        seam_flexible_v: false,
                     });
                 }
-                let probe = polygon_interior_probe(&polygon, bounds).ok_or_else(|| {
-                    IoError::ParseError {
-                        reason: format!(
-                            "ADVANCED_FACE #{face_ref} bound #{} at position {} has no reliable \
-                             planar interior probe",
-                            candidate.bound_ref, candidate.source_position
-                        ),
+                Ok((loops, edge_samples, sampling.deflection))
+            })();
+            match attempt {
+                Ok((loops, edge_samples, deflection)) => {
+                    if relative && planar_loop_areas_ambiguous(&loops, deflection) {
+                        continue;
                     }
-                })?;
-                loops.push(FaceBoundLoop {
-                    candidate_index,
-                    polygon,
-                    bounds,
-                    signed_area,
-                    perimeter,
-                    probe,
-                    seam_flexible_u: false,
-                    seam_flexible_v: false,
-                });
+                    break (loops, edge_samples, deflection);
+                }
+                Err(error) => {
+                    if absolute_error.is_none() {
+                        absolute_error = Some(error);
+                    }
+                }
             }
-            if relative
-                && sampling.deflection > FACE_BOUND_CLASSIFICATION_DEFLECTION
-                && planar_loop_areas_ambiguous(&loops, sampling.deflection)
-            {
-                relative = false;
-                continue;
-            }
-            break (loops, edge_samples, sampling.deflection);
         };
 
         // Every loop's chords lie within `deflection` of its curve.
@@ -9479,10 +9513,11 @@ fn bounds_contain(outer: Aabb2, inner: Aabb2, margin: f64) -> bool {
 
 /// `parent_index` caches `parent`'s winding index across the children it is
 /// tested against; it is built only once a child passes the bounds gate.
-/// Whether two of `loops` have areas their chords, each within `deflection`
-/// of its curve, cannot order: a polygon's area moves by at most its
-/// perimeter times the deflection, so a smaller difference than the two
-/// perimeters' share could pick the wrong outer loop.
+/// Whether two of `loops` have areas within their perimeters times
+/// `deflection` of each other: the guard under which the relative pass,
+/// which only runs for a face the absolute pass could not sample, refuses
+/// instead of classifying. It is a conservative screen for convex-ish trims,
+/// not a general certificate; faces the absolute pass reads never reach it.
 fn planar_loop_areas_ambiguous(loops: &[FaceBoundLoop], deflection: f64) -> bool {
     loops.iter().enumerate().any(|(index, first)| {
         loops[index + 1..].iter().any(|second| {
