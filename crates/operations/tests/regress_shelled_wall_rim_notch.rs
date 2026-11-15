@@ -809,18 +809,16 @@ fn assert_mesh_geometry_at(
     // A named tangent line is a zero-thickness contact, which validation
     // reports (#1739); every other error still fails, and an exact result
     // (no named line) must validate outright.
-    let errors: Vec<_> = report
-        .issues
-        .iter()
-        .filter(|issue| {
-            !(!tangent_lines.is_empty()
-                && issue
-                    .description
-                    .contains("touch along a line inside both faces"))
-        })
-        .filter(|issue| issue.severity == remus_operations::validate::Severity::Error)
-        .collect();
-    assert!(errors.is_empty(), "{what}: {:?}", report.issues);
+    let named_contact = |issue: &&remus_operations::validate::ValidationIssue| {
+        !tangent_lines.is_empty()
+            && issue
+                .description
+                .contains("touch along a line inside both faces")
+    };
+    let failed = report.issues.iter().any(|issue| {
+        issue.severity == remus_operations::validate::Severity::Error && !named_contact(&issue)
+    });
+    assert!(!failed, "{what}: {:?}", report.issues);
     for &deflection in deflections {
         // `tessellate_solid`'s mesh, with each face's triangles together.
         let (mesh, face_offsets) = tessellate_solid_grouped_with_tolerance(
