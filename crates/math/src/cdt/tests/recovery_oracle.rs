@@ -155,16 +155,17 @@ fn assert_same(
         let _legacy = Legacy::set();
         build(points, constraints, outer)
     };
+    assert_eq!(
+        current.is_ok(),
+        legacy.is_ok(),
+        "{what}: only one recovery failed"
+    );
     match (current, legacy) {
         (Ok(current), Ok(legacy)) => assert!(current == legacy, "{what}: triangulations differ"),
         (Err(current), Err(legacy)) => {
             assert_eq!(current.to_string(), legacy.to_string(), "{what}");
         }
-        (current, legacy) => panic!(
-            "{what}: one recovery failed: current ok {}, legacy ok {}",
-            current.is_ok(),
-            legacy.is_ok()
-        ),
+        _ => {}
     }
     (current_work, legacy_work)
 }
@@ -264,7 +265,7 @@ fn a_wall_chart_with_sparse_seams_matches_and_walks_little() {
 #[test]
 fn random_cdts_match_the_legacy_recovery() {
     let p = Point2::new;
-    let mut rng = Rng(0x5EED_CD7);
+    let mut rng = Rng(0x5EED_0CD7);
     let mut corridor_answers = 0_usize;
     let mut legacy_scans = 0_usize;
     for case in 0..300 {
