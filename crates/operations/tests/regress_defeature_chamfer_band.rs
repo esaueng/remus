@@ -11,6 +11,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use remus_math::compact_sort::CompactSort;
 use remus_math::mat::Mat4;
 use remus_operations::blend_ops::chamfer_v2;
 use remus_operations::boolean::{BooleanOp, boolean};
@@ -74,7 +75,7 @@ fn assert_restores(topo: &Topology, healed: SolidId, expected: SolidId) {
             .into_iter()
             .map(|face| topo.face(face).unwrap().surface().type_tag())
             .collect();
-        kinds.sort_unstable();
+        kinds.compact_sort_unstable();
         kinds
     };
     assert_eq!(kinds(healed), kinds(expected));
