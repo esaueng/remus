@@ -732,7 +732,7 @@ pub fn cut_thread(
 /// [`MAX_DEFAULT_TOLERANCE`] or finer. Where a fit cannot hold that within
 /// its span limit, the thread is built at the whole
 /// [`DEFAULT_TOLERANCE_PER_PITCH`] of the pitch instead, under the same
-/// check of its stored tolerances; if that leaves an edge over the cap, the
+/// check of its stored tolerances; if that attempt fails for any reason, the
 /// first refusal stands.
 fn cut_thread_joined(
     topo: &mut Topology,
@@ -752,20 +752,15 @@ fn cut_thread_joined(
     let capped = default_tolerance(form.pitch);
     let whole = DEFAULT_TOLERANCE_PER_PITCH * form.pitch;
     match cut_thread_at(topo, solid, face, form, &at(capped), try_glue) {
-        Err(ThreadError::Refused {
-            code: ThreadRefusal::ToleranceTooTight,
-            reason,
-        }) if whole > capped => {
-            match cut_thread_at(topo, solid, face, form, &at(whole), try_glue) {
-                Err(ThreadError::Refused {
-                    code: ThreadRefusal::ToleranceTooLoose,
-                    ..
-                }) => Err(ThreadError::refused(
-                    ThreadRefusal::ToleranceTooTight,
-                    reason,
-                )),
-                result => result,
-            }
+        // Whatever stops the retry, the caller asked for a default thread
+        // and the capped attempt's refusal is the one that describes it.
+        Err(
+            first @ ThreadError::Refused {
+                code: ThreadRefusal::ToleranceTooTight,
+                ..
+            },
+        ) if whole > capped => {
+            cut_thread_at(topo, solid, face, form, &at(whole), try_glue).map_err(|_| first)
         }
         result => result,
     }

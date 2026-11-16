@@ -2945,6 +2945,33 @@ fn a_default_thread_the_capped_tolerance_cannot_fit_builds_at_the_whole_one() {
         default_edge.to_bits(),
         stored_tolerances(&topo, explicit.solid).0.to_bits()
     );
+
+    // A retry that fails for another reason (here the whole tolerance fits
+    // the trims, but the thread turns past the turn limit) leaves the
+    // capped attempt's refusal standing, reason and all.
+    let tall = 650.0;
+    let (_, capped) = shallow_chamfer(pitch, slope, tall, Some(MAX_DEFAULT_TOLERANCE));
+    let Err(ThreadError::Refused { code, reason }) = capped else {
+        panic!("a {tall} tall thread at {MAX_DEFAULT_TOLERANCE} must refuse");
+    };
+    assert_eq!(code, ThreadRefusal::ToleranceTooTight, "{reason}");
+    let (_, retried) = shallow_chamfer(pitch, slope, tall, Some(whole));
+    match retried {
+        Err(ThreadError::Refused {
+            code: retry_code, ..
+        }) => assert_ne!(retry_code, ThreadRefusal::ToleranceTooTight),
+        Err(_) => {}
+        Ok(_) => panic!("the whole tolerance must fail here"),
+    }
+    let (_, default) = shallow_chamfer(pitch, slope, tall, None);
+    match default {
+        Err(ThreadError::Refused {
+            code: default_code,
+            reason: default_reason,
+        }) => assert_eq!((default_code, default_reason), (code, reason)),
+        Err(other) => panic!("a {tall} tall default thread: {other}"),
+        Ok(_) => panic!("a {tall} tall default thread must refuse"),
+    }
 }
 
 /// Over shallow chamfers and fine pitches the default builds every thread
