@@ -991,7 +991,7 @@ fn describe_chamfer_band(
         (FaceSurface::Plane { .. }, FaceSurface::Cylinder(_))
             | (FaceSurface::Cylinder(_), FaceSurface::Plane { .. })
     );
-    if !plane_and_cylinder {
+    if !plane_and_cylinder || !chamfer_supports_only_grow(topo, &contacts)? {
         return Ok(None);
     }
     Ok(Some(BandDescription {
@@ -999,6 +999,76 @@ fn describe_chamfer_band(
         supports,
         radius: 0.0,
     }))
+}
+
+/// Whether removing the cone band only grows its two supports.
+///
+/// Deleting a chamfer runs the plane on to the cylinder and the cylinder on
+/// to the plane, each across the band. A cone that flares a stem out into a
+/// wider face is no chamfer: rebuilding its sharp rim would shrink that face
+/// and strand whatever it carries in the cut-away annulus (a hole, a boss),
+/// leaving an invalid solid. So the plane's sharp rim (the cylinder radius)
+/// must lie on the band's side of its contact circle — outside a contact that
+/// bounds the plane's outer loop, inside one that bounds an inner loop — and
+/// the cylinder must lie entirely on the far side of its contact circle from
+/// the plane.
+fn chamfer_supports_only_grow(
+    topo: &Topology,
+    contacts: &[(EdgeId, FaceId)],
+) -> Result<bool, OperationsError> {
+    let tolerance = Tolerance::new().linear;
+    let mut plane = None;
+    let mut cylinder = None;
+    for &(edge, face) in contacts {
+        match topo.face(face)?.surface() {
+            FaceSurface::Plane { .. } => plane = Some((edge, face)),
+            FaceSurface::Cylinder(surface) => cylinder = Some((edge, face, surface.clone())),
+            FaceSurface::Nurbs(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_) => return Ok(false),
+        }
+    }
+    let (Some((plane_edge, plane_face)), Some((cylinder_edge, cylinder_face, surface))) =
+        (plane, cylinder)
+    else {
+        return Ok(false);
+    };
+    let EdgeCurve::Circle(plane_rim) = topo.edge(plane_edge)?.curve() else {
+        return Ok(false);
+    };
+    let EdgeCurve::Circle(cylinder_rim) = topo.edge(cylinder_edge)?.curve() else {
+        return Ok(false);
+    };
+    let Ok(axis) = surface.axis().normalize() else {
+        return Ok(false);
+    };
+    let axial = |point: Point3| (point - surface.origin()).dot(axis);
+
+    let bounds_outer_loop = topo
+        .wire(topo.face(plane_face)?.outer_wire())?
+        .edges()
+        .iter()
+        .any(|oriented| oriented.edge() == plane_edge);
+    let plane_grows = if bounds_outer_loop {
+        surface.radius() > plane_rim.radius() + tolerance
+    } else {
+        surface.radius() < plane_rim.radius() - tolerance
+    };
+
+    let contact_height = axial(cylinder_rim.center());
+    let toward_plane = axial(plane_rim.center()) - contact_height;
+    if toward_plane.abs() <= tolerance {
+        return Ok(false);
+    }
+    let mut cylinder_grows = true;
+    for vertex in remus_topology::explorer::face_vertices(topo, cylinder_face)? {
+        let along = axial(topo.vertex(vertex)?.point()) - contact_height;
+        if along * toward_plane.signum() > tolerance {
+            cylinder_grows = false;
+        }
+    }
+    Ok(plane_grows && cylinder_grows)
 }
 
 fn describe_band(

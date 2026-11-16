@@ -17,7 +17,7 @@ use remus_operations::blend_ops::chamfer_v2;
 use remus_operations::boolean::{BooleanOp, boolean};
 use remus_operations::defeature::{defeature, defeature_with_evolution};
 use remus_operations::measure::solid_volume;
-use remus_operations::primitives::{make_box, make_cylinder};
+use remus_operations::primitives::{make_box, make_cone, make_cylinder};
 use remus_operations::transform::transform_solid;
 use remus_operations::validate::validate_solid;
 use remus_topology::Topology;
@@ -201,4 +201,36 @@ fn a_chamfer_band_selected_with_its_support_keeps_the_old_logic() {
         Err(error) => assert!(!error.to_string().is_empty(), "a refusal names its reason"),
     }
     assert!(validate_solid(&topo, chamfered).unwrap().is_valid());
+}
+
+#[test]
+fn a_flared_stem_is_not_a_chamfer_and_is_refused_unchanged() {
+    // A radius-4 stem flaring out to a radius-6 top face, with a small blind
+    // hole in the top face's outer annulus. Rebuilding a "sharp rim" here would
+    // shrink the top face to radius 4 and strand the hole outside it, so the
+    // cone must not be treated as a chamfer band: the removal refuses and the
+    // input is left as it was.
+    let mut topo = Topology::new();
+    let stem = make_cylinder(&mut topo, 4.0, 5.0).unwrap();
+    let flare = make_cone(&mut topo, 4.0, 6.0, 2.0).unwrap();
+    translate(&mut topo, flare, 0.0, 0.0, 5.0);
+    let flared = boolean(&mut topo, BooleanOp::Fuse, stem, flare).unwrap();
+    let pin = make_cylinder(&mut topo, 0.25, 1.0).unwrap();
+    translate(&mut topo, pin, 5.0, 0.0, 6.5);
+    let drilled = boolean(&mut topo, BooleanOp::Cut, flared, pin).unwrap();
+    let band = cones(&topo, drilled);
+    assert_eq!(band.len(), 1, "one flaring cone");
+    let faces_before = solid_faces(&topo, drilled).unwrap().len();
+    let volume_before = solid_volume(&topo, drilled, 0.01).unwrap();
+
+    assert!(
+        defeature(&mut topo, drilled, &band).is_err(),
+        "a flare is refused, never rebuilt into a shrunken top face"
+    );
+    assert!(validate_solid(&topo, drilled).unwrap().is_valid());
+    assert_eq!(solid_faces(&topo, drilled).unwrap().len(), faces_before);
+    assert!(
+        (solid_volume(&topo, drilled, 0.01).unwrap() - volume_before).abs()
+            <= volume_before * 1e-12
+    );
 }
