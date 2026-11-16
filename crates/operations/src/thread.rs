@@ -58,13 +58,14 @@ mod runout;
 
 use std::f64::consts::{PI, TAU};
 
+use remus_math::context::DEFAULT_MAX_ENTITY_TOLERANCE;
 use remus_math::curves::Circle3D;
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::builder::make_circle_edge_with_ref;
 use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
-use remus_topology::explorer::solid_faces;
+use remus_topology::explorer::{solid_edges, solid_faces, solid_vertices};
 use remus_topology::face::{Face, FaceId, FaceSurface};
 use remus_topology::solid::SolidId;
 use remus_topology::vertex::Vertex;
@@ -76,8 +77,30 @@ use crate::classify::{PointClassification, classify_point};
 use crate::extrude::conical_twist::RadialNets;
 use profile::{PieceRole, Segment};
 
-/// Default thread tolerance as a fraction of the pitch.
+/// Default thread tolerance as a fraction of the pitch, up to
+/// [`MAX_DEFAULT_TOLERANCE`].
 pub const DEFAULT_TOLERANCE_PER_PITCH: f64 = 1e-4;
+
+/// Largest default thread tolerance, half of
+/// [`DEFAULT_MAX_ENTITY_TOLERANCE`]: what a pitch of `0.5` gets, and every
+/// coarser one whose fits hold it within their span limits.
+///
+/// The thread's edges hold their proven distance from the exact thread as
+/// their tolerance, and no edge of a solid may hold more than
+/// [`DEFAULT_MAX_ENTITY_TOLERANCE`]: the arena document refuses to read one
+/// back, so nothing could export the body. A helix holds up to half the
+/// thread tolerance (the screw fit's share), and a flank trim of a chamfer
+/// or runout up to three halves of it (the outline fit, the screw fit and
+/// its own, half the tolerance each), which at this default is three
+/// quarters of the cap. A caller's own tolerance is used as given, and
+/// refuses with [`ThreadRefusal::ToleranceTooLoose`] when an edge would
+/// pass the cap.
+///
+/// A coarser thread whose fits cannot hold this within their span limits
+/// (a flank trim that turns many times under a shallow chamfer) is built by
+/// default at the whole [`DEFAULT_TOLERANCE_PER_PITCH`] of its pitch
+/// instead, when every edge then stays within the cap.
+pub const MAX_DEFAULT_TOLERANCE: f64 = 5e-5;
 
 /// Largest supported number of starts.
 pub const MAX_THREAD_STARTS: u32 = 16;
@@ -419,7 +442,11 @@ pub struct CylinderThreadOptions {
     /// radians.
     pub phase: f64,
     /// Bound on the swept surfaces' distance from the exact thread; `None`
-    /// uses [`DEFAULT_TOLERANCE_PER_PITCH`] of the pitch.
+    /// uses [`DEFAULT_TOLERANCE_PER_PITCH`] of the pitch, at most
+    /// [`MAX_DEFAULT_TOLERANCE`] where the span limits allow that (see
+    /// there). One so loose that an edge of the thread would hold more than
+    /// [`DEFAULT_MAX_ENTITY_TOLERANCE`] refuses with
+    /// [`ThreadRefusal::ToleranceTooLoose`].
     pub tolerance: Option<f64>,
     /// Finish of the thread's start (the end nearer the face's start). A
     /// [`ThreadEnd::Chamfer`] becomes a runout when `offset` leaves a collar
@@ -533,6 +560,9 @@ pub enum ThreadRefusal {
     TooDeep,
     /// The tolerance needs more spans than allowed.
     ToleranceTooTight,
+    /// The tolerance leaves an edge of the thread farther from the exact
+    /// thread than an edge of a solid may be.
+    ToleranceTooLoose,
     /// A hole, slot or other feature crosses the band the thread rebuilds.
     FeaturesInThreadRegion,
     /// The chamfers or runouts of the two ends reach past each other.
@@ -558,6 +588,7 @@ impl ThreadRefusal {
             Self::BoreTooLarge => "bore-too-large",
             Self::TooDeep => "too-deep",
             Self::ToleranceTooTight => "tolerance-too-tight",
+            Self::ToleranceTooLoose => "tolerance-too-loose",
             Self::FeaturesInThreadRegion => "features-in-thread-region",
             Self::EndsOverlap => "ends-overlap",
             Self::FinishTooLong => "finish-too-long",
@@ -696,8 +727,48 @@ pub fn cut_thread(
 /// [`cut_thread`], putting the ring on by the glue where it applies
 /// (`try_glue`) or always by the fuse, which the tests use to reach the
 /// fuse fallback.
-#[allow(clippy::too_many_lines)]
+///
+/// Without a tolerance from the caller the thread is built at
+/// [`MAX_DEFAULT_TOLERANCE`] or finer. Where a fit cannot hold that within
+/// its span limit, the thread is built at the whole
+/// [`DEFAULT_TOLERANCE_PER_PITCH`] of the pitch instead, under the same
+/// check of its stored tolerances; if that attempt fails for any reason, the
+/// first refusal stands.
 fn cut_thread_joined(
+    topo: &mut Topology,
+    solid: SolidId,
+    face: FaceId,
+    form: &ThreadForm,
+    options: &CylinderThreadOptions,
+    try_glue: bool,
+) -> Result<ThreadOutcome, ThreadError> {
+    if options.tolerance.is_some() {
+        return cut_thread_at(topo, solid, face, form, options, try_glue);
+    }
+    let at = |tolerance: f64| CylinderThreadOptions {
+        tolerance: Some(tolerance),
+        ..options.clone()
+    };
+    let capped = default_tolerance(form.pitch);
+    let whole = DEFAULT_TOLERANCE_PER_PITCH * form.pitch;
+    match cut_thread_at(topo, solid, face, form, &at(capped), try_glue) {
+        // Whatever stops the retry, the caller asked for a default thread
+        // and the capped attempt's refusal is the one that describes it.
+        Err(
+            first @ ThreadError::Refused {
+                code: ThreadRefusal::ToleranceTooTight,
+                ..
+            },
+        ) if whole > capped => {
+            cut_thread_at(topo, solid, face, form, &at(whole), try_glue).map_err(|_| first)
+        }
+        result => result,
+    }
+}
+
+/// [`cut_thread_joined`] at the tolerance in `options`.
+#[allow(clippy::too_many_lines)]
+fn cut_thread_at(
     topo: &mut Topology,
     solid: SolidId,
     face: FaceId,
@@ -999,7 +1070,7 @@ fn cut_thread_joined(
     let frame = Frame::new(cylinder.origin() + axis * start, axis, reference)?;
     let tolerance = options
         .tolerance
-        .unwrap_or(DEFAULT_TOLERANCE_PER_PITCH * form.pitch);
+        .unwrap_or_else(|| default_tolerance(form.pitch));
 
     remus_topology::transaction::run_transacted(topo, |topo| {
         // The rebuilt band must be solid material in the input.
@@ -1046,6 +1117,7 @@ fn cut_thread_joined(
             0.5 * tolerance,
             ends,
         )?;
+        require_storable_tolerances(topo, ring.solid, tolerance)?;
         let twist = ring.spans;
         let ring_bound = ring.deviation_bound;
         let outline_bound = ring.outline_bound;
@@ -1125,6 +1197,42 @@ fn cut_thread_joined(
     })
 }
 
+/// The thread tolerance for a pitch when the caller gives none.
+fn default_tolerance(pitch: f64) -> f64 {
+    (DEFAULT_TOLERANCE_PER_PITCH * pitch).min(MAX_DEFAULT_TOLERANCE)
+}
+
+/// Refuse a ring with an edge or vertex whose tolerance no solid may hold.
+///
+/// The ring's helices and flank trims hold their proven distance from the
+/// exact thread, which grows with the thread `tolerance`. Past
+/// [`DEFAULT_MAX_ENTITY_TOLERANCE`] the arena document would refuse to read
+/// the body back, and a tolerance is never stored smaller than the distance
+/// it stands for.
+fn require_storable_tolerances(
+    topo: &Topology,
+    ring: SolidId,
+    tolerance: f64,
+) -> Result<(), ThreadError> {
+    let mut worst: f64 = 0.0;
+    for edge in solid_edges(topo, ring)? {
+        worst = worst.max(topo.edge(edge)?.tolerance().unwrap_or(0.0));
+    }
+    for vertex in solid_vertices(topo, ring)? {
+        worst = worst.max(topo.vertex(vertex)?.tolerance());
+    }
+    if worst > DEFAULT_MAX_ENTITY_TOLERANCE {
+        return Err(ThreadError::refused(
+            ThreadRefusal::ToleranceTooLoose,
+            format!(
+                "a tolerance of {tolerance} leaves an edge of the thread {worst} from the \
+                 exact thread; a solid's edge may hold at most {DEFAULT_MAX_ENTITY_TOLERANCE}"
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// The swept thread ring: the outline twisted along the axis, with its
 /// seam cylinder as a bore (external) or rim (internal), and a cone chamfer
 /// or runout built into either end that asks for one (see `chamfer` and
@@ -1172,7 +1280,7 @@ fn thread_ring(
     });
     // The radial nets of the flank edges, for the conical sweep.
     let mut nets = RadialNets::new();
-    let mut outline_bound: f64 = 0.0;
+    let outline_bound = std::cell::Cell::new(0.0_f64);
     let mut spans_per_flank = 0;
     // The role of every thread-wire edge on a segment plane, by edge index:
     // the profile's edges, then each segment's top edges from its bottom's.
@@ -1194,7 +1302,7 @@ fn thread_ring(
             tolerance,
             reach,
         )?;
-        outline_bound = outline_bound.max(outline.remainder_bound);
+        outline_bound.set(outline_bound.get().max(outline.remainder_bound));
         spans_per_flank = spans_per_flank.max(outline.spans_per_flank);
         let at = Frame {
             origin: frame.origin + frame.axis * z,
@@ -1424,6 +1532,7 @@ fn thread_ring(
                 chamfer::RootSide::Top,
                 rate,
                 tolerance,
+                outline_bound.get(),
                 &piece_roles,
                 ThreadEndSide::Start,
             )?
@@ -1437,6 +1546,7 @@ fn thread_ring(
                 seam,
                 rate,
                 tolerance,
+                outline_bound.get(),
                 &piece_roles,
                 ThreadEndSide::Start,
             )?
@@ -1520,6 +1630,7 @@ fn thread_ring(
                 chamfer::RootSide::Bottom,
                 rate,
                 tolerance,
+                outline_bound.get(),
                 &piece_roles,
                 ThreadEndSide::End,
             )?
@@ -1533,6 +1644,7 @@ fn thread_ring(
                 seam,
                 rate,
                 tolerance,
+                outline_bound.get(),
                 &piece_roles,
                 ThreadEndSide::End,
             )?
@@ -1550,7 +1662,7 @@ fn thread_ring(
     Ok(Ring {
         solid,
         deviation_bound: deviation_bound.max(trim_bound),
-        outline_bound,
+        outline_bound: outline_bound.get(),
         spans,
         spans_per_flank,
         face_roles,

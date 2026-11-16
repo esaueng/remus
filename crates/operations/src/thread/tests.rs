@@ -2331,6 +2331,11 @@ fn slight_tapers_keep_their_cone_lands_within_the_reported_bound() {
                     small_end,
                     gauge_offset: None,
                 }),
+                // The residual reads every helix at its middle, which lies
+                // on the exact helix only where it is a knot of the fit: an
+                // even number of spans, as at this tolerance (the default
+                // before it was capped).
+                tolerance: Some(DEFAULT_TOLERANCE_PER_PITCH * form.pitch),
                 ..CylinderThreadOptions::default()
             };
             let outcome = cut_thread(&mut topo, body, face, &form, &options).unwrap();
@@ -2655,4 +2660,352 @@ fn a_long_tapered_runout_measures_the_same_at_a_tight_tolerance() {
         "solid_volume at thread tolerance 1e-8: {tight}, at 1e-6: {reference} (relative {:e})",
         rel(tight, reference)
     );
+}
+
+/// The largest tolerance stored on the solid's edges and on its vertices.
+fn stored_tolerances(topo: &Topology, solid: SolidId) -> (f64, f64) {
+    let mut edge_max: f64 = 0.0;
+    let mut vertex_max: f64 = 0.0;
+    for edge in remus_topology::explorer::solid_edges(topo, solid).unwrap() {
+        let edge = topo.edge(edge).unwrap();
+        edge_max = edge_max.max(edge.tolerance().unwrap_or(0.0));
+    }
+    for vertex in remus_topology::explorer::solid_vertices(topo, solid).unwrap() {
+        vertex_max = vertex_max.max(topo.vertex(vertex).unwrap().tolerance());
+    }
+    (edge_max, vertex_max)
+}
+
+/// Every edge and vertex of the solid holds a tolerance within the kernel's
+/// entity cap, and the solid survives the arena document every export reads
+/// it back from. Returns the largest edge tolerance.
+fn assert_stays_within_the_entity_cap(topo: &Topology, solid: SolidId, what: &str) -> f64 {
+    let cap = remus_math::context::DEFAULT_MAX_ENTITY_TOLERANCE;
+    let (edge_max, vertex_max) = stored_tolerances(topo, solid);
+    assert!(
+        edge_max <= cap,
+        "{what}: an edge holds a tolerance of {edge_max:e}, over the cap of {cap:e}"
+    );
+    assert!(
+        vertex_max <= cap,
+        "{what}: a vertex holds a tolerance of {vertex_max:e}, over the cap of {cap:e}"
+    );
+    let bytes = remus_io::arena_io::serialize_solids(topo, &[solid])
+        .unwrap_or_else(|error| panic!("{what}: serialize: {error}"));
+    let mut reread = Topology::new();
+    let solids = remus_io::arena_io::deserialize_solids(&bytes, &mut reread)
+        .unwrap_or_else(|error| panic!("{what}: parse: {error}"));
+    assert_eq!(solids.len(), 1, "{what}");
+    let (reread_edge_max, reread_vertex_max) = stored_tolerances(&reread, solids[0]);
+    assert_eq!(reread_edge_max.to_bits(), edge_max.to_bits(), "{what}");
+    assert_eq!(reread_vertex_max.to_bits(), vertex_max.to_bits(), "{what}");
+    edge_max
+}
+
+/// The printable form of the report: depth and crest a quarter of the pitch,
+/// both flanks at 45°.
+fn printable_form(pitch: f64) -> ThreadForm {
+    ThreadForm {
+        pitch,
+        depth: pitch / 4.0,
+        crest_width: pitch / 4.0,
+        upper_flank_angle: PI / 4.0,
+        lower_flank_angle: PI / 4.0,
+        starts: 1,
+        hand: ThreadHand::Right,
+    }
+}
+
+fn both_ends(end: ThreadEnd) -> CylinderThreadOptions {
+    CylinderThreadOptions {
+        start: end,
+        end,
+        ..CylinderThreadOptions::default()
+    }
+}
+
+/// At the default tolerance no edge holds more than three halves of
+/// [`MAX_DEFAULT_TOLERANCE`], three quarters of the cap (with room for the
+/// fits' rounding allowances).
+fn assert_default_edge_bound(edge_max: f64, what: &str) {
+    assert!(
+        edge_max <= 1.5 * MAX_DEFAULT_TOLERANCE * (1.0 + 1e-6),
+        "{what}: an edge holds a tolerance of {edge_max:e}"
+    );
+}
+
+const END_FINISHES: [(&str, ThreadEnd); 3] = [
+    ("plain", ThreadEnd::Plain),
+    ("chamfered", ThreadEnd::Chamfer { angle: PI / 4.0 }),
+    ("runout", ThreadEnd::Runout { angle: PI / 4.0 }),
+];
+
+/// A thread cut at the default tolerance is a solid every export can read:
+/// no edge or vertex holds a tolerance over the kernel's entity cap, which
+/// the arena reader refuses. An M12×1.75 thread with 45° chamfers used to
+/// leave four flank trims at 2.3e-4 against the cap of 1e-4, and a plain
+/// thread of 3 pitch its helices at 1.2e-4, so neither could be exported.
+#[test]
+fn default_threads_stay_within_the_entity_tolerance_cap() {
+    for pitch in [0.5, 1.0, 1.25, 1.5, 1.75, 2.0, 3.0] {
+        let form = printable_form(pitch);
+        for kind in [ThreadKind::External, ThreadKind::Internal] {
+            for (finish, end) in END_FINISHES {
+                let mut topo = Topology::new();
+                let (body, face) = match kind {
+                    ThreadKind::External => boss(&mut topo, 5.9, 28.0),
+                    ThreadKind::Internal => bored(&mut topo, 12.0, 6.1 - pitch / 4.0, 24.0),
+                };
+                let what = format!("pitch {pitch} {kind:?} {finish}");
+                let outcome = cut_thread(&mut topo, body, face, &form, &both_ends(end))
+                    .unwrap_or_else(|error| panic!("{what}: {error}"));
+                let edge_max = assert_stays_within_the_entity_cap(&topo, outcome.solid, &what);
+                assert_default_edge_bound(edge_max, &what);
+            }
+        }
+    }
+}
+
+/// The same for the other thread paths: several starts, a long lead, a
+/// collar that turns the chamfer into a runout, and pipe tapers of both
+/// kinds with each end finish.
+#[test]
+fn multi_start_and_tapered_threads_stay_within_the_entity_tolerance_cap() {
+    for (starts, hand) in [(2, ThreadHand::Left), (4, ThreadHand::Right)] {
+        let form = ThreadForm {
+            starts,
+            hand,
+            ..printable_form(3.0)
+        };
+        for (finish, end) in END_FINISHES {
+            let mut topo = Topology::new();
+            let (body, face) = boss(&mut topo, 12.0, 40.0);
+            let options = CylinderThreadOptions {
+                offset: 4.0,
+                length: Some(30.0),
+                ..both_ends(end)
+            };
+            let what = format!("{starts} starts {finish}");
+            let outcome = cut_thread(&mut topo, body, face, &form, &options)
+                .unwrap_or_else(|error| panic!("{what}: {error}"));
+            let edge_max = assert_stays_within_the_entity_cap(&topo, outcome.solid, &what);
+            assert_default_edge_bound(edge_max, &what);
+        }
+    }
+    for tpi in [14.0, 8.0] {
+        let form = ThreadForm::npt(INCH / tpi);
+        for kind in [ThreadKind::External, ThreadKind::Internal] {
+            for (finish, end) in END_FINISHES {
+                let mut topo = Topology::new();
+                let (body, face, side) = match kind {
+                    ThreadKind::External => {
+                        let (body, face) = boss(&mut topo, 30.0, 40.0);
+                        (body, face, ThreadEndSide::Start)
+                    }
+                    ThreadKind::Internal => {
+                        let (body, face) = bored(&mut topo, 40.0, 26.0, 40.0);
+                        (body, face, ThreadEndSide::End)
+                    }
+                };
+                let options = CylinderThreadOptions {
+                    length: Some(24.0),
+                    taper: Some(ThreadTaper::pipe(side)),
+                    ..both_ends(end)
+                };
+                let what = format!("NPT {tpi} per inch {kind:?} {finish}");
+                let outcome = cut_thread(&mut topo, body, face, &form, &options)
+                    .unwrap_or_else(|error| panic!("{what}: {error}"));
+                let edge_max = assert_stays_within_the_entity_cap(&topo, outcome.solid, &what);
+                assert_default_edge_bound(edge_max, &what);
+            }
+        }
+    }
+}
+
+/// The default tolerance follows the pitch up to its cap, and a caller's own
+/// is never tightened behind their back: one that leaves an edge farther from
+/// the exact thread than a solid's edge may hold refuses, and changes
+/// nothing. The old default of `1e-4` of the pitch is such a tolerance for
+/// the chamfered M12×1.75 thread and for a plain thread of 3 pitch.
+#[test]
+fn a_tolerance_too_loose_for_a_solid_refuses() {
+    let cap = remus_math::context::DEFAULT_MAX_ENTITY_TOLERANCE;
+    assert_eq!(default_tolerance(0.25).to_bits(), 2.5e-5_f64.to_bits());
+    assert_eq!(default_tolerance(0.5).to_bits(), 5e-5_f64.to_bits());
+    assert_eq!(default_tolerance(3.0).to_bits(), 5e-5_f64.to_bits());
+    assert!(1.5 * MAX_DEFAULT_TOLERANCE < 0.8 * cap);
+
+    let chamfered = ThreadEnd::Chamfer { angle: PI / 4.0 };
+    let runout = ThreadEnd::Runout { angle: PI / 4.0 };
+    for (pitch, end) in [(1.75, chamfered), (1.75, runout), (3.0, ThreadEnd::Plain)] {
+        let form = printable_form(pitch);
+        for kind in [ThreadKind::External, ThreadKind::Internal] {
+            let mut topo = Topology::new();
+            let (body, face) = match kind {
+                ThreadKind::External => boss(&mut topo, 5.9, 28.0),
+                ThreadKind::Internal => bored(&mut topo, 12.0, 6.1 - pitch / 4.0, 24.0),
+            };
+            let before = (topo.num_vertices(), topo.num_edges(), topo.num_faces());
+            let loose = CylinderThreadOptions {
+                tolerance: Some(DEFAULT_TOLERANCE_PER_PITCH * pitch),
+                ..both_ends(end)
+            };
+            let what = format!("pitch {pitch} {kind:?} {end:?}");
+            match cut_thread(&mut topo, body, face, &form, &loose) {
+                Err(ThreadError::Refused { code, reason }) => {
+                    assert_eq!(code, ThreadRefusal::ToleranceTooLoose, "{what}: {reason}");
+                    assert_eq!(code.code(), "tolerance-too-loose");
+                }
+                Err(other) => panic!("{what}: expected tolerance-too-loose: {other}"),
+                Ok(_) => panic!("{what}: expected tolerance-too-loose"),
+            }
+            assert_eq!(
+                before,
+                (topo.num_vertices(), topo.num_edges(), topo.num_faces()),
+                "{what}"
+            );
+
+            // Two thirds of the cap fits: a trim holds three fits of half
+            // the tolerance each. It builds and is used as given, looser than
+            // the default.
+            let fitting = CylinderThreadOptions {
+                tolerance: Some(cap / 1.5 * (1.0 - 1e-9)),
+                ..both_ends(end)
+            };
+            let outcome = cut_thread(&mut topo, body, face, &form, &fitting)
+                .unwrap_or_else(|error| panic!("{what}: {error}"));
+            assert_stays_within_the_entity_cap(&topo, outcome.solid, &what);
+            let mut topo = Topology::new();
+            let (body, face) = match kind {
+                ThreadKind::External => boss(&mut topo, 5.9, 28.0),
+                ThreadKind::Internal => bored(&mut topo, 12.0, 6.1 - pitch / 4.0, 24.0),
+            };
+            let default = cut_thread(&mut topo, body, face, &form, &both_ends(end))
+                .unwrap_or_else(|error| panic!("{what}: {error}"));
+            assert!(
+                outcome.spans_along_axis <= default.spans_along_axis,
+                "{what}: {} spans at the looser tolerance, {} at the default",
+                outcome.spans_along_axis,
+                default.spans_along_axis
+            );
+        }
+    }
+}
+
+/// A boss with a start chamfer of `slope` (the tangent of its angle from
+/// the axis) on the printable form of `pitch`, at `tolerance`.
+fn shallow_chamfer(
+    pitch: f64,
+    slope: f64,
+    height: f64,
+    tolerance: Option<f64>,
+) -> (Topology, Result<ThreadOutcome, ThreadError>) {
+    let mut topo = Topology::new();
+    let (body, face) = boss(&mut topo, 5.9, height);
+    let options = CylinderThreadOptions {
+        start: ThreadEnd::Chamfer {
+            angle: slope.atan(),
+        },
+        tolerance,
+        ..CylinderThreadOptions::default()
+    };
+    let result = cut_thread(&mut topo, body, face, &printable_form(pitch), &options);
+    (topo, result)
+}
+
+/// A pitch-0.6 thread under a 1° start chamfer: its flank trims turn so
+/// many times that at [`MAX_DEFAULT_TOLERANCE`] they pass their span limit,
+/// while at the whole `1e-4` of the pitch the thread builds with every edge
+/// within the cap (8.5e-5). Capping the default must not refuse what the
+/// uncapped default built and could export: it is built at the whole
+/// tolerance, as before.
+#[test]
+fn a_default_thread_the_capped_tolerance_cannot_fit_builds_at_the_whole_one() {
+    let (pitch, slope, height) = (0.6, 0.0175, 12.0);
+    let (_, capped) = shallow_chamfer(pitch, slope, height, Some(MAX_DEFAULT_TOLERANCE));
+    assert_eq!(refusal(capped), ThreadRefusal::ToleranceTooTight);
+
+    let what = "pitch 0.6 under a 1 degree chamfer";
+    let (topo, default) = shallow_chamfer(pitch, slope, height, None);
+    let default = default.unwrap_or_else(|error| panic!("{what}: {error}"));
+    assert_stays_within_the_entity_cap(&topo, default.solid, what);
+    assert_valid_and_watertight(&topo, default.solid);
+    let default_edge = stored_tolerances(&topo, default.solid).0;
+
+    let whole = DEFAULT_TOLERANCE_PER_PITCH * pitch;
+    let (topo, explicit) = shallow_chamfer(pitch, slope, height, Some(whole));
+    let explicit = explicit.unwrap_or_else(|error| panic!("{what}: {error}"));
+    assert_eq!(default.spans_along_axis, explicit.spans_along_axis);
+    assert_eq!(default.spans_per_flank, explicit.spans_per_flank);
+    assert_eq!(
+        default.deviation_bound.to_bits(),
+        explicit.deviation_bound.to_bits()
+    );
+    assert_eq!(
+        default_edge.to_bits(),
+        stored_tolerances(&topo, explicit.solid).0.to_bits()
+    );
+
+    // A retry that fails for another reason (here the whole tolerance fits
+    // the trims, but the thread turns past the turn limit) leaves the
+    // capped attempt's refusal standing, reason and all.
+    let tall = 650.0;
+    let (_, capped) = shallow_chamfer(pitch, slope, tall, Some(MAX_DEFAULT_TOLERANCE));
+    let Err(ThreadError::Refused { code, reason }) = capped else {
+        panic!("a {tall} tall thread at {MAX_DEFAULT_TOLERANCE} must refuse");
+    };
+    assert_eq!(code, ThreadRefusal::ToleranceTooTight, "{reason}");
+    let (_, retried) = shallow_chamfer(pitch, slope, tall, Some(whole));
+    match retried {
+        Err(ThreadError::Refused {
+            code: retry_code, ..
+        }) => assert_ne!(retry_code, ThreadRefusal::ToleranceTooTight),
+        Err(_) => {}
+        Ok(_) => panic!("the whole tolerance must fail here"),
+    }
+    let (_, default) = shallow_chamfer(pitch, slope, tall, None);
+    match default {
+        Err(ThreadError::Refused {
+            code: default_code,
+            reason: default_reason,
+        }) => assert_eq!((default_code, default_reason), (code, reason)),
+        Err(other) => panic!("a {tall} tall default thread: {other}"),
+        Ok(_) => panic!("a {tall} tall default thread must refuse"),
+    }
+}
+
+/// Over shallow chamfers and fine pitches the default builds every thread
+/// that `1e-4` of the pitch builds with its tolerances within the cap, and
+/// what it builds can be exported. Where the default refuses, that
+/// tolerance gives no such body either.
+#[test]
+fn shallow_chamfers_build_by_default_wherever_the_whole_tolerance_fits() {
+    let cap = remus_math::context::DEFAULT_MAX_ENTITY_TOLERANCE;
+    let mut built = 0;
+    for pitch in [0.55, 0.6, 0.75, 1.0] {
+        for slope in [0.0175, 0.025, 0.04, 0.08] {
+            let what = format!("pitch {pitch} chamfer slope {slope}");
+            let (topo, default) = shallow_chamfer(pitch, slope, 40.0, None);
+            match default {
+                Ok(outcome) => {
+                    assert_stays_within_the_entity_cap(&topo, outcome.solid, &what);
+                    built += 1;
+                }
+                Err(ThreadError::Refused { code, reason }) => {
+                    assert_eq!(code, ThreadRefusal::ToleranceTooTight, "{what}: {reason}");
+                    let whole = DEFAULT_TOLERANCE_PER_PITCH * pitch;
+                    let (topo, explicit) = shallow_chamfer(pitch, slope, 40.0, Some(whole));
+                    if let Ok(outcome) = explicit {
+                        let (edge_max, vertex_max) = stored_tolerances(&topo, outcome.solid);
+                        panic!(
+                            "{what}: refused by default ({reason}), but builds at {whole} with \
+                             tolerances {edge_max:e} and {vertex_max:e} against the cap {cap:e}"
+                        );
+                    }
+                }
+                Err(other) => panic!("{what}: {other}"),
+            }
+        }
+    }
+    assert!(built >= 4, "only {built} of 16 threads built");
 }

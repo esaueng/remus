@@ -338,6 +338,13 @@ fn refusals_are_typed_and_atomic() {
             with(json!({ "lowerFlankAngle": 80.0 })),
             "thread:invalid-parameter",
         ),
+        // So loose that the thread's helices would hold more than a
+        // solid's edge may: the arena document could not read the body back.
+        (
+            face,
+            with(json!({ "tolerance": 0.01 })),
+            "thread:tolerance-too-loose",
+        ),
         (face, with(json!({ "pitch": "fine" })), "invalid_argument"),
         (face, with(json!({ "flank": 30.0 })), "invalid_argument"),
     ];
@@ -351,4 +358,39 @@ fn refusals_are_typed_and_atomic() {
         assert_eq!(batch["ok"], refused, "{spec}: {batch}");
         assert_eq!(live_counts(&kernel), before, "{spec}");
     }
+}
+
+/// An M12×1.75 printable thread with 45° chamfers at both ends, at the
+/// default tolerance, is a body the arena document reads back: every export
+/// serializes the solid and parses it in the translator module, which
+/// refuses an edge whose tolerance passes the kernel's entity cap. Four
+/// flank trims used to hold 2.3e-4 against the cap of 1e-4.
+#[test]
+fn chamfered_coarse_thread_survives_the_arena_document() {
+    let spec = json!({
+        "pitch": 1.75,
+        "depth": 0.4375,
+        "crestWidth": 0.4375,
+        "upperFlankAngle": 45.0,
+        "lowerFlankAngle": 45.0,
+        "start": { "kind": "chamfer", "angle": 45.0 },
+        "end": { "kind": "chamfer", "angle": 45.0 }
+    });
+    let mut kernel = RemusKernel::new();
+    let blank = kernel.make_cylinder_solid(5.9, 28.0).unwrap();
+    let face = side_face(&kernel, blank);
+    let cut = serde_json::to_value(kernel.cut_thread_detailed_impl(blank, face, &spec)).unwrap();
+    assert_eq!(cut["status"], "ok", "{cut}");
+    let id = kernel.resolve_solid(handle(&cut["value"])).unwrap();
+    let cap = remus_math::context::DEFAULT_MAX_ENTITY_TOLERANCE;
+    for edge in remus_topology::explorer::solid_edges(kernel.topo(), id).unwrap() {
+        let tolerance = kernel.topo().edge(edge).unwrap().tolerance().unwrap_or(0.0);
+        assert!(tolerance <= cap, "an edge holds {tolerance:e}");
+    }
+    let bytes = remus_io::arena_io::serialize_solids(kernel.topo(), &[id]).unwrap();
+    let mut reread = remus_topology::Topology::new();
+    let solids = remus_io::arena_io::deserialize_solids(&bytes, &mut reread).unwrap();
+    assert_eq!(solids.len(), 1);
+    let report = remus_operations::validate::validate_solid(&reread, solids[0]).unwrap();
+    assert!(report.is_valid(), "{:?}", report.issues);
 }
