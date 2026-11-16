@@ -214,3 +214,74 @@ fn a_sphere_keeps_the_cap_below_a_box() {
         }
     }
 }
+
+/// `solid_volume` reads the intersect cap exactly, like `mass_properties`.
+/// The cap and its disc are the exact input sphere and plane, so the route
+/// that integrates analytic faces must take it rather than a chorded mesh,
+/// at a preview deflection and for the sphere segmentation an app uses.
+#[test]
+fn solid_volume_reads_the_intersect_cap_exactly() {
+    for segments in [16, 32] {
+        for centre_z in [12.0, 15.0, 20.0, 24.0, 27.0, 29.0] {
+            let h = cap_height(centre_z);
+            let mut topo = Topology::new();
+            let block = make_box(&mut topo, BOX.0, BOX.1, BOX.2).unwrap();
+            let sphere = make_sphere(&mut topo, R, segments).unwrap();
+            transform_solid(
+                &mut topo,
+                sphere,
+                &Mat4::translation(BOX.0 / 2.0, BOX.1 / 2.0, centre_z),
+            )
+            .unwrap();
+            let body = boolean(&mut topo, BooleanOp::Intersect, block, sphere).unwrap();
+            for deflection in [0.08, 1e-3] {
+                assert_rel(
+                    solid_volume(&topo, body, deflection).unwrap(),
+                    cap_volume(h),
+                    &format!(
+                        "Intersect at z = {centre_z}, {segments} segments, deflection {deflection}"
+                    ),
+                );
+            }
+        }
+    }
+}
+
+/// The mirror case: a box ABOVE the sphere centre keeps the UPPER cap,
+/// closed by a disc in the box's bottom face. `solid_volume` must integrate
+/// the north pole's side of the latitude, not the lower cap or the whole
+/// ball.
+#[test]
+fn solid_volume_reads_an_upper_cap_exactly() {
+    for segments in [16, 32] {
+        for centre_z in [12.0, 16.0, 20.0] {
+            // The box spans z = 20..40; the cap is the sphere above z = 20.
+            let h = (centre_z + R - BOX.2).min(2.0 * R);
+            let what = format!("Upper cap at z = {centre_z}, {segments} segments");
+            let mut topo = Topology::new();
+            let block = make_box(&mut topo, BOX.0, BOX.1, BOX.2).unwrap();
+            transform_solid(&mut topo, block, &Mat4::translation(0.0, 0.0, BOX.2)).unwrap();
+            let sphere = make_sphere(&mut topo, R, segments).unwrap();
+            transform_solid(
+                &mut topo,
+                sphere,
+                &Mat4::translation(BOX.0 / 2.0, BOX.1 / 2.0, centre_z),
+            )
+            .unwrap();
+            let body = boolean(&mut topo, BooleanOp::Intersect, block, sphere)
+                .unwrap_or_else(|e| panic!("{what}: {e}"));
+            assert_rel(
+                mass_properties(&topo, body).unwrap().mass,
+                cap_volume(h),
+                &format!("{what} mass_properties"),
+            );
+            for deflection in [0.08, 1e-3] {
+                assert_rel(
+                    solid_volume(&topo, body, deflection).unwrap(),
+                    cap_volume(h),
+                    &format!("{what}, deflection {deflection}"),
+                );
+            }
+        }
+    }
+}
