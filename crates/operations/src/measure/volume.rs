@@ -1437,6 +1437,32 @@ fn analytic_faces_solid_volume(
     }
 
     let mut has_bored_quadric = false;
+    // A sphere cap closed by planes: every face is a plane or an unholed
+    // sphere face whose one rim lies on a single latitude (a box top cutting
+    // the sphere off). Its tessellated volume chords the cap low — about 6e-5
+    // relative for a hemisphere of a 32-segment sphere at a preview
+    // deflection — while the per-face integrator below reads it exactly, the
+    // same sum `mass_properties` takes. Great-circle and scalloped rims are
+    // not latitudes and stay deferred.
+    let mut planes_and_latitude_caps = true;
+    let mut has_latitude_cap = false;
+    for &fid in &faces {
+        let face = topo.face(fid)?;
+        match face.surface() {
+            FaceSurface::Plane { .. } => {}
+            FaceSurface::Sphere(s) => {
+                if face.inner_wires().is_empty() && sphere_outer_wire_constant_v(topo, fid, s)? {
+                    has_latitude_cap = true;
+                } else {
+                    planes_and_latitude_caps = false;
+                }
+            }
+            FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Torus(_)
+            | FaceSurface::Nurbs(_) => planes_and_latitude_caps = false,
+        }
+    }
     for &fid in &faces {
         let notched_quadric = quadric_wall_is_notched_band(topo, fid);
         if notched_quadric {
@@ -1514,7 +1540,7 @@ fn analytic_faces_solid_volume(
             | FaceSurface::Sphere(_) => {}
         }
     }
-    if !has_bored_quadric {
+    if !(has_bored_quadric || (planes_and_latitude_caps && has_latitude_cap)) {
         return Ok(None);
     }
 
