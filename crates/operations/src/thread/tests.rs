@@ -2891,3 +2891,94 @@ fn a_tolerance_too_loose_for_a_solid_refuses() {
         }
     }
 }
+
+/// A boss with a start chamfer of `slope` (the tangent of its angle from
+/// the axis) on the printable form of `pitch`, at `tolerance`.
+fn shallow_chamfer(
+    pitch: f64,
+    slope: f64,
+    height: f64,
+    tolerance: Option<f64>,
+) -> (Topology, Result<ThreadOutcome, ThreadError>) {
+    let mut topo = Topology::new();
+    let (body, face) = boss(&mut topo, 5.9, height);
+    let options = CylinderThreadOptions {
+        start: ThreadEnd::Chamfer {
+            angle: slope.atan(),
+        },
+        tolerance,
+        ..CylinderThreadOptions::default()
+    };
+    let result = cut_thread(&mut topo, body, face, &printable_form(pitch), &options);
+    (topo, result)
+}
+
+/// A pitch-0.6 thread under a 1° start chamfer: its flank trims turn so
+/// many times that at [`MAX_DEFAULT_TOLERANCE`] they pass their span limit,
+/// while at the whole `1e-4` of the pitch the thread builds with every edge
+/// within the cap (8.5e-5). Capping the default must not refuse what the
+/// uncapped default built and could export: it is built at the whole
+/// tolerance, as before.
+#[test]
+fn a_default_thread_the_capped_tolerance_cannot_fit_builds_at_the_whole_one() {
+    let (pitch, slope, height) = (0.6, 0.0175, 12.0);
+    let (_, capped) = shallow_chamfer(pitch, slope, height, Some(MAX_DEFAULT_TOLERANCE));
+    assert_eq!(refusal(capped), ThreadRefusal::ToleranceTooTight);
+
+    let what = "pitch 0.6 under a 1 degree chamfer";
+    let (topo, default) = shallow_chamfer(pitch, slope, height, None);
+    let default = default.unwrap_or_else(|error| panic!("{what}: {error}"));
+    assert_stays_within_the_entity_cap(&topo, default.solid, what);
+    assert_valid_and_watertight(&topo, default.solid);
+    let default_edge = stored_tolerances(&topo, default.solid).0;
+
+    let whole = DEFAULT_TOLERANCE_PER_PITCH * pitch;
+    let (topo, explicit) = shallow_chamfer(pitch, slope, height, Some(whole));
+    let explicit = explicit.unwrap_or_else(|error| panic!("{what}: {error}"));
+    assert_eq!(default.spans_along_axis, explicit.spans_along_axis);
+    assert_eq!(default.spans_per_flank, explicit.spans_per_flank);
+    assert_eq!(
+        default.deviation_bound.to_bits(),
+        explicit.deviation_bound.to_bits()
+    );
+    assert_eq!(
+        default_edge.to_bits(),
+        stored_tolerances(&topo, explicit.solid).0.to_bits()
+    );
+}
+
+/// Over shallow chamfers and fine pitches the default builds every thread
+/// that `1e-4` of the pitch builds with its tolerances within the cap, and
+/// what it builds can be exported. Where the default refuses, that
+/// tolerance gives no such body either.
+#[test]
+fn shallow_chamfers_build_by_default_wherever_the_whole_tolerance_fits() {
+    let cap = remus_math::context::DEFAULT_MAX_ENTITY_TOLERANCE;
+    let mut built = 0;
+    for pitch in [0.55, 0.6, 0.75, 1.0] {
+        for slope in [0.0175, 0.025, 0.04, 0.08] {
+            let what = format!("pitch {pitch} chamfer slope {slope}");
+            let (topo, default) = shallow_chamfer(pitch, slope, 40.0, None);
+            match default {
+                Ok(outcome) => {
+                    assert_stays_within_the_entity_cap(&topo, outcome.solid, &what);
+                    built += 1;
+                }
+                Err(ThreadError::Refused { code, reason }) => {
+                    assert_eq!(code, ThreadRefusal::ToleranceTooTight, "{what}: {reason}");
+                    let whole = DEFAULT_TOLERANCE_PER_PITCH * pitch;
+                    let (topo, explicit) = shallow_chamfer(pitch, slope, 40.0, Some(whole));
+                    if let Ok(outcome) = explicit {
+                        let (edge_max, vertex_max) = stored_tolerances(&topo, outcome.solid);
+                        panic!(
+                            "{what}: refused by default ({reason}), but builds at {whole} with \
+                             tolerances {edge_max:e} and {vertex_max:e} against the cap {cap:e}"
+                        );
+                    }
+                }
+                Err(other) => panic!("{what}: {other}"),
+            }
+        }
+    }
+    assert!(built >= 4, "only {built} of 16 threads built");
+}

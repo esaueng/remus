@@ -115,7 +115,9 @@
 //!
 //! `tolerance` bounds the thread surfaces' distance from the exact thread.
 //! The default is `1e-4` of the pitch up to 5e-5, which keeps every edge's
-//! own tolerance within the 1e-4 an edge may hold. A tolerance too fine for
+//! own tolerance within the 1e-4 an edge may hold (where the span limits
+//! cannot hold 5e-5, the whole `1e-4` of the pitch, if the edges then stay
+//! within it; `deviationBound` reports what was built). A tolerance too fine for
 //! the span limits refuses with `thread:tolerance-too-tight`; one so loose
 //! that an edge would hold more than 1e-4 (possible above about 6.7e-5
 //! with a chamfered or runout end, above 2e-4 with plain ends) refuses with

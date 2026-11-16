@@ -83,7 +83,7 @@ pub const DEFAULT_TOLERANCE_PER_PITCH: f64 = 1e-4;
 
 /// Largest default thread tolerance, half of
 /// [`DEFAULT_MAX_ENTITY_TOLERANCE`]: what a pitch of `0.5` gets, and every
-/// coarser one.
+/// coarser one whose fits hold it within their span limits.
 ///
 /// The thread's edges hold their proven distance from the exact thread as
 /// their tolerance, and no edge of a solid may hold more than
@@ -95,6 +95,11 @@ pub const DEFAULT_TOLERANCE_PER_PITCH: f64 = 1e-4;
 /// quarters of the cap. A caller's own tolerance is used as given, and
 /// refuses with [`ThreadRefusal::ToleranceTooLoose`] when an edge would
 /// pass the cap.
+///
+/// A coarser thread whose fits cannot hold this within their span limits
+/// (a flank trim that turns many times under a shallow chamfer) is built by
+/// default at the whole [`DEFAULT_TOLERANCE_PER_PITCH`] of its pitch
+/// instead, when every edge then stays within the cap.
 pub const MAX_DEFAULT_TOLERANCE: f64 = 5e-5;
 
 /// Largest supported number of starts.
@@ -438,8 +443,9 @@ pub struct CylinderThreadOptions {
     pub phase: f64,
     /// Bound on the swept surfaces' distance from the exact thread; `None`
     /// uses [`DEFAULT_TOLERANCE_PER_PITCH`] of the pitch, at most
-    /// [`MAX_DEFAULT_TOLERANCE`]. One so loose that an edge of the thread
-    /// would hold more than [`DEFAULT_MAX_ENTITY_TOLERANCE`] refuses with
+    /// [`MAX_DEFAULT_TOLERANCE`] where the span limits allow that (see
+    /// there). One so loose that an edge of the thread would hold more than
+    /// [`DEFAULT_MAX_ENTITY_TOLERANCE`] refuses with
     /// [`ThreadRefusal::ToleranceTooLoose`].
     pub tolerance: Option<f64>,
     /// Finish of the thread's start (the end nearer the face's start). A
@@ -721,8 +727,53 @@ pub fn cut_thread(
 /// [`cut_thread`], putting the ring on by the glue where it applies
 /// (`try_glue`) or always by the fuse, which the tests use to reach the
 /// fuse fallback.
-#[allow(clippy::too_many_lines)]
+///
+/// Without a tolerance from the caller the thread is built at
+/// [`MAX_DEFAULT_TOLERANCE`] or finer. Where a fit cannot hold that within
+/// its span limit, the thread is built at the whole
+/// [`DEFAULT_TOLERANCE_PER_PITCH`] of the pitch instead, under the same
+/// check of its stored tolerances; if that leaves an edge over the cap, the
+/// first refusal stands.
 fn cut_thread_joined(
+    topo: &mut Topology,
+    solid: SolidId,
+    face: FaceId,
+    form: &ThreadForm,
+    options: &CylinderThreadOptions,
+    try_glue: bool,
+) -> Result<ThreadOutcome, ThreadError> {
+    if options.tolerance.is_some() {
+        return cut_thread_at(topo, solid, face, form, options, try_glue);
+    }
+    let at = |tolerance: f64| CylinderThreadOptions {
+        tolerance: Some(tolerance),
+        ..options.clone()
+    };
+    let capped = default_tolerance(form.pitch);
+    let whole = DEFAULT_TOLERANCE_PER_PITCH * form.pitch;
+    match cut_thread_at(topo, solid, face, form, &at(capped), try_glue) {
+        Err(ThreadError::Refused {
+            code: ThreadRefusal::ToleranceTooTight,
+            reason,
+        }) if whole > capped => {
+            match cut_thread_at(topo, solid, face, form, &at(whole), try_glue) {
+                Err(ThreadError::Refused {
+                    code: ThreadRefusal::ToleranceTooLoose,
+                    ..
+                }) => Err(ThreadError::refused(
+                    ThreadRefusal::ToleranceTooTight,
+                    reason,
+                )),
+                result => result,
+            }
+        }
+        result => result,
+    }
+}
+
+/// [`cut_thread_joined`] at the tolerance in `options`.
+#[allow(clippy::too_many_lines)]
+fn cut_thread_at(
     topo: &mut Topology,
     solid: SolidId,
     face: FaceId,

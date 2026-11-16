@@ -22,7 +22,12 @@ historical predecessor-line records, retained for provenance. The
   default thread coarser than a pitch of 0.5 is fitted tighter than before,
   with more spans (they grow with the fourth root of the ratio: about 1.4
   times as many at a pitch of 1.75), and no edge of it holds more than
-  7.5e-5; a pitch of 0.5 or finer builds the surfaces it did. A `tolerance`
+  7.5e-5; a pitch of 0.5 or finer builds the surfaces it did. A coarser
+  thread whose fits cannot hold 5e-5 within their span limits (flank trims
+  that turn many times under a very shallow chamfer) is still built at the
+  whole `1e-4` of its pitch when every edge then stays within the cap, so
+  the default refuses nothing it used to build into an exportable body. A
+  `tolerance`
   given by the caller is used as given, and one that would leave an edge
   over the cap refuses with the new `thread:tolerance-too-loose` (argument
   `tolerance`, `ThreadRefusal::ToleranceTooLoose`) where it used to return a
