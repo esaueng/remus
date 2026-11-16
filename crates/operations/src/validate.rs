@@ -926,6 +926,8 @@ fn native_pcurve_use_issues(
 /// 12. **Edge vertex consistency**: edge vertices belong to the solid
 /// 13. **Native pcurve certificates**: available whole-interval NURBS use
 ///     certificates satisfy the existing parameter/range tolerance
+/// 14. **Loop containment**: a planar face's inner loops lie inside its outer
+///     loop and do not cross each other (certified; touching loops pass)
 ///
 /// # Errors
 ///
@@ -1281,6 +1283,24 @@ fn validate_solid_observed(
                     ),
                 });
             }
+        }
+    }
+
+    // Loop containment: a planar face whose outer loop crosses an inner loop
+    // (a blend contact line run past a boss's foot) or whose inner loops cross
+    // passes every count above and still meshes open. Certified and
+    // tolerance-aware: touching or tangent loops are not reported.
+    for fid in &faces {
+        for issue in
+            remus_check::validate::check_face_loop_containment(topo, *fid, scaled_tol.linear)
+                .map_err(|e| crate::OperationsError::InvalidInput {
+                    reason: e.to_string(),
+                })?
+        {
+            issues.push(ValidationIssue {
+                severity: Severity::Error,
+                description: issue.description,
+            });
         }
     }
 

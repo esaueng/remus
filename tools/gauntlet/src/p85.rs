@@ -2102,6 +2102,7 @@ fn validate_all(topology: &Topology, solids: &[SolidId], started: Instant) -> St
                 remus_check::validate::CheckId::FaceOrientationConsistency => {
                     "face_orientation_consistency"
                 }
+                remus_check::validate::CheckId::FaceLoopContainment => "face_loop_containment",
                 remus_check::validate::CheckId::ShellEmpty => "shell_empty",
                 remus_check::validate::CheckId::ShellConnected => "shell_connected",
                 remus_check::validate::CheckId::ShellClosed => "shell_closed",

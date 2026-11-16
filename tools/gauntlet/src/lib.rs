@@ -1354,6 +1354,7 @@ fn check_id_code(check: CheckId) -> &'static str {
         CheckId::WireSelfIntersection => "wire_self_intersection",
         CheckId::FaceNoSurface => "face_no_surface",
         CheckId::FaceOrientationConsistency => "face_orientation_consistency",
+        CheckId::FaceLoopContainment => "face_loop_containment",
         CheckId::ShellEmpty => "shell_empty",
         CheckId::ShellConnected => "shell_connected",
         CheckId::ShellClosed => "shell_closed",

@@ -129,8 +129,11 @@ use remus_topology::wire::WireId;
 
 #[cfg(test)]
 mod cache_tests;
+mod containment;
 #[cfg(test)]
 mod tests;
+
+pub use containment::{LoopContainmentDefect, face_loop_containment_defect};
 
 /// How a planar face's inner loops nest. See the [module docs](self) for
 /// what each answer certifies and what callers do with it.
@@ -493,6 +496,9 @@ struct Loop {
     err: f64,
     /// Points on the loop to test against other loops, with their errors.
     probes: Vec<(P2, f64)>,
+    /// How many leading `pieces` are the wire's own edges; the rest close
+    /// the gaps between them.
+    own: usize,
 }
 
 /// Why a decision was not reached.
@@ -866,6 +872,7 @@ fn read_loop(
     if !diagonal.is_finite() || !err.is_finite() {
         return None;
     }
+    let own = pieces.len();
     for (from, to, gap_err, gap_tol) in gaps {
         if same_point(from, to) {
             continue;
@@ -882,6 +889,7 @@ fn read_loop(
         points,
         err,
         probes,
+        own,
     })
 }
 
