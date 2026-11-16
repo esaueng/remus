@@ -942,8 +942,11 @@ pub(crate) fn fillet_contact_setback(
 /// `CliffEncountered` with the largest radius whose bound stays inside the
 /// clearance as the achievable maximum (zero when the setback is unbounded).
 ///
-/// Only straight blended edges are considered: a closed rim edge IS an inner
-/// loop, and the analytic rim assemblers have their own clearance guard.
+/// Straight edges and open curved edges (an arc of a plate's outline that
+/// passes close to a boss's foot) are considered; a curved edge is measured
+/// along a polyline whose chords are an eighth of the reach. A closed rim
+/// edge IS an inner loop, and the analytic rim assemblers have their own
+/// clearance guard.
 fn reject_blend_into_hole(
     topo: &Topology,
     solid: SolidId,
@@ -953,17 +956,26 @@ fn reject_blend_into_hole(
     let adjacency = topo.build_adjacency(solid)?;
     for &edge_id in edges {
         let e = topo.edge(edge_id)?;
-        if !matches!(e.curve(), EdgeCurve::Line) {
+        let straight = matches!(e.curve(), EdgeCurve::Line);
+        if !straight && e.is_closed() {
             continue;
         }
-        let a = topo.vertex(e.start())?.point();
-        let b = topo.vertex(e.end())?.point();
         let neighbours = adjacency.faces_for_edge(edge_id);
         // The rolling-ball rebuild places contacts at the exact setback only
         // when it can classify the edge's material side; otherwise it trims
         // `radius` away. So the shorter setback of an obtuse edge is not a
         // safe bound, and the guard never goes below `radius`.
         let reach = fillet_contact_setback(topo, neighbours, radius)?.max(radius);
+        let step = reach / 8.0;
+        let spine = if straight {
+            vec![
+                topo.vertex(e.start())?.point(),
+                topo.vertex(e.end())?.point(),
+            ]
+        } else {
+            edge_polyline(topo, edge_id, step)?
+        };
+        let spine_box = polyline_box(&spine);
 
         for &face_id in neighbours {
             let face = topo.face(face_id)?;
@@ -979,8 +991,22 @@ fn reject_blend_into_hole(
                 }
                 let mut clearance = f64::INFINITY;
                 for oe in &wire_edges {
-                    for p in sample_edge(topo, oe.edge(), 64)? {
-                        clearance = clearance.min(point_segment_distance(p, a, b));
+                    let samples = if straight {
+                        sample_edge(topo, oe.edge(), 64)?
+                    } else {
+                        let samples = edge_polyline(topo, oe.edge(), step)?;
+                        // A loop edge whose box clears the spine's by twice
+                        // the reach cannot come within the reach.
+                        if box_gap(&polyline_box(&samples), &spine_box) > 2.0 * reach {
+                            continue;
+                        }
+                        samples
+                    };
+                    for p in samples {
+                        for chord in spine.windows(2) {
+                            clearance =
+                                clearance.min(point_segment_distance(p, chord[0], chord[1]));
+                        }
                     }
                 }
                 if clearance <= reach {
@@ -1353,6 +1379,18 @@ fn polyline_box(points: &[remus_math::vec::Point3]) -> ([f64; 3], [f64; 3]) {
         }
     }
     (lo, hi)
+}
+
+/// Euclidean gap between two axis-aligned boxes (zero when they overlap).
+fn box_gap(a: &([f64; 3], [f64; 3]), b: &([f64; 3], [f64; 3])) -> f64 {
+    let mut gap_sq = 0.0;
+    for axis in 0..3 {
+        let gap = (a.0[axis] - b.1[axis]).max(b.0[axis] - a.1[axis]);
+        if gap > 0.0 {
+            gap_sq += gap * gap;
+        }
+    }
+    f64::sqrt(gap_sq)
 }
 
 /// Whether the shortest distance between two sampled polylines is at most

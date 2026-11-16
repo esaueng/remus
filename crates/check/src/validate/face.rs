@@ -19,6 +19,40 @@ pub fn check_face_has_surface(
     Ok(vec![])
 }
 
+/// Check that a planar face's inner loops lie inside its outer loop and do
+/// not cross each other.
+///
+/// A loop crossing passes every count-based check (closed shell, Euler,
+/// manifold edges) yet leaves the face's region undefined and its mesh open.
+/// Reported only where it is certified, at points farther from the other
+/// loop than both loops' edge tolerances plus `tolerance`: touching or
+/// tangent loops are never flagged, and a face the certified reader cannot
+/// read or decide within its work limit is passed (see
+/// [`crate::properties::loop_nesting::face_loop_containment_defect`]).
+///
+/// # Errors
+///
+/// Returns an error if the face cannot be resolved.
+pub fn check_face_loop_containment(
+    topo: &Topology,
+    face_id: FaceId,
+    tolerance: f64,
+) -> Result<Vec<ValidationIssue>, CheckError> {
+    let _face = topo.face(face_id)?;
+    Ok(
+        crate::properties::loop_nesting::face_loop_containment_defect(topo, face_id, tolerance)
+            .map(|defect| ValidationIssue {
+                check: CheckId::FaceLoopContainment,
+                severity: Severity::Error,
+                entity: EntityRef::Face(face_id),
+                description: format!("face {}: {defect}", face_id.index()),
+                deviation: None,
+            })
+            .into_iter()
+            .collect(),
+    )
+}
+
 /// Check face orientation consistency: the STORED outer-wire winding should
 /// be consistent with the STORED surface normal.
 ///

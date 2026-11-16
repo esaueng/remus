@@ -11,7 +11,7 @@ pub(crate) mod vertex;
 pub(crate) mod wire;
 
 pub use checks::{CheckId, EntityRef, Severity, ValidationIssue, ValidationReport};
-pub use face::check_face_inner_wire_orientation;
+pub use face::{check_face_inner_wire_orientation, check_face_loop_containment};
 pub use wire::check_wire_self_intersection;
 
 use std::collections::{HashMap, HashSet};
@@ -338,6 +338,16 @@ fn validate_shell_checks(
                 .contains(&CheckId::FaceOrientationConsistency)
             {
                 issues.extend(face::check_face_orientation(topo, fid)?);
+            }
+            if !options
+                .disabled_checks
+                .contains(&CheckId::FaceLoopContainment)
+            {
+                issues.extend(face::check_face_loop_containment(
+                    topo,
+                    fid,
+                    options.tolerance_scale * 1e-6,
+                )?);
             }
         }
     }

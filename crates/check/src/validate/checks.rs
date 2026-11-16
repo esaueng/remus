@@ -38,6 +38,9 @@ pub enum CheckId {
     FaceNoSurface,
     /// Face orientation inconsistent with wire winding.
     FaceOrientationConsistency,
+    /// A planar face's inner loop leaves its outer loop, or two of its inner
+    /// loops cross.
+    FaceLoopContainment,
     /// Shell contains no faces.
     ShellEmpty,
     /// Shell faces not all connected via shared edges.
