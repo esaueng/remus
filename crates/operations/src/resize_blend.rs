@@ -493,6 +493,23 @@ pub(crate) fn defeature_curved_band(
         validate_exact_result(topo, sharp.solid, "deleted planar blend reconstruction")?;
         return Ok(Some(sharp));
     }
+    if matches!(topo.face(seed)?.surface(), FaceSurface::Cone(_)) {
+        // A chamfer band rolls no ball, so `describe_band` cannot name it,
+        // yet a closed cone between a plane and a cylinder (a chamfered hole
+        // or boss rim) is removed exactly as a blend band on the same
+        // supports: the sharp rim is where the two supports meet. Anything
+        // else keeps the established defeature logic.
+        let Some(band) = describe_chamfer_band(topo, solid, selected)? else {
+            return Ok(None);
+        };
+        let sharp = remove_blend_region(topo, solid, &band)?;
+        validate_exact_result(topo, sharp.solid, "deleted chamfer band reconstruction")?;
+        return Ok(Some(crate::defeature::DefeatureOutcome {
+            solid: sharp.solid,
+            face_map: sharp.face_map,
+            boundary_history: sharp.boundary_history,
+        }));
+    }
     if !matches!(topo.face(seed)?.surface(), FaceSurface::Torus(_)) {
         return Ok(None);
     }
@@ -922,6 +939,66 @@ fn blend_region_supports(
     let mut supports: Vec<FaceId> = supports.into_iter().collect();
     supports.compact_sort_unstable_by_key(|support| support.index());
     Ok(supports)
+}
+
+/// A selection that is exactly one closed conical chamfer band between a
+/// plane and a cylinder, described as the band a blend removal rebuilds.
+///
+/// The band must meet each support across one closed crease edge (a chamfer
+/// meets its supports at an angle, never tangentially) and touch no other
+/// face. `Ok(None)` for anything else, so the caller keeps its own logic.
+/// The radius is unused by the sharp-rim reconstruction and is set to zero.
+fn describe_chamfer_band(
+    topo: &Topology,
+    solid: SolidId,
+    selected: &[FaceId],
+) -> Result<Option<BandDescription>, OperationsError> {
+    let [band_face] = selected else {
+        return Ok(None);
+    };
+    let adjacency = solid_adjacency(topo, solid)?;
+    let mut contacts: Vec<(EdgeId, FaceId)> = Vec::new();
+    for edge in face_edges(topo, *band_face)? {
+        let others: Vec<FaceId> = distinct_faces(adjacency.faces_for_edge(edge))
+            .into_iter()
+            .filter(|face| face != band_face)
+            .collect();
+        match others.as_slice() {
+            // The cone's own seam.
+            [] => {}
+            [other] => contacts.push((edge, *other)),
+            _ => return Ok(None),
+        }
+    }
+    let [(first_edge, first), (second_edge, second)] = contacts.as_slice() else {
+        return Ok(None);
+    };
+    if first == second {
+        return Ok(None);
+    }
+    for (edge, support) in [(*first_edge, *first), (*second_edge, *second)] {
+        if !topo.edge(edge)?.is_closed() || tangent_across(topo, edge, *band_face, support)? {
+            return Ok(None);
+        }
+    }
+    let mut supports = vec![*first, *second];
+    supports.compact_sort_unstable_by_key(|support| support.index());
+    let plane_and_cylinder = matches!(
+        (
+            topo.face(supports[0])?.surface(),
+            topo.face(supports[1])?.surface()
+        ),
+        (FaceSurface::Plane { .. }, FaceSurface::Cylinder(_))
+            | (FaceSurface::Cylinder(_), FaceSurface::Plane { .. })
+    );
+    if !plane_and_cylinder {
+        return Ok(None);
+    }
+    Ok(Some(BandDescription {
+        faces: vec![*band_face],
+        supports,
+        radius: 0.0,
+    }))
 }
 
 fn describe_band(
