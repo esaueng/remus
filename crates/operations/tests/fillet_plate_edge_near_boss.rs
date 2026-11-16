@@ -373,3 +373,75 @@ fn straight_wall_keeps_its_refusal_and_its_round() {
     let result = fillet_cascade(&mut topo, solid, &[edge], CLEARS).unwrap();
     assert_sound(&topo, before, result.solid, "straight r=0.1");
 }
+
+/// A quarter of an R100 disc with a pin hole of radius 0.1 whose rim comes
+/// exactly 1 from the disc's arc. Measured on samples, the clearance reads
+/// wrong both ways: the long arc's chords (at the sample cap) sit up to 5e-4
+/// inside it, so a radius that fits could be refused, and the pin's eight
+/// rim samples miss its nearest point, so 1.0001 slipped past the guard to
+/// the validator. The arc is measured exactly and the pin's rim re-sampled
+/// around its nearest point: 0.9999 is not refused at the cliff, and 1.0001
+/// is, naming the clearance.
+#[test]
+fn long_arc_guard_measures_the_arc_not_its_chords() {
+    const DISC: f64 = 100.0;
+    const PIN: f64 = 0.1;
+    let build = |topo: &mut Topology| {
+        let disc = make_cylinder(topo, DISC, PLATE).unwrap();
+        let quadrant = make_box(topo, DISC + 10.0, DISC + 10.0, PLATE + 2.0).unwrap();
+        transform_solid(topo, quadrant, &Mat4::translation(0.0, 0.0, -1.0)).unwrap();
+        let plate = boolean(topo, BooleanOp::Intersect, disc, quadrant).unwrap();
+        // Off the arc's middle, so no sample of it need sit at the nearest
+        // point.
+        let angle = 0.3_f64;
+        let at = DISC - 1.0 - PIN;
+        let pin = make_cylinder(topo, PIN, PLATE + 2.0).unwrap();
+        transform_solid(
+            topo,
+            pin,
+            &Mat4::translation(at * angle.cos(), at * angle.sin(), -1.0),
+        )
+        .unwrap();
+        boolean(topo, BooleanOp::Cut, plate, pin).unwrap()
+    };
+    let rim = |topo: &Topology, solid: SolidId| {
+        solid_edges(topo, solid)
+            .unwrap()
+            .into_iter()
+            .find(|&e| {
+                let edge = topo.edge(e).unwrap();
+                let EdgeCurve::Circle(circle) = edge.curve() else {
+                    return false;
+                };
+                (circle.radius() - DISC).abs() < 1e-9 && (circle.center().z() - PLATE).abs() < 1e-9
+            })
+            .expect("top arc of the disc")
+    };
+
+    let mut topo = Topology::new();
+    let solid = build(&mut topo);
+    let edge = rim(&topo, solid);
+    if let Err(error) = fillet_v2(&mut topo, solid, &[edge], 0.9999) {
+        assert_ne!(blend_failure_code(&error), "cliff-encountered", "{error}");
+    }
+
+    let mut topo = Topology::new();
+    let solid = build(&mut topo);
+    let edge = rim(&topo, solid);
+    let before = solid_entity_counts(&topo, solid).unwrap();
+    let error = fillet_v2(&mut topo, solid, &[edge], 1.0001)
+        .map(|result| result.solid)
+        .expect_err("past the pin");
+    let OperationsError::Blend(remus_blend::BlendError::CliffEncountered {
+        available_radius, ..
+    }) = error
+    else {
+        panic!("{error}");
+    };
+    // The pin's rim is sampled, so the reading may sit a hair above 1.
+    assert!(
+        (0.0..1e-4).contains(&(available_radius - 1.0 + 1e-9)),
+        "available radius {available_radius}"
+    );
+    assert_eq!(solid_entity_counts(&topo, solid).unwrap(), before);
+}

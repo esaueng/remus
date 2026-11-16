@@ -852,9 +852,21 @@ fn sample_edge(
     samples: usize,
 ) -> Result<Vec<remus_math::vec::Point3>, OperationsError> {
     let e = topo.edge(edge)?;
+    let (t0, t1) = crate::authoritative_edge_domain(e, "blend edge sampling")?;
+    sample_edge_between(topo, edge, (t0, t1), samples)
+}
+
+/// [`sample_edge`] over the parameter interval `range` of the edge's curve,
+/// `samples + 1` points evenly spaced in parameter, ends included.
+fn sample_edge_between(
+    topo: &Topology,
+    edge: EdgeId,
+    (t0, t1): (f64, f64),
+    samples: usize,
+) -> Result<Vec<remus_math::vec::Point3>, OperationsError> {
+    let e = topo.edge(edge)?;
     let start = topo.vertex(e.start())?.point();
     let end = topo.vertex(e.end())?.point();
-    let (t0, t1) = crate::authoritative_edge_domain(e, "blend edge sampling")?;
     Ok((0..=samples)
         .map(|i| {
             let t = t0
@@ -863,6 +875,131 @@ fn sample_edge(
             e.curve().evaluate_with_endpoints(t, start, end)
         })
         .collect())
+}
+
+/// Chords a curved edge's nearest stretch is re-sampled into.
+const CLEARANCE_REFINE: usize = 64;
+
+/// The parameter of sample `i` of `n + 1` evenly spaced over `(t0, t1)`.
+#[allow(clippy::cast_precision_loss)]
+fn sample_parameter((t0, t1): (f64, f64), i: usize, n: usize) -> f64 {
+    t0 + (t1 - t0) * (i as f64) / (n.max(1) as f64)
+}
+
+/// A curved blended edge, for measuring how close a hole comes to it.
+///
+/// A circular arc is measured exactly ([`remus_check::distance::point_to_edge`]).
+/// Any other curve is measured on its parameter-uniform polyline, re-sampled
+/// [`CLEARANCE_REFINE`]-fold around the nearest chord: a polyline chord lies
+/// inside the arc's bulge, so on a long edge at the sample cap its distance
+/// alone can understate the clearance enough to refuse a radius that fits.
+struct CurvedSpine {
+    edge: EdgeId,
+    exact: bool,
+    domain: (f64, f64),
+    points: Vec<remus_math::vec::Point3>,
+    /// The polyline's box, grown by its longest chord: a chord's arc bows
+    /// out of the box by less than the chord's length.
+    bounds: ([f64; 3], [f64; 3]),
+}
+
+impl CurvedSpine {
+    fn new(topo: &Topology, edge: EdgeId, step: f64) -> Result<Self, OperationsError> {
+        let e = topo.edge(edge)?;
+        let points = edge_polyline(topo, edge, step)?;
+        let chord = points
+            .windows(2)
+            .map(|w| (w[1] - w[0]).length())
+            .fold(0.0, f64::max);
+        let (mut lo, mut hi) = polyline_box(&points);
+        for axis in 0..3 {
+            lo[axis] -= chord;
+            hi[axis] += chord;
+        }
+        Ok(Self {
+            edge,
+            exact: matches!(e.curve(), EdgeCurve::Circle(_)),
+            domain: crate::authoritative_edge_domain(e, "blend edge sampling")?,
+            points,
+            bounds: (lo, hi),
+        })
+    }
+
+    fn distance(
+        &self,
+        topo: &Topology,
+        p: remus_math::vec::Point3,
+    ) -> Result<f64, OperationsError> {
+        if self.exact {
+            return Ok(remus_check::distance::point_to_edge(topo, p, self.edge)?.0);
+        }
+        let n = self.points.len().saturating_sub(1);
+        if n == 0 {
+            return Ok(self
+                .points
+                .first()
+                .map_or(f64::INFINITY, |&q| (p - q).length()));
+        }
+        let chords: Vec<f64> = self
+            .points
+            .windows(2)
+            .map(|w| point_segment_distance(p, w[0], w[1]))
+            .collect();
+        let nearest = (0..n).fold(0, |best, i| if chords[i] < chords[best] { i } else { best });
+        // The chords either side of the nearest, re-sampled finely; the rest
+        // are farther by their chord distance.
+        let (lo, hi) = (nearest.saturating_sub(1), (nearest + 2).min(n));
+        let range = (
+            sample_parameter(self.domain, lo, n),
+            sample_parameter(self.domain, hi, n),
+        );
+        let fine = sample_edge_between(topo, self.edge, range, CLEARANCE_REFINE)?;
+        let near = fine
+            .windows(2)
+            .map(|w| point_segment_distance(p, w[0], w[1]))
+            .fold(f64::INFINITY, f64::min);
+        let far = chords
+            .iter()
+            .enumerate()
+            .filter(|&(i, _)| i < lo || i >= hi)
+            .map(|(_, &d)| d)
+            .fold(f64::INFINITY, f64::min);
+        Ok(near.min(far))
+    }
+}
+
+/// The shortest distance from a hole's edge to a curved blended edge: the
+/// hole edge's parameter-uniform samples, then the stretch around the nearest
+/// of them re-sampled [`CLEARANCE_REFINE`]-fold, each measured with
+/// [`CurvedSpine::distance`].
+fn curved_clearance(
+    topo: &Topology,
+    spine: &CurvedSpine,
+    hole_edge: EdgeId,
+    samples: &[remus_math::vec::Point3],
+) -> Result<f64, OperationsError> {
+    let n = samples.len().saturating_sub(1);
+    let mut best = f64::INFINITY;
+    let mut nearest = 0;
+    for (i, &p) in samples.iter().enumerate() {
+        let d = spine.distance(topo, p)?;
+        if d < best {
+            best = d;
+            nearest = i;
+        }
+    }
+    if n > 0 {
+        let domain =
+            crate::authoritative_edge_domain(topo.edge(hole_edge)?, "blend edge sampling")?;
+        let range = (
+            sample_parameter(domain, nearest.saturating_sub(1), n),
+            sample_parameter(domain, (nearest + 1).min(n), n),
+        );
+        for p in sample_edge_between(topo, hole_edge, range, CLEARANCE_REFINE)? {
+            best = best.min(spine.distance(topo, p)?);
+        }
+    }
+    Ok(best)
 }
 
 /// `tan(θ/2)` for an edge between the two planar faces `faces`, `θ` the angle
@@ -967,15 +1104,15 @@ fn reject_blend_into_hole(
         // safe bound, and the guard never goes below `radius`.
         let reach = fillet_contact_setback(topo, neighbours, radius)?.max(radius);
         let step = reach / 8.0;
-        let spine = if straight {
-            vec![
-                topo.vertex(e.start())?.point(),
-                topo.vertex(e.end())?.point(),
-            ]
+        let (a, b) = (
+            topo.vertex(e.start())?.point(),
+            topo.vertex(e.end())?.point(),
+        );
+        let curved = if straight {
+            None
         } else {
-            edge_polyline(topo, edge_id, step)?
+            Some(CurvedSpine::new(topo, edge_id, step)?)
         };
-        let spine_box = polyline_box(&spine);
 
         for &face_id in neighbours {
             let face = topo.face(face_id)?;
@@ -991,23 +1128,19 @@ fn reject_blend_into_hole(
                 }
                 let mut clearance = f64::INFINITY;
                 for oe in &wire_edges {
-                    let samples = if straight {
-                        sample_edge(topo, oe.edge(), 64)?
-                    } else {
-                        let samples = edge_polyline(topo, oe.edge(), step)?;
-                        // A loop edge whose box clears the spine's by twice
-                        // the reach cannot come within the reach.
-                        if box_gap(&polyline_box(&samples), &spine_box) > 2.0 * reach {
-                            continue;
+                    let Some(spine) = curved.as_ref() else {
+                        for p in sample_edge(topo, oe.edge(), 64)? {
+                            clearance = clearance.min(point_segment_distance(p, a, b));
                         }
-                        samples
+                        continue;
                     };
-                    for p in samples {
-                        for chord in spine.windows(2) {
-                            clearance =
-                                clearance.min(point_segment_distance(p, chord[0], chord[1]));
-                        }
+                    let samples = edge_polyline(topo, oe.edge(), step)?;
+                    // A loop edge whose box clears the spine's by twice the
+                    // reach cannot come within the reach.
+                    if box_gap(&polyline_box(&samples), &spine.bounds) > 2.0 * reach {
+                        continue;
                     }
+                    clearance = clearance.min(curved_clearance(topo, spine, oe.edge(), &samples)?);
                 }
                 if clearance <= reach {
                     // The reach is linear in the radius.
