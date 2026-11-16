@@ -328,17 +328,17 @@ fn vertex_loop_sphere_void_subtracts_from_its_host() {
     for face in cavity.faces() {
         assert!(topo.face(*face).unwrap().is_reversed());
     }
-    // Cavity volume is deflection-sampled, exactly as for a native
-    // `box - sphere` cut (7731.95901 at 0.005 mm): require the
-    // same band and convergence toward the exact value.
+    // The host's planes and the void's two hemispheres, each bounded by one
+    // latitude (the vertex loop at the pole), integrate face by face, so the
+    // cavity volume is exact at any deflection.
     let exact = 8000.0 - sphere_volume(4.0);
-    let coarse = (solid_volume(&topo, solid, 0.005).unwrap() - exact).abs();
-    let fine = (solid_volume(&topo, solid, 0.0005).unwrap() - exact).abs();
-    assert!(coarse <= exact * 1e-5, "spherical void error {coarse}");
-    assert!(
-        fine < coarse,
-        "spherical void converges: {fine} !< {coarse}"
-    );
+    for deflection in [0.005, 0.0005] {
+        let error = (solid_volume(&topo, solid, deflection).unwrap() - exact).abs();
+        assert!(
+            error <= exact * 1e-9,
+            "spherical void error {error} at deflection {deflection}"
+        );
+    }
     for (point, expected) in [
         (Point3::new(10.0, 10.0, 10.0), PointClassification::Outside),
         (Point3::new(10.0, 10.0, 15.0), PointClassification::Inside),

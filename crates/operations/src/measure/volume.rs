@@ -1450,12 +1450,17 @@ fn analytic_faces_solid_volume(
         let face = topo.face(fid)?;
         match face.surface() {
             FaceSurface::Plane { .. } => {}
-            FaceSurface::Sphere(s)
-                if face.inner_wires().is_empty() && sphere_outer_wire_constant_v(topo, fid, s)? =>
-            {
-                has_latitude_cap = true;
+            FaceSurface::Sphere(s) => {
+                if face.inner_wires().is_empty() && sphere_outer_wire_constant_v(topo, fid, s)? {
+                    has_latitude_cap = true;
+                } else {
+                    planes_and_latitude_caps = false;
+                }
             }
-            _ => planes_and_latitude_caps = false,
+            FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Torus(_)
+            | FaceSurface::Nurbs(_) => planes_and_latitude_caps = false,
         }
     }
     for &fid in &faces {
@@ -1535,7 +1540,7 @@ fn analytic_faces_solid_volume(
             | FaceSurface::Sphere(_) => {}
         }
     }
-    if !has_bored_quadric && !(planes_and_latitude_caps && has_latitude_cap) {
+    if !(has_bored_quadric || (planes_and_latitude_caps && has_latitude_cap)) {
         return Ok(None);
     }
 
