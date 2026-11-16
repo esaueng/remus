@@ -8,6 +8,27 @@ historical predecessor-line records, retained for provenance. The
 
 ### Fixed
 
+* **operations,wasm:** a thread cut at the default tolerance can be exported
+  again (#1806). The edges of a thread from `cut_thread` /
+  `cutThreadDetailed` hold their proven distance from the exact thread as
+  their tolerance, and the default tolerance of `1e-4` of the pitch let that
+  pass the kernel's entity cap of `1e-4`, which the arena document every
+  export goes through refuses to read back (`arena edge 17 has invalid
+  tolerance 0.000227…; maximum is 0.0000999…`): the flank trims of a
+  chamfered or runout end from a pitch of 1 up (an M12×1.75 thread with 45°
+  chamfers held 2.3e-4), and the helices of a plain thread at a pitch of 3
+  (1.2e-4). **Behavior change:** the default tolerance is `1e-4` of the
+  pitch up to the new `MAX_DEFAULT_TOLERANCE` (5e-5, half the cap), so a
+  default thread coarser than a pitch of 0.5 is fitted tighter than before,
+  with more spans (they grow with the fourth root of the ratio: about 1.4
+  times as many at a pitch of 1.75), and no edge of it holds more than
+  7.5e-5; a pitch of 0.5 or finer builds the surfaces it did. A `tolerance`
+  given by the caller is used as given, and one that would leave an edge
+  over the cap refuses with the new `thread:tolerance-too-loose` (argument
+  `tolerance`, `ThreadRefusal::ToleranceTooLoose`) where it used to return a
+  body no export could read. A flank trim now holds the three bounds that
+  separate it from its flank as measured (outline, sweep and its own fit),
+  where it held the nominal tolerance in place of the outline's.
 * **operations,wasm:** `fillet` no longer refuses two rounds that meet at a
   corner whose third edge stays sharp unless that corner is convex and
   square, nor a chain that crosses the tangent seam of an earlier round on

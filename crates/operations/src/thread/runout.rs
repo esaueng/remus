@@ -224,6 +224,7 @@ pub(super) fn runout_zone(
     root_side: RootSide,
     rate: f64,
     tolerance: f64,
+    outline_bound: f64,
     piece_roles: &[PieceRole],
     side_of_thread: ThreadEndSide,
 ) -> Result<Zone, ThreadError> {
@@ -319,7 +320,9 @@ pub(super) fn runout_zone(
         .ok_or_else(|| invalid("cannot project onto the cone"))?;
     let reversed = surface.normal(u, v).dot(cone.outward(frame, probe)?) < 0.0;
     let end_center = frame.origin + frame.axis * cone.end_z;
-    let edge_tol = |bound: f64| tolerance + bound + e.deviation_bound;
+    // A trim holds its proven distance from the flank it cuts: the
+    // outline's, the sweep's and its own fit's, each as measured.
+    let edge_tol = |bound: f64| outline_bound + bound + e.deviation_bound;
 
     let mut faces = Vec::new();
     let mut roles = Vec::new();

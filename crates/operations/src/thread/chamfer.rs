@@ -306,6 +306,11 @@ pub(super) fn retrim_flank(
 /// the end plane. `e`'s cap on the root plane and its crest faces are
 /// dropped; its cap on the full plane is left to the caller (it is the next
 /// segment's profile, or the previous segment's cap).
+///
+/// `tolerance` is what the trims are fitted to; `outline_bound` is the
+/// proven distance of `e`'s profile from the exact outline. A trim's edge
+/// holds its proven distance from the flank it cuts: the outline's, the
+/// sweep's and its own fit's, each as measured.
 #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 pub(super) fn chamfer_zone(
     topo: &mut Topology,
@@ -316,6 +321,7 @@ pub(super) fn chamfer_zone(
     seam: f64,
     rate: f64,
     tolerance: f64,
+    outline_bound: f64,
     piece_roles: &[PieceRole],
     side_of_thread: ThreadEndSide,
 ) -> Result<Zone, ThreadError> {
@@ -415,7 +421,7 @@ pub(super) fn chamfer_zone(
                 let turn = raw + TAU * ((expected - raw) / TAU).round();
                 let (fit, bound) = conical_helix(frame, pa, pc, turn, tolerance)?;
                 trim_bound = trim_bound.max(bound);
-                let edge_tol = tolerance + bound + e.deviation_bound;
+                let edge_tol = outline_bound + bound + e.deviation_bound;
                 let mut trim =
                     Edge::with_tolerance(a, cv, EdgeCurve::NurbsCurve(fit.clone()), Some(edge_tol));
                 trim.set_trim(Some(fit.domain()));

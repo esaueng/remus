@@ -22,7 +22,7 @@
 //!   "offset": 0,                      // from the face's lower end
 //!   "length": 8,                      // optional; default to the face end
 //!   "xDirection": [1, 0, 0], "phase": 0,
-//!   "tolerance": 1e-4,                // default 1e-4 · pitch
+//!   "tolerance": 5e-5,                // default 1e-4 · pitch, at most 5e-5
 //!   "start": { "kind": "plain" } | { "kind": "chamfer", "angle": 45 }
 //!            | { "kind": "runout", "angle": 45 },
 //!   "end":   the same,
@@ -112,6 +112,14 @@
 //! [`ThreadRefusal::code`]) and leave the session unchanged. End finishes
 //! that reach past each other refuse with `thread:ends-overlap`, a single
 //! finish longer than the thread with `thread:finish-too-long`.
+//!
+//! `tolerance` bounds the thread surfaces' distance from the exact thread.
+//! The default is `1e-4` of the pitch up to 5e-5, which keeps every edge's
+//! own tolerance within the 1e-4 an edge may hold. A tolerance too fine for
+//! the span limits refuses with `thread:tolerance-too-tight`; one so loose
+//! that an edge would hold more than 1e-4 (possible above about 6.7e-5
+//! with a chamfered or runout end, above 2e-4 with plain ends) refuses with
+//! `thread:tolerance-too-loose`, since no export could read the body back.
 
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -328,7 +336,9 @@ fn thread_failure(error: ThreadError) -> StructuredWasmError {
                 }
                 ThreadRefusal::RootClosed => Some("crestWidth"),
                 ThreadRefusal::TooDeep => Some("depth"),
-                ThreadRefusal::ToleranceTooTight => Some("tolerance"),
+                ThreadRefusal::ToleranceTooTight | ThreadRefusal::ToleranceTooLoose => {
+                    Some("tolerance")
+                }
                 ThreadRefusal::TaperOutOfRange => Some("taper"),
                 _ => None,
             };
