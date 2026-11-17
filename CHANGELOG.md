@@ -48,7 +48,23 @@ historical predecessor-line records, retained for provenance. The
   rounds that lean builds each stripe over a round between that round's
   seams, bounded by the exact contact ellipses, with the stripe itself a
   NURBS surface (it has no closed form). Chamfering a loop over leaning
-  rounds is still refused with `trimming-failure`.
+  rounds: see the next entry.
+* **blend,operations,wasm:** a chamfer of a loop over rounds that lean, the
+  top or bottom loop of a drafted box whose uprights are rounded or the
+  floor loop of a pocket cut by a drafted rounded tool, no longer refuses
+  with `trimming-failure` (#1743). Each band now sets its contacts the same
+  distance `ρ` off the opposite face, `ρ = d·sin α` with `α` the angle
+  between the floor and the flanking walls, which is the distance `d` along
+  each face that the straight bands already used. Over a round the two
+  contacts are exact ellipses and the band between them is an elliptic cone,
+  stored as the rational surface that is exactly it; the straight bands
+  beside it end on its first and last rulings, before or after the chain's
+  vertex. Over the round the distance along each face is `ρ / sin α` at the
+  local angle, within 0.06% of `d` on a 2° draft. Rounds whose two flanks
+  meet the floor at different angles keep their refusal. As for the fillet
+  over leaning rounds, `chamferDetailed` reports the four cones as
+  `approximateFaces` (every new NURBS face is disclosed), so `exactOnly`
+  still declines the result.
 * **algo,operations:** an exact cut of a drilled hole tangent to a wall, or
   crossing a fillet band, no longer depends on where the tool's seam sits
   (#1739). A hole tangent to a wall from the inside leaves a wall of zero
