@@ -396,6 +396,50 @@ historical predecessor-line records, retained for provenance. The
 
 ### Added
 
+* **operations,wasm:** wrap a planar profile onto a cylinder
+  (`wrap::wrap_profile_solid`, `wrapProfileOnCylinder`), preserving arc
+  length, as the solid between two radii: the material an emboss adds or an
+  engrave removes. A profile in a plane parallel to the axis maps its
+  arc-length and axial coordinates to angle `s / R` and height. Inner and
+  outer faces are exact cylinders; an edge along the axis walls a radial
+  plane and one across it a plane square to the axis, with straight and
+  circular edges. Every other edge (an oblique line wraps to a helix, an arc
+  or spline to a curve with no rational form) is a cubic B-spline certified
+  within `1e-7` of the wrap's scale by the Hermite remainder, from a
+  fourth-derivative bound built from the profile curve's own derivative
+  bounds, fitted span by span between a spline's knots and joined `C⁰`;
+  its wall is the exact ruled surface between the inner and outer
+  fits, every ruling radial. A wrapped region of area `A` encloses
+  `A·(ro² − ri²)/(2R)`. A profile not parallel to the axis, one spanning a
+  full turn (its angular extent certified from samples and a bound on how
+  fast the angle moves between them), a rational curve other than a circle or ellipse and an empty
+  radius range are refused, leaving the topology unchanged. Arc length is
+  measured along the profile plane itself (`axis × normal`, the normal
+  turned away from the axis), so turning the reference direction moves the
+  wrap round the axis without scaling it, and a region lands under where it
+  is drawn whichever way its plane faces.
+
+* **operations,wasm:** wrap a planar profile onto a cone
+  (`wrap::wrap_profile_on_cone`, `wrapProfileOnCone`), preserving arc length
+  through the cone's development, as the solid between two normal offsets
+  from it. The profile (in a plane parallel to the axis) is read as the
+  flattened cone about its apex: its coordinates are arc length and length
+  along the generator from the circle at a chosen axis point. Inner and
+  outer faces are exact cones (a cone offset along its normal is a cone
+  with the same axis and half-angle). Every edge is a cubic B-spline
+  certified within `1e-7` of the wrap's scale, from a closed-form
+  fourth-derivative bound: the development map is homogeneous about the
+  apex, so its derivatives are bounded through Wirtinger derivatives of
+  `w^p·w̄^q`. Each wall is the exact ruled surface between an edge's inner
+  and outer fits, which share their spans; every ruling is the normal
+  segment. An annular sector of the development encloses its closed form
+  within `1e-6`. A profile reaching the apex, one spanning a full turn of
+  the cone, an offset past an apex and a degenerate cone are refused,
+  leaving the topology unchanged. Measured by `solid_volume`, a cone face
+  trimmed by a curved `(u, v)` boundary still reads to the face
+  integrator's boundary chording (a wrapped disc reads 1.3e-4 low; a fine
+  mesh converges on the closed form).
+
 * **operations,wasm:** exact path sweep along lines and circular arcs
   (`exact_sweep::sweep_exact`, `sweepExact(face, edges)`). The profile stays
   where it is and is carried by the path's rigid motions — a line translates
