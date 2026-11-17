@@ -22,9 +22,10 @@ historical predecessor-line records, retained for provenance. The
   `face_area` / `faceArea` of the section is then the analytic area, and
   `getEdgeCurveType` reports `CIRCLE` / `ELLIPSE` where it reported 64
   `LINE`s, so a consumer that counted line edges or pinned the polygon's
-  area sees different numbers. Inner wires are grouped by exact containment
-  (a one-vertex circle wire is tested as a disc, and a hole is placed by a
-  point of its boundary clear of the chords between its outline's arcs).
+  area sees different numbers. Inner wires are grouped by exact containment:
+  a ray from the hole is counted against the outline's own lines and arcs
+  (a wire of one closed circle has a single vertex), and is sent clear of
+  every vertex and tangent of the outline.
   Still chorded, as `Line` edges that nothing marks as approximate: a torus
   off its symmetry planes, a NURBS face, and the parabola and hyperbola
   branches of a cone.
