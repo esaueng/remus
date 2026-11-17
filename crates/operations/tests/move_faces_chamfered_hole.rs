@@ -1,4 +1,4 @@
-//! Face moves must carry a bore's chamfer together with its rounded cap.
+//! Face moves must carry a bore's chamfer together with its cap, rounded or not.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -7,10 +7,10 @@
 )]
 
 use remus_math::mat::Mat4;
-use remus_math::vec::Vec3;
-use remus_operations::blend_ops::fillet_v2;
+use remus_math::vec::{Point3, Vec3};
+use remus_operations::blend_ops::{chamfer_v2, fillet_v2};
 use remus_operations::boolean::{BooleanOp, boolean};
-use remus_operations::measure::solid_volume;
+use remus_operations::measure::{face_area, solid_volume};
 use remus_operations::prepared_move::PreparedFaceMove;
 use remus_operations::primitives::{make_box, make_cone, make_cylinder};
 use remus_operations::push_pull::move_faces;
@@ -18,6 +18,7 @@ use remus_operations::tessellate::{is_watertight, tessellate_solid_with_toleranc
 use remus_operations::transform::transform_solid;
 use remus_operations::validate::validate_solid;
 use remus_topology::Topology;
+use remus_topology::edge::EdgeCurve;
 use remus_topology::explorer::{solid_edges, solid_entity_counts, solid_faces};
 use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::solid::SolidId;
@@ -218,5 +219,159 @@ fn rotated_step_mouths_support_repeated_edits_and_prepared_preview() {
         let restored = remus_io::step::read_step(&step, &mut reopened).unwrap()[0];
         verified(&reopened, restored);
         assert!((solid_volume(&reopened, restored, 0.001).unwrap() - expected).abs() < 0.03);
+    }
+}
+
+/// A 30 x 12 x 5 plate with two through bores of radius 4.5 at x = 9 and
+/// x = 21, and a 0.5 mm chamfer on the top mouth of the x = 9 bore only: no
+/// fillet anywhere (#1799).
+fn plate_with_one_chamfered_mouth(topo: &mut Topology) -> SolidId {
+    let mut plate = make_box(topo, 30.0, 12.0, 5.0).unwrap();
+    for x in [9.0, 21.0] {
+        let bore = make_cylinder(topo, 4.5, 9.0).unwrap();
+        transform_solid(topo, bore, &Mat4::translation(x, 6.0, -2.0)).unwrap();
+        plate = boolean(topo, BooleanOp::Cut, plate, bore).unwrap();
+    }
+    let rim = solid_edges(topo, plate)
+        .unwrap()
+        .into_iter()
+        .filter(|&id| match topo.edge(id).unwrap().curve() {
+            EdgeCurve::Circle(circle) => {
+                (circle.center() - Point3::new(9.0, 6.0, 5.0)).length() < 1e-9
+            }
+            _ => false,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(rim.len(), 1, "one top rim on the x = 9 bore");
+    chamfer_v2(topo, plate, &rim, 0.5, 0.5).unwrap().solid
+}
+
+/// Every circle edge of `body` as (centre, radius).
+fn circles(topo: &Topology, body: SolidId) -> Vec<(Point3, f64)> {
+    solid_edges(topo, body)
+        .unwrap()
+        .into_iter()
+        .filter_map(|id| match topo.edge(id).unwrap().curve() {
+            EdgeCurve::Circle(circle) => Some((circle.center(), circle.radius())),
+            _ => None,
+        })
+        .collect()
+}
+
+fn only_cone(topo: &Topology, body: SolidId) -> FaceId {
+    let cones = solid_faces(topo, body)
+        .unwrap()
+        .into_iter()
+        .filter(|&face| matches!(topo.face(face).unwrap().surface(), FaceSurface::Cone(_)))
+        .collect::<Vec<_>>();
+    assert_eq!(cones.len(), 1);
+    cones[0]
+}
+
+#[test]
+fn a_chamfer_only_mouth_travels_with_its_cap() {
+    let mut topo = Topology::new();
+    let body = plate_with_one_chamfered_mouth(&mut topo);
+    verified(&topo, body);
+    let source = remus_io::arena_io::serialize_solid(&topo, body).unwrap();
+    let counts = solid_entity_counts(&topo, body).unwrap();
+    let before = solid_volume(&topo, body, 0.001).unwrap();
+    let selected = cap(&topo, body, Vec3::new(0.0, 0.0, 1.0));
+    let cap_area = face_area(&topo, selected, 0.001).unwrap();
+    let cone = only_cone(&topo, body);
+    let cone_area = face_area(&topo, cone, 0.001).unwrap();
+    let FaceSurface::Cone(source_cone) = topo.face(cone).unwrap().surface() else {
+        unreachable!()
+    };
+    let half_angle = source_cone.half_angle();
+    // Plate outline less both bores: what a slab of the cap's travel adds.
+    let section = 30.0 * 12.0 - 2.0 * PI * 4.5 * 4.5;
+
+    for distance in [0.4, 4.0, 13.0, 16.5, -0.6, -1.0] {
+        let mut preview_topo = topo.clone();
+        let mut prepared = PreparedFaceMove::prepare(&preview_topo, body, &[selected]).unwrap();
+        let preview = prepared
+            .move_faces(&mut preview_topo, distance)
+            .unwrap_or_else(|e| panic!("prepared, distance={distance}: {e}"));
+        let moved = move_faces(&mut topo, body, &[selected], distance)
+            .unwrap_or_else(|e| panic!("distance={distance}: {e}"));
+        assert_eq!(
+            remus_io::arena_io::serialize_solid(&preview_topo, preview.solid).unwrap(),
+            remus_io::arena_io::serialize_solid(&topo, moved).unwrap(),
+            "distance={distance}: prepared and unprepared moves differ"
+        );
+        verified(&topo, moved);
+        assert_eq!(solid_entity_counts(&topo, moved).unwrap(), counts);
+
+        let after = solid_volume(&topo, moved, 0.001).unwrap();
+        let expected = before + section * distance;
+        assert!(
+            (after - expected).abs() < 0.03,
+            "distance={distance}: volume {after} != {expected}"
+        );
+        let moved_cap = cap(&topo, moved, Vec3::new(0.0, 0.0, 1.0));
+        let moved_cap_area = face_area(&topo, moved_cap, 0.001).unwrap();
+        assert!(
+            (moved_cap_area - cap_area).abs() < 1e-3,
+            "distance={distance}: cap area {moved_cap_area} != {cap_area}"
+        );
+        let moved_cone = only_cone(&topo, moved);
+        let moved_cone_area = face_area(&topo, moved_cone, 0.001).unwrap();
+        assert!(
+            (moved_cone_area - cone_area).abs() < 1e-3,
+            "distance={distance}: cone area {moved_cone_area} != {cone_area}"
+        );
+        let FaceSurface::Cone(moved_cone) = topo.face(moved_cone).unwrap().surface() else {
+            unreachable!()
+        };
+        assert!((moved_cone.half_angle() - half_angle).abs() < 1e-10);
+
+        // The mouth keeps its radius at the moved cap; the chamfer foot keeps
+        // the bore radius 0.5 below it; nothing else grows.
+        let top = 5.0 + distance;
+        let rims = circles(&topo, moved);
+        let near = |center: Point3, radius: f64| {
+            rims.iter()
+                .any(|&(c, r)| (c - center).length() < 1e-8 && (r - radius).abs() < 1e-8)
+        };
+        assert!(
+            near(Point3::new(9.0, 6.0, top), 5.0),
+            "distance={distance}: {rims:?}"
+        );
+        assert!(
+            near(Point3::new(9.0, 6.0, top - 0.5), 4.5),
+            "distance={distance}: {rims:?}"
+        );
+        assert!(
+            near(Point3::new(21.0, 6.0, top), 4.5),
+            "distance={distance}: {rims:?}"
+        );
+        assert!(
+            rims.iter().all(|&(_, r)| r <= 5.0 + 1e-8),
+            "distance={distance}: {rims:?}"
+        );
+        assert_eq!(
+            remus_io::arena_io::serialize_solid(&topo, body).unwrap(),
+            source
+        );
+    }
+}
+
+#[test]
+fn a_chamfer_only_mouth_refuses_to_cross_the_far_face() {
+    let mut topo = Topology::new();
+    let body = plate_with_one_chamfered_mouth(&mut topo);
+    let source = remus_io::arena_io::serialize_solid(&topo, body).unwrap();
+    let selected = cap(&topo, body, Vec3::new(0.0, 0.0, 1.0));
+    // The plate is 5 thick and the chamfer 0.5 deep: from -4.5 the chamfer
+    // foot would reach or pass the bottom face.
+    for distance in [-4.5, -4.6] {
+        let error = move_faces(&mut topo, body, &[selected], distance)
+            .expect_err("the chamfer foot cannot cross the bottom face");
+        assert!(!error.to_string().is_empty());
+        assert_eq!(
+            remus_io::arena_io::serialize_solid(&topo, body).unwrap(),
+            source
+        );
     }
 }
