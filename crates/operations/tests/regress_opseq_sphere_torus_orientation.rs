@@ -431,16 +431,15 @@ fn check(pair: Pair, op: BooleanOp, sphere_first: bool, scale: f64, placed: bool
     }
 }
 
-/// The ray vote still miscounts a few probes on the rigidly placed seed-5201
-/// fuse and sphere − torus cut, whose kept sphere piece holds a pole: its trim
-/// cannot be read in the sphere's chart, so it falls back to the 3D polygon
-/// projection (B264, identical on the unpatched kernel). The winding
-/// classifier, validity and volume hold there; the ray vote is witnessed by
+/// The ray vote still miscounts a few probes on the rigidly placed fuse and
+/// sphere − torus cut of both seeds, whose kept sphere piece holds a pole: its
+/// trim cannot be read in the sphere's chart, so it falls back to the 3D
+/// polygon projection (B264; seed 5201 identical on the unpatched kernel,
+/// seed 1146 built only since #1790, one probe each). The closed-mesh winding
+/// number, validity and volume hold there; the ray vote is witnessed by
 /// `ray_vote_pole_piece_witness`.
-fn ray_pole_piece_cell(pair: Pair, op: BooleanOp, sphere_first: bool, placed: bool) -> bool {
-    pair.name == "seed5201"
-        && placed
-        && (op == BooleanOp::Fuse || (op == BooleanOp::Cut && sphere_first))
+fn ray_pole_piece_cell(_pair: Pair, op: BooleanOp, sphere_first: bool, placed: bool) -> bool {
+    placed && (op == BooleanOp::Fuse || (op == BooleanOp::Cut && sphere_first))
 }
 
 /// What the kernel does with one cell of the matrix.
@@ -454,20 +453,18 @@ enum Outcome {
     Open,
 }
 
-/// The declared domain. Unit scale is qualified, apart from three placed
-/// seed-1146 cells the GFA refuses; the 1e-3 and 1e3 scales refuse, apart
-/// from seed 1146's small-scale fuse and sphere − torus cut, which return
-/// wrong bodies (B38's small-scale class, `small_scale_seed1146_witness`).
-/// None of these limits moved with the orientation repair.
-fn outcome(pair: Pair, op: BooleanOp, sphere_first: bool, scale: f64, placed: bool) -> Outcome {
+/// The declared domain. Unit scale is qualified. The three placed seed-1146
+/// cells that keep the outer sphere were typed refusals until #1790: their
+/// lone shell's corner-fan volume reads about zero, and the outward flux that
+/// decides it skipped the kept hemisphere, whose equator is exact great-circle
+/// arcs. The 1e-3 and 1e3 scales refuse, apart from seed 1146's small-scale
+/// fuse and sphere − torus cut, which return wrong bodies (B38's small-scale
+/// class, `small_scale_seed1146_witness`).
+fn outcome(pair: Pair, op: BooleanOp, sphere_first: bool, scale: f64, _placed: bool) -> Outcome {
     let seed1146 = pair.name == "seed1146";
     let keeps_outer_sphere = op == BooleanOp::Fuse || (op == BooleanOp::Cut && sphere_first);
     if (scale - 1.0).abs() < f64::EPSILON {
-        if seed1146 && placed && keeps_outer_sphere {
-            Outcome::Refused
-        } else {
-            Outcome::Exact
-        }
+        Outcome::Exact
     } else if seed1146 && scale < 1.0 && keeps_outer_sphere {
         Outcome::Open
     } else {
@@ -540,20 +537,22 @@ fn small_scale_seed1146_witness() {
     }
 }
 
-/// B264: the ray vote miscounts probes of the placed seed-5201 fuse and
-/// sphere − torus cut (a pole-holding sphere piece read through the 3D
+/// B264: the ray vote miscounts probes of the placed fuse and sphere − torus
+/// cut of both seeds (a pole-holding sphere piece read through the 3D
 /// polygon fallback). Remove the ignore once the classifier reads it.
 #[test]
 #[ignore = "open: ray-vote trim of a pole-holding sphere piece miscounts (B264)"]
 fn ray_vote_pole_piece_witness() {
-    for (op, sphere_first) in [
-        (BooleanOp::Fuse, true),
-        (BooleanOp::Fuse, false),
-        (BooleanOp::Cut, true),
-    ] {
+    for (pair, op, sphere_first) in [SEED_5201, SEED_1146].into_iter().flat_map(|pair| {
+        [
+            (pair, BooleanOp::Fuse, true),
+            (pair, BooleanOp::Fuse, false),
+            (pair, BooleanOp::Cut, true),
+        ]
+    }) {
         let place = placement(true);
         let mut topo = Topology::new();
-        let (sphere, torus) = build(&mut topo, SEED_5201, 1.0, place);
+        let (sphere, torus) = build(&mut topo, pair, 1.0, place);
         let (a, b) = if sphere_first {
             (sphere, torus)
         } else {
@@ -562,13 +561,13 @@ fn ray_vote_pole_piece_witness() {
         let solid = boolean_with_context(&mut topo, op, a, b, &exact())
             .unwrap()
             .solid;
-        let label = format!("seed5201 placed {op:?} sphere_first={sphere_first}");
+        let label = format!("{} placed {op:?} sphere_first={sphere_first}", pair.name);
         let mesh = tessellate_solid(&topo, solid, 0.02).unwrap();
         assert_eq!(boundary_edge_count(&mesh), 0, "{label}");
         let mismatches = assert_material(
             &topo,
             solid,
-            SEED_5201,
+            pair,
             1.0,
             place,
             op,
