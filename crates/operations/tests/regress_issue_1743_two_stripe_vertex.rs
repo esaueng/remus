@@ -717,3 +717,284 @@ fn drafted_top_loop_follows_its_leaning_rounds() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// 3. A chamfer chain over the leaning rounds of a drafted body
+// ---------------------------------------------------------------------------
+
+fn chamfer(topo: &mut Topology, s: SolidId, edges: &[EdgeId], d: f64, what: &str) -> SolidId {
+    let result = blend_ops::chamfer_v2(topo, s, edges, d, d)
+        .unwrap_or_else(|e| panic!("{what}: the chamfer must build, got {e}"));
+    assert!(!result.is_partial, "{what}: every edge is chamfered");
+    result.solid
+}
+
+/// The four sides of a drafted box, each as its outward normal and offset
+/// `n·p = c`, counter-clockwise seen from above. The box is `size` square at
+/// `origin`'s height, its corner at `origin`.
+fn drafted_sides(degrees: f64, origin: Point3, size: f64) -> [(Vec3, f64); 4] {
+    let (sin, cos) = degrees.to_radians().sin_cos();
+    let o = Vec3::new(origin.x(), origin.y(), origin.z());
+    let side = |n: Vec3, through: Vec3| (n, n.dot(o + through));
+    [
+        side(Vec3::new(0.0, -cos, -sin), Vec3::new(0.0, 0.0, 0.0)),
+        side(Vec3::new(cos, 0.0, -sin), Vec3::new(size, 0.0, 0.0)),
+        side(Vec3::new(0.0, cos, -sin), Vec3::new(0.0, size, 0.0)),
+        side(Vec3::new(-cos, 0.0, -sin), Vec3::new(0.0, 0.0, 0.0)),
+    ]
+}
+
+/// The radius-`radius` round between consecutive sides: its rising axis and
+/// the point of it at height 0.
+fn round_between(a: (Vec3, f64), b: (Vec3, f64), radius: f64) -> (Vec3, Point3) {
+    let axis = a.0.cross(b.0).normalize().unwrap();
+    let axis = if axis.z() < 0.0 { -axis } else { axis };
+    // n_a·p = c_a - r and n_b·p = c_b - r at p.z = 0.
+    let (ca, cb) = (a.1 - radius, b.1 - radius);
+    let det = a.0.x() * b.0.y() - a.0.y() * b.0.x();
+    let x = (ca * b.0.y() - cb * a.0.y()) / det;
+    let y = (a.0.x() * cb - b.0.x() * ca) / det;
+    (axis, Point3::new(x, y, 0.0))
+}
+
+/// Area of the slice at height `z` through the body bounded by `sides` and
+/// radius-`radius` rounds between them, every side moved `s` inward (each
+/// round keeps its axis and loses `s` of its radius). Exact: the slice is
+/// four segments and four arcs, each arc an affine image of a circular one,
+/// so Green's theorem integrates it in closed form.
+fn rounded_slice_area(sides: &[(Vec3, f64); 4], radius: f64, s: f64, z: f64) -> f64 {
+    let cross = |p: Vec3, q: Vec3| p.x() * q.y() - p.y() * q.x();
+    let r = radius - s;
+    let mut twice = 0.0;
+    let mut ends = Vec::new();
+    for k in 0..4 {
+        let (a, b) = (sides[k], sides[(k + 1) % 4]);
+        let (axis, foot) = round_between(a, b, radius);
+        let m = axis.cross(a.0);
+        let sweep = b.0.dot(m).atan2(b.0.dot(a.0));
+        assert!(sweep > 0.0, "the sides run counter-clockwise");
+        let foot = Vec3::new(foot.x(), foot.y(), foot.z());
+        // A radial `v` at the slice's height: v moved along the axis.
+        let lift = |v: Vec3| v - axis * (v.z() / axis.z());
+        let centre = foot + axis * ((z - foot.z()) / axis.z());
+        let (cb, cc) = (lift(a.0) * r, lift(m) * r);
+        twice += cross(centre, cb) * (sweep.cos() - 1.0)
+            + cross(centre, cc) * sweep.sin()
+            + cross(cb, cc) * sweep;
+        ends.push((centre + cb, centre + cb * sweep.cos() + cc * sweep.sin()));
+    }
+    for k in 0..4 {
+        twice += cross(ends[k].1, ends[(k + 1) % 4].0);
+    }
+    twice / 2.0
+}
+
+/// Volume a distance-`d` chamfer moves along the loop where the plane at
+/// height `level` meets the rounded drafted sides, on the side of the plane
+/// `toward` (-1 below, +1 above).
+///
+/// The chamfer is the set of points of the body with `h + w < ρ`: `h` the
+/// distance to the plane, `w` the distance to the sides, and `ρ = d sin α`
+/// with `α` the sides' angle to the plane. Its slice at `h` is what the
+/// body's slice loses when the sides move in by `ρ - h`. Simpson in `h`.
+fn rounded_loop_chamfer_volume(
+    sides: &[(Vec3, f64); 4],
+    radius: f64,
+    level: f64,
+    toward: f64,
+    d: f64,
+) -> f64 {
+    const STEPS: usize = 200;
+    let rho = d * sides[0].0.cross(Z).length();
+    let slab = |h: f64| {
+        let z = level + toward * h;
+        rounded_slice_area(sides, radius, 0.0, z) - rounded_slice_area(sides, radius, rho - h, z)
+    };
+    let mut sum = 0.0;
+    for i in 0..=STEPS {
+        let weight = if i == 0 || i == STEPS {
+            1.0
+        } else if i % 2 == 1 {
+            4.0
+        } else {
+            2.0
+        };
+        #[allow(clippy::cast_precision_loss)]
+        let h = rho * i as f64 / STEPS as f64;
+        sum += weight * slab(h);
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let step = rho / STEPS as f64;
+    step / 3.0 * sum
+}
+
+/// Every band over a round is the elliptic cone `h + w = ρ` (`h` from the
+/// plane at `level`, `w` from the round), bounded by two ellipses and two
+/// lines: sampled across and along, every point is on it.
+fn assert_bands_on_the_cone(
+    topo: &Topology,
+    s: SolidId,
+    sides: &[(Vec3, f64); 4],
+    radius: f64,
+    level: f64,
+    rho: f64,
+    what: &str,
+) {
+    let rounds: Vec<(Vec3, Point3)> = (0..4)
+        .map(|k| round_between(sides[k], sides[(k + 1) % 4], radius))
+        .collect();
+    let off_round = |p: Point3, (axis, foot): (Vec3, Point3)| {
+        let v = p - foot;
+        radius - (v - axis * axis.dot(v)).length()
+    };
+    let mut bands = 0;
+    for f in solid_faces(topo, s).unwrap() {
+        let face = topo.face(f).unwrap();
+        let FaceSurface::Nurbs(surface) = face.surface() else {
+            continue;
+        };
+        bands += 1;
+        let mut curves = BTreeMap::new();
+        for e in face_edges(topo, f) {
+            let kind = match topo.edge(e).unwrap().curve() {
+                EdgeCurve::Ellipse(_) => "ellipse",
+                EdgeCurve::Line => "line",
+                _ => "other",
+            };
+            *curves.entry(kind).or_insert(0) += 1;
+        }
+        assert_eq!(curves, kinds(&[("ellipse", 2), ("line", 2)]), "{what}");
+        let ((u0, u1), (v0, v1)) = (surface.domain_u(), surface.domain_v());
+        let at = |i: u32, j: u32| {
+            remus_math::traits::ParametricSurface::evaluate(
+                surface,
+                u0 + (u1 - u0) * f64::from(i) / 8.0,
+                v0 + (v1 - v0) * f64::from(j) / 8.0,
+            )
+        };
+        // The band's round: the one its middle is nearest.
+        let middle = at(4, 4);
+        let round = *rounds
+            .iter()
+            .min_by(|a, b| {
+                off_round(middle, **a)
+                    .abs()
+                    .total_cmp(&off_round(middle, **b).abs())
+            })
+            .unwrap();
+        for i in 0..=8 {
+            for j in 0..=8 {
+                let p = at(i, j);
+                let miss = (p.z() - level).abs() + off_round(p, round) - rho;
+                assert!(
+                    miss.abs() < 1e-9,
+                    "{what}: band point {p:?} is {miss:e} off the cone"
+                );
+            }
+        }
+    }
+    assert_eq!(bands, 4, "{what}: one band over each round");
+}
+
+/// The issue's last line: the drafted box's uprights rounded R5, then the
+/// top loop chamfered. Also its mirror image (the bands hand over after the
+/// vertices instead of before), the bottom loop, and a larger distance.
+#[test]
+fn drafted_rounded_top_loop_chamfers_with_elliptic_cone_bands() {
+    for degrees in [2.0, -2.0] {
+        for (z, toward) in [(20.0, -1.0), (0.0, 1.0)] {
+            for d in [0.2, 1.0] {
+                let what = format!("draft {degrees}, rounds, loop at z {z}, chamfer {d}");
+                let mut topo = Topology::new();
+                let body = drafted_box(&mut topo, degrees);
+                let uprights = upright_edges(&topo, body, |_| true);
+                let round = fillet(&mut topo, body, &uprights, 5.0, "drafted uprights");
+                let loop_edges = edges_at_z(&topo, round, z);
+                assert_eq!(loop_edges.len(), 8, "{what}: four lines and four arcs");
+                let chamfered = chamfer(&mut topo, round, &loop_edges, d, &what);
+                assert_sound(&topo, round, chamfered, &what);
+                // Four plane bands and four elliptic cones; the rounds and
+                // walls keep their surfaces.
+                assert_eq!(
+                    census(&topo, chamfered),
+                    kinds(&[("cylinder", 4), ("nurbs", 4), ("plane", 10)]),
+                    "{what}"
+                );
+                let sides = drafted_sides(degrees, Point3::new(0.0, 0.0, 0.0), 40.0);
+                let rho = d * sides[0].0.cross(Z).length();
+                assert_bands_on_the_cone(&topo, chamfered, &sides, 5.0, z, rho, &what);
+                let expected = -rounded_loop_chamfer_volume(&sides, 5.0, z, toward, d);
+                assert_close(
+                    volume_change(&topo, round, chamfered),
+                    expected,
+                    1e-3 * expected.abs(),
+                    &what,
+                );
+            }
+        }
+    }
+}
+
+/// The volume oracle above, on the undrafted box, against the exact cone
+/// chamfer the square case already builds and its closed form.
+#[test]
+fn square_rounded_top_loop_chamfer_matches_the_slice_quadrature() {
+    let what = "box, rounds, top loop chamfer 1";
+    let mut topo = Topology::new();
+    let body = make_box(&mut topo, 40.0, 40.0, 20.0).unwrap();
+    let uprights = upright_edges(&topo, body, |_| true);
+    let round = fillet(&mut topo, body, &uprights, 5.0, "box uprights");
+    let top = edges_at_z(&topo, round, 20.0);
+    let chamfered = chamfer(&mut topo, round, &top, 1.0, what);
+    assert_sound(&topo, round, chamfered, what);
+    assert_eq!(
+        census(&topo, chamfered),
+        kinds(&[("cone", 4), ("cylinder", 4), ("plane", 10)])
+    );
+    // Four wall prisms of the half unit square, and the four cone quarters
+    // (Pappus: the triangle's centroid is 4 + 2/3 from the axis).
+    let closed_form = 4.0 * 30.0 * 0.5 + 2.0 * PI * (4.0 + 2.0 / 3.0) * 0.5;
+    let sides = drafted_sides(0.0, Point3::new(0.0, 0.0, 0.0), 40.0);
+    let quadrature = rounded_loop_chamfer_volume(&sides, 5.0, 20.0, -1.0, 1.0);
+    assert_close(quadrature, closed_form, 1e-9, "the quadrature");
+    // `solid_volume` reads this body 0.19 high at a deflection of 1e-3 and
+    // converges from there (0.04 at 2e-4); the fine mesh resolves it.
+    let measured = mesh_volume(&topo, chamfered, 5e-4) - mesh_volume(&topo, round, 5e-4);
+    assert_close(measured, -closed_form, 2e-3, what);
+}
+
+/// A pocket cut by a drafted tool whose uprights are rounded: the floor loop
+/// is concave, and its bands add material under the leaning rounds.
+#[test]
+fn drafted_rounded_pocket_floor_loop_chamfers_with_concave_elliptic_cones() {
+    let what = "drafted rounded pocket floor chamfer";
+    let mut topo = Topology::new();
+    let body = make_box(&mut topo, 80.0, 60.0, 20.0).unwrap();
+    let tool = drafted_box(&mut topo, 3.0);
+    let uprights = upright_edges(&topo, tool, |_| true);
+    let tool = fillet(&mut topo, tool, &uprights, 5.0, "tool uprights");
+    transform_solid(&mut topo, tool, &Mat4::translation(20.0, 10.0, 12.0)).unwrap();
+    let pocket = boolean(&mut topo, BooleanOp::Cut, body, tool).unwrap();
+    let floor = edges_at_z(&topo, pocket, 12.0);
+    assert_eq!(floor.len(), 8, "four lines and four ellipse arcs");
+    let chamfered = chamfer(&mut topo, pocket, &floor, 1.0, what);
+    assert_sound(&topo, pocket, chamfered, what);
+    let (before, after) = (census(&topo, pocket), census(&topo, chamfered));
+    assert_eq!(after.get("nurbs"), Some(&4), "{what}: {after:?}");
+    assert_eq!(after.get("cylinder"), before.get("cylinder"), "{what}");
+    assert_eq!(
+        after.get("plane").copied().unwrap_or(0),
+        before.get("plane").copied().unwrap_or(0) + 4,
+        "{what}"
+    );
+    let sides = drafted_sides(3.0, Point3::new(20.0, 10.0, 12.0), 40.0);
+    let rho = sides[0].0.cross(Z).length();
+    assert_bands_on_the_cone(&topo, chamfered, &sides, 5.0, 12.0, rho, what);
+    let expected = rounded_loop_chamfer_volume(&sides, 5.0, 12.0, 1.0, 1.0);
+    assert_close(
+        volume_change(&topo, pocket, chamfered),
+        expected,
+        1e-3 * expected,
+        what,
+    );
+}
