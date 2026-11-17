@@ -844,8 +844,8 @@ fn element_for(
 /// The band along `oriented`, the elliptic foot of a leaning round on the
 /// floor (see the module notes), or `None` when the edge is not one.
 ///
-/// Declined: a wall that is not a cylinder, an axis lying in the floor, a
-/// round turning half a turn or more, flanks at different angles to the
+/// Declined: a wall that is not a cylinder, an axis lying in the floor or
+/// square to it, a round turning half a turn or more, flanks at different angles to the
 /// floor, and a setback that reaches the axis.
 fn oblique_element(
     topo: &Topology,
@@ -871,7 +871,10 @@ fn oblique_element(
         return Ok(None);
     };
     let (origin, radius) = (cylinder.origin(), cylinder.radius());
-    if normal.dot(axis).abs() <= 1e-6 {
+    // An axis in the floor makes the edge a ruling, not an arc; one square
+    // to it is a circle (stored as an ellipse here), the conical bands' case.
+    let lean = normal.dot(axis).abs();
+    if lean <= 1e-6 || lean >= 1.0 - 1e-9 {
         return Ok(None);
     }
     let Some(frames) = crate::analytic::edge_material_frames_at(topo, edge, floor, wall)? else {

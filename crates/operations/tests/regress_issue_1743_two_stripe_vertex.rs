@@ -36,9 +36,12 @@
 use std::collections::BTreeMap;
 use std::f64::consts::PI;
 
+use remus_blend::BlendError;
 use remus_check::validate::{Severity, ValidateOptions, validate_solid};
+use remus_math::curves::Ellipse3D;
 use remus_math::mat::Mat4;
 use remus_math::vec::{Point3, Vec3};
+use remus_operations::OperationsError;
 use remus_operations::blend_ops::{self, BlendEngine};
 use remus_operations::boolean::{BooleanOp, boolean};
 use remus_operations::draft::draft;
@@ -997,4 +1000,49 @@ fn drafted_rounded_pocket_floor_loop_chamfers_with_concave_elliptic_cones() {
         1e-3 * expected,
         what,
     );
+}
+
+/// A round square to the floor whose foot is stored as an ellipse with equal
+/// axes (an imported circle, say) is not a leaning round: the chamfer must
+/// not stop on it, and builds as it does with the circles.
+#[test]
+fn square_round_feet_stored_as_ellipses_chamfer_as_circles_do() {
+    let what = "box, rounds with elliptic feet, top loop chamfer 1";
+    let mut topo = Topology::new();
+    let body = make_box(&mut topo, 40.0, 40.0, 20.0).unwrap();
+    let uprights = upright_edges(&topo, body, |_| true);
+    let round = fillet(&mut topo, body, &uprights, 5.0, "box uprights");
+    let top = edges_at_z(&topo, round, 20.0);
+    let mut rewritten = 0;
+    for &e in &top {
+        let edge = topo.edge(e).unwrap();
+        let EdgeCurve::Circle(circle) = edge.curve().clone() else {
+            continue;
+        };
+        let domain = edge.strict_domain().unwrap();
+        let ellipse = Ellipse3D::new_with_ref(
+            circle.center(),
+            circle.normal(),
+            circle.radius(),
+            circle.radius(),
+            circle.u_axis(),
+        )
+        .unwrap();
+        assert!((ellipse.v_axis() - circle.v_axis()).length() < 1e-12);
+        let edge = topo.edge_mut(e).unwrap();
+        edge.set_curve(EdgeCurve::Ellipse(ellipse));
+        edge.set_trim(Some(domain));
+        rewritten += 1;
+    }
+    assert_eq!(rewritten, 4, "{what}: four round feet");
+    match blend_ops::chamfer_v2(&mut topo, round, &top, 1.0, 1.0) {
+        Ok(result) => {
+            assert!(!result.is_partial, "{what}");
+            assert_sound(&topo, round, result.solid, what);
+        }
+        Err(e) => assert!(
+            !matches!(e, OperationsError::Blend(BlendError::Math(_))),
+            "{what}: the floor chain must decline, not fail: {e}"
+        ),
+    }
 }
