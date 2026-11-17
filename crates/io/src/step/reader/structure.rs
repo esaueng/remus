@@ -43,6 +43,7 @@ use remus_math::mat::Mat4;
 use remus_operations::copy::copy_and_transform_solid_detailed;
 use remus_operations::transform::TransformPolicy;
 use remus_topology::attributes::{ColorRgb, EntityAttributes};
+use remus_topology::explorer::{solid_edges, solid_faces, solid_vertices};
 use remus_topology::face::FaceId;
 use remus_topology::solid::SolidId;
 use remus_topology::transaction::run_append_only;
@@ -154,6 +155,11 @@ pub fn read_step_structure_with_limits(
         let presentation = apply_presentation(topo, &entities, &definitions, &face_origins);
         let expansion = graph.expand(&definitions, &transforms, limits)?;
         let mut used = BTreeSet::new();
+        // Every copy allocates a whole solid: charge its faces, edges and
+        // vertices against the model budget before allocating, so repeated
+        // large parts refuse with a typed limit instead of exhausting memory.
+        let mut sizes: HashMap<u64, usize> = HashMap::new();
+        let mut copied = 0usize;
         let mut solids = Vec::with_capacity(expansion.instances.len());
         let mut solid_nodes = Vec::with_capacity(expansion.instances.len());
         for instance in &expansion.instances {
@@ -164,6 +170,22 @@ pub fn read_step_structure_with_limits(
             let solid = if instance.world == Mat4::identity() && used.insert(instance.brep) {
                 definition
             } else {
+                let size = match sizes.get(&instance.brep) {
+                    Some(&size) => size,
+                    None => {
+                        let size = solid_faces(topo, definition)?.len()
+                            + solid_edges(topo, definition)?.len()
+                            + solid_vertices(topo, definition)?.len();
+                        sizes.insert(instance.brep, size);
+                        size
+                    }
+                };
+                copied = copied.saturating_add(size);
+                ensure_limit(
+                    "STEP occurrence copy entities",
+                    copied,
+                    limits.max_model_entities,
+                )?;
                 copy_and_transform_solid_detailed(
                     topo,
                     definition,
@@ -475,22 +497,33 @@ impl ProductGraph {
         Ok(transforms)
     }
 
-    /// Whether a definition or anything below it holds a solid.
-    fn holds_geometry(&self, definition: u64, depth: usize) -> Result<bool, IoError> {
-        ensure_limit("STEP assembly depth", depth, MAX_PRODUCT_DEPTH)?;
-        if self
-            .shapes
-            .get(&definition)
-            .is_some_and(|shape| !shape.breps.is_empty())
-        {
-            return Ok(true);
+    /// Every definition that holds a solid or has one somewhere below it,
+    /// found once by walking occurrences upward from the definitions with
+    /// solids: linear in the occurrence count, however often definitions are
+    /// shared.
+    fn with_geometry(&self) -> BTreeSet<u64> {
+        let mut parents: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
+        for occurrence in self.children.values().flatten() {
+            parents
+                .entry(occurrence.child)
+                .or_default()
+                .push(occurrence.parent);
         }
-        for occurrence in self.children.get(&definition).into_iter().flatten() {
-            if self.holds_geometry(occurrence.child, depth + 1)? {
-                return Ok(true);
+        let mut found: BTreeSet<u64> = self
+            .shapes
+            .iter()
+            .filter(|(_, shape)| !shape.breps.is_empty())
+            .map(|(&id, _)| id)
+            .collect();
+        let mut pending: Vec<u64> = found.iter().copied().collect();
+        while let Some(id) = pending.pop() {
+            for &parent in parents.get(&id).into_iter().flatten() {
+                if found.insert(parent) {
+                    pending.push(parent);
+                }
             }
         }
-        Ok(false)
+        found
     }
 
     #[allow(clippy::too_many_lines)]
@@ -506,6 +539,7 @@ impl ProductGraph {
             world: Mat4,
             depth: usize,
         }
+        let with_geometry = self.with_geometry();
         let mut nodes = Vec::new();
         let mut instances = Vec::new();
         let mut reached = BTreeSet::new();
@@ -570,7 +604,7 @@ impl ProductGraph {
             for occurrence in occurrences.into_iter().flatten().rev() {
                 let local = match transforms.get(&occurrence.id) {
                     Some(&transform) => transform,
-                    None if self.holds_geometry(occurrence.child, frame.depth + 1)? => {
+                    None if with_geometry.contains(&occurrence.child) => {
                         return Err(invalid(format!(
                             "occurrence #{} places geometry but has no placement",
                             occurrence.id
@@ -751,6 +785,7 @@ fn predefined_colour(name: &str) -> Option<(f64, f64, f64)> {
     })
 }
 
+#[derive(Clone, Copy)]
 enum Resolved {
     Colour(ColorRgb),
     /// The chain names a colour this reader refuses (out of range).
@@ -766,75 +801,148 @@ enum Resolved {
 /// `SURFACE_SIDE_STYLE` → `SURFACE_STYLE_FILL_AREA` → `FILL_AREA_STYLE` →
 /// `FILL_AREA_STYLE_COLOUR`. A chain that names two different colours is a
 /// conflict and resolves to none.
-fn style_colour(entities: &HashMap<u64, StepEntity<'_>>, styles: &[u64]) -> Resolved {
-    let entity = |id: u64| entities.get(&id);
-    let list = |entity: &StepEntity<'_>, index: usize| -> Vec<u64> {
-        match split_attr_slots(&entity.attrs).get(index) {
-            Some(AttrSlot::List(list)) => exact_reference_list(list).unwrap_or_default(),
-            _ => Vec::new(),
+/// Folds one more resolved colour into `found`: two different colours are a
+/// conflict, and a conflict stays one.
+fn combine(found: Resolved, next: Resolved) -> Resolved {
+    match (found, next) {
+        (Resolved::Conflict, _) | (_, Resolved::Conflict) => Resolved::Conflict,
+        (Resolved::Colour(a), Resolved::Colour(b)) if a != b => Resolved::Conflict,
+        (Resolved::Colour(a), _) => Resolved::Colour(a),
+        (found, Resolved::None) => found,
+        (_, next) => next,
+    }
+}
+
+/// Resolves surface fill colours through the style chain, each entity once.
+///
+/// A chain shares entities freely (one assignment listed N times, one usage
+/// referenced by N assignments), so every level is memoized by entity id and
+/// every reference list is deduplicated: the work is bounded by the number
+/// of distinct references in the file, not by the number of paths through it.
+struct StyleResolver<'a, 'input> {
+    entities: &'a HashMap<u64, StepEntity<'input>>,
+    memo: HashMap<u64, Resolved>,
+}
+
+impl StyleResolver<'_, '_> {
+    fn list(&self, id: u64, index: usize) -> BTreeSet<u64> {
+        self.entities
+            .get(&id)
+            .and_then(|entity| match split_attr_slots(&entity.attrs).get(index) {
+                Some(AttrSlot::List(list)) => exact_reference_list(list).ok(),
+                _ => None,
+            })
+            .unwrap_or_default()
+            .into_iter()
+            .collect()
+    }
+
+    fn single(&self, id: u64, index: usize) -> Option<u64> {
+        self.entities.get(&id).and_then(|entity| {
+            split_attr_slots(&entity.attrs)
+                .get(index)
+                .and_then(AttrSlot::as_ref_id)
+        })
+    }
+
+    fn is(&self, id: u64, kinds: &[&str]) -> bool {
+        self.entities
+            .get(&id)
+            .is_some_and(|entity| kinds.iter().any(|kind| is_type(entity, kind)))
+    }
+
+    fn memoized(&mut self, id: u64, resolve: impl FnOnce(&mut Self) -> Resolved) -> Resolved {
+        if let Some(&known) = self.memo.get(&id) {
+            return known;
         }
-    };
-    let single = |entity: &StepEntity<'_>, index: usize| -> Option<u64> {
-        split_attr_slots(&entity.attrs)
-            .get(index)
-            .and_then(AttrSlot::as_ref_id)
-    };
-    let mut found = Resolved::None;
-    for &assignment in styles {
-        let Some(assignment) = entity(assignment) else {
-            continue;
-        };
-        let usages = if is_type(assignment, "PRESENTATION_STYLE_ASSIGNMENT")
-            || is_type(assignment, "PRESENTATION_STYLE_BY_CONTEXT")
-        {
-            list(assignment, 0)
-        } else {
-            continue;
-        };
-        for usage in usages.into_iter().filter_map(entity) {
-            if !is_type(usage, "SURFACE_STYLE_USAGE") {
-                continue;
-            }
-            let side = split_attr_slots(&usage.attrs);
-            if matches!(side.first(), Some(AttrSlot::Enum(side)) if side.eq_ignore_ascii_case(".NEGATIVE."))
-            {
-                continue;
-            }
-            let Some(side_style) = single(usage, 1).and_then(entity) else {
-                continue;
-            };
-            if !is_type(side_style, "SURFACE_SIDE_STYLE") {
-                continue;
-            }
-            for fill in list(side_style, 1).into_iter().filter_map(entity) {
-                if !is_type(fill, "SURFACE_STYLE_FILL_AREA") {
+        // Provisionally none, so a malformed self-reference terminates.
+        self.memo.insert(id, Resolved::None);
+        let resolved = resolve(self);
+        self.memo.insert(id, resolved);
+        resolved
+    }
+
+    /// `FILL_AREA_STYLE` → its `FILL_AREA_STYLE_COLOUR`s.
+    fn area(&mut self, id: u64) -> Resolved {
+        self.memoized(id, |this| {
+            let mut found = Resolved::None;
+            for colour in this.list(id, 1) {
+                if !this.is(colour, &["FILL_AREA_STYLE_COLOUR"]) {
                     continue;
                 }
-                let Some(area) = single(fill, 0).and_then(entity) else {
+                let Some(rgb) = this.single(colour, 1).and_then(|id| this.entities.get(&id)) else {
                     continue;
                 };
-                if !is_type(area, "FILL_AREA_STYLE") {
+                found = combine(found, colour_value(rgb));
+            }
+            found
+        })
+    }
+
+    /// `SURFACE_SIDE_STYLE` → `SURFACE_STYLE_FILL_AREA` → `FILL_AREA_STYLE`.
+    fn side(&mut self, id: u64) -> Resolved {
+        self.memoized(id, |this| {
+            let mut found = Resolved::None;
+            for fill in this.list(id, 1) {
+                if !this.is(fill, &["SURFACE_STYLE_FILL_AREA"]) {
                     continue;
                 }
-                for colour in list(area, 1).into_iter().filter_map(entity) {
-                    if !is_type(colour, "FILL_AREA_STYLE_COLOUR") {
-                        continue;
-                    }
-                    let Some(rgb) = single(colour, 1).and_then(entity) else {
-                        continue;
-                    };
-                    match (&found, colour_value(rgb)) {
-                        (Resolved::Colour(a), Resolved::Colour(b)) if *a != b => {
-                            return Resolved::Conflict;
-                        }
-                        (Resolved::Colour(_), _) | (_, Resolved::None) => {}
-                        (_, resolved) => found = resolved,
-                    }
+                let Some(area) = this.single(fill, 0) else {
+                    continue;
+                };
+                if this.is(area, &["FILL_AREA_STYLE"]) {
+                    found = combine(found, this.area(area));
                 }
             }
-        }
+            found
+        })
     }
-    found
+
+    /// `PRESENTATION_STYLE_ASSIGNMENT` → `SURFACE_STYLE_USAGE` (both or
+    /// positive side) → `SURFACE_SIDE_STYLE`.
+    fn assignment(&mut self, id: u64) -> Resolved {
+        self.memoized(id, |this| {
+            if !this.is(
+                id,
+                &[
+                    "PRESENTATION_STYLE_ASSIGNMENT",
+                    "PRESENTATION_STYLE_BY_CONTEXT",
+                ],
+            ) {
+                return Resolved::None;
+            }
+            let mut found = Resolved::None;
+            for usage in this.list(id, 0) {
+                if !this.is(usage, &["SURFACE_STYLE_USAGE"]) {
+                    continue;
+                }
+                let negative = this.entities.get(&usage).is_some_and(|entity| {
+                    matches!(
+                        split_attr_slots(&entity.attrs).first(),
+                        Some(AttrSlot::Enum(side)) if side.eq_ignore_ascii_case(".NEGATIVE.")
+                    )
+                });
+                if negative {
+                    continue;
+                }
+                let Some(side) = this.single(usage, 1) else {
+                    continue;
+                };
+                if this.is(side, &["SURFACE_SIDE_STYLE"]) {
+                    found = combine(found, this.side(side));
+                }
+            }
+            found
+        })
+    }
+
+    /// The surface fill colour a styled item's style list names.
+    fn styles(&mut self, styles: &[u64]) -> Resolved {
+        let distinct: BTreeSet<u64> = styles.iter().copied().collect();
+        distinct.into_iter().fold(Resolved::None, |found, id| {
+            combine(found, self.assignment(id))
+        })
+    }
 }
 
 fn colour_value(entity: &StepEntity<'_>) -> Resolved {
@@ -877,6 +985,10 @@ fn apply_presentation(
     let mut ordered: Vec<(u64, &StepEntity<'_>)> =
         entities.iter().map(|(&id, entity)| (id, entity)).collect();
     ordered.sort_unstable_by_key(|(id, _)| *id);
+    let mut resolver = StyleResolver {
+        entities,
+        memo: HashMap::new(),
+    };
     let mut targets: BTreeMap<u64, Option<ColorRgb>> = BTreeMap::new();
     let mut overridden: BTreeSet<u64> = BTreeSet::new();
     for (_, entity) in ordered {
@@ -900,7 +1012,7 @@ fn apply_presentation(
             Some(AttrSlot::List(list)) => exact_reference_list(list).unwrap_or_default(),
             _ => Vec::new(),
         };
-        let colour = match style_colour(entities, &styles) {
+        let colour = match resolver.styles(&styles) {
             Resolved::Colour(colour) => colour,
             Resolved::Invalid => {
                 summary.invalid_colours += 1;

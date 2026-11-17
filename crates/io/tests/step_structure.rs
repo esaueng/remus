@@ -429,3 +429,119 @@ fn an_untyped_length_conversion_factor_reads_in_every_reader() {
     );
     assert!(step::read_step(&untyped, &mut Topology::new()).is_err());
 }
+
+#[test]
+fn shared_geometry_free_definitions_do_not_explode_the_reachability_check() {
+    // Forty geometry-free products, each using the next twice without a
+    // placement, beside a part with real geometry: 2^40 paths. The graph is
+    // walked once, and expansion stops at the occurrence budget.
+    let mut extra = String::new();
+    let base = 9000;
+    for level in 0..41u64 {
+        let id = base + level * 10;
+        let _ = std::fmt::Write::write_fmt(
+            &mut extra,
+            format_args!(
+                "#{} = PRODUCT('L{level}','L{level}','',(#8));\n#{} = PRODUCT_DEFINITION_FORMATION('','',#{});\n#{} = PRODUCT_DEFINITION('design','',#{},#9);\n",
+                id,
+                id + 1,
+                id,
+                id + 2,
+                id + 1
+            ),
+        );
+        if level > 0 {
+            let parent = base + (level - 1) * 10 + 2;
+            for copy in 0..2 {
+                let _ = std::fmt::Write::write_fmt(
+                    &mut extra,
+                    format_args!(
+                        "#{} = NEXT_ASSEMBLY_USAGE_OCCURRENCE('{copy}','','',#{parent},#{},$);\n",
+                        id + 3 + copy,
+                        id + 2
+                    ),
+                );
+            }
+        }
+    }
+    let text = append_entities(PART, &extra);
+    let limits = ImportLimits {
+        max_model_entities: 20_000,
+        ..ImportLimits::default()
+    };
+    let started = std::time::Instant::now();
+    let error =
+        step::read_step_structure_with_limits(&text, &mut Topology::new(), limits).unwrap_err();
+    assert!(matches!(error, IoError::LimitExceeded { .. }), "{error}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(20));
+}
+
+#[test]
+fn occurrence_copies_are_charged_against_the_model_budget() {
+    // Two hundred more placements of the plate in the root: each costs four
+    // entities to state but a whole plate (26 faces, edges and vertices) to
+    // copy. A budget the file's entities fit refuses the copies by name.
+    let mut extra = String::new();
+    for copy in 0..200u64 {
+        let id = 9000 + copy * 4;
+        let _ = std::fmt::Write::write_fmt(
+            &mut extra,
+            format_args!(
+                "#{a} = CONTEXT_DEPENDENT_SHAPE_REPRESENTATION(#{b},#{c});
+                 #{b} = ( REPRESENTATION_RELATIONSHIP('','',#40,#10) REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION(#378) SHAPE_REPRESENTATION_RELATIONSHIP() );
+                 #{c} = PRODUCT_DEFINITION_SHAPE('','',#{d});
+                 #{d} = NEXT_ASSEMBLY_USAGE_OCCURRENCE('x{copy}','','',#5,#35,$);
+",
+                a = id,
+                b = id + 1,
+                c = id + 2,
+                d = id + 3
+            ),
+        );
+    }
+    let text = append_entities(AP214, &extra);
+    let mut topo = Topology::new();
+    assert_eq!(
+        step::read_step_structure(&text, &mut topo)
+            .unwrap()
+            .solids
+            .len(),
+        205
+    );
+    let limits = ImportLimits {
+        max_model_entities: 3_000,
+        ..ImportLimits::default()
+    };
+    match step::read_step_structure_with_limits(&text, &mut Topology::new(), limits) {
+        Err(IoError::LimitExceeded { resource, .. }) => {
+            assert_eq!(resource, "STEP occurrence copy entities");
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn a_style_chain_that_repeats_its_references_is_resolved_once() {
+    // Each level lists the next one 300 times: 300^4 paths, one colour.
+    let repeat = |id: u64| vec![format!("#{id}"); 300].join(",");
+    let extra = format!(
+        "#9100 = COLOUR_RGB('',0.1,0.2,0.3);\n\
+         #9101 = FILL_AREA_STYLE_COLOUR('',#9100);\n\
+         #9102 = FILL_AREA_STYLE('',({}));\n\
+         #9103 = SURFACE_STYLE_FILL_AREA(#9102);\n\
+         #9104 = SURFACE_SIDE_STYLE('',({}));\n\
+         #9105 = SURFACE_STYLE_USAGE(.BOTH.,#9104);\n\
+         #9106 = PRESENTATION_STYLE_ASSIGNMENT(({}));\n\
+         #9107 = STYLED_ITEM('',({}),#345);",
+        repeat(9101),
+        repeat(9103),
+        repeat(9105),
+        repeat(9106)
+    );
+    let text = append_entities(PART, &extra);
+    let started = std::time::Instant::now();
+    let mut topo = Topology::new();
+    let result = step::read_step_structure(&text, &mut topo).unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_secs(20));
+    assert_colour(colour(&topo, result.solids[1]), (0.1, 0.2, 0.3));
+}
