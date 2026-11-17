@@ -236,7 +236,9 @@ fn fit_piece(
 /// Wrap the planar face `profile` onto `cone` between normal offsets
 /// `inner` and `outer` (negative is inside the cone).
 ///
-/// See the [module docs](self). The profile's plane must be parallel to the
+/// The profile is read in the cone's development: its arc length along the
+/// plane (`axis × normal`) and its height along the generator from the
+/// circle at `origin`. The profile's plane must be parallel to the
 /// axis.
 ///
 /// # Errors
