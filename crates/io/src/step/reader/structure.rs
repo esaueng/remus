@@ -866,39 +866,69 @@ impl StyleResolver<'_, '_> {
         self.memoized(id, |this| {
             let mut found = Resolved::None;
             for colour in this.list(id, 1) {
-                if !this.is(colour, &["FILL_AREA_STYLE_COLOUR"]) {
-                    continue;
+                if this.is(colour, &["FILL_AREA_STYLE_COLOUR"]) {
+                    found = combine(found, this.fill_colour(colour));
                 }
-                let Some(rgb) = this.single(colour, 1).and_then(|id| this.entities.get(&id)) else {
-                    continue;
-                };
-                found = combine(found, colour_value(rgb));
             }
             found
         })
     }
 
-    /// `SURFACE_SIDE_STYLE` → `SURFACE_STYLE_FILL_AREA` → `FILL_AREA_STYLE`.
+    /// `FILL_AREA_STYLE_COLOUR` → its colour entity, parsed once however
+    /// many areas share either of them.
+    fn fill_colour(&mut self, id: u64) -> Resolved {
+        self.memoized(id, |this| {
+            let Some(colour) = this.single(id, 1) else {
+                return Resolved::None;
+            };
+            this.memoized(colour, |this| {
+                this.entities
+                    .get(&colour)
+                    .map_or(Resolved::None, colour_value)
+            })
+        })
+    }
+
+    /// `SURFACE_STYLE_FILL_AREA` → its `FILL_AREA_STYLE`.
+    fn fill(&mut self, id: u64) -> Resolved {
+        self.memoized(id, |this| match this.single(id, 0) {
+            Some(area) if this.is(area, &["FILL_AREA_STYLE"]) => this.area(area),
+            _ => Resolved::None,
+        })
+    }
+
+    /// `SURFACE_SIDE_STYLE` → its `SURFACE_STYLE_FILL_AREA`s.
     fn side(&mut self, id: u64) -> Resolved {
         self.memoized(id, |this| {
             let mut found = Resolved::None;
             for fill in this.list(id, 1) {
-                if !this.is(fill, &["SURFACE_STYLE_FILL_AREA"]) {
-                    continue;
-                }
-                let Some(area) = this.single(fill, 0) else {
-                    continue;
-                };
-                if this.is(area, &["FILL_AREA_STYLE"]) {
-                    found = combine(found, this.area(area));
+                if this.is(fill, &["SURFACE_STYLE_FILL_AREA"]) {
+                    found = combine(found, this.fill(fill));
                 }
             }
             found
         })
     }
 
-    /// `PRESENTATION_STYLE_ASSIGNMENT` → `SURFACE_STYLE_USAGE` (both or
-    /// positive side) → `SURFACE_SIDE_STYLE`.
+    /// `SURFACE_STYLE_USAGE` (both or positive side) → `SURFACE_SIDE_STYLE`.
+    fn usage(&mut self, id: u64) -> Resolved {
+        self.memoized(id, |this| {
+            let negative = this.entities.get(&id).is_some_and(|entity| {
+                matches!(
+                    split_attr_slots(&entity.attrs).first(),
+                    Some(AttrSlot::Enum(side)) if side.eq_ignore_ascii_case(".NEGATIVE.")
+                )
+            });
+            match this.single(id, 1) {
+                Some(side) if !negative && this.is(side, &["SURFACE_SIDE_STYLE"]) => {
+                    this.side(side)
+                }
+                _ => Resolved::None,
+            }
+        })
+    }
+
+    /// `PRESENTATION_STYLE_ASSIGNMENT` → its `SURFACE_STYLE_USAGE`s.
     fn assignment(&mut self, id: u64) -> Resolved {
         self.memoized(id, |this| {
             if !this.is(
@@ -912,23 +942,8 @@ impl StyleResolver<'_, '_> {
             }
             let mut found = Resolved::None;
             for usage in this.list(id, 0) {
-                if !this.is(usage, &["SURFACE_STYLE_USAGE"]) {
-                    continue;
-                }
-                let negative = this.entities.get(&usage).is_some_and(|entity| {
-                    matches!(
-                        split_attr_slots(&entity.attrs).first(),
-                        Some(AttrSlot::Enum(side)) if side.eq_ignore_ascii_case(".NEGATIVE.")
-                    )
-                });
-                if negative {
-                    continue;
-                }
-                let Some(side) = this.single(usage, 1) else {
-                    continue;
-                };
-                if this.is(side, &["SURFACE_SIDE_STYLE"]) {
-                    found = combine(found, this.side(side));
+                if this.is(usage, &["SURFACE_STYLE_USAGE"]) {
+                    found = combine(found, this.usage(usage));
                 }
             }
             found

@@ -545,3 +545,39 @@ fn a_style_chain_that_repeats_its_references_is_resolved_once() {
     assert!(started.elapsed() < std::time::Duration::from_secs(20));
     assert_colour(colour(&topo, result.solids[1]), (0.1, 0.2, 0.3));
 }
+
+#[test]
+fn shared_style_entities_are_parsed_once_however_many_chains_share_them() {
+    // Two thousand distinct chains all share one FILL_AREA_STYLE_COLOUR whose
+    // name is 200 KB: it is parsed once, not once per chain.
+    let name = "x".repeat(200_000);
+    let mut extra = format!(
+        "#20000 = COLOUR_RGB('',0.1,0.2,0.3);\n#20001 = FILL_AREA_STYLE_COLOUR('{name}',#20000);\n"
+    );
+    let mut assignments = Vec::new();
+    for chain in 0..2_000u64 {
+        let id = 30_000 + chain * 5;
+        let _ = std::fmt::Write::write_fmt(
+            &mut extra,
+            format_args!(
+                "#{a} = FILL_AREA_STYLE('',(#20001));\n#{b} = SURFACE_STYLE_FILL_AREA(#{a});\n#{c} = SURFACE_SIDE_STYLE('',(#{b}));\n#{d} = SURFACE_STYLE_USAGE(.BOTH.,#{c});\n#{e} = PRESENTATION_STYLE_ASSIGNMENT((#{d}));\n",
+                a = id,
+                b = id + 1,
+                c = id + 2,
+                d = id + 3,
+                e = id + 4
+            ),
+        );
+        assignments.push(format!("#{}", id + 4));
+    }
+    let _ = std::fmt::Write::write_fmt(
+        &mut extra,
+        format_args!("#40000 = STYLED_ITEM('',({}),#345);", assignments.join(",")),
+    );
+    let text = append_entities(PART, &extra);
+    let started = std::time::Instant::now();
+    let mut topo = Topology::new();
+    let result = step::read_step_structure(&text, &mut topo).unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_secs(20));
+    assert_colour(colour(&topo, result.solids[1]), (0.1, 0.2, 0.3));
+}
