@@ -545,15 +545,15 @@ fn group_wires_by_containment(
     // A wire with no strict container is itself an outer wire.
     let mut parent: Vec<Option<usize>> = vec![None; wires.len()];
     for (i, outline_i) in outlines.iter().enumerate() {
-        let Some(&sample) = outline_i.polygon.first() else {
-            continue;
-        };
         let mut best_parent: Option<usize> = None;
         let mut best_area = f64::INFINITY;
         for (j, outline_j) in outlines.iter().enumerate() {
             if i == j {
                 continue;
             }
+            let Some(sample) = outline_j.clearest_probe(outline_i) else {
+                continue;
+            };
             if outline_j.contains(sample, normal) {
                 let area = outline_j.area(normal);
                 if area < best_area {
@@ -597,6 +597,9 @@ struct OutlineArc {
     /// The curve's axes over their semi-axis lengths.
     u: Vec3,
     v: Vec3,
+    /// The curve's axes times their semi-axis lengths.
+    major: Vec3,
+    minor: Vec3,
     /// The product of the semi-axes: the chart's area scale.
     scale: f64,
     /// The parameters the wire runs between, in the direction it runs.
@@ -617,6 +620,40 @@ impl OutlineArc {
         (self.to - self.from).abs() >= TAU - 1e-9
     }
 
+    /// The point of the arc `fraction` of the way along it.
+    fn point(&self, fraction: f64) -> Point3 {
+        let (sin_t, cos_t) = (self.from + (self.to - self.from) * fraction).sin_cos();
+        self.center + self.major * cos_t + self.minor * sin_t
+    }
+
+    /// The chord's ends on the unit circle of the chart, and how far to its
+    /// left `q` is, times the chord's length.
+    fn chord_side(&self, q: (f64, f64)) -> ((f64, f64), (f64, f64), f64) {
+        let at = |t: f64| (t.cos(), t.sin());
+        let (start, end) = (at(self.from), at(self.to));
+        let side = (end.0 - start.0).mul_add(q.1 - start.1, -((end.1 - start.1) * (q.0 - start.0)));
+        (start, end, side)
+    }
+
+    /// How far `p` is from the arc's chord, in the chart (so in units of
+    /// the curve's radius), when it is in the curve's disc: the test of
+    /// [`Self::segment_contains`] turns on that side's sign, so on the chord
+    /// itself it turns on rounding. `None` for a point the chord does not
+    /// decide: outside the disc, or of a whole curve, which has no chord.
+    fn chord_clearance(&self, p: Point3) -> Option<f64> {
+        let (x, y) = self.chart(p);
+        if self.is_full() || x.mul_add(x, y * y) > 1.0 {
+            return None;
+        }
+        let (start, end, side) = self.chord_side((x, y));
+        let length = (end.0 - start.0).hypot(end.1 - start.1);
+        Some(if length > 0.0 {
+            side.abs() / length
+        } else {
+            0.0
+        })
+    }
+
     /// Whether `p` lies strictly between the arc and its chord: in the
     /// curve's disc, on the arc's side of the chord. The chart is affine, so
     /// both tests carry over from the unit circle exactly.
@@ -628,16 +665,8 @@ impl OutlineArc {
         if self.is_full() {
             return true;
         }
-        let at = |t: f64| (t.cos(), t.sin());
-        let (start, end, mid) = (
-            at(self.from),
-            at(self.to),
-            at(f64::midpoint(self.from, self.to)),
-        );
-        let side = |q: (f64, f64)| {
-            (end.0 - start.0).mul_add(q.1 - start.1, -((end.1 - start.1) * (q.0 - start.0)))
-        };
-        side((x, y)) * side(mid) > 0.0
+        let mid = f64::midpoint(self.from, self.to);
+        self.chord_side((x, y)).2 * self.chord_side((mid.cos(), mid.sin())).2 > 0.0
     }
 
     /// The signed area between the arc and its chord, counter-clockwise
@@ -653,6 +682,9 @@ impl OutlineArc {
 struct LoopOutline {
     polygon: Vec<Point3>,
     arcs: Vec<OutlineArc>,
+    /// Points of the outline itself to place it by: each edge's start, and
+    /// a line's midpoint or an arc's two third-points.
+    probes: Vec<Point3>,
 }
 
 impl LoopOutline {
@@ -660,6 +692,7 @@ impl LoopOutline {
         let mut outline = Self {
             polygon: Vec::new(),
             arcs: Vec::new(),
+            probes: Vec::new(),
         };
         let Ok(wire) = topo.wire(wire_id) else {
             return outline;
@@ -672,9 +705,9 @@ impl LoopOutline {
                 continue;
             };
             let (start, end) = (start.point(), end.point());
-            outline
-                .polygon
-                .push(if oe.is_forward() { start } else { end });
+            let first = if oe.is_forward() { start } else { end };
+            outline.polygon.push(first);
+            outline.probes.push(first);
             let (center, u, v, a, b, curve_normal) = match edge.curve() {
                 EdgeCurve::Circle(c) => (
                     c.center(),
@@ -695,7 +728,10 @@ impl LoopOutline {
                 EdgeCurve::Line
                 | EdgeCurve::NurbsCurve(_)
                 | EdgeCurve::Hyperbola(_)
-                | EdgeCurve::Parabola(_) => continue,
+                | EdgeCurve::Parabola(_) => {
+                    outline.probes.push(start + (end - start) * 0.5);
+                    continue;
+                }
             };
             // Every arc `loop_wire` lays down stores its span; an edge with
             // no authoritative one counts as its chord.
@@ -703,23 +739,58 @@ impl LoopOutline {
                 continue;
             };
             let (from, to) = if oe.is_forward() { (t0, t1) } else { (t1, t0) };
-            outline.arcs.push(OutlineArc {
+            let arc = OutlineArc {
                 center,
                 u: u * (1.0 / a),
                 v: v * (1.0 / b),
+                major: u * a,
+                minor: v * b,
                 scale: a * b,
                 from,
                 to,
                 turn: curve_normal.dot(normal).signum(),
-            });
+            };
+            outline
+                .probes
+                .extend([arc.point(1.0 / 3.0), arc.point(2.0 / 3.0)]);
+            outline.arcs.push(arc);
         }
         outline
+    }
+
+    /// The probe of `inner` that [`Self::contains`] reads most surely: the
+    /// one farthest from every chord of this outline that decides it. The
+    /// vertex polygon and the arc segments are pieces of one region, and
+    /// the chords between them are inside it or outside it, not its
+    /// boundary; a point on one is placed by rounding. A loop that does not
+    /// touch this one is wholly inside or wholly outside it, so any of its
+    /// points stands for it, and at most two of an edge's probes lie on one
+    /// line.
+    fn clearest_probe(&self, inner: &Self) -> Option<Point3> {
+        let clearance = |p: Point3| {
+            self.arcs
+                .iter()
+                .filter_map(|arc| arc.chord_clearance(p))
+                .fold(f64::INFINITY, f64::min)
+        };
+        let mut best: Option<(Point3, f64)> = None;
+        for &probe in &inner.probes {
+            let clear = clearance(probe);
+            if clear.is_infinite() {
+                return Some(probe);
+            }
+            if best.is_none_or(|(_, most)| clear > most) {
+                best = Some((probe, clear));
+            }
+        }
+        best.map(|(probe, _)| probe)
     }
 
     /// Whether `p` (in the section plane, off the outline) is inside it.
     /// The region is the vertex polygon with each arc's segment added where
     /// the arc bulges out of it and removed where it bulges in: the parity
-    /// of the polygon and every segment that holds the point.
+    /// of the polygon and every segment that holds the point. A point on a
+    /// chord between the two is not decided (see [`Self::clearest_probe`]).
     fn contains(&self, p: Point3, normal: Vec3) -> bool {
         let in_polygon = self.polygon.len() >= 3
             && crate::distance::point_in_polygon_3d(&p, &self.polygon, &normal);
@@ -1990,6 +2061,67 @@ mod tests {
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].0, wires[0]);
         assert_eq!(groups[0].1.len(), 2);
+    }
+
+    /// A hole whose seam vertex lies on the chord between two arcs of its
+    /// outline is still a hole. A lens has two vertices, so its region is
+    /// its two arc segments, and a point on the chord they share is in
+    /// neither by its side of that chord: the hole is placed by a point of
+    /// its boundary clear of the chord instead. (Read at the seam, the
+    /// section of a lens with a cavity came back as two faces, the cavity
+    /// filled.)
+    #[test]
+    fn a_hole_on_the_chord_between_two_arcs_is_still_a_hole() {
+        let tol = Tolerance::new();
+        let normal = Vec3::new(0.0, 0.0, 1.0);
+        let disc = |x: f64, y: f64, radius: f64, reference: Vec3| {
+            Conic::Circle(
+                Circle3D::new_with_ref(Point3::new(x, y, 0.0), normal, radius, reference).unwrap(),
+            )
+        };
+        let (along_x, along_y) = (Vec3::new(1.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0));
+        // Circles of radius 5 about (∓3, 0) meet at (0, ±4): the lens's two
+        // arcs share the chord x = 0. The hole's seam, its parameter 0, is
+        // the origin, on that chord.
+        let carriers = vec![
+            disc(-3.0, 0.0, 5.0, along_x),
+            disc(3.0, 0.0, 5.0, along_x),
+            disc(0.0, -0.25, 0.25, along_y),
+        ];
+        let half = 4.0f64.atan2(3.0);
+        let mut pieces = arc_pieces(&carriers[0], Trace::Conic(0), -half, 2.0 * half, 32);
+        pieces.extend(arc_pieces(
+            &carriers[1],
+            Trace::Conic(1),
+            PI - half,
+            2.0 * half,
+            32,
+        ));
+        pieces.extend(arc_pieces(&carriers[2], Trace::Conic(2), 0.0, TAU, 64));
+        let mut topo = Topology::new();
+        let wires = assemble_wires(&mut topo, &pieces, &carriers, tol).unwrap();
+        assert_eq!(wires.len(), 2, "the lens and the hole");
+        assert_eq!(wire_edges(&topo, wires[0]).len(), 2, "the lens is two arcs");
+        let (_, seam) = closed_edge(&topo, wires[1]);
+        assert!(
+            seam.x().abs() <= 1e-15 && seam.y().abs() <= 1e-15,
+            "{seam:?}"
+        );
+
+        let lens = LoopOutline::of(&topo, wires[0], normal);
+        let lens_area = 25.0 * (2.0 * half - (2.0 * half).sin());
+        assert!((lens.area(normal) - lens_area).abs() <= 1e-12);
+
+        let groups = group_wires_by_containment(&topo, &wires, normal);
+        assert_eq!(groups.len(), 1, "one face, not the lens and a filled hole");
+        assert_eq!(groups[0], (wires[0], vec![wires[1]]));
+        let face = topo.add_face(Face::new(
+            groups[0].0,
+            groups[0].1.clone(),
+            FaceSurface::Plane { normal, d: 0.0 },
+        ));
+        let area = crate::measure::face_area(&topo, face, 0.01).unwrap();
+        assert_relative(area, lens_area - PI * 0.0625, 1e-12, "lens less its hole");
     }
 
     /// Arcs bulging out of and into a wire's vertex polygon are added to

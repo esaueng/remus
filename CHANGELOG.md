@@ -9,7 +9,7 @@ historical predecessor-line records, retained for provenance. The
 ### Fixed
 
 * **operations,wasm:** `section` keeps the closed-form curves of a cross
-  section. Every curved piece of a section was chorded into `Line`
+  section (#1826). Every curved piece of a section was chorded into `Line`
   edges, 64 or more to a circle or ellipse. An 80×40 plate with two r=3 holes cut at mid-thickness
   came back as 4 + 64 + 64 lines and measured 3143.542127 for the analytic
   3200 − 18π = 3143.451332, and a consumer that exports the section got
@@ -23,9 +23,11 @@ historical predecessor-line records, retained for provenance. The
   `getEdgeCurveType` reports `CIRCLE` / `ELLIPSE` where it reported 64
   `LINE`s, so a consumer that counted line edges or pinned the polygon's
   area sees different numbers. Inner wires are grouped by exact containment
-  (a one-vertex circle wire is tested as a disc). Still chorded, as `Line`
-  edges that nothing marks as approximate: a torus off its symmetry planes,
-  a NURBS face, and the parabola and hyperbola branches of a cone.
+  (a one-vertex circle wire is tested as a disc, and a hole is placed by a
+  point of its boundary clear of the chords between its outline's arcs).
+  Still chorded, as `Line` edges that nothing marks as approximate: a torus
+  off its symmetry planes, a NURBS face, and the parabola and hyperbola
+  branches of a cone.
   One wrong crossing went with it: a closed rim traversed backwards was
   laid down ending, not starting, at its vertex, so the seam of a cone or
   torus face was crossed one rim sample off and its section carried a dent
