@@ -3643,9 +3643,12 @@ pub fn fillet_rolling_ball_with_origins(
             let Some(&[f1, f2]) = edge_to_faces.get(&edge_id.index()).map(Vec::as_slice) else {
                 continue;
             };
-            if side >= 0.0 {
-                continue;
-            }
+            // `side` is -1 (convex) or 1 (concave). A concave stripe has only
+            // the three-plane cell: its ball rolls in the air of a strictly
+            // concave corner (a drafted pocket's floor), whose leaning walls
+            // carry its contacts down past the vertex's section to the floor
+            // (#1780).
+            let concave = side > 0.0;
             let edge = topo.edge(edge_id)?;
             for vid in [edge.start(), edge.end()] {
                 let vi = vid.index();
@@ -3684,11 +3687,15 @@ pub fn fillet_rolling_ball_with_origins(
                         &vertex_faces,
                         &edge_to_faces,
                         &face_polygons,
+                        concave,
                         tol,
                     )? {
                         fillet_contact_map.insert((vi, edge_id.index(), f1.index()), r1);
                         fillet_contact_map.insert((vi, edge_id.index(), f2.index()), r2);
                     }
+                    continue;
+                }
+                if concave {
                     continue;
                 }
                 if let Some(split) = split_runout::qualify(

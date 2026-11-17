@@ -1,19 +1,24 @@
-//! A lone straight stripe ending at a strictly convex planar corner.
+//! A lone straight stripe ending at a strictly convex or strictly concave
+//! planar corner.
 //!
 //! When every face at the stripe's end vertex is a plane and every edge
 //! there is convex, the material near the vertex is the intersection of
 //! those planes' half-spaces, so the band is the rolling-ball cylinder cut
 //! by them and each contact line runs until the first side plane it meets —
 //! wherever along its line that is, before the vertex's own section or past
-//! it. Two cells:
+//! it. When every edge there is concave (a pocket's floor corner), the same
+//! holds of the air near the vertex, where a concave stripe's ball rolls.
+//! Two cells:
 //!
-//! - **Three planes** (`f1`, `f2` and one side `P`): both contacts run out on
-//!   `P`. The pre-pass already does this when both reach `P` within the
-//!   edge's own span; [`qualify_single`] covers the contacts that reach it
-//!   beyond the vertex — a chamfer's upper contact line, whose chamfer
-//!   contact runs on to the mitre, or a fillet of the mitre, whose contacts
-//!   run on to the top.
-//! - **Four planes** ([`qualify`]): a chamfered box's mitred corner bounds the
+//! - **Three planes** (`f1`, `f2` and one side `P`), convex or concave: both
+//!   contacts run out on `P`. The pre-pass already does this when both reach
+//!   `P` within the edge's own span; [`qualify_single`] covers the contacts
+//!   that reach it beyond the vertex — a chamfer's upper contact line, whose
+//!   chamfer contact runs on to the mitre, a fillet of the mitre, whose
+//!   contacts run on to the top, or a round of a drafted pocket's leaning
+//!   corner, whose contacts run down to the floor (#1780).
+//! - **Four planes** ([`qualify`]), convex only: a chamfered box's mitred
+//!   corner bounds the
 //!   chamfer's lower contact line by the stripe's own supports `f1` (wall)
 //!   and `f2` (chamfer), the neighbouring wall `Pa` (meeting `f1`) and the
 //!   neighbouring chamfer `Pb` (meeting `f2` along the mitre), `Pa` and `Pb`
@@ -94,7 +99,7 @@ struct CornerEdge {
 }
 
 /// The planar faces and straight edges around one vertex, qualified as a
-/// strictly convex cone.
+/// strictly convex (or, for a concave stripe, strictly concave) cone.
 struct Cone {
     vertex: Point3,
     /// `(face, outward unit normal, d)`.
@@ -140,10 +145,16 @@ impl Cone {
 /// strictly on the material side of every plane not containing it, and lies
 /// in the two that do. The material near the vertex is then exactly the
 /// intersection of the planes' half-spaces.
-fn convex_cone(
+///
+/// With `concave` the cone must instead be strictly concave: each edge
+/// leaves the vertex strictly on the air side of every plane not containing
+/// it. The air near the vertex is then exactly the intersection of the
+/// planes' inward half-spaces, and a concave stripe's ball rolls in it.
+fn planar_cone(
     topo: &Topology,
     vertex_index: usize,
     count: usize,
+    concave: bool,
     vertex_faces: &HashMap<usize, Vec<FaceId>>,
     edge_to_faces: &HashMap<usize, Vec<FaceId>>,
     face_polygons: &HashMap<usize, FacePolygon>,
@@ -223,7 +234,7 @@ fn convex_cone(
                 if along.abs() > slack {
                     return Ok(None);
                 }
-            } else if along >= -slack {
+            } else if (concave && along <= slack) || (!concave && along >= -slack) {
                 return Ok(None);
             }
         }
@@ -257,10 +268,10 @@ fn run_out(
         .then_some(end)
 }
 
-/// The three-plane end of the lone straight convex stripe `edge` at vertex
-/// `vertex_index`: both contacts (`contacts`, on `f1`, `f2` at the vertex
-/// section) run out on the one side plane, wherever they meet it. `None`
-/// outside the cell.
+/// The three-plane end of the lone straight stripe `edge` at vertex
+/// `vertex_index`, convex or (with `concave`) concave: both contacts
+/// (`contacts`, on `f1`, `f2` at the vertex section) run out on the one side
+/// plane, wherever they meet it. `None` outside the cell.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn qualify_single(
     topo: &Topology,
@@ -271,13 +282,15 @@ pub(super) fn qualify_single(
     vertex_faces: &HashMap<usize, Vec<FaceId>>,
     edge_to_faces: &HashMap<usize, Vec<FaceId>>,
     face_polygons: &HashMap<usize, FacePolygon>,
+    concave: bool,
     tol: Tolerance,
 ) -> Result<Option<[Point3; 2]>, crate::OperationsError> {
     let [f1, f2] = [supports[0].index(), supports[1].index()];
-    let Some(cone) = convex_cone(
+    let Some(cone) = planar_cone(
         topo,
         vertex_index,
         3,
+        concave,
         vertex_faces,
         edge_to_faces,
         face_polygons,
@@ -324,10 +337,11 @@ pub(super) fn qualify(
     tol: Tolerance,
 ) -> Result<Option<SplitRunout>, crate::OperationsError> {
     let [f1, f2] = [supports[0].index(), supports[1].index()];
-    let Some(cone) = convex_cone(
+    let Some(cone) = planar_cone(
         topo,
         vertex_index,
         4,
+        false,
         vertex_faces,
         edge_to_faces,
         face_polygons,
