@@ -9937,22 +9937,29 @@ fn exact_ruled_offset_section(
     }
     // Signed distance to the surface, positive outside, exact on the
     // surface and first-order exact beside it.
-    let offset: Box<dyn Fn(Point3) -> f64> = match analytic {
+    // `reach`: how far a point is from the carrier's own frame (the axis,
+    // or the apex), so the scale below does not grow with translation.
+    #[allow(clippy::type_complexity)]
+    let (offset, reach): (Box<dyn Fn(Point3) -> f64>, Box<dyn Fn(Point3) -> f64>) = match analytic {
         FaceSurface::Cylinder(c) => {
             let (origin, axis, radius) = (c.origin(), c.axis(), c.radius());
-            Box::new(move |p: Point3| {
+            let radial = move |p: Point3| {
                 let to = p - origin;
-                (to - axis * axis.dot(to)).length() - radius
-            })
+                (to - axis * axis.dot(to)).length()
+            };
+            (Box::new(move |p| radial(p) - radius), Box::new(radial))
         }
         FaceSurface::Cone(c) => {
             let (apex, axis) = (c.apex(), c.axis());
             let (sin_a, cos_a) = c.half_angle().sin_cos();
-            Box::new(move |p: Point3| {
-                let to = p - apex;
-                let h = axis.dot(to);
-                (to - axis * h).length() * sin_a - h * cos_a
-            })
+            (
+                Box::new(move |p: Point3| {
+                    let to = p - apex;
+                    let h = axis.dot(to);
+                    (to - axis * h).length() * sin_a - h * cos_a
+                }),
+                Box::new(move |p: Point3| (p - apex).length()),
+            )
         }
         // B24: exhaustive over `FaceSurface` — only a cylinder or cone is
         // the carrier a wrapped wall is ruled across.
@@ -9961,25 +9968,44 @@ fn exact_ruled_offset_section(
         | FaceSurface::Sphere(_)
         | FaceSurface::Torus(_) => return Ok(None),
     };
-    let scale = points.iter().flatten().fold(1.0_f64, |s, p| {
-        s.max(p.x().abs()).max(p.y().abs()).max(p.z().abs())
-    });
-    // The wrap certifies its fits within 1e-7 of its scale; allow a few.
+    // The wrap certifies its fits within 1e-7 of its own scale (its radius
+    // and extent); allow a few. Measured from the carrier's frame and the
+    // net's own size, never from the world origin, so a translated pair
+    // gets the same band.
+    let net = surface.aabb();
+    let scale = points
+        .iter()
+        .flatten()
+        .fold((net.max - net.min).length().max(1.0), |s, &p| {
+            s.max(reach(p))
+        });
     let band = (8e-7 * scale).max(4.0 * tol.linear);
     let (v0, v1) = surface.domain_v();
-    let (u0, u1) = surface.domain_u();
-    let spans = surface
+    // Every knot span is sampled on its own, however short: a span the
+    // samples skipped could leave the surface unseen.
+    let mut spans: Vec<(f64, f64)> = surface
         .knots_u()
         .windows(2)
         .filter(|k| k[1] > k[0])
-        .count()
-        .max(1);
-    let samples = 8 * spans;
-    let mut fractions = Vec::with_capacity(samples + 1);
+        .map(|k| (k[0], k[1]))
+        .collect();
+    if spans.is_empty() {
+        spans.push(surface.domain_u());
+    }
+    let span_params = |per: usize| {
+        let mut params = Vec::with_capacity(spans.len() * per + 1);
+        for &(a, b) in &spans {
+            for j in 0..per {
+                #[allow(clippy::cast_precision_loss)]
+                params.push(a + (b - a) * (j as f64 / per as f64));
+            }
+        }
+        params.push(spans[spans.len() - 1].1);
+        params
+    };
+    let mut fractions = Vec::new();
     let mut longest = 0.0_f64;
-    for i in 0..=samples {
-        #[allow(clippy::cast_precision_loss)]
-        let u = u0 + (u1 - u0) * (i as f64 / samples as f64);
+    for u in span_params(8) {
         let (a, b) = (surface.evaluate(u, v0), surface.evaluate(u, v1));
         let (ga, gb) = (offset(a), offset(b));
         if !(ga.abs() > band && gb.abs() > band && ga * gb < 0.0) {
@@ -10020,10 +10046,8 @@ fn exact_ruled_offset_section(
         curve_weights,
     )?;
     let domain = curve.domain();
-    let checks = 32 * spans;
-    for i in 0..=checks {
-        #[allow(clippy::cast_precision_loss)]
-        let t = domain.0 + (domain.1 - domain.0) * (i as f64 / checks as f64);
+    // The iso-curve shares the surface's u knots, so its spans are these.
+    for t in span_params(32) {
         if offset(curve.evaluate(t)).abs() > band {
             return Ok(None);
         }
@@ -14332,6 +14356,9 @@ mod carrier_clearance_oracle_tests;
 
 #[cfg(test)]
 mod ruled_plane_tests;
+
+#[cfg(test)]
+mod ruled_offset_tests;
 
 #[cfg(test)]
 mod multi_span_section_tests;
