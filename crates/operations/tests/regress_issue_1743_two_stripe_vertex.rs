@@ -960,10 +960,14 @@ fn square_rounded_top_loop_chamfer_matches_the_slice_quadrature() {
     let sides = drafted_sides(0.0, Point3::new(0.0, 0.0, 0.0), 40.0);
     let quadrature = rounded_loop_chamfer_volume(&sides, 5.0, 20.0, -1.0, 1.0);
     assert_close(quadrature, closed_form, 1e-9, "the quadrature");
-    // `solid_volume` reads this body 0.19 high at a deflection of 1e-3 and
-    // converges from there (0.04 at 2e-4); the fine mesh resolves it.
-    let measured = mesh_volume(&topo, chamfered, 5e-4) - mesh_volume(&topo, round, 5e-4);
-    assert_close(measured, -closed_form, 2e-3, what);
+    // Every face is a plane or a line/circle-trimmed cylinder or cone, which
+    // `solid_volume` integrates exactly at any deflection (#1823).
+    assert_close(
+        volume_change(&topo, round, chamfered),
+        -closed_form,
+        1e-6,
+        what,
+    );
 }
 
 /// A pocket cut by a drafted tool whose uprights are rounded: the floor loop
