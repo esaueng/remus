@@ -149,16 +149,14 @@ fn intersect_is_the_lower_cap_closed_by_a_disc() {
     }
 }
 
-/// A radius-2 sphere already cut above z = 1, then cut below z = -1. On main
-/// the second cut silently returned its input (volume of the top-trimmed
-/// sphere, not the slab): the ray-cast classifier approximates each sphere
-/// face by its boundary polygon, so it read the trimmed sphere's interior as
-/// outside and dropped the closing disc, while the centroid fallback kept the
-/// lower cap. With the cap now classified on the sphere, the dropped disc
-/// leaves an open shell and the exact-only boolean refuses. The cut must
-/// either refuse with the typed exact-only reason or build the slab.
+/// A radius-2 sphere already cut above z = 1, then cut below z = -1, is the
+/// slab between the planes. The second cut once silently returned its input,
+/// then refused (#1816): the GFA ray caster flattened each sphere face into
+/// its boundary polygon, read the trimmed sphere's interior as outside and
+/// dropped the closing disc. `regress_trimmed_sphere_second_cap.rs` covers
+/// the variants.
 #[test]
-fn second_cut_of_a_trimmed_sphere_refuses_or_builds_the_slab() {
+fn second_cut_of_a_trimmed_sphere_builds_the_slab() {
     let mut topo = Topology::new();
     let sphere = make_sphere(&mut topo, 2.0, 16).unwrap();
     let above = make_box(&mut topo, 20.0, 20.0, 20.0).unwrap();
@@ -175,20 +173,12 @@ fn second_cut_of_a_trimmed_sphere_refuses_or_builds_the_slab() {
 
     let below = make_box(&mut topo, 20.0, 20.0, 20.0).unwrap();
     transform_solid(&mut topo, below, &Mat4::translation(-10.0, -10.0, -21.0)).unwrap();
-    match boolean(&mut topo, BooleanOp::Cut, trimmed, below) {
-        Ok(slab) => assert_rel(
-            mass_properties(&topo, slab).unwrap().mass,
-            sphere_volume - 2.0 * cap,
-            "slab between z = -1 and z = 1",
-        ),
-        Err(error) => assert!(
-            matches!(
-                error,
-                remus_operations::OperationsError::ExactOnlyUnattainable
-            ),
-            "a refusal must be the typed exact-only one: {error:?}"
-        ),
-    }
+    let slab = boolean(&mut topo, BooleanOp::Cut, trimmed, below).unwrap();
+    assert_rel(
+        mass_properties(&topo, slab).unwrap().mass,
+        sphere_volume - 2.0 * cap,
+        "slab between z = -1 and z = 1",
+    );
 }
 
 /// The sphere as the object: a radius-2 sphere at the origin cut by a box
