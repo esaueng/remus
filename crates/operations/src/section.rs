@@ -5,13 +5,16 @@
 
 #![allow(clippy::too_many_lines, clippy::doc_markdown)]
 
+use std::f64::consts::{PI, TAU};
+
+use remus_math::curves::{Circle3D, Ellipse3D};
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::edge::{Edge, EdgeCurve};
 use remus_topology::face::{Face, FaceId, FaceSurface};
 use remus_topology::solid::SolidId;
-use remus_topology::vertex::Vertex;
+use remus_topology::vertex::{Vertex, VertexId};
 use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
 use remus_math::nurbs::intersection::IntersectionPoint;
@@ -22,6 +25,261 @@ use crate::boolean::face_polygon;
 use crate::dot_normal_point;
 
 // Finite-band certification stays private to the section module.
+
+/// The closed-form curve a curved face's plane section lies on.
+///
+/// The arms still lay a section down as chords of its carrier (the clipping
+/// to the face's trims works on them); a chord that carries one of these is
+/// a sample of that exact curve, and [`assemble_wires`] turns each run of
+/// them back into one circle or ellipse edge.
+#[derive(Debug, Clone)]
+enum Conic {
+    Circle(Circle3D),
+    Ellipse(Ellipse3D),
+}
+
+impl Conic {
+    /// The circle or ellipse with the given centre, plane normal and
+    /// semi-axes, `major_dir` being the direction of `semi_major`. Semi-axes
+    /// that agree to `1e-12` relative are a circle of radius `semi_minor`:
+    /// an ellipse that round has no stable major direction, and is the
+    /// circle to well under the modeling tolerance.
+    fn new(
+        center: Point3,
+        normal: Vec3,
+        semi_major: f64,
+        semi_minor: f64,
+        major_dir: Vec3,
+    ) -> Option<Self> {
+        if !(semi_major.is_finite() && semi_minor.is_finite())
+            || semi_major <= 0.0
+            || semi_minor <= 0.0
+        {
+            return None;
+        }
+        if (semi_major - semi_minor).abs() <= 1e-12 * semi_major.max(semi_minor) {
+            return Circle3D::new(center, normal, semi_minor)
+                .ok()
+                .map(Self::Circle);
+        }
+        let (a, b, dir) = if semi_major > semi_minor {
+            (semi_major, semi_minor, major_dir)
+        } else {
+            (semi_minor, semi_major, normal.cross(major_dir))
+        };
+        Ellipse3D::new_with_ref(center, normal, a, b, dir)
+            .ok()
+            .map(Self::Ellipse)
+    }
+
+    fn evaluate(&self, t: f64) -> Point3 {
+        match self {
+            Self::Circle(c) => c.evaluate(t),
+            Self::Ellipse(e) => e.evaluate(t),
+        }
+    }
+
+    fn project(&self, point: Point3) -> f64 {
+        match self {
+            Self::Circle(c) => c.project(point),
+            Self::Ellipse(e) => e.project(point),
+        }
+    }
+
+    /// How far `point` is from the point of the curve at its own parameter:
+    /// the radial distance on a circle, a like measure on an ellipse.
+    fn offset(&self, point: Point3) -> f64 {
+        (self.evaluate(self.project(point)) - point).length()
+    }
+
+    fn reversed(&self) -> Self {
+        match self {
+            Self::Circle(c) => Self::Circle(c.reversed()),
+            Self::Ellipse(e) => Self::Ellipse(e.reversed()),
+        }
+    }
+
+    fn edge_curve(&self) -> EdgeCurve {
+        match self {
+            Self::Circle(c) => EdgeCurve::Circle(c.clone()),
+            Self::Ellipse(e) => EdgeCurve::Ellipse(e.clone()),
+        }
+    }
+
+    /// Whether two carriers are one curve within the modeling tolerance,
+    /// whichever way round each is traced: adjacent faces of one surface
+    /// (a sphere's patches, a split cylinder wall) each bring their own.
+    fn same_curve(&self, other: &Self, tol: Tolerance) -> bool {
+        let parallel = |a: Vec3, b: Vec3| a.cross(b).length() <= tol.angular;
+        let near = |a: f64, b: f64| (a - b).abs() <= tol.linear;
+        match (self, other) {
+            (Self::Circle(a), Self::Circle(b)) => {
+                (a.center() - b.center()).length() <= tol.linear
+                    && near(a.radius(), b.radius())
+                    && parallel(a.normal(), b.normal())
+            }
+            (Self::Ellipse(a), Self::Ellipse(b)) => {
+                (a.center() - b.center()).length() <= tol.linear
+                    && near(a.semi_major(), b.semi_major())
+                    && near(a.semi_minor(), b.semi_minor())
+                    && parallel(a.normal(), b.normal())
+                    && parallel(a.u_axis(), b.u_axis())
+            }
+            (Self::Circle(_), Self::Ellipse(_)) | (Self::Ellipse(_), Self::Circle(_)) => false,
+        }
+    }
+}
+
+/// What a section chord is a piece of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Trace {
+    /// The exact straight section of a planar face.
+    Straight,
+    /// A sample of the closed-form carrier with this index.
+    Conic(usize),
+    /// A sample of a section with no closed form here (a torus off its
+    /// symmetry planes, a NURBS face, an open cone branch): the chord
+    /// approximates it, and stays a line.
+    Sampled,
+}
+
+/// One chord of the section, from `a` to `b`.
+#[derive(Debug, Clone, Copy)]
+struct Piece {
+    a: Point3,
+    b: Point3,
+    trace: Trace,
+}
+
+/// The trace for chords on `conic`, filing it with the carriers unless an
+/// equal curve is already there.
+fn conic_trace(carriers: &mut Vec<Conic>, conic: Conic, tol: Tolerance) -> Trace {
+    let index = carriers
+        .iter()
+        .position(|known| known.same_curve(&conic, tol))
+        .unwrap_or_else(|| {
+            carriers.push(conic);
+            carriers.len() - 1
+        });
+    Trace::Conic(index)
+}
+
+/// The trace of one carrier polyline: the candidate conic that its first,
+/// middle and last points lie on, or `Sampled` when none holds it.
+/// [`assemble_wires`] checks every point it turns into an edge again.
+fn polyline_trace(
+    carriers: &mut Vec<Conic>,
+    candidates: &[Conic],
+    polyline: &[Point3],
+    tol: Tolerance,
+) -> Trace {
+    let band = tol.linear * 100.0;
+    let probes = [
+        polyline.first(),
+        polyline.get(polyline.len() / 2),
+        polyline.last(),
+    ];
+    candidates
+        .iter()
+        .find(|conic| {
+            probes
+                .iter()
+                .all(|p| p.is_some_and(|&p| conic.offset(p) <= band))
+        })
+        .map_or(Trace::Sampled, |conic| {
+            conic_trace(carriers, conic.clone(), tol)
+        })
+}
+
+/// The clipped chords of carrier `polylines` (each with its polyline's
+/// index), as pieces carrying their polyline's trace.
+fn traced(
+    carriers: &mut Vec<Conic>,
+    candidates: &[Conic],
+    polylines: &[Vec<Point3>],
+    clipped: Vec<(usize, Point3, Point3)>,
+    tol: Tolerance,
+) -> Vec<Piece> {
+    let traces: Vec<Trace> = polylines
+        .iter()
+        .map(|polyline| polyline_trace(carriers, candidates, polyline, tol))
+        .collect();
+    clipped
+        .into_iter()
+        .map(|(k, a, b)| Piece {
+            a,
+            b,
+            trace: traces[k],
+        })
+        .collect()
+}
+
+/// The circle a plane cuts a sphere in.
+fn sphere_circle(
+    sphere: &remus_math::surfaces::SphericalSurface,
+    normal: Vec3,
+    d: f64,
+) -> Option<Conic> {
+    let height = dot_normal_point(normal, sphere.center()) - d;
+    let radius_squared = sphere.radius().mul_add(sphere.radius(), -(height * height));
+    if radius_squared.is_nan() || radius_squared <= 0.0 {
+        return None;
+    }
+    Circle3D::new(
+        sphere.center() - normal * height,
+        normal,
+        radius_squared.sqrt(),
+    )
+    .ok()
+    .map(Conic::Circle)
+}
+
+/// The circles a plane cuts a torus in on its two families of symmetry
+/// planes: perpendicular to the axis (two concentric circles) and through
+/// the axis (the two tube circles). Any other torus section is a quartic
+/// with no conic pieces (the Villarceau planes aside), and stays sampled.
+fn torus_circles(
+    torus: &remus_math::surfaces::ToroidalSurface,
+    normal: Vec3,
+    d: f64,
+) -> Vec<Conic> {
+    // The same strictness as the conic arms: a plane this close to the
+    // symmetry plane cuts the circle to 1e-12 of the torus's size.
+    const ALIGNED: f64 = 1e-12;
+    let (major, minor) = (torus.major_radius(), torus.minor_radius());
+    let axis = torus.z_axis();
+    let height = d - dot_normal_point(normal, torus.center());
+    let circle = |center: Point3, radius: f64| {
+        Circle3D::new(center, normal, radius)
+            .ok()
+            .map(Conic::Circle)
+    };
+    if normal.cross(axis).length() <= ALIGNED {
+        // n = ±axis: the plane sits `height` along n from the centre.
+        let half_squared = minor.mul_add(minor, -(height * height));
+        if half_squared.is_nan() || half_squared <= 0.0 {
+            return Vec::new();
+        }
+        let half = half_squared.sqrt();
+        let center = torus.center() + normal * height;
+        return [major + half, major - half]
+            .into_iter()
+            .filter(|&radius| radius > 0.0)
+            .filter_map(|radius| circle(center, radius))
+            .collect();
+    }
+    if normal.dot(axis).abs() <= ALIGNED && height.abs() <= ALIGNED * (major + minor) {
+        // The plane holds the axis: the tube's circles sit on either side.
+        let Ok(radial) = axis.cross(normal).normalize() else {
+            return Vec::new();
+        };
+        return [radial, -radial]
+            .into_iter()
+            .filter_map(|side| circle(torus.center() + side * major, minor))
+            .collect();
+    }
+    Vec::new()
+}
 
 /// Chain intersection curve points into consecutive segment pairs.
 ///
@@ -77,12 +335,29 @@ pub struct Section {
 /// intersection segments exist but cannot be assembled into a closed
 /// cross-section wire. Intersecting cylindrical faces must have a complete
 /// two-rim band; cuts through its rims or parallel to its axis return
-/// `Unsupported` until authoritative cap clipping is available. Contained
-/// cylindrical sections retain the existing 64-segment polygon approximation.
-/// Sphere, cone and torus sections are the same 64-chord polylines of the
-/// complete carrier, clipped to the face's trims where they cross its
-/// boundary; a curved section that leaves its face away from every boundary
-/// crossing, or a cone face spanning its apex, returns `Unsupported`.
+/// `Unsupported` until authoritative cap clipping is available. A curved
+/// section that leaves its face away from every boundary crossing, or a cone
+/// face spanning its apex, returns `Unsupported`.
+///
+/// # Edge geometry
+///
+/// The wires keep the section's closed-form curves. A planar face
+/// contributes straight `Line` edges. A plane cuts a sphere in a circle, a
+/// cylinder or cone (across every generator) in a circle or ellipse, and a
+/// torus on its symmetry planes (square to its axis, or through it) in
+/// circles: each such curve is one `Circle` or `Ellipse` edge, closed on a
+/// single vertex with the trim `[0, 2π]` when the face holds it whole, and
+/// an arc with its parameter span stored as the edge's trim where the face's
+/// boundary clips it. `measure::face_area` of such a face is its analytic
+/// area.
+///
+/// Sections with no closed form here stay sampled, as chords: a torus off
+/// its symmetry planes, a NURBS face, and the open (parabola, hyperbola)
+/// branches of a cone. Those chords are `Line` edges that only approximate
+/// the section (64 to a turn of a torus tube), and nothing on the edge tells
+/// them from the exact straight edges of a planar face: a caller that must
+/// know whether a section is exact has to look at the faces the plane
+/// crosses.
 pub fn section(
     topo: &mut Topology,
     solid: SolidId,
@@ -105,7 +380,12 @@ pub fn section(
         face_ids.extend_from_slice(shell.faces());
     }
 
-    let mut segments: Vec<(Point3, Point3)> = Vec::new();
+    let mut segments: Vec<Piece> = Vec::new();
+    // The closed-form curves the section's chords sample, by `Trace::Conic`.
+    let mut carriers: Vec<Conic> = Vec::new();
+    let pieces = |chords: Vec<(Point3, Point3)>, trace: Trace| {
+        chords.into_iter().map(move |(a, b)| Piece { a, b, trace })
+    };
 
     for &fid in &face_ids {
         let face = topo.face(fid)?;
@@ -118,37 +398,63 @@ pub fn section(
                 let face_d = *face_d;
 
                 let verts = curved::trim_polygon(topo, face.outer_wire(), Some((normal, d)), tol)?;
-                if let Some(seg) =
+                if let Some((a, b)) =
                     intersect_planar_face_with_plane(&verts, face_normal, face_d, normal, d, tol)
                 {
-                    segments.push(seg);
+                    segments.push(Piece {
+                        a,
+                        b,
+                        trace: Trace::Straight,
+                    });
                 }
             }
             FaceSurface::Nurbs(nurbs) => {
                 let intersection_curves =
                     remus_math::nurbs::intersection::intersect_plane_nurbs(nurbs, normal, d, 50)?;
+                let mut chords = Vec::new();
                 for curve in &intersection_curves {
-                    chain_curve_points(&curve.points, &mut segments);
+                    chain_curve_points(&curve.points, &mut chords);
                 }
+                segments.extend(pieces(chords, Trace::Sampled));
             }
             FaceSurface::Cylinder(cyl) => {
-                cylinder::append_section(topo, face, cyl, plane_point, normal, tol, &mut segments)?;
+                let mut chords = Vec::new();
+                let conic = cylinder::append_section(
+                    topo,
+                    face,
+                    cyl,
+                    plane_point,
+                    normal,
+                    tol,
+                    &mut chords,
+                )?;
+                let trace = conic.map_or(Trace::Sampled, |conic| {
+                    conic_trace(&mut carriers, conic, tol)
+                });
+                segments.extend(pieces(chords, trace));
             }
             FaceSurface::Cone(cone) => {
                 let loops = curved::cone_section(topo, fid, cone, normal, d)?;
-                curved::append_clipped(topo, fid, &loops, normal, d, tol, &mut segments)?;
+                let candidates: Vec<Conic> =
+                    curved::cone_conic(cone, normal, d).into_iter().collect();
+                let clipped = curved::clip_loops(topo, fid, &loops, normal, d, tol)?;
+                segments.extend(traced(&mut carriers, &candidates, &loops, clipped, tol));
             }
             FaceSurface::Sphere(sphere) => {
                 let curves =
                     remus_math::analytic_intersection::intersect_plane_sphere(sphere, normal, d)?;
                 let loops = section_polylines(&curves);
-                curved::append_clipped(topo, fid, &loops, normal, d, tol, &mut segments)?;
+                let candidates: Vec<Conic> = sphere_circle(sphere, normal, d).into_iter().collect();
+                let clipped = curved::clip_loops(topo, fid, &loops, normal, d, tol)?;
+                segments.extend(traced(&mut carriers, &candidates, &loops, clipped, tol));
             }
             FaceSurface::Torus(torus) => {
                 let curves =
                     remus_math::analytic_intersection::intersect_plane_torus(torus, normal, d)?;
                 let loops = section_polylines(&curves);
-                curved::append_clipped(topo, fid, &loops, normal, d, tol, &mut segments)?;
+                let candidates = torus_circles(torus, normal, d);
+                let clipped = curved::clip_loops(topo, fid, &loops, normal, d, tol)?;
+                segments.extend(traced(&mut carriers, &candidates, &loops, clipped, tol));
             }
         }
     }
@@ -158,14 +464,16 @@ pub fn section(
     // circle — emitting every segment twice in opposing directions. Left in
     // place, the wire assembler chains both copies into a single zero-area
     // double loop, so collapse coincident duplicates first.
-    dedup_coincident_segments(&mut segments, tol);
+    dedup_coincident_by(&mut segments, |piece| (piece.a, piece.b), tol);
+
+    let straight =
+        |chords: Vec<(Point3, Point3)>| -> Vec<Piece> { pieces(chords, Trace::Straight).collect() };
 
     // If no crossing segments were found, the cutting plane may be exactly
     // coplanar with one or more faces. In that case, extract the boundary
     // edges of those coplanar faces as the cross-section.
     if segments.is_empty() {
-        let coplanar_segs = extract_coplanar_boundary(topo, &face_ids, normal, d, tol)?;
-        segments = coplanar_segs;
+        segments = straight(extract_coplanar_boundary(topo, &face_ids, normal, d, tol)?);
     }
 
     // No crossing segments and no coplanar boundary across outer + inner
@@ -175,15 +483,15 @@ pub fn section(
         return Ok(Section { faces: Vec::new() });
     }
 
-    let mut wires = assemble_wires(topo, &segments, normal, d, tol)?;
+    let mut wires = assemble_wires(topo, &segments, &carriers, tol)?;
 
     // Fallback: if crossing-based segments didn't form closed wires,
     // try using coplanar face boundaries instead (handles the case where
     // the cutting plane exactly coincides with a face of the solid).
     if wires.is_empty() {
-        let coplanar_segs = extract_coplanar_boundary(topo, &face_ids, normal, d, tol)?;
-        if !coplanar_segs.is_empty() {
-            wires = assemble_wires(topo, &coplanar_segs, normal, d, tol)?;
+        let coplanar = straight(extract_coplanar_boundary(topo, &face_ids, normal, d, tol)?);
+        if !coplanar.is_empty() {
+            wires = assemble_wires(topo, &coplanar, &carriers, tol)?;
         }
     }
 
@@ -225,26 +533,29 @@ fn group_wires_by_containment(
         return wires.iter().map(|&w| (w, vec![])).collect();
     }
 
-    // Collect each wire's vertex polygon (used for both bounding-box and
-    // point-in-polygon checks below).
-    let polygons: Vec<Vec<Point3>> = wires.iter().map(|&wid| wire_vertices(topo, wid)).collect();
+    // Each wire's outline: its vertex polygon and the arcs that bulge off it.
+    // A wire of one closed circle has a single vertex, so the vertex polygon
+    // alone would neither contain anything nor have an area.
+    let outlines: Vec<LoopOutline> = wires
+        .iter()
+        .map(|&wid| LoopOutline::of(topo, wid, normal))
+        .collect();
 
     // For each wire, find the smallest wire that strictly contains it.
     // A wire with no strict container is itself an outer wire.
     let mut parent: Vec<Option<usize>> = vec![None; wires.len()];
-    for (i, poly_i) in polygons.iter().enumerate() {
-        if poly_i.is_empty() {
+    for (i, outline_i) in outlines.iter().enumerate() {
+        let Some(&sample) = outline_i.polygon.first() else {
             continue;
-        }
-        let sample = poly_i[0];
+        };
         let mut best_parent: Option<usize> = None;
         let mut best_area = f64::INFINITY;
-        for (j, poly_j) in polygons.iter().enumerate() {
-            if i == j || poly_j.len() < 3 {
+        for (j, outline_j) in outlines.iter().enumerate() {
+            if i == j {
                 continue;
             }
-            if crate::distance::point_in_polygon_3d(&sample, poly_j, &normal) {
-                let area = polygon_area_3d(poly_j, normal);
+            if outline_j.contains(sample, normal) {
+                let area = outline_j.area(normal);
                 if area < best_area {
                     best_area = area;
                     best_parent = Some(j);
@@ -279,52 +590,162 @@ fn group_wires_by_containment(
     groups
 }
 
-fn wire_vertices(topo: &Topology, wire_id: WireId) -> Vec<Point3> {
-    let Ok(wire) = topo.wire(wire_id) else {
-        return vec![];
-    };
-    let mut pts = Vec::with_capacity(wire.edges().len());
-    for oe in wire.edges() {
-        let Ok(edge) = topo.edge(oe.edge()) else {
-            continue;
-        };
-        let vid = if oe.is_forward() {
-            edge.start()
-        } else {
-            edge.end()
-        };
-        if let Ok(v) = topo.vertex(vid) {
-            pts.push(v.point());
-        }
-    }
-    pts
+/// A circle or ellipse arc of a section wire, in the affine chart that maps
+/// its curve to the unit circle: `chart(p) = ((p − c)·u / a, (p − c)·v / b)`.
+struct OutlineArc {
+    center: Point3,
+    /// The curve's axes over their semi-axis lengths.
+    u: Vec3,
+    v: Vec3,
+    /// The product of the semi-axes: the chart's area scale.
+    scale: f64,
+    /// The parameters the wire runs between, in the direction it runs.
+    from: f64,
+    to: f64,
+    /// `+1` when the curve turns counter-clockwise about the section normal.
+    turn: f64,
 }
 
-/// Unsigned area of a 3D planar polygon (projected to dominant axis plane).
-fn polygon_area_3d(polygon: &[Point3], normal: Vec3) -> f64 {
-    if polygon.len() < 3 {
-        return 0.0;
+impl OutlineArc {
+    fn chart(&self, p: Point3) -> (f64, f64) {
+        let r = p - self.center;
+        (r.dot(self.u), r.dot(self.v))
     }
-    let ax = normal.x().abs();
-    let ay = normal.y().abs();
-    let az = normal.z().abs();
-    let to_2d = |p: Point3| -> (f64, f64) {
-        if az >= ax && az >= ay {
-            (p.x(), p.y())
-        } else if ay >= ax {
-            (p.x(), p.z())
-        } else {
-            (p.y(), p.z())
+
+    /// Whether the arc is its whole curve.
+    fn is_full(&self) -> bool {
+        (self.to - self.from).abs() >= TAU - 1e-9
+    }
+
+    /// Whether `p` lies strictly between the arc and its chord: in the
+    /// curve's disc, on the arc's side of the chord. The chart is affine, so
+    /// both tests carry over from the unit circle exactly.
+    fn segment_contains(&self, p: Point3) -> bool {
+        let (x, y) = self.chart(p);
+        if x.mul_add(x, y * y) >= 1.0 {
+            return false;
         }
-    };
-    let mut sum = 0.0;
-    let n = polygon.len();
-    for i in 0..n {
-        let (x0, y0) = to_2d(polygon[i]);
-        let (x1, y1) = to_2d(polygon[(i + 1) % n]);
-        sum += x0 * y1 - x1 * y0;
+        if self.is_full() {
+            return true;
+        }
+        let at = |t: f64| (t.cos(), t.sin());
+        let (start, end, mid) = (
+            at(self.from),
+            at(self.to),
+            at(f64::midpoint(self.from, self.to)),
+        );
+        let side = |q: (f64, f64)| {
+            (end.0 - start.0).mul_add(q.1 - start.1, -((end.1 - start.1) * (q.0 - start.0)))
+        };
+        side((x, y)) * side(mid) > 0.0
     }
-    (sum * 0.5).abs()
+
+    /// The signed area between the arc and its chord, counter-clockwise
+    /// about the section normal positive: `ab (θ − sin θ) / 2` for a span θ.
+    fn segment_area(&self) -> f64 {
+        let span = self.to - self.from;
+        self.turn * self.scale * 0.5 * (span - span.sin())
+    }
+}
+
+/// The outline of a section wire: the polygon of its vertices, and the arcs
+/// its circle and ellipse edges bulge off that polygon's chords.
+struct LoopOutline {
+    polygon: Vec<Point3>,
+    arcs: Vec<OutlineArc>,
+}
+
+impl LoopOutline {
+    fn of(topo: &Topology, wire_id: WireId, normal: Vec3) -> Self {
+        let mut outline = Self {
+            polygon: Vec::new(),
+            arcs: Vec::new(),
+        };
+        let Ok(wire) = topo.wire(wire_id) else {
+            return outline;
+        };
+        for oe in wire.edges() {
+            let Ok(edge) = topo.edge(oe.edge()) else {
+                continue;
+            };
+            let (Ok(start), Ok(end)) = (topo.vertex(edge.start()), topo.vertex(edge.end())) else {
+                continue;
+            };
+            let (start, end) = (start.point(), end.point());
+            outline
+                .polygon
+                .push(if oe.is_forward() { start } else { end });
+            let (center, u, v, a, b, curve_normal) = match edge.curve() {
+                EdgeCurve::Circle(c) => (
+                    c.center(),
+                    c.u_axis(),
+                    c.v_axis(),
+                    c.radius(),
+                    c.radius(),
+                    c.normal(),
+                ),
+                EdgeCurve::Ellipse(e) => (
+                    e.center(),
+                    e.u_axis(),
+                    e.v_axis(),
+                    e.semi_major(),
+                    e.semi_minor(),
+                    e.normal(),
+                ),
+                EdgeCurve::Line
+                | EdgeCurve::NurbsCurve(_)
+                | EdgeCurve::Hyperbola(_)
+                | EdgeCurve::Parabola(_) => continue,
+            };
+            // Every arc `loop_wire` lays down stores its span; an edge with
+            // no authoritative one counts as its chord.
+            let Ok((t0, t1)) = edge.strict_domain() else {
+                continue;
+            };
+            let (from, to) = if oe.is_forward() { (t0, t1) } else { (t1, t0) };
+            outline.arcs.push(OutlineArc {
+                center,
+                u: u * (1.0 / a),
+                v: v * (1.0 / b),
+                scale: a * b,
+                from,
+                to,
+                turn: curve_normal.dot(normal).signum(),
+            });
+        }
+        outline
+    }
+
+    /// Whether `p` (in the section plane, off the outline) is inside it.
+    /// The region is the vertex polygon with each arc's segment added where
+    /// the arc bulges out of it and removed where it bulges in: the parity
+    /// of the polygon and every segment that holds the point.
+    fn contains(&self, p: Point3, normal: Vec3) -> bool {
+        let in_polygon = self.polygon.len() >= 3
+            && crate::distance::point_in_polygon_3d(&p, &self.polygon, &normal);
+        self.arcs
+            .iter()
+            .filter(|arc| arc.segment_contains(p))
+            .fold(in_polygon, |inside, _| !inside)
+    }
+
+    /// The unsigned area the outline encloses: its vertex polygon's signed
+    /// area about the normal plus every arc's signed segment, exact for
+    /// lines, circles and ellipses.
+    fn area(&self, normal: Vec3) -> f64 {
+        let polygon = self.polygon.first().map_or(0.0, |&origin| {
+            let doubled = self
+                .polygon
+                .iter()
+                .zip(self.polygon.iter().cycle().skip(1))
+                .fold(Vec3::new(0.0, 0.0, 0.0), |sum, (&p, &q)| {
+                    sum + (p - origin).cross(q - origin)
+                });
+            0.5 * doubled.dot(normal)
+        });
+        let segments: f64 = self.arcs.iter().map(OutlineArc::segment_area).sum();
+        (polygon + segments).abs()
+    }
 }
 
 /// Return whether two points coincide within the endpoint-matching tolerance.
@@ -420,18 +841,26 @@ fn endpoint_pair(index: &mut EndpointIndex, a: Point3, b: Point3) -> (usize, usi
 /// unordered endpoints keeps a single copy without quantizing absolute world
 /// coordinates into a bounded integer type.
 /// Distinct polygon edges share at most one endpoint, so real edges of the
-/// section outline are never merged.
-fn dedup_coincident_segments(segments: &mut Vec<(Point3, Point3)>, tol: Tolerance) {
+/// section outline are never merged. The first of each set of coincident
+/// segments (by its two `ends`) is the one kept.
+fn dedup_coincident_by<T>(
+    segments: &mut Vec<T>,
+    ends: impl Fn(&T) -> (Point3, Point3),
+    tol: Tolerance,
+) {
     let endpoint_tol = tol.linear * 10.0;
     let mut endpoint_index = EndpointIndex::new(endpoint_tol);
     let mut seen = HashSet::with_capacity(segments.len());
-    let mut unique = Vec::with_capacity(segments.len());
-    for &(a, b) in segments.iter() {
-        if seen.insert(endpoint_pair(&mut endpoint_index, a, b)) {
-            unique.push((a, b));
-        }
-    }
-    *segments = unique;
+    segments.retain(|segment| {
+        let (a, b) = ends(segment);
+        seen.insert(endpoint_pair(&mut endpoint_index, a, b))
+    });
+}
+
+/// [`dedup_coincident_by`] over bare endpoint pairs.
+#[cfg(test)]
+fn dedup_coincident_segments(segments: &mut Vec<(Point3, Point3)>, tol: Tolerance) {
+    dedup_coincident_by(segments, |&segment| segment, tol);
 }
 
 /// Extract boundary edges of faces coplanar with the cutting plane.
@@ -575,20 +1004,23 @@ fn intersect_planar_face_with_plane(
 /// Assemble intersection segments into closed wires.
 ///
 /// Chains segments endpoint-to-endpoint using spatial proximity,
-/// producing one or more closed wires.
+/// producing one or more closed wires. Each run of chords on one closed-form
+/// carrier becomes a single circle or ellipse edge carrying its parameter
+/// span (see [`loop_wire`]); straight pieces and sampled chords stay lines.
 fn assemble_wires(
     topo: &mut Topology,
-    segments: &[(Point3, Point3)],
-    _normal: Vec3,
-    _d: f64,
+    segments: &[Piece],
+    carriers: &[Conic],
     tol: Tolerance,
 ) -> Result<Vec<WireId>, crate::OperationsError> {
     if segments.is_empty() {
         return Ok(vec![]);
     }
 
-    let mut remaining: Vec<(Point3, Point3)> = segments.to_vec();
+    let mut remaining: Vec<Piece> = segments.to_vec();
     let mut wires = Vec::new();
+    // Carriers already laid down as one whole closed edge.
+    let mut closed_carriers: HashSet<usize> = HashSet::new();
 
     // Chaining tolerance must be tight enough to keep separate loops apart
     // (e.g., the outer perimeter and the inner hole of a hollow shape) while
@@ -602,7 +1034,9 @@ fn assemble_wires(
 
     while !remaining.is_empty() {
         let first = remaining.remove(0);
-        let mut chain: Vec<Point3> = vec![first.0, first.1];
+        let mut chain: Vec<Point3> = vec![first.a, first.b];
+        // `traces[i]` is what the chord from `chain[i]` to the next point is.
+        let mut traces: Vec<Trace> = vec![first.trace];
 
         let mut changed = true;
         while changed {
@@ -615,7 +1049,7 @@ fn assemble_wires(
             let mut best_forward = true;
 
             for i in 0..remaining.len() {
-                let (a, b) = remaining[i];
+                let Piece { a, b, .. } = remaining[i];
                 let dist_a = (a - chain_end).length_squared();
                 let dist_b = (b - chain_end).length_squared();
 
@@ -632,8 +1066,9 @@ fn assemble_wires(
             }
 
             if let Some(idx) = best_idx {
-                let (a, b) = remaining.remove(idx);
+                let Piece { a, b, trace } = remaining.remove(idx);
                 chain.push(if best_forward { b } else { a });
+                traces.push(trace);
                 changed = true;
             }
         }
@@ -652,37 +1087,249 @@ fn assemble_wires(
 
         if chain.len() > 3 {
             chain.pop();
+        } else {
+            // Two chords there and back: the third point stays, and the
+            // edge from it to the first is the gap that closes them.
+            traces.push(Trace::Straight);
         }
 
-        let n = chain.len();
-        let vert_ids: Vec<_> = chain
-            .iter()
-            .map(|&p| topo.add_vertex(Vertex::new(p, tol.linear)))
-            .collect();
-
-        let mut oriented_edges = Vec::with_capacity(n);
-        for i in 0..n {
-            let j = (i + 1) % n;
-            let edge = topo.add_edge(Edge::new(vert_ids[i], vert_ids[j], EdgeCurve::Line));
-            oriented_edges.push(OrientedEdge::new(edge, true));
+        if let Some(wire) = loop_wire(topo, &chain, &traces, carriers, &mut closed_carriers, tol)? {
+            wires.push(wire);
         }
-
-        let wire = Wire::new(oriented_edges, true).map_err(crate::OperationsError::Topology)?;
-        wires.push(topo.add_wire(wire));
     }
 
     Ok(wires)
 }
 
+/// The parameter `conic` starts the run of `points` at and the signed span
+/// it turns through to the last of them, when the run is an arc of it:
+/// every point within `band` of the curve, the parameter moving one way at
+/// every step, and never past a full turn.
+fn conic_span(conic: &Conic, points: &[Point3], band: f64) -> Option<(f64, f64)> {
+    if points.len() < 2 || points.iter().any(|&p| conic.offset(p) > band) {
+        return None;
+    }
+    let start = conic.project(points[0]);
+    let mut at = start;
+    let mut span = 0.0_f64;
+    for &p in &points[1..] {
+        let t = conic.project(p);
+        // The step the short way round: no chord of a section subtends
+        // more than half a turn of its carrier.
+        let step = (t - at + PI).rem_euclid(TAU) - PI;
+        if step == 0.0 || (span != 0.0 && (step > 0.0) != (span > 0.0)) {
+            return None;
+        }
+        span += step;
+        at = t;
+    }
+    (span.abs() <= TAU + 1e-9).then_some((start, span))
+}
+
+/// The wire of one closed chain of section chords: `points[i]` to the next
+/// point (the last to the first) is `traces[i]`.
+///
+/// A run of chords on one carrier is one circle or ellipse edge, trimmed to
+/// the parameters of the run's ends and traced the way the chain runs (the
+/// curve reversed where the chain runs clockwise about its normal, so every
+/// edge is used forward). A chain that is all one carrier is that curve
+/// whole: one closed edge on one vertex, laid down once however many faces
+/// brought it (`closed_carriers`).
+///
+/// Straight pieces are line edges. So is every sampled chord, and every
+/// chord of a run that fails [`conic_span`]: those lines only approximate
+/// the section, as all of its curved pieces used to. Nothing on the edge
+/// says so. The one field that could, its tolerance, is capped at
+/// `DEFAULT_MAX_ENTITY_TOLERANCE` (the arena document refuses more), far
+/// under a chord's sagitta, so a stored value would understate the error.
+fn loop_wire(
+    topo: &mut Topology,
+    points: &[Point3],
+    traces: &[Trace],
+    carriers: &[Conic],
+    closed_carriers: &mut HashSet<usize>,
+    tol: Tolerance,
+) -> Result<Option<WireId>, crate::OperationsError> {
+    // How far a chain point may sit from the curve it is trimmed to: the
+    // band `extract_coplanar_boundary` and the in-plane tests of this module
+    // use. The carrier's own samples are on it to rounding; a run's ends are
+    // crossings with the face's trims, on it to the tolerance those trims
+    // were built at.
+    let band = tol.linear * 100.0;
+    let n = points.len();
+    let point = |i: usize| points[i % n];
+
+    if let Trace::Conic(k) = traces[0]
+        && traces.iter().all(|&trace| trace == traces[0])
+    {
+        let ring: Vec<Point3> = (0..=n).map(point).collect();
+        if conic_span(&carriers[k], &ring, band)
+            .is_some_and(|(_, span)| (span.abs() - TAU).abs() <= 1e-9)
+        {
+            if !closed_carriers.insert(k) {
+                return Ok(None);
+            }
+            // The seam goes where the chain starts on a circle; an ellipse
+            // keeps its own, at the end of its major axis.
+            let curve = match &carriers[k] {
+                Conic::Circle(c) => Circle3D::new_with_ref(
+                    c.center(),
+                    c.normal(),
+                    c.radius(),
+                    points[0] - c.center(),
+                )
+                .map_or_else(|_| carriers[k].clone(), Conic::Circle),
+                Conic::Ellipse(_) => carriers[k].clone(),
+            };
+            let vertex = topo.add_vertex(Vertex::new(curve.evaluate(0.0), tol.linear));
+            let mut edge = Edge::new(vertex, vertex, curve.edge_curve());
+            edge.set_trim(Some((0.0, TAU)));
+            let edge = topo.add_edge(edge);
+            let wire = Wire::new(vec![OrientedEdge::new(edge, true)], true)
+                .map_err(crate::OperationsError::Topology)?;
+            return Ok(Some(topo.add_wire(wire)));
+        }
+    }
+
+    // Start where the trace changes, so no run wraps past the end; a chain
+    // of one trace throughout is a single run from its first point.
+    let first = (0..n)
+        .find(|&i| traces[i] != traces[(i + n - 1) % n])
+        .unwrap_or(0);
+    let mut vertices: Vec<Option<VertexId>> = vec![None; n];
+    let mut vertex = |topo: &mut Topology, i: usize| {
+        *vertices[i % n]
+            .get_or_insert_with(|| topo.add_vertex(Vertex::new(points[i % n], tol.linear)))
+    };
+    let mut oriented_edges = Vec::new();
+    let mut done = 0;
+    while done < n {
+        let begin = first + done;
+        let trace = traces[begin % n];
+        let length = (1..n - done)
+            .find(|&m| traces[(begin + m) % n] != trace)
+            .unwrap_or(n - done);
+        done += length;
+
+        if let Trace::Conic(k) = trace {
+            let run: Vec<Point3> = (begin..=begin + length).map(point).collect();
+            // A whole chain that is not a full turn of its carrier (the
+            // check above) is no arc of it either.
+            if length < n
+                && let Some((start, span)) = conic_span(&carriers[k], &run, band)
+                && span.abs() < TAU - 1e-9
+            {
+                // Traced the other way round, the curve's parameter runs
+                // backwards: `reversed().evaluate(t) = evaluate(−t)`.
+                let (curve, from) = if span > 0.0 {
+                    (carriers[k].clone(), start)
+                } else {
+                    (carriers[k].reversed(), -start)
+                };
+                let to = from + span.abs();
+                let (v0, v1) = (vertex(topo, begin), vertex(topo, begin + length));
+                // The ends are trims' crossings, not the curve's own points:
+                // each vertex covers its distance from the trimmed curve.
+                for (v, on_curve) in [(v0, curve.evaluate(from)), (v1, curve.evaluate(to))] {
+                    let gap = (topo.vertex(v)?.point() - on_curve).length();
+                    if gap > topo.vertex(v)?.tolerance() {
+                        topo.vertex_mut(v)?
+                            .set_tolerance(gap)
+                            .map_err(crate::OperationsError::Topology)?;
+                    }
+                }
+                let mut edge = Edge::new(v0, v1, curve.edge_curve());
+                edge.set_trim(Some((from, to)));
+                oriented_edges.push(OrientedEdge::new(topo.add_edge(edge), true));
+                continue;
+            }
+        }
+
+        for j in begin..begin + length {
+            let (v0, v1) = (vertex(topo, j), vertex(topo, j + 1));
+            let edge = topo.add_edge(Edge::new(v0, v1, EdgeCurve::Line));
+            oriented_edges.push(OrientedEdge::new(edge, true));
+        }
+    }
+
+    let wire = Wire::new(oriented_edges, true).map_err(crate::OperationsError::Topology)?;
+    Ok(Some(topo.add_wire(wire)))
+}
+
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, clippy::panic)]
+
+    use std::f64::consts::FRAC_PI_2;
 
     use remus_math::vec::{Point3, Vec3};
     use remus_topology::Topology;
     use remus_topology::test_utils::make_unit_cube_manifold;
 
     use super::*;
+
+    /// The edges of a wire, in order.
+    fn wire_edges(topo: &Topology, wire: WireId) -> Vec<&Edge> {
+        topo.wire(wire)
+            .unwrap()
+            .edges()
+            .iter()
+            .map(|oriented| topo.edge(oriented.edge()).unwrap())
+            .collect()
+    }
+
+    /// The single closed edge of a one-edge wire, with its vertex.
+    fn closed_edge(topo: &Topology, wire: WireId) -> (&Edge, Point3) {
+        let edges = wire_edges(topo, wire);
+        assert_eq!(edges.len(), 1, "a whole conic is one closed edge");
+        let edge = edges[0];
+        assert_eq!(edge.start(), edge.end(), "the edge closes on one vertex");
+        let (t0, t1) = edge.strict_domain().unwrap();
+        assert!(
+            t0 == 0.0 && (t1 - TAU).abs() <= 4.0 * f64::EPSILON * TAU,
+            "a closed conic edge spans its curve's own turn, got [{t0}, {t1}]"
+        );
+        (edge, topo.vertex(edge.start()).unwrap().point())
+    }
+
+    fn assert_relative(actual: f64, expected: f64, tolerance: f64, what: &str) {
+        let error = (actual - expected).abs() / expected.abs();
+        assert!(
+            error <= tolerance,
+            "{what}: expected {expected:.15}, got {actual:.15} (rel_err={error:.2e})"
+        );
+    }
+
+    /// The face's display mesh fills its region: its triangles' area is the
+    /// face's, short by no more than `DEFLECTION` along the curved boundary
+    /// of length `curved`. A consumer checks a section the same way, so an
+    /// arc traced the wrong way round (its complement) must not pass.
+    fn assert_mesh_fills(topo: &Topology, face: FaceId, expected: f64, curved: f64) {
+        const DEFLECTION: f64 = 1e-3;
+        let mesh = crate::tessellate::tessellate(topo, face, DEFLECTION).unwrap();
+        let area: f64 = mesh
+            .indices
+            .chunks_exact(3)
+            .map(|t| {
+                let at = |i: u32| mesh.positions[i as usize];
+                0.5 * (at(t[1]) - at(t[0])).cross(at(t[2]) - at(t[0])).length()
+            })
+            .sum();
+        assert!(
+            (area - expected).abs() <= DEFLECTION * curved + 1e-9 * expected,
+            "mesh area {area} against {expected}"
+        );
+    }
+
+    fn translated(topo: &mut Topology, solid: SolidId, x: f64, y: f64, z: f64) -> SolidId {
+        crate::transform::transform_solid(
+            topo,
+            solid,
+            &remus_math::mat::Mat4::translation(x, y, z),
+        )
+        .unwrap();
+        solid
+    }
 
     #[test]
     fn section_cube_at_half_height() {
@@ -976,21 +1623,495 @@ mod tests {
             result.err()
         );
         let sec = result.unwrap();
-        assert!(!sec.faces.is_empty(), "should produce at least one face");
+        assert_eq!(sec.faces.len(), 1, "cylinder section should be one disk");
 
-        let total_area: f64 = sec
-            .faces
-            .iter()
-            .map(|&fid| crate::measure::face_area(&topo, fid, 0.01).unwrap())
-            .sum();
-        // Circle area = πr² = 25π ≈ 78.54
-        let expected = std::f64::consts::PI * 25.0;
-        let rel_err = (total_area - expected).abs() / expected;
+        // The wall's section is its circle, not a 64-gon inscribed in it.
+        let face = topo.face(sec.faces[0]).unwrap();
+        assert!(face.inner_wires().is_empty());
+        let (edge, vertex) = closed_edge(&topo, face.outer_wire());
+        let EdgeCurve::Circle(circle) = edge.curve() else {
+            panic!("expected a circle edge, got {}", edge.curve().type_tag());
+        };
+        assert!((circle.center() - Point3::new(0.0, 0.0, 5.0)).length() <= 1e-12);
+        assert!((circle.radius() - 5.0).abs() <= 1e-12);
+        assert!((circle.evaluate(0.0) - vertex).length() <= 1e-12);
+
+        // Circle area = πr² = 25π ≈ 78.54, to rounding: the old 5% band
+        // covered the polygon's chord sagitta, which is gone.
+        let area = crate::measure::face_area(&topo, sec.faces[0], 0.01).unwrap();
+        assert_relative(area, PI * 25.0, 1e-12, "cylinder section area");
+    }
+
+    /// The reported failing input: an 80×40×8 plate with two r=3 through
+    /// holes, cut at mid-thickness. The holes are circles, so the face is
+    /// 3200 − 18π, not 3200 less two 64-gons (3143.542127).
+    #[test]
+    fn section_plate_with_two_holes_keeps_circles() {
+        let mut topo = Topology::new();
+        let mut solid = crate::primitives::make_box(&mut topo, 80.0, 40.0, 8.0).unwrap();
+        for x in [16.0, 64.0] {
+            let hole = crate::primitives::make_cylinder(&mut topo, 3.0, 12.0).unwrap();
+            let hole = translated(&mut topo, hole, x, 20.0, -2.0);
+            solid = crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Cut, solid, hole)
+                .unwrap();
+        }
+
+        let sec = section(
+            &mut topo,
+            solid,
+            Point3::new(0.0, 0.0, 4.0),
+            Vec3::new(0.0, 0.0, 1.0),
+        )
+        .unwrap();
+        assert_eq!(sec.faces.len(), 1, "one plate face with two holes");
+        let face = topo.face(sec.faces[0]).unwrap();
+
+        let outer = wire_edges(&topo, face.outer_wire());
+        assert_eq!(outer.len(), 4, "the plate outline is four lines");
         assert!(
-            rel_err < 0.05,
-            "cylinder section area should be πr² = {expected:.2}, got {total_area:.2} \
-             (rel_err={rel_err:.2e})"
+            outer
+                .iter()
+                .all(|edge| matches!(edge.curve(), EdgeCurve::Line))
         );
+
+        assert_eq!(face.inner_wires().len(), 2, "both holes are inner wires");
+        let mut centers = Vec::new();
+        for &wire in face.inner_wires() {
+            let (edge, _) = closed_edge(&topo, wire);
+            let EdgeCurve::Circle(circle) = edge.curve() else {
+                panic!("expected a circle edge, got {}", edge.curve().type_tag());
+            };
+            assert!(
+                (circle.radius() - 3.0).abs() <= 1e-12,
+                "{}",
+                circle.radius()
+            );
+            centers.push(circle.center());
+        }
+        centers.sort_by(|a, b| a.x().total_cmp(&b.x()));
+        assert!((centers[0] - Point3::new(16.0, 20.0, 4.0)).length() <= 1e-12);
+        assert!((centers[1] - Point3::new(64.0, 20.0, 4.0)).length() <= 1e-12);
+
+        let area = crate::measure::face_area(&topo, sec.faces[0], 0.01).unwrap();
+        assert_relative(
+            area,
+            18.0f64.mul_add(-PI, 3200.0),
+            1e-9,
+            "plate section area",
+        );
+        assert_mesh_fills(&topo, sec.faces[0], 18.0f64.mul_add(-PI, 3200.0), 12.0 * PI);
+    }
+
+    /// A contained oblique cut of a cylinder is one ellipse: semi-minor the
+    /// radius, semi-major the radius over the cosine of the tilt, along the
+    /// axis's shadow in the plane.
+    #[test]
+    fn section_cylinder_oblique_is_an_ellipse() {
+        let mut topo = Topology::new();
+        let solid = crate::primitives::make_cylinder(&mut topo, 5.0, 20.0).unwrap();
+        let normal = Vec3::new(0.0, 1.0, 2.0).normalize().unwrap();
+
+        let sec = section(&mut topo, solid, Point3::new(0.0, 0.0, 10.0), normal).unwrap();
+        assert_eq!(sec.faces.len(), 1);
+        let face = topo.face(sec.faces[0]).unwrap();
+        let (edge, vertex) = closed_edge(&topo, face.outer_wire());
+        let EdgeCurve::Ellipse(ellipse) = edge.curve() else {
+            panic!("expected an ellipse edge, got {}", edge.curve().type_tag());
+        };
+        let major = 5.0 * 5.0f64.sqrt() / 2.0;
+        assert!((ellipse.center() - Point3::new(0.0, 0.0, 10.0)).length() <= 1e-12);
+        assert!((ellipse.semi_major() - major).abs() <= 1e-12);
+        assert!((ellipse.semi_minor() - 5.0).abs() <= 1e-12);
+        assert!((ellipse.evaluate(0.0) - vertex).length() <= 1e-12);
+        // Every point of the edge is on the cylinder and in the plane.
+        for k in 0..16 {
+            let p = ellipse.evaluate(TAU * f64::from(k) / 16.0);
+            assert!((p.x().hypot(p.y()) - 5.0).abs() <= 1e-12, "{p:?}");
+            assert!(normal.dot(p - Point3::new(0.0, 0.0, 10.0)).abs() <= 1e-12);
+        }
+
+        let area = crate::measure::face_area(&topo, sec.faces[0], 0.01).unwrap();
+        assert_relative(area, PI * major * 5.0, 1e-12, "oblique section area");
+        assert_mesh_fills(&topo, sec.faces[0], PI * major * 5.0, TAU * major);
+    }
+
+    /// A frustum cut square to its axis is a circle; cut obliquely (clear of
+    /// both caps) it is an ellipse, every point of it on the cone.
+    #[test]
+    fn section_cone_is_a_circle_or_an_ellipse() {
+        // Radius 10 at z=0 down to 4 at z=12: r(z) = 10 − z/2.
+        let radius_at = |z: f64| 10.0 - z / 2.0;
+
+        let mut topo = Topology::new();
+        let solid = crate::primitives::make_cone(&mut topo, 10.0, 4.0, 12.0).unwrap();
+        let sec = section(
+            &mut topo,
+            solid,
+            Point3::new(0.0, 0.0, 6.0),
+            Vec3::new(0.0, 0.0, 1.0),
+        )
+        .unwrap();
+        assert_eq!(sec.faces.len(), 1);
+        let (edge, _) = closed_edge(&topo, topo.face(sec.faces[0]).unwrap().outer_wire());
+        let EdgeCurve::Circle(circle) = edge.curve() else {
+            panic!("expected a circle edge, got {}", edge.curve().type_tag());
+        };
+        assert!((circle.center() - Point3::new(0.0, 0.0, 6.0)).length() <= 1e-12);
+        assert!(
+            (circle.radius() - 7.0).abs() <= 1e-12,
+            "{}",
+            circle.radius()
+        );
+        let area = crate::measure::face_area(&topo, sec.faces[0], 0.01).unwrap();
+        assert_relative(area, PI * 49.0, 1e-12, "cone circle section area");
+
+        let mut topo = Topology::new();
+        let solid = crate::primitives::make_cone(&mut topo, 10.0, 4.0, 12.0).unwrap();
+        let normal = Vec3::new(0.2, 0.0, 1.0).normalize().unwrap();
+        let through = Point3::new(0.0, 0.0, 6.0);
+        let sec = section(&mut topo, solid, through, normal).unwrap();
+        assert_eq!(sec.faces.len(), 1);
+        let (edge, _) = closed_edge(&topo, topo.face(sec.faces[0]).unwrap().outer_wire());
+        let EdgeCurve::Ellipse(ellipse) = edge.curve() else {
+            panic!("expected an ellipse edge, got {}", edge.curve().type_tag());
+        };
+        for k in 0..32 {
+            let p = ellipse.evaluate(TAU * f64::from(k) / 32.0);
+            assert!(
+                (p.x().hypot(p.y()) - radius_at(p.z())).abs() <= 1e-11,
+                "{p:?} is off the cone"
+            );
+            assert!(
+                normal.dot(p - through).abs() <= 1e-11,
+                "{p:?} is off the plane"
+            );
+        }
+        // The plane z = 6 − x/5 meets the generators in the x–z plane at
+        // x = ±(10 − z/2): x = 70/9 and x = −70/11, the major axis's ends.
+        let (near, far) = (70.0 / 9.0, -70.0 / 11.0);
+        let major = (near - far) / 2.0 / normal.z();
+        assert!((ellipse.semi_major() - major).abs() <= 1e-11);
+        let area = crate::measure::face_area(&topo, sec.faces[0], 0.01).unwrap();
+        assert_relative(
+            area,
+            PI * ellipse.semi_major() * ellipse.semi_minor(),
+            1e-12,
+            "cone ellipse section area",
+        );
+        assert_mesh_fills(
+            &topo,
+            sec.faces[0],
+            PI * ellipse.semi_major() * ellipse.semi_minor(),
+            TAU * ellipse.semi_major(),
+        );
+    }
+
+    /// A section clipped by the face's trims is an arc carrying its span:
+    /// a 20-cube less a sphere of radius 12 about its corner, cut at z=5,
+    /// is the square less a quarter disc of radius √119.
+    #[test]
+    fn section_trimmed_sphere_is_a_circle_arc() {
+        let mut topo = Topology::new();
+        let b = crate::primitives::make_box(&mut topo, 20.0, 20.0, 20.0).unwrap();
+        let s = crate::primitives::make_sphere(&mut topo, 12.0, 16).unwrap();
+        let solid =
+            crate::boolean::boolean(&mut topo, crate::boolean::BooleanOp::Cut, b, s).unwrap();
+
+        let sec = section(
+            &mut topo,
+            solid,
+            Point3::new(0.0, 0.0, 5.0),
+            Vec3::new(0.0, 0.0, 1.0),
+        )
+        .unwrap();
+        assert_eq!(sec.faces.len(), 1);
+        let face = topo.face(sec.faces[0]).unwrap();
+        assert!(face.inner_wires().is_empty());
+        let edges = wire_edges(&topo, face.outer_wire());
+        let arcs: Vec<&&Edge> = edges
+            .iter()
+            .filter(|edge| !matches!(edge.curve(), EdgeCurve::Line))
+            .collect();
+        assert_eq!(arcs.len(), 1, "the quarter circle is one edge");
+        assert_eq!(edges.len(), 5, "four straight sides and the arc");
+        let arc = arcs[0];
+        let EdgeCurve::Circle(circle) = arc.curve() else {
+            panic!("expected a circle arc, got {}", arc.curve().type_tag());
+        };
+        let radius = 119.0f64.sqrt();
+        assert!((circle.center() - Point3::new(0.0, 0.0, 5.0)).length() <= 1e-12);
+        assert!((circle.radius() - radius).abs() <= 1e-12);
+        // The arc's stored span is the quarter turn between its vertices.
+        let (t0, t1) = arc.strict_domain().unwrap();
+        assert!(t1 > t0, "an arc edge runs forward along its curve");
+        assert!((t1 - t0 - FRAC_PI_2).abs() <= 1e-9, "span {}", t1 - t0);
+        let (start, end) = (
+            topo.vertex(arc.start()).unwrap().point(),
+            topo.vertex(arc.end()).unwrap().point(),
+        );
+        assert!((circle.evaluate(t0) - start).length() <= 1e-9);
+        assert!((circle.evaluate(t1) - end).length() <= 1e-9);
+        let mid = circle.evaluate(f64::midpoint(t0, t1));
+        let diagonal = radius / 2.0f64.sqrt();
+        assert!(
+            (mid - Point3::new(diagonal, diagonal, 5.0)).length() <= 1e-9,
+            "the arc is the quarter inside the box, not its complement: {mid:?}"
+        );
+
+        let area = crate::measure::face_area(&topo, sec.faces[0], 0.01).unwrap();
+        assert_relative(
+            area,
+            (119.0 / 4.0f64).mul_add(-PI, 400.0),
+            1e-9,
+            "arc section area",
+        );
+        assert_mesh_fills(
+            &topo,
+            sec.faces[0],
+            (119.0 / 4.0f64).mul_add(-PI, 400.0),
+            FRAC_PI_2 * radius,
+        );
+    }
+
+    /// A torus cut square to its axis is two concentric circles; off its
+    /// symmetry planes the section has no closed form, and stays the chords
+    /// it was.
+    #[test]
+    fn section_torus_is_circles_on_its_symmetry_plane_and_chords_off_it() {
+        let mut topo = Topology::new();
+        let solid = crate::primitives::make_torus(&mut topo, 10.0, 3.0, 16).unwrap();
+        let sec = section(
+            &mut topo,
+            solid,
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+        )
+        .unwrap();
+        assert_eq!(sec.faces.len(), 1, "an annulus");
+        let face = topo.face(sec.faces[0]).unwrap();
+        assert_eq!(face.inner_wires().len(), 1);
+        let radius = |wire| {
+            let (edge, _) = closed_edge(&topo, wire);
+            let EdgeCurve::Circle(circle) = edge.curve() else {
+                panic!("expected a circle edge, got {}", edge.curve().type_tag());
+            };
+            assert!(circle.center().0.iter().all(|x| x.abs() <= 1e-12));
+            circle.radius()
+        };
+        assert!((radius(face.outer_wire()) - 13.0).abs() <= 1e-12);
+        assert!((radius(face.inner_wires()[0]) - 7.0).abs() <= 1e-12);
+        let area = crate::measure::face_area(&topo, sec.faces[0], 0.01).unwrap();
+        assert_relative(area, PI * (169.0 - 49.0), 1e-12, "torus annulus area");
+
+        let mut topo = Topology::new();
+        let solid = crate::primitives::make_torus(&mut topo, 10.0, 3.0, 16).unwrap();
+        let sec = section(
+            &mut topo,
+            solid,
+            Point3::new(0.0, 0.0, 0.5),
+            Vec3::new(0.1, 0.0, 1.0),
+        )
+        .unwrap();
+        assert!(!sec.faces.is_empty());
+        for &fid in &sec.faces {
+            let face = topo.face(fid).unwrap();
+            for wire in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+            {
+                let edges = wire_edges(&topo, wire);
+                assert!(edges.len() >= 32, "a sampled loop, {} chords", edges.len());
+                for edge in edges {
+                    assert!(matches!(edge.curve(), EdgeCurve::Line));
+                    // No tolerance claim: a chord's sagitta is over the cap
+                    // an arena document accepts.
+                    assert_eq!(edge.tolerance(), None);
+                }
+            }
+        }
+    }
+
+    /// The chords of `conic` from `from` over `span`, as section pieces.
+    fn arc_pieces(conic: &Conic, trace: Trace, from: f64, span: f64, chords: u32) -> Vec<Piece> {
+        let at = |k: u32| conic.evaluate(from + span * f64::from(k) / f64::from(chords));
+        (0..chords)
+            .map(|k| Piece {
+                a: at(k),
+                b: at(k + 1),
+                trace,
+            })
+            .collect()
+    }
+
+    fn circle(radius: f64) -> Conic {
+        Conic::Circle(
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), radius).unwrap(),
+        )
+    }
+
+    /// A hole a hair inside its outline is still its hole: the outline's
+    /// one-vertex circle is tested as a disc, not as its vertex polygon (or
+    /// a polygon inscribed in it, which the hole's seam would fall outside
+    /// of between two of its corners).
+    #[test]
+    fn a_circle_wire_contains_and_measures_as_a_disc() {
+        let tol = Tolerance::new();
+        let normal = Vec3::new(0.0, 0.0, 1.0);
+        let carriers = vec![circle(10.0), circle(9.99), circle(2.0)];
+        let mut pieces = Vec::new();
+        // The hole's chords start half a chord round from the outline's.
+        pieces.extend(arc_pieces(&carriers[0], Trace::Conic(0), 0.0, TAU, 64));
+        pieces.extend(arc_pieces(
+            &carriers[1],
+            Trace::Conic(1),
+            PI / 64.0,
+            TAU,
+            64,
+        ));
+        pieces.extend(arc_pieces(&carriers[2], Trace::Conic(2), 0.3, -TAU, 64));
+        let mut topo = Topology::new();
+        let wires = assemble_wires(&mut topo, &pieces, &carriers, tol).unwrap();
+        assert_eq!(wires.len(), 3);
+        for &wire in &wires {
+            closed_edge(&topo, wire);
+        }
+
+        let outlines: Vec<LoopOutline> = wires
+            .iter()
+            .map(|&wire| LoopOutline::of(&topo, wire, normal))
+            .collect();
+        for (outline, radius) in outlines.iter().zip([10.0_f64, 9.99, 2.0]) {
+            assert!((outline.area(normal) - PI * radius * radius).abs() <= 1e-12 * radius * radius);
+            assert!(outline.contains(Point3::new(radius - 1e-6, 0.0, 0.0), normal));
+            assert!(!outline.contains(Point3::new(radius + 1e-6, 0.0, 0.0), normal));
+        }
+
+        // Nested three deep: the smallest wire's parent is the middle one,
+        // and both end up holes of the outermost.
+        let groups = group_wires_by_containment(&topo, &wires, normal);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].0, wires[0]);
+        assert_eq!(groups[0].1.len(), 2);
+    }
+
+    /// Arcs bulging out of and into a wire's vertex polygon are added to
+    /// and taken from it: a square with one side bowed out by a half disc
+    /// and the opposite side bowed in by one.
+    #[test]
+    fn arcs_add_to_and_cut_from_the_vertex_polygon() {
+        let tol = Tolerance::new();
+        let normal = Vec3::new(0.0, 0.0, 1.0);
+        // Parameter 0 along +x, so the arcs below start where they say.
+        let half_disc = |x: f64| {
+            Conic::Circle(
+                Circle3D::new_with_ref(
+                    Point3::new(x, 0.0, 0.0),
+                    Vec3::new(0.0, 0.0, 1.0),
+                    1.0,
+                    Vec3::new(1.0, 0.0, 0.0),
+                )
+                .unwrap(),
+            )
+        };
+        let carriers = vec![half_disc(1.0), half_disc(-1.0)];
+        let line = |a: (f64, f64), b: (f64, f64)| Piece {
+            a: Point3::new(a.0, a.1, 0.0),
+            b: Point3::new(b.0, b.1, 0.0),
+            trace: Trace::Straight,
+        };
+        let mut pieces = vec![
+            line((-1.0, -1.0), (1.0, -1.0)),
+            line((1.0, 1.0), (-1.0, 1.0)),
+        ];
+        // Out through x = 2 on the right, in through x = 0 on the left.
+        pieces.extend(arc_pieces(
+            &carriers[0],
+            Trace::Conic(0),
+            -FRAC_PI_2,
+            PI,
+            32,
+        ));
+        pieces.extend(arc_pieces(
+            &carriers[1],
+            Trace::Conic(1),
+            FRAC_PI_2,
+            -PI,
+            32,
+        ));
+        let mut topo = Topology::new();
+        let wires = assemble_wires(&mut topo, &pieces, &carriers, tol).unwrap();
+        assert_eq!(wires.len(), 1);
+        let edges = wire_edges(&topo, wires[0]);
+        assert_eq!(edges.len(), 4, "two lines and two arcs");
+        for edge in edges {
+            if let EdgeCurve::Circle(_) = edge.curve() {
+                let (t0, t1) = edge.strict_domain().unwrap();
+                assert!((t1 - t0 - PI).abs() <= 1e-12, "half a turn, forward");
+            }
+        }
+
+        let outline = LoopOutline::of(&topo, wires[0], normal);
+        // The bulge and the bite cancel: the square's own area.
+        assert!((outline.area(normal) - 4.0).abs() <= 1e-12);
+        let inside = |x: f64, y: f64| outline.contains(Point3::new(x, y, 0.0), normal);
+        assert!(inside(1.5, 0.0), "in the bulge, outside the square");
+        assert!(!inside(-0.5, 0.0), "in the bite, inside the square");
+        assert!(inside(0.5, 0.0));
+        assert!(!inside(-1.5, 0.0));
+        assert!(!inside(1.5, 0.9), "beside the bulge");
+
+        let face = topo.add_face(Face::new(
+            wires[0],
+            vec![],
+            FaceSurface::Plane { normal, d: 0.0 },
+        ));
+        let area = crate::measure::face_area(&topo, face, 0.01).unwrap();
+        assert!((area - 4.0).abs() <= 1e-12, "{area}");
+        assert_mesh_fills(&topo, face, 4.0, TAU);
+    }
+
+    /// Two faces that bring the same whole circle with different chords
+    /// (which the chord dedup cannot pair) still give one wire.
+    #[test]
+    fn a_whole_carrier_is_laid_down_once() {
+        let carriers = vec![circle(3.0)];
+        let mut pieces = arc_pieces(&carriers[0], Trace::Conic(0), 0.0, TAU, 64);
+        pieces.extend(arc_pieces(&carriers[0], Trace::Conic(0), 0.4, -TAU, 48));
+        let mut topo = Topology::new();
+        let wires = assemble_wires(&mut topo, &pieces, &carriers, Tolerance::new()).unwrap();
+        assert_eq!(wires.len(), 1);
+        closed_edge(&topo, wires[0]);
+    }
+
+    /// Chords that claim a carrier they are not on fall back to lines
+    /// instead of becoming an edge off its vertices.
+    #[test]
+    fn chords_off_their_carrier_stay_lines() {
+        let carriers = vec![circle(3.0)];
+        let pieces = arc_pieces(&circle(3.5), Trace::Conic(0), 0.0, TAU, 64);
+        let mut topo = Topology::new();
+        let wires = assemble_wires(&mut topo, &pieces, &carriers, Tolerance::new()).unwrap();
+        assert_eq!(wires.len(), 1);
+        let edges = wire_edges(&topo, wires[0]);
+        assert_eq!(edges.len(), 64);
+        assert!(
+            edges
+                .iter()
+                .all(|edge| matches!(edge.curve(), EdgeCurve::Line))
+        );
+    }
+
+    /// The same curve from two faces, traced either way round, is one
+    /// carrier; a different radius or centre is not.
+    #[test]
+    fn carriers_are_filed_by_their_curve() {
+        let tol = Tolerance::new();
+        let mut carriers = Vec::new();
+        let first = conic_trace(&mut carriers, circle(3.0), tol);
+        assert_eq!(
+            conic_trace(&mut carriers, circle(3.0).reversed(), tol),
+            first
+        );
+        assert_ne!(conic_trace(&mut carriers, circle(3.0 + 1e-6), tol), first);
+        assert_eq!(carriers.len(), 2);
     }
 
     /// Section of a sphere through its center → a disk bounded by the great
@@ -1013,18 +2134,19 @@ mod tests {
 
         assert_eq!(sec.faces.len(), 1, "sphere section should be a single disk");
 
-        let total_area: f64 = sec
-            .faces
-            .iter()
-            .map(|&fid| crate::measure::face_area(&topo, fid, 0.01).unwrap())
-            .sum();
-        let expected = std::f64::consts::PI * 144.0;
-        let rel_err = (total_area - expected).abs() / expected;
-        assert!(
-            rel_err < 0.05,
-            "sphere great-circle section area should be πr² = {expected:.2}, got \
-             {total_area:.2} (rel_err={rel_err:.2e})"
-        );
+        // Both hemispheres bring the equator; it is one circle edge.
+        let face = topo.face(sec.faces[0]).unwrap();
+        assert!(face.inner_wires().is_empty());
+        let (edge, _) = closed_edge(&topo, face.outer_wire());
+        let EdgeCurve::Circle(circle) = edge.curve() else {
+            panic!("expected a circle edge, got {}", edge.curve().type_tag());
+        };
+        assert!(circle.center().0.iter().all(|x| x.abs() <= 1e-12));
+        assert!((circle.radius() - 12.0).abs() <= 1e-12);
+
+        // To rounding: the old 5% band covered the chords' sagitta.
+        let area = crate::measure::face_area(&topo, sec.faces[0], 0.01).unwrap();
+        assert_relative(area, PI * 144.0, 1e-12, "sphere great-circle section area");
     }
 
     /// Section of a sphere off-center → a smaller disk. r=12 at z=5 →
@@ -1044,18 +2166,15 @@ mod tests {
 
         assert_eq!(sec.faces.len(), 1, "sphere section should be a single disk");
 
-        let total_area: f64 = sec
-            .faces
-            .iter()
-            .map(|&fid| crate::measure::face_area(&topo, fid, 0.01).unwrap())
-            .sum();
-        let expected = std::f64::consts::PI * 119.0;
-        let rel_err = (total_area - expected).abs() / expected;
-        assert!(
-            rel_err < 0.05,
-            "sphere off-center section area should be {expected:.2}, got {total_area:.2} \
-             (rel_err={rel_err:.2e})"
-        );
+        let (edge, _) = closed_edge(&topo, topo.face(sec.faces[0]).unwrap().outer_wire());
+        let EdgeCurve::Circle(circle) = edge.curve() else {
+            panic!("expected a circle edge, got {}", edge.curve().type_tag());
+        };
+        assert!((circle.center() - Point3::new(0.0, 0.0, 5.0)).length() <= 1e-12);
+        assert!((circle.radius() - 119.0f64.sqrt()).abs() <= 1e-12);
+
+        let area = crate::measure::face_area(&topo, sec.faces[0], 0.01).unwrap();
+        assert_relative(area, PI * 119.0, 1e-12, "sphere off-center section area");
     }
 }
 
@@ -1176,7 +2295,8 @@ mod cylinder {
         Ok((low, high))
     }
 
-    /// Append a contained plane/cylinder loop, or prove a finite-band miss.
+    /// Append a contained plane/cylinder loop as chords and return the circle
+    /// or ellipse they sample, or prove a finite-band miss.
     /// The complete carrier's axial sinusoid is bounded analytically; a sampled
     /// point or a midpoint cannot admit a loop crossing either authoritative rim.
     #[allow(
@@ -1192,7 +2312,7 @@ mod cylinder {
         normal: Vec3,
         tol: Tolerance,
         segments: &mut Vec<(Point3, Point3)>,
-    ) -> Result<(), OperationsError> {
+    ) -> Result<Option<super::Conic>, OperationsError> {
         if !cylinder.radius().is_finite()
             || cylinder.radius() <= 0.0
             || cylinder.origin().0.iter().any(|x| !x.is_finite())
@@ -1212,7 +2332,7 @@ mod cylinder {
         // unbounded carrier. A merely small component can intersect far along
         // the axis, so it still needs authoritative finite-boundary evidence.
         if axial == 0.0 && offset.is_finite() && offset.abs() > amplitude + tol.linear {
-            return Ok(());
+            return Ok(None);
         }
         let (low, high) = axial_band(topo, face, cylinder, tol)?;
         let first = axial * low;
@@ -1220,7 +2340,7 @@ mod cylinder {
         if offset < first.min(last) - amplitude - tol.linear
             || offset > first.max(last) + amplitude + tol.linear
         {
-            return Ok(());
+            return Ok(None);
         }
         if axial.abs() <= tol.angular {
             return Err(unsupported(
@@ -1239,8 +2359,20 @@ mod cylinder {
             let level = (offset - radial_x * cosine - radial_y * sine) / axial;
             cylinder.evaluate(angle, level)
         };
-        // Preserve the existing section's 64 chords, with exact loop closure and
-        // without the infinite-carrier helper's arbitrary |v| <= 100 cutoff.
+        // The loop is the ellipse centred where the axis meets the plane, its
+        // minor semi-axis the radius and its major one the radius over the
+        // cosine of the tilt, along the axis's direction in the plane (a
+        // circle of the cylinder's radius when the plane is square to it).
+        let conic = super::Conic::new(
+            cylinder.origin() + cylinder.axis() * center,
+            normal,
+            cylinder.radius() / axial.abs(),
+            cylinder.radius(),
+            cylinder.axis() - normal * axial,
+        );
+        // The 64 chords sample that curve, with exact loop closure and
+        // without the infinite-carrier helper's arbitrary |v| <= 100 cutoff;
+        // the wire assembler turns them back into the one closed edge.
         let first = point_at(0.0);
         let mut previous = first;
         for i in 1..=64 {
@@ -1252,7 +2384,7 @@ mod cylinder {
             segments.push((previous, next));
             previous = next;
         }
-        Ok(())
+        Ok(conic)
     }
 }
 
@@ -1437,6 +2569,70 @@ mod curved {
             branch.push(branch[0]);
         }
         Ok(vec![branch])
+    }
+
+    /// The circle or ellipse the plane `n·p = d` cuts the cone in, when it
+    /// crosses every generator of one nappe. On longitude u the plane meets
+    /// the generator where `n·g(u) = R cos(u − φ) + C` (see
+    /// [`cone_section`]); the section is closed while `|C| > R`, and a
+    /// parabola or hyperbola otherwise. A plane within `1e-6` (relative) of
+    /// the parabola is left to the sampled branch: its ellipse's far end is
+    /// that ill-conditioned.
+    pub(super) fn cone_conic(cone: &ConicalSurface, normal: Vec3, d: f64) -> Option<super::Conic> {
+        let apex_offset = d - dot_normal_point(normal, cone.apex());
+        let (sin_a, cos_a) = cone.half_angle().sin_cos();
+        let (nx, ny, nz) = (
+            normal.dot(cone.x_axis()),
+            normal.dot(cone.y_axis()),
+            normal.dot(cone.axis()),
+        );
+        let amplitude = cos_a * nx.hypot(ny);
+        let constant = sin_a * nz;
+        if apex_offset.abs() <= Tolerance::new().linear || constant == 0.0 {
+            return None;
+        }
+        if amplitude <= f64::EPSILON * constant.abs().max(1.0) {
+            // Square to the axis: the circle at generator distance v.
+            let v = apex_offset / constant;
+            return remus_math::curves::Circle3D::new(
+                cone.apex() + cone.axis() * (v * sin_a),
+                normal,
+                (v * cos_a).abs(),
+            )
+            .ok()
+            .map(super::Conic::Circle);
+        }
+        if constant.abs() - amplitude < 1e-6 * constant.abs() {
+            return None;
+        }
+        let point = |u: f64| {
+            let (sin_u, cos_u) = u.sin_cos();
+            let generator =
+                (cone.x_axis() * cos_u + cone.y_axis() * sin_u) * cos_a + cone.axis() * sin_a;
+            cone.apex() + generator * (apex_offset / normal.dot(generator))
+        };
+        // The plane through the axis and the normal mirrors the section, so
+        // its major axis runs between the two generators in that plane.
+        let phase = ny.atan2(nx);
+        let (near, far) = (point(phase), point(phase + PI));
+        let center = far + (near - far) * 0.5;
+        // The minor axis is square to that mirror plane, so to the cone's
+        // axis: along it the cone's form (w·A)² − |w|² sin²a falls from its
+        // value at the centre by sin²a per unit squared.
+        let w = center - cone.apex();
+        let form = w
+            .dot(cone.axis())
+            .mul_add(w.dot(cone.axis()), -(w.length_squared() * sin_a * sin_a));
+        if form.is_nan() || form <= 0.0 {
+            return None;
+        }
+        super::Conic::new(
+            center,
+            normal,
+            (near - far).length() * 0.5,
+            form.sqrt() / sin_a.abs(),
+            near - far,
+        )
     }
 
     /// Points along every boundary edge of `face`.
@@ -1730,7 +2926,17 @@ mod curved {
                 }
                 run.compact_sort_by(|l, r| l.0.total_cmp(&r.0));
                 if !oriented.is_forward() {
-                    run.reverse();
+                    // Backwards round a periodic curve still starts from the
+                    // edge's vertex (parameter 0 from the anchor): reversing
+                    // the whole run would end on it instead, and the wire's
+                    // previous edge would run to the rim's last sample, one
+                    // chord off the vertex it really ends at.
+                    let lead = if divisor == WIRE_POLYGON_SAMPLES {
+                        run.iter().take_while(|entry| entry.0 == 0.0).count()
+                    } else {
+                        0
+                    };
+                    run[lead..].reverse();
                 }
                 points.extend(run.into_iter().map(|(_, p)| p));
                 continue;
@@ -2257,8 +3463,8 @@ mod curved {
         Ok(crossings)
     }
 
-    /// Keep the parts of `polylines` (carrier section curves) that lie on
-    /// `face`, ending each at the boundary crossing it leaves the face by.
+    /// [`clip_loops`], appending the kept pieces without their polylines.
+    #[cfg(test)]
     pub(super) fn append_clipped(
         topo: &Topology,
         face: FaceId,
@@ -2268,15 +3474,32 @@ mod curved {
         tol: Tolerance,
         segments: &mut Vec<(Point3, Point3)>,
     ) -> Result<(), OperationsError> {
+        let kept = clip_loops(topo, face, polylines, normal, d, tol)?;
+        segments.extend(kept.into_iter().map(|(_, p, q)| (p, q)));
+        Ok(())
+    }
+
+    /// Keep the parts of `polylines` (carrier section curves) that lie on
+    /// `face`, ending each at the boundary crossing it leaves the face by.
+    /// Each kept piece comes with the index of the polyline it is a part of.
+    pub(super) fn clip_loops(
+        topo: &Topology,
+        face: FaceId,
+        polylines: &[Vec<Point3>],
+        normal: Vec3,
+        d: f64,
+        tol: Tolerance,
+    ) -> Result<Vec<(usize, Point3, Point3)>, OperationsError> {
+        let mut segments = Vec::new();
         if polylines.iter().all(|p| p.len() < 2) {
-            return Ok(());
+            return Ok(segments);
         }
         let crossings = boundary_crossings(topo, face, normal, d, tol)?;
         // Every crossing belongs to the chord nearest it. Each chord is cut
         // at its crossings and each piece kept by its own midpoint, so a
         // trimmed span or a hole narrower than one chord is not dropped or
         // bridged by classifying only the chord's ends.
-        let (chords, cuts) = assign_crossings(polylines, &crossings, tol)?;
+        let (chords, cuts, component) = assign_crossings(polylines, &crossings, tol)?;
         // A piece running along a boundary edge that lies in the plane is the
         // face's own boundary, shared with its neighbour (and deduplicated);
         // it is kept without classifying a point on the trim itself. Both of
@@ -2298,7 +3521,7 @@ mod curved {
                 topo, face, on_carrier,
             )?)
         };
-        for (&(a, b), mut cut) in chords.iter().zip(cuts) {
+        for ((&(a, b), mut cut), &k) in chords.iter().zip(cuts).zip(&component) {
             cut.compact_sort_by(|l, r| l.0.total_cmp(&r.0));
             let points: Vec<Point3> = std::iter::once(a)
                 .chain(cut.into_iter().map(|(_, x)| x))
@@ -2309,21 +3532,22 @@ mod curved {
                 if (q - p).length() > tol.linear
                     && (along_one_edge(p, q) || on_face(p + (q - p) * 0.5)?)
                 {
-                    segments.push((p, q));
+                    segments.push((k, p, q));
                 }
             }
         }
-        Ok(())
+        Ok(segments)
     }
 
     /// The chords of `polylines`, with each crossing filed against the chord
-    /// it cuts (its parameter along the chord, and the point).
+    /// it cuts (its parameter along the chord, and the point), and each
+    /// chord's polyline.
     #[allow(clippy::type_complexity)]
     fn assign_crossings(
         polylines: &[Vec<Point3>],
         crossings: &[Point3],
         tol: Tolerance,
-    ) -> Result<(Vec<(Point3, Point3)>, Vec<Vec<(f64, Point3)>>), OperationsError> {
+    ) -> Result<(Vec<(Point3, Point3)>, Vec<Vec<(f64, Point3)>>, Vec<usize>), OperationsError> {
         let mut chords: Vec<(Point3, Point3)> = Vec::new();
         let mut component: Vec<usize> = Vec::new();
         // Each chord's sagitta, from how far the polyline turns at its ends:
@@ -2401,7 +3625,7 @@ mod curved {
             let along = (x - a).dot(ab) / ab.length_squared().max(f64::MIN_POSITIVE);
             cuts[i].push((along, x));
         }
-        Ok((chords, cuts))
+        Ok((chords, cuts, component))
     }
 
     /// Whether a piece runs along one in-plane edge: both its ends lie
@@ -2965,11 +4189,19 @@ mod curved {
                         sorted(crate::boolean::wire_polygon(&topo, wire).unwrap())
                     );
                     // No chord across a rim: consecutive points at one height
-                    // are at most a 32-gon side apart.
+                    // are at most a 32-gon side apart. And the seam between
+                    // the rims runs along the axis, from one rim's vertex to
+                    // the other's: a rim traversed backwards starts at its
+                    // vertex too, not one sample round from it.
                     for (k, &p) in polygon.iter().enumerate() {
                         let q = polygon[(k + 1) % polygon.len()];
                         if (p.z() - q.z()).abs() < 1e-12 {
                             assert!((q - p).length() <= side, "chord {p:?} → {q:?}");
+                        } else {
+                            assert!(
+                                (q.x() - p.x()).hypot(q.y() - p.y()) < 1e-12,
+                                "slanted seam {p:?} → {q:?}"
+                            );
                         }
                     }
                 }
@@ -3015,7 +4247,7 @@ mod curved {
                 Point3::new(rho * u.cos(), rho * u.sin(), 0.0)
             };
             let tol = Tolerance::new();
-            let (_, cuts) = assign_crossings(&loops(3.0), &[crossing(3.0)], tol).unwrap();
+            let (_, cuts, _) = assign_crossings(&loops(3.0), &[crossing(3.0)], tol).unwrap();
             // Chord 128 + 0 is the inner loop's first chord.
             assert_eq!(cuts[128].len(), 1, "the inner loop is cut");
             assert!(matches!(

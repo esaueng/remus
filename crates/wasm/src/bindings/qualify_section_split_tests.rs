@@ -60,6 +60,113 @@ fn direct_section_box_transverse_matches_area() {
     );
 }
 
+/// Direct `section` of an 80×40×8 plate with two r=3 through holes at
+/// mid-thickness, read the way a consumer reads it: the holes are one closed
+/// `CIRCLE` edge each (not 64 `LINE` chords), `faceArea` is the analytic
+/// 3200 − 18π (it was the polygon's 3143.542127), and the edge and face
+/// samplers work on a wire of one closed edge.
+#[test]
+fn direct_section_plate_with_holes_keeps_circle_edges() {
+    use std::f64::consts::{PI, TAU};
+
+    let mut kernel = RemusKernel::new();
+    let mut solid = kernel.make_box_solid(80.0, 40.0, 8.0).unwrap();
+    for x in [16.0, 64.0] {
+        let hole = kernel.make_cylinder_solid(3.0, 12.0).unwrap();
+        kernel
+            .transform_solid_binding(hole, translation_matrix(x, 20.0, -2.0))
+            .unwrap();
+        solid = kernel.cut(solid, hole).unwrap();
+    }
+    let faces = kernel
+        .section_solid(solid, 0.0, 0.0, 4.0, 0.0, 0.0, 1.0)
+        .unwrap();
+    assert_eq!(faces.len(), 1, "plate section must be one face");
+    let face = faces[0];
+
+    let outer = kernel.get_face_outer_wire(face).unwrap();
+    let wires = kernel.get_face_wires(face).unwrap();
+    assert_eq!(wires.len(), 3, "the outline and two holes");
+    let mut centers = Vec::new();
+    for &wire in &wires {
+        let edges = kernel.get_wire_edges(wire).unwrap();
+        if wire == outer {
+            assert_eq!(edges.len(), 4, "the outline is four lines");
+            for &edge in &edges {
+                assert_eq!(kernel.get_edge_curve_type(edge).unwrap(), "LINE");
+            }
+            continue;
+        }
+        assert_eq!(edges.len(), 1, "a hole is one closed edge");
+        let edge = edges[0];
+        assert_eq!(kernel.get_edge_curve_type(edge).unwrap(), "CIRCLE");
+        let ends = kernel.get_edge_vertices(edge).unwrap();
+        assert_eq!(ends[..3], ends[3..], "closed on one vertex");
+        let span = kernel.get_edge_param_span(edge).unwrap();
+        assert!(span[0] == 0.0 && (span[1] - TAU).abs() <= 1e-12, "{span:?}");
+        // Opposite points of the edge are a diameter apart, about its centre.
+        let (a, b) = (
+            kernel.evaluate_edge_curve(edge, 0.0).unwrap(),
+            kernel.evaluate_edge_curve(edge, PI).unwrap(),
+        );
+        let diameter = (0..3).map(|i| (a[i] - b[i]).powi(2)).sum::<f64>().sqrt();
+        assert_relative("hole diameter", diameter, 6.0, 1e-12);
+        centers.push([
+            f64::midpoint(a[0], b[0]),
+            f64::midpoint(a[1], b[1]),
+            f64::midpoint(a[2], b[2]),
+        ]);
+        // The span-true sampler closes the loop on the edge's vertex, with
+        // every sample on the circle.
+        let samples = kernel.sample_edge_polyline(edge, 0.01).unwrap();
+        let count = samples.len() / 3;
+        assert!(count > 8, "{count} samples");
+        assert_eq!(samples[..3], samples[samples.len() - 3..]);
+        let center = centers[centers.len() - 1];
+        for p in samples.chunks_exact(3) {
+            let radius = (p[0] - center[0]).hypot(p[1] - center[1]);
+            assert!((radius - 3.0).abs() <= 1e-9 && (p[2] - 4.0).abs() <= 1e-9);
+        }
+    }
+    assert_eq!(centers.len(), 2);
+    if centers[0][0] > centers[1][0] {
+        centers.swap(0, 1);
+    }
+    for (center, x) in centers.iter().zip([16.0, 64.0]) {
+        let off = (center[0] - x)
+            .hypot(center[1] - 20.0)
+            .hypot(center[2] - 4.0);
+        assert!(off <= 1e-12, "hole centre {center:?}");
+    }
+
+    let exact = 18.0f64.mul_add(-PI, 3200.0);
+    assert_relative(
+        "plate section area",
+        kernel.face_area(face, 0.01).unwrap(),
+        exact,
+        1e-9,
+    );
+    // The display mesh fills the same region, short of the holes' arcs by
+    // no more than its deflection along their circumference.
+    let mesh = kernel.tessellate_face(face, 0.01, None).unwrap();
+    let (positions, indices) = (mesh.positions(), mesh.indices());
+    let corner = |i: u32| {
+        let at = 3 * i as usize;
+        (positions[at], positions[at + 1])
+    };
+    let meshed: f64 = indices
+        .chunks_exact(3)
+        .map(|t| {
+            let (a, b, c) = (corner(t[0]), corner(t[1]), corner(t[2]));
+            0.5 * ((b.0 - a.0) * (c.1 - a.1) - (c.0 - a.0) * (b.1 - a.1)).abs()
+        })
+        .sum();
+    assert!(
+        (meshed - exact).abs() <= 0.01 * 2.0 * TAU * 3.0,
+        "mesh area {meshed} against {exact}"
+    );
+}
+
 /// Batch hollow-box section through the cavity: one face, area 12, one hole.
 /// Builds the hollow body through batch `cut`, so the WASM path exercises
 /// the same boolean-constructed cavity the native matrix qualifies.

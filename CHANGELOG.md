@@ -8,6 +8,28 @@ historical predecessor-line records, retained for provenance. The
 
 ### Fixed
 
+* **operations,wasm:** `section` keeps the closed-form curves of a cross
+  section. Every curved piece of a section was chorded into `Line`
+  edges, 64 or more to a circle or ellipse. An 80×40 plate with two r=3 holes cut at mid-thickness
+  came back as 4 + 64 + 64 lines and measured 3143.542127 for the analytic
+  3200 − 18π = 3143.451332, and a consumer that exports the section got
+  polygons where the part has holes. **Behavior change:** a plane cuts a
+  sphere in one `Circle` edge, a cylinder or cone (across every generator)
+  in one `Circle` or `Ellipse` edge, and a torus on its symmetry planes
+  (square to its axis, or through it) in `Circle` edges; a curve the face
+  holds whole is one closed edge on one vertex with the trim `[0, 2π]`, and
+  one the face's boundary clips is an arc whose trim is its parameter span.
+  `face_area` / `faceArea` of the section is then the analytic area, and
+  `getEdgeCurveType` reports `CIRCLE` / `ELLIPSE` where it reported 64
+  `LINE`s, so a consumer that counted line edges or pinned the polygon's
+  area sees different numbers. Inner wires are grouped by exact containment
+  (a one-vertex circle wire is tested as a disc). Still chorded, as `Line`
+  edges that nothing marks as approximate: a torus off its symmetry planes,
+  a NURBS face, and the parabola and hyperbola branches of a cone.
+  One wrong crossing went with it: a closed rim traversed backwards was
+  laid down ending, not starting, at its vertex, so the seam of a cone or
+  torus face was crossed one rim sample off and its section carried a dent
+  there (0.03 deep on a frustum of radius 7).
 * **operations,wasm:** a thread cut at the default tolerance can be exported
   again (#1806). The edges of a thread from `cut_thread` /
   `cutThreadDetailed` hold their proven distance from the exact thread as

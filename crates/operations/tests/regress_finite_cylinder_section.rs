@@ -33,9 +33,10 @@ fn axial_sections_respect_caps_at_all_scales_and_placements() {
                     let result = section(&mut topo, solid, point, normal).unwrap();
                     if (0. ..=2.).contains(&height) {
                         assert_eq!(result.faces.len(), 1);
-                        // The API retains its existing inscribed 64-chord disc.
+                        // The section is the wall's circle itself (it was a
+                        // 64-chord polygon inscribed in it).
                         let area = face_area(&topo, result.faces[0], 1e-3 * scale).unwrap();
-                        let expected = 32. * scale * scale * (std::f64::consts::TAU / 64.).sin();
+                        let expected = std::f64::consts::PI * scale * scale;
                         assert!((area / expected - 1.).abs() < 1e-10);
                         for oriented in topo
                             .wire(topo.face(result.faces[0]).unwrap().outer_wire())
@@ -67,7 +68,8 @@ fn contained_oblique_section_matches_ellipse_area() {
     let normal = Vec3::new(0.25, 0., 1.).normalize().unwrap();
     let result = section(&mut topo, solid, Point3::new(0., 0., 2.), normal).unwrap();
     assert_eq!(result.faces.len(), 1);
-    let expected = 32. * (std::f64::consts::TAU / 64.).sin() / normal.z();
+    // The ellipse with semi-axes 1 and 1 / cos(tilt), not a polygon in it.
+    let expected = std::f64::consts::PI / normal.z();
     assert!((face_area(&topo, result.faces[0], 1e-3).unwrap() / expected - 1.).abs() < 1e-12);
 }
 

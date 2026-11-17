@@ -10,10 +10,11 @@
 //!
 //! Oracles are closed-form areas: a disc, an ellipse (the oblique cone cut, a
 //! focal conic `r = ℓ / (1 − e cos θ)` in projection), and a circular segment.
-//! The section polylines keep the 64-chord sampling of the carrier circle, so
-//! the areas carry its chord deficit, at most `(2π²/3)/64² ≈ 1.6e-3` relative;
-//! the bound below is twice that. `classify_point` probes check that a
-//! section region lies in the material and that a missed plane really misses.
+//! The sections are their circles and ellipses themselves (they were 64-chord
+//! polylines of the carrier, short of these areas by up to `(2π²/3)/64² ≈
+//! 1.6e-3` relative), so the areas hold to rounding. `classify_point` probes
+//! check that a section region lies in the material and that a missed plane
+//! really misses.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::f64::consts::{PI, TAU};
@@ -38,8 +39,10 @@ use remus_topology::solid::{Solid, SolidId};
 use remus_topology::vertex::Vertex;
 use remus_topology::wire::{OrientedEdge, Wire};
 
-/// Twice the 64-chord area deficit of the sampled section loops.
-const CHORD_BOUND: f64 = 3.3e-3;
+/// The relative error allowed against a closed-form area: the sections here
+/// are exact arcs, measured at 2e-15 to 9e-15. (It was 3.3e-3, twice the
+/// area deficit of the 64-chord loops the sections used to be.)
+const AREA_BOUND: f64 = 1e-12;
 
 fn section_area(topo: &mut Topology, solid: SolidId, point: Point3, normal: Vec3) -> f64 {
     let faces = section(topo, solid, point, normal).unwrap().faces;
@@ -52,7 +55,7 @@ fn section_area(topo: &mut Topology, solid: SolidId, point: Point3, normal: Vec3
 fn assert_area(area: f64, expected: f64, what: &str) {
     let rel = (area - expected).abs() / expected;
     assert!(
-        rel <= CHORD_BOUND,
+        rel <= AREA_BOUND,
         "{what}: section area {area}, closed form {expected} ({rel:e})"
     );
 }
@@ -170,15 +173,13 @@ fn b125_section_keeps_a_span_narrower_than_a_chord() {
         Vec3::new(0.0, 1.0, 0.0),
         Vec3::new(-0.28, 0.96, 0.0),
     ] {
-        // The strip ends on the rims' sampled 32-gons (the planar arm's
-        // `wire_polygon`), so it can fall short of the circle by their
-        // relative sagitta, 1 − cos(π/32) ≈ 4.8e-3, on top of the arcs' own
-        // 64-chord deficit.
+        // The strip's arcs end on the rims' exact crossings with the plane
+        // (not on their sampled 32-gons), so it is the strip itself.
         let area = section_area(&mut topo, solid, Point3::new(0.0, 0.0, 0.0), normal);
         let expected = segment(0.5) - segment(top);
         let rel = (area - expected).abs() / expected;
         assert!(
-            rel <= 1.0 - (PI / 32.0).cos() + 0.5 * CHORD_BOUND,
+            rel <= AREA_BOUND,
             "{normal:?}: section area {area}, closed form {expected} ({rel:e})"
         );
     }
@@ -464,13 +465,10 @@ fn b125_section_crosses_a_closed_rim_between_its_samples() {
         (extent - half_chord).abs() < 1e-9,
         "base reaches {extent}, the rim crosses at ±{half_chord}"
     );
-    // The circular segment, against its 64-chord sampling: its arc spans
-    // under two chords, so only a lower bound is meaningful.
+    // The circular segment itself: its arc is one edge between the rim's
+    // crossings (as chords it spanned under two, and fell short).
     let r = (1.0 - c * c).sqrt();
     let segment = r * r * (0.5 / r).acos() - 0.5 * (r * r - 0.25).sqrt();
     let area = face_area(&topo, faces[0], 1e-3).unwrap();
-    assert!(
-        area > 0.0 && area <= segment * (1.0 + 1e-9),
-        "{area} vs {segment}"
-    );
+    assert_area(area, segment, "narrow segment");
 }
