@@ -19,6 +19,30 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
 
 ### ⚠ BREAKING CHANGES
 
+* A fillet or chamfer whose result fails its own validation postcondition
+  on a valid input is now an engine failure, not an input error (#1814).
+  The direct blend methods that prefix their message with
+  `blend_failure_code` (`fillet`, `filletWithEvolution`, `filletV2`,
+  `chamfer`, `chamferV2`, `chamferDistanceAngle`, `filletVariable` and
+  their evolution forms) now throw `postcondition-failed: fillet
+  postcondition validation failed with …` where they threw `invalid-input:
+  invalid input: fillet postcondition validation failed with …`.
+  `executeBatchV2` and the structured errors report `code:
+  "operation_failed"`, `category: "internal"`, `details.kernelCode:
+  "postcondition-failed"` and `details.errorCount`, where they reported
+  `invalid_argument` / `invalid_input` (blend ops also carried `kernelCode:
+  "invalid-input"`), and the typed `*Detailed` refusals (`filletDetailed`,
+  `chamferDetailed`, `filletVariableDetailed`, …) report `code:
+  "postcondition-failed"` where they reported `invalid-input` or
+  `invalid_argument`. A request refused before the
+  engine runs (a non-positive radius, no edges) keeps `invalid-input` /
+  `invalid_argument`. **Migration:** a caller that branches on
+  `invalid-input`, `invalid_argument` or `invalid_input` to detect a fillet
+  or chamfer refusal must also accept `postcondition-failed` /
+  `operation_failed`; one that retries with other edges or a smaller
+  radius should treat it as a refusal of this request, not as a malformed
+  argument.
+
 * A move-face refusal outside the qualified cells
   (`OffsetError::UnsupportedMoveFace`) now projects as category
   `unsupported` with `details.kernelCode = "unsupported_move_face"`, plus

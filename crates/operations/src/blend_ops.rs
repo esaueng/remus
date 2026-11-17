@@ -820,11 +820,11 @@ pub(crate) fn validate_blend_solid_against_input(
             .map(|issue| issue.description.as_str())
             .collect::<Vec<_>>()
             .join("; ");
-        return Err(OperationsError::InvalidInput {
-            reason: format!(
-                "{operation} postcondition validation failed with {} error(s): {summary}",
-                report.error_count(),
-            ),
+        // The input passed its own baseline; the regression is the engine's.
+        return Err(OperationsError::PostconditionFailed {
+            operation,
+            error_count: report.error_count(),
+            summary,
         });
     }
     Ok(())
@@ -3004,6 +3004,7 @@ pub fn blend_failure_code(error: &OperationsError) -> &'static str {
         OperationsError::PartialResult { .. } => "partial-result",
         OperationsError::ChamferTangentChainRequired { .. } => "chamfer-tangent-chain-required",
         OperationsError::InvalidInput { .. } => "invalid-input",
+        OperationsError::PostconditionFailed { .. } => "postcondition-failed",
         OperationsError::Unsupported {
             operation: "fillet_variable",
             ..
@@ -3038,12 +3039,7 @@ pub fn chamfer_v2(
     };
     // Size verdicts and malformed requests stand; so does a selection that
     // is already its whole tangent chain.
-    if matches!(
-        refusal,
-        OperationsError::Blend(BlendError::RadiusTooLarge { .. })
-            | OperationsError::InvalidInput { .. }
-    ) || edges.is_empty()
-    {
+    if chamfer_refusal_stands(&refusal) || edges.is_empty() {
         return Err(refusal);
     }
     let tolerance = remus_math::tolerance::Tolerance::new();
@@ -3071,6 +3067,20 @@ pub fn chamfer_v2(
         chain: chain.iter().map(|edge| edge.index()).collect(),
         reason: refusal.to_string(),
     })
+}
+
+/// Whether [`chamfer_v2`] returns a selection's refusal as it stands, without
+/// probing its tangent chain: size verdicts, malformed requests, and a
+/// result that failed its validation postcondition. The postcondition
+/// refusal was `InvalidInput` until #1814 gave it its own variant; it stays
+/// here so that change does not alter which refusals are probed.
+const fn chamfer_refusal_stands(refusal: &OperationsError) -> bool {
+    matches!(
+        refusal,
+        OperationsError::Blend(BlendError::RadiusTooLarge { .. })
+            | OperationsError::InvalidInput { .. }
+            | OperationsError::PostconditionFailed { .. }
+    )
 }
 
 /// [`chamfer_v2`] of exactly `edges`, without the tangent-chain diagnosis.
@@ -4076,6 +4086,71 @@ mod tests {
         let cyl = crate::primitives::make_cylinder(&mut topo, 1.0, 1.0).unwrap();
         let faces = remus_topology::explorer::solid_faces(&topo, cyl).unwrap();
         assert!((fillet_contact_setback(&topo, &faces[..2], r).unwrap() - r).abs() < 1e-12);
+    }
+
+    /// #1814: a result that regresses validation against a valid input is
+    /// the engine's failure, `PostconditionFailed`, not `InvalidInput`. The
+    /// "result" here is the input box with its top face dropped from the
+    /// shell, so it is open where the input was closed.
+    #[test]
+    fn regressed_blend_result_is_a_postcondition_failure() {
+        let mut topo = Topology::new();
+        let input = crate::primitives::make_box(&mut topo, 10.0, 10.0, 10.0).unwrap();
+        let mut baseline = BlendBaseline::new(&topo, input);
+        validate_blend_solid_against_input(&mut baseline, "fillet", input).unwrap();
+        assert!(baseline.magnitudes().unwrap().is_empty(), "input is valid");
+
+        let faces = remus_topology::explorer::solid_faces(&topo, input).unwrap();
+        let shell = topo.add_shell(remus_topology::shell::Shell::new(faces[..5].to_vec()).unwrap());
+        let open = topo.add_solid(remus_topology::solid::Solid::new(shell, Vec::new()));
+        let mut baseline = BlendBaseline::new(&topo, input);
+        let error = validate_blend_solid_against_input(&mut baseline, "chamfer", open).unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                OperationsError::PostconditionFailed {
+                    operation: "chamfer",
+                    error_count,
+                    summary,
+                } if *error_count > 0 && !summary.is_empty()
+            ),
+            "{error:?}"
+        );
+        if let OperationsError::PostconditionFailed {
+            error_count,
+            ref summary,
+            ..
+        } = error
+        {
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "chamfer postcondition validation failed with {error_count} error(s): {summary}"
+                )
+            );
+        }
+        assert_eq!(blend_failure_code(&error), "postcondition-failed");
+    }
+
+    /// The re-categorised postcondition refusal still stands in `chamfer_v2`,
+    /// as it did while it was `InvalidInput`: no tangent-chain probe.
+    #[test]
+    fn chamfer_postcondition_refusal_still_stands() {
+        assert!(chamfer_refusal_stands(&OperationsError::InvalidInput {
+            reason: "no edges specified".into(),
+        }));
+        assert!(chamfer_refusal_stands(
+            &OperationsError::PostconditionFailed {
+                operation: "chamfer",
+                error_count: 1,
+                summary: "shell has 4 free (boundary) edges".into(),
+            }
+        ));
+        assert!(!chamfer_refusal_stands(&OperationsError::PartialResult {
+            operation: "chamfer",
+            succeeded: 1,
+            failed: 1,
+        }));
     }
 
     #[test]

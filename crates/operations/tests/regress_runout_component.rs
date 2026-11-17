@@ -232,10 +232,27 @@ fn connected_curved_g1_runout_still_refuses_atomically() {
     let before = counts(&topo);
     let volume = solid_volume(&topo, input, 1e-3).unwrap();
     let error = fillet_rolling_ball(&mut topo, input, &[bottom_arc], 0.5).unwrap_err();
+    // The input is valid (`assert_sound` below), so the refusal blames the
+    // engine, not the input (#1814).
     assert!(
-        matches!(error, OperationsError::InvalidInput { ref reason }
-        if reason.starts_with("fillet postcondition validation failed")),
+        matches!(
+            error,
+            OperationsError::PostconditionFailed {
+                operation: "fillet",
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+    assert!(
+        error
+            .to_string()
+            .starts_with("fillet postcondition validation failed"),
         "{error}"
+    );
+    assert_eq!(
+        remus_operations::blend_ops::blend_failure_code(&error),
+        "postcondition-failed"
     );
     assert_eq!(counts(&topo), before, "refusal must restore every arena");
     assert_eq!(
