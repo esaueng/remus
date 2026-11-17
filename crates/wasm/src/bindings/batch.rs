@@ -358,6 +358,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "sweepWithOptions"
         | "helicalSweep"
         | "helicalSweepInPlace"
+        | "sweepExact"
         | "multiSectionSweep"
         | "guidedSweep"
         | "minkowskiSum"
