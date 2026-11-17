@@ -336,27 +336,27 @@ impl Screw {
 }
 
 /// One profile boundary piece: a source edge.
-struct Piece {
+pub struct Piece {
     /// Start-cap edge geometry in the piece's natural direction.
-    cap: EdgeCurve,
-    trim: Option<(f64, f64)>,
+    pub cap: EdgeCurve,
+    pub trim: Option<(f64, f64)>,
     /// Exact NURBS form, natural direction, ends snapped to the vertices.
-    nurbs: NurbsCurve,
+    pub nurbs: NurbsCurve,
     /// The loop traverses the piece in its natural direction.
-    forward: bool,
+    pub forward: bool,
 }
 
 /// One profile loop in traversal order.
-struct Loop {
-    pieces: Vec<Piece>,
+pub struct Loop {
+    pub pieces: Vec<Piece>,
     /// Traversal start point of each piece, and its vertex tolerance.
-    points: Vec<(Point3, f64)>,
-    outer: bool,
+    pub points: Vec<(Point3, f64)>,
+    pub outer: bool,
 }
 
 impl Loop {
     /// Indices of piece `i`'s natural start and end points.
-    fn natural_ends(&self, i: usize) -> (usize, usize) {
+    pub fn natural_ends(&self, i: usize) -> (usize, usize) {
         let next = (i + 1) % self.pieces.len();
         if self.pieces[i].forward {
             (i, next)
@@ -367,7 +367,7 @@ impl Loop {
 
     /// Boundary samples in traversal order.
     #[allow(clippy::cast_precision_loss)]
-    fn samples(&self) -> Vec<Point3> {
+    pub fn samples(&self) -> Vec<Point3> {
         let mut out = Vec::with_capacity(self.pieces.len() * CHECK_SAMPLES);
         for piece in &self.pieces {
             let (u0, u1) = piece.nurbs.domain();
@@ -394,6 +394,7 @@ fn snap(
     start: Point3,
     end: Point3,
     tolerance: f64,
+    label: &str,
 ) -> Result<NurbsCurve, OperationsError> {
     let mut points = curve.control_points().to_vec();
     let last = points.len() - 1;
@@ -402,7 +403,7 @@ fn snap(
         .max((points[last] - end).length());
     if miss.is_nan() || miss > tolerance {
         return Err(invalid(format!(
-            "helical sweep profile edge misses its vertices by {miss} (tolerance {tolerance})"
+            "{label} profile edge misses its vertices by {miss} (tolerance {tolerance})"
         )));
     }
     points[0] = start;
@@ -518,6 +519,17 @@ fn full_turn_knots(curve: &NurbsCurve) -> Result<NurbsCurve, OperationsError> {
 
 /// Read one profile wire into traversal-ordered pieces, one per edge.
 fn read_loop(topo: &Topology, wire: WireId, outer: bool) -> Result<Loop, OperationsError> {
+    read_profile_loop(topo, wire, outer, "helical sweep")
+}
+
+/// Read one planar-profile wire into traversal-ordered pieces, one per edge,
+/// naming the operation `label` in its refusals.
+pub fn read_profile_loop(
+    topo: &Topology,
+    wire: WireId,
+    outer: bool,
+    label: &str,
+) -> Result<Loop, OperationsError> {
     let linear = Tolerance::new().linear;
     let mut pieces = Vec::new();
     let mut points = Vec::new();
@@ -535,7 +547,7 @@ fn read_loop(topo: &Topology, wire: WireId, outer: bool) -> Result<Loop, Operati
             Err(_) => crate::reconstruct_legacy_edge_domain(
                 topo,
                 oe.edge(),
-                "helical sweep profile edge",
+                &format!("{label} profile edge"),
             )?,
         };
         let snap_tol = 10.0 * start_tol.max(end_tol);
@@ -543,7 +555,7 @@ fn read_loop(topo: &Topology, wire: WireId, outer: bool) -> Result<Loop, Operati
         // whole: its side face is closed across the profile and seamed by
         // the rail its one vertex sweeps, like a cylinder's wall.
         let (cap, trim, nurbs) = exact_piece(edge.curve(), domain, start, end)?;
-        let nurbs = snap(nurbs, start, end, snap_tol)?;
+        let nurbs = snap(nurbs, start, end, snap_tol, label)?;
         let nurbs = if edge.start() == edge.end() {
             full_turn_knots(&nurbs)?
         } else {
@@ -563,7 +575,7 @@ fn read_loop(topo: &Topology, wire: WireId, outer: bool) -> Result<Loop, Operati
         });
     }
     if pieces.is_empty() {
-        return Err(invalid("helical sweep profile wire has no edges"));
+        return Err(invalid(format!("{label} profile wire has no edges")));
     }
     Ok(Loop {
         pieces,
@@ -573,7 +585,7 @@ fn read_loop(topo: &Topology, wire: WireId, outer: bool) -> Result<Loop, Operati
 }
 
 /// Whether `samples` wind counter-clockwise about `normal`.
-fn is_ccw(samples: &[Point3], normal: Vec3) -> bool {
+pub fn is_ccw(samples: &[Point3], normal: Vec3) -> bool {
     crate::winding::newell_normal(samples).dot(normal) >= 0.0
 }
 

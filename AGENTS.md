@@ -585,6 +585,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Mesh boolean (co-refinement) | `mesh_boolean.rs` |
 | Robust triangle-triangle intersection: the narrow phase shared by mesh co-refinement and validation's component-overlap check | `triangle_intersection.rs` |
 | Extrude, Revolve, Sweep, Loft, Pipe | `extrude.rs`, `revolve.rs`, `sweep.rs`, `loft.rs`, `pipe.rs` |
+| Exact path sweep along a tangent-continuous chain of lines and circular arcs: the profile carried in place by the path's rigid motions (translations along lines, turns about arc axes, the rotation-minimizing frame exactly), one face per profile edge per segment — planes, cylinders, cones and tori where they apply, exact rational tensor-product NURBS otherwise — shared rails and joint sections, capless rings for closed chains; refusals for corners, folds, self-approach and non-line/arc paths | `exact_sweep.rs`, `exact_sweep/tests.rs` |
 | Extrusion nesting preflight, separate island caps, and closed-form material/void regressions | `extrude/nesting.rs`, `extrude/nesting_tests.rs` |
 | Main-comparison profile families, unnested sweep compatibility, disjoint ellipse/spline holes with overlapping boxes and split-circle seam alignment (tests) | `extrude/profile_compatibility_tests.rs` |
 | Exact loft between parallel full circles: coaxial cylinder/cone bands, and laterally offset (oblique) circles as one exact rational ruled band per section pair with circular rims | `loft.rs` (`try_loft_coaxial_circle_stack`, `try_loft_parallel_circle_stack`), `loft/tests.rs` |
@@ -913,6 +914,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Growing-holder recipe `volume` contract (B54: closed-form −5440 width step through `executeBatch`) | `bindings/growing_holder_volume_tests.rs` |
 | Store-local boolean switch (`setStoreLocalCuts` / `storeLocalCutsEnabled`, direct and batch) contract tests | `bindings/store_local_switch_tests.rs` |
 | Sweep bindings refuse atomically (`multiSectionSweep` direct and batch; kernel review WASM-6) | `bindings/sweep_transaction_tests.rs` |
+| `sweepExact` contract: the exact pipe bend directly and through `executeBatch`, and a corner refused with the session unchanged | `bindings/exact_sweep_tests.rs` |
 | Batch `sewFaces` without `tolerance` sews at the batch default `TOL`, not 1e-6 (contract test) | `bindings/sew_faces_default_tests.rs` |
 | Direct and both batch contracts for the bounded P-Class 7.1 hollow taper | `bindings/tapered_hollow_sweep_tests.rs` |
 | WASM contract tests for the mixed-notch L-bracket boundary | `bindings/mixed_notch_tests.rs` |

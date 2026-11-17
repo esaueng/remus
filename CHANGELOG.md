@@ -45,6 +45,37 @@ historical predecessor-line records, retained for provenance. The
   draft (#1743); that is a property of the constant-`ρ` construction, not
   of the surface, and is not disclosed in `details`.
 
+### Added
+
+* **operations,wasm:** exact path sweep along lines and circular arcs
+  (`exact_sweep::sweep_exact`, `sweepExact(face, edges)`). The profile stays
+  where it is and is carried by the path's rigid motions — a line translates
+  it, an arc turns it about the arc's axis, which along a tangent-continuous
+  chain is exactly the rotation-minimizing frame — so nothing is sampled: each
+  profile edge sweeps into one face per path segment, a plane, cylinder, cone
+  or torus where the pair has one and the exact rational tensor product of the
+  edge with the motion otherwise. A circle swept 270° about r = 30 is one
+  torus band and two caps at the closed-form volume (the sampled `sweep` built
+  902 planes, 2.16% short); a line–arc–line bend is two cylinders and a torus
+  quadrant. A corner between two straight runs is mitred exactly: the joint
+  section is the profile projected onto the bisector plane, which both runs'
+  prisms cut in the same curve (a round profile meets on an exact rational
+  ellipse), so an L is two cylinders at the area times the centre-line
+  length. Path edges may come in any order and direction; a closed chain
+  builds a capless ring. A corner next to an arc, a path edge that is not a
+  line or circular arc, a profile that reaches an arc's axis or lies along
+  the path, a run too short for its mitres and a chain that passes closer to
+  itself than the profile's reach are refused, leaving the topology
+  unchanged. `sweep`,
+  `sweepWithOptions` and `sweepAlongEdges` are unchanged.
+* **operations:** `solid_volume` reads a body of planes and four-sided curved
+  windows (every non-planar face an unholed cylinder, cone, torus or NURBS
+  patch bounded by four edges, no sphere) off its certified face integrals,
+  as it already did for caps and full-turn bands. The whole-solid mesh read a
+  circle swept round a bend 5.7e-4 low; the certified reading is its closed
+  form. Every guard of the certified route still applies; a declined body
+  keeps the mesh.
+
 ### Fixed
 
 * **operations,wasm:** a thread cut at the default tolerance can be exported

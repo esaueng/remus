@@ -2068,6 +2068,14 @@ impl RemusKernel {
                     .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(result))
             }
+            "sweepExact" => {
+                let profile = get_u32(args, "profile")?;
+                let edges: Vec<u32> = get_u32_array(args, "edges")?;
+                let result = self
+                    .sweep_exact_impl(profile, &edges)
+                    .map_err(StructuredWasmError::from)?;
+                Ok(serde_json::json!(result))
+            }
             "multiSectionSweep" => {
                 let faces: Vec<u32> = get_u32_array_optional(args, "faces")?;
                 let params: Vec<f64> = match args.get("params") {
