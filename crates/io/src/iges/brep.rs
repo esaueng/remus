@@ -107,6 +107,22 @@ pub struct IgesWriteOptions {
     /// Time stamp `YYYYMMDD.HHMMSS` for the global section; a fixed epoch
     /// when empty, so output is deterministic.
     pub timestamp: String,
+    /// The length unit the geometry is already in, stated in the global
+    /// section: `MM` (the default), `CM`, `M` or `IN`. Nothing is scaled.
+    pub unit: Option<String>,
+}
+
+/// IGES global unit flag and name for a supported unit.
+fn unit_flag(unit: Option<&str>) -> Result<(&'static str, &'static str), IoError> {
+    match unit.map(str::to_ascii_uppercase).as_deref() {
+        None | Some("MM") => Ok(("2", "MM")),
+        Some("CM") => Ok(("10", "CM")),
+        Some("M") => Ok(("6", "M")),
+        Some("IN" | "INCH") => Ok(("1", "INCH")),
+        Some(other) => Err(invalid(format!(
+            "IGES export unit {other} is not supported"
+        ))),
+    }
 }
 
 struct Entity {
@@ -182,7 +198,8 @@ impl Writer {
         self.add_full(124, 0, 0, false, params)
     }
 
-    fn finish(self, options: &IgesWriteOptions) -> String {
+    fn finish(self, options: &IgesWriteOptions) -> Result<String, IoError> {
+        let (flag, unit_name) = unit_flag(options.unit.as_deref())?;
         let mut out = String::new();
         let mut push = |line: &str, section: char, seq: usize| {
             let _ = writeln!(out, "{line:<72}{section}{seq:>7}");
@@ -207,8 +224,8 @@ impl Writer {
             "15".into(),
             hollerith(&options.product_name),
             "1.".into(),
-            "2".into(),
-            hollerith("MM"),
+            flag.into(),
+            hollerith(unit_name),
             "1".into(),
             "0.01".into(),
             hollerith(&timestamp),
@@ -266,7 +283,7 @@ impl Writer {
             p_lines.len()
         );
         push(&terminate, 'T', 1);
-        out
+        Ok(out)
     }
 }
 
@@ -720,7 +737,7 @@ pub fn write_iges_brep(
         }
         w.entities[(msbo - 1) / 2].params = params;
     }
-    Ok(w.finish(options))
+    w.finish(options)
 }
 
 fn write_face(

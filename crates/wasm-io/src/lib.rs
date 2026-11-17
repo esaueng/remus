@@ -335,6 +335,16 @@ impl RemusIo {
         Ok(solids_document_with_limits(&topo, &result.solids, limits)?)
     }
 
+    fn iges_brep_as_step_impl(
+        data: &[u8],
+        max_input_bytes: Option<f64>,
+        max_entities: Option<f64>,
+    ) -> Result<Vec<u8>, IoWasmError> {
+        let limits = import_limits_from(max_input_bytes, max_entities)?;
+        let text = utf8(data, "IGES")?;
+        Ok(remus_io::iges::iges_brep_as_step(text, limits)?.into_bytes())
+    }
+
     fn export_iges_impl(bodies: &[u8]) -> Result<Vec<u8>, IoWasmError> {
         let (topo, solids) = load_solids(bodies)?;
         Ok(remus_io::iges::writer::write_iges(&topo, &solids)?.into_bytes())
@@ -798,12 +808,32 @@ impl RemusIo {
         )?)
     }
 
+    /// Restate an IGES file's 186 solids as ISO 10303-21 text in millimetres
+    /// (UTF-8 bytes): exactly what `importIgesBrep` builds its solids from.
+    /// A consumer that stores STEP sources can keep this as an IGES import's
+    /// replayable source; `importStepBodies` on it gives `importIgesBrep`'s
+    /// solids. Refuses what `importIgesBrep` refuses before any geometry.
+    #[wasm_bindgen(js_name = "igesBrepAsStep")]
+    pub fn iges_brep_as_step(
+        &self,
+        data: &[u8],
+        max_input_bytes: Option<f64>,
+        max_entities: Option<f64>,
+    ) -> Result<Vec<u8>, JsError> {
+        Ok(Self::iges_brep_as_step_impl(
+            data,
+            max_input_bytes,
+            max_entities,
+        )?)
+    }
+
     /// Write the solids of an arena document as exact IGES 5.3 manifold
     /// solid B-rep objects (UTF-8 bytes), in millimetres.
     ///
-    /// `options` is a JSON string with `fileName`, `productName` and
-    /// `timestamp` (`YYYYMMDD.HHMMSS`) fields; missing fields keep their
-    /// defaults. Carriers keep their exact class; a closed edge with no
+    /// `options` is a JSON string with `fileName`, `productName`,
+    /// `timestamp` (`YYYYMMDD.HHMMSS`) and `unit` (`MM`, `CM`, `M` or `IN`:
+    /// the unit the geometry is already in, stated, not applied) fields;
+    /// missing fields keep their defaults. Carriers keep their exact class; a closed edge with no
     /// carrier is refused.
     #[wasm_bindgen(js_name = "exportIgesBrep")]
     pub fn export_iges_brep(
@@ -919,6 +949,15 @@ mod tests {
         assert!(text.contains("10Hcavity.igs"));
         let again = RemusIo::import_iges_brep_impl(&written, None, None).unwrap();
         assert!((volumes(&again)[0] - actual[0]).abs() < 1e-6);
+        // The restated STEP reads to the same solid.
+        let step = RemusIo::iges_brep_as_step_impl(input, None, None).unwrap();
+        let bodies = RemusIo::import_step_bodies_impl(&step, None, None).unwrap();
+        assert!((volumes(&bodies.solids())[0] - actual[0]).abs() < 1e-6);
+        // A stated unit scales nothing: the same solid read as inches.
+        let inches = RemusIo::export_iges_brep_impl(&document, Some(r#"{"unit":"IN"}"#)).unwrap();
+        let read = volumes(&RemusIo::import_iges_brep_impl(&inches, None, None).unwrap())[0];
+        assert!((read - actual[0] * 25.4f64.powi(3)).abs() < 1e-3 * read);
+        assert!(RemusIo::export_iges_brep_impl(&document, Some(r#"{"unit":"FT"}"#)).is_err());
         let surfaces = include_bytes!("../../io/tests/data/iges_brep/holed_plate_faces_mm.igs");
         assert!(RemusIo::import_iges_brep_impl(surfaces, None, None).is_err());
         assert!(RemusIo::export_iges_brep_impl(&document, Some("{")).is_err());
