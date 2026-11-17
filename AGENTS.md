@@ -778,6 +778,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | FreeCAD saved-shape ASCII BREP read and bounded planar loop classification | `brep/mod.rs`, `brep/reader.rs`, `brep/planar.rs` |
 | Saved-shape analytic line/circle and plane/cylinder carriers, rigid location words, bounded placed occurrences, circular caps and cylindrical seam bands | `brep/reader/carriers.rs`, `brep/reader/locations.rs`, `brep/reader/placed.rs`, `brep/reader/curved.rs` |
 | STEP read/write | `step/reader.rs`, `step/writer.rs` |
+| Exact IGES 5.3 B-rep (type 186) read and write: carriers kept exact, read through the STEP body reader (`read_iges_brep`, `write_iges_brep`) | `iges/brep.rs` |
 | Verbatim STEP string-decoder oracle, deterministic fuzz, linear-work guards and hostile-name imports (tests) | `step/reader/directive_oracle_tests.rs` |
 | Relative planar-bound sampling: loops whose areas the coarser chords cannot order are flagged for re-sampling at the absolute deflection (tests) | `step/reader/bound_sampling_tests.rs` |
 | STEP export seam placement: a cylindrical band whose seam runs through one of its own inner wires is written, on a private arena copy, with the seam and its rim vertices moved into the widest free angular gap | `step/writer/seam.rs` |

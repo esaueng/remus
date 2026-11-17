@@ -312,6 +312,29 @@ impl RemusIo {
         Ok(step.into_bytes())
     }
 
+    fn export_iges_brep_impl(bodies: &[u8], options: Option<&str>) -> Result<Vec<u8>, IoWasmError> {
+        let (topo, solids) = load_solids(bodies)?;
+        let options: remus_io::iges::IgesWriteOptions = match options {
+            None => remus_io::iges::IgesWriteOptions::default(),
+            Some(json) => serde_json::from_str(json).map_err(|error| {
+                IoWasmError::invalid(format!("invalid IGES write options JSON: {error}"))
+            })?,
+        };
+        Ok(remus_io::iges::write_iges_brep(&topo, &solids, &options)?.into_bytes())
+    }
+
+    fn import_iges_brep_impl(
+        data: &[u8],
+        max_input_bytes: Option<f64>,
+        max_entities: Option<f64>,
+    ) -> Result<Vec<u8>, IoWasmError> {
+        let limits = import_limits_from(max_input_bytes, max_entities)?;
+        let text = utf8(data, "IGES")?;
+        let mut topo = Topology::new();
+        let result = remus_io::iges::read_iges_brep(text, &mut topo, limits)?;
+        Ok(solids_document_with_limits(&topo, &result.solids, limits)?)
+    }
+
     fn export_iges_impl(bodies: &[u8]) -> Result<Vec<u8>, IoWasmError> {
         let (topo, solids) = load_solids(bodies)?;
         Ok(remus_io::iges::writer::write_iges(&topo, &solids)?.into_bytes())
@@ -752,6 +775,45 @@ impl RemusIo {
         )?)
     }
 
+    /// Read every IGES 5.3 manifold solid B-rep object (type 186) as an
+    /// exact solid; returns a solid document for `deserializeSolids`.
+    ///
+    /// The qualified IGES path (`importIges` remains a lossy preview). Reads
+    /// planes, cylinders, cones, spheres, tori (190–198) and B-spline
+    /// surfaces (128) with 110/100/104/126 edges, rigid 124 frames and the
+    /// declared unit, and builds them through the strict STEP body reader.
+    /// A surface model (trimmed surfaces with no 186 solid), other entity
+    /// types and non-rigid frames are refused by name.
+    #[wasm_bindgen(js_name = "importIgesBrep")]
+    pub fn import_iges_brep(
+        &self,
+        data: &[u8],
+        max_input_bytes: Option<f64>,
+        max_entities: Option<f64>,
+    ) -> Result<Vec<u8>, JsError> {
+        Ok(Self::import_iges_brep_impl(
+            data,
+            max_input_bytes,
+            max_entities,
+        )?)
+    }
+
+    /// Write the solids of an arena document as exact IGES 5.3 manifold
+    /// solid B-rep objects (UTF-8 bytes), in millimetres.
+    ///
+    /// `options` is a JSON string with `fileName`, `productName` and
+    /// `timestamp` (`YYYYMMDD.HHMMSS`) fields; missing fields keep their
+    /// defaults. Carriers keep their exact class; a closed edge with no
+    /// carrier is refused.
+    #[wasm_bindgen(js_name = "exportIgesBrep")]
+    pub fn export_iges_brep(
+        &self,
+        bodies: &[u8],
+        options: Option<String>,
+    ) -> Result<Vec<u8>, JsError> {
+        Ok(Self::export_iges_brep_impl(bodies, options.as_deref())?)
+    }
+
     /// Read an IGES file; returns a solid document, or no bytes when empty.
     #[wasm_bindgen(js_name = "importIges")]
     pub fn import_iges(
@@ -840,6 +902,27 @@ mod tests {
     use super::*;
     use remus_operations::measure::solid_volume;
     use remus_operations::primitives::make_box;
+
+    #[test]
+    fn iges_brep_translator_round_trips_exact_solids() {
+        let input = include_bytes!("../../io/tests/data/iges_brep/cavity_brep_in.igs");
+        let document = RemusIo::import_iges_brep_impl(input, None, None).unwrap();
+        let actual = volumes(&document);
+        assert_eq!(actual.len(), 1);
+        assert!((actual[0] - 24_855.339_415).abs() < 1e-3);
+        let written = RemusIo::export_iges_brep_impl(
+            &document,
+            Some(r#"{"fileName":"cavity.igs","productName":"Cavity"}"#),
+        )
+        .unwrap();
+        let text = String::from_utf8(written.clone()).unwrap();
+        assert!(text.contains("10Hcavity.igs"));
+        let again = RemusIo::import_iges_brep_impl(&written, None, None).unwrap();
+        assert!((volumes(&again)[0] - actual[0]).abs() < 1e-6);
+        let surfaces = include_bytes!("../../io/tests/data/iges_brep/holed_plate_faces_mm.igs");
+        assert!(RemusIo::import_iges_brep_impl(surfaces, None, None).is_err());
+        assert!(RemusIo::export_iges_brep_impl(&document, Some("{")).is_err());
+    }
 
     #[test]
     fn brep_translator_returns_exact_arena_and_enforces_api_limits() {
