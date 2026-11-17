@@ -3137,19 +3137,24 @@ fn solid_volume_uncached(
         .map(|&face| topo.face(face).map(remus_topology::face::Face::surface))
         .collect::<Result<_, _>>()?;
     // This refinement is qualified for planar faces and line/circle-trimmed
-    // cylinders. Other quadrics retain their existing measurement dispatch.
+    // cylinders and cones. Other quadrics retain their existing measurement
+    // dispatch. A cone wall once sent the whole body to the mesh below: a
+    // rounded box whose top loop is chamfered (four cone bands over the
+    // rounds) read its 74.66 mm³ removal 0.19 heavy at a deflection of 1e-3,
+    // the chord undercount of its cylinders, which the unchamfered body read
+    // exactly here (#1823).
     if surfaces
         .iter()
-        .any(|surface| matches!(surface, FaceSurface::Cylinder(_)))
+        .any(|surface| matches!(surface, FaceSurface::Cylinder(_) | FaceSurface::Cone(_)))
         && surfaces.iter().all(|surface| {
             matches!(
                 surface,
-                FaceSurface::Plane { .. } | FaceSurface::Cylinder(_)
+                FaceSurface::Plane { .. } | FaceSurface::Cylinder(_) | FaceSurface::Cone(_)
             )
         })
         && let Some(volume) = exact_analytic_face_volume(topo, solid, deflection, true)
     {
-        vol_trace(|| format!("plane/cylinder exact faces -> {volume}"));
+        vol_trace(|| format!("plane/cylinder/cone exact faces -> {volume}"));
         return Ok(volume);
     }
 
@@ -4099,6 +4104,136 @@ fn planar_wire_signed_area2(
     }))
 }
 
+/// Exact signed volume contribution of a conical face bounded by rulings and
+/// coaxial rim circles, by Green's theorem over the cone's own chart.
+///
+/// On `P(u, v) = apex + v·(cos a·radial(u) + sin a·axis)` the vector area
+/// element is `v·cos a·n(u) du dv` with `n(u) = sin a·radial(u) − cos a·axis`,
+/// and `(P − reference)·n(u)` does not depend on `v`. So the face's
+/// `(1/3)∬ (P − reference)·n dA` is `∬ g(u)·v du dv` over the face's chart
+/// region, with `g(u) = (cos a / 3)·(sin a·(ax cos u + ay sin u) − cos a·az)`
+/// and `(ax, ay, az)` the apex about `reference` in the cone's frame. Green's
+/// theorem turns that into `−∮ g(u)·v²/2 du` round the boundary:
+///
+/// * a ruling has `du = 0` and contributes nothing, including one that ends
+///   at the apex, where `u` is undefined (the chart's apex edge `v = 0`
+///   contributes nothing either);
+/// * a rim circle at constant `v` integrates `g` in closed form over its
+///   sweep.
+///
+/// Unlike the `[u] × [v]` rectangle [`analytic_cone_signed_volume`] fills,
+/// this follows the face's actual outline, so a rim that steps or a sweep
+/// that differs per rim is integrated as stored. Any other curve (an ellipse,
+/// a NURBS trim, a line that is not a ruling) declines with `None`.
+fn line_circle_cone_signed_volume(
+    topo: &Topology,
+    face_id: FaceId,
+    reference: Point3,
+) -> Option<f64> {
+    let face = topo.face(face_id).ok()?;
+    let FaceSurface::Cone(cone) = face.surface() else {
+        return None;
+    };
+    if !face.inner_wires().is_empty() {
+        return None;
+    }
+    let tolerance = remus_math::tolerance::Tolerance::new();
+    let (sin_a, cos_a) = cone.half_angle().sin_cos();
+    let apex = cone.apex() - reference;
+    let ax = apex.dot(cone.x_axis());
+    let ay = apex.dot(cone.y_axis());
+    let az = apex.dot(cone.axis());
+    // `g(u)` above, and its antiderivative over `[u0, u1]`.
+    let g = |u: f64| cos_a / 3.0 * (sin_a * ax.mul_add(u.cos(), ay * u.sin()) - cos_a * az);
+    let g_integral = |u0: f64, u1: f64| {
+        cos_a / 3.0
+            * (sin_a * (ax * (u1.sin() - u0.sin()) + ay * (u0.cos() - u1.cos()))
+                - cos_a * az * (u1 - u0))
+    };
+    let mut boundary_integral = 0.0;
+    let mut signed_chart_area = 0.0;
+    for oriented in topo.wire(face.outer_wire()).ok()?.edges() {
+        let edge = topo.edge(oriented.edge()).ok()?;
+        let (from, to) = if oriented.is_forward() {
+            (edge.start(), edge.end())
+        } else {
+            (edge.end(), edge.start())
+        };
+        match edge.curve() {
+            EdgeCurve::Line => {
+                let (u0, v0) = cone.project_point(topo.vertex(from).ok()?.point());
+                let (u1, v1) = cone.project_point(topo.vertex(to).ok()?.point());
+                // A ruling into the apex: `u` is undefined there, and the
+                // integrand vanishes with `v`, so the edge adds nothing.
+                if v0.abs() * cos_a <= tolerance.linear || v1.abs() * cos_a <= tolerance.linear {
+                    continue;
+                }
+                let du = (u1 - u0 + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU)
+                    - std::f64::consts::PI;
+                // A line on the wall is a ruling (`du = 0`). As on the
+                // cylinder, accept a chord that stays within tolerance of
+                // the wall (a sub-tolerance rim arc written as a line) and
+                // integrate it as its chart segment; anything wider declines.
+                let radius = v0.abs().max(v1.abs()) * cos_a;
+                if radius * (1.0 - (0.5 * du).cos()) > tolerance.linear {
+                    return None;
+                }
+                let along = |s: f64| {
+                    let v = v1.mul_add(s, v0 * (1.0 - s));
+                    g(u0 + s * du) * v * v / 2.0
+                };
+                boundary_integral -= du / 6.0 * (along(0.0) + 4.0 * along(0.5) + along(1.0));
+                signed_chart_area -= 0.5 * (v0 + v1) * du;
+            }
+            EdgeCurve::Circle(circle) => {
+                // Coaxial: normal along the axis, centre on it, and the radius
+                // the cone has at that height.
+                let delta = circle.center() - cone.apex();
+                let height = delta.dot(cone.axis());
+                let v = height / sin_a;
+                if circle.normal().cross(cone.axis()).length() > tolerance.angular
+                    || (delta - cone.axis() * height).length() > tolerance.linear
+                    || (circle.radius() - v.abs() * cos_a).abs() > tolerance.linear
+                {
+                    return None;
+                }
+                let (lo, hi) = edge.trim()?;
+                let direction = if oriented.is_forward() { 1.0 } else { -1.0 };
+                let sweep = (hi - lo)
+                    * circle
+                        .u_axis()
+                        .cross(circle.v_axis())
+                        .dot(cone.axis())
+                        .signum()
+                    * direction;
+                // The chart loop closes on the shared vertices; the trim only
+                // fixes the sweep's turn and direction (as on the cylinder).
+                let (u0, _) = cone.project_point(topo.vertex(from).ok()?.point());
+                let (u_to, _) = cone.project_point(topo.vertex(to).ok()?.point());
+                let chord = u_to - u0;
+                let sweep = std::f64::consts::TAU
+                    .mul_add(((sweep - chord) / std::f64::consts::TAU).round(), chord);
+                boundary_integral -= v * v / 2.0 * g_integral(u0, u0 + sweep);
+                signed_chart_area -= v * sweep;
+            }
+            // Only rulings and coaxial rims bound the face this integrator is
+            // exact for; each other carrier declines by name, so a future
+            // curve variant cannot silently inherit this path.
+            EdgeCurve::Ellipse(_)
+            | EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => return None,
+        }
+    }
+    if signed_chart_area.abs() <= tolerance.linear * tolerance.angular {
+        return None;
+    }
+    // Integrate the positively oriented chart region whichever way the wire
+    // runs, then apply the face's orientation.
+    let volume = boundary_integral * signed_chart_area.signum();
+    Some(if face.is_reversed() { -volume } else { volume })
+}
+
 /// Exact signed volume contribution of a conical face via the divergence
 /// theorem: `V = (1/3) integral P.n dA`.
 ///
@@ -4822,7 +4957,7 @@ fn exact_analytic_face_volume(
     topo: &Topology,
     solid: SolidId,
     deflection: f64,
-    require_cylinder_trim_authority: bool,
+    require_trim_authority: bool,
 ) -> Option<f64> {
     // Cavity faces are boundary too, and their stored reversal makes each one's
     // signed contribution subtract. Enumerating only the outer shell would
@@ -4851,14 +4986,18 @@ fn exact_analytic_face_volume(
                 exact.volume
             }
             FaceSurface::Cylinder(_) if !holed => {
-                if require_cylinder_trim_authority {
+                if require_trim_authority {
                     line_circle_cylinder_signed_volume(topo, fid, reference)?
                 } else {
                     analytic_cylinder_signed_volume(topo, fid, reference).ok()?
                 }
             }
             FaceSurface::Cone(_) if !holed => {
-                analytic_cone_signed_volume(topo, fid, reference).ok()?
+                if require_trim_authority {
+                    line_circle_cone_signed_volume(topo, fid, reference)?
+                } else {
+                    analytic_cone_signed_volume(topo, fid, reference).ok()?
+                }
             }
             FaceSurface::Sphere(_) if !holed => {
                 analytic_sphere_signed_volume(topo, fid, reference).ok()?
@@ -7543,3 +7682,44 @@ mod periodic_winding_tests;
 
 #[cfg(test)]
 mod crossing_cylinder_breakout_tests;
+
+#[cfg(test)]
+mod line_circle_cone_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::*;
+    use crate::primitives::make_cone;
+
+    /// A cone primitive's wall (a full turn to the apex, or between two rims)
+    /// integrates through the chart exactly as the rectangle reads it, and
+    /// the planes-and-cones body sums to its closed form.
+    #[test]
+    fn full_turn_walls_match_the_rectangle_and_the_closed_form() {
+        for (bottom, top, height) in [(3.0, 0.0, 6.0), (3.0, 1.0, 6.0), (1.0, 4.0, 2.5)] {
+            let mut topo = Topology::new();
+            let solid = make_cone(&mut topo, bottom, top, height).unwrap();
+            let reference = Point3::new(0.7, -1.3, 2.9);
+            let mut walls = 0;
+            for face in remus_topology::explorer::solid_faces(&topo, solid).unwrap() {
+                if !matches!(topo.face(face).unwrap().surface(), FaceSurface::Cone(_)) {
+                    continue;
+                }
+                walls += 1;
+                let chart = line_circle_cone_signed_volume(&topo, face, reference).unwrap();
+                let rectangle = analytic_cone_signed_volume(&topo, face, reference).unwrap();
+                assert!(
+                    (chart - rectangle).abs() <= 1e-9 * rectangle.abs().max(1.0),
+                    "r {bottom}..{top}: chart {chart} vs rectangle {rectangle}"
+                );
+            }
+            assert_eq!(walls, 1);
+            let expected =
+                std::f64::consts::PI * height / 3.0 * (bottom * bottom + bottom * top + top * top);
+            let exact = exact_analytic_face_volume(&topo, solid, 1e-3, true).unwrap();
+            assert!(
+                (exact - expected).abs() <= 1e-9 * expected,
+                "r {bottom}..{top}: {exact} vs {expected}"
+            );
+        }
+    }
+}
