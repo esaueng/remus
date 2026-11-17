@@ -226,16 +226,20 @@ fn both_batches_return_exact_valid_watertight_sphere_torus_legs() {
 }
 
 /// An exact-only refusal through either batch leaves the session as it was:
-/// the placed seed-1146 fuse is outside the qualified domain.
+/// the placed seed-1146 fuse at 1e3 scale is outside the qualified domain
+/// (the native matrix refuses every 1e3 cell; at unit scale this placed fuse
+/// builds exactly since #1790).
 #[test]
 fn both_batches_roll_back_a_refused_placed_fuse() {
     for v2 in [false, true] {
         let mut kernel = RemusKernel::new();
         let (mut ops, sphere, torus) = chain(&SEEDS[1]);
-        // The native matrix's rigid placement, applied to both operands.
+        // The native matrix's rigid placement of its 1e3-scale build, applied
+        // to both operands.
         let placement = remus_math::mat::Mat4::translation(17.0, -23.0, 31.0)
             * remus_math::mat::Mat4::rotation_x(0.37)
-            * remus_math::mat::Mat4::rotation_z(-0.61);
+            * remus_math::mat::Mat4::rotation_z(-0.61)
+            * remus_math::mat::Mat4::scale(1000.0, 1000.0, 1000.0);
         let matrix: Vec<f64> = (0..4)
             .flat_map(|row| (0..4).map(move |col| placement.0[row][col]))
             .collect();

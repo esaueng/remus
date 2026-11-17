@@ -145,7 +145,8 @@ export function runOpseqSphereTorusIntersectPackaged({ RemusKernel }) {
       // The intersect in both orders and the torus − sphere cut everywhere.
       // Seed 1146's fuse and sphere − torus cut keep a sphere face with two
       // section holes (meshed closed by #1546); they run unplaced, since the
-      // placed cells are typed exact-only refusals on this and the base kernel.
+      // placed cells were typed exact-only refusals before #1790 (base kernels
+      // older than it still refuse them; the native matrix qualifies them).
       const legs = [['intersect', true], ['intersect', false], ['cut', false]];
       if (seed.name === 'seed1146' && !placed) legs.push(['fuse', true], ['fuse', false], ['cut', true]);
       for (const [operation, sphereFirst] of legs) {
