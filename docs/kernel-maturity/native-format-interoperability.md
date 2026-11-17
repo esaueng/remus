@@ -87,6 +87,51 @@ unit or trim fidelity. Qualification must identify:
   implementation prerequisites and unchanged tolerances. A broader IGES program
   is not inferred from one successful fixture.
 
+### Decision (2026-11-17): a precise B-rep subset, additive
+
+Tier: lazy:io. The legacy `read_iges` / `write_iges` pair stays a declared
+lossy preview: it reads only type 108 planes as square faces and writes planes
+and polyline edges, which an independent reader opens as zero faces. It is
+unchanged. The precise subset is a separate API, `read_iges_brep` /
+`write_iges_brep` (translator `importIgesBrep` / `exportIgesBrep`), in
+`crates/io/src/iges/brep.rs`:
+
+| Cell | Read | Write |
+| --- | --- | --- |
+| Manifold solid B-rep object 186 over 514 closed shells, 510 faces, 508 loops, 504 edge and 502 vertex lists | exact | exact |
+| Cavities (186 void shells) | exact | exact |
+| Several 186 solids per file | separate solids | separate solids |
+| Planes, cylinders, cones, spheres, tori: 190/192/194/196/198 | forms 0 and 1 | form 1 |
+| Rational B-spline surface 128 | exact | exact |
+| Edges: line 110, circular arc 100, ellipse 104 (form 1, standard position), B-spline 126 | exact | exact; hyperbola and parabola edges refused by name |
+| Rigid 124 frames, chained | applied | written for arcs and conics |
+| Units: global unit flag (and name) with model scale | applied | millimetres |
+| Sphere poles as 508 vertex entries | read | not needed |
+| Surface model: 143/144 trimmed surfaces, no 186 solid | refused, named with its surface count (sewing is a separate decision) | not written |
+| Other surface or curve types; non-rigid or mirroring 124; open (form 2) shells; off-standard 104 conics | refused by name | n/a |
+| Closed edge with no carrier (the torus primitive's degenerate seams) | n/a | refused by name |
+| Names, colours, levels, parameter-space curves | not read | not written (loops carry K = 0) |
+| 126 edge whose vertex lies off the curve as read (an independent slanted cut whose ellipses were written as approximating degree-6/8 splines: 0.77 mm) | refused atomically, not repaired (open) | n/a |
+
+Reading restates the B-rep as ISO 10303-42 entities in millimetres. IGES
+loops run relative to their surface and are reversed for a face that
+disagrees with it. The strict STEP body reader then builds the solid, so
+imported IGES solids pass the same topology, carrier and tolerance validation
+and the same transactional rollback as STEP solids. Writing walks the
+topology and keeps each carrier's exact class; reals use their shortest
+round-trip form.
+
+Qualification (`crates/io/tests/iges_brep.rs`) reads eleven B-rep files
+written by an independent kernel's IGES writer: box, cylinder, cone, sphere,
+torus, holed plate, cavity in millimetres and inches, a B-spline box, and a
+tilted cylinder through chained 124 frames in millimetres and inches. Every
+volume and centroid matches what that kernel's own IGES reader reports, and
+every solid validates. Each file written back reads to the same solid, and
+so do the native box, cylinder, cone and sphere, and a slanted cut
+cylinder (ellipse edges written as 104 conics in a 124 frame). Locally, that independent
+reader also opened every Remus-written file as one valid solid with the
+exact volume and area. That check is not part of CI.
+
 ## Consumer-only and already-owned work
 
 DXF/SVG parsing/writing, PDF drawings and USDZ visualization packaging stay in
