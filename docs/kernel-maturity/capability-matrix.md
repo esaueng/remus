@@ -680,9 +680,16 @@ does not itself promote or demote anything.
 - Qualified cells: planar targets across the axes above, with closed-form
   volume oracles and native + WASM-batch determinism
   (`crates/operations/tests/qualify_draft.rs`, wasm `qualify_ops_tests`).
+- Bounded cell: walls whose re-trimmed neighbours are recognized blend
+  groups draft through the groups (removed to sharp, drafted, re-filleted at
+  their recorded radii): a box with its vertical edges rounded, all walls or
+  one, and a box with its top loop rounded, whose two-stripe corners are a
+  ball patch over a planar ledge (#1744). Closed-form volumes, exact bands
+  and balls, ray-cast probes, both build orders (`draft/blend_tests.rs`).
 - Unsupported-typed cells (both-sides tested): zero angle, non-planar target,
   drafted face carrying a hole rim, cavity-bearing solid, foreign face,
-  parting-plane target, moved inner wires, curved re-trim neighbours.
+  parting-plane target, moved inner wires, curved re-trim neighbours that
+  are not recognized blends.
 
 ### Defeaturing
 

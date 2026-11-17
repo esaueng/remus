@@ -177,3 +177,89 @@ fn a_rim_restored_with_cut_arcs_is_the_same_body() {
         (volume(cut.solid) - std::f64::consts::PI * 36.0 * 20.0).abs() < 1e-3 * volume(cut.solid)
     );
 }
+
+/// A box's top loop rounded at R2: where two stripes meet over a sharp
+/// vertical edge, the rolling-ball engine closes the corner with the ball's
+/// patch over a planar ledge one radius down that edge. The ledge is part of
+/// its corner (#1744): the group removes, ledges and all, to the sharp box,
+/// with each vertical edge running up to the box corner again.
+#[test]
+fn a_lid_with_ledged_corners_removes_to_the_sharp_box() {
+    use crate::blend_cluster::recognize_blend_cluster;
+    use remus_topology::explorer::{solid_edges, solid_vertices};
+
+    let mut topo = Topology::new();
+    let body = crate::primitives::make_box(&mut topo, 40.0, 40.0, 20.0).unwrap();
+    let top: Vec<_> = solid_edges(&topo, body)
+        .unwrap()
+        .into_iter()
+        .filter(|&edge| {
+            let data = topo.edge(edge).unwrap();
+            [data.start(), data.end()]
+                .iter()
+                .all(|&v| (topo.vertex(v).unwrap().point().z() - 20.0).abs() < 1e-9)
+        })
+        .collect();
+    assert_eq!(top.len(), 4);
+    let lid = fillet_cascade(&mut topo, body, &top, 2.0).unwrap().solid;
+    let faces = solid_faces(&topo, lid).unwrap();
+    let ledges: Vec<FaceId> = tagged(&topo, &faces, "plane")
+        .into_iter()
+        .filter(|&face| face_edges(&topo, face).unwrap().len() == 3)
+        .collect();
+    assert_eq!(ledges.len(), 4, "one ledge under each corner ball");
+
+    let band = tagged(&topo, &faces, "cylinder")[0];
+    let cluster = recognize_blend_cluster(&topo, lid, band).unwrap();
+    assert!(cluster.boundary_faces.is_empty());
+    let corners: Vec<&BlendMember> = cluster
+        .members
+        .iter()
+        .filter(|member| member.kind == BlendMemberKind::CornerPatch)
+        .collect();
+    assert_eq!(corners.len(), 4);
+    for corner in corners {
+        assert_eq!(corner.form, BlendMemberForm::Sphere);
+        let [ball, ledge] = corner.faces[..] else {
+            panic!("a corner is its ball and its ledge: {:?}", corner.faces);
+        };
+        assert_eq!(topo.face(ball).unwrap().surface().type_tag(), "sphere");
+        assert!(ledges.contains(&ledge));
+    }
+
+    let before = solid_entity_counts(&topo, lid).unwrap();
+    let restoration = remove_blend_cluster(&mut topo, lid, &cluster).unwrap();
+    let sharp = restoration.solid;
+    assert_eq!(solid_entity_counts(&topo, sharp).unwrap(), (6, 12, 8));
+    let faces = solid_faces(&topo, sharp).unwrap();
+    assert_eq!(tagged(&topo, &faces, "plane").len(), 6);
+    let report = crate::validate::validate_solid(&topo, sharp).unwrap();
+    assert!(report.is_valid(), "{:?}", report.issues);
+    let mut corners: Vec<[f64; 3]> = solid_vertices(&topo, sharp)
+        .unwrap()
+        .into_iter()
+        .map(|v| {
+            let p = topo.vertex(v).unwrap().point();
+            [p.x(), p.y(), p.z()]
+        })
+        .collect();
+    corners.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let mut expected = Vec::new();
+    for x in [0.0, 40.0] {
+        for y in [0.0, 40.0] {
+            for z in [0.0, 20.0] {
+                expected.push([x, y, z]);
+            }
+        }
+    }
+    for (found, wanted) in corners.iter().zip(&expected) {
+        assert!(
+            found.iter().zip(wanted).all(|(a, b)| (a - b).abs() < 1e-9),
+            "sharp box corner {found:?}, expected {wanted:?}"
+        );
+    }
+    let volume = crate::measure::solid_volume(&topo, sharp, 0.001).unwrap();
+    assert!((volume - 32000.0).abs() < 1e-6 * 32000.0, "volume {volume}");
+    // The lid is left as it was.
+    assert_eq!(solid_entity_counts(&topo, lid).unwrap(), before);
+}

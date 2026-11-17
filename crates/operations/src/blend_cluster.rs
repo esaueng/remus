@@ -27,6 +27,14 @@
 //!   rail of a blend that rolls on this one. At least two distinct supports
 //!   are required (a sphere corner instead continues into at least two
 //!   bands).
+//! - **Corner ledges**: where two stripes meet and the third edge stays
+//!   sharp, the rolling-ball engine closes the corner with the ball's patch
+//!   over a planar ledge back to where that edge resumes. A plane face is
+//!   part of its sphere corner only when it is exactly that: through the
+//!   ball's centre, bounded by the ball's great-circle arc and two straight
+//!   edges on two of the corner's planar roots, with the corner's sharp
+//!   vertex square above the vertex between them. The sharp body has no
+//!   face there, so the ledge is removed with its corner.
 //! - **Sampled corner patches**: freeform faces are accepted only on the
 //!   bounded circular-section family the walking and boss-corner builders
 //!   store ([`remus_blend::cap_reblend::sampled_canal`]). Every stored section
@@ -85,7 +93,7 @@ use remus_math::compact_sort::CompactSort;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::adjacency::AdjacencyIndex;
-use remus_topology::edge::EdgeId;
+use remus_topology::edge::{EdgeCurve, EdgeId};
 use remus_topology::explorer::{face_edges, solid_faces};
 use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::solid::SolidId;
@@ -1599,6 +1607,100 @@ fn no_sharp(face: FaceId, reason: impl Into<String>) -> OperationsError {
     .into()
 }
 
+/// Whether `face` is the planar ledge of a two-stripe corner: the
+/// rolling-ball engine's corner where two stripes meet and the third edge
+/// stays sharp. The ball's `patch` (`ball` its centre and radius) ends on
+/// the great circle in the plane across that edge, and the ledge fills that
+/// plane back to the point where the edge resumes. Qualified exactly:
+///
+/// - a plane through the ball's centre, with no inner wire, bounded by three
+///   edges;
+/// - one of them is a great-circle arc of the ball shared with the patch;
+/// - the other two are straight, each shared with a different planar root
+///   support of the corner (`roots`);
+/// - the corner's `sharp` vertex lies square above the ledge vertex between
+///   the straight edges, on the ledge's outer side: the sharp edge between
+///   the two supports runs from that vertex across the ledge to the corner.
+fn is_corner_ledge(
+    topo: &Topology,
+    adjacency: &AdjacencyIndex,
+    face: FaceId,
+    patch: &[FaceId],
+    (center, radius): (Point3, f64),
+    roots: &BTreeSet<FaceId>,
+    sharp: Point3,
+) -> Result<bool, OperationsError> {
+    let data = topo.face(face)?;
+    let (FaceSurface::Plane { normal, d }, Some(outward)) =
+        (data.surface(), data.effective_plane_normal())
+    else {
+        return Ok(false);
+    };
+    if !data.inner_wires().is_empty() {
+        return Ok(false);
+    }
+    let tolerance = EXACT_DISTANCE * reference_scale(center).max(radius);
+    if (crate::dot_normal_point(*normal, center) - d).abs() > tolerance {
+        return Ok(false);
+    }
+    let boundary = topo.wire(data.outer_wire())?.edges();
+    if boundary.len() != 3 {
+        return Ok(false);
+    }
+    let mut arc = false;
+    let mut straight = Vec::with_capacity(2);
+    for oriented in boundary {
+        let edge = topo.edge(oriented.edge())?;
+        let [other] = adjacency
+            .faces_for_edge(oriented.edge())
+            .iter()
+            .copied()
+            .filter(|&other| other != face)
+            .collect::<Vec<_>>()[..]
+        else {
+            return Ok(false);
+        };
+        match edge.curve() {
+            EdgeCurve::Circle(circle) => {
+                if arc
+                    || !patch.contains(&other)
+                    || (circle.center() - center).length() > tolerance
+                    || (circle.radius() - radius).abs() > tolerance
+                {
+                    return Ok(false);
+                }
+                arc = true;
+            }
+            EdgeCurve::Line => {
+                if !roots.contains(&other)
+                    || !matches!(topo.face(other)?.surface(), FaceSurface::Plane { .. })
+                {
+                    return Ok(false);
+                }
+                straight.push((other, [edge.start(), edge.end()]));
+            }
+            EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => return Ok(false),
+        }
+    }
+    let [(first, first_ends), (second, second_ends)] = straight[..] else {
+        return Ok(false);
+    };
+    if !arc || first == second {
+        return Ok(false);
+    }
+    let Some(foot) = first_ends
+        .into_iter()
+        .find(|vertex| second_ends.contains(vertex))
+    else {
+        return Ok(false);
+    };
+    let rise = sharp - topo.vertex(foot)?.point();
+    Ok(outward.dot(rise) > tolerance && outward.cross(rise).length() <= tolerance)
+}
+
 #[allow(clippy::too_many_lines)]
 fn assemble(
     recognizer: &mut Recognizer<'_>,
@@ -1726,7 +1828,7 @@ fn assemble(
             }
         }
     }
-    let boundary: BTreeSet<FaceId> = boundary.difference(&supports).copied().collect();
+    let mut boundary: BTreeSet<FaceId> = boundary.difference(&supports).copied().collect();
 
     // Roots a corner (or any member) collapses onto, widened by the roots of
     // the members it rolls on or continues into.
@@ -1941,6 +2043,38 @@ fn assemble(
         members.push((index, MemberSharp::Vertex(vertex)));
     }
     members.compact_sort_unstable_by_key(|(index, _)| *index);
+    // Ledges: where two stripes meet and the third edge stays sharp, the
+    // rolling-ball engine closes the corner with the ball's patch over a
+    // planar ledge back to the point where that edge resumes. The sharp body
+    // has no face there, so the ledge goes with its corner; it is absorbed
+    // only when it is exactly that construction (see `is_corner_ledge`).
+    let mut ledges: BTreeMap<usize, Vec<FaceId>> = BTreeMap::new();
+    for &(index, sharp) in &members {
+        let (MemberSharp::Vertex(vertex), Form::Sphere { center, radius }) =
+            (sharp, &drafts[index].form)
+        else {
+            continue;
+        };
+        let corner_roots = expanded(index);
+        for &face in &drafts[index].neighbours {
+            if boundary.contains(&face)
+                && is_corner_ledge(
+                    topo,
+                    recognizer.adjacency,
+                    face,
+                    &drafts[index].faces,
+                    (*center, *radius),
+                    &corner_roots,
+                    vertices[vertex].point,
+                )?
+            {
+                ledges.entry(index).or_default().push(face);
+            }
+        }
+    }
+    for face in ledges.values().flatten() {
+        boundary.remove(face);
+    }
     // A variable-radius carrier is an unequal corner's evolving ball; as a
     // band it would have no one radius to re-fillet at.
     for (index, sharp) in &members {
@@ -1962,6 +2096,7 @@ fn assemble(
         .map(|(index, sharp)| {
             let draft = &drafts[*index];
             let mut faces = draft.faces.clone();
+            faces.extend(ledges.get(index).into_iter().flatten().copied());
             faces.compact_sort_unstable_by_key(|face| face.index());
             let chamfer = matches!(draft.form, Form::Chamfer { .. });
             BlendMember {
