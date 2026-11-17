@@ -315,6 +315,110 @@ fn bspline_bounds(curve: &NurbsCurve, frame: &impl Unroll) -> [f64; 4] {
     bounds
 }
 
+/// Read a profile wire for a wrap, splitting a closed edge in two.
+///
+/// A closed edge (a whole circle, ellipse or closed spline) would wrap to
+/// one wall closed across the region and seamed by a single ruling used
+/// twice. A boolean against the body cuts each wall along the face it was
+/// wrapped on, and a seamed wall's split cannot place the cut seam on both
+/// sides of its parameter domain; two halves make every wall a plain
+/// four-sided patch. The halves meet at the point half way round, so the
+/// loop's shape is unchanged.
+pub(crate) fn read_wrap_loop(
+    topo: &Topology,
+    wire: WireId,
+    outer: bool,
+    label: &str,
+) -> Result<Loop, OperationsError> {
+    let lp = read_profile_loop(topo, wire, outer, label)?;
+    if lp.pieces.len() != 1 {
+        return Ok(lp);
+    }
+    let Loop {
+        mut pieces,
+        points,
+        outer,
+    } = lp;
+    let piece = pieces.remove(0);
+    let (start, tolerance) = points[0];
+    let (u0, u1) = piece.nurbs.domain();
+    let middle = 0.5 * (u0 + u1);
+    let (head, tail) = remus_math::nurbs::knot_ops::curve_split(&piece.nurbs, middle)?;
+    let halfway = head.evaluate(head.domain().1);
+    let conic_half_way = |m: f64| match &piece.cap {
+        EdgeCurve::Circle(c) => Some(c.evaluate(m)),
+        EdgeCurve::Ellipse(e) => Some(e.evaluate(m)),
+        EdgeCurve::Line
+        | EdgeCurve::NurbsCurve(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => None,
+    };
+    let (first, second) = match &piece.cap {
+        EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) => {
+            let (a, b) = piece.trim.unwrap_or((0.0, std::f64::consts::TAU));
+            let m = 0.5 * (a + b);
+            // The exact curve's half-way point must be the NURBS form's.
+            let Some(exact) = conic_half_way(m) else {
+                return Err(unsupported(format!(
+                    "{label}: a closed conic lost its exact form"
+                )));
+            };
+            if (exact - halfway).length() > tolerance.max(Tolerance::new().linear) * 10.0 {
+                return Err(unsupported(format!(
+                    "{label}: a closed profile curve's exact and NURBS forms disagree half way \
+                     round"
+                )));
+            }
+            (
+                Piece {
+                    cap: piece.cap.clone(),
+                    trim: Some((a, m)),
+                    nurbs: head,
+                    forward: piece.forward,
+                },
+                Piece {
+                    cap: piece.cap,
+                    trim: Some((m, b)),
+                    nurbs: tail,
+                    forward: piece.forward,
+                },
+            )
+        }
+        EdgeCurve::NurbsCurve(_) => (
+            Piece {
+                cap: EdgeCurve::NurbsCurve(head.clone()),
+                trim: Some(head.domain()),
+                nurbs: head,
+                forward: piece.forward,
+            },
+            Piece {
+                cap: EdgeCurve::NurbsCurve(tail.clone()),
+                trim: Some(tail.domain()),
+                nurbs: tail,
+                forward: piece.forward,
+            },
+        ),
+        EdgeCurve::Line | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => {
+            return Err(unsupported(format!(
+                "{label}: a closed profile edge must be a circle, an ellipse or a spline"
+            )));
+        }
+    };
+    // Traversal order: forward runs the first half first; reversed runs the
+    // second half first. Either way the loop starts at the closed edge's
+    // one vertex and passes the half-way point between the halves.
+    let pieces = if piece.forward {
+        vec![first, second]
+    } else {
+        vec![second, first]
+    };
+    Ok(Loop {
+        pieces,
+        points: vec![(start, tolerance), (halfway, tolerance)],
+        outer,
+    })
+}
+
 fn unroll_piece<'a, U: Unroll>(
     piece: &'a Piece,
     frame: &'a U,
@@ -586,9 +690,9 @@ fn wrap_impl(
     };
     let outer_wire = face.outer_wire();
     let inner_wires = face.inner_wires().to_vec();
-    let mut loops: Vec<Loop> = vec![read_profile_loop(topo, outer_wire, true, "cylinder wrap")?];
+    let mut loops: Vec<Loop> = vec![read_wrap_loop(topo, outer_wire, true, "cylinder wrap")?];
     for wire in inner_wires {
-        loops.push(read_profile_loop(topo, wire, false, "cylinder wrap")?);
+        loops.push(read_wrap_loop(topo, wire, false, "cylinder wrap")?);
     }
 
     let unrolled: Vec<Vec<Unrolled<'_>>> = loops

@@ -56,7 +56,7 @@ use super::{
     Unrolled, certified_range, fit_spans, invalid, unroll_piece,
 };
 use crate::OperationsError;
-use crate::helix::in_place::{Loop, read_profile_loop};
+use crate::helix::in_place::Loop;
 
 /// The cone a profile is wrapped onto.
 #[derive(Debug, Clone, Copy)]
@@ -327,9 +327,9 @@ fn wrap_impl(
     };
     let outer_wire = face.outer_wire();
     let inner_wires = face.inner_wires().to_vec();
-    let mut loops: Vec<Loop> = vec![read_profile_loop(topo, outer_wire, true, "cone wrap")?];
+    let mut loops: Vec<Loop> = vec![super::read_wrap_loop(topo, outer_wire, true, "cone wrap")?];
     for wire in inner_wires {
-        loops.push(read_profile_loop(topo, wire, false, "cone wrap")?);
+        loops.push(super::read_wrap_loop(topo, wire, false, "cone wrap")?);
     }
     let unrolled: Vec<Vec<Unrolled<'_>>> = loops
         .iter()

@@ -47,6 +47,20 @@ historical predecessor-line records, retained for provenance. The
 
 ### Fixed
 
+* **algo,operations:** a region wrapped onto a cylinder or cone with
+  curved edges can now be embossed onto or engraved into the body it was
+  wrapped on (#1847 follow-up). The exact boolean refused every such pair:
+  marching the wrapped wall against the face stopped at the loop's turning
+  points and left an open fragment, and a closed edge's wall, seamed by one
+  ruling used twice, could not be split. The face–face intersection now
+  takes a wall ruled between two offsets of a cylinder or cone exactly as
+  its iso-curve at offset zero, shared by every ruling (only when every
+  ruling crosses, the crossings agree and the curve lies on the surface
+  within the fits' scale), and the wrap splits a closed profile edge into
+  two halves so every wall is a four-sided patch. A disc engraved into or
+  embossed onto a radius-10 post now matches the closed-form volume to
+  1e-10, across the post's seam or beside it.
+
 * **operations,wasm:** a thread cut at the default tolerance can be exported
   again (#1806). The edges of a thread from `cut_thread` /
   `cutThreadDetailed` hold their proven distance from the exact thread as
