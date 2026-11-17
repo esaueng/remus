@@ -1691,6 +1691,48 @@ impl RemusKernel {
         Ok(solid_id_to_u32(solid_id))
     }
 
+    // ── Exact Sweep ───────────────────────────────────────────────
+
+    /// Sweep a planar face exactly along a tangent-continuous chain of line
+    /// and circular-arc edges.
+    ///
+    /// The profile stays where it is and is carried by the path's rigid
+    /// motions (a line translates it, an arc turns it about the arc's axis),
+    /// starting from the chain end nearer the profile's plane. Every face is
+    /// an exact plane, cylinder, cone, torus or rational NURBS surface;
+    /// nothing is sampled. A closed chain builds a capless ring.
+    ///
+    /// Returns a solid handle (`u32`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an empty or broken chain, a path edge that is not
+    /// a line or circular arc, a corner that is not tangent-continuous, a
+    /// non-planar profile, a profile the motion does not cross transversally
+    /// (it touches an arc's axis or lies along the path), or a chain that
+    /// passes closer to itself than the profile's reach. The session is left
+    /// unchanged.
+    #[wasm_bindgen(js_name = "sweepExact")]
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn sweep_exact(&mut self, face: u32, edge_handles: Vec<u32>) -> Result<u32, JsError> {
+        Ok(self.sweep_exact_impl(face, &edge_handles)?)
+    }
+
+    pub(crate) fn sweep_exact_impl(
+        &mut self,
+        face: u32,
+        edge_handles: &[u32],
+    ) -> Result<u32, WasmError> {
+        let face_id = self.resolve_face(face)?;
+        let edges = edge_handles
+            .iter()
+            .map(|&h| self.resolve_edge(h))
+            .collect::<Result<Vec<_>, _>>()?;
+        let solid_id =
+            remus_operations::exact_sweep::sweep_exact(self.topo_mut(), face_id, &edges)?;
+        Ok(solid_id_to_u32(solid_id))
+    }
+
     // ── Sweep Along Edges ─────────────────────────────────────────
 
     /// Sweep a face along a path defined by a chain of edges.

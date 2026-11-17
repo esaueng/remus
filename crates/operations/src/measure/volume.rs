@@ -1052,6 +1052,44 @@ fn solid_is_caps_and_full_turn_bands(
     Ok(curved)
 }
 
+/// Whether `solid` is planes and curved four-sided windows: every
+/// non-planar face a cylinder, cone, torus or NURBS patch with no hole and
+/// exactly four boundary edges (two sections and two rails, or one closed
+/// section seamed by one rail used twice), and no sphere. An exact path sweep
+/// (`exact_sweep`) builds exactly these; each window is its own surface's
+/// parameter rectangle, so the face integrals measure it with nothing to trim,
+/// where the mesh chords every curved window at the clamp (a circle swept
+/// round a bend read 5.7e-4 low). The certified reading still has to pass
+/// every guard of [`qualified_face_integral_volume`]; a declined one keeps
+/// the mesh.
+fn solid_is_swept_windows(topo: &Topology, solid: SolidId) -> Result<bool, crate::OperationsError> {
+    const MAX_FACES: usize = 512;
+    let faces = remus_topology::explorer::solid_faces(topo, solid)?;
+    if faces.len() > MAX_FACES {
+        return Ok(false);
+    }
+    let mut curved = false;
+    for face_id in faces {
+        let face = topo.face(face_id)?;
+        match face.surface() {
+            FaceSurface::Plane { .. } => {}
+            FaceSurface::Sphere(_) => return Ok(false),
+            FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Torus(_)
+            | FaceSurface::Nurbs(_) => {
+                if !face.inner_wires().is_empty()
+                    || topo.wire(face.outer_wire())?.edges().len() != 4
+                {
+                    return Ok(false);
+                }
+                curved = true;
+            }
+        }
+    }
+    Ok(curved)
+}
+
 /// Distance from `p` to `surface` (infinite when it cannot be measured);
 /// `grid` is a NURBS surface's projection seed grid.
 fn surface_gap(
@@ -3167,12 +3205,16 @@ fn solid_volume_uncached(
     // keep the mesh, which costs them less than per-face integration. The
     // certified reading stands only when every guard of
     // [`qualified_face_integral_volume`] holds; a declined one keeps the mesh.
-    if solid_is_caps_and_full_turn_bands(topo, solid)?
+    if (solid_is_caps_and_full_turn_bands(topo, solid)? || solid_is_swept_windows(topo, solid)?)
         && let Some(volume) = crate::performance::timed("volume.face-integrals", || {
             qualified_face_integral_volume(topo, solid)
         })?
     {
-        vol_trace(|| format!("caps and full-turn bands: qualified face integrals -> {volume}"));
+        vol_trace(|| {
+            format!(
+                "caps with full-turn bands or swept windows: qualified face integrals -> {volume}"
+            )
+        });
         return Ok(volume);
     }
 

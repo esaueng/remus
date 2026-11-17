@@ -19,7 +19,7 @@ use remus_topology::solid::SolidId;
 
 use crate::OperationsError;
 
-mod in_place;
+pub(crate) mod in_place;
 
 pub use in_place::helical_sweep_in_place;
 

@@ -358,6 +358,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "sweepWithOptions"
         | "helicalSweep"
         | "helicalSweepInPlace"
+        | "sweepExact"
         | "multiSectionSweep"
         | "guidedSweep"
         | "minkowskiSum"
@@ -2065,6 +2066,14 @@ impl RemusKernel {
                 let turns = get_f64(args, "turns")?;
                 let result = self
                     .helical_sweep_in_place_impl(profile, origin, axis_dir, pitch, turns)
+                    .map_err(StructuredWasmError::from)?;
+                Ok(serde_json::json!(result))
+            }
+            "sweepExact" => {
+                let profile = get_u32(args, "profile")?;
+                let edges: Vec<u32> = get_u32_array(args, "edges")?;
+                let result = self
+                    .sweep_exact_impl(profile, &edges)
                     .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(result))
             }
