@@ -29,6 +29,9 @@
 //! length-valued in it (some are `PRODUCT`/`COLOUR_RGB` only) still imports,
 //! as zero solids.
 
+#[path = "reader/structure.rs"]
+pub mod structure;
+
 pub mod assembly {
     //! Named, rigid STEP occurrences over shared solid definitions.
 
@@ -590,7 +593,7 @@ pub mod assembly {
         Ok(result)
     }
 
-    fn placement(builder: &StepBuilder<'_>, id: u64) -> Result<Mat4, IoError> {
+    pub(super) fn placement(builder: &StepBuilder<'_>, id: u64) -> Result<Mat4, IoError> {
         let instance = entity(builder.entities, id, "AXIS2_PLACEMENT_3D")?;
         let slots = split_attr_slots(&instance.attrs);
         if slots.len() != 4 {
@@ -2073,12 +2076,17 @@ impl<'map, 'input> UnitResolver<'map, 'input> {
         }
         let measure_attrs = measure.attrs.clone();
         let measure_slots = split_attr_slots(&measure_attrs);
-        let value = required_typed_measure_attribute(
-            "MEASURE_WITH_UNIT",
-            measure_ref,
-            &measure_slots,
-            0,
-            "value_component",
+        let value = untyped_subtype_measure(measure, &measure_slots).map_or_else(
+            || {
+                required_typed_measure_attribute(
+                    "MEASURE_WITH_UNIT",
+                    measure_ref,
+                    &measure_slots,
+                    0,
+                    "value_component",
+                )
+            },
+            Ok,
         )?;
         let base_ref = required_reference_attribute(
             "MEASURE_WITH_UNIT",
@@ -3237,6 +3245,9 @@ struct StepBuilder<'a> {
     vertex_cache: HashMap<u64, remus_topology::vertex::VertexId>,
     edge_cache: HashMap<u64, remus_topology::edge::EdgeId>,
     diagnostics: Vec<StepImportDiagnostic>,
+    /// The faces each `ADVANCED_FACE` became, recorded only when a caller
+    /// asks (the structure reader's presentation pass); `None` otherwise.
+    face_origins: Option<HashMap<u64, Vec<remus_topology::face::FaceId>>>,
 }
 
 impl<'a> StepBuilder<'a> {
@@ -3280,6 +3291,7 @@ impl<'a> StepBuilder<'a> {
             vertex_cache: HashMap::new(),
             edge_cache: HashMap::new(),
             diagnostics: Vec::new(),
+            face_origins: None,
         })
     }
 
@@ -3654,10 +3666,17 @@ impl<'a> StepBuilder<'a> {
             _ => None,
         };
         if let Some(hemispheres) = whole_sphere {
+            if let (Some(origins), [face_ref]) = (self.face_origins.as_mut(), face_refs.as_slice())
+            {
+                origins.insert(*face_ref, hemispheres.clone());
+            }
             face_ids.extend(hemispheres);
         } else {
             for face_ref in face_refs {
                 let face_id = self.build_face(face_ref, flip)?;
+                if let Some(origins) = self.face_origins.as_mut() {
+                    origins.entry(face_ref).or_default().push(face_id);
+                }
                 face_ids.push(face_id);
             }
         }
@@ -12332,6 +12351,27 @@ fn exact_real_attribute_list(
 }
 
 /// Read a schema-positioned `*_MEASURE(real)` select as one finite value.
+/// The bare-real `value_component` of a length or plane-angle
+/// `*_MEASURE_WITH_UNIT`, which some writers emit as `(25.4,#31)` rather than
+/// the typed `(LENGTH_MEASURE(25.4),#31)`. The subtype already names the
+/// measure, so the untyped literal is unambiguous; every other form, and a
+/// plain `MEASURE_WITH_UNIT`, still needs the typed parameter.
+fn untyped_subtype_measure(entity: &StepEntity<'_>, slots: &[AttrSlot<'_>]) -> Option<f64> {
+    let kind = entity.type_str();
+    if !kind.eq_ignore_ascii_case("LENGTH_MEASURE_WITH_UNIT")
+        && !kind.eq_ignore_ascii_case("PLANE_ANGLE_MEASURE_WITH_UNIT")
+    {
+        return None;
+    }
+    let Some(AttrSlot::Other(raw)) = slots.first() else {
+        return None;
+    };
+    raw.trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|value| value.is_finite())
+}
+
 fn required_typed_measure_attribute(
     entity_type: &str,
     entity_ref: u64,

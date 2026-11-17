@@ -8,6 +8,10 @@ use remus_math::vec::{Point3, Vec3};
 pub use reader::assembly::{
     StepAssemblyReadResult, read_step_assembly, read_step_assembly_with_limits,
 };
+pub use reader::structure::{
+    StepPresentationSummary, StepProductNode, StepStructureReadResult, read_step_structure,
+    read_step_structure_with_limits,
+};
 pub use reader::{
     StepImportDiagnostic, StepReadResult, StepValidationDiagnostic, StepValidationDiagnosticCode,
     StepValidationOptions, StepValidationProperties, StepValidationProperty, StepValidationReport,

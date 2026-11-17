@@ -1,5 +1,5 @@
 //! A lone straight stripe ending at a strictly convex or strictly concave
-//! planar corner.
+//! planar corner, or a concave one ending under two convex rim edges.
 //!
 //! When every face at the stripe's end vertex is a plane and every edge
 //! there is convex, the material near the vertex is the intersection of
@@ -8,15 +8,22 @@
 //! wherever along its line that is, before the vertex's own section or past
 //! it. When every edge there is concave (a pocket's floor corner), the same
 //! holds of the air near the vertex, where a concave stripe's ball rolls.
-//! Two cells:
+//! When the concave stripe instead ends under one side plane `P` whose two
+//! edges there are convex rims (an undercut pocket's top corner), the air
+//! near the vertex is the walls' wedge joined with the air beyond `P`; the
+//! ball rolls in the wedge, and the band is the part of its cylinder on
+//! `P`'s material side. Two cells:
 //!
-//! - **Three planes** (`f1`, `f2` and one side `P`), convex or concave: both
-//!   contacts run out on `P`. The pre-pass already does this when both reach
-//!   `P` within the edge's own span; [`qualify_single`] covers the contacts
-//!   that reach it beyond the vertex — a chamfer's upper contact line, whose
-//!   chamfer contact runs on to the mitre, a fillet of the mitre, whose
-//!   contacts run on to the top, or a round of a drafted pocket's leaning
-//!   corner, whose contacts run down to the floor (#1780).
+//! - **Three planes** (`f1`, `f2` and one side `P`), convex, concave, or
+//!   concave under convex rims: both contacts run out on `P`. The pre-pass
+//!   already does this when both reach `P` within the edge's own span;
+//!   [`qualify_single`] covers the contacts that reach it beyond the vertex
+//!   — a chamfer's upper contact line, whose chamfer contact runs on to the
+//!   mitre, a fillet of the mitre, whose contacts run on to the top, a round
+//!   of a drafted pocket's leaning corner, whose contacts run down to the
+//!   floor (#1780), or a round of an undercut pocket's leaning corner, whose
+//!   contacts run up to the top (#1815). That last corner lies on the top
+//!   face's hole, an inner wire.
 //! - **Four planes** ([`qualify`]), convex only: a chamfered box's mitred
 //!   corner bounds the
 //!   chamfer's lower contact line by the stripe's own supports `f1` (wall)
@@ -98,8 +105,28 @@ struct CornerEdge {
     faces: [usize; 2],
 }
 
+/// How the edges of a [`Cone`] must leave its vertex.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Sense {
+    /// Every edge strictly on the material side of every plane not
+    /// containing it: the material near the vertex is the intersection of
+    /// the planes' half-spaces.
+    Convex,
+    /// Every edge strictly on the air side: the air near the vertex is the
+    /// intersection of the planes' inward half-spaces.
+    Concave,
+    /// The concave stripe `stripe` (between walls `f1` and `f2`) under a side
+    /// plane `P` whose edges at the vertex are convex rims: the stripe leaves
+    /// strictly on `P`'s material side, each rim strictly on the air side of
+    /// the wall it does not lie in, the walls' corners at the vertex are
+    /// convex and `P`'s is reflex. The air near the vertex is then the wedge
+    /// between the walls (the intersection of their inward half-spaces)
+    /// joined with the air beyond `P`.
+    UnderRim { stripe: usize },
+}
+
 /// The planar faces and straight edges around one vertex, qualified as a
-/// strictly convex (or, for a concave stripe, strictly concave) cone.
+/// strict cone of one [`Sense`].
 struct Cone {
     vertex: Point3,
     /// `(face, outward unit normal, d)`.
@@ -140,33 +167,72 @@ impl Cone {
     }
 }
 
+/// A face's corner at a vertex: the vertex's position, and the wire's edge
+/// into it and edge out of it, each with its far end.
+type FaceCorner = (Point3, [(EdgeId, Point3); 2]);
+
+/// The vertex's corner on one of `face`'s inner wires (a hole's corner).
+/// `None` unless the vertex appears exactly once there.
+fn inner_corner(
+    topo: &Topology,
+    face: FaceId,
+    vertex_index: usize,
+) -> Result<Option<FaceCorner>, crate::OperationsError> {
+    let mut found = None;
+    for &wid in topo.face(face)?.inner_wires() {
+        let oes = topo.wire(wid)?.edges();
+        let n = oes.len();
+        let mut starts = Vec::with_capacity(n);
+        for oe in oes {
+            starts.push(oe.oriented_start(topo.edge(oe.edge())?));
+        }
+        for i in (0..n).filter(|&i| starts[i].index() == vertex_index) {
+            if found.is_some() {
+                return Ok(None);
+            }
+            let prev = (i + n - 1) % n;
+            let next = (i + 1) % n;
+            found = Some((
+                topo.vertex(starts[i])?.point(),
+                [
+                    (oes[prev].edge(), topo.vertex(starts[prev])?.point()),
+                    (oes[i].edge(), topo.vertex(starts[next])?.point()),
+                ],
+            ));
+        }
+    }
+    Ok(found)
+}
+
 /// Every face at the vertex planar and visited once, every edge straight,
-/// `count` of each, and the cone strictly convex: each edge leaves the vertex
-/// strictly on the material side of every plane not containing it, and lies
-/// in the two that do. The material near the vertex is then exactly the
-/// intersection of the planes' half-spaces.
+/// `count` of each, and the cone strict in `sense`: each edge lies in the
+/// two planes that contain it and leaves the vertex strictly on the side
+/// `sense` names of every other plane.
 ///
-/// With `concave` the cone must instead be strictly concave: each edge
-/// leaves the vertex strictly on the air side of every plane not containing
-/// it. The air near the vertex is then exactly the intersection of the
-/// planes' inward half-spaces, and a concave stripe's ball rolls in it.
+/// [`Sense::Convex`]: the material near the vertex is then exactly the
+/// intersection of the planes' half-spaces. [`Sense::Concave`]: the air
+/// near the vertex is exactly the intersection of the planes' inward
+/// half-spaces, and a concave stripe's ball rolls in it.
+/// [`Sense::UnderRim`]: see there.
+///
+/// The vertex is a corner of each face's outer wire, except that under
+/// [`Sense::UnderRim`] it may instead be a corner of one of a face's inner
+/// wires (a hole's corner, such as a pocket's mouth in the top face).
 fn planar_cone(
     topo: &Topology,
     vertex_index: usize,
     count: usize,
-    concave: bool,
+    sense: Sense,
     vertex_faces: &HashMap<usize, Vec<FaceId>>,
     edge_to_faces: &HashMap<usize, Vec<FaceId>>,
     face_polygons: &HashMap<usize, FacePolygon>,
 ) -> Result<Option<Cone>, crate::OperationsError> {
-    let mut faces: Vec<usize> = vertex_faces
+    let mut faces: Vec<FaceId> = vertex_faces
         .get(&vertex_index)
         .map_or(&[][..], Vec::as_slice)
-        .iter()
-        .map(|f| f.index())
-        .collect();
+        .to_vec();
     let listed = faces.len();
-    faces.compact_sort_by_key(|f| *f);
+    faces.compact_sort_by_key(|f| f.index());
     faces.dedup();
     // A face touching the vertex twice is a pinched corner, not a cone.
     if faces.len() != count || listed != count {
@@ -174,8 +240,13 @@ fn planar_cone(
     }
     let mut planes = Vec::with_capacity(count);
     let mut edges: Vec<CornerEdge> = Vec::with_capacity(count);
+    // Per face, whether its corner at the vertex turns left about the
+    // direction its wires wind about (a convex corner of the face), or
+    // `None` when the turn is too slight to call.
+    let mut convex_corner: Vec<(usize, Option<bool>)> = Vec::with_capacity(count);
     let mut vertex: Option<Point3> = None;
-    for &f in &faces {
+    for &face in &faces {
+        let f = face.index();
         let Some(poly) = face_polygons.get(&f) else {
             return Ok(None);
         };
@@ -188,17 +259,37 @@ fn planar_cone(
         let at: Vec<usize> = (0..n)
             .filter(|&i| poly.vertex_ids[i].index() == vertex_index)
             .collect();
-        let &[i] = at.as_slice() else {
+        let (pos, sides) = match at.as_slice() {
+            &[i] => {
+                let prev = (i + n - 1) % n;
+                let next = (i + 1) % n;
+                (
+                    poly.positions[i],
+                    [
+                        (poly.wire_edge_ids[prev], poly.positions[prev]),
+                        (poly.wire_edge_ids[i], poly.positions[next]),
+                    ],
+                )
+            }
+            [] if matches!(sense, Sense::UnderRim { .. }) => {
+                match inner_corner(topo, face, vertex_index)? {
+                    Some(corner) => corner,
+                    None => return Ok(None),
+                }
+            }
+            _ => return Ok(None),
+        };
+        vertex = Some(pos);
+        let winding = if poly.reversed { -normal } else { normal };
+        let (Ok(into), Ok(out)) = (
+            (pos - sides[0].1).normalize(),
+            (sides[1].1 - pos).normalize(),
+        ) else {
             return Ok(None);
         };
-        let pos = poly.positions[i];
-        vertex = Some(pos);
-        let prev = (i + n - 1) % n;
-        let next = (i + 1) % n;
-        for (edge_id, far) in [
-            (poly.wire_edge_ids[prev], poly.positions[prev]),
-            (poly.wire_edge_ids[i], poly.positions[next]),
-        ] {
+        let turn = into.cross(out).dot(winding);
+        convex_corner.push((f, (turn.abs() > 1e-9).then_some(turn > 0.0)));
+        for (edge_id, far) in sides {
             if edges.iter().any(|e| e.id == edge_id.index()) {
                 continue;
             }
@@ -228,15 +319,35 @@ fn planar_cone(
     // Unit normals against unit directions: a dimensionless slack.
     let slack = 1e-9;
     for e in &edges {
+        // Whether `e` must leave the vertex on the air side of the planes
+        // not containing it.
+        let airward = match sense {
+            Sense::Convex => false,
+            Sense::Concave => true,
+            Sense::UnderRim { stripe } => e.id != stripe,
+        };
         for &(f, normal, _) in &planes {
             let along = normal.dot(e.dir);
             if e.faces.contains(&f) {
                 if along.abs() > slack {
                     return Ok(None);
                 }
-            } else if (concave && along <= slack) || (!concave && along >= -slack) {
+            } else if (airward && along <= slack) || (!airward && along >= -slack) {
                 return Ok(None);
             }
+        }
+    }
+    if let Sense::UnderRim { stripe } = sense {
+        // The stripe's two walls turn convex corners at the vertex and the
+        // side plane a reflex one: its face wraps around the walls' wedge.
+        let Some(walls) = edges.iter().find(|e| e.id == stripe).map(|e| e.faces) else {
+            return Ok(None);
+        };
+        if convex_corner
+            .iter()
+            .any(|&(f, convex)| convex != Some(walls.contains(&f)))
+        {
+            return Ok(None);
         }
     }
     Ok(Some(Cone {
@@ -269,9 +380,10 @@ fn run_out(
 }
 
 /// The three-plane end of the lone straight stripe `edge` at vertex
-/// `vertex_index`, convex or (with `concave`) concave: both contacts
-/// (`contacts`, on `f1`, `f2` at the vertex section) run out on the one side
-/// plane, wherever they meet it. `None` outside the cell.
+/// `vertex_index`, convex or (with `concave`) concave, at a cone of the same
+/// sense or, for a concave stripe, under convex rims ([`Sense::UnderRim`]):
+/// both contacts (`contacts`, on `f1`, `f2` at the vertex section) run out
+/// on the one side plane, wherever they meet it. `None` outside the cell.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn qualify_single(
     topo: &Topology,
@@ -286,16 +398,32 @@ pub(super) fn qualify_single(
     tol: Tolerance,
 ) -> Result<Option<[Point3; 2]>, crate::OperationsError> {
     let [f1, f2] = [supports[0].index(), supports[1].index()];
-    let Some(cone) = planar_cone(
-        topo,
-        vertex_index,
-        3,
-        concave,
-        vertex_faces,
-        edge_to_faces,
-        face_polygons,
-    )?
-    else {
+    let senses: &[Sense] = if concave {
+        &[
+            Sense::Concave,
+            Sense::UnderRim {
+                stripe: edge.index(),
+            },
+        ]
+    } else {
+        &[Sense::Convex]
+    };
+    let mut cone = None;
+    for &sense in senses {
+        cone = planar_cone(
+            topo,
+            vertex_index,
+            3,
+            sense,
+            vertex_faces,
+            edge_to_faces,
+            face_polygons,
+        )?;
+        if cone.is_some() {
+            break;
+        }
+    }
+    let Some(cone) = cone else {
         return Ok(None);
     };
     let Some(stripe) = cone.edge_between(f1, f2).filter(|e| e.id == edge.index()) else {
@@ -341,7 +469,7 @@ pub(super) fn qualify(
         topo,
         vertex_index,
         4,
-        false,
+        Sense::Convex,
         vertex_faces,
         edge_to_faces,
         face_polygons,

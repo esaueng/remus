@@ -377,7 +377,7 @@ Quick reference — find the right file for any task:
 | Analytic fast paths (plane-plane, plane-cyl, etc.) | `analytic.rs` |
 | Fillet builder (orchestration) | `fillet_builder.rs` |
 | Chamfer builder (orchestration) | `chamfer_builder.rs` |
-| Exact chamfers along tangent and mitred edge chains on one planar floor (plane strips, cones on arcs) | `chamfer_floor_chain.rs` |
+| Exact chamfers along tangent and mitred edge chains on one planar floor (plane strips, cones on arcs, elliptic cones over leaning rounds) | `chamfer_floor_chain.rs` |
 | Exact straight-ridge chamfers on proven spline extrusion supports | `chamfer_extrusion.rs` |
 | Ruled chamfers on monotone spline rims of linear extrusions | `chamfer_spline_rim.rs` |
 | Whole-carrier hole clearance for spline chamfers | `chamfer_clearance.rs` |
@@ -623,7 +623,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Rolling-ball arc stripe between a plane and a coaxial cylinder as an exact torus, or a sphere triangle at the band's own radius (a fillet riding an earlier band's end) | `fillet/arc_torus.rs` |
 | Two convex stripes mitred over a reflex corner whose concave edge stays sharp | `fillet/mitre.rs` |
 | Rolling-ball stripe between a plane and a cylinder that crosses it at a lean (an earlier round's end on a drafted body): closed-form sections between the round's two seams, where the neighbouring wall stripes hand over | `fillet/oblique_arc.rs` |
-| Lone straight rolling-ball stripes ending at a strictly convex planar corner, or a concave one at a strictly concave corner (a drafted pocket's floor): contacts run out past the vertex onto one side plane, or (convex only) onto two (a chamfered box's mitred corner) with the end boundary kinked where the band crosses their shared edge | `fillet/rolling_ball/split_runout.rs` |
+| Lone straight rolling-ball stripes ending at a strictly convex planar corner, or a concave one at a strictly concave corner (a drafted pocket's floor) or under two convex rims (an undercut pocket's top, a hole corner): contacts run out past the vertex onto one side plane, or (convex only) onto two (a chamfered box's mitred corner) with the end boundary kinked where the band crosses their shared edge | `fillet/rolling_ball/split_runout.rs` |
 | Spatial grid behind the rolling-ball Phase 5d vertex dedup and snap (the linear scans' winners and ties), with its oracle tests | `fillet/vertex_snap.rs` |
 | Shell (hollow solid) | `shell_op.rs` |
 | Draft (taper faces): the sharp construction (corners relocated to three-plane intersections, only the wires they sit on rebuilt), which names the curved faces it refuses on | `draft.rs` |
@@ -778,6 +778,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | FreeCAD saved-shape ASCII BREP read and bounded planar loop classification | `brep/mod.rs`, `brep/reader.rs`, `brep/planar.rs` |
 | Saved-shape analytic line/circle and plane/cylinder carriers, rigid location words, bounded placed occurrences, circular caps and cylindrical seam bands | `brep/reader/carriers.rs`, `brep/reader/locations.rs`, `brep/reader/placed.rs`, `brep/reader/curved.rs` |
 | STEP read/write | `step/reader.rs`, `step/writer.rs` |
+| STEP product structure: product-occurrence tree, every placed occurrence as its own exact root, `STYLED_ITEM` solid and face colours (`read_step_structure`, translator `importStepStructure`) | `step/reader/structure.rs` |
 | Exact IGES 5.3 B-rep (type 186) read and write: carriers kept exact, read through the STEP body reader (`read_iges_brep`, `write_iges_brep`) | `iges/brep.rs` |
 | Verbatim STEP string-decoder oracle, deterministic fuzz, linear-work guards and hostile-name imports (tests) | `step/reader/directive_oracle_tests.rs` |
 | Relative planar-bound sampling: loops whose areas the coarser chords cannot order are flagged for re-sampling at the absolute deflection (tests) | `step/reader/bound_sampling_tests.rs` |
