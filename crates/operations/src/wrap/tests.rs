@@ -314,3 +314,57 @@ fn a_profile_just_over_a_turn_is_refused_between_samples() {
     };
     assert!(reason.contains("one turn"), "{reason}");
 }
+
+/// A knot within rounding of an end is a break all the same, or the span
+/// beside it would carry a kink its bound does not know; one too close to
+/// split exactly is refused by name instead of merged away.
+#[test]
+fn a_knot_hugging_an_end_is_split_or_refused_never_merged() {
+    for (knot, splits) in [(5e-13, true), (1e-16, false)] {
+        let mut topo = Topology::new();
+        let (a, kink, b) = (
+            Point3::new(10.0, 0.0, 0.0),
+            Point3::new(10.0, 0.0, 1e-10),
+            Point3::new(10.0, 1.0, 1e-10),
+        );
+        let top = Point3::new(10.0, 1.0, 1.0);
+        let left = Point3::new(10.0, 0.0, 1.0);
+        let spline = NurbsCurve::new(
+            1,
+            vec![0.0, 0.0, knot, 1.0, 1.0],
+            vec![a, kink, b],
+            vec![1.0; 3],
+        )
+        .unwrap();
+        let [va, vb, vt, vl] = [a, b, top, left].map(|p| topo.add_vertex(Vertex::new(p, 1e-7)));
+        let edges = [
+            topo.add_edge(Edge::new(va, vb, EdgeCurve::NurbsCurve(spline))),
+            topo.add_edge(Edge::new(vb, vt, EdgeCurve::Line)),
+            topo.add_edge(Edge::new(vt, vl, EdgeCurve::Line)),
+            topo.add_edge(Edge::new(vl, va, EdgeCurve::Line)),
+        ];
+        let wire = topo.add_wire(
+            Wire::new(
+                edges.iter().map(|&e| OrientedEdge::new(e, true)).collect(),
+                true,
+            )
+            .unwrap(),
+        );
+        let profile = plane_face(&mut topo, wire, vec![]);
+        let result = wrap_profile_solid(&mut topo, profile, &cylinder(), 9.0, 11.0);
+        if splits {
+            let solid = result.unwrap();
+            assert_valid(&topo, solid, "near-end knot");
+            // About a unit square: 1 × (1 − 1e-10).
+            let measured = volume(&topo, solid);
+            assert!(rel(measured, exact(1.0, 9.0, 11.0)) < 1e-6, "{measured}");
+        } else {
+            match result {
+                Err(OperationsError::Unsupported { reason, .. }) => {
+                    assert!(reason.contains("too close together"), "{reason}");
+                }
+                other => panic!("expected a refusal, got {other:?}"),
+            }
+        }
+    }
+}

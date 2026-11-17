@@ -384,13 +384,28 @@ fn unroll_piece<'a, U: Unroll>(
             let w = u1 - u0;
             // Split at every distinct interior knot: within a knot span the
             // curve is a polynomial, across one it may not even be C¹.
+            // Every distinct interior knot is a break, however close: a
+            // knot dropped as too close would leave a kink inside a span.
+            // Knots too close to split exactly are refused, never merged.
             let mut breaks: Vec<f64> = curve
                 .knots()
                 .iter()
                 .copied()
-                .filter(|&k| k > u0 + 1e-12 * w && k < u1 - 1e-12 * w)
+                .filter(|&k| k > u0 && k < u1)
                 .collect();
-            breaks.dedup_by(|a, b| (*a - *b).abs() <= 1e-12 * w);
+            // Knots are sorted, so a later knot no greater than the one before is equal to it.
+            breaks.dedup_by(|a, b| *a <= *b);
+            let tight = |a: f64, b: f64| (b - a) <= 1e-14 * a.abs().max(b.abs()).max(1.0);
+            let mut previous = u0;
+            for &k in breaks.iter().chain(std::iter::once(&u1)) {
+                if tight(previous, k) {
+                    return Err(unsupported(format!(
+                        "a wrapped spline has knots {previous} and {k}, too close together \
+                         to split at; remove the near-duplicate knot"
+                    )));
+                }
+                previous = k;
+            }
             let mut spans = Vec::with_capacity(breaks.len() + 1);
             let mut rest = curve.clone();
             let mut x0 = 0.0;
