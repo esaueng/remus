@@ -465,7 +465,10 @@ fn read_segment(
                 },
             })
         }
-        other => Err(unsupported(format!(
+        other @ (EdgeCurve::Ellipse(_)
+        | EdgeCurve::Parabola(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::NurbsCurve(_)) => Err(unsupported(format!(
             "exact sweep paths are lines and circular arcs; path edge {index} is a {}",
             other.type_tag()
         ))),
@@ -787,7 +790,13 @@ fn analytic_side(
             )?;
             Ok(Some(FaceSurface::Torus(surface)))
         }
-        _ => Ok(None),
+        (
+            _,
+            EdgeCurve::Ellipse(_)
+            | EdgeCurve::Parabola(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::NurbsCurve(_),
+        ) => Ok(None),
     }
 }
 
