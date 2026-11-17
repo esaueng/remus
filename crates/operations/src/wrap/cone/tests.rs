@@ -315,3 +315,41 @@ fn cone_refusals_are_typed_and_leave_the_topology_unchanged() {
         );
     }
 }
+
+#[test]
+fn a_disc_wrapped_on_a_frustum_embosses_and_engraves_as_one_body() {
+    // A frustum radius 10 at z = 0 to 5 at z = 20: its apex is at z = 40.
+    let beta = (20.0_f64 / 5.0).atan();
+    for (op, inner, outer) in [
+        (crate::boolean::BooleanOp::Cut, -1.0, 0.25),
+        (crate::boolean::BooleanOp::Fuse, -0.25, 1.0),
+    ] {
+        let mut topo = Topology::new();
+        let frustum = crate::primitives::make_cone(&mut topo, 10.0, 5.0, 20.0).unwrap();
+        let edge = make_circle_edge(&mut topo, Point3::new(7.5, 0.0, 10.0), X, 2.0, 1e-7).unwrap();
+        let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap());
+        let disc = topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane { normal: X, d: 7.5 },
+        ));
+        let frame = WrapCone {
+            apex: Point3::new(0.0, 0.0, 40.0),
+            axis: -Z,
+            reference: X,
+            half_angle: beta,
+            origin: Point3::new(0.0, 0.0, 10.0),
+        };
+        let piece = wrap_profile_on_cone(&mut topo, disc, &frame, inner, outer).unwrap();
+        let before = volume(&topo, frustum);
+        let result = crate::boolean::boolean(&mut topo, op, frustum, piece)
+            .unwrap_or_else(|e| panic!("{op:?}: {e}"));
+        assert_valid(&topo, result, "wrapped frustum");
+        // A 4π disc a millimetre deep, give or take the cone's curvature.
+        let change = (volume(&topo, result) - before).abs();
+        assert!(
+            (change - 4.0 * std::f64::consts::PI).abs() < 0.4 * std::f64::consts::PI,
+            "{op:?}: changed by {change}"
+        );
+    }
+}

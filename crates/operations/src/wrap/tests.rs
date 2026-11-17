@@ -368,3 +368,82 @@ fn a_knot_hugging_an_end_is_split_or_refused_never_merged() {
         }
     }
 }
+
+/// A post the wrap's cylinder lies on: radius 10, 20 tall, on Z.
+fn post(topo: &mut Topology) -> SolidId {
+    crate::primitives::make_cylinder(topo, 10.0, 20.0).unwrap()
+}
+
+#[test]
+fn a_wrapped_disc_embosses_and_engraves_exactly_across_the_seam_or_beside_it() {
+    // A disc of radius 2 centred 10 up: across the post's seam at +X, then
+    // a quarter turn round at +Y. The engrave reaches a quarter out of the
+    // face and the emboss a quarter into it, so each wall crosses the face
+    // and the boolean cuts it along its wrapped curve.
+    let post_volume = PI * 100.0 * 20.0;
+    for quarter in [false, true] {
+        for (op, inner, outer) in [
+            (crate::boolean::BooleanOp::Cut, 9.0, 10.25),
+            (crate::boolean::BooleanOp::Fuse, 9.75, 11.0),
+        ] {
+            let mut topo = Topology::new();
+            let body = post(&mut topo);
+            let (plane, frame) = if quarter {
+                let y = Vec3::new(0.0, 1.0, 0.0);
+                let mut frame = cylinder();
+                frame.reference = y;
+                (y, frame)
+            } else {
+                (X, cylinder())
+            };
+            let edge = make_circle_edge(
+                &mut topo,
+                Point3::new(0.0, 0.0, 10.0) + plane * 10.0,
+                plane,
+                2.0,
+                1e-7,
+            )
+            .unwrap();
+            let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap());
+            let disc = topo.add_face(Face::new(
+                wire,
+                vec![],
+                FaceSurface::Plane {
+                    normal: plane,
+                    d: 10.0,
+                },
+            ));
+            let piece = wrap_profile_solid(&mut topo, disc, &frame, inner, outer).unwrap();
+            let result = crate::boolean::boolean(&mut topo, op, body, piece)
+                .unwrap_or_else(|e| panic!("{op:?} at quarter={quarter}: {e}"));
+            assert_valid(&topo, result, "wrapped disc boolean");
+            // The material between the face and the far offset.
+            let expected = if matches!(op, crate::boolean::BooleanOp::Cut) {
+                post_volume - exact(4.0 * PI, 9.0, 10.0)
+            } else {
+                post_volume + exact(4.0 * PI, 10.0, 11.0)
+            };
+            let measured = volume(&topo, result);
+            assert!(
+                rel(measured, expected) < 1e-8,
+                "{op:?} at quarter={quarter}: {measured} vs {expected}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_closed_profile_edge_wraps_to_two_walls() {
+    let mut topo = Topology::new();
+    let outer = circle_wire(&mut topo, 0.0, 5.0, 4.0, true);
+    let disc = plane_face(&mut topo, outer, vec![]);
+    let solid = wrap_profile_solid(&mut topo, disc, &cylinder(), 9.5, 11.0).unwrap();
+    let walls = solid_faces(&topo, solid)
+        .unwrap()
+        .into_iter()
+        .filter(|&f| matches!(topo.face(f).unwrap().surface(), FaceSurface::Nurbs(_)))
+        .count();
+    // Two halves, each a four-sided patch: no wall is seamed by a ruling
+    // used twice.
+    assert_eq!(walls, 2);
+}

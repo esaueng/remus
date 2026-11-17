@@ -8915,10 +8915,16 @@ fn compute_raw_curves_banded(
         }
 
         (analytic_surf, FaceSurface::Nurbs(nurbs)) if analytic_surf.as_analytic().is_some() => {
-            analytic_nurbs_intersection(analytic_surf, v_range_a, nurbs, context)
+            match exact_ruled_offset_section(analytic_surf, nurbs, context.tolerance)? {
+                Some(exact) => Ok(exact),
+                None => analytic_nurbs_intersection(analytic_surf, v_range_a, nurbs, context),
+            }
         }
         (FaceSurface::Nurbs(nurbs), analytic_surf) if analytic_surf.as_analytic().is_some() => {
-            analytic_nurbs_intersection(analytic_surf, v_range_b, nurbs, context)
+            match exact_ruled_offset_section(analytic_surf, nurbs, context.tolerance)? {
+                Some(exact) => Ok(exact),
+                None => analytic_nurbs_intersection(analytic_surf, v_range_b, nurbs, context),
+            }
         }
 
         (FaceSurface::Nurbs(na), FaceSurface::Nurbs(nb)) => {
@@ -9884,6 +9890,168 @@ fn exact_ruled_plane_section(
         weights[0].clone(),
     )?;
     let domain = curve.domain();
+    Ok(Some(vec![RawCurve {
+        bbox: curve.aabb(),
+        p_start: curve.evaluate(domain.0),
+        p_end: curve.evaluate(domain.1),
+        t_range: domain,
+        curve: EdgeCurve::NurbsCurve(curve),
+    }]))
+}
+
+/// A wall ruled between two offsets of a cylinder or cone, every ruling
+/// crossing the offset-zero surface, meets that surface along one iso-curve.
+///
+/// A region wrapped onto a cylinder or cone (`remus-operations` `wrap`) has
+/// side walls ruled between its edge's wrap at an inner and an outer offset,
+/// fitted at the same parameters. The exact wrapped curve is linear in the
+/// offset, so the ruling through a parameter meets the surface itself where
+/// the interpolation reaches offset zero, at one fraction `v*` shared by
+/// every ruling: the section is the iso-curve `S(·, v*)`, whose control
+/// points interpolate the two rows. Marching it instead stops at the loop's
+/// turning points and leaves an open fragment, so no face split closes.
+///
+/// The section is taken only when every sampled ruling crosses the surface
+/// strictly, their crossings agree on one `v*`, and the iso-curve lies on
+/// the surface within the fits' own scale at dense samples; any other wall
+/// keeps the general intersection.
+#[allow(clippy::float_cmp)] // Knot and weight identity is an algebraic precondition.
+#[cfg_attr(target_arch = "wasm32", inline(never))]
+fn exact_ruled_offset_section(
+    analytic: &FaceSurface,
+    surface: &remus_math::nurbs::surface::NurbsSurface,
+    tol: Tolerance,
+) -> Result<Option<Vec<RawCurve>>, AlgoError> {
+    let points = surface.control_points();
+    let weights = surface.weights();
+    let knots_v = surface.knots_v();
+    if surface.degree_v() != 1
+        || knots_v.len() != 4
+        || knots_v[0] != knots_v[1]
+        || knots_v[2] != knots_v[3]
+        || points.len() < 2
+        || points.iter().any(|row| row.len() != 2)
+        || weights.iter().any(|row| row.len() != 2 || row[0] != row[1])
+    {
+        return Ok(None);
+    }
+    // Signed distance to the surface, positive outside, exact on the
+    // surface and first-order exact beside it.
+    // `reach`: how far a point is from the carrier's own frame (the axis,
+    // or the apex), so the scale below does not grow with translation.
+    #[allow(clippy::type_complexity)]
+    let (offset, reach): (Box<dyn Fn(Point3) -> f64>, Box<dyn Fn(Point3) -> f64>) = match analytic {
+        FaceSurface::Cylinder(c) => {
+            let (origin, axis, radius) = (c.origin(), c.axis(), c.radius());
+            let radial = move |p: Point3| {
+                let to = p - origin;
+                (to - axis * axis.dot(to)).length()
+            };
+            (Box::new(move |p| radial(p) - radius), Box::new(radial))
+        }
+        FaceSurface::Cone(c) => {
+            let (apex, axis) = (c.apex(), c.axis());
+            let (sin_a, cos_a) = c.half_angle().sin_cos();
+            (
+                Box::new(move |p: Point3| {
+                    let to = p - apex;
+                    let h = axis.dot(to);
+                    (to - axis * h).length() * sin_a - h * cos_a
+                }),
+                Box::new(move |p: Point3| (p - apex).length()),
+            )
+        }
+        // B24: exhaustive over `FaceSurface` — only a cylinder or cone is
+        // the carrier a wrapped wall is ruled across.
+        FaceSurface::Plane { .. }
+        | FaceSurface::Nurbs(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => return Ok(None),
+    };
+    // The wrap certifies its fits within 1e-7 of its own scale (its radius
+    // and extent); allow a few. Measured from the carrier's frame and the
+    // net's own size, never from the world origin, so a translated pair
+    // gets the same band.
+    let net = surface.aabb();
+    let scale = points
+        .iter()
+        .flatten()
+        .fold((net.max - net.min).length().max(1.0), |s, &p| {
+            s.max(reach(p))
+        });
+    let band = (8e-7 * scale).max(4.0 * tol.linear);
+    let (v0, v1) = surface.domain_v();
+    // Every knot span is sampled on its own, however short: a span the
+    // samples skipped could leave the surface unseen.
+    let mut spans: Vec<(f64, f64)> = surface
+        .knots_u()
+        .windows(2)
+        .filter(|k| k[1] > k[0])
+        .map(|k| (k[0], k[1]))
+        .collect();
+    if spans.is_empty() {
+        spans.push(surface.domain_u());
+    }
+    let span_params = |per: usize| {
+        let mut params = Vec::with_capacity(spans.len() * per + 1);
+        for &(a, b) in &spans {
+            for j in 0..per {
+                #[allow(clippy::cast_precision_loss)]
+                params.push(a + (b - a) * (j as f64 / per as f64));
+            }
+        }
+        params.push(spans[spans.len() - 1].1);
+        params
+    };
+    let mut fractions = Vec::new();
+    let mut longest = 0.0_f64;
+    for u in span_params(8) {
+        let (a, b) = (surface.evaluate(u, v0), surface.evaluate(u, v1));
+        let (ga, gb) = (offset(a), offset(b));
+        if !(ga.abs() > band && gb.abs() > band && ga * gb < 0.0) {
+            return Ok(None);
+        }
+        longest = longest.max((b - a).length());
+        // The ruling is straight: bisect the offset along it.
+        let (mut lo, mut hi) = (0.0_f64, 1.0_f64);
+        for _ in 0..64 {
+            let mid = 0.5 * (lo + hi);
+            let g = offset(a + (b - a) * mid);
+            if (g < 0.0) == (ga < 0.0) {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        fractions.push(0.5 * (lo + hi));
+    }
+    let mut sorted = fractions.clone();
+    sorted.compact_sort_by(f64::total_cmp);
+    let fraction = sorted[sorted.len() / 2];
+    if fractions
+        .iter()
+        .any(|&f| (f - fraction).abs() * longest > band)
+    {
+        return Ok(None);
+    }
+    let control_points: Vec<Point3> = points
+        .iter()
+        .map(|row| row[0] + (row[1] - row[0]) * fraction)
+        .collect();
+    let curve_weights: Vec<f64> = weights.iter().map(|row| row[0]).collect();
+    let curve = remus_math::nurbs::curve::NurbsCurve::new(
+        surface.degree_u(),
+        surface.knots_u().to_vec(),
+        control_points,
+        curve_weights,
+    )?;
+    let domain = curve.domain();
+    // The iso-curve shares the surface's u knots, so its spans are these.
+    for t in span_params(32) {
+        if offset(curve.evaluate(t)).abs() > band {
+            return Ok(None);
+        }
+    }
     Ok(Some(vec![RawCurve {
         bbox: curve.aabb(),
         p_start: curve.evaluate(domain.0),
@@ -14188,6 +14356,9 @@ mod carrier_clearance_oracle_tests;
 
 #[cfg(test)]
 mod ruled_plane_tests;
+
+#[cfg(test)]
+mod ruled_offset_tests;
 
 #[cfg(test)]
 mod multi_span_section_tests;
