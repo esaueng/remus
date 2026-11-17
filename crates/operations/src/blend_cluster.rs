@@ -1661,21 +1661,28 @@ fn is_corner_ledge(
             return Ok(false);
         };
         match edge.curve() {
-            EdgeCurve::Circle(circle) if !arc && patch.contains(&other) => {
-                if (circle.center() - center).length() > tolerance
+            EdgeCurve::Circle(circle) => {
+                if arc
+                    || !patch.contains(&other)
+                    || (circle.center() - center).length() > tolerance
                     || (circle.radius() - radius).abs() > tolerance
                 {
                     return Ok(false);
                 }
                 arc = true;
             }
-            EdgeCurve::Line
-                if roots.contains(&other)
-                    && matches!(topo.face(other)?.surface(), FaceSurface::Plane { .. }) =>
-            {
+            EdgeCurve::Line => {
+                if !roots.contains(&other)
+                    || !matches!(topo.face(other)?.surface(), FaceSurface::Plane { .. })
+                {
+                    return Ok(false);
+                }
                 straight.push((other, [edge.start(), edge.end()]));
             }
-            _ => return Ok(false),
+            EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => return Ok(false),
         }
     }
     let [(first, first_ends), (second, second_ends)] = straight[..] else {
