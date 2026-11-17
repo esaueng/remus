@@ -1668,6 +1668,11 @@ fn face_normal_at(topo: &Topology, face_id: FaceId, point: Point3) -> Option<Vec
 
 // ── Phase 3 ──────────────────────────────────────────────────────────
 
+/// Samples per great-circle arc of a hemisphere's equator in
+/// [`spherical_hemisphere_flux`]. Only the arc's plane and traversal sense
+/// are read from them, so a few suffice.
+const HEMISPHERE_ARC_SAMPLES: u32 = 8;
+
 /// Equatorial boundaries enclose a hemisphere even though their latitude span
 /// vanishes. Integrate its solid angle and subtract the sampled polar pockets.
 fn spherical_hemisphere_flux(topo: &Topology, face: &Face) -> Option<f64> {
@@ -1678,14 +1683,35 @@ fn spherical_hemisphere_flux(topo: &Topology, face: &Face) -> Option<f64> {
     let mut points = Vec::new();
     for oe in outer.edges() {
         let edge = topo.edge(oe.edge()).ok()?;
-        if !matches!(edge.curve(), EdgeCurve::Line) {
-            return None;
+        match edge.curve() {
+            // A faceted equator: its chord corners.
+            EdgeCurve::Line => points.push(
+                (topo.vertex(oe.oriented_start(edge)).ok()?.point() - sphere.center())
+                    .normalize()
+                    .ok()?,
+            ),
+            // An exact equator (`make_sphere` bounds its hemispheres by
+            // great-circle arcs): sample each arc in its traversal sense, end
+            // excluded (it is the next edge's start). An arc off the great
+            // circle fails the plane test below.
+            EdgeCurve::Circle(_) => {
+                let sp = topo.vertex(edge.start()).ok()?.point();
+                let ep = topo.vertex(edge.end()).ok()?.point();
+                let (lo, hi) = edge.strict_domain().ok()?;
+                for k in 0..HEMISPHERE_ARC_SAMPLES {
+                    let f = f64::from(k) / f64::from(HEMISPHERE_ARC_SAMPLES);
+                    let f = if oe.is_forward() { f } else { 1.0 - f };
+                    let p = edge
+                        .curve()
+                        .evaluate_with_endpoints((hi - lo).mul_add(f, lo), sp, ep);
+                    points.push((p - sphere.center()).normalize().ok()?);
+                }
+            }
+            EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => return None,
         }
-        points.push(
-            (topo.vertex(oe.oriented_start(edge)).ok()?.point() - sphere.center())
-                .normalize()
-                .ok()?,
-        );
     }
     if points.len() < 3 {
         return None;
