@@ -39,6 +39,14 @@ const NURBS_RAY_SAMPLES: usize = 20;
 
 /// Per-face geometry used for ray crossing tests.
 enum FaceGeom {
+    /// A sphere face bounded by circular arcs on its sphere. Crossings are
+    /// the exact ray/sphere roots that the face's arc trim contains. The
+    /// planar polygon fallback flattens such a face into its boundary plane:
+    /// a hemisphere bounded by the equator becomes the equatorial disc.
+    TrimmedSphere {
+        surface: remus_math::surfaces::SphericalSurface,
+        trim: Box<super::sphere_patch::SphereTrim>,
+    },
     /// Exact torus crossings restricted by a sampled local trim in UV space.
     TrimmedTorus {
         surface: remus_math::surfaces::ToroidalSurface,
@@ -1053,6 +1061,7 @@ fn line_clears_carrier(geom: &FaceGeom, origin: Point3, ray_dir: Vec3) -> bool {
             torus_line_is_clear(surface, origin, ray_dir)
         }
         FaceGeom::Planar { .. }
+        | FaceGeom::TrimmedSphere { .. }
         | FaceGeom::Cylinder { .. }
         | FaceGeom::TrimmedCylinder { .. }
         | FaceGeom::ChartTrimmedCylinder { .. }
@@ -1186,6 +1195,7 @@ fn geom_kind(geom: &FaceGeom) -> String {
         FaceGeom::Cone { .. } => "Cone".into(),
         FaceGeom::Torus { .. } => "Torus".into(),
         FaceGeom::TrimmedTorus { .. } => "TrimmedTorus".into(),
+        FaceGeom::TrimmedSphere { .. } => "TrimmedSphere".into(),
     }
 }
 
@@ -1374,8 +1384,11 @@ fn collect_face_geoms(topo: &Topology, solid: SolidId) -> Result<Vec<FaceGeom>, 
     crate::perf::bump_ray_geom_build();
     let faces = remus_topology::explorer::solid_faces(topo, solid)?;
     let mut result = Vec::with_capacity(faces.len());
+    // Which side of its loops the shell's faces lie on, read once from its
+    // planar faces when a sphere face needs it.
+    let mut shell_left: Option<Option<bool>> = None;
 
-    for fid in faces {
+    for &fid in &faces {
         let face = topo.face(fid)?;
 
         // A recognized exact-rational converted cylinder wall classifies
@@ -1727,6 +1740,27 @@ fn collect_face_geoms(topo: &Topology, solid: SolidId) -> Result<Vec<FaceGeom>, 
             }
         }
 
+        if let remus_topology::face::FaceSurface::Sphere(sphere) = face.surface() {
+            let left = match shell_left {
+                Some(left) => left,
+                None => *shell_left.insert(super::sphere_patch::shell_winds_left(
+                    topo,
+                    &faces,
+                    |wire| wire_polygon(topo, wire),
+                )?),
+            };
+            if let Some(left) = left
+                && let Some(trim) =
+                    super::sphere_patch::SphereTrim::build(topo, face, sphere, left)?
+            {
+                result.push(FaceGeom::TrimmedSphere {
+                    surface: sphere.clone(),
+                    trim: Box::new(trim),
+                });
+                continue;
+            }
+        }
+
         let (verts, outer_arcs) = wire_polygon_arcs(topo, face.outer_wire())?;
         if verts.len() < 3 {
             continue;
@@ -1990,6 +2024,9 @@ fn ray_geom_crossings(
         FaceGeom::TrimmedTorus { surface, trim } => {
             ray_trimmed_torus_crossings(origin, ray_dir, surface, trim, tol)
         }
+        FaceGeom::TrimmedSphere { surface, trim } => {
+            ray_trimmed_sphere_crossings(origin, ray_dir, surface, trim, tol)
+        }
         FaceGeom::Torus {
             surface,
             v_band,
@@ -2020,6 +2057,45 @@ fn ray_face_crossing(
         PlaneHit::Behind => (0, false),
         PlaneHit::Ahead(hit) => face.polygon_hit(hit, axis.project(hit), 10.0 * tol.linear),
     }
+}
+
+/// Count ray crossings with a sphere face bounded by circular arcs.
+///
+/// Solves the ray/sphere quadratic and counts the transversal roots ahead of
+/// the origin that the face's trim contains. A tangential or uncertified root
+/// counts nothing and, like a root on or near the trim, marks the ray
+/// suspicious.
+fn ray_trimmed_sphere_crossings(
+    origin: Point3,
+    ray_dir: Vec3,
+    surface: &remus_math::surfaces::SphericalSurface,
+    trim: &super::sphere_patch::SphereTrim,
+    tol: Tolerance,
+) -> (i32, bool) {
+    let near = 10.0 * tol.linear;
+    let mut crossings = 0;
+    let mut suspicious = false;
+    for hit in remus_math::ray::ray_sphere(origin, ray_dir, surface).iter() {
+        if hit.t <= tol.linear {
+            continue;
+        }
+        if hit.kind != remus_math::intersect::ContactKind::Transversal {
+            suspicious = true;
+            continue;
+        }
+        let point = Point3::new(
+            ray_dir.x().mul_add(hit.t, origin.x()),
+            ray_dir.y().mul_add(hit.t, origin.y()),
+            ray_dir.z().mul_add(hit.t, origin.z()),
+        );
+        suspicious |= trim.near_boundary(point, near);
+        match trim.contains(point) {
+            Some(true) => crossings += 1,
+            Some(false) => {}
+            None => suspicious = true,
+        }
+    }
+    (crossings, suspicious)
 }
 
 /// Count ray crossings with a bounded full-period cylindrical face.
