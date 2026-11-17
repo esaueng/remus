@@ -313,3 +313,33 @@ fn an_edge_whose_vertex_is_off_its_curve_is_refused_not_repaired() {
     let error = refuses_atomically(fixture!("slanted_cut_brep_mm"));
     assert!(error.to_string().contains("misses its carrier"), "{error}");
 }
+
+#[test]
+fn hostile_parameter_text_refuses_or_reads_in_linear_time() {
+    let box_text = fixture!("box_brep_mm");
+    // A Hollerith count past the end of memory: a typed refusal, no panic.
+    for count in ["18446744073709551615", "4294967295", "999999999"] {
+        let hostile = with_parameters(box_text, 116, &format!("116,{count}Hx;"));
+        let mut topo = Topology::new();
+        assert!(iges::read_iges_brep(&hostile, &mut topo, ImportLimits::default()).is_err());
+    }
+    // A 400,000-digit number spread over parameter records is one linear
+    // scan, then a refusal (it is not a usable coordinate).
+    let digits = "7".repeat(400_000);
+    let mut lines: Vec<String> = box_text.lines().map(str::to_string).collect();
+    let at = lines
+        .iter()
+        .position(|line| line.len() == 80 && &line[72..73] == "P" && line.starts_with("116,"))
+        .unwrap();
+    let pointer = lines[at][64..72].to_string();
+    let records: Vec<String> = format!("116,{digits},0.,0.,0;")
+        .as_bytes()
+        .chunks(64)
+        .map(|chunk| format!("{:<64}{pointer}P{:>7}", String::from_utf8_lossy(chunk), 0))
+        .collect();
+    lines.splice(at..=at, records);
+    let started = std::time::Instant::now();
+    let mut topo = Topology::new();
+    let _ = iges::read_iges_brep(&lines.join("\n"), &mut topo, ImportLimits::default());
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+}

@@ -805,57 +805,64 @@ struct IgesFile {
 }
 
 /// Parameter list split on `delimiter` and `terminator`, honouring
-/// Hollerith constants.
+/// Hollerith constants, in one pass over the text.
+///
+/// A Hollerith count is only recognised at the start of a parameter, its
+/// digits are bounded, and its length is checked against the text before
+/// any slice is taken, so hostile counts and long digit runs cost linear
+/// work and refuse by name.
 fn split_params(text: &str, delimiter: char, terminator: char) -> Result<Vec<Param>, IoError> {
     let chars: Vec<char> = text.chars().collect();
     let mut params = Vec::new();
     let mut i = 0;
-    let mut current = String::new();
     while i < chars.len() {
-        let c = chars[i];
-        if c.is_ascii_digit() && current.trim().chars().all(|ch| ch.is_ascii_digit()) {
-            // Possible Hollerith: digits then 'H'.
-            let mut j = i;
-            while j < chars.len() && chars[j].is_ascii_digit() {
-                j += 1;
-            }
-            if j < chars.len() && chars[j] == 'H' && current.trim().is_empty() {
-                let n: usize = chars[i..j]
-                    .iter()
-                    .collect::<String>()
-                    .parse()
-                    .map_err(|_| invalid("IGES Hollerith length is not a number"))?;
-                let end = j + 1 + n;
-                if end > chars.len() {
-                    return Err(invalid("IGES Hollerith string runs past its record"));
-                }
-                params.push(Param::Text(chars[j + 1..end].iter().collect()));
-                i = end;
-                // Skip to the delimiter after the string.
-                while i < chars.len() && chars[i] != delimiter && chars[i] != terminator {
-                    i += 1;
-                }
-                if i < chars.len() && chars[i] == terminator {
-                    return Ok(params);
-                }
-                i += 1;
-                current.clear();
-                continue;
-            }
+        // Leading blanks belong to no parameter.
+        while i < chars.len() && chars[i] == ' ' {
+            i += 1;
         }
-        if c == delimiter || c == terminator {
-            params.push(Param::Value(current.trim().to_string()));
-            current.clear();
-            if c == terminator {
-                return Ok(params);
+        if i >= chars.len() {
+            break;
+        }
+        let mut digits = i;
+        while digits < chars.len() && chars[digits].is_ascii_digit() {
+            digits += 1;
+        }
+        if digits > i && digits < chars.len() && chars[digits] == 'H' {
+            if digits - i > 9 {
+                return Err(invalid("IGES Hollerith length is too long"));
+            }
+            let n: usize = chars[i..digits]
+                .iter()
+                .collect::<String>()
+                .parse()
+                .map_err(|_| invalid("IGES Hollerith length is not a number"))?;
+            let start = digits + 1;
+            let end = start
+                .checked_add(n)
+                .filter(|&end| end <= chars.len())
+                .ok_or_else(|| invalid("IGES Hollerith string runs past its record"))?;
+            params.push(Param::Text(chars[start..end].iter().collect()));
+            i = end;
+            while i < chars.len() && chars[i] != delimiter && chars[i] != terminator {
+                i += 1;
             }
         } else {
-            current.push(c);
+            let start = i;
+            while i < chars.len() && chars[i] != delimiter && chars[i] != terminator {
+                i += 1;
+            }
+            params.push(Param::Value(
+                chars[start..i]
+                    .iter()
+                    .collect::<String>()
+                    .trim()
+                    .to_string(),
+            ));
+        }
+        if i < chars.len() && chars[i] == terminator {
+            return Ok(params);
         }
         i += 1;
-    }
-    if !current.trim().is_empty() {
-        params.push(Param::Value(current.trim().to_string()));
     }
     Ok(params)
 }
