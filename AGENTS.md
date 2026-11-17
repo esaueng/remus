@@ -335,6 +335,7 @@ Quick reference — find the right file for any task:
 | Closed-form and differential oracles for the ray-cast polygon gate and shared plane hits (tests) | `classifier/ray_cast/gate_oracle_tests.rs` |
 | Differential oracles for the ray-cast torus line cull: no quartic roots on a cleared line, ray triples against the unculled vote loop, near and far past the reach cap, near-miss roots only the margin keeps (tests) | `classifier/ray_cast/torus_cull_oracle_tests.rs` |
 | Bit-identity oracle for the ray-cast plane, cylinder and cone hits routed through `remus_math::ray`: the pre-routing functions kept verbatim, on random, tangent, near-tangent, axis- and generator-parallel and in-plane rays at scales 1e-3 to 1e6 (tests) | `classifier/ray_cast/quadric_policy_oracle_tests.rs` |
+| Trim membership of a ray hit on a sphere face bounded by circular arcs on its sphere | `classifier/sphere_patch.rs` |
 | Recognition of bounded rectangular torus patches | `classifier/torus_patch.rs` |
 | Shell assembly (4-phase `BuilderSolid`) | `builder/builder_solid.rs` |
 | Boolean preflight diagnostics | `diagnostic.rs` |
