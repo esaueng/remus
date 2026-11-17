@@ -608,3 +608,32 @@ fn every_family_tessellates_watertight_and_measures_exact() {
         );
     }
 }
+
+/// Two lines that cross at a grazing angle far from the origin: `a·c − b²`
+/// cancels to zero there, so the crossing must come from the cross-product
+/// form, never from the endpoints alone (0.5 apart).
+#[test]
+fn grazing_crossing_lines_measure_zero_apart() {
+    let d = segment_segment_distance(
+        p(-1e8, 0.0, 0.0),
+        p(1e8, 0.0, 0.0),
+        p(-5e7, -0.5, 0.0),
+        p(5e7, 0.5, 0.0),
+    );
+    assert!(d < 1e-3, "{d}");
+    // Parallel and skew pairs keep their true distance, less rounding.
+    let parallel = segment_segment_distance(
+        p(0.0, 0.0, 0.0),
+        p(10.0, 0.0, 0.0),
+        p(2.0, 3.0, 0.0),
+        p(8.0, 3.0, 0.0),
+    );
+    assert!((parallel - 3.0).abs() < 1e-12, "{parallel}");
+    let skew = segment_segment_distance(
+        p(-5.0, 0.0, 0.0),
+        p(5.0, 0.0, 0.0),
+        p(0.0, -5.0, 2.0),
+        p(0.0, 5.0, 2.0),
+    );
+    assert!((skew - 2.0).abs() < 1e-12 && skew <= 2.0, "{skew}");
+}

@@ -994,26 +994,32 @@ fn point_segment_distance(p: Point3, a: Point3, b: Point3) -> f64 {
     (p - (a + d * t)).length()
 }
 
-/// The exact distance between the segments `p0`–`p1` and `q0`–`q1`.
+/// A lower bound on the distance between the segments `p0`–`p1` and
+/// `q0`–`q1`. The closest pair is interior to both only when the lines are
+/// not parallel; every other case has an endpoint in it. The interior
+/// parameters come from cross products (Cramer's rule on `n = u × v`), which
+/// keep a crossing at a grazing angle that `a·c − b²` cancels to zero, and a
+/// rounding margin scaled by the coordinates is taken off the result.
 fn segment_segment_distance(p0: Point3, p1: Point3, q0: Point3, q1: Point3) -> f64 {
-    let (u, v, w) = (p1 - p0, q1 - q0, p0 - q0);
-    let (a, b, c, d, e) = (u.dot(u), u.dot(v), v.dot(v), u.dot(w), v.dot(w));
-    let denominator = a * c - b * b;
-    // The closest pair is interior to both segments only when the lines are
-    // not parallel and the unconstrained parameters fall inside; every other
-    // case has an endpoint in the closest pair.
+    let (u, v, w) = (p1 - p0, q1 - q0, q0 - p0);
     let mut best = point_segment_distance(p0, q0, q1)
         .min(point_segment_distance(p1, q0, q1))
         .min(point_segment_distance(q0, p0, p1))
         .min(point_segment_distance(q1, p0, p1));
-    if denominator > f64::EPSILON * a * c {
-        let s = (b * e - c * d) / denominator;
-        let t = (a * e - b * d) / denominator;
+    let n = u.cross(v);
+    let nn = n.dot(n);
+    if nn > 0.0 {
+        let s = w.cross(v).dot(n) / nn;
+        let t = w.cross(u).dot(n) / nn;
         if (0.0..=1.0).contains(&s) && (0.0..=1.0).contains(&t) {
             best = best.min(((p0 + u * s) - (q0 + v * t)).length());
         }
     }
-    best
+    let scale = [p0, p1, q0, q1]
+        .iter()
+        .map(|p| p.x().abs().max(p.y().abs()).max(p.z().abs()))
+        .fold(0.0, f64::max);
+    (best - 64.0 * f64::EPSILON * scale).max(0.0)
 }
 
 /// The ruled surface a straight run sweeps from `curve` (its rigid start
