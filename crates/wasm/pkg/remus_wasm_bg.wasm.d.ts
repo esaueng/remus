@@ -414,6 +414,7 @@ export const remuskernel_surfaceKnotRemoveU: (a: number, b: number, c: number, d
 export const remuskernel_surfaceKnotRemoveV: (a: number, b: number, c: number, d: number, e: number) => [number, number];
 export const remuskernel_sweep: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number, number];
 export const remuskernel_sweepAlongEdges: (a: number, b: number, c: number, d: number) => [number, number, number];
+export const remuskernel_sweepExact: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const remuskernel_sweepSmooth: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number, number];
 export const remuskernel_sweepWire: (a: number, b: number, c: number) => [number, number, number];
 export const remuskernel_sweepWithOptions: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number, number];
