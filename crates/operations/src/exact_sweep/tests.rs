@@ -218,6 +218,37 @@ fn an_oblique_line_shears_a_circle_into_one_exact_nurbs_side() {
     assert!(rel(measured, exact) < 1e-9, "{measured} vs {exact}");
 }
 
+/// A run within a microradian of the circle's axis still drifts off it by
+/// a thousandth over its length: the side is the exact sheared NURBS, not a
+/// cylinder the far cap would leave.
+#[test]
+fn a_long_nearly_axial_run_is_not_taken_for_a_cylinder() {
+    let mut topo = Topology::new();
+    let profile = circle_face(&mut topo, p(0.0, 0.0, 0.0), Z, 2.0);
+    let path = line(&mut topo, p(0.0, 0.0, 0.0), p(1e-3, 0.0, 1000.0));
+    let solid = sweep_exact(&mut topo, profile, &[path]).unwrap();
+    assert_valid(&topo, solid, "nearly axial");
+    assert_eq!(census(&topo, solid), (2, 0, 0, 0, 1));
+    let exact = PI * 4.0 * 1000.0;
+    let measured = volume(&topo, solid);
+    assert!(rel(measured, exact) < 1e-9, "{measured} vs {exact}");
+}
+
+/// One full-turn arc closes on itself: a capless torus ring of two half
+/// turns.
+#[test]
+fn a_single_full_turn_arc_builds_a_capless_ring() {
+    let mut topo = Topology::new();
+    let profile = circle_face(&mut topo, p(10.0, 0.0, 0.0), Y, 1.0);
+    let path = arc(&mut topo, p(0.0, 0.0, 0.0), 10.0, 0.0, 2.0 * PI);
+    let solid = sweep_exact(&mut topo, profile, &[path]).unwrap();
+    assert_valid(&topo, solid, "full ring");
+    assert_eq!(census(&topo, solid), (0, 0, 0, 2, 0));
+    let exact = PI * 2.0 * PI * 10.0;
+    let measured = volume(&topo, solid);
+    assert!(rel(measured, exact) < 1e-9, "{measured} vs {exact}");
+}
+
 #[test]
 fn a_profile_with_a_hole_sweeps_a_tube() {
     let mut topo = Topology::new();
@@ -338,7 +369,7 @@ type Sweep = fn(&mut Topology) -> Result<SolidId, OperationsError>;
 
 #[test]
 fn refusals_are_typed_and_leave_the_topology_unchanged() {
-    let cases: [(&str, Sweep, bool, &str); 7] = [
+    let cases: [(&str, Sweep, bool, &str); 8] = [
         (
             "edges that do not meet",
             |topo| {
@@ -415,6 +446,31 @@ fn refusals_are_typed_and_leave_the_topology_unchanged() {
                     line(topo, p(0.0, 0.0, 0.0), p(20.0, 0.0, 0.0)),
                     arc(topo, p(20.0, 5.0, 0.0), 5.0, -FRAC_PI_2, PI),
                     line(topo, p(15.0, 5.0, 0.0), p(15.0, -10.0, 0.0)),
+                ];
+                sweep_exact(topo, profile, &path)
+            },
+            true,
+            "meet itself",
+        ),
+        (
+            "runs that cross between the sampled points",
+            |topo| {
+                // Runs 0 and 2 cross at (-1, 0, 0); a thin profile keeps the
+                // mitres short.
+                let h = 0.001;
+                let profile = polygon_face(
+                    topo,
+                    &[
+                        p(-10.0, -h, -h),
+                        p(-10.0, h, -h),
+                        p(-10.0, h, h),
+                        p(-10.0, -h, h),
+                    ],
+                );
+                let path = [
+                    line(topo, p(-10.0, 0.0, 0.0), p(10.0, 0.0, 0.0)),
+                    line(topo, p(10.0, 0.0, 0.0), p(10.0, 11.0, 0.0)),
+                    line(topo, p(10.0, 11.0, 0.0), p(-10.0, -9.0, 0.0)),
                 ];
                 sweep_exact(topo, profile, &path)
             },

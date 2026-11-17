@@ -61,15 +61,11 @@ const G1_ANGLE_TOLERANCE: f64 = 1e-6;
 /// bisector plane runs almost along both runs.
 const MAX_MITRE_TURN: f64 = 175.0 * std::f64::consts::PI / 180.0;
 
-/// Samples per path segment for the self-clearance check.
-const CLEARANCE_SAMPLES: usize = 48;
+/// Bounds on the points per arc in the self-clearance check.
+const CLEARANCE_POINTS: (usize, usize) = (16, 4096);
 
 /// Relative scale for geometric refusal margins.
 const RELATIVE_MARGIN: f64 = 1e-9;
-
-/// Directions closer than this (as `1 − |cos|`) count as parallel when an
-/// analytic surface is recognised.
-const PARALLEL_TOLERANCE: f64 = 1e-12;
 
 fn invalid(reason: impl Into<String>) -> OperationsError {
     OperationsError::InvalidInput {
@@ -368,11 +364,29 @@ struct Segment {
 }
 
 impl Segment {
+    /// The segment's length along the path.
+    fn length(&self) -> f64 {
+        match self.motion {
+            Motion::Translate(d) => d.length(),
+            Motion::Rotate {
+                origin,
+                axis,
+                angle,
+            } => {
+                let d = self.start - origin;
+                (d - axis * d.dot(axis)).length() * angle.abs()
+            }
+        }
+    }
+
+    /// `count + 1` points evenly spaced along the segment: consecutive ones
+    /// are `length / count` apart along it, so no point of the segment is
+    /// farther than half that from one of them.
     #[allow(clippy::cast_precision_loss)]
-    fn samples(&self) -> Vec<Point3> {
-        (0..=CLEARANCE_SAMPLES)
+    fn points(&self, count: usize) -> Vec<Point3> {
+        (0..=count)
             .map(|k| {
-                let f = k as f64 / CLEARANCE_SAMPLES as f64;
+                let f = k as f64 / count as f64;
                 match self.motion {
                     Motion::Translate(d) => self.start + d * f,
                     Motion::Rotate {
@@ -383,6 +397,41 @@ impl Segment {
                 }
             })
             .collect()
+    }
+
+    /// Two halves of an arc, meeting tangentially at its middle.
+    fn halves(&self) -> Option<(Self, Self)> {
+        let Motion::Rotate {
+            origin,
+            axis,
+            angle,
+        } = self.motion
+        else {
+            return None;
+        };
+        let half = Motion::Rotate {
+            origin,
+            axis,
+            angle: angle / 2.0,
+        };
+        let middle = origin + rotate_vec(self.start - origin, axis, angle / 2.0);
+        let tangent = rotate_vec(self.start_tangent, axis, angle / 2.0);
+        Some((
+            Self {
+                start: self.start,
+                end: middle,
+                start_tangent: self.start_tangent,
+                end_tangent: tangent,
+                motion: half,
+            },
+            Self {
+                start: middle,
+                end: self.end,
+                start_tangent: tangent,
+                end_tangent: self.end_tangent,
+                motion: half,
+            },
+        ))
     }
 
     fn reversed(&self) -> Self {
@@ -557,7 +606,17 @@ fn read_chain(
         used[i] = true;
         chain.push(segment);
     }
-    let closed = chain.len() > 1 && meets(chain[chain.len() - 1].end, chain[0].start);
+    let closed = meets(chain[chain.len() - 1].end, chain[0].start);
+    if closed && chain.len() == 1 {
+        // One full-turn arc: two half turns, so the ring has two sections
+        // like any other closed chain rather than one section met twice.
+        let Some((first, second)) = chain[0].halves() else {
+            return Err(invalid(
+                "a single straight sweep path edge cannot close on itself",
+            ));
+        };
+        chain = vec![first, second];
+    }
     Ok((chain, closed))
 }
 
@@ -692,7 +751,6 @@ fn analytic_side(
     probe: Point3,
     linear: f64,
 ) -> Result<Option<FaceSurface>, OperationsError> {
-    let parallel = |a: Vec3, b: Vec3| 1.0 - a.dot(b).abs() <= PARALLEL_TOLERANCE;
     match (*motion, curve) {
         (Motion::Translate(d), EdgeCurve::Line) => {
             let normal = (end - start).cross(d).normalize()?;
@@ -702,8 +760,10 @@ fn analytic_side(
             }))
         }
         (Motion::Translate(d), EdgeCurve::Circle(c)) => {
-            let direction = d.normalize()?;
-            if !parallel(direction, c.normal()) {
+            // The far circle stays on the cylinder only if the run drifts off
+            // the circle's axis by no more than the linear tolerance over its
+            // whole length; an angular test alone lets a long run drift.
+            if (d - c.normal() * d.dot(c.normal())).length() > linear {
                 return Ok(None);
             }
             let surface = CylindricalSurface::with_ref_dir(
@@ -715,19 +775,19 @@ fn analytic_side(
             Ok(Some(FaceSurface::Cylinder(surface)))
         }
         (Motion::Rotate { origin, axis, .. }, EdgeCurve::Line) => {
-            let e = end - start;
-            let length = e.length();
-            let e = e.normalize()?;
+            // Tests on the whole run, not its direction alone, so that a long
+            // line cannot drift off the surface by more than `linear`.
+            let run = end - start;
+            let across = run - axis * run.dot(axis);
             // Coplanar with the axis: the line meets or parallels it.
             let offset = start - origin;
-            if axis.cross(e).length() > PARALLEL_TOLERANCE
-                && offset.dot(axis.cross(e).normalize()?).abs() > linear.max(1e-12 * length)
-            {
+            let normal = axis.cross(run);
+            if normal.length() > linear && offset.dot(normal.normalize()?).abs() > linear {
                 return Ok(None);
             }
             let foot = |p: Point3| origin + axis * (p - origin).dot(axis);
             let radial = probe - foot(probe);
-            if parallel(e, axis) {
+            if across.length() <= linear {
                 let surface = CylindricalSurface::with_ref_dir(
                     foot(start),
                     axis,
@@ -736,7 +796,7 @@ fn analytic_side(
                 )?;
                 return Ok(Some(FaceSurface::Cylinder(surface)));
             }
-            if e.dot(axis).abs() <= PARALLEL_TOLERANCE {
+            if run.dot(axis).abs() <= linear {
                 return Ok(Some(FaceSurface::Plane {
                     normal: axis,
                     d: crate::dot_normal_point(axis, start),
@@ -770,7 +830,9 @@ fn analytic_side(
         }
         (Motion::Rotate { origin, axis, .. }, EdgeCurve::Circle(c)) => {
             // The circle's plane must hold the axis.
-            if c.normal().dot(axis).abs() > PARALLEL_TOLERANCE
+            // Off the axis plane by at most `linear` anywhere on the circle.
+            let reach = (c.center() - origin).length() + c.radius();
+            if c.normal().dot(axis).abs() * reach > linear
                 || (origin - c.center()).dot(c.normal()).abs() > linear
             {
                 return Ok(None);
@@ -848,8 +910,9 @@ fn crossing_sign(
     }
 }
 
-/// Refuse a chain whose non-adjacent segments pass within twice the profile's
-/// reach of each other: the swept body could meet itself.
+/// Refuse a chain whose non-adjacent segments come within twice the
+/// profile's reach of each other, where the swept body could meet itself.
+/// The distance used is a certified lower bound, never a sampled estimate.
 fn check_clearance(
     chain: &[Segment],
     closed: bool,
@@ -857,25 +920,100 @@ fn check_clearance(
     margin: f64,
 ) -> Result<(), OperationsError> {
     let n = chain.len();
-    let samples: Vec<Vec<Point3>> = chain.iter().map(Segment::samples).collect();
+    let limit = 2.0 * reach + margin;
     for i in 0..n {
         for j in (i + 2)..n {
             if closed && i == 0 && j == n - 1 {
                 continue;
             }
-            let closest = samples[i]
-                .iter()
-                .flat_map(|&a| samples[j].iter().map(move |&b| (a - b).length()))
-                .fold(f64::INFINITY, f64::min);
-            if closest <= 2.0 * reach + margin {
+            let closest = distance_lower_bound(&chain[i], &chain[j], reach);
+            if closest <= limit {
                 return Err(invalid(format!(
-                    "path segments {i} and {j} pass {closest} apart, within twice the sweep \
-                     profile's reach ({reach}): the swept body could meet itself"
+                    "path segments {i} and {j} pass within {} of each other, within twice the \
+                     sweep profile's reach ({reach}): the swept body could meet itself",
+                    closest.max(0.0)
                 )));
             }
         }
     }
     Ok(())
+}
+
+/// A lower bound on the distance between two path segments. Two lines are
+/// measured exactly. An arc is replaced by points no farther apart along it
+/// than `reach / 4`, so every point of the arc lies within half that spacing
+/// of one of them, and that half spacing is taken off.
+fn distance_lower_bound(a: &Segment, b: &Segment, reach: f64) -> f64 {
+    let spacing = |s: &Segment| -> (Vec<Point3>, f64) {
+        let length = s.length();
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            clippy::cast_precision_loss
+        )]
+        let count = ((length / (0.25 * reach)).ceil() as usize)
+            .clamp(CLEARANCE_POINTS.0, CLEARANCE_POINTS.1);
+        #[allow(clippy::cast_precision_loss)]
+        let slack = 0.5 * length / count as f64;
+        (s.points(count), slack)
+    };
+    match (a.motion, b.motion) {
+        (Motion::Translate(_), Motion::Translate(_)) => {
+            segment_segment_distance(a.start, a.end, b.start, b.end)
+        }
+        (Motion::Translate(_), Motion::Rotate { .. }) => {
+            let (points, slack) = spacing(b);
+            points
+                .iter()
+                .map(|&p| point_segment_distance(p, a.start, a.end))
+                .fold(f64::INFINITY, f64::min)
+                - slack
+        }
+        (Motion::Rotate { .. }, Motion::Translate(_)) => distance_lower_bound(b, a, reach),
+        (Motion::Rotate { .. }, Motion::Rotate { .. }) => {
+            let (pa, sa) = spacing(a);
+            let (pb, sb) = spacing(b);
+            pa.iter()
+                .flat_map(|&p| pb.iter().map(move |&q| (p - q).length()))
+                .fold(f64::INFINITY, f64::min)
+                - sa
+                - sb
+        }
+    }
+}
+
+/// The distance from `p` to the segment `a`–`b`.
+fn point_segment_distance(p: Point3, a: Point3, b: Point3) -> f64 {
+    let d = b - a;
+    let dd = d.dot(d);
+    let t = if dd > 0.0 {
+        ((p - a).dot(d) / dd).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    (p - (a + d * t)).length()
+}
+
+/// The exact distance between the segments `p0`–`p1` and `q0`–`q1`.
+fn segment_segment_distance(p0: Point3, p1: Point3, q0: Point3, q1: Point3) -> f64 {
+    let (u, v, w) = (p1 - p0, q1 - q0, p0 - q0);
+    let (a, b, c, d, e) = (u.dot(u), u.dot(v), v.dot(v), u.dot(w), v.dot(w));
+    let denominator = a * c - b * b;
+    // The closest pair is interior to both segments only when the lines are
+    // not parallel and the unconstrained parameters fall inside; every other
+    // case has an endpoint in the closest pair.
+    let mut best = point_segment_distance(p0, q0, q1)
+        .min(point_segment_distance(p1, q0, q1))
+        .min(point_segment_distance(q0, p0, p1))
+        .min(point_segment_distance(q1, p0, p1));
+    if denominator > f64::EPSILON * a * c {
+        let s = (b * e - c * d) / denominator;
+        let t = (a * e - b * d) / denominator;
+        if (0.0..=1.0).contains(&s) && (0.0..=1.0).contains(&t) {
+            best = best.min(((p0 + u * s) - (q0 + v * t)).length());
+        }
+    }
+    best
 }
 
 /// The ruled surface a straight run sweeps from `curve` (its rigid start
