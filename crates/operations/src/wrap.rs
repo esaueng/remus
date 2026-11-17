@@ -2,16 +2,18 @@
 //! shell of material between two radii (B73; OpenZCAD M12 emboss/engrave).
 //!
 //! The profile lies in a plane parallel to the cylinder's axis. A profile
-//! point `p` has an arc-length coordinate `s = (p − O)·c` and an axial one
-//! `z = (p − O)·a`, with `a` the unit axis, `e` the unit reference direction
-//! across it (angle zero) and `c = a × e`. Wrapped at radius `r`:
+//! point `p` has an arc-length coordinate `s = (p − O)·b` and an axial one
+//! `z = (p − O)·a`, with `a` the unit axis, `b = a × n` the plane's own
+//! direction across the axis (`n` its normal), `e` the unit reference
+//! direction across the axis (angle zero) and `c = a × e`. Wrapped at
+//! radius `r`:
 //!
 //! ```text
 //! W_r(s, z) = O + z·a + r·(cos(s/R)·e + sin(s/R)·c)
 //! ```
 //!
 //! `R` is the wrap radius, so arc length along the cylinder of radius `R`
-//! equals the profile's length along `c`. The solid is every `W_r(s, z)` with
+//! equals the profile's length along `b`. The solid is every `W_r(s, z)` with
 //! `(s, z)` in the profile and `r` between the inner and outer radii:
 //!
 //! - its inner and outer faces are exact cylinders;
@@ -24,6 +26,9 @@
 //!   on the curve's fourth derivative ([`fit_cubic_hermite`]), held within
 //!   the wrap tolerance, and its wall is the exact ruled surface between the
 //!   inner and outer fits, every ruling radial.
+//!
+//! [`wrap_profile_on_cone`] wraps onto a cone the same way, through the
+//! cone's development (see its module).
 //!
 //! Lines, circles, ellipses and non-rational B-splines are wrapped; other
 //! rational curves, a profile plane that is not parallel to the axis, a
@@ -94,20 +99,34 @@ struct Frame {
     a: Vec3,
     e: Vec3,
     c: Vec3,
+    /// The profile plane's own arc-length direction, `axis × plane normal`:
+    /// `s` is measured along it, so turning `reference` moves the wrap round
+    /// the axis without changing its lengths.
+    across: Vec3,
     radius: f64,
 }
 
-impl Frame {
-    /// `(s, z)` of a profile point, and of a profile direction.
-    fn unroll(&self, p: Point3) -> (f64, f64) {
+/// A map from a profile's plane to its unrolled `(s, z)` coordinates: `s`
+/// across, along the arc-length direction, `z` along the surface.
+trait Unroll {
+    /// `(s, z)` of a profile point.
+    fn unroll(&self, p: Point3) -> Planar;
+    /// `(s, z)` of a profile direction.
+    fn unroll_vec(&self, v: Vec3) -> Planar;
+}
+
+impl Unroll for Frame {
+    fn unroll(&self, p: Point3) -> Planar {
         let d = p - self.origin;
-        (d.dot(self.c), d.dot(self.a))
+        (d.dot(self.across), d.dot(self.a))
     }
 
-    fn unroll_vec(&self, v: Vec3) -> (f64, f64) {
-        (v.dot(self.c), v.dot(self.a))
+    fn unroll_vec(&self, v: Vec3) -> Planar {
+        (v.dot(self.across), v.dot(self.a))
     }
+}
 
+impl Frame {
     fn radial(&self, theta: f64) -> Vec3 {
         let (sin, cos) = theta.sin_cos();
         self.e * cos + self.c * sin
@@ -157,7 +176,7 @@ struct Unrolled<'a> {
 /// Bounds on the derivatives of a non-rational B-spline's `(s, z)` image,
 /// from its hodographs (each derivative curve lies in the convex hull of its
 /// control points), reparameterized onto `[0, 1]`.
-fn bspline_bounds(curve: &NurbsCurve, frame: &Frame) -> [f64; 4] {
+fn bspline_bounds(curve: &NurbsCurve, frame: &impl Unroll) -> [f64; 4] {
     let degree = curve.degree();
     let knots = curve.knots();
     let (u0, u1) = curve.domain();
@@ -201,7 +220,10 @@ fn bspline_bounds(curve: &NurbsCurve, frame: &Frame) -> [f64; 4] {
     bounds
 }
 
-fn unroll_piece<'a>(piece: &'a Piece, frame: &'a Frame) -> Result<Unrolled<'a>, OperationsError> {
+fn unroll_piece<'a, U: Unroll>(
+    piece: &'a Piece,
+    frame: &'a U,
+) -> Result<Unrolled<'a>, OperationsError> {
     match &piece.cap {
         EdgeCurve::Line => {
             let (u0, u1) = piece.nurbs.domain();
@@ -342,8 +364,9 @@ fn loop_angles(pieces: &[Unrolled<'_>], frame: &Frame) -> Vec<f64> {
 /// `outer` radii.
 ///
 /// See the [module docs](self). The profile's plane must be
-/// parallel to the axis; its arc-length coordinate runs along
-/// `axis × reference`.
+/// parallel to the axis. Its arc-length coordinate runs along
+/// `axis × plane normal` from `origin`'s foot in the plane, and
+/// `reference` is where that coordinate's zero lands round the axis.
 ///
 /// # Errors
 ///
@@ -384,23 +407,39 @@ fn wrap_impl(
     }
     let a = cylinder.axis.normalize()?;
     let e = (cylinder.reference - a * cylinder.reference.dot(a)).normalize()?;
+    let face = topo.face(profile)?;
+    let FaceSurface::Plane { normal, d } = *face.surface() else {
+        return Err(invalid("a wrapped profile must be planar"));
+    };
+    // The plane's normal turned to face away from the axis, so a region
+    // lands under where it is drawn whichever way its sketch faces.
+    let length = normal.length();
+    let normal = normal.normalize()?;
+    let normal = if d / length
+        - normal.dot(Vec3::new(
+            cylinder.origin.x(),
+            cylinder.origin.y(),
+            cylinder.origin.z(),
+        ))
+        < 0.0
+    {
+        -normal
+    } else {
+        normal
+    };
+    if normal.dot(a).abs() > PARALLEL_TOLERANCE {
+        return Err(invalid(
+            "a wrapped profile must lie in a plane parallel to the cylinder's axis",
+        ));
+    }
     let frame = Frame {
         origin: cylinder.origin,
         a,
         e,
         c: a.cross(e),
+        across: a.cross(normal).normalize()?,
         radius: cylinder.radius,
     };
-
-    let face = topo.face(profile)?;
-    let FaceSurface::Plane { normal, .. } = *face.surface() else {
-        return Err(invalid("a wrapped profile must be planar"));
-    };
-    if normal.normalize()?.dot(a).abs() > PARALLEL_TOLERANCE {
-        return Err(invalid(
-            "a wrapped profile must lie in a plane parallel to the cylinder's axis",
-        ));
-    }
     let outer_wire = face.outer_wire();
     let inner_wires = face.inner_wires().to_vec();
     let mut loops: Vec<Loop> = vec![read_profile_loop(topo, outer_wire, true, "cylinder wrap")?];
@@ -679,6 +718,9 @@ fn wrap_impl(
     let shell = topo.add_shell(Shell::new(faces)?);
     Ok(topo.add_solid(Solid::new(shell, vec![])))
 }
+
+mod cone;
+pub use cone::{WrapCone, wrap_profile_on_cone};
 
 #[cfg(test)]
 mod tests;

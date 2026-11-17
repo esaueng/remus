@@ -360,6 +360,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "helicalSweepInPlace"
         | "sweepExact"
         | "wrapProfileOnCylinder"
+        | "wrapProfileOnCone"
         | "multiSectionSweep"
         | "guidedSweep"
         | "minkowskiSum"
@@ -2087,6 +2088,31 @@ impl RemusKernel {
                         vector("ref")?,
                         [
                             get_f64(args, "radius")?,
+                            get_f64(args, "inner")?,
+                            get_f64(args, "outer")?,
+                        ],
+                    )
+                    .map_err(StructuredWasmError::from)?;
+                Ok(serde_json::json!(result))
+            }
+            "wrapProfileOnCone" => {
+                let profile = get_u32(args, "profile")?;
+                let vector = |key: &str| -> Result<[f64; 3], StructuredWasmError> {
+                    Ok([
+                        get_f64(args, &format!("{key}X"))?,
+                        get_f64(args, &format!("{key}Y"))?,
+                        get_f64(args, &format!("{key}Z"))?,
+                    ])
+                };
+                let result = self
+                    .wrap_profile_on_cone_impl(
+                        profile,
+                        vector("apex")?,
+                        vector("axis")?,
+                        vector("ref")?,
+                        vector("origin")?,
+                        [
+                            get_f64(args, "halfAngle")?,
                             get_f64(args, "inner")?,
                             get_f64(args, "outer")?,
                         ],

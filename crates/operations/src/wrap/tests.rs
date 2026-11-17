@@ -217,3 +217,25 @@ fn refusals_are_typed_and_leave_the_topology_unchanged() {
     assert!(matches!(refused, Err(OperationsError::InvalidInput { .. })));
     assert_eq!(topo.num_faces(), 1);
 }
+
+/// A region drawn off the axis line lands on the same side of the
+/// cylinder whichever way its sketch plane faces: the plane's normal is
+/// turned away from the axis before arc length is read along it.
+#[test]
+fn a_region_lands_under_where_it_is_drawn_from_either_side() {
+    for (normal, d) in [(X, 10.0), (-X, -10.0)] {
+        let mut topo = Topology::new();
+        let points: Vec<Point3> = [(1.0, 0.0), (3.0, 0.0), (3.0, 2.0), (1.0, 2.0)]
+            .iter()
+            .map(|&(y, z)| Point3::new(10.0, y, z))
+            .collect();
+        let wire = make_polygon_wire(&mut topo, &points, 1e-7).unwrap();
+        let profile = topo.add_face(Face::new(wire, vec![], FaceSurface::Plane { normal, d }));
+        let solid = wrap_profile_solid(&mut topo, profile, &cylinder(), 9.0, 11.0).unwrap();
+        let centre = crate::measure::mass_properties(&topo, solid)
+            .unwrap()
+            .center;
+        // Arc length 1..3 at radius 10 turns 0.1..0.3 rad toward +Y.
+        assert!(centre.y() > 0.5, "normal {normal:?}: centre {centre:?}");
+    }
+}
