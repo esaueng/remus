@@ -2981,10 +2981,13 @@ class RemusKernel {
      * cascade and whole-selection rule, with the legacy method's return
      * value and thrown errors unchanged. On success `details.engine` names
      * the blend engine (`walking`, `rollingBall`, or `mixed`). A result
-     * that introduces a NURBS face — a sampled blend wall with no closed
-     * form — reports `quality: "approximate"` and lists those faces under
-     * `approximateFaces`. With `exactOnly: true` such a result is rolled
-     * back and refused (`quality_refused` / `exact_only_unattainable`).
+     * that introduces a NURBS face approximating its surface — a sampled,
+     * fitted or lofted blend wall with no closed form — reports `quality:
+     * "approximate"` and lists those faces under `approximateFaces`. A
+     * NURBS face its engine built as an exact closed form (the elliptic
+     * cone a chamfer lays over a leaning round) is exact and not listed.
+     * With `exactOnly: true` an approximate result is rolled back and
+     * refused (`quality_refused` / `exact_only_unattainable`).
      * @param {number} solid
      * @param {Uint32Array} edge_handles
      * @param {number} radius
