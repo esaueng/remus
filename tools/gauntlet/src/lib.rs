@@ -1267,6 +1267,11 @@ fn operations_diagnostic(error: &OperationsError) -> DiagnosticRecord {
             "body_validation_failed",
             error.to_string(),
         ),
+        OperationsError::PostconditionFailed { .. } => DiagnosticRecord::error(
+            FailureCategory::Internal,
+            "postcondition_failed",
+            error.to_string(),
+        ),
         OperationsError::HealingValidationFailed { .. }
         | OperationsError::ConfiguredHealingValidationFailed { .. } => DiagnosticRecord::error(
             FailureCategory::InvalidTopology,

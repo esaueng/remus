@@ -1095,6 +1095,9 @@ pub fn exact_boolean_outcome(
                 remus_operations::OperationsError::BodyValidationFailed { .. } => {
                     "BodyValidationFailed"
                 }
+                remus_operations::OperationsError::PostconditionFailed { .. } => {
+                    "PostconditionFailed"
+                }
                 remus_operations::OperationsError::HealingValidationFailed { .. } => {
                     "HealingValidationFailed"
                 }

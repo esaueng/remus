@@ -666,6 +666,21 @@ impl From<remus_operations::OperationsError> for StructuredWasmError {
             remus_operations::OperationsError::InvalidInput { .. } => {
                 Self::invalid_argument(message, None)
             }
+            // The engine built a result that failed its own validation: an
+            // engine failure (category `internal`), not the caller's input.
+            // One `kernelCode` spelling on every path, the blend code
+            // `blend_failure` attaches too.
+            remus_operations::OperationsError::PostconditionFailed { error_count, .. } => {
+                let mut structured = Self::operation_failed(message);
+                structured.details.insert(
+                    "kernelCode".to_string(),
+                    Value::from("postcondition-failed"),
+                );
+                structured
+                    .details
+                    .insert("errorCount".to_string(), Value::from(error_count));
+                structured
+            }
             // Same wire code as the untyped inside-out refusal it replaces
             // (`invalid_argument`), with a stable native code beside it.
             // `operation` is left to the binding context, which names the
@@ -1351,6 +1366,54 @@ mod work_limit_tests {
             structured.details["chainEdges"],
             serde_json::json!([43, 40, 41, 44, 45])
         );
+    }
+
+    /// #1814: a blend whose result fails its own validation postcondition
+    /// blames the engine (`operation_failed` / `internal`), not the input
+    /// (`invalid_argument` / `invalid_input`, its code before), on the batch
+    /// path and on the blend path that the direct bindings prefix.
+    #[test]
+    fn blend_postcondition_failure_is_an_engine_failure() {
+        let error = || remus_operations::OperationsError::PostconditionFailed {
+            operation: "fillet",
+            error_count: 2,
+            summary: "shell has 2 connected components (7 of 8 faces reached); \
+                      shell has 66 free (boundary) edges"
+                .into(),
+        };
+        let message = error().to_string();
+        assert_eq!(
+            message,
+            "fillet postcondition validation failed with 2 error(s): shell has 2 connected \
+             components (7 of 8 faces reached); shell has 66 free (boundary) edges"
+        );
+        assert_eq!(
+            remus_operations::blend_ops::blend_failure_code(&error()),
+            "postcondition-failed"
+        );
+        for structured in [
+            super::StructuredWasmError::from(error()),
+            super::StructuredWasmError::blend_failure(error()),
+        ] {
+            assert_eq!(structured.code, WasmErrorCode::OperationFailed);
+            assert_eq!(structured.code.as_str(), "operation_failed");
+            assert_eq!(structured.category, "internal");
+            assert_eq!(structured.message, message);
+            assert_eq!(structured.details["kernelCode"], "postcondition-failed");
+            assert_eq!(structured.details["errorCount"], 2);
+        }
+        // Input rejected before an engine runs keeps its code.
+        let invalid = remus_operations::OperationsError::InvalidInput {
+            reason: "radius must be finite and positive, got -1".into(),
+        };
+        assert_eq!(
+            remus_operations::blend_ops::blend_failure_code(&invalid),
+            "invalid-input"
+        );
+        let structured = super::StructuredWasmError::blend_failure(invalid);
+        assert_eq!(structured.code, WasmErrorCode::InvalidArgument);
+        assert_eq!(structured.category, "invalid_input");
+        assert_eq!(structured.details["kernelCode"], "invalid-input");
     }
 
     #[test]
