@@ -42,7 +42,7 @@ TIERS: dict[str, list[str]] = {
     ],
     "remus-construct": [
         "primitives", "extrude", "revolve", "sweep", "loft", "pipe", "helix",
-        "exact_sweep",
+        "exact_sweep", "wrap",
         "cap", "fill_face", "thicken",
     ],
     "remus-boolean": [

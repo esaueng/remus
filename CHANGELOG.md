@@ -396,6 +396,23 @@ historical predecessor-line records, retained for provenance. The
 
 ### Added
 
+* **operations,wasm:** wrap a planar profile onto a cylinder
+  (`wrap::wrap_profile_solid`, `wrapProfileOnCylinder`), preserving arc
+  length, as the solid between two radii: the material an emboss adds or an
+  engrave removes. A profile in a plane parallel to the axis maps its
+  arc-length and axial coordinates to angle `s / R` and height. Inner and
+  outer faces are exact cylinders; an edge along the axis walls a radial
+  plane and one across it a plane square to the axis, with straight and
+  circular edges. Every other edge (an oblique line wraps to a helix, an arc
+  or spline to a curve with no rational form) is a cubic B-spline certified
+  within `1e-7` of the wrap's scale by the Hermite remainder, from a
+  fourth-derivative bound built from the profile curve's own derivative
+  bounds; its wall is the exact ruled surface between the inner and outer
+  fits, every ruling radial. A wrapped region of area `A` encloses
+  `A·(ro² − ri²)/(2R)`. A profile not parallel to the axis, one spanning a
+  full turn, a rational curve other than a circle or ellipse and an empty
+  radius range are refused, leaving the topology unchanged.
+
 * **operations,wasm:** exact path sweep along lines and circular arcs
   (`exact_sweep::sweep_exact`, `sweepExact(face, edges)`). The profile stays
   where it is and is carried by the path's rigid motions — a line translates

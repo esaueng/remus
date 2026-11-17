@@ -1733,6 +1733,88 @@ impl RemusKernel {
         Ok(solid_id_to_u32(solid_id))
     }
 
+    // ── Cylinder Wrap ─────────────────────────────────────────────
+
+    /// Wrap a planar face onto a cylinder, preserving arc length, as the
+    /// solid between `inner` and `outer` radii.
+    ///
+    /// The face lies in a plane parallel to the axis through
+    /// `(origin_*)` along `(axis_*)`; arc length runs along
+    /// `axis × reference` from the angle of `(ref_*)`, measured at `radius`.
+    /// Inner and outer faces are exact cylinders, walls along or across the
+    /// axis exact planes; other walls are exact ruled surfaces between
+    /// certified fits of the wrapped edges.
+    ///
+    /// Returns a solid handle (`u32`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a degenerate frame or radius range, a face not
+    /// parallel to the axis, a profile spanning a full turn, or a profile
+    /// curve that is not a line, circle, ellipse or non-rational spline. The
+    /// session is left unchanged.
+    #[wasm_bindgen(js_name = "wrapProfileOnCylinder")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn wrap_profile_on_cylinder(
+        &mut self,
+        face: u32,
+        origin_x: f64,
+        origin_y: f64,
+        origin_z: f64,
+        axis_x: f64,
+        axis_y: f64,
+        axis_z: f64,
+        ref_x: f64,
+        ref_y: f64,
+        ref_z: f64,
+        radius: f64,
+        inner: f64,
+        outer: f64,
+    ) -> Result<u32, JsError> {
+        Ok(self.wrap_profile_on_cylinder_impl(
+            face,
+            [origin_x, origin_y, origin_z],
+            [axis_x, axis_y, axis_z],
+            [ref_x, ref_y, ref_z],
+            [radius, inner, outer],
+        )?)
+    }
+
+    pub(crate) fn wrap_profile_on_cylinder_impl(
+        &mut self,
+        face: u32,
+        origin: [f64; 3],
+        axis: [f64; 3],
+        reference: [f64; 3],
+        [radius, inner, outer]: [f64; 3],
+    ) -> Result<u32, WasmError> {
+        for (name, value) in [
+            ("origin", origin),
+            ("axis", axis),
+            ("reference", reference),
+            ("radii", [radius, inner, outer]),
+        ] {
+            for v in value {
+                validate_finite(v, name)?;
+            }
+        }
+        let face_id = self.resolve_face(face)?;
+        let cylinder = remus_operations::wrap::WrapCylinder {
+            origin: Point3::new(origin[0], origin[1], origin[2]),
+            axis: Vec3::new(axis[0], axis[1], axis[2]),
+            reference: Vec3::new(reference[0], reference[1], reference[2]),
+            radius,
+        };
+        let solid_id = remus_operations::wrap::wrap_profile_solid(
+            self.topo_mut(),
+            face_id,
+            &cylinder,
+            inner,
+            outer,
+        )?;
+        Ok(solid_id_to_u32(solid_id))
+    }
+
     // ── Sweep Along Edges ─────────────────────────────────────────
 
     /// Sweep a face along a path defined by a chain of edges.
