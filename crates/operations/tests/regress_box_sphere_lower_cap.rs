@@ -20,8 +20,9 @@
 //! A cut or fuse with the centre below the box top (z = 12, 15) never reached
 //! the first defect and is kept as a control; its intersect keeps the
 //! sphere's equator seam, three faces, so the gate never refused it. z = 20 puts the equator in the box top:
-//! its cut and fuse stay refused (tracked on #1790), and its intersect, the
-//! lower hemisphere, now builds.
+//! its intersect, the lower hemisphere, builds since the gate fix, and its cut
+//! and fuse since the box top stopped receiving the equator twice (see
+//! `regress_box_sphere_equator.rs`).
 //!
 //! Every oracle is a closed form: the spherical cap `πh²(3r − h)/3` and its
 //! centroid `3(2r − h)²/(4(3r − h))` below the sphere centre.
@@ -83,7 +84,7 @@ fn assert_rel(got: f64, want: f64, what: &str) {
 fn cut_and_fuse_keep_the_lower_sphere_cap() {
     let box_volume = BOX.0 * BOX.1 * BOX.2;
     let sphere_volume = 4.0 * PI * R.powi(3) / 3.0;
-    for centre_z in [12.0, 15.0, 24.0, 27.0, 29.0] {
+    for centre_z in [12.0, 15.0, 20.0, 24.0, 27.0, 29.0] {
         let cap = cap_volume(cap_height(centre_z));
         for (op, want) in [
             (BooleanOp::Cut, box_volume - cap),
@@ -268,15 +269,8 @@ fn solid_volume_reads_an_upper_cap_exactly() {
                 &Mat4::translation(BOX.0 / 2.0, BOX.1 / 2.0, centre_z),
             )
             .unwrap();
-            // The 32-segment hemisphere (z = 20) is still a typed refusal of
-            // #1790; every 16-segment cap builds. Only a built body is measured.
-            let body = match boolean(&mut topo, BooleanOp::Intersect, block, sphere) {
-                Ok(body) => body,
-                Err(error) if segments == 32 && error.to_string().contains("exact-only policy") => {
-                    continue;
-                }
-                Err(error) => panic!("{what}: {error}"),
-            };
+            let body = boolean(&mut topo, BooleanOp::Intersect, block, sphere)
+                .unwrap_or_else(|error| panic!("{what}: {error}"));
             assert_rel(
                 mass_properties(&topo, body).unwrap().mass,
                 cap_volume(h),
