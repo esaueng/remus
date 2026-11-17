@@ -6,6 +6,24 @@ historical predecessor-line records, retained for provenance. The
 
 ## Unreleased
 
+### ⚠ BREAKING CHANGES
+
+* **operations,wasm:** a fillet or chamfer whose result fails its own
+  validation postcondition on a valid input now refuses with the new
+  `OperationsError::PostconditionFailed { operation, error_count, summary }`
+  instead of `OperationsError::InvalidInput` (#1814). The input was not at
+  fault: the engine built a result with validation errors the input did not
+  have. The message text is unchanged apart from the `invalid input: `
+  prefix (`fillet postcondition validation failed with 2 error(s): …`).
+  `blend_failure_code` returns `postcondition-failed` for it, where it
+  returned `invalid-input`; the JS projection is in the WASM changelog. Input
+  refused before an engine runs (a non-positive radius, no edges) is still
+  `InvalidInput`. **Migration:** code that matches `InvalidInput` (or the
+  `invalid-input` code) to detect a blend refusal must also match
+  `PostconditionFailed` (`postcondition-failed`). `chamfer_v2` treats it as
+  it treated the `InvalidInput` it replaces, and the fillet cascades fall
+  back on it as on any refusal, so no result that built before changes.
+
 ### Fixed
 
 * **operations,wasm:** a thread cut at the default tolerance can be exported

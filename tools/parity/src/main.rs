@@ -341,6 +341,18 @@ fn ops_disclosure(operation: &str, index: usize, error: &OperationsError) -> Val
                 "details": detail(kernel_code_detail(code), operation, index),
             })
         }
+        // Mirror the crate's `PostconditionFailed` arm: an engine failure
+        // with the blend code as `kernelCode` on every path.
+        OperationsError::PostconditionFailed { error_count, .. } => {
+            let mut details = kernel_code_detail("postcondition-failed");
+            details.insert("errorCount".to_string(), serde_json::json!(error_count));
+            serde_json::json!({
+                "code": "operation_failed",
+                "category": "internal",
+                "message": message,
+                "details": detail(details, operation, index),
+            })
+        }
         OperationsError::PatternInstancesOverlap { .. } => serde_json::json!({
             "code": "operation_failed",
             "category": "unsupported",

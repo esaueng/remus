@@ -6414,6 +6414,7 @@ pub fn resize_blend_failure_code(error: &OperationsError) -> &'static str {
         | OperationsError::BodyClassMeasureMismatch { .. }
         | OperationsError::BodyClassOperationUnsupported { .. }
         | OperationsError::BodyValidationFailed { .. }
+        | OperationsError::PostconditionFailed { .. }
         | OperationsError::HealingValidationFailed { .. }
         | OperationsError::HealingVerificationUnavailable { .. }
         | OperationsError::HealingRepairRefused { .. }

@@ -120,6 +120,13 @@ entry, `details.kernelCode` carries that fine-grained stable code (e.g.
 the native registry in `remus_math::diagnostic`. It is additive and
 per-code optional: consumers must not require it.
 
+A fillet or chamfer whose engine built a result that fails the operation's
+own validation postcondition reports `operation_failed` with category
+`internal`, `kernelCode` `postcondition-failed` and `details.errorCount`. The
+input was valid; the engine failed. A request refused before the engine runs
+(a non-positive radius, no edges) is `invalid_argument` /
+`invalid_input` (`kernelCode` `invalid-input` on the blend ops).
+
 A face move or cylindrical resize outside the qualified direct-edit cells
 reports `kernelCode` `unsupported_move_face` with category `unsupported`.
 `details.reason` names the typed cause: `unsupported_neighbor` (the selected
