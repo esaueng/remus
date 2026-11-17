@@ -150,6 +150,127 @@ struct StepReport<V> {
     validation: Option<V>,
 }
 
+/// `importStepStructure`'s report: the flat report's counts plus the
+/// product tree, each solid's node, name and colours, and the presentation
+/// pass's counts.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StepStructureReport {
+    solid_count: usize,
+    sheet_count: usize,
+    diagnostics: Vec<StepImportDiagnostic>,
+    structure: StepStructureJson,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StepStructureJson {
+    nodes: Vec<StepNodeJson>,
+    solids: Vec<StepSolidJson>,
+    presentation: StepPresentationJson,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StepNodeJson {
+    name: String,
+    parent: Option<usize>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StepSolidJson {
+    /// Index into `nodes`; `null` for a solid no product reaches.
+    node: Option<usize>,
+    /// The solid's own `MANIFOLD_SOLID_BREP` name, when the file gives one.
+    name: Option<String>,
+    /// The solid's surface colour, sRGB channels in `[0, 1]`.
+    color: Option<[f64; 3]>,
+    /// The one colour every face carries explicitly, when they all agree.
+    face_color: Option<[f64; 3]>,
+    /// Faces with an explicit colour of their own.
+    colored_faces: usize,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StepPresentationJson {
+    solid_colors: usize,
+    face_colors: usize,
+    unapplied_styles: usize,
+    conflicting_styles: usize,
+    invalid_colors: usize,
+}
+
+fn channels(color: remus_topology::attributes::ColorRgb) -> [f64; 3] {
+    [color.r(), color.g(), color.b()]
+}
+
+fn step_structure_result(
+    topo: &Topology,
+    result: &remus_io::step::StepStructureReadResult,
+    limits: ImportLimits,
+) -> Result<StepImportResult, IoWasmError> {
+    let mut solids = Vec::with_capacity(result.solids.len());
+    for (&solid, &node) in result.solids.iter().zip(&result.solid_nodes) {
+        let attributes = topo.attributes().solid(solid);
+        let faces = remus_topology::explorer::solid_faces(topo, solid).map_err(IoError::from)?;
+        let face_colors: Vec<_> = faces
+            .iter()
+            .filter_map(|&face| topo.attributes().face(face).and_then(|a| a.color))
+            .collect();
+        let face_color = (face_colors.len() == faces.len())
+            .then(|| face_colors.first().copied())
+            .flatten()
+            .filter(|first| face_colors.iter().all(|color| color == first))
+            .map(channels);
+        solids.push(StepSolidJson {
+            node,
+            name: attributes.and_then(|a| a.name.clone()),
+            color: attributes.and_then(|a| a.color).map(channels),
+            face_color,
+            colored_faces: face_colors.len(),
+        });
+    }
+    let presentation = result.presentation;
+    let report = StepStructureReport {
+        solid_count: result.solids.len(),
+        sheet_count: 0,
+        diagnostics: result
+            .diagnostics
+            .iter()
+            .map(StepImportDiagnostic::from)
+            .collect(),
+        structure: StepStructureJson {
+            nodes: result
+                .nodes
+                .iter()
+                .map(|node| StepNodeJson {
+                    name: node.name.clone(),
+                    parent: node.parent,
+                })
+                .collect(),
+            solids,
+            presentation: StepPresentationJson {
+                solid_colors: presentation.solid_colours,
+                face_colors: presentation.face_colours,
+                unapplied_styles: presentation.unapplied_styles,
+                conflicting_styles: presentation.conflicting_styles,
+                invalid_colors: presentation.invalid_colours,
+            },
+        },
+    };
+    Ok(StepImportResult {
+        solids: solids_document_with_limits(topo, &result.solids, limits)?,
+        sheets: Vec::new(),
+        report: String::from_utf8(arena_io::serialize_json_with_limit(
+            &report,
+            limits.max_input_bytes,
+        )?)
+        .map_err(|error| IoWasmError::invalid(format!("STEP report encoding failed: {error}")))?,
+    })
+}
+
 // ── Shared helpers ─────────────────────────────────────────────────
 
 /// Build [`ImportLimits`] from optional JS overrides.
@@ -427,6 +548,18 @@ impl RemusIo {
         let mut topo = Topology::new();
         let result = remus_io::step::read_step_with_limits_and_report(text, &mut topo, limits)?;
         step_result(&topo, &result, false, limits)
+    }
+
+    fn import_step_structure_impl(
+        data: &[u8],
+        max_input_bytes: Option<f64>,
+        max_entities: Option<f64>,
+    ) -> Result<StepImportResult, IoWasmError> {
+        let limits = import_limits_from(max_input_bytes, max_entities)?;
+        let text = utf8(data, "STEP")?;
+        let mut topo = Topology::new();
+        let result = remus_io::step::read_step_structure_with_limits(text, &mut topo, limits)?;
+        step_structure_result(&topo, &result, limits)
     }
 
     fn import_step_with_validation_impl(
@@ -717,6 +850,31 @@ impl RemusIo {
         )?)
     }
 
+    /// Read a STEP file's solids with their product structure.
+    ///
+    /// Every product occurrence is a node of `report.structure.nodes`
+    /// (`name`, `parent`), parents first. Every placed occurrence of a solid
+    /// is its own root of `solids`, moved by its composed placement, so a
+    /// repeated part comes back once per occurrence. `report.structure.solids`
+    /// gives each root's `node`, its own `name`, and its surface `color` and
+    /// uniform `faceColor` (sRGB, `[0, 1]`); the colours also travel as
+    /// attributes in the arena document. Styles it cannot apply are counted in
+    /// `report.structure.presentation`, never refused. Unlike the flat readers,
+    /// an assembly's parts come back where the assembly places them.
+    #[wasm_bindgen(js_name = "importStepStructure")]
+    pub fn import_step_structure(
+        &self,
+        data: &[u8],
+        max_input_bytes: Option<f64>,
+        max_entities: Option<f64>,
+    ) -> Result<StepImportResult, JsError> {
+        Ok(Self::import_step_structure_impl(
+            data,
+            max_input_bytes,
+            max_entities,
+        )?)
+    }
+
     /// Read a STEP file's solids with bounded-healing diagnostics.
     #[wasm_bindgen(js_name = "importStepWithReport")]
     pub fn import_step_with_report(
@@ -840,6 +998,51 @@ mod tests {
     use super::*;
     use remus_operations::measure::solid_volume;
     use remus_operations::primitives::make_box;
+
+    #[test]
+    fn step_structure_translator_reports_nodes_placements_names_and_colours() {
+        let input = include_bytes!("../../io/tests/data/step_structure/nested_assembly_ap214.step");
+        let result = RemusIo::import_step_structure_impl(input, None, None).unwrap();
+        let report: serde_json::Value = serde_json::from_str(&result.report()).unwrap();
+        assert_eq!(report["solidCount"], 5);
+        let nodes = report["structure"]["nodes"].as_array().unwrap();
+        assert_eq!(nodes.len(), 8);
+        assert_eq!(nodes[0]["name"], "Fixture");
+        assert!(nodes[0]["parent"].is_null());
+        assert_eq!(nodes[2]["name"], "Pin pair");
+        assert_eq!(nodes[2]["parent"], 0);
+        let solids = report["structure"]["solids"].as_array().unwrap();
+        assert_eq!(solids.len(), 5);
+        assert_eq!(solids[0]["node"], 1);
+        assert!(solids[0]["name"].is_null());
+        let plate = solids[0]["color"].as_array().unwrap();
+        assert!((plate[0].as_f64().unwrap() - 0.484_529_207_832).abs() < 1e-12);
+        assert_eq!(report["structure"]["presentation"]["solidColors"], 2);
+        // Every occurrence is its own placed root; the document carries the
+        // colours as attributes too.
+        let document = result.solids();
+        let actual = volumes(&document);
+        assert_eq!(actual.len(), 5);
+        assert!((actual[0] - 6000.).abs() < 1e-6);
+        let mut topo = Topology::new();
+        let roots = arena_io::deserialize_solids(&document, &mut topo).unwrap();
+        assert!(topo.attributes().solid(roots[4]).unwrap().color.is_some());
+        assert!(RemusIo::import_step_structure_impl(input, Some(10.), None).is_err());
+        assert!(RemusIo::import_step_structure_impl(&[0xff], None, None).is_err());
+    }
+
+    #[test]
+    fn step_structure_translator_reports_a_uniform_face_colour() {
+        let input =
+            include_bytes!("../../io/tests/data/step_structure/part_solid_and_face_colours.step");
+        let result = RemusIo::import_step_structure_impl(input, None, None).unwrap();
+        let report: serde_json::Value = serde_json::from_str(&result.report()).unwrap();
+        let solids = report["structure"]["solids"].as_array().unwrap();
+        assert_eq!(solids[0]["coloredFaces"], 1);
+        assert!(solids[0]["faceColor"].is_null());
+        assert!(solids[1]["color"].is_null());
+        assert_eq!(report["structure"]["nodes"][0]["name"], "Bracket");
+    }
 
     #[test]
     fn brep_translator_returns_exact_arena_and_enforces_api_limits() {
