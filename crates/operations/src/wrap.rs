@@ -23,7 +23,8 @@
 //! - every other edge (an oblique line wraps to a helix, an arc or spline to
 //!   a curve with no rational form) wraps to a **certified** cubic B-spline:
 //!   the fit's distance from the exact wrapped curve is proven from a bound
-//!   on the curve's fourth derivative ([`fit_cubic_hermite`]), held within
+//!   on the curve's fourth derivative ([`fit_cubic_hermite`]), taken span by
+//!   span between a spline's knots (where it is smooth), held within
 //!   the wrap tolerance, and its wall is the exact ruled surface between the
 //!   inner and outer fits, every ruling radial.
 //!
@@ -73,7 +74,7 @@ const RELATIVE_FIT_TOLERANCE: f64 = 1e-7;
 /// Most cubic Hermite spans one wrapped edge may take.
 const MAX_FIT_SPANS: usize = 4096;
 
-/// Samples per profile piece for the angular-extent check.
+/// Samples per profile piece for the winding check.
 const EXTENT_SAMPLES: usize = 64;
 
 /// Directions closer than this (as `1 − |cos|`) count as parallel.
@@ -169,8 +170,102 @@ struct Unrolled<'a> {
     piece: &'a Piece,
     /// `(q(x), q'(x))`.
     sample: Box<dyn Fn(f64) -> (Planar, Planar) + 'a>,
-    /// `bounds[k-1] ≥ sup |s^(k)|, sup |z^(k)|` over `[0, 1]`.
+    /// The piece's smooth stretches, in order over `x ∈ [0, 1]`: one for a
+    /// line, circle or ellipse, one per knot span of a spline. The Hermite
+    /// remainder holds only where the curve is smooth, so every fit and
+    /// every bound is taken span by span.
+    spans: Vec<Span<'a>>,
+}
+
+/// One smooth stretch of an unrolled piece over `x ∈ [x0, x1]`, sampled on
+/// its own parameter `t ∈ [0, 1]`.
+struct Span<'a> {
+    x0: f64,
+    x1: f64,
+    /// `(q(t), q'(t))`, `q'` with respect to `t`.
+    sample: Box<dyn Fn(f64) -> (Planar, Planar) + 'a>,
+    /// `bounds[k-1] ≥ sup |s^(k)|, sup |z^(k)|` over `t ∈ [0, 1]`.
     bounds: [f64; 4],
+}
+
+/// The point and derivative of a sampled span, read in 3D.
+fn bspline_span<U: Unroll>(curve: NurbsCurve, frame: &U, x0: f64, x1: f64) -> Span<'_> {
+    let bounds = bspline_bounds(&curve, frame);
+    let (u0, u1) = curve.domain();
+    let w = u1 - u0;
+    Span {
+        x0,
+        x1,
+        bounds,
+        sample: Box::new(move |t| {
+            let d = curve.derivatives(u0 + w * t, 1);
+            (
+                frame.unroll(Point3::new(d[0].x(), d[0].y(), d[0].z())),
+                frame.unroll_vec(d[1] * w),
+            )
+        }),
+    }
+}
+
+/// Samples per span for the certified angular extent and lowest height.
+const SPAN_SAMPLES: usize = 64;
+
+/// Fit `map` of `unrolled` span by span with `fourth(span)` bounding each
+/// span's fourth derivative, and join the spans' fits `C⁰` at their shared
+/// ends, so no Hermite span straddles a break in the profile curve's
+/// smoothness. Returns the curve over `x ∈ [0, 1]` and its certified bound.
+fn fit_spans(
+    unrolled: &Unrolled<'_>,
+    fourth: impl Fn(&Span<'_>) -> f64,
+    map: impl Fn(Planar, Planar) -> (Point3, Vec3),
+    tolerance: f64,
+) -> Result<(NurbsCurve, f64), OperationsError> {
+    let mut points: Vec<Point3> = Vec::new();
+    let mut knots: Vec<f64> = Vec::new();
+    let mut bound: f64 = 0.0;
+    let last = unrolled.spans.len().saturating_sub(1);
+    for (i, span) in unrolled.spans.iter().enumerate() {
+        let fit = fit_cubic_hermite(
+            |t| {
+                let (q, dq) = (span.sample)(t);
+                map(q, dq)
+            },
+            0.0,
+            1.0,
+            fourth(span),
+            tolerance,
+            MAX_FIT_SPANS,
+        )
+        .map_err(|e| OperationsError::Unsupported {
+            operation: "wrap",
+            reason: format!("a wrapped edge could not be fitted: {e}"),
+        })?;
+        bound = bound.max(fit.remainder_bound);
+        let width = span.x1 - span.x0;
+        let span_knots: Vec<f64> = fit
+            .curve
+            .knots()
+            .iter()
+            .map(|&k| span.x0 + width * k)
+            .collect();
+        if i == 0 {
+            // Its clamped start, and its interior pairs.
+            knots.extend(&span_knots[..span_knots.len() - 4]);
+            points.extend(fit.curve.control_points());
+        } else {
+            // A triple knot at the join (C⁰); the shared end point once.
+            knots.push(span.x0);
+            knots.extend(&span_knots[4..span_knots.len() - 4]);
+            points.extend(&fit.curve.control_points()[1..]);
+        }
+        if i == last {
+            knots.extend([span.x1; 4]);
+        } else {
+            knots.extend([span.x1; 2]);
+        }
+    }
+    let weights = vec![1.0; points.len()];
+    Ok((NurbsCurve::new(3, knots, points, weights)?, bound))
 }
 
 /// Bounds on the derivatives of a non-rational B-spline's `(s, z)` image,
@@ -224,53 +319,89 @@ fn unroll_piece<'a, U: Unroll>(
     piece: &'a Piece,
     frame: &'a U,
 ) -> Result<Unrolled<'a>, OperationsError> {
+    // A whole smooth piece is its own single span.
+    let whole = |sample: Box<dyn Fn(f64) -> (Planar, Planar) + 'a>,
+                 span: Box<dyn Fn(f64) -> (Planar, Planar) + 'a>,
+                 bounds: [f64; 4]| Unrolled {
+        piece,
+        sample,
+        spans: vec![Span {
+            x0: 0.0,
+            x1: 1.0,
+            sample: span,
+            bounds,
+        }],
+    };
     match &piece.cap {
         EdgeCurve::Line => {
             let (u0, u1) = piece.nurbs.domain();
             let q0 = frame.unroll(piece.nurbs.evaluate(u0));
             let q1 = frame.unroll(piece.nurbs.evaluate(u1));
             let d = (q1.0 - q0.0, q1.1 - q0.1);
-            Ok(Unrolled {
-                piece,
-                sample: Box::new(move |x| ((q0.0 + d.0 * x, q0.1 + d.1 * x), d)),
-                bounds: [d.0.abs().max(d.1.abs()), 0.0, 0.0, 0.0],
-            })
+            let line = move |x: f64| ((q0.0 + d.0 * x, q0.1 + d.1 * x), d);
+            Ok(whole(
+                Box::new(line),
+                Box::new(line),
+                [d.0.abs().max(d.1.abs()), 0.0, 0.0, 0.0],
+            ))
         }
         EdgeCurve::Circle(circle) => {
             let (a, b) = piece.trim.unwrap_or((0.0, std::f64::consts::TAU));
             let w = b - a;
             let rho = circle.radius();
-            Ok(Unrolled {
-                piece,
-                sample: Box::new(move |x| {
-                    let t = a + w * x;
-                    let p = circle.evaluate(t);
-                    let dp = circle.tangent(t) * (rho * w);
-                    (frame.unroll(p), frame.unroll_vec(dp))
-                }),
-                bounds: [1, 2, 3, 4].map(|k| rho * w.abs().powi(k)),
-            })
+            let arc = move |x: f64| {
+                let t = a + w * x;
+                let p = circle.evaluate(t);
+                let dp = circle.tangent(t) * (rho * w);
+                (frame.unroll(p), frame.unroll_vec(dp))
+            };
+            Ok(whole(
+                Box::new(arc),
+                Box::new(arc),
+                [1, 2, 3, 4].map(|k| rho * w.abs().powi(k)),
+            ))
         }
         EdgeCurve::Ellipse(ellipse) => {
             let (a, b) = piece.trim.unwrap_or((0.0, std::f64::consts::TAU));
             let w = b - a;
             let (major, minor) = (ellipse.semi_major(), ellipse.semi_minor());
             let (u, v, center) = (ellipse.u_axis(), ellipse.v_axis(), ellipse.center());
-            Ok(Unrolled {
-                piece,
-                sample: Box::new(move |x| {
-                    let (sin, cos) = (a + w * x).sin_cos();
-                    let p = center + u * (major * cos) + v * (minor * sin);
-                    let dp = (v * (minor * cos) - u * (major * sin)) * w;
-                    (frame.unroll(p), frame.unroll_vec(dp))
-                }),
-                bounds: [1, 2, 3, 4].map(|k| major.max(minor) * w.abs().powi(k)),
-            })
+            let arc = move |x: f64| {
+                let (sin, cos) = (a + w * x).sin_cos();
+                let p = center + u * (major * cos) + v * (minor * sin);
+                let dp = (v * (minor * cos) - u * (major * sin)) * w;
+                (frame.unroll(p), frame.unroll_vec(dp))
+            };
+            Ok(whole(
+                Box::new(arc),
+                Box::new(arc),
+                [1, 2, 3, 4].map(|k| major.max(minor) * w.abs().powi(k)),
+            ))
         }
         EdgeCurve::NurbsCurve(_) if !piece.nurbs.is_rational() => {
             let curve = &piece.nurbs;
             let (u0, u1) = curve.domain();
             let w = u1 - u0;
+            // Split at every distinct interior knot: within a knot span the
+            // curve is a polynomial, across one it may not even be C¹.
+            let mut breaks: Vec<f64> = curve
+                .knots()
+                .iter()
+                .copied()
+                .filter(|&k| k > u0 + 1e-12 * w && k < u1 - 1e-12 * w)
+                .collect();
+            breaks.dedup_by(|a, b| (*a - *b).abs() <= 1e-12 * w);
+            let mut spans = Vec::with_capacity(breaks.len() + 1);
+            let mut rest = curve.clone();
+            let mut x0 = 0.0;
+            for &k in &breaks {
+                let (head, tail) = remus_math::nurbs::knot_ops::curve_split(&rest, k)?;
+                let x1 = (k - u0) / w;
+                spans.push(bspline_span(head, frame, x0, x1));
+                rest = tail;
+                x0 = x1;
+            }
+            spans.push(bspline_span(rest, frame, x0, 1.0));
             Ok(Unrolled {
                 piece,
                 sample: Box::new(move |x| {
@@ -280,7 +411,7 @@ fn unroll_piece<'a, U: Unroll>(
                         frame.unroll_vec(d[1] * w),
                     )
                 }),
-                bounds: bspline_bounds(curve, frame),
+                spans,
             })
         }
         other @ (EdgeCurve::NurbsCurve(_) | EdgeCurve::Parabola(_) | EdgeCurve::Hyperbola(_)) => {
@@ -320,44 +451,42 @@ fn wrap_piece(
             return Ok(WrappedEdge::Circumferential);
         }
     }
-    // `‖W_1''''‖ ≤ |z''''| + B4(g)` with `g = s / R` and the Faà di Bruno
-    // bound for the unit point `(cos g, sin g)`.
-    let [d1, d2, d3, d4] = unrolled.bounds;
+    // `‖W_1‖ ≤ |z| + B4(g)` with `g = s / R` and the Faà di Bruno
+    // bound for the unit point `(cos g, sin g)`, span by span.
     let r = frame.radius;
-    let (g1, g2, g3, g4) = (d1 / r, d2 / r, d3 / r, d4 / r);
-    let b4 = g4 + 4.0 * g1 * g3 + 3.0 * g2 * g2 + 6.0 * g1 * g1 * g2 + g1.powi(4);
-    let bound = d4 + b4;
-    let fit = fit_cubic_hermite(
-        |x| {
-            let (q, dq) = (unrolled.sample)(x);
-            frame.wrap_with_derivative(q, dq, 1.0)
-        },
-        0.0,
-        1.0,
-        bound,
+    let fourth = |span: &Span<'_>| {
+        let [d1, d2, d3, d4] = span.bounds;
+        let (g1, g2, g3, g4) = (d1 / r, d2 / r, d3 / r, d4 / r);
+        d4 + g4 + 4.0 * g1 * g3 + 3.0 * g2 * g2 + 6.0 * g1 * g1 * g2 + g1.powi(4)
+    };
+    let (unit, bound) = fit_spans(
+        unrolled,
+        fourth,
+        |q, dq| frame.wrap_with_derivative(q, dq, 1.0),
         scale_tolerance,
-        MAX_FIT_SPANS,
-    )
-    .map_err(|e| unsupported(format!("a wrapped edge could not be fitted: {e}")))?;
-    Ok(WrappedEdge::Fitted {
-        unit: fit.curve,
-        bound: fit.remainder_bound,
-    })
+    )?;
+    Ok(WrappedEdge::Fitted { unit, bound })
 }
 
-/// The angles a loop's boundary reaches, for the extent check and the
-/// cylinders' seam.
+/// A certified range `[low, high]` of `angle` over every span of `pieces`:
+/// its samples widened by half a sample spacing times `rate(span)`, a bound
+/// on `|d angle / dt|` over the span.
 #[allow(clippy::cast_precision_loss)]
-fn loop_angles(pieces: &[Unrolled<'_>], frame: &Frame) -> Vec<f64> {
-    pieces
-        .iter()
-        .flat_map(|u| {
-            (0..=EXTENT_SAMPLES).map(move |k| {
-                let ((s, _), _) = (u.sample)(k as f64 / EXTENT_SAMPLES as f64);
-                s / frame.radius
-            })
-        })
-        .collect()
+fn certified_range(
+    pieces: &[&Unrolled<'_>],
+    angle: impl Fn(Planar) -> f64,
+    rate: impl Fn(&Span<'_>) -> f64,
+) -> (f64, f64) {
+    let n = SPAN_SAMPLES;
+    let mut range = (f64::INFINITY, f64::NEG_INFINITY);
+    for span in pieces.iter().flat_map(|u| u.spans.iter()) {
+        let slack = rate(span) / (2.0 * n as f64);
+        for k in 0..=n {
+            let a = angle((span.sample)(k as f64 / n as f64).0);
+            range = (range.0.min(a - slack), range.1.max(a + slack));
+        }
+    }
+    range
 }
 
 /// Wrap the planar face `profile` onto `cylinder` between `inner` and
@@ -457,21 +586,19 @@ fn wrap_impl(
         })
         .collect::<Result<_, _>>()?;
 
-    // The profile must stay within one turn; the cylinders' seam goes in the
-    // gap it leaves.
-    let angles: Vec<f64> = unrolled
-        .iter()
-        .flat_map(|u| loop_angles(u, &frame))
-        .collect();
-    let (low, high) = angles
-        .iter()
-        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &t| {
-            (lo.min(t), hi.max(t))
-        });
+    // The profile must stay within one turn, certified from samples and a
+    // bound on how fast the angle can move between them; the cylinders'
+    // seam goes in the gap it leaves.
+    let all: Vec<&Unrolled<'_>> = unrolled.iter().flatten().collect();
+    let (low, high) = certified_range(
+        &all,
+        |q| q.0 / frame.radius,
+        |span| span.bounds[0] / frame.radius,
+    );
     let extent = high - low;
     if extent.is_nan() || extent >= std::f64::consts::TAU - 1e-6 {
         return Err(invalid(format!(
-            "the wrapped profile spans {:.3}° around the cylinder; it must stay within one turn",
+            "the wrapped profile spans up to {:.3}° around the cylinder; it must stay within one turn",
             extent.to_degrees()
         )));
     }

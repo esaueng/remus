@@ -407,10 +407,12 @@ historical predecessor-line records, retained for provenance. The
   or spline to a curve with no rational form) is a cubic B-spline certified
   within `1e-7` of the wrap's scale by the Hermite remainder, from a
   fourth-derivative bound built from the profile curve's own derivative
-  bounds; its wall is the exact ruled surface between the inner and outer
+  bounds, fitted span by span between a spline's knots and joined `C⁰`;
+  its wall is the exact ruled surface between the inner and outer
   fits, every ruling radial. A wrapped region of area `A` encloses
   `A·(ro² − ri²)/(2R)`. A profile not parallel to the axis, one spanning a
-  full turn, a rational curve other than a circle or ellipse and an empty
+  full turn (its angular extent certified from samples and a bound on how
+  fast the angle moves between them), a rational curve other than a circle or ellipse and an empty
   radius range are refused, leaving the topology unchanged. Arc length is
   measured along the profile plane itself (`axis × normal`, the normal
   turned away from the axis), so turning the reference direction moves the

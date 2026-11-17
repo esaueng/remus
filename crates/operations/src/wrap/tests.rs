@@ -2,12 +2,16 @@
 
 use std::f64::consts::PI;
 
+use remus_math::curves::Circle3D;
+use remus_math::nurbs::curve::NurbsCurve;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::builder::{make_circle_edge, make_polygon_wire};
+use remus_topology::edge::{Edge, EdgeCurve};
 use remus_topology::explorer::solid_faces;
 use remus_topology::face::{Face, FaceId, FaceSurface};
 use remus_topology::solid::SolidId;
+use remus_topology::vertex::Vertex;
 use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
 use super::*;
@@ -238,4 +242,75 @@ fn a_region_lands_under_where_it_is_drawn_from_either_side() {
         // Arc length 1..3 at radius 10 turns 0.1..0.3 rad toward +Y.
         assert!(centre.y() > 0.5, "normal {normal:?}: centre {centre:?}");
     }
+}
+
+/// A spline with a kink at an interior knot (degree 1: its derivative jumps
+/// there) closed by a line: the fit is taken span by span, so the wrapped
+/// triangle encloses its closed form. One Hermite fit across the kink read
+/// the apex 0.167 low while claiming 1e-6.
+#[test]
+fn a_spline_kinked_at_a_knot_wraps_span_by_span() {
+    let mut topo = Topology::new();
+    let (a, apex, b) = (
+        Point3::new(10.0, 0.0, 0.0),
+        Point3::new(10.0, 0.5, 1.0),
+        Point3::new(10.0, 1.0, 0.0),
+    );
+    let va = topo.add_vertex(Vertex::new(a, 1e-7));
+    let vb = topo.add_vertex(Vertex::new(b, 1e-7));
+    let spline = NurbsCurve::new(
+        1,
+        vec![0.0, 0.0, 0.5, 1.0, 1.0],
+        vec![a, apex, b],
+        vec![1.0; 3],
+    )
+    .unwrap();
+    let kinked = topo.add_edge(Edge::new(va, vb, EdgeCurve::NurbsCurve(spline)));
+    let base = topo.add_edge(Edge::new(vb, va, EdgeCurve::Line));
+    let wire = topo.add_wire(
+        Wire::new(
+            vec![
+                OrientedEdge::new(kinked, true),
+                OrientedEdge::new(base, true),
+            ],
+            true,
+        )
+        .unwrap(),
+    );
+    let profile = topo.add_face(Face::new(
+        wire,
+        vec![],
+        FaceSurface::Plane {
+            normal: -X,
+            d: -10.0,
+        },
+    ));
+    let solid = wrap_profile_solid(&mut topo, profile, &cylinder(), 9.0, 11.0).unwrap();
+    assert_valid(&topo, solid, "kinked");
+    let measured = volume(&topo, solid);
+    assert!(rel(measured, exact(0.5, 9.0, 11.0)) < 1e-6, "{measured}");
+}
+
+/// A circle just wider than the cylinder's circumference, turned so its
+/// widest point falls between samples, is refused: the extent is certified,
+/// not sampled.
+#[test]
+fn a_profile_just_over_a_turn_is_refused_between_samples() {
+    let mut topo = Topology::new();
+    let r = 10.0 * std::f64::consts::PI * 1.0005;
+    let turn = std::f64::consts::PI / 64.0;
+    let u = Vec3::new(0.0, turn.cos(), turn.sin());
+    let v = Vec3::new(0.0, -turn.sin(), turn.cos());
+    let circle = Circle3D::with_axes(Point3::new(10.0, 0.0, 0.0), X, r, u, v).unwrap();
+    let start = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+    let mut edge = Edge::new(start, start, EdgeCurve::Circle(circle));
+    edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+    let edge = topo.add_edge(edge);
+    let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap());
+    let profile = plane_face(&mut topo, wire, vec![]);
+    let reason = match wrap_profile_solid(&mut topo, profile, &cylinder(), 9.0, 11.0) {
+        Err(OperationsError::InvalidInput { reason }) => reason,
+        other => panic!("expected a refusal, got {other:?}"),
+    };
+    assert!(reason.contains("one turn"), "{reason}");
 }

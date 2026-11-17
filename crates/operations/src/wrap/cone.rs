@@ -39,7 +39,6 @@
 //! degenerate cone or offset range are refused by name; every refusal
 //! leaves the topology unchanged.
 
-use remus_math::nurbs::hermite_fit::fit_cubic_hermite;
 use remus_math::nurbs::surface::NurbsSurface;
 use remus_math::surfaces::ConicalSurface;
 use remus_math::tolerance::Tolerance;
@@ -53,8 +52,8 @@ use remus_topology::vertex::{Vertex, VertexId};
 use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
 use super::{
-    EXTENT_SAMPLES, MAX_FIT_SPANS, PARALLEL_TOLERANCE, Planar, RELATIVE_FIT_TOLERANCE, Unroll,
-    Unrolled, invalid, unroll_piece,
+    EXTENT_SAMPLES, PARALLEL_TOLERANCE, Planar, RELATIVE_FIT_TOLERANCE, SPAN_SAMPLES, Span, Unroll,
+    Unrolled, certified_range, fit_spans, invalid, unroll_piece,
 };
 use crate::OperationsError;
 use crate::helix::in_place::{Loop, read_profile_loop};
@@ -74,13 +73,6 @@ pub struct WrapCone {
     /// A point on the axis beyond the apex: the profile's `z = 0` is the
     /// circle at its height.
     pub origin: Point3,
-}
-
-fn unsupported(reason: impl Into<String>) -> OperationsError {
-    OperationsError::Unsupported {
-        operation: "cone wrap",
-        reason: reason.into(),
-    }
 }
 
 /// The wrap's frame and its map from the profile plane onto the cone.
@@ -183,16 +175,16 @@ fn wirtinger(j: u32, a: f64, b: f64) -> f64 {
         .sum()
 }
 
-/// A lower bound on `z + ρ₀` along a piece (and so on its distance from the
+/// A lower bound on `z + ρ₀` along a span (and so on its distance from the
 /// developed apex): its least sample less the most its first-derivative
 /// bound allows between samples.
 #[allow(clippy::cast_precision_loss)]
-fn least_height(unrolled: &Unrolled<'_>, slant: f64) -> f64 {
-    let n = EXTENT_SAMPLES;
+fn least_height(span: &Span<'_>, slant: f64) -> f64 {
+    let n = SPAN_SAMPLES;
     let least = (0..=n)
-        .map(|i| (unrolled.sample)(i as f64 / n as f64).0.1 + slant)
+        .map(|i| (span.sample)(i as f64 / n as f64).0.1 + slant)
         .fold(f64::INFINITY, f64::min);
-    least - unrolled.bounds[0] / (2.0 * n as f64)
+    least - span.bounds[0] / (2.0 * n as f64)
 }
 
 /// One wrapped profile edge: its fits at the inner and outer offsets, with
@@ -210,37 +202,34 @@ fn fit_piece(
     outer: f64,
     tolerance: f64,
 ) -> Result<Fitted, OperationsError> {
-    let rho_min = least_height(unrolled, frame.slant);
-    // `‖q^(i)‖ ≤ √2·bounds[i−1]`, then Faà di Bruno at order four.
-    let [d1, d2, d3, d4] = unrolled.bounds.map(|b| std::f64::consts::SQRT_2 * b);
-    let fourth = |d: f64| {
-        let w = |j| frame.derivative_bound(j, rho_min, d);
-        w(1) * d4
-            + w(2) * (4.0 * d1 * d3 + 3.0 * d2 * d2)
-            + w(3) * 6.0 * d1 * d1 * d2
-            + w(4) * d1.powi(4)
+    // `‖q^(i)‖ ≤ √2·bounds[i−1]`, then Faà di Bruno at order four, on each
+    // span with its own least distance from the apex. One bound serves both
+    // offsets, so both fits take the same spans.
+    let fourth = |span: &Span<'_>| {
+        let rho_min = least_height(span, frame.slant);
+        let [d1, d2, d3, d4] = span.bounds.map(|b| std::f64::consts::SQRT_2 * b);
+        let at = |d: f64| {
+            let w = |j| frame.derivative_bound(j, rho_min, d);
+            w(1) * d4
+                + w(2) * (4.0 * d1 * d3 + 3.0 * d2 * d2)
+                + w(3) * 6.0 * d1 * d1 * d2
+                + w(4) * d1.powi(4)
+        };
+        at(inner).max(at(outer))
     };
-    // One bound for both offsets, so both fits take the same spans.
-    let bound = fourth(inner).max(fourth(outer));
     let fit = |d: f64| {
-        fit_cubic_hermite(
-            |x| {
-                let (q, dq) = (unrolled.sample)(x);
-                frame.wrap_with_derivative(q, dq, d)
-            },
-            0.0,
-            1.0,
-            bound,
+        fit_spans(
+            unrolled,
+            fourth,
+            |q, dq| frame.wrap_with_derivative(q, dq, d),
             tolerance,
-            MAX_FIT_SPANS,
         )
-        .map_err(|e| unsupported(format!("a wrapped edge could not be fitted: {e}")))
     };
-    let (fi, fo) = (fit(inner)?, fit(outer)?);
+    let ((inner, bi), (outer, bo)) = (fit(inner)?, fit(outer)?);
     Ok(Fitted {
-        bound: fi.remainder_bound.max(fo.remainder_bound),
-        inner: fi.curve,
-        outer: fo.curve,
+        bound: bi.max(bo),
+        inner,
+        outer,
     })
 }
 
@@ -355,7 +344,8 @@ fn wrap_impl(
     let lowest = unrolled
         .iter()
         .flatten()
-        .map(|u| least_height(u, slant))
+        .flat_map(|u| u.spans.iter())
+        .map(|span| least_height(span, slant))
         .fold(f64::INFINITY, f64::min);
     if lowest.is_nan() || lowest <= linear {
         return Err(invalid(
@@ -368,26 +358,18 @@ fn wrap_impl(
             "the inner offset {inner} passes the apex of the offset cone under the profile"
         )));
     }
-    #[allow(clippy::cast_precision_loss)]
-    let angles: Vec<f64> = unrolled
-        .iter()
-        .flatten()
-        .flat_map(|u| {
-            (0..=EXTENT_SAMPLES).map(move |k| {
-                let (q, _) = (u.sample)(k as f64 / EXTENT_SAMPLES as f64);
-                q.0.atan2(q.1 + slant) / cos_b
-            })
-        })
-        .collect();
-    let (low, high) = angles
-        .iter()
-        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &t| {
-            (lo.min(t), hi.max(t))
-        });
+    // Certified from samples and a bound on how fast the angle can move
+    // between them: `|dθ/dt| ≤ |q'| / (ρ cos β)`.
+    let all: Vec<&Unrolled<'_>> = unrolled.iter().flatten().collect();
+    let (low, high) = certified_range(
+        &all,
+        |q| q.0.atan2(q.1 + slant) / cos_b,
+        |span| std::f64::consts::SQRT_2 * span.bounds[0] / (least_height(span, slant) * cos_b),
+    );
     let extent = high - low;
     if extent.is_nan() || extent >= std::f64::consts::TAU - 1e-6 {
         return Err(invalid(format!(
-            "the wrapped profile spans {:.3}° around the cone; it must stay within one turn",
+            "the wrapped profile spans up to {:.3}° around the cone; it must stay within one turn",
             extent.to_degrees()
         )));
     }
