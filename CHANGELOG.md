@@ -24,6 +24,27 @@ historical predecessor-line records, retained for provenance. The
   it treated the `InvalidInput` it replaces, and the fillet cascades fall
   back on it as on any refusal, so no result that built before changes.
 
+* **math,blend,wasm:** a NURBS face that a blend engine builds as an exact
+  closed form is no longer reported as approximate (#1824). A
+  `NurbsSurface` can now carry an `ExactForm`, recorded by the engine that
+  constructs the net (`with_exact_form`), kept by clones, and absent from
+  every other construction, from deserialization and from equality. The
+  chamfer floor chain records it on its elliptic cone bands over leaning
+  rounds (#1743), which are affine images of exact rational arcs. The
+  detailed blend twins (`filletDetailed`, `chamferDetailed`,
+  `filletV2Detailed`, `chamferV2Detailed`, `chamferDistanceAngleDetailed`,
+  `filletVariableDetailed` and their batch ops) now list under
+  `approximateFaces` only new NURBS faces that record no exact form. **Contract
+  change:** a chamfer over the rounds of a drafted body now returns
+  `quality: "exact"` with no `approximateFaces` (it was `"approximate"` with
+  the four cones listed), and `exactOnly: true` accepts it (it was refused
+  with `exact_only_unattainable`). Fitted, sampled, lofted and walked NURBS
+  faces are unchanged and still refused, including the fillet stripes over
+  leaning rounds from #1778, a loft through sampled sections. The chamfer
+  distance over a leaning round still drifts from `d` by up to 0.06% at a 2°
+  draft (#1743); that is a property of the constant-`ρ` construction, not
+  of the surface, and is not disclosed in `details`.
+
 ### Fixed
 
 * **operations,wasm:** a thread cut at the default tolerance can be exported
@@ -79,10 +100,9 @@ historical predecessor-line records, retained for provenance. The
   beside it end on its first and last rulings, before or after the chain's
   vertex. Over the round the distance along each face is `ρ / sin α` at the
   local angle, within 0.06% of `d` on a 2° draft. Rounds whose two flanks
-  meet the floor at different angles keep their refusal. As for the fillet
-  over leaning rounds, `chamferDetailed` reports the four cones as
-  `approximateFaces` (every new NURBS face is disclosed), so `exactOnly`
-  still declines the result.
+  meet the floor at different angles keep their refusal. The cones record
+  their exact form, so `chamferDetailed` reports the result as exact and
+  `exactOnly` accepts it (#1824, above).
 * **algo,operations:** an exact cut of a drilled hole tangent to a wall, or
   crossing a fillet band, no longer depends on where the tool's seam sits
   (#1739). A hole tangent to a wall from the inside leaves a wall of zero

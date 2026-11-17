@@ -355,7 +355,9 @@ fn key_reads_every_geometry_field() {
     // them.
     assert_eq!(
         size_of::<NurbsSurface>(),
-        2 * F + 4 * size_of::<std::sync::Arc<Vec<f64>>>() + LOCK_F64 + LOCK_BOOL + LOCK_GRID
+        // The trailing `F` is the one-byte exact-form record (#1824), padded to
+        // the struct's alignment: provenance, which no cached value reads.
+        2 * F + 4 * size_of::<std::sync::Arc<Vec<f64>>>() + LOCK_F64 + LOCK_BOOL + LOCK_GRID + F
     );
     assert_eq!(
         size_of::<NurbsCurve>(),

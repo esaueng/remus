@@ -695,9 +695,12 @@ fn drafted_top_loop_follows_its_leaning_rounds() {
             // Each stripe is bounded by exact curves: two ellipses, where it
             // touches the top and the round, and its two end circles.
             for f in solid_faces(&topo, rounded).unwrap() {
-                if !matches!(topo.face(f).unwrap().surface(), FaceSurface::Nurbs(_)) {
+                let FaceSurface::Nurbs(stripe) = topo.face(f).unwrap().surface() else {
                     continue;
-                }
+                };
+                // A loft through sampled sections: it records no exact form,
+                // so exact-only callers keep refusing it (#1824).
+                assert_eq!(stripe.exact_form(), None, "{what}");
                 let mut curves = BTreeMap::new();
                 for e in face_edges(&topo, f) {
                     let kind = match topo.edge(e).unwrap().curve() {
@@ -894,6 +897,31 @@ fn assert_bands_on_the_cone(
                     "{what}: band point {p:?} is {miss:e} off the cone"
                 );
             }
+        }
+        // The band records itself as the exact cone (#1824), so exact-only
+        // callers take it. That claim is held to the cone here off the grid
+        // too: 400 parameters from a low-discrepancy sequence over the whole
+        // domain, every one on `h + w = ρ` with `h` within `[0, ρ]`.
+        assert_eq!(
+            surface.exact_form(),
+            Some(remus_math::nurbs::surface::ExactForm::EllipticCone),
+            "{what}: the band records the cone it is"
+        );
+        let golden = (5f64.sqrt() - 1.0) / 2.0;
+        for k in 1..=400_u32 {
+            let s = f64::from(k) / 401.0;
+            let t = (f64::from(k) * golden).fract();
+            let p = remus_math::traits::ParametricSurface::evaluate(
+                surface,
+                u0 + (u1 - u0) * s,
+                v0 + (v1 - v0) * t,
+            );
+            let h = (p.z() - level).abs();
+            let miss = h + off_round(p, round) - rho;
+            assert!(
+                miss.abs() < 1e-9 && h <= rho + 1e-9,
+                "{what}: band point {p:?} at ({s}, {t}) is {miss:e} off the cone"
+            );
         }
     }
     assert_eq!(bands, 4, "{what}: one band over each round");

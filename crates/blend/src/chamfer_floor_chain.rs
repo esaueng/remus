@@ -68,7 +68,7 @@ use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
 use remus_math::curves::{Circle3D, Ellipse3D};
 use remus_math::det_hash::DetHashMap;
-use remus_math::nurbs::surface::NurbsSurface;
+use remus_math::nurbs::surface::{ExactForm, NurbsSurface};
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::adjacency::AdjacencyIndex;
@@ -1003,6 +1003,13 @@ fn oblique_element(
     rows[1].push(at(radius, wall_level, sweep.cos(), sweep.sin()));
     weights.push(1.0);
     knots.push(1.0);
+    // Exact, not fitted: `at` is affine in `(cos, sin)`, so each row is the
+    // affine image of an exact rational arc of the unit circle, and affine
+    // jointly in `(r, c)`, so with equal weights in both rows the straight
+    // line between them at each angle is `at` of the interpolated radius
+    // and level: the cone `h + w = ρ`. Recorded so an exact-only caller
+    // takes the band as exact (sampled against the cone in
+    // `regress_issue_1743_two_stripe_vertex.rs`).
     let surface = NurbsSurface::new(
         1,
         2,
@@ -1010,7 +1017,8 @@ fn oblique_element(
         knots,
         rows.to_vec(),
         vec![weights.clone(), weights],
-    )?;
+    )?
+    .with_exact_form(ExactForm::EllipticCone);
     let ends = |r: f64, c: f64| [at(r, c, 1.0, 0.0), at(r, c, sweep.cos(), sweep.sin())];
     Ok(Some(Element {
         edges: vec![edge],

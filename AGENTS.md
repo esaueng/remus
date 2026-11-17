@@ -152,7 +152,7 @@ Quick reference — find the right file for any task:
 | NURBS curve evaluation/manipulation | `nurbs/curve.rs` |
 | Bit-identity oracle for `NurbsCurve::evaluate`'s basis buffer against the verbatim pre-widening evaluate, degrees 1–12 (tests) | `nurbs/curve/eval_stack_oracle_tests.rs` |
 | Compact band storage for NURBS interpolation | `nurbs/banded.rs` |
-| NURBS surface evaluation | `nurbs/surface.rs` |
+| NURBS surface evaluation; `ExactForm`, the closed form a rational surface exactly is, as recorded by the engine that built it | `nurbs/surface.rs` |
 | Bit-identity oracle for `NurbsSurface::evaluate`'s u/v basis buffers against the verbatim pre-widening evaluate, degrees 1–12 (tests) | `nurbs/surface/eval_stack_oracle_tests.rs` |
 | Bit-identity oracle for the loop-based `evaluate` contraction, the lane first-order solve, the allocation-free `normal`, the fused `evaluate_and_partials_from`/`point_and_normal(_with)` and the per-axis `first_order_at` tables against the verbatim pre-change code, degrees 1–5, 9 and 11 (tests) | `nurbs/surface/contraction_oracle_tests.rs` |
 | The cached periodicity flags against the control-net comparisons kept verbatim, `with_control_points` against `NurbsSurface::new` on copied knots and weights bit for bit, and their work counts: one net comparison per surface, no knot-vector comparison per sample (tests) | `nurbs/surface/shared_storage_tests.rs` |
@@ -844,6 +844,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Source-relative live face moves preserve accepted geometry on refusal (tests) | `bindings/face_move_preview_tests.rs` |
 | Batch `getFaceNormal` returns the outward normal of reversed planar faces and refuses curved faces, matching the direct method (tests) | `bindings/face_normal_contract_tests.rs` |
 | Differential oracle: the modifier twins' full-copy rollback envelope kept verbatim, against the rollback scope (tests) | `bindings/modifier_detailed/envelope_oracle_tests.rs` |
+| Exact-only blend twins accept NURBS faces built as exact closed forms (the chamfer's elliptic cones over leaning rounds) and keep refusing lofted ones (#1824) (tests) | `bindings/modifier_detailed/exact_nurbs_tests.rs` |
 | Bounded fillet twins (`filletDetailedWithCancellation`, `filletV2DetailedWithCancellation`): cancellation token, `maxWalkSteps` budget, typed `cancelled`/`resource_limit` refusals, `details.walkSteps` | `bindings/modifier_detailed/governed.rs` |
 | Typed construction results (`extrudeDetailed`, `revolveDetailed`) | `bindings/construction_detailed.rs` |
 | Certified spline-island success and undecided nesting refusals retaining the unsupported category and document/session state through direct and batch routes (tests) | `bindings/profile_nesting_tests.rs` |
