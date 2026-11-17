@@ -43,6 +43,21 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
   radius should treat it as a refusal of this request, not as a malformed
   argument.
 
+* The detailed blend twins (`filletDetailed`, `chamferDetailed`,
+  `filletV2Detailed`, `chamferV2Detailed`, `chamferDistanceAngleDetailed`,
+  `filletVariableDetailed`, and the same-named `executeBatch` /
+  `executeBatchV2` ops) no longer treat every new NURBS face as approximate
+  (#1824). A NURBS face whose engine built it as an exact closed form is
+  exact: it is not listed under `details.approximateFaces`, and with no
+  other approximate face the result reports `quality: "exact"` and
+  `exactOnly: true` accepts it. Today that is the elliptic cone band a
+  chamfer lays over a leaning round (the top loop of a drafted box with
+  rounded uprights, say): such a chamfer used to return `quality:
+  "approximate"` with the four cones listed, or refuse with
+  `exact_only_unattainable` under `exactOnly`. Fitted, sampled, lofted and
+  walked NURBS faces are still listed and refused, including the fillet
+  stripes over the same leaning rounds. A caller that read "any new NURBS
+  face" as approximate should read `approximateFaces` instead.
 * A move-face refusal outside the qualified cells
   (`OffsetError::UnsupportedMoveFace`) now projects as category
   `unsupported` with `details.kernelCode = "unsupported_move_face"`, plus

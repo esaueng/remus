@@ -163,10 +163,13 @@ impl RemusKernel {
     /// cascade and whole-selection rule, with the legacy method's return
     /// value and thrown errors unchanged. On success `details.engine` names
     /// the blend engine (`walking`, `rollingBall`, or `mixed`). A result
-    /// that introduces a NURBS face — a sampled blend wall with no closed
-    /// form — reports `quality: "approximate"` and lists those faces under
-    /// `approximateFaces`. With `exactOnly: true` such a result is rolled
-    /// back and refused (`quality_refused` / `exact_only_unattainable`).
+    /// that introduces a NURBS face approximating its surface — a sampled,
+    /// fitted or lofted blend wall with no closed form — reports `quality:
+    /// "approximate"` and lists those faces under `approximateFaces`. A
+    /// NURBS face its engine built as an exact closed form (the elliptic
+    /// cone a chamfer lays over a leaning round) is exact and not listed.
+    /// With `exactOnly: true` an approximate result is rolled back and
+    /// refused (`quality_refused` / `exact_only_unattainable`).
     #[wasm_bindgen(js_name = "filletDetailed")]
     #[allow(clippy::needless_pass_by_value)]
     pub fn fillet_detailed(
@@ -940,14 +943,35 @@ const fn engine_name(engine: BlendEngine) -> &'static str {
     }
 }
 
+/// Whether a result face of a blend is approximate: a NURBS surface whose
+/// constructing engine recorded no exact closed form for it.
+///
+/// Exactness is provenance, never read off the net: a rational surface is
+/// exact only when the engine that built it said so
+/// ([`NurbsSurface::with_exact_form`](remus_math::nurbs::surface::NurbsSurface::with_exact_form)),
+/// as the chamfer floor chain does for its elliptic cone bands. A fitted,
+/// sampled, lofted or walked surface records none, however close it is.
+fn is_approximate_surface(surface: &FaceSurface) -> bool {
+    match surface {
+        FaceSurface::Nurbs(nurbs) => nurbs.exact_form().is_none(),
+        FaceSurface::Plane { .. }
+        | FaceSurface::Cylinder(_)
+        | FaceSurface::Cone(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => false,
+    }
+}
+
 /// Classify a committed blend result and apply the exact-only policy.
 ///
-/// A result face that is not an input face and carries a NURBS surface is a
-/// blend wall (or a re-minted neighbour) with no certified closed form, so
-/// the result is disclosed as approximate. This errs toward disclosure: a
-/// re-minted input NURBS face is also listed. Analytic walls (the rolling
-/// ball's cylinders, the walking builder's analytic fast paths, the planar
-/// bevel) are exact.
+/// A result face that is not an input face and carries a NURBS surface with
+/// no recorded exact form ([`is_approximate_surface`]) is a blend wall (or a
+/// re-minted neighbour) with no certified closed form, so the result is
+/// disclosed as approximate. This errs toward disclosure: a re-minted input
+/// NURBS face is also listed unless its surface records an exact form.
+/// Analytic walls (the rolling ball's cylinders, the walking builder's
+/// analytic fast paths, the planar bevel) and NURBS surfaces built exactly
+/// (the chamfer floor chain's elliptic cones) are exact.
 fn blend_outcome(
     topo: &Topology,
     operation: &str,
@@ -958,9 +982,7 @@ fn blend_outcome(
 ) -> Result<(u32, Map<String, Value>), StructuredWasmError> {
     let mut approximate = Vec::new();
     for face in solid_faces(topo, result)? {
-        if !input_faces.contains(&face)
-            && matches!(topo.face(face)?.surface(), FaceSurface::Nurbs(_))
-        {
+        if !input_faces.contains(&face) && is_approximate_surface(topo.face(face)?.surface()) {
             approximate.push(face_id_to_u32(face));
         }
     }
@@ -997,3 +1019,6 @@ mod tests;
 #[cfg(test)]
 #[path = "modifier_detailed/envelope_oracle_tests.rs"]
 mod envelope_oracle_tests;
+
+#[cfg(test)]
+mod exact_nurbs_tests;
