@@ -170,15 +170,14 @@ pub fn read_step_structure_with_limits(
             let solid = if instance.world == Mat4::identity() && used.insert(instance.brep) {
                 definition
             } else {
-                let size = match sizes.get(&instance.brep) {
-                    Some(&size) => size,
-                    None => {
-                        let size = solid_faces(topo, definition)?.len()
-                            + solid_edges(topo, definition)?.len()
-                            + solid_vertices(topo, definition)?.len();
-                        sizes.insert(instance.brep, size);
-                        size
-                    }
+                let size = if let Some(&size) = sizes.get(&instance.brep) {
+                    size
+                } else {
+                    let size = solid_faces(topo, definition)?.len()
+                        + solid_edges(topo, definition)?.len()
+                        + solid_vertices(topo, definition)?.len();
+                    sizes.insert(instance.brep, size);
+                    size
                 };
                 copied = copied.saturating_add(size);
                 ensure_limit(
