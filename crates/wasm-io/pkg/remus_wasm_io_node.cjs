@@ -410,6 +410,32 @@ class RemusIo {
         return StepImportResult.__wrap(ret[0]);
     }
     /**
+     * Read a STEP file's solids with their product structure.
+     *
+     * Every product occurrence is a node of `report.structure.nodes`
+     * (`name`, `parent`), parents first. Every placed occurrence of a solid
+     * is its own root of `solids`, moved by its composed placement, so a
+     * repeated part comes back once per occurrence. `report.structure.solids`
+     * gives each root's `node`, its own `name`, and its surface `color` and
+     * uniform `faceColor` (sRGB, `[0, 1]`); the colours also travel as
+     * attributes in the arena document. Styles it cannot apply are counted in
+     * `report.structure.presentation`, never refused. Unlike the flat readers,
+     * an assembly's parts come back where the assembly places them.
+     * @param {Uint8Array} data
+     * @param {number | null} [max_input_bytes]
+     * @param {number | null} [max_entities]
+     * @returns {StepImportResult}
+     */
+    importStepStructure(data, max_input_bytes, max_entities) {
+        const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remusio_importStepStructure(this.__wbg_ptr, ptr0, len0, !isLikeNone(max_input_bytes), isLikeNone(max_input_bytes) ? 0 : max_input_bytes, !isLikeNone(max_entities), isLikeNone(max_entities) ? 0 : max_entities);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return StepImportResult.__wrap(ret[0]);
+    }
+    /**
      * Read a STEP file's solids with bounded-healing diagnostics.
      * @param {Uint8Array} data
      * @param {number | null} [max_input_bytes]

@@ -25,6 +25,7 @@ export const remusio_importObj: (a: number, b: number, c: number, d: number, e: 
 export const remusio_importPly: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
 export const remusio_importStep: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
 export const remusio_importStepBodies: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
+export const remusio_importStepStructure: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
 export const remusio_importStepWithReport: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
 export const remusio_importStepWithValidation: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number, number];
 export const remusio_importStl: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
