@@ -549,10 +549,151 @@ fn draft_one_wall_of_a_box_with_rounded_vertical_edges() {
     }
 }
 
+/// A convex polyhedron's volume, the polyhedron given as half-spaces
+/// `n . p <= d`: its vertices are the feasible three-plane intersections,
+/// and each face's vertices, ordered round the face, are fanned to an
+/// interior point.
+fn polyhedron_volume(planes: &[(Vec3, f64)]) -> f64 {
+    let mut vertices: Vec<Vec3> = Vec::new();
+    for (i, &(a, da)) in planes.iter().enumerate() {
+        for (j, &(b, db)) in planes.iter().enumerate().skip(i + 1) {
+            for &(c, dc) in planes.iter().skip(j + 1) {
+                let det = a.dot(b.cross(c));
+                if det.abs() < 1e-12 {
+                    continue;
+                }
+                let p = (b.cross(c) * da + c.cross(a) * db + a.cross(b) * dc) * (1.0 / det);
+                if planes.iter().all(|&(n, d)| n.dot(p) <= d + 1e-9)
+                    && vertices.iter().all(|&q| (q - p).length() > 1e-9)
+                {
+                    vertices.push(p);
+                }
+            }
+        }
+    }
+    let mean = |points: &[Vec3]| {
+        points
+            .iter()
+            .fold(Vec3::new(0.0, 0.0, 0.0), |sum, &p| sum + p)
+            * (1.0 / points.len() as f64)
+    };
+    let inside = mean(&vertices);
+    let mut volume = 0.0;
+    for &(normal, d) in planes {
+        let mut face: Vec<Vec3> = vertices
+            .iter()
+            .copied()
+            .filter(|&p| (normal.dot(p) - d).abs() < 1e-9)
+            .collect();
+        if face.len() < 3 {
+            continue;
+        }
+        let centre = mean(&face);
+        let u = (face[0] - centre).normalize().unwrap();
+        let w = normal.cross(u);
+        let turn = |p: Vec3| (p - centre).dot(w).atan2((p - centre).dot(u));
+        face.sort_by(|&p, &q| turn(p).total_cmp(&turn(q)));
+        for (k, &a) in face.iter().enumerate() {
+            let b = face[(k + 1) % face.len()];
+            volume += (a - inside).cross(b - inside).dot(centre - inside).abs() / 6.0;
+        }
+    }
+    volume
+}
+
+/// How far the centre of a lid corner's ball sits inside each wall, along
+/// X and Y, with the walls drafted by `angle`: the ball is [`LID_RADIUS`]
+/// below the top and [`LID_RADIUS`] inside both walls.
+fn lid_ball_inset(angle: f64) -> f64 {
+    let (sin, cos) = angle.sin_cos();
+    (LID_RADIUS - (HEIGHT - LID_RADIUS) * sin) / cos
+}
+
+/// The closed-form volume of the box with its top loop rounded at
+/// [`LID_RADIUS`] and its walls drafted by `angle` (zero: not drafted).
+///
+/// The rolling-ball engine closes each corner, where two stripes meet and
+/// the edge between the walls stays sharp, with the ball's patch over a
+/// planar ledge: the stripes end on the ball's great circles square to
+/// their edges, and the ledge lies in the plane through the ball's centre
+/// square to the sharp edge. Those three planes, the top and the two walls
+/// bound the corner's cell; the body keeps the ball's sector the three
+/// planes cut at the centre and loses the rest of the cell. So the volume is
+/// the frustum the walls bound, less each band's section over its length
+/// between its end stations, less each corner's cell less that sector. The
+/// sector's solid angle is the sum of the three planes' dihedral angles less
+/// `pi`.
+fn lid_volume(angle: f64) -> f64 {
+    let radius = LID_RADIUS;
+    let (sin, cos) = angle.sin_cos();
+    let tan = angle.tan();
+    let frustum = if tan.abs() < 1e-12 {
+        SIDE * SIDE * HEIGHT
+    } else {
+        ((SIDE + 2.0 * tan * HEIGHT).powi(3) - SIDE.powi(3)) / (6.0 * tan)
+    };
+    // Each top edge: the R2 corner between the top and a wall at the
+    // interior angle 90 degrees less the draft.
+    let section = rounded_corner_area(radius, PI / 2.0 - angle);
+    let inset = lid_ball_inset(angle);
+    let band = SIDE - 2.0 * inset;
+    // The corner at the origin: walls `n . p <= 0` through the neutral
+    // lines, the ball's centre, and the sharp edge between the walls,
+    // pointing up toward the top.
+    let centre = Vec3::new(inset, inset, HEIGHT - radius);
+    let up = Vec3::new(-sin, -sin, cos).normalize().unwrap();
+    let cell = polyhedron_volume(&[
+        (Vec3::new(0.0, -cos, -sin), 0.0),
+        (Vec3::new(-cos, 0.0, -sin), 0.0),
+        (Vec3::new(0.0, 0.0, 1.0), HEIGHT),
+        (Vec3::new(1.0, 0.0, 0.0), inset),
+        (Vec3::new(0.0, 1.0, 0.0), inset),
+        (-up, -up.dot(centre)),
+    ]);
+    // Inward normals at the centre: -X and -Y (the station planes, square
+    // to each other) and `up` (the ledge plane). The dihedral angle between
+    // two of them is pi less the angle between their normals.
+    let ledge_dihedral = PI - Vec3::new(-1.0, 0.0, 0.0).dot(up).acos();
+    let solid_angle = PI / 2.0 + 2.0 * ledge_dihedral - PI;
+    let sector = solid_angle * radius.powi(3) / 3.0;
+    frustum - 4.0 * section * band - 4.0 * (cell - sector)
+}
+
+/// Assert the solid carries one [`LID_RADIUS`] ball patch at each top
+/// corner, centred where the ball touches the top and both walls drafted by
+/// `angle`.
+fn assert_lid_corners(topo: &Topology, solid: SolidId, angle: f64) {
+    let inset = lid_ball_inset(angle);
+    let height = HEIGHT - LID_RADIUS;
+    for (x, y) in [
+        (inset, inset),
+        (SIDE - inset, inset),
+        (inset, SIDE - inset),
+        (SIDE - inset, SIDE - inset),
+    ] {
+        let found = solid_faces(topo, solid)
+            .unwrap()
+            .into_iter()
+            .filter(|&face| {
+                let FaceSurface::Sphere(sphere) = topo.face(face).unwrap().surface() else {
+                    return false;
+                };
+                (sphere.center() - Point3::new(x, y, height)).length() < 1e-9
+                    && (sphere.radius() - LID_RADIUS).abs() < 1e-9
+            })
+            .count();
+        assert_eq!(found, 1, "one R{LID_RADIUS} ball at ({x}, {y}, {height})");
+    }
+}
+
 /// Assert `solid` is the lidded box with all four walls drafted and its top
 /// loop rounded at R2 again.
 fn assert_drafted_lid(topo: &Topology, solid: SolidId) {
     assert_valid_and_watertight(topo, solid);
+    assert_eq!(
+        tags(topo, solid),
+        vec![("cylinder", 4), ("plane", 10), ("sphere", 4)]
+    );
     for &(x, y) in &SIDE_NORMALS {
         assert_wall(
             topo,
@@ -563,7 +704,7 @@ fn assert_drafted_lid(topo: &Topology, solid: SolidId) {
     }
     plane_face(topo, solid, Vec3::new(0.0, 0.0, 1.0));
     // Each top edge carries the R2 cylinder rolling between its tilted wall
-    // and the top.
+    // and the top, and each corner the R2 ball touching all three.
     let top = (Vec3::new(0.0, 0.0, 1.0), Point3::new(0.0, 0.0, HEIGHT));
     for &(x, y) in &SIDE_NORMALS {
         assert_band(
@@ -573,19 +714,17 @@ fn assert_drafted_lid(topo: &Topology, solid: SolidId) {
             [(drafted_normal(x, y), neutral_point_of_wall(x, y)), top],
         );
     }
-    // The frustum less the four rounded top edges, to the corner patches'
-    // order: each edge's section is the R2 corner at the wall-to-top angle.
-    let tan = angle().tan();
-    let frustum = ((SIDE + 2.0 * tan * HEIGHT).powi(3) - SIDE.powi(3)) / (6.0 * tan);
-    let theta = PI / 2.0 - angle();
-    let rounded = 4.0 * rounded_corner_area(LID_RADIUS, theta) * (SIDE + 2.0 * tan * HEIGHT);
-    let volume = crate::measure::solid_volume(topo, solid, 0.0005).unwrap();
-    assert!(
-        volume < frustum && volume > frustum - rounded - 1.0,
-        "volume {volume} outside ({}, {frustum})",
-        frustum - rounded - 1.0
-    );
-    let reach = SIDE + HEIGHT * tan;
+    assert_lid_corners(topo, solid, angle());
+    let expected = lid_volume(angle());
+    for deflection in [0.0005, 0.0002] {
+        let volume = crate::measure::solid_volume(topo, solid, deflection).unwrap();
+        assert!(
+            (volume - expected).abs() < 1e-4 * expected,
+            "volume {volume} at deflection {deflection}, closed form {expected}"
+        );
+    }
+    let reach = SIDE + HEIGHT * angle().tan();
+    let inset = lid_ball_inset(angle());
     for (point, wanted) in [
         (
             Point3::new(SIDE + 0.3, 20.0, HEIGHT - 3.0),
@@ -600,75 +739,46 @@ fn assert_drafted_lid(topo: &Topology, solid: SolidId) {
             Point3::new(reach - 1.5, 20.0, HEIGHT - 1.5),
             PointClassification::Inside,
         ),
+        // At a corner: above the ledge and outside the ball, then below the
+        // ledge, inside the walls.
+        (
+            Point3::new(0.0, 0.0, HEIGHT - LID_RADIUS + 0.5),
+            PointClassification::Outside,
+        ),
+        (
+            Point3::new(0.0, 0.0, HEIGHT - LID_RADIUS - 0.5),
+            PointClassification::Inside,
+        ),
+        // Inside the ball, under its contact with the top.
+        (
+            Point3::new(inset, inset, HEIGHT - 0.1),
+            PointClassification::Inside,
+        ),
     ] {
         assert_eq!(classified(topo, solid, point), wanted, "probe {point:?}");
     }
 }
 
-/// The issue's third case: the box with its top loop at R2. The draft now
-/// goes through the lid's blend group, and two steps of that route are still
-/// open for this body:
-///
-/// - the group does not remove to sharp. The rolling-ball loop closes each
-///   box corner with a sphere patch over a flat triangular ledge at the
-///   contact height (`(2, 0, 18) (0, 0, 18) (0, 2, 18)`); the removal keeps
-///   the ledge as a boundary face and finds no sharp image for its corner
-///   ("the sharp parent is ambiguous"), where the sharp box has no ledge;
-/// - on the drafted box the loop does not re-fillet: its corners are 88 and
-///   92 degrees, and the fillet engines refuse the vertex where two stripes
-///   meet there (#1743).
-///
-/// Until both are closed the draft must refuse by naming the step that
-/// stopped it, never with the curved-neighbour refusal it used to give, and
-/// must leave the input as it was. Once they are it must build the body
-/// [`assert_drafted_lid`] describes.
+/// The issue's third case: the box with its top loop at R2, all four walls
+/// drafted. Each lid corner is the ball's patch over a planar ledge; the
+/// ledge goes with its corner when the group is removed to the sharp box,
+/// the sharp box drafts, and the loop re-fillets on the drafted box's 88
+/// and 92 degree corners.
 #[test]
-fn draft_of_a_box_with_a_rounded_top_loop_builds_or_names_the_blend_step() {
-    let mut topo = Topology::new();
-    let lid = lidded_box(&mut topo);
-    let selected = walls(&topo, lid);
-    let before = solid_entity_counts(&topo, lid).unwrap();
-
-    match draft(
-        &mut topo,
-        lid,
-        &selected,
-        pull(),
-        Point3::new(0.0, 0.0, 0.0),
-        angle(),
-    ) {
-        Ok(drafted) => assert_drafted_lid(&topo, drafted),
-        Err(OperationsError::Unsupported {
-            operation: "draft",
-            reason,
-        }) => {
-            assert!(
-                reason.contains("does not remove to its sharp edges")
-                    || (reason.contains("blends cannot be re-applied")
-                        && reason.contains("unsupported vertex blend")),
-                "the refusal must name the blend step that stopped it: {reason}"
-            );
-            assert!(
-                !reason.contains("curved neighbour"),
-                "the curved-neighbour refusal is what #1744 removes: {reason}"
-            );
-        }
-        Err(error) => panic!("unexpected error {error:?}"),
-    }
-    // A refusal leaves the input as it was.
-    assert_eq!(solid_entity_counts(&topo, lid).unwrap(), before);
-    assert_valid_and_watertight(&topo, lid);
-}
-
-/// Ready repro for the lid case: the draft must build once the lid's group
-/// removes to sharp and a top loop re-fillets on the drafted body (see
-/// [`draft_of_a_box_with_a_rounded_top_loop_builds_or_names_the_blend_step`]).
-#[test]
-#[ignore = "open: the lid's ledge corners do not remove to sharp, and re-filleting the top loop on the drafted box refuses with '2 stripes meet' at its 88/92 degree corners (#1743)"]
 fn draft_all_walls_of_a_box_with_a_rounded_top_loop() {
     let mut topo = Topology::new();
     let lid = lidded_box(&mut topo);
+    // The input is the closed form's undrafted body.
+    let volume = crate::measure::solid_volume(&topo, lid, 0.0005).unwrap();
+    let expected = lid_volume(0.0);
+    assert!(
+        (volume - expected).abs() < 1e-4 * expected,
+        "input volume {volume}, closed form {expected}"
+    );
+    assert_lid_corners(&topo, lid, 0.0);
+    let before = solid_entity_counts(&topo, lid).unwrap();
     let selected = walls(&topo, lid);
+
     let drafted = draft(
         &mut topo,
         lid,
@@ -678,7 +788,38 @@ fn draft_all_walls_of_a_box_with_a_rounded_top_loop() {
         angle(),
     )
     .unwrap();
+
+    assert_ne!(drafted, lid);
+    assert_eq!(solid_entity_counts(&topo, drafted).unwrap(), before);
     assert_drafted_lid(&topo, drafted);
+    // The input is left as it was.
+    assert_eq!(solid_entity_counts(&topo, lid).unwrap(), before);
+    assert_valid_and_watertight(&topo, lid);
+}
+
+/// The issue's point: a drafted part with rounded edges can be built in
+/// either order. Rounding the top loop of the drafted box builds the same
+/// body as drafting the rounded one.
+#[test]
+fn rounding_a_drafted_box_builds_the_drafted_lid() {
+    let mut topo = Topology::new();
+    let body = make_box(&mut topo, SIDE, SIDE, HEIGHT).unwrap();
+    let selected = walls(&topo, body);
+    let drafted = draft(
+        &mut topo,
+        body,
+        &selected,
+        pull(),
+        Point3::new(0.0, 0.0, 0.0),
+        angle(),
+    )
+    .unwrap();
+    let edges = top_loop(&topo, drafted);
+    assert_eq!(edges.len(), 4);
+    let rounded = fillet_cascade(&mut topo, drafted, &edges, LID_RADIUS)
+        .unwrap()
+        .solid;
+    assert_drafted_lid(&topo, rounded);
 }
 
 /// A curved face in the way that is not a blend is not the blend route's to

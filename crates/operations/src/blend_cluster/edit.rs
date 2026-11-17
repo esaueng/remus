@@ -62,7 +62,7 @@ use remus_math::compact_sort::CompactSort;
 use remus_math::tolerance::Tolerance;
 use remus_topology::Topology;
 use remus_topology::edge::EdgeId;
-use remus_topology::face::FaceId;
+use remus_topology::face::{FaceId, FaceSurface};
 use remus_topology::journal::{EntityKey, EntityKind};
 use remus_topology::solid::SolidId;
 
@@ -992,7 +992,21 @@ pub(super) fn carry_member_identities(
     for _ in 0..before.members.len() {
         let mut matches = Vec::new();
         for member in &before.members {
-            let [source] = member.faces.as_slice() else {
+            // A two-stripe corner's planar ledge rides with its ball patch
+            // (see `is_corner_ledge`): the patch carries the corner's
+            // identity, and the ledge is regenerated with it.
+            let curved: Vec<FaceId> = member
+                .faces
+                .iter()
+                .copied()
+                .filter(|&face| {
+                    member.kind != BlendMemberKind::CornerPatch
+                        || topo
+                            .face(face)
+                            .is_ok_and(|data| !matches!(data.surface(), FaceSurface::Plane { .. }))
+                })
+                .collect();
+            let [source] = curved.as_slice() else {
                 continue;
             };
             if map.modified.contains_key(&source.index()) {
@@ -1007,7 +1021,9 @@ pub(super) fn carry_member_identities(
                     .neighbors_of_face(*source)
                     .iter()
                     .copied()
-                    .filter(|&face| before.member_of(face).is_some())
+                    .filter(|&face| {
+                        before.member_of(face).is_some() && !member.faces.contains(&face)
+                    })
                     .collect::<Vec<_>>()
             } else {
                 member.supports.clone()
