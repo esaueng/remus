@@ -914,24 +914,17 @@ fn hairpin_corners_past_the_old_limit_mitre_exactly() {
                 rel(read, exact) < 1e-6,
                 "{label}: solid_volume {read} vs {exact}"
             );
-            // The display mesh is checked from scale 1 up: at 1e-3 the
-            // tessellator stitches the seam of these long, thin mitred walls
-            // with mismatched vertices, as it already does for a 170° mitre
-            // (see `small_mitred_tube_seam_tessellates_watertight`).
-            if s >= 1.0 {
-                for deflection in [0.2 * r, 0.05 * r] {
-                    let mesh =
-                        crate::tessellate::tessellate_solid(&topo, solid, deflection).unwrap();
-                    assert!(
-                        crate::tessellate::is_watertight(&mesh),
-                        "{label}: watertight at {deflection}"
-                    );
-                    let enclosed = mesh_volume(&mesh);
-                    assert!(
-                        rel(enclosed, exact) < 2e-2,
-                        "{label}: mesh {enclosed} vs {exact}"
-                    );
-                }
+            for deflection in [0.2 * r, 0.05 * r] {
+                let mesh = crate::tessellate::tessellate_solid(&topo, solid, deflection).unwrap();
+                assert!(
+                    crate::tessellate::is_watertight(&mesh),
+                    "{label}: watertight at {deflection}"
+                );
+                let enclosed = mesh_volume(&mesh);
+                assert!(
+                    rel(enclosed, exact) < 2e-2,
+                    "{label}: mesh {enclosed} vs {exact}"
+                );
             }
             // The bisector plane's in-plane direction toward the corner's
             // outside, where the incoming run reaches past the corner.
@@ -958,22 +951,45 @@ fn hairpin_corners_past_the_old_limit_mitre_exactly() {
     }
 }
 
-/// Ready repro, not fixed here: a 170° mitre (accepted before the corner
-/// limit was lifted) on a tube of radius 1e-4 tessellates with an open seam
-/// at deflections from the radius down to a fifth of it; it closes at 1e-5
-/// and at larger scales.
+/// A 170° mitre on a tube of radius 1e-4 tessellated with an open seam at
+/// deflections from the radius down to a fifth of it. The two walls meet at
+/// the mitre in thin slivers, one on each wall across the same chord; the
+/// coincident-triangle pass keys triangles on an absolute 1 µm grid, read
+/// the two slivers as one facet seen from both sides and cancelled them,
+/// opening both walls. Facets that fold across one mesh edge are now kept
+/// (`mesh_ops::folded_neighbours`). Closed and sound at the radius, a half
+/// and a fifth of it, and the scale-derived deflection (bounding diagonal
+/// times 1e-5), enclosing the area times the centre-line length.
 #[test]
-#[ignore = "pre-existing: small mitred tube seams tessellate open (tessellator)"]
 fn small_mitred_tube_seam_tessellates_watertight() {
     let s = 1e-3;
     let mut topo = Topology::new();
     let r = 0.1 * s;
     let profile = circle_face(&mut topo, p(-10.0 * s, 0.0, 0.0), X, r);
-    let (path, _) = hairpin(&mut topo, s, 170.0);
+    let (path, out) = hairpin(&mut topo, s, 170.0);
     let solid = sweep_exact(&mut topo, profile, &path).unwrap();
     assert_valid(&topo, solid, "170 degree tube at 1e-3");
-    let mesh = crate::tessellate::tessellate_solid(&topo, solid, r).unwrap();
-    assert_eq!(open_mesh_edges(&mesh), 0);
+    let exact = PI * r * r * 20.0 * s;
+    let measured = volume(&topo, solid);
+    assert!(rel(measured, exact) < 1e-9, "{measured} vs {exact}");
+    // The two runs' far ends and the tube's radius bound the body.
+    let far = p(0.0, 0.0, 0.0) + out * (10.0 * s);
+    let diagonal = (10.0 * s + far.x().max(0.0) + r)
+        .hypot(far.y() + 2.0 * r)
+        .hypot(2.0 * r);
+    let mut unsound = Vec::new();
+    for deflection in [r, 0.5 * r, 0.2 * r, diagonal * 1e-5] {
+        let audit = crate::tessellate::mesh_audit::audit_display_mesh(
+            &topo,
+            solid,
+            deflection,
+            remus_math::chord::DEFAULT_ANGULAR_TOL,
+        );
+        if !audit.sound(deflection, exact) {
+            unsound.push((deflection, audit));
+        }
+    }
+    assert!(unsound.is_empty(), "unsound meshes: {unsound:?}");
 }
 
 /// The same hairpins with a rectangle: four planes per run, mitred on the

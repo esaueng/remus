@@ -1243,10 +1243,64 @@ fn dedupe_rechecks_preserved_collisions_after_positions_change_within_grid_cells
     assert!(mesh.indices.is_empty());
 }
 
+/// Two facets thinner than the grid whose corners sit apart by a sizeable
+/// share of their own thickness are distinct, whatever cells they share: the
+/// polar pair touching at one corner, and two slivers folded ten degrees
+/// across a shared chord (a 170° mitre of a 1e-4 tube, whose cancellation
+/// opened both walls). Copies of one facet whose corners agree to within a
+/// small share of its thickness still cancel or collapse.
 #[test]
-fn dedupe_preserves_legacy_resolution_for_unresolved_candidates() {
+fn dedupe_keeps_thin_facets_the_grid_cannot_resolve() {
     let mut touching = fine_grid_polar_pair();
     touching.positions[3] = touching.positions[0];
+    // A chord of 6e-6 along x, and two apexes 3e-7 from it, folded 10°
+    // about it: every corner shares its cell with its partner.
+    let (half, h) = (5f64.to_radians(), 3e-7);
+    let base = Point3::new(1.0e-3, 2.0e-3, 3.0e-3);
+    let fold = TriangleMesh {
+        positions: vec![
+            base,
+            base + Vec3::new(6e-6, 0.0, 0.0),
+            base + Vec3::new(3e-6, h * half.cos(), h * half.sin()),
+            base + Vec3::new(3e-6, h * half.cos(), -h * half.sin()),
+        ],
+        normals: vec![Vec3::new(0.0, 0.0, 1.0); 4],
+        indices: vec![0, 1, 2, 1, 0, 3],
+    };
+    for (label, mut mesh) in [("touching", touching), ("fold", fold)] {
+        let mut reference = mesh.clone();
+        super::tests::mesh_passes::reference::dedupe_coincident_triangles(&mut reference, None);
+        assert!(
+            reference.indices.is_empty(),
+            "{label}: the grid alone cancels"
+        );
+        let before = mesh.clone();
+        assert!(
+            !super::mesh_ops::dedupe_coincident_triangles(&mut mesh, None),
+            "{label}"
+        );
+        assert_eq!(mesh.indices, before.indices, "{label}");
+    }
+    // The same fold at a tenth of a degree is a copy seen from both sides.
+    let tiny = 0.05f64.to_radians();
+    let mut copy = TriangleMesh {
+        positions: vec![
+            base,
+            base + Vec3::new(6e-6, 0.0, 0.0),
+            base + Vec3::new(3e-6, h * tiny.cos(), h * tiny.sin()),
+            base + Vec3::new(3e-6, h * tiny.cos(), -h * tiny.sin()),
+        ],
+        normals: vec![Vec3::new(0.0, 0.0, 1.0); 4],
+        indices: vec![0, 1, 2, 1, 0, 3],
+    };
+    assert!(super::mesh_ops::dedupe_coincident_triangles(
+        &mut copy, None
+    ));
+    assert!(copy.indices.is_empty());
+}
+
+#[test]
+fn dedupe_preserves_legacy_resolution_for_unresolved_candidates() {
     let mut non_finite = fine_grid_polar_pair();
     for i in [0, 3] {
         let p = non_finite.positions[i];
@@ -1263,7 +1317,7 @@ fn dedupe_preserves_legacy_resolution_for_unresolved_candidates() {
     ];
     let mut larger_group = fine_grid_polar_pair();
     larger_group.indices.extend_from_slice(&[0, 1, 2]);
-    for mut mesh in [touching, non_finite, collinear, larger_group] {
+    for mut mesh in [non_finite, collinear, larger_group] {
         let mut reference = mesh.clone();
         super::tests::mesh_passes::reference::dedupe_coincident_triangles(&mut reference, None);
         assert!(super::mesh_ops::dedupe_coincident_triangles(

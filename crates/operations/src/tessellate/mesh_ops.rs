@@ -391,7 +391,10 @@ pub(super) fn dedupe_coincident_triangles_cached(
                     group.push((tj, parity[tj]));
                 }
             }
-            if group.len() == 2 && strictly_separated_facets(mesh, group[0].0, group[1].0) {
+            if group.len() == 2
+                && (strictly_separated_facets(mesh, group[0].0, group[1].0)
+                    || grid_unresolved_facets(mesh, &ids.of, group[0].0, group[1].0))
+            {
                 continue;
             }
             if group.len() >= 2 {
@@ -510,6 +513,51 @@ fn strictly_separated_facets(mesh: &TriangleMesh, first: usize, second: usize) -
         })
     };
     separated(a, b, areas[0]) || separated(b, a, areas[1])
+}
+
+/// Whether two facets that share a key are distinct facets the grid cannot
+/// resolve rather than copies of one facet: some pair of their corners in
+/// one cell lies at least a twentieth of the thinner facet's least altitude
+/// apart (for two facets folded across a shared chord, a fold of about
+/// three degrees). The grid is absolute (1 µm), so on a small part two
+/// slivers less than a micrometre thick share every cell although each lies
+/// well clear of the other on its own scale: where two tubes of radius 1e-4
+/// meet at a 170° mitre, one sliver of each wall on either side of a shared
+/// chord, and at a 179.5° mitre two walls half a degree apart near the
+/// mitre's tip. Cancelling such a pair opened both walls. Copies of one
+/// facet, whose corners agree to within rounding, keep the old policy, as
+/// do degenerate facets.
+fn grid_unresolved_facets(
+    mesh: &TriangleMesh,
+    cell_of: &[u32],
+    first: usize,
+    second: usize,
+) -> bool {
+    let corner = |t: usize, k: usize| mesh.indices[3 * t + k] as usize;
+    let points = |t: usize| [0, 1, 2].map(|k| mesh.positions[corner(t, k)]);
+    let (a, b) = (points(first), points(second));
+    // The least altitude: twice the area over the longest side.
+    let thickness = |p: [Point3; 3]| {
+        let twice_area = (p[1] - p[0]).cross(p[2] - p[0]).length();
+        let longest = (p[1] - p[0])
+            .length()
+            .max((p[2] - p[1]).length())
+            .max((p[0] - p[2]).length());
+        twice_area / longest
+    };
+    let thinner = thickness(a).min(thickness(b));
+    if !thinner.is_finite() || thinner <= 0.0 {
+        return false;
+    }
+    let mut apart = 0.0_f64;
+    for (i, &p) in a.iter().enumerate() {
+        let cell = cell_of[corner(first, i)];
+        let Some(j) = (0..3).find(|&j| cell_of[corner(second, j)] == cell) else {
+            return false;
+        };
+        apart = apart.max((p - b[j]).length());
+    }
+    apart.is_finite() && apart >= 0.05 * thinner
 }
 
 /// Removal rule for one group of position-coincident triangles (in index
