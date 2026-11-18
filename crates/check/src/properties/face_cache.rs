@@ -605,6 +605,10 @@ impl FaceIntegralCache {
     /// identical content was integrated about this very reference; otherwise
     /// equal to it up to rounding (see the [module docs](self)).
     ///
+    /// The term is the vector-area-collecting reading, so on a cylinder or
+    /// cone face with a fitted trim it is the sampled trim's, not the
+    /// boundary reading `integrate_face_fixed_about` returns there.
+    ///
     /// # Errors
     ///
     /// Exactly the errors of the uncached integrator.
