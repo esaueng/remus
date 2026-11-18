@@ -352,8 +352,9 @@ pub(crate) fn trim_contains_point(trim: &boundary::FaceTrimData, point: Point3) 
 
 /// Trim membership of a point already within tolerance of the face's
 /// support surface: the UV trim for cylinder, cone and torus faces, whose
-/// 3D outer polygon can project degenerately (RFC 0008 F4), else the
-/// projected polygon.
+/// 3D outer polygon can project degenerately (RFC 0008 F4), the
+/// stereographic chart for a sphere face whose trim holds a pole or winds
+/// the axis (B264), else the projected polygon.
 pub(crate) fn face_trim_contains(
     topo: &Topology,
     fid: FaceId,
@@ -362,6 +363,9 @@ pub(crate) fn face_trim_contains(
     point: Point3,
 ) -> Result<bool, CheckError> {
     if let Some(inside) = boundary::analytic_uv_trim_contains(topo, fid, trim, cache, point)? {
+        return Ok(inside);
+    }
+    if let Some(inside) = boundary::sphere_pole_trim_contains(topo, fid, trim, cache, point)? {
         return Ok(inside);
     }
     Ok(trim_contains_point(trim, point))
@@ -399,7 +403,8 @@ fn is_on_boundary(
                 }
                 continue;
             }
-            if trim_is_uv_decided(topo.face(fid)?.surface()) {
+            let surface = topo.face(fid)?.surface();
+            if trim_is_uv_decided(surface) || matches!(surface, FaceSurface::Sphere(_)) {
                 let trim = boundary::FaceTrimData::build(topo, fid)?;
                 if face_trim_contains(topo, fid, &trim, None, point)? {
                     return Ok(true);

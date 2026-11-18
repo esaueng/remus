@@ -624,6 +624,9 @@ pub struct FaceCache {
     circle_patch: OnceLock<Option<Vec<(Point3, Vec3)>>>,
     /// Circle-arc trim of a sphere face the narrower sphere paths decline.
     sphere_arc_trim: OnceLock<Option<sphere_arcs::SphereArcTrim>>,
+    /// Re-centred stereographic trim of a sphere face whose trim holds a pole
+    /// of the sphere's chart or winds its axis.
+    sphere_stereo_trim: OnceLock<Option<sphere_stereo::StereoTrim>>,
 }
 
 /// UV images of a cylinder, cone or torus face's trim polygons, as
@@ -1090,13 +1093,26 @@ fn count_sphere_cap_crossings_with_trim(
     let cap_sign = if inward_side > 0.0 { 1.0 } else { -1.0 };
 
     let holes = &trim_data.holes;
+    // The holes lie in the cap, so the sphere point farthest off it is in
+    // none of them: read from there, each hole bounds its own image (B264).
+    // Projected along the plane normal instead, a hole near the rim folds
+    // over the cap and its shadow takes in hits it does not hold.
+    let cap_holes = if holes.is_empty() {
+        None
+    } else {
+        sphere_stereo::CapHoles::build(holes, sph.center(), plane_normal * -cap_sign)
+    };
     let mut crossings = 0u32;
     for &hit in hits {
         // Exact: the cap is every point of the sphere on this side of the plane.
         if (hit - ref_pt).dot(plane_normal) * cap_sign < -HALF_SPACE_EPS {
             continue;
         }
-        if hit_in_hole_3d(holes, hit, plane_normal) {
+        let in_hole = cap_holes
+            .as_ref()
+            .and_then(|cap_holes| cap_holes.in_hole(hit))
+            .unwrap_or_else(|| hit_in_hole_3d(holes, hit, plane_normal));
+        if in_hole {
             continue;
         }
         crossings += 1;
@@ -1108,6 +1124,7 @@ fn count_sphere_cap_crossings_with_trim(
 /// Outward arithmetic for the qualified great-circle trim predicate.
 /// Unknown/overflowed arithmetic never decides a containment sign.
 mod sphere_arcs;
+mod sphere_stereo;
 
 mod spherical_trim_math {
     use super::{Point3, Vec3};
@@ -2045,6 +2062,89 @@ fn count_sphere_chart_crossings(
     .map(Some)
 }
 
+/// Count ray crossings of a sphere face the `(longitude, latitude)` chart
+/// cannot read (a trim that holds a pole or winds the axis) in a
+/// stereographic chart re-centred clear of its loops
+/// ([`sphere_stereo::StereoTrim`], B264). `None` when that chart cannot be
+/// built either, keeping the 3D polygon fallback; a hit whose winding is not
+/// that of a simple trim abstains from the vote.
+fn count_sphere_stereo_crossings(
+    topo: &Topology,
+    face_id: FaceId,
+    trim: Option<&FaceTrimData>,
+    cache: Option<&FaceCache>,
+    hits: &[Point3],
+    sphere: &remus_math::surfaces::SphericalSurface,
+) -> Result<Option<u32>, CheckError> {
+    if hits.is_empty() {
+        return Ok(None);
+    }
+    let owned_trim;
+    let trim_data = if let Some(cached) = trim {
+        cached
+    } else {
+        owned_trim = FaceTrimData::build(topo, face_id)?;
+        &owned_trim
+    };
+    let owned_chart;
+    let chart = if let Some(cache) = cache {
+        cache
+            .sphere_stereo_trim
+            .get_or_init(|| sphere_stereo::StereoTrim::build(trim_data, sphere))
+    } else {
+        owned_chart = sphere_stereo::StereoTrim::build(trim_data, sphere);
+        &owned_chart
+    };
+    let Some(chart) = chart else {
+        return Ok(None);
+    };
+    let mut count = 0;
+    for &hit in hits {
+        let Some(inside) = chart.contains(hit) else {
+            return Err(CheckError::ClassificationFailed(
+                super::NURBS_RAY_GRAZE.into(),
+            ));
+        };
+        count += u32::from(inside);
+    }
+    Ok(Some(count))
+}
+
+/// Trim membership of a point near a sphere face whose trim the
+/// `(longitude, latitude)` chart cannot read (a pole-holding or axis-winding
+/// trim), read in the re-centred stereographic chart the ray vote uses
+/// ([`count_sphere_stereo_crossings`]). `None` for other faces, for trims the
+/// chart reads, and where the stereographic chart cannot decide: the caller
+/// keeps its projected polygon there.
+///
+/// # Errors
+///
+/// Returns an error if a topology lookup fails.
+pub fn sphere_pole_trim_contains(
+    topo: &Topology,
+    face_id: FaceId,
+    trim: &FaceTrimData,
+    cache: Option<&FaceCache>,
+    point: Point3,
+) -> Result<Option<bool>, CheckError> {
+    let FaceSurface::Sphere(sphere) = topo.face(face_id)?.surface() else {
+        return Ok(None);
+    };
+    if sphere_trim_reads_in_chart(trim, sphere) {
+        return Ok(None);
+    }
+    let owned_chart;
+    let chart = if let Some(cache) = cache {
+        cache
+            .sphere_stereo_trim
+            .get_or_init(|| sphere_stereo::StereoTrim::build(trim, sphere))
+    } else {
+        owned_chart = sphere_stereo::StereoTrim::build(trim, sphere);
+        &owned_chart
+    };
+    Ok(chart.as_ref().and_then(|chart| chart.contains(point)))
+}
+
 /// Whether a sphere face's trim polygons are simple loops in its chart.
 fn sphere_trim_reads_in_chart(
     trim: &FaceTrimData,
@@ -2258,6 +2358,10 @@ pub fn count_face_ray_crossings_cached(
                     Ok(count)
                 } else if let Some(count) =
                     count_sphere_chart_crossings(topo, face_id, trim, cache, points, sph)?
+                {
+                    Ok(count)
+                } else if let Some(count) =
+                    count_sphere_stereo_crossings(topo, face_id, trim, cache, points, sph)?
                 {
                     Ok(count)
                 } else {

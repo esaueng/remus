@@ -792,10 +792,12 @@ mod ray_crossing_torus_tests {
         rows[0]["ok"].clone()
     }
 
-    /// Already fails on d78230e1 before the ray-solver optimization. These points
-    /// lie exactly on the retained torus support, well away from the removed notch.
+    /// B269: these points lie exactly on the retained torus support, well away
+    /// from the removed notch. They read Outside on d78230e1, before the
+    /// ray-solver optimization, and read `OnBoundary` again on 4b81ce74 (not
+    /// bisected). `torus_notch_support_reads_boundary_at_every_scale` holds
+    /// the whole retained support to the closed form.
     #[test]
-    #[ignore = "open: trimmed torus boundary containment reports Outside on retained curved support"]
     fn ray_crossing_torus_notch_curved_boundary_ready_repro() {
         let mut kernel = RemusKernel::new();
         let torus = batch(
@@ -833,6 +835,118 @@ mod ray_crossing_torus_tests {
                     .unwrap(),
                 PointClassification::OnBoundary
             );
+        }
+    }
+
+    /// B269 oracle: the torus R1/r0.3 less the 0.8 box at (0.6, −0.4, −0.4),
+    /// built through the batch at three scales, unplaced and rigidly placed.
+    /// Every sampled point of the retained torus support (`u` over the half
+    /// turn opposite the notch, `v` all round the tube) reads `OnBoundary`,
+    /// the points 0.03 inside and outside the tube there read `Inside` and
+    /// `Outside`, and the tube inside the notch reads `Outside` — through the
+    /// prepared and the one-shot classifier alike.
+    #[test]
+    fn torus_notch_support_reads_boundary_at_every_scale() {
+        use std::f64::consts::{PI, TAU};
+        for scale in [0.1_f64, 1.0, 10.0] {
+            for placed in [false, true] {
+                let mut kernel = RemusKernel::new();
+                let torus = batch(
+                    &mut kernel,
+                    "makeTorus",
+                    json!({"majorRadius": scale, "minorRadius": 0.3 * scale, "segments": 32}),
+                );
+                let tool = batch(
+                    &mut kernel,
+                    "makeBox",
+                    json!({"width": 0.8 * scale, "height": 0.8 * scale, "depth": 0.8 * scale}),
+                );
+                batch(
+                    &mut kernel,
+                    "transform",
+                    json!({"solid": tool, "matrix": [
+                        1.0, 0.0, 0.0, 0.6 * scale, 0.0, 1.0, 0.0, -0.4 * scale,
+                        0.0, 0.0, 1.0, -0.4 * scale, 0.0, 0.0, 0.0, 1.0,
+                    ]}),
+                );
+                let (c, s) = if placed {
+                    (0.37_f64.cos(), 0.37_f64.sin())
+                } else {
+                    (1.0, 0.0)
+                };
+                let offset = if placed { [3.7, -9.1, 1.3] } else { [0.0; 3] };
+                for solid in [&torus, &tool] {
+                    batch(
+                        &mut kernel,
+                        "transform",
+                        json!({"solid": solid, "matrix": [
+                            c, 0.0, s, offset[0] * scale, 0.0, 1.0, 0.0, offset[1] * scale,
+                            -s, 0.0, c, offset[2] * scale, 0.0, 0.0, 0.0, 1.0,
+                        ]}),
+                    );
+                }
+                let result = batch(
+                    &mut kernel,
+                    "booleanWithQuality",
+                    json!({"operation": "cut", "solidA": torus, "solidB": tool, "exactOnly": true}),
+                );
+                assert_eq!(result["quality"], "exact");
+                let solid = kernel
+                    .resolve_solid(u32::try_from(result["solid"].as_u64().unwrap()).unwrap())
+                    .unwrap();
+                let topo = kernel.topo();
+                let prepared = PreparedSolid::prepare(topo, solid).unwrap();
+                let options = ClassifyOptions {
+                    tolerance: 1e-7 * scale.max(1.0),
+                    ..ClassifyOptions::default()
+                };
+                let classify = |[x, y, z]: [f64; 3]| {
+                    let point = Point3::new(
+                        (c * x + s * z + offset[0]) * scale,
+                        (y + offset[1]) * scale,
+                        (-s * x + c * z + offset[2]) * scale,
+                    );
+                    let reused = prepared.classify_point(point, &options).unwrap();
+                    let one_shot =
+                        remus_check::classify::classify_point(topo, solid, point, &options)
+                            .unwrap();
+                    assert_eq!(reused, one_shot, "scale={scale} placed={placed} {point:?}");
+                    reused
+                };
+                // A point at tube radius `rho` from the core circle.
+                let at = |u: f64, v: f64, rho: f64| {
+                    let ring = rho.mul_add(v.cos(), 1.0);
+                    [ring * u.cos(), ring * u.sin(), rho * v.sin()]
+                };
+                for i in 0..=8_u32 {
+                    let u = f64::from(i).mul_add(PI / 8.0, PI / 2.0);
+                    for j in 0..12_u32 {
+                        let v = f64::from(j).mul_add(TAU / 12.0, 0.1);
+                        let label = format!("scale={scale} placed={placed} u={u} v={v}");
+                        assert_eq!(
+                            classify(at(u, v, 0.3)),
+                            PointClassification::OnBoundary,
+                            "{label}: on support"
+                        );
+                        assert_eq!(
+                            classify(at(u, v, 0.27)),
+                            PointClassification::Inside,
+                            "{label}: inside the tube"
+                        );
+                        assert_eq!(
+                            classify(at(u, v, 0.33)),
+                            PointClassification::Outside,
+                            "{label}: outside the tube"
+                        );
+                        // The tube the box removed.
+                        assert_eq!(
+                            classify(at(0.05, v, 0.2)),
+                            PointClassification::Outside,
+                            "{label}: in the notch"
+                        );
+                    }
+                }
+            }
         }
     }
 
