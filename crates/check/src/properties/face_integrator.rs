@@ -153,9 +153,10 @@ pub struct FittedBoundaryCertificate {
     /// `Σ |V_span − V_halved|` over the fitted edges, the volume term's own
     /// quadrature disagreement (about the reading's reference).
     pub volume_disagreement: f64,
-    /// Bound on `|N − N_stored|`, the reading's vector area against the one
-    /// its stored boundary bounds, from the offsets of the fitted points read
-    /// (see `cylinder_green::FittedEdges::add`).
+    /// Estimated bound on `|N − N_stored|`, the reading's vector area against
+    /// the one its stored boundary bounds, from the fitted edges' offsets
+    /// read at the quadrature points; not certified between them (see
+    /// `cylinder_green::FittedEdges::add`).
     pub closure_allowance: f64,
 }
 

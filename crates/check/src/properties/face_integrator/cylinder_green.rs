@@ -85,7 +85,11 @@ pub(super) const NURBS_ON_SURFACE_ABS: f64 = 1e-3;
 const FITTED_CONVERGENCE: f64 = 1e-9;
 /// Margin [`FittedEdges::add`] puts on its vector-area bound: the offsets it
 /// is built from are read at the quadrature points only, and twice the bound
-/// covers an offset between them up to twice the largest one read.
+/// covers an offset between them up to twice the largest one read. It is no
+/// certificate between the points (an excursion a parameterization crowds
+/// between them goes unseen, as it does by the sampled trim and the
+/// boundary-gap check); see [`FittedEdges::add`] for why an underestimate is
+/// safe.
 const CLOSURE_ALLOWANCE_MARGIN: f64 = 2.0;
 
 /// A face's reading on its own boundary.
@@ -148,6 +152,15 @@ impl FittedEdges {
     /// shell read this way closes to within the sum of its faces' allowances
     /// plus whatever its other faces' readings leave. `|a|` is the largest
     /// offset read, and the bound carries [`CLOSURE_ALLOWANCE_MARGIN`].
+    ///
+    /// It is an estimate from the offsets read, not a certified bound: an
+    /// excursion between quadrature points, and an exact trim (line, circle,
+    /// ellipse) that stands off the surface, are not counted. Exact trims are
+    /// read where they lie, as the exact-trim boundary path always read them,
+    /// and are left to the base closure bound as before. The allowance only
+    /// ever adds to that bound, for faces read on a fitted boundary, so where
+    /// it falls short the closure check is no looser than it was without
+    /// it.
     pub(super) fn add(
         &mut self,
         coarse: (&Accumulator, EdgeMeasure),
