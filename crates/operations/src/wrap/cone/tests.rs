@@ -416,9 +416,9 @@ fn solid_volume_reads_wrapped_cone_faces_on_their_fitted_rims() {
         );
         area += term.area;
         if let FaceSurface::Cone(_) = topo.face(face).unwrap().surface() {
-            let certificate = term.fitted_boundary.expect("a fitted boundary reading");
-            assert!(certificate.volume_disagreement < 1e-12 * measured);
-            allowance += certificate.closure_allowance;
+            let fitted_reading = term.fitted_boundary.expect("a fitted boundary reading");
+            assert!(fitted_reading.span_disagreement < 1e-12 * measured);
+            allowance += fitted_reading.closure_allowance;
             cones += 1;
         } else {
             assert!(term.fitted_boundary.is_none());

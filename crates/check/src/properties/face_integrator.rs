@@ -31,7 +31,7 @@ mod cone_green_tests;
 mod cylinder_band_tests;
 mod cylinder_green;
 #[cfg(test)]
-mod fitted_certificate_tests;
+mod fitted_boundary_tests;
 #[cfg(test)]
 mod flat_loop_oracle_tests;
 mod knot_axis;
@@ -70,7 +70,7 @@ struct IntegrationRule<'a> {
     ruled_guard: bool,
     /// Where a fixed-rule path records the face's vector area `∫ n dA`, taken
     /// over exactly the samples (or the closed form) its volume came from;
-    /// see [`integrate_face_fixed_flux_certified_about`]. Adaptive paths
+    /// see [`integrate_face_fixed_flux_with_boundary_about`]. Adaptive paths
     /// leave it unset.
     flux: Option<&'a Cell<Option<Vec3>>>,
     /// Analytic cone apex used only for stable adaptive volume density:
@@ -79,7 +79,7 @@ struct IntegrationRule<'a> {
     /// Where a fixed-rule path that collects the vector area records the
     /// certificate of a reading it took on a fitted boundary
     /// (`cylinder_green`, `cone_green`).
-    boundary: Option<&'a Cell<Option<FittedBoundaryCertificate>>>,
+    boundary: Option<&'a Cell<Option<FittedBoundaryReading>>>,
 }
 
 impl<'a> IntegrationRule<'a> {
@@ -127,11 +127,11 @@ impl<'a> IntegrationRule<'a> {
     fn record_boundary_reading(
         self,
         vector_area: Vec3,
-        certificate: Option<FittedBoundaryCertificate>,
+        fitted_reading: Option<FittedBoundaryReading>,
     ) {
         self.record_flux(vector_area);
         if let Some(sink) = self.boundary {
-            sink.set(certificate);
+            sink.set(fitted_reading);
         }
     }
 }
@@ -149,10 +149,10 @@ impl<'a> IntegrationRule<'a> {
 /// stands off the one the stored boundary bounds by up to what that
 /// projection moves, which a closure check must allow for.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct FittedBoundaryCertificate {
+pub struct FittedBoundaryReading {
     /// `Σ |V_span − V_halved|` over the fitted edges, the volume term's own
     /// quadrature disagreement (about the reading's reference).
-    pub volume_disagreement: f64,
+    pub span_disagreement: f64,
     /// Estimated bound on `|N − N_stored|`, the reading's vector area against
     /// the one its stored boundary bounds, from the fitted edges' offsets
     /// read at the quadrature points; not certified between them (see
@@ -324,7 +324,7 @@ pub fn integrate_face_fixed_about(
 /// # Errors
 ///
 /// Exactly the errors of [`integrate_face_fixed_about`].
-pub(crate) fn integrate_face_fixed_flux_certified_about(
+pub(crate) fn integrate_face_fixed_flux_with_boundary_about(
     topo: &Topology,
     face_id: FaceId,
     gauss_order: usize,
@@ -364,7 +364,7 @@ pub(crate) fn integrate_face_fixed_flux_certified_about(
 }
 
 /// A fixed-rule reading that collects the vector area: what
-/// [`integrate_face_fixed_flux_certified_about`] returns.
+/// [`integrate_face_fixed_flux_with_boundary_about`] returns.
 #[derive(Debug, Clone)]
 pub(crate) struct FluxReading {
     pub(crate) contribution: FaceContribution,
@@ -372,11 +372,11 @@ pub(crate) struct FluxReading {
     pub(crate) vector_area: Option<Vec3>,
     /// The certificate of a reading taken on a fitted boundary, which
     /// replaces the order comparison and widens the closure check for it.
-    pub(crate) fitted_boundary: Option<FittedBoundaryCertificate>,
+    pub(crate) fitted_boundary: Option<FittedBoundaryReading>,
 }
 
 /// The contribution and vector area of
-/// [`integrate_face_fixed_flux_certified_about`], every moment read.
+/// [`integrate_face_fixed_flux_with_boundary_about`], every moment read.
 #[cfg(test)]
 pub(crate) fn integrate_face_fixed_flux_about(
     topo: &Topology,
@@ -384,12 +384,12 @@ pub(crate) fn integrate_face_fixed_flux_about(
     gauss_order: usize,
     reference: Point3,
 ) -> Result<(FaceContribution, Option<Vec3>), CheckError> {
-    integrate_face_fixed_flux_certified_about(topo, face_id, gauss_order, reference, false)
+    integrate_face_fixed_flux_with_boundary_about(topo, face_id, gauss_order, reference, false)
         .map(|reading| (reading.contribution, reading.vector_area))
 }
 
 /// The contribution and vector area of
-/// [`integrate_face_fixed_flux_certified_about`], volume only.
+/// [`integrate_face_fixed_flux_with_boundary_about`], volume only.
 #[cfg(test)]
 pub(crate) fn integrate_face_fixed_volume_flux_about(
     topo: &Topology,
@@ -397,7 +397,7 @@ pub(crate) fn integrate_face_fixed_volume_flux_about(
     gauss_order: usize,
     reference: Point3,
 ) -> Result<(FaceContribution, Option<Vec3>), CheckError> {
-    integrate_face_fixed_flux_certified_about(topo, face_id, gauss_order, reference, true)
+    integrate_face_fixed_flux_with_boundary_about(topo, face_id, gauss_order, reference, true)
         .map(|reading| (reading.contribution, reading.vector_area))
 }
 
@@ -727,7 +727,7 @@ fn cone_boundary_or_sampled<const AREA_ONLY: bool>(
             && (exact.volume - sampled.volume).abs()
                 <= 1e-3 * sampled.volume.abs().max(scale * scale.sqrt());
         if agrees {
-            rule.record_boundary_reading(reading.flux, reading.certificate);
+            rule.record_boundary_reading(reading.flux, reading.fitted);
             return Ok(exact);
         }
     }
@@ -862,7 +862,7 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
                             <= 1e-3 * sampled.volume.abs().max(scale * s.radius()));
                 if agrees {
                     if !AREA_ONLY {
-                        rule.record_boundary_reading(reading.flux, reading.certificate);
+                        rule.record_boundary_reading(reading.flux, reading.fitted);
                     }
                     return Ok(exact);
                 }

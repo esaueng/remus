@@ -24,7 +24,7 @@
 //! A caller that collects the vector area (the shell-closure and
 //! order-convergence certificates of `solid_volume`) qualifies the reading it
 //! is handed, so a fitted reading also reports what certifies it
-//! ([`FittedBoundaryCertificate`]): how far its span-by-span and halved-span
+//! ([`FittedBoundaryReading`]): how far its span-by-span and halved-span
 //! volume terms differ (the convergence certificate an order comparison
 //! cannot give, since this reading does not depend on the order), and how
 //! far its vector area can stand from the one the stored boundary bounds:
@@ -60,7 +60,7 @@ use remus_topology::Topology;
 use remus_topology::edge::EdgeCurve;
 use remus_topology::face::Face;
 
-use super::{Accumulator, FaceContribution, FittedBoundaryCertificate, IntegrationRule};
+use super::{Accumulator, FaceContribution, FittedBoundaryReading, IntegrationRule};
 use crate::CheckError;
 
 /// Composite pieces per edge and Gauss points per piece. A conic trim's
@@ -99,7 +99,7 @@ pub(super) struct GreenReading {
     pub(super) flux: Vec3,
     /// What certifies the reading of its fitted edges; `None` when the face
     /// has none (exact trims only).
-    pub(super) certificate: Option<FittedBoundaryCertificate>,
+    pub(super) fitted: Option<FittedBoundaryReading>,
 }
 
 /// What one reading of an edge measured of it besides its integrals.
@@ -128,7 +128,7 @@ impl EdgeMeasure {
 /// The certificate of a face's fitted edges, summed edge by edge.
 #[derive(Debug, Default)]
 pub(super) struct FittedEdges {
-    volume_disagreement: f64,
+    span_disagreement: f64,
     closure_allowance: f64,
     count: usize,
 }
@@ -174,21 +174,19 @@ impl FittedEdges {
                 end_reach[0] + end_reach[1],
                 1.5f64.mul_add(length, 0.5 * projected),
             );
-        self.volume_disagreement += (coarse.0.vol - fine.0.vol).abs();
+        self.span_disagreement += (coarse.0.vol - fine.0.vol).abs();
         self.closure_allowance += CLOSURE_ALLOWANCE_MARGIN * bound;
         self.count += 1;
     }
 
     /// The face's certificate, `None` when it has no fitted edge or a
     /// measure is not finite.
-    pub(super) fn certificate(&self) -> Option<FittedBoundaryCertificate> {
-        (self.count > 0
-            && self.volume_disagreement.is_finite()
-            && self.closure_allowance.is_finite())
-        .then_some(FittedBoundaryCertificate {
-            volume_disagreement: self.volume_disagreement,
-            closure_allowance: self.closure_allowance,
-        })
+    pub(super) fn summary(&self) -> Option<FittedBoundaryReading> {
+        (self.count > 0 && self.span_disagreement.is_finite() && self.closure_allowance.is_finite())
+            .then_some(FittedBoundaryReading {
+                span_disagreement: self.span_disagreement,
+                closure_allowance: self.closure_allowance,
+            })
     }
 }
 
@@ -355,15 +353,15 @@ pub(super) fn finish(acc: Accumulator, sign: f64, fitted: &FittedEdges) -> Optio
     if !acc.area.is_finite() || acc.area <= 0.0 {
         return None;
     }
-    let certificate = fitted.certificate();
-    if fitted.count > 0 && certificate.is_none() {
+    let fitted_reading = fitted.summary();
+    if fitted.count > 0 && fitted_reading.is_none() {
         return None;
     }
     let flux = acc.flux(sign);
     Some(GreenReading {
         contribution: acc.finish(sign),
         flux,
-        certificate,
+        fitted: fitted_reading,
     })
 }
 

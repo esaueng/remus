@@ -1,5 +1,5 @@
 //! The certificate a reading on a fitted boundary carries
-//! (`FittedBoundaryCertificate`), against quantities read off the stored
+//! (`FittedBoundaryReading`), against quantities read off the stored
 //! boundary directly (tests).
 //!
 //! A cylinder or cone face with a fitted rim is read at the rim's projection
@@ -136,12 +136,12 @@ fn pointed_face(topo: &mut Topology, section: &Section, rim: NurbsCurve) -> Face
 }
 
 /// `(|N − N_stored|, allowance, volume disagreement, area^(3/2))` of a reading.
-fn certificate_terms(reading: &cylinder_green::GreenReading, stored: Vec3) -> (f64, f64, f64, f64) {
-    let certificate = reading.certificate.expect("a fitted boundary certificate");
+fn fitted_terms(reading: &cylinder_green::GreenReading, stored: Vec3) -> (f64, f64, f64, f64) {
+    let fitted_reading = reading.fitted.expect("a fitted boundary reading");
     (
         (reading.flux - stored).length(),
-        certificate.closure_allowance,
-        certificate.volume_disagreement,
+        fitted_reading.closure_allowance,
+        fitted_reading.span_disagreement,
         // The volume's own scale (a term about the apex vanishes).
         reading.contribution.area * reading.contribution.area.sqrt(),
     )
@@ -168,7 +168,7 @@ fn the_closure_allowance_holds_what_projection_moves_on_a_cone() {
             .unwrap()
             .expect("the boundary reading");
             let (moved, allowance, disagreement, volume) =
-                certificate_terms(&reading, stored_vector_area(&topo, face));
+                fitted_terms(&reading, stored_vector_area(&topo, face));
             let label = format!("section {index} at scale {scale}");
             assert!(
                 moved <= allowance,
@@ -231,7 +231,7 @@ fn the_closure_allowance_holds_what_projection_moves_on_a_cylinder() {
         .unwrap()
         .expect("the boundary reading");
         let (moved, allowance, disagreement, volume) =
-            certificate_terms(&reading, stored_vector_area(&topo, face));
+            fitted_terms(&reading, stored_vector_area(&topo, face));
         assert!(
             moved <= allowance,
             "scale {scale}: moved {moved:e} > {allowance:e}"
@@ -282,7 +282,7 @@ fn a_volume_only_reading_takes_the_full_readings_path_bit_for_bit() {
                 light.flux.0.map(f64::to_bits),
                 full.flux.0.map(f64::to_bits)
             );
-            assert_eq!(light.certificate, full.certificate);
+            assert_eq!(light.fitted, full.fitted);
         }
     }
 }
@@ -306,17 +306,13 @@ fn the_face_cache_serves_fitted_volume_terms_bit_for_bit() {
             term.area.to_bits(),
             term.volume.to_bits(),
             term.vector_area.map(|n| n.0.map(f64::to_bits)),
-            term.fitted_boundary.map(|c| {
-                (
-                    c.volume_disagreement.to_bits(),
-                    c.closure_allowance.to_bits(),
-                )
-            }),
+            term.fitted_boundary
+                .map(|c| (c.span_disagreement.to_bits(), c.closure_allowance.to_bits())),
         )
     };
     let uncached = |topo: &Topology, face, reference| {
         let reading =
-            super::integrate_face_fixed_flux_certified_about(topo, face, 5, reference, true)
+            super::integrate_face_fixed_flux_with_boundary_about(topo, face, 5, reference, true)
                 .unwrap();
         FaceVolumeTerm {
             area: reading.contribution.area,

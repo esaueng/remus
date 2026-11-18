@@ -472,17 +472,17 @@ fn the_boundary_path_is_scoped_to_fitted_moment_readings() {
         collecting.flux.0.map(f64::to_bits),
         moments.flux.0.map(f64::to_bits)
     );
-    let certificate = collecting.certificate.unwrap();
+    let fitted_reading = collecting.fitted.unwrap();
     // About the apex the volume term vanishes: compare at the area's scale.
     let area = collecting.contribution.area;
     let volume = area * area.sqrt();
     assert!(
-        certificate.volume_disagreement <= 1e-12 * volume,
-        "{certificate:?}"
+        fitted_reading.span_disagreement <= 1e-12 * volume,
+        "{fitted_reading:?}"
     );
     assert!(
-        certificate.closure_allowance <= 1e-12 * area,
-        "{certificate:?}"
+        fitted_reading.closure_allowance <= 1e-12 * area,
+        "{fitted_reading:?}"
     );
     assert!(
         cone_green::integrate::<true>(&topo, &face, &cone, &rule(None), 1.0)

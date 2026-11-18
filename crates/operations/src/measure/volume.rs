@@ -806,7 +806,7 @@ fn qualified_face_integral_volume(
 /// disagreement may instead be read against [`REFINEMENT_ORDER`].
 ///
 /// A cylinder or cone face read on its own fitted boundary (its term carries
-/// a [`FittedBoundaryCertificate`]) does not depend on the order, so two
+/// a [`FittedBoundaryReading`]) does not depend on the order, so two
 /// orders would agree on it whatever its error. Its disagreement is instead
 /// its fitted edges' span-by-span against halved-span volume terms, and its
 /// reading has already agreed with the sampled trim's to the integrator's
@@ -816,7 +816,7 @@ fn qualified_face_integral_volume(
 /// boundary's (`remus_check`'s `cylinder_green::FittedEdges::add`). A shell
 /// with no such face is checked exactly as before.
 ///
-/// [`FittedBoundaryCertificate`]: remus_check::properties::face_integrator::FittedBoundaryCertificate
+/// [`FittedBoundaryReading`]: remus_check::properties::face_integrator::FittedBoundaryReading
 fn qualified_shell_volume(
     topo: &Topology,
     shell: remus_topology::shell::ShellId,
@@ -860,12 +860,12 @@ fn qualified_shell_volume(
             });
             return Ok(None);
         };
-        if let Some(certificate) = term.fitted_boundary {
+        if let Some(fitted_reading) = term.fitted_boundary {
             area += term.area;
             vector_area += n;
-            allowance += certificate.closure_allowance;
+            allowance += fitted_reading.closure_allowance;
             volume += term.volume;
-            disagreement += certificate.volume_disagreement;
+            disagreement += fitted_reading.span_disagreement;
             continue;
         }
         // Gauss orders are not nested, so a lower one is an independent

@@ -31,7 +31,7 @@ pub struct FittedFace {
     /// The oracle's term about the same reference.
     pub oracle: f64,
     /// Whether the kernel read the face on its fitted boundary.
-    pub certified: bool,
+    pub on_boundary: bool,
 }
 
 fn has_fitted_trim(topo: &Topology, face: FaceId) -> bool {
@@ -68,7 +68,7 @@ pub fn fitted_faces(topo: &Topology, solid: SolidId) -> Vec<FittedFace> {
                 face,
                 kernel: term.volume,
                 oracle: volume_oracle::face_volume(topo, face, reference),
-                certified: term.fitted_boundary.is_some(),
+                on_boundary: term.fitted_boundary.is_some(),
             });
         }
     }
@@ -82,7 +82,7 @@ pub fn assert_fitted_faces_match(topo: &Topology, solid: SolidId, tolerance: f64
     let faces = fitted_faces(topo, solid);
     for f in &faces {
         assert!(
-            f.certified,
+            f.on_boundary,
             "face {} was not read on its boundary",
             f.face.index()
         );

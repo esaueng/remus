@@ -142,7 +142,7 @@ use remus_topology::edge::EdgeCurve;
 use remus_topology::face::{FaceId, FaceSurface};
 use smallvec::SmallVec;
 
-use super::face_integrator::{self, FaceContribution, FittedBoundaryCertificate};
+use super::face_integrator::{self, FaceContribution, FittedBoundaryReading};
 use super::loop_nesting::{InnerLoopNesting, inner_loop_nesting};
 use crate::CheckError;
 
@@ -216,7 +216,7 @@ pub struct FaceVolumeTerm {
     /// cylinder or cone face with a NURBS trim), `None` for every other
     /// reading. A qualifying caller checks this reading's convergence and
     /// closure against it instead of an order comparison.
-    pub fitted_boundary: Option<FittedBoundaryCertificate>,
+    pub fitted_boundary: Option<FittedBoundaryReading>,
 }
 
 /// What an entry remembers about one integration.
@@ -231,7 +231,7 @@ struct Value {
     /// `∫ n dA` from the same samples, when the integration reported it.
     flux: Option<Vec3>,
     /// The certificate of a reading taken on a fitted boundary.
-    fitted_boundary: Option<FittedBoundaryCertificate>,
+    fitted_boundary: Option<FittedBoundaryReading>,
     /// Whether the integrator's choice of path turns on the reference (a
     /// cylinder or cone face with a fitted trim): such an entry answers only
     /// a request about its own reference.
@@ -325,7 +325,7 @@ impl Request {
                 })
             }
             Self::FixedAbout { order, reference } => {
-                let reading = face_integrator::integrate_face_fixed_flux_certified_about(
+                let reading = face_integrator::integrate_face_fixed_flux_with_boundary_about(
                     topo, face, order, reference, false,
                 )?;
                 Ok(Value {
@@ -339,7 +339,7 @@ impl Request {
                 })
             }
             Self::Volume { order, reference } => {
-                let reading = face_integrator::integrate_face_fixed_flux_certified_about(
+                let reading = face_integrator::integrate_face_fixed_flux_with_boundary_about(
                     topo, face, order, reference, true,
                 )?;
                 Ok(Value {
