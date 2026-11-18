@@ -7,8 +7,9 @@
 
 use remus_math::vec::Point3;
 use remus_topology::Topology;
-use remus_topology::edge::EdgeCurve;
-use remus_topology::face::FaceId;
+use remus_topology::edge::{Edge, EdgeCurve};
+use remus_topology::face::{Face, FaceId};
+use remus_topology::wire::WireId;
 
 /// Number of samples used when discretizing closed curves (circles, ellipses)
 /// in the analytic boolean path. All code paths must use this constant so that
@@ -78,13 +79,41 @@ pub fn face_polygon(
     wire_polygon(topo, topo.face(face_id)?.outer_wire())
 }
 
-/// Sample stored partial circle and ellipse spans for loft's polygon fallback.
-/// A clipped section can have just two edges, with its area carried by an arc.
-pub fn face_polygon_with_trimmed_conics(
+/// Sample the stored partial conic spans for loft's polygon fallback. Use one
+/// chord count across profiles so corresponding arcs contribute matching
+/// vertices and no perimeter resampling is needed just to equalize arc counts.
+pub fn loft_profile_polygons(
     topo: &Topology,
-    face_id: FaceId,
-) -> Result<Vec<Point3>, crate::OperationsError> {
-    wire_polygon_impl(topo, topo.face(face_id)?.outer_wire(), true)
+    face_ids: &[FaceId],
+) -> Result<Vec<Vec<Point3>>, crate::OperationsError> {
+    const MAX_CONIC_CHORDS: f64 = 64.0;
+    let wires: Vec<_> = face_ids
+        .iter()
+        .map(|&id| topo.face(id).map(Face::outer_wire))
+        .collect::<Result<_, _>>()?;
+    let mut widest_span = 0.0_f64;
+    for &wire in &wires {
+        for oe in topo.wire(wire)?.edges() {
+            if let Some((from, to)) = partial_conic_span(topo.edge(oe.edge())?) {
+                widest_span = widest_span.max((to - from).abs());
+            }
+        }
+    }
+    let chords = (widest_span * (MAX_CONIC_CHORDS / std::f64::consts::TAU))
+        .ceil()
+        .clamp(4.0, MAX_CONIC_CHORDS) as u32;
+    wires
+        .into_iter()
+        .map(|wire| wire_polygon_impl(topo, wire, Some(chords)))
+        .collect()
+}
+
+fn partial_conic_span(edge: &Edge) -> Option<(f64, f64)> {
+    if !edge.is_closed() && matches!(edge.curve(), EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_)) {
+        edge.strict_domain().ok()
+    } else {
+        None
+    }
 }
 
 /// Get a polygon approximation of any wire by sampling its curved edges.
@@ -101,15 +130,15 @@ pub fn face_polygon_with_trimmed_conics(
 /// Returns an error if the wire or any of its edges cannot be resolved.
 pub fn wire_polygon(
     topo: &Topology,
-    wire_id: remus_topology::wire::WireId,
+    wire_id: WireId,
 ) -> Result<Vec<Point3>, crate::OperationsError> {
-    wire_polygon_impl(topo, wire_id, false)
+    wire_polygon_impl(topo, wire_id, None)
 }
 
 fn wire_polygon_impl(
     topo: &Topology,
-    wire_id: remus_topology::wire::WireId,
-    sample_trimmed_conics: bool,
+    wire_id: WireId,
+    partial_conic_chords: Option<u32>,
 ) -> Result<Vec<Point3>, crate::OperationsError> {
     let wire = topo.wire(wire_id)?;
     let mut pts = Vec::new();
@@ -133,23 +162,25 @@ fn wire_polygon_impl(
                 sampled.reverse();
             }
             pts.extend(sampled);
-        } else if sample_trimmed_conics
-            && matches!(curve, EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_))
-            && edge.strict_domain().is_ok()
-        {
-            // Match the section's previous angular sampling density at any
-            // scale. The next wire edge contributes the last vertex.
-            const MAX_STEP: f64 = std::f64::consts::TAU / 64.0;
-            let mut sampled =
-                crate::tessellate::sample_edge_polyline(topo, oe.edge(), f64::MAX, MAX_STEP)?;
-            if !oe.is_forward() {
-                sampled.reverse();
-            }
-            sampled.pop();
-            pts.extend(sampled);
         } else {
-            let vid = oe.oriented_start(edge);
-            pts.push(topo.vertex(vid)?.point());
+            let start = topo.vertex(oe.oriented_start(edge))?.point();
+            pts.push(start);
+            if let Some(chords) = partial_conic_chords
+                && let Some((from, to)) = partial_conic_span(edge)
+            {
+                let end = topo.vertex(oe.oriented_end(edge))?.point();
+                let (from, to) = if oe.is_forward() {
+                    (from, to)
+                } else {
+                    (to, from)
+                };
+                // Keep the real junction vertices. The next edge adds `end`.
+                pts.extend((1..chords).map(|i| {
+                    let fraction = f64::from(i) / f64::from(chords);
+                    let t = (to - from).mul_add(fraction, from);
+                    curve.evaluate_with_endpoints(t, start, end)
+                }));
+            }
         }
     }
 

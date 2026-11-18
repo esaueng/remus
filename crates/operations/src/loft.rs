@@ -18,7 +18,7 @@ use remus_topology::vertex::{Vertex, VertexId};
 use remus_topology::wire::{OrientedEdge, Wire};
 
 use crate::dot_normal_point;
-use crate::polygon::face_polygon_with_trimmed_conics;
+use crate::polygon::loft_profile_polygons;
 use crate::winding::ensure_ccw_profiles;
 
 /// A repeated polygon junction has no line image to loft. Keep each exact
@@ -242,11 +242,10 @@ fn loft_impl(topo: &mut Topology, profiles: &[FaceId]) -> Result<SolidId, crate:
         return Ok(curved_solid);
     }
 
-    let mut profile_verts: Vec<Vec<Point3>> = Vec::with_capacity(profiles.len());
-    for &fid in profiles {
-        let verts = canonical_polygon_junctions(face_polygon_with_trimmed_conics(topo, fid)?);
-        profile_verts.push(verts);
-    }
+    let mut profile_verts: Vec<_> = loft_profile_polygons(topo, profiles)?
+        .into_iter()
+        .map(canonical_polygon_junctions)
+        .collect();
 
     // Resample all profiles to the maximum vertex count so that lofting
     // between different-resolution profiles (e.g. rectangle ↔ circle) works.
@@ -1959,11 +1958,10 @@ fn loft_smooth_impl(
         return loft_impl(topo, profiles);
     }
 
-    let mut profile_verts: Vec<Vec<Point3>> = Vec::with_capacity(profiles.len());
-    for &fid in profiles {
-        let verts = canonical_polygon_junctions(face_polygon_with_trimmed_conics(topo, fid)?);
-        profile_verts.push(verts);
-    }
+    let mut profile_verts: Vec<_> = loft_profile_polygons(topo, profiles)?
+        .into_iter()
+        .map(canonical_polygon_junctions)
+        .collect();
 
     let n = profile_verts.iter().map(Vec::len).max().unwrap_or(0);
     if n < 3 {

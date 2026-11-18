@@ -69,9 +69,18 @@ fn dome(topo: &mut Topology) -> SolidId {
 
 #[test]
 fn clipped_dome_sections_remain_loft_profiles() {
+    assert_dome_sections_loft(0.0, 0.2);
+}
+
+#[test]
+fn clipped_dome_loft_keeps_junctions_across_a_sampling_threshold() {
+    assert_dome_sections_loft(0.231_617_760_9, 0.233_617_760_9);
+}
+
+fn assert_dome_sections_loft(from: f64, to: f64) {
     let mut topo = Topology::new();
     let solid = dome(&mut topo);
-    let profiles = [0.0, 0.1, 0.2].map(|x| {
+    let profiles = [from, f64::midpoint(from, to), to].map(|x| {
         let faces = section(
             &mut topo,
             solid,
@@ -103,8 +112,8 @@ fn clipped_dome_sections_remain_loft_profiles() {
     };
     for lofted in [ruled, smooth] {
         let volume = solid_volume(&topo, lofted, 1e-4).unwrap();
-        let min = 0.99 * 0.2 * section_area(0.2);
-        let max = 1.01 * 0.2 * section_area(0.0);
+        let min = 0.99 * (to - from) * section_area(to);
+        let max = 1.01 * (to - from) * section_area(from);
         assert!((min..=max).contains(&volume), "loft volume {volume}");
     }
 }
