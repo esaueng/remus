@@ -319,6 +319,40 @@ fn fixed_order_readings_agree_with_the_closed_form() {
     }
 }
 
+/// The face-integral cache answers a fitted cone face's full contribution
+/// bit for bit as the uncached integrator does (review of #1856: its
+/// flux-collecting miss path read the sampled trim), enabled or disabled,
+/// cold or warm, and a volume request after it keeps its own reading.
+#[test]
+fn the_face_cache_matches_the_uncached_boundary_reading() {
+    use crate::properties::face_cache::FaceIntegralCache;
+    let section = &sections(1.0)[1];
+    let mut topo = Topology::new();
+    let face = pointed_face(&mut topo, section);
+    let reference = section.apex + Vec3::new(0.5, 0.25, -1.0);
+    let (volume, _) = section.lateral_terms(reference);
+    let fresh_volume = {
+        let mut cold = FaceIntegralCache::new();
+        cold.integrate_face_volume_about(&topo, face, 5, reference)
+            .unwrap()
+    };
+    let uncached = integrate_face_fixed_about(&topo, face, 5, reference).unwrap();
+    assert!(rel(uncached.volume, volume, section.d.powi(3)) < 1e-12);
+    for mut cache in [FaceIntegralCache::new(), FaceIntegralCache::disabled()] {
+        for _ in 0..2 {
+            let cached = cache
+                .integrate_face_fixed_about(&topo, face, 5, reference)
+                .unwrap();
+            // `f64`'s Debug form round-trips, so equal text is equal bits.
+            assert_eq!(format!("{cached:?}"), format!("{uncached:?}"));
+        }
+        let after = cache
+            .integrate_face_volume_about(&topo, face, 5, reference)
+            .unwrap();
+        assert_eq!(after.volume.to_bits(), fresh_volume.volume.to_bits());
+    }
+}
+
 /// The band between two oblique sections: the frustum's closed-form volume
 /// less its two caps' terms.
 #[test]
