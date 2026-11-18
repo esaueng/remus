@@ -453,19 +453,27 @@ fn refusals_are_typed_and_leave_the_topology_unchanged() {
             "meet itself",
         ),
         (
-            "an oblique profile into a half turn",
+            "an oblique profile turned back into its own run",
             |topo| {
+                // 340° about (10, 5): the arc ends at (8.29, 0.30, 0), inside
+                // the unit tube of the run it started from.
                 let tilt = 30.0_f64.to_radians();
                 let normal = Vec3::new(tilt.cos(), -tilt.sin(), 0.0);
                 let profile = circle_face(topo, p(0.0, 0.0, 0.0), normal, 1.0);
                 let path = [
                     line(topo, p(0.0, 0.0, 0.0), p(10.0, 0.0, 0.0)),
-                    arc(topo, p(10.0, 5.0, 0.0), 5.0, -FRAC_PI_2, FRAC_PI_2),
+                    arc(
+                        topo,
+                        p(10.0, 5.0, 0.0),
+                        5.0,
+                        -FRAC_PI_2,
+                        250.0_f64.to_radians(),
+                    ),
                 ];
                 sweep_exact(topo, profile, &path)
             },
             true,
-            "swings back across the plane",
+            "meet itself",
         ),
         (
             "edges that do not meet",
@@ -1002,6 +1010,109 @@ fn hairpin_rectangles_mitre_on_planes() {
                 (origin + out * (5.0 * s), true),
                 (p(-5.0 * s, 0.0, 1.5 * hz), false),
                 (p(-5.0 * s, -1.5 * hy, 0.0), false),
+            ] {
+                assert_probe(&topo, solid, point, inside, s, &label);
+            }
+        }
+    }
+}
+
+/// A unit circle tilted by `tilt` from square to the path, swept along a
+/// run of 10 into a turn of radius 5 about (10, 5) (a half turn or a
+/// quarter turn), or back along the same path from the turn's far end.
+/// Returns the solid and the turn's middle point, all times `s`.
+fn oblique_run_and_turn(
+    topo: &mut Topology,
+    s: f64,
+    tilt: f64,
+    turn: f64,
+    reversed: bool,
+) -> Result<SolidId, OperationsError> {
+    let centre = p(10.0 * s, 5.0 * s, 0.0);
+    let start = -FRAC_PI_2;
+    let path = [
+        line(topo, p(0.0, 0.0, 0.0), p(10.0 * s, 0.0, 0.0)),
+        arc(topo, centre, 5.0 * s, start, start + turn),
+    ];
+    // Where the sweep starts, and the way it travels there.
+    let (at, travel) = if reversed {
+        let end = start + turn;
+        (
+            centre + Vec3::new(end.cos(), end.sin(), 0.0) * (5.0 * s),
+            Vec3::new(end.sin(), -end.cos(), 0.0),
+        )
+    } else {
+        (p(0.0, 0.0, 0.0), X)
+    };
+    let across = Z.cross(travel);
+    let normal = travel * tilt.cos() + across * tilt.sin();
+    let profile = circle_face(topo, at, normal, s);
+    sweep_exact(topo, profile, &path)
+}
+
+/// A profile that is not square to its path swings across a joint's
+/// section plane once it has turned far enough (`2·atan(B/A)`, past 106°
+/// for a 30° tilt into a half turn), far from the run before it. Those
+/// bodies are clean and build; the turn beyond the certified angle is held
+/// to the distance check instead. A tilted section sweeps the volume
+/// `area · cos(tilt) · centre-line length` (the flux of the motion through
+/// it), here `π cos(tilt) (10 + 5 turn) s³`.
+#[test]
+fn oblique_profiles_into_a_turn_build_exactly() {
+    let cases = [
+        (30.0, PI, false),
+        (-30.0, PI, false),
+        (0.5, PI, false),
+        (0.01, PI, false),
+        (-0.5, PI, false),
+        (-0.01, PI, false),
+        (60.0, FRAC_PI_2, false),
+        (-60.0, FRAC_PI_2, false),
+        (30.0, PI, true),
+        (-30.0, PI, true),
+        (60.0, FRAC_PI_2, true),
+        (-60.0, FRAC_PI_2, true),
+    ];
+    for (degrees, turn, reversed) in cases {
+        for s in [1e-3, 1.0, 1e3] {
+            let label = format!("tilt {degrees}, turn {turn}, reversed {reversed}, scale {s}");
+            let mut topo = Topology::new();
+            let tilt = f64::to_radians(degrees);
+            let solid = oblique_run_and_turn(&mut topo, s, tilt, turn, reversed)
+                .unwrap_or_else(|e| panic!("{label}: {e:?}"));
+            assert_valid(&topo, solid, &label);
+            // An oblique circle moved along a run or turned about an axis
+            // its centre is off the plane of is exact rational NURBS.
+            assert_eq!(census(&topo, solid), (2, 0, 0, 0, 2), "{label}");
+            let exact = PI * tilt.cos() * 5.0f64.mul_add(turn, 10.0) * s * s * s;
+            let measured = volume(&topo, solid);
+            // `mass_properties` integrates these NURBS sides to a few 1e-6 at
+            // scale 1e-3 (an absolute integration floor) and 1e-10 from 1 up.
+            let bound = if s < 1.0 { 1e-5 } else { 1e-8 };
+            assert!(
+                rel(measured, exact) < bound,
+                "{label}: {measured} vs {exact}"
+            );
+            let mesh = crate::tessellate::tessellate_solid(&topo, solid, 0.02 * s).unwrap();
+            assert!(crate::tessellate::is_watertight(&mesh), "{label}");
+            let enclosed = mesh_volume(&mesh);
+            assert!(
+                rel(enclosed, exact) < 1e-2,
+                "{label}: mesh {enclosed} vs {exact}"
+            );
+            let middle = -FRAC_PI_2 + 0.5 * turn;
+            for (point, inside) in [
+                (p(5.0 * s, 0.0, 0.0), true),
+                (
+                    p(
+                        5.0f64.mul_add(middle.cos(), 10.0) * s,
+                        5.0f64.mul_add(middle.sin(), 5.0) * s,
+                        0.0,
+                    ),
+                    true,
+                ),
+                (p(10.0 * s, 5.0 * s, 0.0), false),
+                (p(5.0 * s, 0.0, 1.5 * s), false),
             ] {
                 assert_probe(&topo, solid, point, inside, s, &label);
             }

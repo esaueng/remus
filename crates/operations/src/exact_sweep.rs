@@ -43,7 +43,8 @@
 //! run's centre line is extended over every ruling its mitres leave, an arc
 //! of more than a half turn is halved, and consecutive turns about one axis
 //! form one rotation. Neighbouring pieces must lie on either side of their
-//! joint's section or mitre plane; every other pair must stay twice the
+//! joint's section or mitre plane, for as much of an arc as that is certified;
+//! the rest of the arc, and every other pair, must stay twice the
 //! profile's reach apart.
 
 use std::f64::consts::FRAC_PI_2;
@@ -425,6 +426,26 @@ impl Segment {
                 }
             })
             .collect()
+    }
+
+    /// The part of an arc between the turns `from` and `to` (`0 ≤ from < to ≤
+    /// angle`), measured from its start.
+    fn sub_arc(&self, from: f64, to: f64) -> Option<Self> {
+        let Motion::Rotate { origin, axis, .. } = self.motion else {
+            return None;
+        };
+        let at = |turn: f64| origin + rotate_vec(self.start - origin, axis, turn);
+        Some(Self {
+            start: at(from),
+            end: at(to),
+            start_tangent: rotate_vec(self.start_tangent, axis, from),
+            end_tangent: rotate_vec(self.start_tangent, axis, to),
+            motion: Motion::Rotate {
+                origin,
+                axis,
+                angle: to - from,
+            },
+        })
     }
 
     /// Two halves of an arc, meeting tangentially at its middle.
@@ -1087,13 +1108,17 @@ fn co_rotational(a: &Segment, b: &Segment, margin: f64) -> bool {
 }
 
 /// How a body meets the plane of one of its end sections.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum Side {
     /// On one side of the plane, meeting it in that section alone.
     Strict,
     /// On one side, within the margin; it may also touch the plane far from
     /// the section (an arc of a half turn lays its other end section in it).
     Weak,
+    /// Strictly on one side for this much of its turn from the joint; past
+    /// it the section may swing across the plane, so the rest of the arc
+    /// must clear the neighbour by the distance check.
+    Within(f64),
 }
 
 /// Which side of its section plane the body of an arc lies on.
@@ -1109,6 +1134,13 @@ enum Side {
 /// That end value is `(x − origin)·(m × axis)` with `m` the normal turned by
 /// `−angle/2`: affine in `x`, so its minimum over the profile is bounded on
 /// the boundary.
+///
+/// A profile that is not square to the path swings across the plane once
+/// it has turned by `2·atan2(B, A)`, which for a half turn happens at any
+/// tilt at all. The same test at a smaller half-turn `β` certifies the first
+/// `2β` of the arc, so the largest certified `β` is found by bisection and
+/// the arc is [`Side::Within`] that turn; only a profile that cannot be
+/// certified for any turn is refused.
 #[allow(clippy::too_many_arguments)]
 fn arc_side(
     loops: &[Loop],
@@ -1120,12 +1152,28 @@ fn arc_side(
     margin: f64,
     segment: usize,
 ) -> Result<Side, OperationsError> {
-    let w = rotate_vec(normal, axis, -0.5 * angle).cross(axis);
-    let low = profile_inf(loops, placement, w) - to_vec(origin).dot(w);
-    if low > margin {
-        Ok(Side::Strict)
-    } else if low >= -margin {
-        Ok(Side::Weak)
+    let low = |half: f64| {
+        let w = rotate_vec(normal, axis, -half).cross(axis);
+        profile_inf(loops, placement, w) - to_vec(origin).dot(w)
+    };
+    let end = low(0.5 * angle);
+    if end > margin {
+        return Ok(Side::Strict);
+    }
+    if end >= -margin {
+        return Ok(Side::Weak);
+    }
+    let (mut certified, mut failed) = (0.0, 0.5 * angle);
+    for _ in 0..60 {
+        let half = f64::midpoint(certified, failed);
+        if low(half) > margin {
+            certified = half;
+        } else {
+            failed = half;
+        }
+    }
+    if certified > 0.0 {
+        Ok(Side::Within(2.0 * certified))
     } else {
         Err(invalid(format!(
             "the sweep profile, turned along path arc {segment}, swings back across the plane of \
@@ -1238,9 +1286,11 @@ fn stretches(
 /// Consecutive stretches of different groups share their joint section and
 /// are separated by its plane: a run's rulings all end (or start) on it, a
 /// mitred run's on the bisector plane, and an arc is certified by
-/// [`arc_side`]; where both sides only touch the plane, their far ends must
-/// clear each other. Every other pair must keep twice the profile's reach
-/// apart, measured with a certified lower bound, never a sampled estimate.
+/// [`arc_side`] over as much of its turn as it can be (the rest of the arc
+/// must clear the neighbour by distance); where both sides only touch the
+/// plane, their far ends must clear each other. Every other pair must keep
+/// twice the profile's reach apart, measured with a certified lower bound,
+/// never a sampled estimate.
 #[allow(clippy::too_many_arguments)]
 fn check_clearance(
     chain: &[Segment],
@@ -1301,6 +1351,36 @@ fn check_clearance(
                 after.segment,
             )?,
         };
+        // Past a certified turn, an arc's remainder must clear the whole
+        // body on the other side of the joint.
+        let remainders = [
+            match (incoming, before.path.motion) {
+                (Side::Within(turn), Motion::Rotate { angle, .. }) => before
+                    .path
+                    .sub_arc(0.0, angle - turn)
+                    .map(|rest| (rest, after)),
+                _ => None,
+            },
+            match (outgoing, after.path.motion) {
+                (Side::Within(turn), Motion::Rotate { angle, .. }) => {
+                    after.path.sub_arc(turn, angle).map(|rest| (rest, before))
+                }
+                _ => None,
+            },
+        ];
+        for (rest, other) in remainders.into_iter().flatten() {
+            let closest = distance_lower_bound(&rest, &other.path, reach);
+            if closest <= limit {
+                return Err(invalid(format!(
+                    "path segments {} and {} pass within {} of each other beyond the turn their \
+                     joint's plane separates, within twice the sweep profile's reach ({reach}): \
+                     the swept body could meet itself",
+                    before.segment,
+                    after.segment,
+                    closest.max(0.0)
+                )));
+            }
+        }
         if incoming == Side::Weak && outgoing == Side::Weak {
             let apart = (before.path.start - after.path.end).length();
             if apart <= limit {
