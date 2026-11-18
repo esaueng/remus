@@ -207,8 +207,9 @@ fn fold_radius(tilt: f64) -> f64 {
 /// Tight, tilted turns the 2×reach distance check refused although they are
 /// clean (#1860's declined review finding): the half turn of radius 1.2 at a
 /// 30° tilt with a return run (built on main before #1860, volume 64.67),
-/// the 216° turn of radius 2 at 45°, and neighbours at other tilts down to
-/// within a few hundredths of the fold radius. Each now builds valid,
+/// and neighbours at other tilts down to within a few hundredths of the
+/// fold radius; the 216° turn of radius 2 at 45°, which the distance check
+/// already clears on this path, is a control. Each now builds valid,
 /// watertight, with the flux volume `π cos(tilt) · length` (a tilted
 /// section sweeps its area times `cos(tilt)` per unit of centre line), and
 /// the independent oracle finds no two sections that meet.
