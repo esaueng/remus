@@ -143,18 +143,27 @@ fn a_disc_wraps_at_its_developed_volume() {
     let solid = wrap_profile_on_cone(&mut topo, profile, &cone(beta), d0, d1).unwrap();
     assert_valid(&topo, solid, "disc");
     // V = Δd·A + tan β·(d1² − d0²)/2 · ∬ dA/ρ, the integral by polar
-    // quadrature about the disc's centre (developed (1.5, 2 + ρ₀)).
-    let (n_r, n_t) = (1200, 1200);
+    // quadrature about the disc's centre (developed (1.5, 2 + ρ₀)): composite
+    // Gauss–Legendre in the radius, the periodic rectangle rule in the angle,
+    // both converged far below the fit's own error.
+    let (n_r, n_t) = (16, 512);
+    let gauss = remus_math::quadrature::gauss_legendre_points(16);
     let mut integral = 0.0;
     for i in 0..n_r {
-        let r = 2.0 * (f64::from(i) + 0.5) / f64::from(n_r);
-        for j in 0..n_t {
-            let t = std::f64::consts::TAU * f64::from(j) / f64::from(n_t);
-            let (s, y) = (1.5 + r * t.cos(), 2.0 + rho0 + r * t.sin());
-            integral += r / s.hypot(y);
+        let (lo, hi) = (
+            2.0 * f64::from(i) / f64::from(n_r),
+            2.0 * f64::from(i + 1) / f64::from(n_r),
+        );
+        for gp in gauss {
+            let r = (hi - lo).mul_add(0.5 * (gp.x + 1.0), lo);
+            for j in 0..n_t {
+                let t = std::f64::consts::TAU * f64::from(j) / f64::from(n_t);
+                let (s, y) = (1.5 + r * t.cos(), 2.0 + rho0 + r * t.sin());
+                integral += 0.5 * (hi - lo) * gp.w * r / s.hypot(y);
+            }
         }
     }
-    integral *= (2.0 / f64::from(n_r)) * (std::f64::consts::TAU / f64::from(n_t));
+    integral *= std::f64::consts::TAU / f64::from(n_t);
     let area = std::f64::consts::PI * 4.0;
     let exact = (d1 - d0) * area + beta.to_radians().tan() * (d1 * d1 - d0 * d0) / 2.0 * integral;
     // The fitted edges lie on their offset cones: the certified part.
@@ -175,11 +184,15 @@ fn a_disc_wraps_at_its_developed_volume() {
             }
         }
     }
-    // Remus's face integrator reads a cone face trimmed by a curved (u, v)
-    // boundary to the chording of that boundary (see `integrate_face`), here
-    // 1.3e-4; a fine tessellation converges on the closed form instead.
+    // The cone faces integrate on their own fitted boundary (see the check
+    // crate's `cone_green`), so the solid reads the closed form to the fit:
+    // its rims are certified within `RELATIVE_FIT_TOLERANCE` (1e-7) of the
+    // scale and sit, on average, 5.2e-8 inside the exact developed circle,
+    // which takes 2π·2·5.2e-8 = 6.5e-7 off each cone's 4π-sized area and
+    // leaves the volume 5.3e-8 low (it read 1.3e-4 low when the trim was
+    // chorded). A fine tessellation converges on the closed form too.
     let measured = volume(&topo, solid);
-    assert!(rel(measured, exact) < 2e-4, "{measured} vs {exact}");
+    assert!(rel(measured, exact) < 2e-7, "{measured} vs {exact}");
     let mesh = crate::tessellate::tessellate_solid(&topo, solid, 2e-4).unwrap();
     let six: f64 = mesh
         .indices

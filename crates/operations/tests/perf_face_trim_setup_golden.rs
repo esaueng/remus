@@ -255,6 +255,15 @@ fn cross_drilled_shaft_integrals_are_pinned() {
 /// This pin includes the correctness changes from #969, #970 and #971. It
 /// was reproduced on their combined source without #972's hot-path changes;
 /// the optimized integration must match that reference bit for bit.
+///
+/// The cone wall's fitted bore rims are now read by Green's theorem on the
+/// cone (`cone_green`), which moved its pins. The wall's area is checked
+/// against an independent reference: the full lateral area `6π√40` less two
+/// bore patches, `2 ∫ r k · 2 asin(√(0.64 − (z − 3)²) / r) dz` with
+/// `r = 4 − z/3` and `k = √(10)/3`, integrated by Simpson's rule in `φ`
+/// (`z = 3 + 0.8 sin φ`) to 114.937_419_762_766. On this cone `P·n` is the
+/// constant `4/k`, so the wall's volume term is `4A/(3k)`. The previous
+/// sampled reading was 1.9e-4 high.
 #[test]
 fn drilled_cone_frustum_integrals_are_pinned() {
     let mut topo = Topology::new();
@@ -268,6 +277,22 @@ fn drilled_cone_frustum_integrals_are_pinned() {
     .unwrap();
     let tool = translated(&mut topo, tool, -6.0, 0.0, 3.0);
     let solid = boolean(&mut topo, BooleanOp::Cut, frustum, tool).unwrap();
+    let reference_area = 114.937_419_762_766_f64;
+    let k = 10.0_f64.sqrt() / 3.0;
+    let mut walls = 0;
+    for id in solid_faces(&topo, solid).unwrap() {
+        if matches!(topo.face(id).unwrap().surface(), FaceSurface::Cone(_)) {
+            walls += 1;
+            for order in [1, 5, 8] {
+                let wall = integrate_face_fixed_about(&topo, id, order, Point3::new(0.0, 0.0, 0.0))
+                    .unwrap();
+                assert!((wall.area - reference_area).abs() < 1e-8, "{}", wall.area);
+                let volume = 4.0 * reference_area / (3.0 * k);
+                assert!((wall.volume - volume).abs() < 1e-8, "{}", wall.volume);
+            }
+        }
+    }
+    assert_eq!(walls, 1);
     assert_golden("drilled_cone_frustum.golden", &render(&topo, solid));
 }
 

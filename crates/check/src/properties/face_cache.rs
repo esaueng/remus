@@ -291,6 +291,17 @@ impl Request {
 
     fn integrate(self, topo: &Topology, face: FaceId) -> Result<Value, CheckError> {
         match self {
+            Self::FixedAbout { order, reference } if reads_fitted_boundary(topo, face) => {
+                let contribution =
+                    face_integrator::integrate_face_fixed_about(topo, face, order, reference)?;
+                Ok(Value {
+                    contribution,
+                    full_contribution: true,
+                    reference,
+                    flux: None,
+                    nesting: None,
+                })
+            }
             Self::FixedAbout { order, reference } => {
                 let (contribution, flux) =
                     face_integrator::integrate_face_fixed_flux_about(topo, face, order, reference)?;
@@ -335,6 +346,16 @@ impl Request {
                 })
             }
         }
+    }
+
+    /// Whether this request is answered fresh, never stored. A full
+    /// contribution of a face whose fitted trims the uncached integrator
+    /// reads on the boundary (`cone_green`, `cylinder_green`) differs from
+    /// the flux-collecting reading the cache stores to re-reference, and a
+    /// stored one would answer this family's volume requests with it; so
+    /// such a face is integrated afresh, bit-identical to the uncached call.
+    fn bypasses_cache(self, topo: &Topology, face: FaceId) -> bool {
+        matches!(self, Self::FixedAbout { .. }) && reads_fitted_boundary(topo, face)
     }
 
     /// The answer `value`, just integrated for this request, gives it.
@@ -584,6 +605,10 @@ impl FaceIntegralCache {
     /// identical content was integrated about this very reference; otherwise
     /// equal to it up to rounding (see the [module docs](self)).
     ///
+    /// The term is the vector-area-collecting reading, so on a cylinder or
+    /// cone face with a fitted trim it is the sampled trim's, not the
+    /// boundary reading `integrate_face_fixed_about` returns there.
+    ///
     /// # Errors
     ///
     /// Exactly the errors of the uncached integrator.
@@ -630,7 +655,7 @@ impl FaceIntegralCache {
         request: Request,
     ) -> Result<Answer, CheckError> {
         request.validate_reference()?;
-        if !self.is_enabled() {
+        if !self.is_enabled() || request.bypasses_cache(topo, face) {
             return Ok(request.answer_fresh(&request.integrate(topo, face)?));
         }
         let Ok((hash, key)) = face_key(topo, face, request) else {
@@ -908,7 +933,7 @@ fn memoized(topo: &Topology, face: FaceId, request: Request) -> Result<Answer, C
     request.validate_reference()?;
     let enabled =
         THREAD_CACHE.with(|cache| cache.try_borrow().is_ok_and(|cache| cache.is_enabled()));
-    if !enabled {
+    if !enabled || request.bypasses_cache(topo, face) {
         return Ok(request.answer_fresh(&request.integrate(topo, face)?));
     }
     let Ok((hash, key)) = face_key(topo, face, request) else {
@@ -931,6 +956,32 @@ fn memoized(topo: &Topology, face: FaceId, request: Request) -> Result<Answer, C
         }
     });
     Ok(answer)
+}
+
+/// Whether `face` is a cylinder or cone face with a fitted (NURBS) trim, the
+/// faces whose full contribution the uncached integrator reads on their
+/// boundary where a flux-collecting reading samples the trim. Unreadable
+/// faces answer `false`; the integrator reports their error.
+fn reads_fitted_boundary(topo: &Topology, face: FaceId) -> bool {
+    let Ok(face_data) = topo.face(face) else {
+        return false;
+    };
+    if !matches!(
+        face_data.surface(),
+        FaceSurface::Cylinder(_) | FaceSurface::Cone(_)
+    ) {
+        return false;
+    }
+    std::iter::once(face_data.outer_wire())
+        .chain(face_data.inner_wires().iter().copied())
+        .any(|wire| {
+            topo.wire(wire).is_ok_and(|wire| {
+                wire.edges().iter().any(|oriented| {
+                    topo.edge(oriented.edge())
+                        .is_ok_and(|edge| matches!(edge.curve(), EdgeCurve::NurbsCurve(_)))
+                })
+            })
+        })
 }
 
 /// How a real in the key may move when the face is translated.

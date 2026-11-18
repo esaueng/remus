@@ -24,6 +24,9 @@ mod adaptive;
 #[cfg(test)]
 mod anisotropic_tests;
 mod boundary_area;
+mod cone_green;
+#[cfg(test)]
+mod cone_green_tests;
 #[cfg(test)]
 mod cylinder_band_tests;
 mod cylinder_green;
@@ -167,7 +170,11 @@ pub struct FaceContribution {
 ///   trim the analytic domain, are integrated over that domain by composite
 ///   Gauss quadrature, converged to machine precision at the default order.
 /// * **Quadric faces trimmed by a UV boundary polygon** are limited by the
-///   chording of that polygon.
+///   chording of that polygon. Cylinder faces trimmed by exact curves, and
+///   cylinder and cone faces trimmed by fitted NURBS curves on the surface,
+///   integrate exactly on their own boundary instead where the sampled
+///   reading agrees (see `cylinder_green` and `cone_green`; fitted trims
+///   only for readings that do not collect the vector area).
 /// * **NURBS faces** keep every Gauss cell inside one knot span of the
 ///   carrier (see `integrate_knot_aligned`), so they converge with the order
 ///   up to the same trim chording.
@@ -574,6 +581,35 @@ pub fn integrate_face_about(
     )
 }
 
+/// The cone face's reading on its own boundary when it qualifies (see
+/// `cone_green`), else `sampled`, under the cylinder's guard: the boundary
+/// reading replaces the sampled one only where both agree to the sampling
+/// error. Faces with only exact trims, area-only and vector-area readings,
+/// and explicit refinement requests keep the sampled reading unchanged.
+fn cone_boundary_or_sampled<const AREA_ONLY: bool>(
+    topo: &Topology,
+    face: &Face,
+    cone: &remus_math::surfaces::ConicalSurface,
+    rule: IntegrationRule<'_>,
+    sign: f64,
+    sampled: FaceContribution,
+) -> Result<FaceContribution, CheckError> {
+    if rule.requested_refinement().is_none()
+        && let Some((exact, flux)) =
+            cone_green::integrate::<AREA_ONLY>(topo, face, cone, &rule, sign)?
+    {
+        let scale = sampled.area.max(f64::MIN_POSITIVE);
+        let agrees = (exact.area - sampled.area).abs() <= 1e-3 * scale
+            && (exact.volume - sampled.volume).abs()
+                <= 1e-3 * sampled.volume.abs().max(scale * scale.sqrt());
+        if agrees {
+            rule.record_flux(flux);
+            return Ok(exact);
+        }
+    }
+    Ok(sampled)
+}
+
 fn integrate_face_impl<const AREA_ONLY: bool>(
     topo: &Topology,
     face_id: FaceId,
@@ -776,7 +812,7 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
                         .iter()
                         .map(|p| p.x())
                         .fold(f64::NEG_INFINITY, f64::max);
-                    return integrate_parametric::<_, AREA_ONLY>(
+                    let sampled = integrate_parametric::<_, AREA_ONLY>(
                         s,
                         (lo, hi),
                         v_range,
@@ -784,6 +820,9 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
                         sign,
                         &UvTrim::boundary_of(&uv),
                         PatchScale::ANGULAR,
+                    )?;
+                    return cone_boundary_or_sampled::<AREA_ONLY>(
+                        topo, face, s, rule, sign, sampled,
                     );
                 }
                 return Err(CheckError::IntegrationFailed(
@@ -791,7 +830,7 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
                 ));
             }
             uv.hole_vs = full_revolution_hole_vs(topo, face_id, s);
-            integrate_with_trimming_to_pole::<_, AREA_ONLY>(
+            let sampled = integrate_with_trimming_to_pole::<_, AREA_ONLY>(
                 s,
                 u_range,
                 v_range,
@@ -800,7 +839,8 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
                 &uv,
                 PatchScale::ANGULAR,
                 Some(0.0),
-            )
+            )?;
+            cone_boundary_or_sampled::<AREA_ONLY>(topo, face, s, rule, sign, sampled)
         }
         FaceSurface::Sphere(s) => {
             let mut framed = None;
