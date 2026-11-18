@@ -747,6 +747,7 @@ impl TorusCut {
             &ext,
             tol,
         )
+        .expect("no lens on one box edge")
     }
 }
 

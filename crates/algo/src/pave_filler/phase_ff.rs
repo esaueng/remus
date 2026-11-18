@@ -1245,7 +1245,16 @@ fn perform_seeded(
                     let Some(n_fine) = fine_sample_count(approx_len, dim, N) else {
                         return true;
                     };
-                    n_fine > N && (0..=n_fine).map(|i| sample(i, n_fine)).any(in_both)
+                    if n_fine > N && (0..=n_fine).map(|i| sample(i, n_fine)).any(in_both) {
+                        return true;
+                    }
+                    // A plane × torus oval can enter a box face for an arc
+                    // far shorter than any sample pitch (B266: a notch 1e-5
+                    // deep on a box edge enters the side face for 1.3e-2 of
+                    // a 2.2 oval). The box edges' exact crossings with the
+                    // torus are points of the section: one inside both boxes
+                    // answers this filter's question without sampling.
+                    torus_oval_boundary_witness(topo, fa, fb, surf_a, surf_b, raw, bb_a, bb_b)
                 })
                 .collect();
             if traced {
@@ -3479,7 +3488,7 @@ fn restrict_curves_to_faces(
             // boundary edges; defers (None) otherwise, so all other sections
             // keep the sample-clip below.
             if let Some(arcs) =
-                trim_torus_oval_to_box_face(topo, fa, fb, surf_a, surf_b, &raw, ext_a, ext_b, tol)
+                trim_torus_oval_to_box_face(topo, fa, fb, surf_a, surf_b, &raw, ext_a, ext_b, tol)?
             {
                 out.extend(arcs);
                 continue;
@@ -4313,6 +4322,96 @@ fn point_is_inside_surface(surface: &FaceSurface, p: Point3, tol: Tolerance) -> 
     signed.is_finite() && signed < -tol.linear
 }
 
+/// Whether a closed plane × torus section meets a straight boundary edge of
+/// its planar face at a point inside both faces' boxes `bb_a` and `bb_b`.
+///
+/// The point is a resolved crossing of the edge's line with the torus
+/// ([`analytic_intersection::intersect_line_torus_contacts`]), within the
+/// edge, and within the coarse branch distance [`trim_torus_oval_to_box_face`]
+/// uses of the sampled `raw` curve, so it is a point of this section, not of
+/// another branch on the same plane. Only a `Torus` × `Plane` pair and a
+/// closed non-`Line` section are read; anything else answers `false`.
+#[allow(clippy::too_many_arguments)]
+fn torus_oval_boundary_witness(
+    topo: &Topology,
+    fa: FaceId,
+    fb: FaceId,
+    surf_a: &FaceSurface,
+    surf_b: &FaceSurface,
+    raw: &RawCurve,
+    bb_a: Aabb3,
+    bb_b: Aabb3,
+) -> bool {
+    if matches!(raw.curve, EdgeCurve::Line) || (raw.p_start - raw.p_end).length() > 1e-6 {
+        return false;
+    }
+    let (torus, plane_face) = match (surf_a, surf_b) {
+        (FaceSurface::Torus(t), FaceSurface::Plane { .. }) => (t, fb),
+        (FaceSurface::Plane { .. }, FaceSurface::Torus(t)) => (t, fa),
+        // B24: exhaustive over the `FaceSurface` pair — only a torus × plane
+        // pair is read here.
+        (
+            FaceSurface::Plane { .. },
+            FaceSurface::Plane { .. }
+            | FaceSurface::Nurbs(_)
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_),
+        )
+        | (
+            FaceSurface::Nurbs(_)
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_),
+            _,
+        )
+        | (
+            FaceSurface::Torus(_),
+            FaceSurface::Nurbs(_)
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_),
+        ) => return false,
+    };
+    let Ok(face) = topo.face(plane_face) else {
+        return false;
+    };
+    let Ok(wire) = topo.wire(face.outer_wire()) else {
+        return false;
+    };
+    let on_oval_tol = torus.minor_radius() * 0.1;
+    for oe in wire.edges() {
+        let Ok(edge) = topo.edge(oe.edge()) else {
+            return false;
+        };
+        let EdgeCurve::Line = edge.curve() else {
+            continue;
+        };
+        let (Ok(start), Ok(end)) = (topo.vertex(edge.start()), topo.vertex(edge.end())) else {
+            return false;
+        };
+        let (s, dir) = (start.point(), end.point() - start.point());
+        for contact in analytic_intersection::intersect_line_torus_contacts(torus, s, dir) {
+            if !contact.resolved || !(0.0..=1.0).contains(&contact.t) {
+                continue;
+            }
+            let p = s + dir * contact.t;
+            if !(bb_a.contains_point(p) && bb_b.contains_point(p)) {
+                continue;
+            }
+            let near = (0..=128).any(|i| {
+                let t = raw.t_range.0 + (raw.t_range.1 - raw.t_range.0) * f64::from(i) / 128.0;
+                (raw_point_at(raw, t) - p).length() < on_oval_tol
+            });
+            if near {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// Trim a plane×torus oval to its EXACT in-box arc at the box-edge∩torus
 /// crossings (the analogue of box∩sphere's `emit_split_circle_arcs`, for a
 /// marched torus oval instead of a `Circle`).
@@ -4340,6 +4439,24 @@ fn point_is_inside_surface(surface: &FaceSurface, p: Point3, tol: Tolerance) -> 
 /// The kept arc is the one whose midpoint is inside the box-face polygon (the
 /// outer arc that wraps most of the tube), not the inner fragment a contiguous
 /// sample run would wrongly keep on a mirror-asymmetric marcher parameterisation.
+///
+/// A kept arc whose two ends lie on one straight edge of the box face bounds
+/// a lens between itself and that edge, as thick as the arc's farthest
+/// distance from the edge (B266: a torus notch on a box edge). Read against
+/// the section tolerance model ([`crate::section_tolerance`]):
+///
+/// - within the model's `band` the lens is the edge, to tolerance: the arc
+///   is dropped (an oval all of whose arcs are dropped gives `Some(vec![])`);
+/// - thinner than its `separate` distance, the arc and the edge are distinct
+///   curves that later stages may weld into one, so no partition of the face
+///   is certain: [`AlgoError::IntersectionFailed`] refuses the section by
+///   name rather than let a weld drop the notch from a valid solid;
+/// - thicker, the arc is kept.
+///
+/// # Errors
+///
+/// [`AlgoError::IntersectionFailed`] for a lens thinner than the separation
+/// distance, as above.
 #[allow(clippy::too_many_arguments)]
 fn trim_torus_oval_to_box_face(
     topo: &Topology,
@@ -4351,7 +4468,117 @@ fn trim_torus_oval_to_box_face(
     ext_a: &FaceExtent,
     ext_b: &FaceExtent,
     tol: Tolerance,
-) -> Option<Vec<RawCurve>> {
+) -> Result<Option<Vec<RawCurve>>, AlgoError> {
+    let Some(groups) = torus_oval_box_arcs(topo, fa, fb, surf_a, surf_b, raw, ext_a, ext_b, tol)
+    else {
+        return Ok(None);
+    };
+    // `torus_oval_box_arcs` answers only for a torus × plane pair.
+    let (torus, plane_face) = if let FaceSurface::Torus(t) = surf_a {
+        (t, fb)
+    } else if let FaceSurface::Torus(t) = surf_b {
+        (t, fa)
+    } else {
+        return Ok(Some(groups.into_iter().flatten().collect()));
+    };
+    let coord = (torus.center() - Point3::new(0.0, 0.0, 0.0)).length()
+        + torus.major_radius().abs()
+        + torus.minor_radius().abs();
+    let model = crate::section_tolerance::SectionTolerance::at(tol.linear, coord);
+    let face = topo.face(plane_face)?;
+    let mut lines = Vec::new();
+    for oe in topo.wire(face.outer_wire())?.edges() {
+        let edge = topo.edge(oe.edge())?;
+        if matches!(edge.curve(), EdgeCurve::Line) {
+            lines.push((
+                topo.vertex(edge.start())?.point(),
+                topo.vertex(edge.end())?.point(),
+            ));
+        }
+    }
+    let mut kept = Vec::new();
+    let mut dropped = false;
+    for group in groups {
+        let (Some(first), Some(last)) = (group.first(), group.last()) else {
+            continue;
+        };
+        if let Some(thickness) = lens_thickness(&group, first.p_start, last.p_end, &lines, model) {
+            if thickness <= model.band {
+                dropped = true;
+                continue;
+            }
+            if thickness < model.separate {
+                return Err(AlgoError::IntersectionFailed(format!(
+                    "plane × torus section on face {plane_face:?}: the arc between \
+                     {:?} and {:?} runs {thickness:e} from the box edge they lie on, \
+                     inside the separation distance {:e}",
+                    first.p_start, last.p_end, model.separate
+                )));
+            }
+        }
+        kept.extend(group);
+    }
+    if kept.is_empty() {
+        return Ok(dropped.then(Vec::new));
+    }
+    Ok(Some(kept))
+}
+
+/// How far the arc made of `pieces`, from `start` to `end`, runs from the
+/// straight edge of `lines` both its ends lie on (within `model.band`), or
+/// `None` when no one edge holds both ends.
+///
+/// The distance is the largest over 64 samples of each piece, its ends
+/// included, from the edge's line.
+fn lens_thickness(
+    pieces: &[RawCurve],
+    start: Point3,
+    end: Point3,
+    lines: &[(Point3, Point3)],
+    model: crate::section_tolerance::SectionTolerance,
+) -> Option<f64> {
+    let distance = |p: Point3, (a, b): (Point3, Point3)| -> Option<f64> {
+        let dir = b - a;
+        let len_sq = dir.dot(dir);
+        if len_sq.is_nan() || len_sq <= 0.0 {
+            return None;
+        }
+        Some((p - a).cross(dir).length() / len_sq.sqrt())
+    };
+    let on_segment = |p: Point3, (a, b): (Point3, Point3)| -> bool {
+        let dir = b - a;
+        let len_sq = dir.dot(dir);
+        let t = (p - a).dot(dir) / len_sq;
+        (0.0..=1.0).contains(&t) && distance(p, (a, b)).is_some_and(|d| d <= model.band)
+    };
+    let &line = lines
+        .iter()
+        .find(|&&line| on_segment(start, line) && on_segment(end, line))?;
+    let mut thickness = 0.0_f64;
+    for piece in pieces {
+        for i in 0..=64 {
+            let t =
+                (piece.t_range.1 - piece.t_range.0).mul_add(f64::from(i) / 64.0, piece.t_range.0);
+            thickness = thickness.max(distance(raw_point_at(piece, t), line)?);
+        }
+    }
+    Some(thickness)
+}
+
+/// The in-box arcs of [`trim_torus_oval_to_box_face`], each as the one or
+/// two pieces it is emitted in.
+#[allow(clippy::too_many_arguments)]
+fn torus_oval_box_arcs(
+    topo: &Topology,
+    fa: FaceId,
+    fb: FaceId,
+    surf_a: &FaceSurface,
+    surf_b: &FaceSurface,
+    raw: &RawCurve,
+    ext_a: &FaceExtent,
+    ext_b: &FaceExtent,
+    tol: Tolerance,
+) -> Option<Vec<Vec<RawCurve>>> {
     // Identify the torus face/surface and the box (plane) face; the oval must be
     // a closed non-Line curve.
     if matches!(raw.curve, EdgeCurve::Line) {
@@ -4562,7 +4789,7 @@ fn trim_torus_oval_to_box_face(
             .curve
             .evaluate_with_endpoints(0.5, raw.p_start, raw.p_end);
         return if inside_face(mid) {
-            Some(vec![raw.clone()])
+            Some(vec![vec![raw.clone()]])
         } else {
             None
         };
@@ -4597,6 +4824,55 @@ fn trim_torus_oval_to_box_face(
     marks.compact_sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     if marks.len() < 2 {
         return None;
+    }
+    // A dense parameter can miss its crossing by half a dense step, on
+    // either side, and the arc below is re-sampled at a 48th of the span
+    // between two parameters. Between crossings fewer than about 48 dense
+    // steps apart the first or last re-sample can then lie past its
+    // crossing, and the refit through the exact crossing folds back on
+    // itself; two crossings a few steps apart get the same or neighbouring
+    // samples, and the arc runs round the whole oval (B266: a notch 3e-7 to
+    // 1e-5 deep enters the box face for 2e-3 to 1.3e-2 of a 2.2 oval, one to
+    // six steps). Settle each crossing's parameter to the closest point of
+    // the oval within a step of the dense one. Crossings further apart keep
+    // their dense parameters.
+    #[allow(clippy::cast_precision_loss)]
+    let dense_step = 1.0 / n_dense as f64;
+    let close = (0..marks.len()).any(|i| {
+        // Sorted: only the last gap wraps past the oval's seam.
+        let gap = marks
+            .get(i + 1)
+            .map_or(marks[0].0 + 1.0 - marks[i].0, |next| next.0 - marks[i].0);
+        gap < 64.0 * dense_step
+    });
+    if close {
+        let distance = |f: f64, p: Point3| (oval_at(f.rem_euclid(1.0)) - p).length();
+        for (frac, p) in &mut marks {
+            // Golden-section search on the closest-point distance, which is
+            // unimodal this close to a crossing the oval passes through.
+            let golden = 0.5 * (5.0_f64.sqrt() - 1.0);
+            let (mut lo, mut hi) = (*frac - dense_step, *frac + dense_step);
+            let mut x1 = hi - golden * (hi - lo);
+            let mut x2 = lo + golden * (hi - lo);
+            let (mut d1, mut d2) = (distance(x1, *p), distance(x2, *p));
+            for _ in 0..80 {
+                if d1 <= d2 {
+                    hi = x2;
+                    x2 = x1;
+                    d2 = d1;
+                    x1 = hi - golden * (hi - lo);
+                    d1 = distance(x1, *p);
+                } else {
+                    lo = x1;
+                    x1 = x2;
+                    d1 = d2;
+                    x2 = lo + golden * (hi - lo);
+                    d2 = distance(x2, *p);
+                }
+            }
+            *frac = f64::midpoint(lo, hi).rem_euclid(1.0);
+        }
+        marks.compact_sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     }
 
     // For each arc between consecutive crossings (wrapping the closed oval), the
@@ -4741,13 +5017,12 @@ fn trim_torus_oval_to_box_face(
         if pts.len() >= 7 {
             let mid = pts.len() / 2;
             if let (Some(a0), Some(a1)) = (fit(&pts[..=mid]), fit(&pts[mid..])) {
-                out_arcs.push(a0);
-                out_arcs.push(a1);
+                out_arcs.push(vec![a0, a1]);
             } else if let Some(a) = fit(pts) {
-                out_arcs.push(a);
+                out_arcs.push(vec![a]);
             }
         } else if let Some(a) = fit(pts) {
-            out_arcs.push(a);
+            out_arcs.push(vec![a]);
         }
     }
     if out_arcs.is_empty() {
