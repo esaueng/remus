@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794933053905,
+  "lastUpdate": 1795017829628,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -145599,6 +145599,304 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 58675,
             "range": "± 158",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Peter",
+            "username": "petertoday",
+            "email": "171875562+petertoday@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "51fefc6886f92583a2873054bbe802107f71cbf0",
+          "message": "fix(operations): keep a section's circles and ellipses as curve edges (#1826)\n\n## Problem\n\n`section()` chorded every curved piece of a cross section into\n`EdgeCurve::Line` edges. Reported from an OpenZCAD section export (which\nlabels these sections exact):\n\n`make_box(80, 40, 8)` minus two `make_cylinder(3, 12)` at (16, 20, −2)\nand (64, 20, −2), `section(point (0, 0, 4), normal (0, 0, 1))`\n\n| | before | after |\n|---|---|---|\n| outer wire | 4 `Line` | 4 `Line` |\n| each hole | 64 `Line` | 1 closed `Circle`, r = 3, centre (16, 20, 4) /\n(64, 20, 4) |\n| `face_area` | 3143.542127 | 3200 − 18π = 3143.4513322 (1e-9 relative)\n|\n| wasm `getEdgeCurveType` of a hole edge | `LINE` ×64 | `CIRCLE` |\n\n## Root cause\n\n`crates/operations/src/section.rs`: `cylinder::append_section` emitted\n64 chords, the cone arm 64 samples, the sphere and torus arms the\nsampled polylines of `analytic_intersection::intersect_plane_*`, and\n`assemble_wires` built only `Line` edges. The chord sagitta is `r (1 −\ncos(π/64))`.\n\n## Fix\n\n- The arms still clip chords of the carrier against the face's trims\n(that machinery is unchanged), but each chord now carries the\nclosed-form curve it samples:\n  - sphere → circle;\n  - cylinder → circle (plane square to the axis) or ellipse;\n- cone → circle or ellipse when the plane crosses every generator of the\nnappe;\n- torus → circles on its symmetry planes (square to the axis, or through\nit).\n- `assemble_wires` turns each run of chords on one curve into one\n`Circle` / `Ellipse` edge: closed on one vertex with the trim `[0, 2π]`\nwhen the chain is all that curve, otherwise an arc whose parameter span\nis stored as the edge's trim. The curve is reversed where the chain runs\nclockwise, so every edge is used forward with an increasing span.\n- Equal curves from adjacent faces are one carrier (a sphere's two\nhemispheres give one circle edge). A run with a point more than `100 ×\ntol.linear` off its carrier, or not monotone in its parameter, stays\nlines.\n- `group_wires_by_containment` reads arcs exactly (`LoopOutline`). A\nwire of one closed circle has one vertex, so its vertex polygon alone\ncontains nothing and has no area. Loop area is the vertex polygon plus\nthe signed arc segments. Containment is the parity of a ray's crossings\nwith the outline's own line and arc edges; the ray is sent down the\nwidest gap between the directions of the outline's vertices and\ntangents, so with `n` of them it clears each by at least `π / 2n`.\n- `trim_polygon` laid a closed rim traversed backwards down ending, not\nstarting, at its vertex. The wire's previous edge then ran to the rim's\nlast sample, so the seam of a cone or torus face was crossed one rim\nsample off the true seam and the section carried a dent there (0.03 deep\non a frustum of radius 7). Found because that off-curve point kept cone\nsections from being recognised; it now starts at the vertex either way\nround.\n\n## Behavior change\n\nSection faces now have `Circle` / `Ellipse` edges where they had runs of\n`Line` edges, and `face_area` of a section is the analytic area. A\nconsumer that counted line edges or pinned the polygon's area sees\ndifferent numbers. No signature changed.\n\n## Not changed\n\n- A torus off its symmetry planes, a NURBS face, and the parabola /\nhyperbola branches of a cone stay sampled, as `Line` chords. Nothing\nmarks those edges as approximate. The only field that could, the edge\ntolerance, is capped at `DEFAULT_MAX_ENTITY_TOLERANCE` (1e-4) by the\narena document, which is under a chord's sagitta, so a stored value\nwould understate the error. Marking them needs a small API of its own.\n- The coplanar-face fallback (`extract_coplanar_boundary`) still takes\nsampled polygons of curved boundary edges.\n- Cylinder cuts through a rim or parallel to the axis still return\n`Unsupported`.\n\n## Tolerances\n\nNo existing tolerance was loosened. Tightened, because the chord sagitta\nthey covered is gone:\n\n- `section_cylinder_at_midheight`, `section_sphere_through_center`,\n`section_sphere_off_center`: 5e-2 → 1e-12 relative, plus one `Circle`\nedge.\n- `regress_b125_section_curved_trims.rs`: area bound 3.3e-3 → 1e-12\n(measured 2e-15 to 9e-15); the narrow-band case loses its extra 32-gon\nsagitta allowance, and the narrow segment is now compared two-sided.\n- `regress_finite_cylinder_section.rs`: expected areas are π r² and π /\ncos(tilt) instead of the 64-gon's, at the same 1e-10 / 1e-12.\n\nNew internal bands: a chain point may sit `100 × tol.linear` (1e-5) off\nthe curve it is trimmed to (the band this module already uses for\nin-plane and coplanar tests), and the vertex tolerance is raised to\ncover any such gap; two carriers are one curve when centre, radii and\naxes agree to `tol.linear` / `tol.angular`.\n\n## Tests\n\nNew in `crates/operations/src/section.rs`:\n\n- `section_plate_with_two_holes_keeps_circles` (the reported input)\n- `section_cylinder_oblique_is_an_ellipse`\n- `section_cone_is_a_circle_or_an_ellipse`\n- `section_trimmed_sphere_is_a_circle_arc` (arc with its quarter-turn\nspan, not the complement)\n- `section_torus_is_circles_on_its_symmetry_plane_and_chords_off_it`\n- `a_circle_wire_contains_and_measures_as_a_disc`,\n`arcs_add_to_and_cut_from_the_vertex_polygon`,\n`a_whole_carrier_is_laid_down_once`,\n`chords_off_their_carrier_stay_lines`,\n`carriers_are_filed_by_their_curve`\n- `a_hole_on_the_chord_between_two_arcs_is_still_a_hole`,\n`a_hole_touching_every_chord_of_a_rounded_triangle_is_still_a_hole` (the\ntwo review findings; the first failed before its fix with two groups\ninstead of one)\n- `trim_polygon_starts_closed_rims_at_their_vertex` gains the seam\nassertion (fails on the old ordering: `slanted seam (1.5, 0, 0) →\n(1.4712, −0.2926, 2)`)\n\nThe curved cases also check that the face's display mesh fills the same\nregion within its deflection.\n\nNew in `crates/wasm/src/bindings/qualify_section_split_tests.rs`:\n`direct_section_plate_with_holes_keeps_circle_edges`\n(`getEdgeCurveType`, `getEdgeParamSpan`, `evaluateEdgeCurve`,\n`sampleEdge`, `faceArea`, `tessellateFace` on the plate).\n\n## Verification\n\nLocal, Windows host (`ci-test` profile):\n\n- `cargo test -p remus-operations --lib section::`: 44 passed (final\nhead)\n- `--test regress_finite_cylinder_section --test\nregress_b125_section_curved_trims --test qualify_section_split --test\nregress_volume_open_mesh_route`: 26 passed (final head)\n- `cargo test -p remus-wasm --lib section`: 22 passed (final head)\n- `cargo clippy -p remus-operations --lib --tests -- -D warnings`: clean\n- `check-edge-domain-authority.py`, `check-det-hash.sh`,\n`check-wildcard-arms.sh`, `check-ops-module-graph.py`: pass\n- pre-commit hooks (fmt, clippy, commitlint) through the Linux stage\nclone: pass\n\nFull `cargo test -p remus-operations --no-fail-fast` (run on 1e6798a):\n115 test binaries, one failure,\n`regress_opseq_sphere_torus_orientation::seed1146_closed_disc_rims_oppose_the_band`,\nwhich fails on this Windows host on unmodified `main` and passes in CI.\nThe section unit, integration and wasm tests above were re-run on the\nfinal head cce71c1.\n\nCI on the first head (a5c8c42): `checks / CI Pass` green, including the\nsix native test shards, the wasm build and runtime jobs, and the size\ngate (kernel +30.9 KiB raw, under the 64 KiB line).\n\n## Review\n\nReviewer: `gpt-6.1-sol` (Codex), read-only, in its own worktree. One\nreview round on a5c8c42, then one re-check scoped to the fix.\n\nFixed:\n\n1. **Major, round 1** (`section.rs`, `LoopOutline::contains`): a hole\nwhose seam vertex lies on the chord shared by two arcs of its outline\nwas read as outside. Reproduced through the public API: a lens of two\nspherical caps with a small cavity sectioned into two faces (22.3648 and\n0.1963) instead of one face with a hole (22.1684). Fixed in 1e6798a by\nplacing the hole at a point of its boundary clear of the chords; the\nreviewer re-ran its reproduction on that commit and got one face, one\nhole, area 22.168411359231300.\n2. **Major, re-check** (`section.rs`, the probe selection of 1e6798a): a\nunit circle inside a rounded triangle whose three chords touch it at its\nseam and third-points still read as outside. Fixed in cce71c1 by\ndropping the polygon-plus-segments reading for containment altogether: a\nray is counted against the outline's own lines and arcs, clear of every\nvertex and tangent. Both cases are unit tests.\n\nDeclined: none.\n\nThe fix in cce71c1 has not had a further review round (one round plus\none scoped re-check is the limit); it is covered by the two regression\ntests, the chord-point assertions added to the outline tests, and the\nexisting nesting tests.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\n---------\n\nCo-authored-by: Claude Fable 5.2 <noreply@anthropic.com>",
+          "timestamp": "2026-11-18T14:09:48Z",
+          "url": "https://github.com/esaueng/remus/commit/51fefc6886f92583a2873054bbe802107f71cbf0"
+        },
+        "date": 1795017825387,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 838186,
+            "range": "± 1608",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 917494,
+            "range": "± 7004",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 20271,
+            "range": "± 293",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 5996558,
+            "range": "± 6246",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 5989042,
+            "range": "± 11402",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 5884606,
+            "range": "± 7392",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 20197,
+            "range": "± 46",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 3571435,
+            "range": "± 5577",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 21702052,
+            "range": "± 361841",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 18,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 77,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 43,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 146,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 140,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 567,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 101,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 272,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 150,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 371,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 740,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 2217,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 9,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 26,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 92,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 93,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "surface_projection/cached_grid/3",
+            "value": 17076,
+            "range": "± 52",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "surface_projection/cached_grid/9",
+            "value": 97118,
+            "range": "± 343",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/bilinear_hit",
+            "value": 2647,
+            "range": "± 10",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_secant",
+            "value": 11290,
+            "range": "± 17",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_miss",
+            "value": 42162,
+            "range": "± 68",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/quadratic_hit",
+            "value": 3738,
+            "range": "± 18",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 419428,
+            "range": "± 689",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 1917769,
+            "range": "± 5543",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 119413,
+            "range": "± 216",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 223230,
+            "range": "± 306",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/plane_torus_grid",
+            "value": 271480,
+            "range": "± 5322",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 49482,
+            "range": "± 262",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/narrow_bump_flank",
+            "value": 25946,
+            "range": "± 63",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_hit",
+            "value": 16129,
+            "range": "± 16",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_miss",
+            "value": 94773,
+            "range": "± 187",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_grid_build",
+            "value": 115260,
+            "range": "± 664",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 540288,
+            "range": "± 20165",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 6536022,
+            "range": "± 73411",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 539510,
+            "range": "± 817",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 842375,
+            "range": "± 1707",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 58947,
+            "range": "± 175",
             "unit": "ns/iter"
           }
         ]
