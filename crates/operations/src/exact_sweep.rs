@@ -43,9 +43,13 @@
 //! run's centre line is extended over every ruling its mitres leave, an arc
 //! of more than a half turn is halved, and consecutive turns about one axis
 //! form one rotation. Neighbouring pieces must lie on either side of their
-//! joint's section or mitre plane, for as much of an arc as that is certified;
-//! the rest of the arc, and every other pair, must stay twice the
-//! profile's reach apart.
+//! joint's section or mitre plane, for as much of an arc as that is certified.
+//! The rest of the arc, and every other pair, must stay twice the profile's
+//! reach apart, or lie on either side of a plane: an upper bound on `g·x`
+//! over one piece's body below a lower bound over the other's, both
+//! certified (closed-form profile bounds, an arc's sections at close turns
+//! plus the most a sinusoid can rise between two of them). A pair neither
+//! clears is halved a bounded number of times before it is refused.
 
 use std::f64::consts::FRAC_PI_2;
 
@@ -83,6 +87,20 @@ const MIN_MITRE_COSINE: f64 = 1e-3;
 
 /// Bounds on the points per arc in the self-clearance check.
 const CLEARANCE_POINTS: (usize, usize) = (16, 4096);
+
+/// Bounds on the sections an arc is cut into for the separation bound.
+const SEPARATION_TURNS: (usize, usize) = (4, 128);
+
+/// Directions tried around a circle in the separating-plane search.
+const SEPARATION_DIRECTIONS: usize = 48;
+
+/// How many times a pair of bodies may be halved in the separation
+/// certificate before it is refused.
+const SEPARATION_DEPTH: usize = 10;
+
+/// The most pairs of bodies the separation certificate tries for one pair
+/// of stretches before it refuses: a bound on its work.
+const SEPARATION_PAIRS: usize = 128;
 
 /// Relative scale for geometric refusal margins.
 const RELATIVE_MARGIN: f64 = 1e-9;
@@ -1091,7 +1109,9 @@ struct Stretch {
     /// group: together they are one rotation of the profile.
     group: usize,
     path: Segment,
-    /// The profile's placement at the stretch's start.
+    /// The profile's placement at the stretch's start. The stretch's body
+    /// lies in that placed profile carried along all of `path`: a run's is
+    /// moved back over its mitre extension, which spans every ruling.
     placement: Rigid,
 }
 
@@ -1222,7 +1242,7 @@ fn stretches(
                         end_tangent: t,
                         motion: Motion::Translate(end - start),
                     },
-                    placement,
+                    placement: Motion::Translate(t * lo).rigid().after(&placement),
                 });
             }
             Motion::Rotate { angle, .. } => {
@@ -1297,10 +1317,11 @@ fn stretches(
 /// are separated by its plane: a run's rulings all end (or start) on it, a
 /// mitred run's on the bisector plane, and an arc is certified by
 /// [`arc_side`] over as much of its turn as it can be (the rest of the arc
-/// must clear the neighbour by distance); where both sides only touch the
-/// plane, their far ends must clear each other. Every other pair must keep
-/// twice the profile's reach apart, measured with a certified lower bound,
-/// never a sampled estimate.
+/// must clear the neighbour's body by [`bodies_clear`]); where both sides
+/// only touch the plane, their far ends must clear each other. Every other
+/// pair must clear each other by [`bodies_clear`]: twice the profile's reach
+/// apart, measured with a certified lower bound, or certifiably on either
+/// side of a plane, never a sampled estimate.
 #[allow(clippy::too_many_arguments)]
 fn check_clearance(
     chain: &[Segment],
@@ -1365,26 +1386,44 @@ fn check_clearance(
         // body on the other side of the joint.
         let remainders = [
             match (incoming, before.path.motion) {
-                (Side::Within(turn), Motion::Rotate { angle, .. }) => before
-                    .path
-                    .sub_arc(0.0, angle - turn)
-                    .map(|rest| (rest, after)),
+                (Side::Within(turn), Motion::Rotate { angle, .. }) => {
+                    before.path.sub_arc(0.0, angle - turn).map(|path| {
+                        let rest = Body {
+                            path,
+                            placement: before.placement,
+                        };
+                        (rest, after)
+                    })
+                }
                 _ => None,
             },
             match (outgoing, after.path.motion) {
-                (Side::Within(turn), Motion::Rotate { angle, .. }) => {
-                    after.path.sub_arc(turn, angle).map(|rest| (rest, before))
-                }
+                (
+                    Side::Within(turn),
+                    Motion::Rotate {
+                        origin,
+                        axis,
+                        angle,
+                    },
+                ) => after.path.sub_arc(turn, angle).map(|path| {
+                    let lead = Motion::Rotate {
+                        origin,
+                        axis,
+                        angle: turn,
+                    };
+                    let placement = lead.rigid().after(&after.placement);
+                    (Body { path, placement }, before)
+                }),
                 _ => None,
             },
         ];
         for (rest, other) in remainders.into_iter().flatten() {
-            let closest = distance_lower_bound(&rest, &other.path, reach);
-            if closest <= limit {
+            if !bodies_clear(loops, &rest, &Body::of(other), reach, limit, margin) {
+                let closest = distance_lower_bound(&rest.path, &other.path, reach);
                 return Err(invalid(format!(
                     "path segments {} and {} pass within {} of each other beyond the turn their \
-                     joint's plane separates, within twice the sweep profile's reach ({reach}): \
-                     the swept body could meet itself",
+                     joint's plane separates, within twice the sweep profile's reach ({reach}), \
+                     and no plane certifiably separates them: the swept body could meet itself",
                     before.segment,
                     after.segment,
                     closest.max(0.0)
@@ -1410,11 +1449,12 @@ fn check_clearance(
             if a.group == b.group || neighbours {
                 continue;
             }
-            let closest = distance_lower_bound(&a.path, &b.path, reach);
-            if closest <= limit {
+            if !bodies_clear(loops, &Body::of(a), &Body::of(b), reach, limit, margin) {
+                let closest = distance_lower_bound(&a.path, &b.path, reach);
                 return Err(invalid(format!(
                     "path segments {} and {} pass within {} of each other, within twice the \
-                     sweep profile's reach ({reach}): the swept body could meet itself",
+                     sweep profile's reach ({reach}), and no plane certifiably separates them: \
+                     the swept body could meet itself",
                     a.segment,
                     b.segment,
                     closest.max(0.0)
@@ -1423,6 +1463,229 @@ fn check_clearance(
         }
     }
     Ok(())
+}
+
+/// A piece of the swept body for the separation certificate: the profile
+/// placed by `placement` at `path.start`, carried along all of `path` (moved
+/// along a run, turned through an arc). It contains the material of the
+/// stretch or sub-arc it is made from.
+#[derive(Debug, Clone, Copy)]
+struct Body {
+    path: Segment,
+    placement: Rigid,
+}
+
+impl Body {
+    const fn of(stretch: &Stretch) -> Self {
+        Self {
+            path: stretch.path,
+            placement: stretch.placement,
+        }
+    }
+
+    /// Two bodies whose union contains this one: the path halved, the second
+    /// half's profile carried to the middle.
+    fn halves(&self) -> Option<(Self, Self)> {
+        let (first, second) = match self.path.motion {
+            Motion::Translate(d) => {
+                let half = d * 0.5;
+                let middle = self.path.start + half;
+                let piece = |start: Point3, end: Point3| Segment {
+                    start,
+                    end,
+                    motion: Motion::Translate(half),
+                    ..self.path
+                };
+                (piece(self.path.start, middle), piece(middle, self.path.end))
+            }
+            Motion::Rotate { .. } => self.path.halves()?,
+        };
+        let placement = first.motion.rigid().after(&self.placement);
+        Some((
+            Self {
+                path: first,
+                placement: self.placement,
+            },
+            Self {
+                path: second,
+                placement,
+            },
+        ))
+    }
+}
+
+/// An upper bound on `g·x` over a [`Body`]. A run adds the better of its
+/// two ends to the placed profile's bound (`g·x` is affine along a ruling).
+/// An arc is cut into `count` turns of `h`. Turning one point `x`, `g·x`
+/// is a sinusoid `c + A cos(α − φ)` with `A ≤ |g| ρ`, `ρ` bounding the
+/// point's distance from the axis (the profile lies within `reach` of the
+/// path point, and turning keeps that distance). Over one turn of `h` it
+/// exceeds the larger of its two end values by at most `A (1 − cos(h/2)) =
+/// 2A sin²(h/4)`: past its crest only when the crest lies inside, and then
+/// one end is within `h/2` of it. The sup over the profile of the larger end
+/// value is the larger of the two placed sections' bounds, so the sections'
+/// bounds at every cut plus that wobble bound the whole arc.
+fn body_sup(loops: &[Loop], body: &Body, reach: f64, g: Vec3) -> f64 {
+    match body.path.motion {
+        Motion::Translate(d) => {
+            profile_sup(loops, &body.placement, g)
+                + g.dot(d).max(0.0)
+                + rounding(g.length() * d.length())
+        }
+        Motion::Rotate {
+            origin,
+            axis,
+            angle,
+        } => {
+            let rho = (body.path.start - origin).length() + reach;
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                clippy::cast_precision_loss
+            )]
+            let count = ((16.0 * rho * angle / reach).ceil() as usize)
+                .clamp(SEPARATION_TURNS.0, SEPARATION_TURNS.1);
+            #[allow(clippy::cast_precision_loss)]
+            let h = angle / count as f64;
+            let wobble = 2.0 * rho * (0.25 * h).sin().powi(2) * g.length();
+            #[allow(clippy::cast_precision_loss)]
+            let sections = (0..=count)
+                .map(|i| {
+                    let turn = Motion::Rotate {
+                        origin,
+                        axis,
+                        angle: i as f64 * h,
+                    };
+                    profile_sup(loops, &turn.rigid().after(&body.placement), g)
+                })
+                .fold(f64::NEG_INFINITY, f64::max);
+            sections + wobble + rounding(g.length() * (to_vec(origin).length() + 2.0 * rho))
+        }
+    }
+}
+
+/// A unit vector square to the unit `w`, and the one completing the pair.
+fn square_pair(w: Vec3) -> Option<(Vec3, Vec3)> {
+    let helper = if w.x().abs() < 0.9 {
+        Vec3::new(1.0, 0.0, 0.0)
+    } else {
+        Vec3::new(0.0, 1.0, 0.0)
+    };
+    let e1 = w.cross(helper).normalize().ok()?;
+    Some((e1, w.cross(e1)))
+}
+
+/// Whether a plane certifiably separates the bodies `a` and `b` by more
+/// than `margin`: some direction `g` with a lower bound on `g·x` over `b`
+/// above an upper bound on it over `a` by the margin. Only the found
+/// direction's bounds decide, so the search for it needs no guarantee: it
+/// tries the directions square to an arc's axis (or to both runs), that axis
+/// itself and the line between the paths' middles, then refines the best.
+fn separated(loops: &[Loop], a: &Body, b: &Body, reach: f64, margin: f64) -> bool {
+    let gap = |g: Vec3| -body_sup(loops, b, reach, -g) - body_sup(loops, a, reach, g);
+    let axis_of = |body: &Body| match body.path.motion {
+        Motion::Rotate { axis, .. } => Some(axis),
+        Motion::Translate(_) => None,
+    };
+    let direction = |body: &Body| match body.path.motion {
+        Motion::Translate(d) => d.normalize().ok(),
+        Motion::Rotate { .. } => None,
+    };
+    let w = axis_of(a).or_else(|| axis_of(b)).or_else(|| {
+        let (da, db) = (direction(a)?, direction(b)?);
+        da.cross(db)
+            .normalize()
+            .ok()
+            .or_else(|| square_pair(da).map(|p| p.0))
+    });
+    let Some(w) = w else {
+        return false;
+    };
+    let Some((e1, e2)) = square_pair(w) else {
+        return false;
+    };
+    let middle = |body: &Body| {
+        body.path
+            .points(2)
+            .get(1)
+            .copied()
+            .unwrap_or(body.path.start)
+    };
+    let mut extra = vec![w, -w];
+    if let Ok(between) = (middle(b) - middle(a)).normalize() {
+        extra.push(between);
+    }
+    if extra.into_iter().any(|g| gap(g) > margin) {
+        return true;
+    }
+    let along = |psi: f64| e1 * psi.cos() + e2 * psi.sin();
+    #[allow(clippy::cast_precision_loss)]
+    let step = std::f64::consts::TAU / SEPARATION_DIRECTIONS as f64;
+    let mut best = (f64::NEG_INFINITY, 0.0);
+    for k in 0..SEPARATION_DIRECTIONS {
+        #[allow(clippy::cast_precision_loss)]
+        let psi = k as f64 * step;
+        let value = gap(along(psi));
+        if value > margin {
+            return true;
+        }
+        if value > best.0 {
+            best = (value, psi);
+        }
+    }
+    let (mut value, mut psi) = best;
+    let mut width = 0.5 * step;
+    for _ in 0..16 {
+        for candidate in [psi - width, psi + width] {
+            let v = gap(along(candidate));
+            if v > margin {
+                return true;
+            }
+            if v > value {
+                (value, psi) = (v, candidate);
+            }
+        }
+        width *= 0.5;
+    }
+    false
+}
+
+/// Whether the bodies `a` and `b` certifiably keep apart: their paths more
+/// than `limit` apart, or a plane separating them. Failing both, each half
+/// of the longer one must keep apart from the other, down to
+/// [`SEPARATION_DEPTH`] halvings and within [`SEPARATION_PAIRS`] pairs tried
+/// in all; past either, the pair is refused.
+fn bodies_clear(loops: &[Loop], a: &Body, b: &Body, reach: f64, limit: f64, margin: f64) -> bool {
+    let mut pending = vec![(*a, *b, 0usize)];
+    let mut tried = 0usize;
+    while let Some((a, b, depth)) = pending.pop() {
+        tried += 1;
+        if tried > SEPARATION_PAIRS {
+            return false;
+        }
+        if distance_lower_bound(&a.path, &b.path, reach) > limit
+            || separated(loops, &a, &b, reach, margin)
+        {
+            continue;
+        }
+        if depth >= SEPARATION_DEPTH {
+            return false;
+        }
+        if a.path.length() >= b.path.length() {
+            let Some((first, second)) = a.halves() else {
+                return false;
+            };
+            pending.push((second, b, depth + 1));
+            pending.push((first, b, depth + 1));
+        } else {
+            let Some((first, second)) = b.halves() else {
+                return false;
+            };
+            pending.push((a, second, depth + 1));
+            pending.push((a, first, depth + 1));
+        }
+    }
+    true
 }
 
 /// A lower bound on the distance between two path segments. Two lines are
@@ -1965,3 +2228,6 @@ fn sweep_exact_impl(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod clearance_tests;
