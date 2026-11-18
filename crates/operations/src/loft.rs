@@ -18,7 +18,7 @@ use remus_topology::vertex::{Vertex, VertexId};
 use remus_topology::wire::{OrientedEdge, Wire};
 
 use crate::dot_normal_point;
-use crate::polygon::face_polygon;
+use crate::polygon::face_polygon_with_trimmed_conics;
 use crate::winding::ensure_ccw_profiles;
 
 /// A repeated polygon junction has no line image to loft. Keep each exact
@@ -244,7 +244,7 @@ fn loft_impl(topo: &mut Topology, profiles: &[FaceId]) -> Result<SolidId, crate:
 
     let mut profile_verts: Vec<Vec<Point3>> = Vec::with_capacity(profiles.len());
     for &fid in profiles {
-        let verts = canonical_polygon_junctions(face_polygon(topo, fid)?);
+        let verts = canonical_polygon_junctions(face_polygon_with_trimmed_conics(topo, fid)?);
         profile_verts.push(verts);
     }
 
@@ -1961,7 +1961,7 @@ fn loft_smooth_impl(
 
     let mut profile_verts: Vec<Vec<Point3>> = Vec::with_capacity(profiles.len());
     for &fid in profiles {
-        let verts = canonical_polygon_junctions(face_polygon(topo, fid)?);
+        let verts = canonical_polygon_junctions(face_polygon_with_trimmed_conics(topo, fid)?);
         profile_verts.push(verts);
     }
 

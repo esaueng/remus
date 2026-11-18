@@ -25,6 +25,7 @@ use remus_math::surfaces::SphericalSurface;
 use remus_math::vec::{Point3, Vec3};
 use remus_operations::boolean::{BooleanOp, boolean};
 use remus_operations::classify::{PointClassification, classify_point};
+use remus_operations::loft::{loft, loft_smooth};
 use remus_operations::measure::{face_area, solid_volume};
 use remus_operations::primitives::{make_box, make_cone, make_torus};
 use remus_operations::revolve::revolve;
@@ -64,6 +65,48 @@ fn assert_area(area: f64, expected: f64, what: &str) {
 /// sharing one closed rim circle.
 fn dome(topo: &mut Topology) -> SolidId {
     dome_above(topo, 0.5)
+}
+
+#[test]
+fn clipped_dome_sections_remain_loft_profiles() {
+    let mut topo = Topology::new();
+    let solid = dome(&mut topo);
+    let profiles = [0.0, 0.1, 0.2].map(|x| {
+        let faces = section(
+            &mut topo,
+            solid,
+            Point3::new(x, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap()
+        .faces;
+        assert_eq!(faces.len(), 1);
+        let wire = topo.face(faces[0]).unwrap().outer_wire();
+        let edges = topo.wire(wire).unwrap().edges();
+        assert_eq!(edges.len(), 2, "each section keeps its arc and chord");
+        assert!(
+            edges
+                .iter()
+                .any(|oe| matches!(topo.edge(oe.edge()).unwrap().curve(), EdgeCurve::Circle(_)))
+        );
+        faces[0]
+    });
+
+    let ruled = loft(&mut topo, &[profiles[0], profiles[2]]).unwrap();
+    let smooth = loft_smooth(&mut topo, &profiles).unwrap();
+
+    // The true circular-segment sections shrink over this interval. Bound
+    // the volume by their extreme areas, allowing for chordal sampling.
+    let section_area = |x: f64| {
+        let radius_sq = 1.0 - x * x;
+        radius_sq * (0.5 / radius_sq.sqrt()).acos() - 0.5 * (radius_sq - 0.25).sqrt()
+    };
+    for lofted in [ruled, smooth] {
+        let volume = solid_volume(&topo, lofted, 1e-4).unwrap();
+        let min = 0.99 * 0.2 * section_area(0.2);
+        let max = 1.01 * 0.2 * section_area(0.0);
+        assert!((min..=max).contains(&volume), "loft volume {volume}");
+    }
 }
 
 /// The unit sphere's cap above `z = cut`, as [`dome`].

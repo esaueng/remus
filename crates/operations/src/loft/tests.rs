@@ -10,6 +10,7 @@ use remus_topology::vertex::Vertex;
 use remus_topology::wire::{OrientedEdge, Wire};
 
 use crate::fill_face::fill_coons_patch;
+use crate::polygon::face_polygon;
 
 use super::*;
 

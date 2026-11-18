@@ -78,6 +78,15 @@ pub fn face_polygon(
     wire_polygon(topo, topo.face(face_id)?.outer_wire())
 }
 
+/// Sample stored partial circle and ellipse spans for loft's polygon fallback.
+/// A clipped section can have just two edges, with its area carried by an arc.
+pub fn face_polygon_with_trimmed_conics(
+    topo: &Topology,
+    face_id: FaceId,
+) -> Result<Vec<Point3>, crate::OperationsError> {
+    wire_polygon_impl(topo, topo.face(face_id)?.outer_wire(), true)
+}
+
 /// Get a polygon approximation of any wire by sampling its curved edges.
 ///
 /// The same sampling [`face_polygon`] applies to a face's outer wire, exposed
@@ -94,6 +103,14 @@ pub fn wire_polygon(
     topo: &Topology,
     wire_id: remus_topology::wire::WireId,
 ) -> Result<Vec<Point3>, crate::OperationsError> {
+    wire_polygon_impl(topo, wire_id, false)
+}
+
+fn wire_polygon_impl(
+    topo: &Topology,
+    wire_id: remus_topology::wire::WireId,
+    sample_trimmed_conics: bool,
+) -> Result<Vec<Point3>, crate::OperationsError> {
     let wire = topo.wire(wire_id)?;
     let mut pts = Vec::new();
 
@@ -101,7 +118,6 @@ pub fn wire_polygon(
         let edge = topo.edge(oe.edge())?;
         let curve = edge.curve();
         // Sample closed parametric edges (start == end vertex).
-        // Partial arcs fall through to the vertex-based path.
         let start_vid = edge.start();
         let end_vid = edge.end();
         let is_closed_edge = start_vid == end_vid
@@ -116,6 +132,20 @@ pub fn wire_polygon(
             if !oe.is_forward() {
                 sampled.reverse();
             }
+            pts.extend(sampled);
+        } else if sample_trimmed_conics
+            && matches!(curve, EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_))
+            && edge.strict_domain().is_ok()
+        {
+            // Match the section's previous angular sampling density at any
+            // scale. The next wire edge contributes the last vertex.
+            const MAX_STEP: f64 = std::f64::consts::TAU / 64.0;
+            let mut sampled =
+                crate::tessellate::sample_edge_polyline(topo, oe.edge(), f64::MAX, MAX_STEP)?;
+            if !oe.is_forward() {
+                sampled.reverse();
+            }
+            sampled.pop();
             pts.extend(sampled);
         } else {
             let vid = oe.oriented_start(edge);
