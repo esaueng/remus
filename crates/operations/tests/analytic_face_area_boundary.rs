@@ -17,7 +17,9 @@
 
 use std::f64::consts::{PI, TAU};
 
-use remus_check::properties::face_integrator::{analytic_face_area, integrate_face_area};
+use remus_check::properties::face_integrator::{
+    analytic_face_area, boundary_face_area, integrate_face_area,
+};
 use remus_math::mat::Mat4;
 use remus_operations::boolean::{BooleanOp, boolean};
 use remus_operations::{blend_ops, measure, primitives, transform};
@@ -69,10 +71,19 @@ fn census(topo: &Topology, solid: SolidId) -> Census {
             area.abs().to_bits(),
             "face_area routes through the reduction"
         );
-        if area.to_bits() == quadrature.to_bits() {
+        // Asked directly, not inferred from bit equality with the
+        // quadrature: on fitted cylinder and cone trims that quadrature reads
+        // the boundary too and can land on the same bits.
+        let Some(reduced) = boundary_face_area(topo, face).unwrap() else {
+            assert_eq!(
+                area.to_bits(),
+                quadrature.to_bits(),
+                "fallback is the quadrature"
+            );
             census.fallback += 1;
             continue;
-        }
+        };
+        assert_eq!(area.to_bits(), reduced.to_bits(), "the reduction answers");
         census.reduced += 1;
         assert!(area > 0.0);
         let relative = (area - quadrature.abs()).abs() / area;

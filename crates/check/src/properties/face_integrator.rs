@@ -535,17 +535,33 @@ pub fn analytic_face_area(
     face_id: FaceId,
     fallback_order: usize,
 ) -> Result<f64, CheckError> {
-    let analytic = matches!(
+    if let Some(area) = boundary_face_area(topo, face_id)? {
+        return Ok(area);
+    }
+    integrate_face_area(topo, face_id, fallback_order)
+}
+
+/// The exact boundary reduction behind [`analytic_face_area`] alone.
+///
+/// The area of a cylinder, cone, sphere or torus face, or `None` where the
+/// reduction does not qualify and [`analytic_face_area`] would fall back to
+/// the quadrature. Like [`planar_face_exact_area`], it never substitutes a
+/// quadrature, so a caller can tell the two readings apart.
+///
+/// # Errors
+///
+/// Returns the topology errors of the reduction.
+pub fn boundary_face_area(topo: &Topology, face_id: FaceId) -> Result<Option<f64>, CheckError> {
+    if !matches!(
         topo.face(face_id)?.surface(),
         FaceSurface::Cylinder(_)
             | FaceSurface::Cone(_)
             | FaceSurface::Sphere(_)
             | FaceSurface::Torus(_)
-    );
-    if analytic && let Some(area) = boundary_area::analytic_face_area(topo, face_id)? {
-        return Ok(area);
+    ) {
+        return Ok(None);
     }
-    integrate_face_area(topo, face_id, fallback_order)
+    boundary_area::analytic_face_area(topo, face_id)
 }
 
 /// Integrate a face with the validated numerical controls in [`PropertiesOptions`].
@@ -2043,6 +2059,10 @@ struct FaceUv {
     /// integration range instead of masking abscissae (see
     /// [`full_revolution_hole_vs`]).
     hole_vs: Vec<f64>,
+    /// Whether the outer wire uses no edge twice: no seam runs through it,
+    /// so an outer wire that wraps the periodic axis is a whole rim, not a
+    /// rim joined to a seam (see `define_trimmed_integrator`).
+    seamless_outer: bool,
 }
 
 /// Bring nonwrapping torus pockets into an already resolved one-period chart.
@@ -2347,6 +2367,12 @@ where
     // A face is its outer wire minus its holes; keeping the face's own wires
     // is the only thing that keeps the two in step.
     debug_assert!(face.inner_wires().len() >= pockets.len() + bands.len());
+    let outer_edges = topo.wire(face.outer_wire())?.edges();
+    let seamless_outer = outer_edges.iter().enumerate().all(|(i, oriented)| {
+        outer_edges[i + 1..]
+            .iter()
+            .all(|other| other.edge() != oriented.edge())
+    });
 
     Ok(FaceUv {
         boundary,
@@ -2354,6 +2380,7 @@ where
         bands,
         u_periodic,
         hole_vs: Vec::new(),
+        seamless_outer,
     })
 }
 
@@ -5922,7 +5949,10 @@ macro_rules! define_trimmed_integrator {
                     &UvTrim::pockets_of(uv),
                     scale,
                 )
-            } else if full_revolution && (apex_v.is_some() || !uv.bands.is_empty()) {
+            } else if full_revolution
+                && uv.seamless_outer
+                && (apex_v.is_some() || !uv.bands.is_empty())
+            {
                 // An outer wire that wraps the axis with no seam and climbs and
                 // falls (an oblique section's rim): the face runs from that rim
                 // to the cone's apex, or to the other wrapping rims of a band,
@@ -7284,6 +7314,7 @@ mod tests {
             bands: vec![band],
             u_periodic: true,
             hole_vs: Vec::new(),
+            seamless_outer: false,
         };
         let v_range = (0.0, 3.0);
         let bits = |spans: &[(f64, f64)]| -> Vec<[u64; 2]> {
