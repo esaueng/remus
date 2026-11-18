@@ -1,7 +1,7 @@
 ---
 row: B266
 ---
-**Done (2026-11-18, #PRNUM):** the witness is un-ignored and green. Two causes in phase FF: the side face's plane ×
+**Done (2026-11-18, [#1867](https://github.com/esaueng/remus/pull/1867)):** the witness is un-ignored and green. Two causes in phase FF: the side face's plane ×
 torus oval enters the box face for an arc far shorter than the in-both
 prefilter's sample pitch (`1.3e-2` of a `2.2` oval at a depth of `1e-5`), so
 the prefilter dropped it; and `trim_torus_oval_to_box_face` placed the
