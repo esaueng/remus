@@ -140,7 +140,7 @@ impl Section {
     }
 }
 
-fn reversed(curve: &NurbsCurve) -> NurbsCurve {
+pub(super) fn reversed(curve: &NurbsCurve) -> NurbsCurve {
     let points: Vec<_> = curve.control_points().iter().rev().copied().collect();
     let weights: Vec<_> = curve.weights().iter().rev().copied().collect();
     let (lo, hi) = curve.domain();

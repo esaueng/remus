@@ -882,6 +882,21 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
                 ));
             }
             uv.hole_vs = full_revolution_hole_vs(topo, face_id, s);
+            // A seam built of separate edges still reaches the apex, whose
+            // projection has no longitude of its own: such an outer wire is a
+            // rim joined to a seam, never a strand (`define_trimmed_integrator`).
+            let reach = face_boundary_v_extent(topo, face_id, s)
+                .map_or(0.0, |(lo, hi)| lo.abs().max(hi.abs()));
+            for oriented in topo.wire(face.outer_wire())?.edges() {
+                let edge = topo.edge(oriented.edge())?;
+                for vertex in [edge.start(), edge.end()] {
+                    let vertex = topo.vertex(vertex)?;
+                    if (vertex.point() - s.apex()).length() <= vertex.tolerance().max(1e-9 * reach)
+                    {
+                        uv.seamless_outer = false;
+                    }
+                }
+            }
             let sampled = integrate_with_trimming_to_pole::<_, AREA_ONLY>(
                 s,
                 u_range,
@@ -5918,8 +5933,28 @@ macro_rules! define_trimmed_integrator {
             let winding = uv.boundary.u_winding();
             let full_revolution = uv.u_periodic && winding.abs() >= tau - WRAP_EPS;
             let v_degenerate = (v_max - v_min) <= 1e-9;
+            // Whether the face's wrapping loops are the strands of its boundary
+            // (see the strand branch below): a seamless outer wire that wraps,
+            // climbing and falling itself, or a latitude with an inner wire
+            // that wraps and climbs and falls.
+            let wavy_band = uv.bands.iter().any(|band| {
+                let (lo, hi) = band
+                    .points
+                    .iter()
+                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| {
+                        (lo.min(p.y()), hi.max(p.y()))
+                    });
+                hi - lo > 1e-9
+            });
+            let strands = full_revolution
+                && uv.seamless_outer
+                && if v_degenerate {
+                    wavy_band
+                } else {
+                    apex_v.is_some() || !uv.bands.is_empty()
+                };
 
-            if full_revolution && v_degenerate {
+            if full_revolution && v_degenerate && !strands {
                 // Polar cap (e.g. a sphere hemisphere bounded only by one latitude
                 // circle): the cap runs from that latitude to a pole. The winding sign
                 // (CCW vs CW boundary) selects which pole — the boundary's interior
@@ -5949,17 +5984,16 @@ macro_rules! define_trimmed_integrator {
                     &UvTrim::pockets_of(uv),
                     scale,
                 )
-            } else if full_revolution
-                && uv.seamless_outer
-                && (apex_v.is_some() || !uv.bands.is_empty())
-            {
+            } else if strands {
                 // An outer wire that wraps the axis with no seam and climbs and
-                // falls (an oblique section's rim): the face runs from that rim
-                // to the cone's apex, or to the other wrapping rims of a band,
-                // not over the band of the outer rim's own `v` extent, which
-                // read such faces several percent to several times off. Every
-                // wrapping loop is a strand of that boundary; the face is where
-                // an odd number of them lie above.
+                // falls (an oblique section's rim), or a latitude outer wire
+                // over an inner one that does: the face runs from the rim to
+                // the cone's apex, or between the wrapping rims of a band, not
+                // over the band of the outer rim's own `v` extent (nor from the
+                // latitude to the inner rim's mean `v`), which read such faces
+                // several percent to several times off. Every wrapping loop is
+                // a strand of that boundary; the face is where an odd number of
+                // them lie above.
                 let mut bands = vec![uv.boundary.clone().oriented_along_u()];
                 bands.extend(uv.bands.iter().cloned());
                 let (lo, hi) = bands
