@@ -38,6 +38,11 @@
 //! node, so a file whose product data is partial loses no geometry.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::rc::Rc;
+
+#[cfg(test)]
+#[path = "structure/name_storage_tests.rs"]
+mod name_storage_tests;
 
 use remus_math::mat::Mat4;
 use remus_operations::copy::copy_and_transform_solid_detailed;
@@ -273,7 +278,7 @@ struct Shape {
 
 struct ProductGraph {
     /// Product definitions in entity order, with their product names.
-    definitions: BTreeMap<u64, String>,
+    definitions: BTreeMap<u64, Rc<str>>,
     shapes: BTreeMap<u64, Shape>,
     /// Occurrences by parent definition, in entity order.
     children: BTreeMap<u64, Vec<Occurrence>>,
@@ -310,7 +315,10 @@ impl ProductGraph {
         }
 
         // Product names, resolved once per product.
-        let mut product_names: HashMap<u64, String> = HashMap::new();
+        // Definitions may all refer to one long product name, including
+        // definitions that expansion never visits. Retain its decoded bytes
+        // once per product, not once per referring definition.
+        let mut product_names: HashMap<u64, Rc<str>> = HashMap::new();
         let mut definitions = BTreeMap::new();
         for (&id, entity) in &ordered {
             if !is_type(entity, "PRODUCT_DEFINITION")
@@ -336,7 +344,7 @@ impl ProductGraph {
                 "PRODUCT_DEFINITION_FORMATION",
             )?;
             let name = if let Some(name) = product_names.get(&product_id) {
-                name.clone()
+                Rc::clone(name)
             } else {
                 let product = typed(entities, product_id, "PRODUCT")?;
                 let slots = split_attr_slots(&product.attrs);
@@ -344,7 +352,8 @@ impl ProductGraph {
                     .filter(|name| !name.is_empty())
                     .or_else(|| text(&slots, 0))
                     .unwrap_or_default();
-                product_names.insert(product_id, name.clone());
+                let name: Rc<str> = name.into();
+                product_names.insert(product_id, Rc::clone(&name));
                 name
             };
             definitions.insert(id, name);
@@ -568,7 +577,7 @@ impl ProductGraph {
                 nodes.len() + 1,
                 limits.max_model_entities,
             )?;
-            let name = self.definitions[&frame.definition].clone();
+            let name = &self.definitions[&frame.definition];
             name_bytes = name_bytes.saturating_add(name.len());
             ensure_limit(
                 "expanded STEP name bytes",
@@ -577,7 +586,7 @@ impl ProductGraph {
             )?;
             let node = nodes.len();
             nodes.push(StepProductNode {
-                name,
+                name: name.to_string(),
                 parent: frame.parent,
             });
             visited.insert(frame.definition);
