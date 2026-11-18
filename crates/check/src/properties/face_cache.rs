@@ -48,6 +48,14 @@
 //! an area only from identical content, so both stay bit-identical to a fresh
 //! integration.
 //!
+//! A cylinder or cone face with a fitted (NURBS) trim is read on its own
+//! boundary where that reading agrees with the sampled one (`cylinder_green`,
+//! `cone_green`), and whether it does turns on the reference the volume term
+//! is taken about. Such a face's volume term is therefore served only from an
+//! entry of identical content integrated about the very same reference, with
+//! the certificate of its boundary reading, never re-referenced or
+//! translated; its full contribution is integrated afresh every time.
+//!
 //! A volume-only miss computes area, signed volume and vector area without
 //! centroid/inertia terms. Full and volume requests share lookup buckets so
 //! a full entry can answer a volume request; each entry records whether its
@@ -134,7 +142,7 @@ use remus_topology::edge::EdgeCurve;
 use remus_topology::face::{FaceId, FaceSurface};
 use smallvec::SmallVec;
 
-use super::face_integrator::{self, FaceContribution};
+use super::face_integrator::{self, FaceContribution, FittedBoundaryCertificate};
 use super::loop_nesting::{InnerLoopNesting, inner_loop_nesting};
 use crate::CheckError;
 
@@ -204,6 +212,11 @@ pub struct FaceVolumeTerm {
     /// that measured the face reports it. Neither a reference nor a
     /// translation changes it.
     pub vector_area: Option<Vec3>,
+    /// The certificate of a reading taken on the face's fitted boundary (a
+    /// cylinder or cone face with a NURBS trim), `None` for every other
+    /// reading. A qualifying caller checks this reading's convergence and
+    /// closure against it instead of an order comparison.
+    pub fitted_boundary: Option<FittedBoundaryCertificate>,
 }
 
 /// What an entry remembers about one integration.
@@ -217,6 +230,12 @@ struct Value {
     reference: Point3,
     /// `∫ n dA` from the same samples, when the integration reported it.
     flux: Option<Vec3>,
+    /// The certificate of a reading taken on a fitted boundary.
+    fitted_boundary: Option<FittedBoundaryCertificate>,
+    /// Whether the integrator's choice of path turns on the reference (a
+    /// cylinder or cone face with a fitted trim): such an entry answers only
+    /// a request about its own reference.
+    reference_bound: bool,
     /// The inner-loop nesting the integration used, for a planar face with
     /// at least two inner wires (see [`nesting_stamp`]).
     nesting: Option<InnerLoopNesting>,
@@ -285,6 +304,7 @@ impl Request {
         let mut value = self.integrate(topo, face)?;
         if matches!(self, Self::FixedAbout { .. } | Self::Volume { .. }) {
             value.nesting = nesting_stamp(topo, face);
+            value.reference_bound = reads_fitted_boundary(topo, face);
         }
         Ok(value)
     }
@@ -299,29 +319,36 @@ impl Request {
                     full_contribution: true,
                     reference,
                     flux: None,
+                    fitted_boundary: None,
+                    reference_bound: true,
                     nesting: None,
                 })
             }
             Self::FixedAbout { order, reference } => {
-                let (contribution, flux) =
-                    face_integrator::integrate_face_fixed_flux_about(topo, face, order, reference)?;
+                let reading = face_integrator::integrate_face_fixed_flux_certified_about(
+                    topo, face, order, reference, false,
+                )?;
                 Ok(Value {
-                    contribution,
+                    contribution: reading.contribution,
                     full_contribution: true,
                     reference,
-                    flux,
+                    flux: reading.vector_area,
+                    fitted_boundary: reading.fitted_boundary,
+                    reference_bound: false,
                     nesting: None,
                 })
             }
             Self::Volume { order, reference } => {
-                let (contribution, flux) = face_integrator::integrate_face_fixed_volume_flux_about(
-                    topo, face, order, reference,
+                let reading = face_integrator::integrate_face_fixed_flux_certified_about(
+                    topo, face, order, reference, true,
                 )?;
                 Ok(Value {
-                    contribution,
+                    contribution: reading.contribution,
                     full_contribution: false,
                     reference,
-                    flux,
+                    flux: reading.vector_area,
+                    fitted_boundary: reading.fitted_boundary,
+                    reference_bound: false,
                     nesting: None,
                 })
             }
@@ -332,6 +359,8 @@ impl Request {
                     full_contribution: false,
                     reference: Point3::new(0.0, 0.0, 0.0),
                     flux: None,
+                    fitted_boundary: None,
+                    reference_bound: false,
                     nesting: None,
                 })
             }
@@ -342,18 +371,22 @@ impl Request {
                     full_contribution: false,
                     reference: Point3::new(0.0, 0.0, 0.0),
                     flux: None,
+                    fitted_boundary: None,
+                    reference_bound: false,
                     nesting: None,
                 })
             }
         }
     }
 
-    /// Whether this request is answered fresh, never stored. A full
-    /// contribution of a face whose fitted trims the uncached integrator
-    /// reads on the boundary (`cone_green`, `cylinder_green`) differs from
-    /// the flux-collecting reading the cache stores to re-reference, and a
-    /// stored one would answer this family's volume requests with it; so
-    /// such a face is integrated afresh, bit-identical to the uncached call.
+    /// Whether this request is answered fresh, never stored: a full
+    /// contribution of a face whose fitted trims the integrator reads on the
+    /// boundary (`cone_green`, `cylinder_green`). A full entry would answer
+    /// this family's volume requests too, and its moments make the two
+    /// readings' agreement test differ in what it compares; integrated afresh,
+    /// the full contribution is bit-identical to the uncached call, and the
+    /// face's volume terms come only from volume-only entries (see
+    /// [`Value::reference_bound`]).
     fn bypasses_cache(self, topo: &Topology, face: FaceId) -> bool {
         matches!(self, Self::FixedAbout { .. }) && reads_fitted_boundary(topo, face)
     }
@@ -366,6 +399,7 @@ impl Request {
                 area: value.contribution.area,
                 volume: value.contribution.volume,
                 vector_area: value.flux,
+                fitted_boundary: value.fitted_boundary,
             }),
             Self::Area { .. } | Self::AnalyticArea { .. } => Answer::Area(value.contribution.area),
         }
@@ -399,8 +433,14 @@ impl Request {
                             area,
                             volume: value.contribution.volume,
                             vector_area: value.flux,
+                            fitted_boundary: value.fitted_boundary,
                         }),
                     ));
+                }
+                // About another reference the integrator may take another
+                // path on this face: integrate it afresh.
+                if value.reference_bound {
+                    return None;
                 }
                 let flux = value.flux?;
                 // The face is the entry's translated by `δ` (zero for an
@@ -420,6 +460,7 @@ impl Request {
                         area,
                         volume,
                         vector_area: Some(flux),
+                        fitted_boundary: None,
                     }),
                 ))
             }
@@ -605,9 +646,10 @@ impl FaceIntegralCache {
     /// identical content was integrated about this very reference; otherwise
     /// equal to it up to rounding (see the [module docs](self)).
     ///
-    /// The term is the vector-area-collecting reading, so on a cylinder or
-    /// cone face with a fitted trim it is the sampled trim's, not the
-    /// boundary reading `integrate_face_fixed_about` returns there.
+    /// On a cylinder or cone face with a fitted trim the term is read on the
+    /// face's boundary where that reading agrees with the sampled one, as
+    /// `integrate_face_fixed_about` reads it, and carries its certificate; it
+    /// is then served only bit-identically (see the [module docs](self)).
     ///
     /// # Errors
     ///

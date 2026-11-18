@@ -93,6 +93,7 @@ pub(super) fn integrate(
                 area: term.closure_area_lower_bound,
                 volume: term.volume,
                 vector_area: term.vector_area,
+                fitted_boundary: None,
             }
         }
         declined => {

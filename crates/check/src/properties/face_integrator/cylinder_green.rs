@@ -17,14 +17,20 @@
 //! surface has no boundary on the cylinder to integrate, and the sampled
 //! path keeps measuring it.
 //!
-//! Fitted trims are read here only for a moment (not area-only) reading,
-//! and only when the caller does not collect the vector area. An area-only
-//! request on a fitted face (`integrate_face_area`) is answered by the
-//! moment reading, so it takes this path under the same guard. The callers that do (the shell-closure and order-convergence
-//! certificates of `solid_volume`) qualify the reading they are handed, and a
-//! fitted trim read on the surface sits up to its fit error off the
-//! neighbouring face's own edge, so its vector area would not cancel to their
-//! tolerance. They keep the sampled reading and its checks unchanged.
+//! Fitted trims are read here only for a moment (not area-only) reading. An
+//! area-only request on a fitted face (`integrate_face_area`) is answered by
+//! the moment reading, so it takes this path under the same guard.
+//!
+//! A caller that collects the vector area (the shell-closure and
+//! order-convergence certificates of `solid_volume`) qualifies the reading it
+//! is handed, so a fitted reading also reports what certifies it
+//! ([`FittedBoundaryCertificate`]): how far its span-by-span and halved-span
+//! volume terms differ (the convergence certificate an order comparison
+//! cannot give, since this reading does not depend on the order), and how
+//! far its vector area can stand from the one the stored boundary bounds:
+//! every fitted point is read at its projection onto this surface, up to its
+//! fit error off the neighbouring face's own reading of the edge (see
+//! [`FittedEdges::add`]).
 //!
 //! The sampled path cannot be trusted on such trims either: when two
 //! unequal crossing cylinders cut a single closed loop (a drill r 7.3 at
@@ -54,7 +60,7 @@ use remus_topology::Topology;
 use remus_topology::edge::EdgeCurve;
 use remus_topology::face::Face;
 
-use super::{Accumulator, FaceContribution, IntegrationRule};
+use super::{Accumulator, FaceContribution, FittedBoundaryCertificate, IntegrationRule};
 use crate::CheckError;
 
 /// Composite pieces per edge and Gauss points per piece. A conic trim's
@@ -77,6 +83,101 @@ pub(super) const NURBS_ON_SURFACE_ABS: f64 = 1e-3;
 /// Relative agreement a fitted trim's span-by-span and halved-span readings
 /// must reach in every term (see `readings_agree`).
 const FITTED_CONVERGENCE: f64 = 1e-9;
+/// Margin [`FittedEdges::add`] puts on its vector-area bound: the offsets it
+/// is built from are read at the quadrature points only, and twice the bound
+/// covers an offset between them up to twice the largest one read.
+const CLOSURE_ALLOWANCE_MARGIN: f64 = 2.0;
+
+/// A face's reading on its own boundary.
+pub(super) struct GreenReading {
+    pub(super) contribution: FaceContribution,
+    /// The vector area `∫ n dA` from the same quadrature points.
+    pub(super) flux: Vec3,
+    /// What certifies the reading of its fitted edges; `None` when the face
+    /// has none (exact trims only).
+    pub(super) certificate: Option<FittedBoundaryCertificate>,
+}
+
+/// What one reading of an edge measured of it besides its integrals.
+#[derive(Debug, Default, Clone, Copy)]
+pub(super) struct EdgeMeasure {
+    /// Largest distance of a quadrature point from its projection onto the
+    /// surface (zero for an exact trim, which is read where it lies).
+    pub(super) offset: f64,
+    /// The stored edge's arc length, by the same quadrature.
+    pub(super) length: f64,
+    /// The arc length of its projection onto the surface.
+    pub(super) projected_length: f64,
+}
+
+impl EdgeMeasure {
+    /// Record one quadrature point: its weight `w` (the interval map
+    /// included), its distance `offset` off the surface, and the speeds of
+    /// the stored point and of its projection.
+    pub(super) fn add(&mut self, w: f64, offset: f64, speed: f64, projected_speed: f64) {
+        self.offset = self.offset.max(offset);
+        self.length += w * speed;
+        self.projected_length += w * projected_speed;
+    }
+}
+
+/// The certificate of a face's fitted edges, summed edge by edge.
+#[derive(Debug, Default)]
+pub(super) struct FittedEdges {
+    volume_disagreement: f64,
+    closure_allowance: f64,
+    count: usize,
+}
+
+impl FittedEdges {
+    /// Add one fitted edge from its span-by-span (`coarse`) and halved-span
+    /// (`fine`) readings, what they measured of it, and the distances of its
+    /// two end points from the integration reference.
+    ///
+    /// The volume disagreement is `|V_coarse − V_fine|`.
+    ///
+    /// The closure allowance bounds how far this face's vector area moves
+    /// because the edge is read at its projection `C + a` onto the surface
+    /// rather than where it is stored, `C`. A vector area is
+    /// `½ ∮ (P − R) × dP` over the boundary, and with `∫ (C − R) × da`
+    /// integrated by parts the edge moves it by
+    /// `∫ a × dC + ½ [(C − R) × a] + ½ ∫ a × da`, which is at most
+    /// `|a| (ℓ + ½ (ℓ + ℓₐ) + ½ (|C₀ − R| + |C₁ − R|))`, `ℓ` and `ℓₐ` being
+    /// the stored and projected arc lengths (`∫ |da| ≤ ℓ + ℓₐ`). The stored
+    /// edges bound a closed shell, whose vector areas cancel exactly, so a
+    /// shell read this way closes to within the sum of its faces' allowances
+    /// plus whatever its other faces' readings leave. `|a|` is the largest
+    /// offset read, and the bound carries [`CLOSURE_ALLOWANCE_MARGIN`].
+    pub(super) fn add(
+        &mut self,
+        coarse: (&Accumulator, EdgeMeasure),
+        fine: (&Accumulator, EdgeMeasure),
+        end_reach: [f64; 2],
+    ) {
+        let offset = coarse.1.offset.max(fine.1.offset);
+        let (length, projected) = (fine.1.length, fine.1.projected_length);
+        let bound = offset
+            * 0.5f64.mul_add(
+                end_reach[0] + end_reach[1],
+                1.5f64.mul_add(length, 0.5 * projected),
+            );
+        self.volume_disagreement += (coarse.0.vol - fine.0.vol).abs();
+        self.closure_allowance += CLOSURE_ALLOWANCE_MARGIN * bound;
+        self.count += 1;
+    }
+
+    /// The face's certificate, `None` when it has no fitted edge or a
+    /// measure is not finite.
+    pub(super) fn certificate(&self) -> Option<FittedBoundaryCertificate> {
+        (self.count > 0
+            && self.volume_disagreement.is_finite()
+            && self.closure_allowance.is_finite())
+        .then_some(FittedBoundaryCertificate {
+            volume_disagreement: self.volume_disagreement,
+            closure_allowance: self.closure_allowance,
+        })
+    }
+}
 
 /// The edge's velocity `dP/dt` at `t` for an exact trim (line, circle,
 /// ellipse); `None` for anything else.
@@ -114,20 +215,22 @@ pub(super) fn pieces(lo: f64, hi: f64, count: usize) -> impl Iterator<Item = (f6
     (0..count).map(move |k| (step.mul_add(k as f64, lo), step.mul_add((k + 1) as f64, lo)))
 }
 
-/// The face's contribution and vector area by Green's theorem.
+/// The face's contribution and vector area by Green's theorem, with the
+/// certificate of its fitted edges.
 ///
 /// `None` when a boundary edge is not a line, circle or ellipse (or, for a
-/// caller that does not collect the vector area, an on-surface NURBS curve;
-/// see the module docs), has no stored domain, or the boundary does not
-/// enclose positive area (an orientation outside the convention this relies
-/// on): the caller keeps its sampled path then.
+/// moment reading, an on-surface NURBS curve; see the module docs), has no
+/// stored domain, a fitted edge's two readings disagree or measure something
+/// non-finite, or the boundary does not enclose positive area (an
+/// orientation outside the convention this relies on): the caller keeps its
+/// sampled path then.
 pub(super) fn integrate<const AREA_ONLY: bool>(
     topo: &Topology,
     face: &Face,
     cylinder: &CylindricalSurface,
     rule: &IntegrationRule<'_>,
     sign: f64,
-) -> Result<Option<(FaceContribution, Vec3)>, CheckError> {
+) -> Result<Option<GreenReading>, CheckError> {
     let fresh = || Accumulator {
         volume_only: rule.volume_only,
         ..Accumulator::default()
@@ -142,10 +245,11 @@ pub(super) fn integrate<const AREA_ONLY: bool>(
         reference: rule.reference,
         off_surface_limit: (NURBS_ON_SURFACE * cylinder.radius()).max(NURBS_ON_SURFACE_ABS),
     };
-    // Fitted trims only for a moment reading no certificate qualifies (module
-    // docs). `integrate_face_area` never asks for one area-only: it reads a
-    // fitted face with its moments, whose volume the guard needs.
-    let fitted_trims_allowed = !AREA_ONLY && rule.flux.is_none();
+    // Fitted trims only for a moment reading (module docs).
+    // `integrate_face_area` never asks for one area-only: it reads a fitted
+    // face with its moments, whose volume the guard needs.
+    let fitted_trims_allowed = !AREA_ONLY;
+    let mut fitted = FittedEdges::default();
     // Every term compared at its own dimension of this length: the radius,
     // plus how far the integration reference lies from the cylinder.
     let length_scale = cylinder.radius() + (cylinder.origin() - rule.reference).length();
@@ -170,7 +274,13 @@ pub(super) fn integrate<const AREA_ONLY: bool>(
             };
             if !matches!(span.curve, EdgeCurve::NurbsCurve(_)) {
                 let intervals: Vec<_> = pieces(lo, hi, EDGE_PIECES).collect();
-                if !reading.edge::<AREA_ONLY>(&span, direction, &intervals, &mut acc) {
+                if !reading.edge::<AREA_ONLY>(
+                    &span,
+                    direction,
+                    &intervals,
+                    &mut acc,
+                    &mut EdgeMeasure::default(),
+                ) {
                     return Ok(None);
                 }
                 continue;
@@ -190,24 +300,58 @@ pub(super) fn integrate<const AREA_ONLY: bool>(
                 knot_pieces(nurbs.knots(), lo, hi, 1),
                 knot_pieces(nurbs.knots(), lo, hi, 2),
             );
-            let (mut coarse, mut fine) = (fresh(), fresh());
-            if !reading.edge::<AREA_ONLY>(&span, direction, &coarse_pieces, &mut coarse)
-                || !reading.edge::<AREA_ONLY>(&span, direction, &fine_pieces, &mut fine)
-            {
+            // Every term, even for a volume-only rule: the edge is kept on
+            // the same agreement whatever the request, so a volume-only
+            // reading takes the path the full one takes, bit for bit.
+            let (mut coarse, mut fine) = (Accumulator::default(), Accumulator::default());
+            let (mut coarse_measure, mut fine_measure) =
+                (EdgeMeasure::default(), EdgeMeasure::default());
+            if !reading.edge::<AREA_ONLY>(
+                &span,
+                direction,
+                &coarse_pieces,
+                &mut coarse,
+                &mut coarse_measure,
+            ) || !reading.edge::<AREA_ONLY>(
+                &span,
+                direction,
+                &fine_pieces,
+                &mut fine,
+                &mut fine_measure,
+            ) {
                 return Ok(None);
             }
             let converged = readings_agree(&coarse, &fine, length_scale);
             if !converged {
                 return Ok(None);
             }
+            fitted.add(
+                (&coarse, coarse_measure),
+                (&fine, fine_measure),
+                span.end_reach(lo, hi, rule.reference),
+            );
             acc.absorb(&fine);
         }
     }
+    Ok(finish(acc, sign, &fitted))
+}
+
+/// The reading `acc` sums, `None` when it encloses no positive area or its
+/// fitted edges measured something non-finite.
+pub(super) fn finish(acc: Accumulator, sign: f64, fitted: &FittedEdges) -> Option<GreenReading> {
     if !acc.area.is_finite() || acc.area <= 0.0 {
-        return Ok(None);
+        return None;
+    }
+    let certificate = fitted.certificate();
+    if fitted.count > 0 && certificate.is_none() {
+        return None;
     }
     let flux = acc.flux(sign);
-    Ok(Some((acc.finish(sign), flux)))
+    Some(GreenReading {
+        contribution: acc.finish(sign),
+        flux,
+        certificate,
+    })
 }
 
 /// Whether two readings of one fitted edge agree in every term they carry
@@ -246,6 +390,15 @@ pub(super) struct EdgeSpan<'a> {
     pub(super) end: Point3,
 }
 
+impl EdgeSpan<'_> {
+    /// How far the edge's points at `lo` and `hi` lie from `reference`.
+    pub(super) fn end_reach(&self, lo: f64, hi: f64, reference: Point3) -> [f64; 2] {
+        [lo, hi].map(|t| {
+            (self.curve.evaluate_with_endpoints(t, self.start, self.end) - reference).length()
+        })
+    }
+}
+
 /// What every edge of one face is read against.
 struct Reading<'a> {
     cylinder: &'a CylindricalSurface,
@@ -256,14 +409,16 @@ struct Reading<'a> {
 
 impl Reading<'_> {
     /// Add `−∮ F du` along `span` over `intervals` (run in `direction`), one
-    /// Gauss–Legendre rule per interval. `false` when the edge is not a curve
-    /// this path reads, or a fitted point lies off the surface.
+    /// Gauss–Legendre rule per interval, and what its points read of the edge
+    /// to `measure`. `false` when the edge is not a curve this path reads, or
+    /// a fitted point lies off the surface.
     fn edge<const AREA_ONLY: bool>(
         &self,
         span: &EdgeSpan<'_>,
         direction: f64,
         intervals: &[(f64, f64)],
         acc: &mut Accumulator,
+        measure: &mut EdgeMeasure,
     ) -> bool {
         let mut scratch = DerivativeScratch::new();
         let edge_points = gauss_legendre_points(EDGE_ORDER);
@@ -282,20 +437,29 @@ impl Reading<'_> {
                 // radius's length, so a point at radial distance ρ moves in u
                 // at r/ρ times `dp·∂P/∂u / |∂P/∂u|²`. Exact trims lie on the
                 // surface (ρ = r) and keep the plain quotient.
-                let rate_scale = if matches!(span.curve, EdgeCurve::NurbsCurve(_)) {
+                let (rate_scale, off) = if matches!(span.curve, EdgeCurve::NurbsCurve(_)) {
                     let offset = point - cylinder.origin();
                     let rho = (offset - self.axis * offset.dot(self.axis)).length();
-                    if (rho - cylinder.radius()).abs() > self.off_surface_limit {
+                    let off = (rho - cylinder.radius()).abs();
+                    if off > self.off_surface_limit {
                         return false;
                     }
-                    cylinder.radius() / rho
+                    (cylinder.radius() / rho, off)
                 } else {
-                    1.0
+                    (1.0, 0.0)
                 };
                 let (u, v) = cylinder.project_point(point);
-                let (_, du_vec, _, _, _) =
+                let (_, du_vec, dv_vec, _, _) =
                     cylinder.span_hinted_point_and_partials_with_scratch(u, v, &mut scratch);
                 let du_dt = rate_scale * dp_dt.dot(du_vec) / du_vec.dot(du_vec);
+                // The radial projection keeps the axial rate.
+                let dv_dt = dp_dt.dot(dv_vec) / dv_vec.dot(dv_vec);
+                measure.add(
+                    gp.w * half,
+                    off,
+                    dp_dt.length(),
+                    (du_vec * du_dt + dv_vec * dv_dt).length(),
+                );
                 // −∮ F du, F(u, v) = v ∫₀¹ f(u, v s) ds.
                 let line_weight = -(direction * gp.w * half) * du_dt * v;
                 for sp in axial_points {

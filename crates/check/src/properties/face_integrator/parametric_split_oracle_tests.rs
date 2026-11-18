@@ -371,6 +371,7 @@ fn compare<S: ParametricSurface>(
                                     ruled_guard: false,
                                     flux: Some(&flux),
                                     cone_apex: None,
+                                    boundary: None,
                                 };
                                 let (u, v) = domain;
                                 let result = match (shared, area_only) {

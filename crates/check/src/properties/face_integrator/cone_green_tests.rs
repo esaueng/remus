@@ -435,13 +435,17 @@ fn rule(flux: Option<&Cell<Option<Vec3>>>) -> IntegrationRule<'_> {
         ruled_guard: false,
         flux,
         cone_apex: None,
+        boundary: None,
     }
 }
 
-/// Faces with only exact trims, vector-area readings and area-only readings
-/// never take the boundary path, so their results stay bit for bit. (An
-/// area-only request on a fitted face reaches it through the moments
-/// reading instead; see `integrate_face_area`.)
+/// Faces with only exact trims and area-only readings never take the
+/// boundary path, so their results stay bit for bit. (An area-only request
+/// on a fitted face reaches it through the moments reading instead; see
+/// `integrate_face_area`.) A reading that collects the vector area takes it
+/// exactly as the moments reading does, and gets the certificate of its
+/// fitted rim: an exact conic on the cone, so it converges to round-off and
+/// is read where it lies.
 #[test]
 fn the_boundary_path_is_scoped_to_fitted_moment_readings() {
     let section = &sections(1.0)[0];
@@ -449,16 +453,36 @@ fn the_boundary_path_is_scoped_to_fitted_moment_readings() {
     let fitted = pointed_face(&mut topo, section);
     let cone = section.cone();
     let face = topo.face(fitted).unwrap().clone();
-    assert!(
-        cone_green::integrate::<false>(&topo, &face, &cone, &rule(None), 1.0)
-            .unwrap()
-            .is_some()
-    );
+    let moments = cone_green::integrate::<false>(&topo, &face, &cone, &rule(None), 1.0)
+        .unwrap()
+        .unwrap();
     let sink = Cell::new(None);
+    let collecting = cone_green::integrate::<false>(&topo, &face, &cone, &rule(Some(&sink)), 1.0)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        collecting.contribution.volume.to_bits(),
+        moments.contribution.volume.to_bits()
+    );
+    assert_eq!(
+        collecting.contribution.area.to_bits(),
+        moments.contribution.area.to_bits()
+    );
+    assert_eq!(
+        collecting.flux.0.map(f64::to_bits),
+        moments.flux.0.map(f64::to_bits)
+    );
+    let certificate = collecting.certificate.unwrap();
+    // About the apex the volume term vanishes: compare at the area's scale.
+    let area = collecting.contribution.area;
+    let volume = area * area.sqrt();
     assert!(
-        cone_green::integrate::<false>(&topo, &face, &cone, &rule(Some(&sink)), 1.0)
-            .unwrap()
-            .is_none()
+        certificate.volume_disagreement <= 1e-12 * volume,
+        "{certificate:?}"
+    );
+    assert!(
+        certificate.closure_allowance <= 1e-12 * area,
+        "{certificate:?}"
     );
     assert!(
         cone_green::integrate::<true>(&topo, &face, &cone, &rule(None), 1.0)
