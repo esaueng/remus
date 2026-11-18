@@ -44,6 +44,33 @@ pub struct NurbsSurface {
     /// [`Self::span_seed_grid`] and [`Self::is_periodic_u`]).
     #[cfg_attr(feature = "serde", serde(skip))]
     seed_grid: SeedGridCache,
+    /// The closed-form surface this one is exactly, when the engine that
+    /// built it proved so (see [`Self::with_exact_form`]). `None` from
+    /// [`Self::new`] and every other constructor, so a fitted, sampled or
+    /// edited net never inherits it; clones keep it, being the same surface.
+    /// Provenance, not geometry: it takes no part in equality and is not
+    /// serialized, so a deserialized surface reads `None`.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    exact_form: Option<ExactForm>,
+}
+
+/// A closed-form surface that a rational [`NurbsSurface`] represents exactly.
+///
+/// Recorded by the engine that constructs the net, never inferred from the
+/// net afterwards. A surface carries one only where its construction proves
+/// that the rational surface is the closed form (up to the rounding of its
+/// control net), and a test samples the surface against the closed form.
+/// Consumers that disclose approximation, such as the detailed blend
+/// results, treat a NURBS face that carries one as exact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ExactForm {
+    /// A quadric cone with elliptic sections: the lines joining the points
+    /// of two similar ellipses at the same angle about a common axis. Each
+    /// row of the net is an affine image of a rational circular arc and the
+    /// other direction is linear with equal weights, so the surface between
+    /// the rows is the ruled surface those lines sweep.
+    EllipticCone,
 }
 
 /// Lazily built [`SurfaceSeedGrid`]s and periodicity flags of one surface.
@@ -94,6 +121,7 @@ impl Clone for NurbsSurface {
             max_weight: self.max_weight.clone(),
             uniform_weights: self.uniform_weights.clone(),
             seed_grid: self.seed_grid.clone(),
+            exact_form: self.exact_form,
         }
     }
 }
@@ -647,6 +675,7 @@ impl NurbsSurface {
             max_weight: std::sync::OnceLock::new(),
             uniform_weights: std::sync::OnceLock::new(),
             seed_grid: SeedGridCache::default(),
+            exact_form: None,
         };
         let _ = surface.max_weight();
         Ok(surface)
@@ -681,6 +710,8 @@ impl NurbsSurface {
             max_weight: std::sync::OnceLock::new(),
             uniform_weights: std::sync::OnceLock::new(),
             seed_grid: SeedGridCache::default(),
+            // A new net is a new surface, whatever this one was.
+            exact_form: None,
         };
         let _ = surface.max_weight();
         Ok(surface)
@@ -704,6 +735,28 @@ impl NurbsSurface {
             .get_or_init(|| std::sync::Arc::new(ProjectionGrids::default()))
             .spans
             .get_or_init(|| SurfaceSeedGrid::build_spans(self))
+    }
+
+    /// This surface, recorded as an exact representation of `form`.
+    ///
+    /// For the engine that builds the net, and only where its construction
+    /// proves that the rational surface is that closed form, as an affine
+    /// image of exact rational arcs is. Never for a fit, a loft through
+    /// sampled sections or a refined approximation, however close. Every
+    /// call site carries a test that samples the surface against the closed
+    /// form.
+    #[must_use]
+    pub const fn with_exact_form(mut self, form: ExactForm) -> Self {
+        self.exact_form = Some(form);
+        self
+    }
+
+    /// The closed-form surface this one exactly represents, as recorded by
+    /// the engine that built it (see [`Self::with_exact_form`]), or `None`
+    /// when no construction proved one.
+    #[must_use]
+    pub const fn exact_form(&self) -> Option<ExactForm> {
+        self.exact_form
     }
 
     /// Polynomial degree in the u direction.
@@ -4127,6 +4180,68 @@ mod contraction_oracle_tests;
 #[cfg(test)]
 mod shared_storage_tests;
 
+/// `exact_form` is provenance: only the constructing call sets it, clones
+/// keep it, and every other construction (a new net, a moved net,
+/// deserialization) starts without it. It never changes equality.
+#[cfg(test)]
+mod exact_form_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    fn quarter_cylinder() -> NurbsSurface {
+        let h = std::f64::consts::FRAC_1_SQRT_2;
+        let row = |z: f64| {
+            vec![
+                Point3::new(1.0, 0.0, z),
+                Point3::new(1.0, 1.0, z),
+                Point3::new(0.0, 1.0, z),
+            ]
+        };
+        NurbsSurface::new(
+            1,
+            2,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            vec![row(0.0), row(1.0)],
+            vec![vec![1.0, h, 1.0]; 2],
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn only_the_constructing_call_records_an_exact_form() {
+        let plain = quarter_cylinder();
+        assert_eq!(plain.exact_form(), None, "new records nothing");
+        let exact = plain.clone().with_exact_form(ExactForm::EllipticCone);
+        assert_eq!(exact.exact_form(), Some(ExactForm::EllipticCone));
+        assert_eq!(exact, plain, "provenance is not geometry");
+        // The clone outlives its source, so it carries the record itself.
+        let copy = exact.clone();
+        drop(exact);
+        assert_eq!(
+            copy.exact_form(),
+            Some(ExactForm::EllipticCone),
+            "a clone is the same surface"
+        );
+        let net = copy.control_points().to_vec();
+        assert_eq!(
+            copy.with_control_points(net).unwrap().exact_form(),
+            None,
+            "a new net is a new surface"
+        );
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn a_deserialized_surface_records_nothing() {
+        let exact = quarter_cylinder().with_exact_form(ExactForm::EllipticCone);
+        let json = serde_json::to_string(&exact).unwrap();
+        let back: NurbsSurface = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, exact);
+        assert_eq!(back.exact_form(), None);
+    }
+}
+
 #[cfg(test)]
 mod borrowed_validation_tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -4144,6 +4259,7 @@ mod borrowed_validation_tests {
             max_weight: OnceLock::new(),
             uniform_weights: OnceLock::new(),
             seed_grid: SeedGridCache::default(),
+            exact_form: None,
         }
     }
 

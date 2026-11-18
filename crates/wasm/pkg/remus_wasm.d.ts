@@ -2197,10 +2197,13 @@ export class RemusKernel {
      * cascade and whole-selection rule, with the legacy method's return
      * value and thrown errors unchanged. On success `details.engine` names
      * the blend engine (`walking`, `rollingBall`, or `mixed`). A result
-     * that introduces a NURBS face — a sampled blend wall with no closed
-     * form — reports `quality: "approximate"` and lists those faces under
-     * `approximateFaces`. With `exactOnly: true` such a result is rolled
-     * back and refused (`quality_refused` / `exact_only_unattainable`).
+     * that introduces a NURBS face approximating its surface — a sampled,
+     * fitted or lofted blend wall with no closed form — reports `quality:
+     * "approximate"` and lists those faces under `approximateFaces`. A
+     * NURBS face its engine built as an exact closed form (the elliptic
+     * cone a chamfer lays over a leaning round) is exact and not listed.
+     * With `exactOnly: true` an approximate result is rolled back and
+     * refused (`quality_refused` / `exact_only_unattainable`).
      */
     filletDetailed(solid: number, edge_handles: Uint32Array, radius: number, exact_only?: boolean | null): SolidOperationDetailedResult;
     /**
@@ -5014,6 +5017,28 @@ export class RemusKernel {
      */
     sweepAlongEdges(face: number, edge_handles: Uint32Array): number;
     /**
+     * Sweep a planar face exactly along a tangent-continuous chain of line
+     * and circular-arc edges.
+     *
+     * The profile stays where it is and is carried by the path's rigid
+     * motions (a line translates it, an arc turns it about the arc's axis),
+     * starting from the chain end nearer the profile's plane. Every face is
+     * an exact plane, cylinder, cone, torus or rational NURBS surface;
+     * nothing is sampled. A closed chain builds a capless ring.
+     *
+     * Returns a solid handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns an error for an empty or broken chain, a path edge that is not
+     * a line or circular arc, a corner that is not tangent-continuous, a
+     * non-planar profile, a profile the motion does not cross transversally
+     * (it touches an arc's axis or lies along the path), or a chain that
+     * passes closer to itself than the profile's reach. The session is left
+     * unchanged.
+     */
+    sweepExact(face: number, edge_handles: Uint32Array): number;
+    /**
      * Sweep a face along a path with smooth NURBS side surfaces.
      *
      * Like `sweep()`, but produces a single NURBS surface per edge strip
@@ -5365,6 +5390,54 @@ export class RemusKernel {
      * Compute the total arc-length of a wire.
      */
     wireLength(wire: number): number;
+    /**
+     * Wrap a planar face onto a cone, preserving arc length, as the solid
+     * between normal offsets `inner` and `outer` from the cone (negative is
+     * inside it).
+     *
+     * The cone has its apex at `(apex_*)`, axis `(axis_*)` into the cone
+     * and remus half-angle `half_angle` (from the radial plane to a
+     * generator). The face lies in a plane parallel to the axis and is read
+     * in the cone's development: arc length runs along `axis × normal`,
+     * length along the generator along the axis, from `(origin_*)` on the
+     * axis, whose circle is the profile's zero; angle zero is at
+     * `(ref_*)`. Inner and outer faces are exact cones; walls are exact
+     * ruled surfaces between certified fits of the wrapped edges.
+     *
+     * Returns a solid handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns an error for a degenerate cone or offset range, an origin
+     * not beyond the apex, a face not parallel to the axis, a profile that
+     * reaches the apex or spans a full turn, an offset past an apex, or a
+     * profile curve that is not a line, circle, ellipse or non-rational
+     * spline. The session is left unchanged.
+     */
+    wrapProfileOnCone(face: number, apex_x: number, apex_y: number, apex_z: number, axis_x: number, axis_y: number, axis_z: number, ref_x: number, ref_y: number, ref_z: number, origin_x: number, origin_y: number, origin_z: number, half_angle: number, inner: number, outer: number): number;
+    /**
+     * Wrap a planar face onto a cylinder, preserving arc length, as the
+     * solid between `inner` and `outer` radii.
+     *
+     * The face lies in a plane parallel to the axis through
+     * `(origin_*)` along `(axis_*)`; arc length runs along
+     * `axis × normal` (the face's own direction across the axis), from
+     * `origin`'s foot, and lands round the axis from the angle of
+     * `(ref_*)`, measured at `radius`.
+     * Inner and outer faces are exact cylinders, walls along or across the
+     * axis exact planes; other walls are exact ruled surfaces between
+     * certified fits of the wrapped edges.
+     *
+     * Returns a solid handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns an error for a degenerate frame or radius range, a face not
+     * parallel to the axis, a profile spanning a full turn, or a profile
+     * curve that is not a line, circle, ellipse or non-rational spline. The
+     * session is left unchanged.
+     */
+    wrapProfileOnCylinder(face: number, origin_x: number, origin_y: number, origin_z: number, axis_x: number, axis_y: number, axis_z: number, ref_x: number, ref_y: number, ref_z: number, radius: number, inner: number, outer: number): number;
 }
 
 /**

@@ -1451,8 +1451,9 @@ pub(crate) fn remove_recognized_blend_faces(
 /// one rigid, proof-gated patch when every boundary extension stays exact.
 ///
 /// `Ok(None)` means the selection has no tangent analytic blend neighbor and
-/// the ordinary planar path should run. Once a blend is recognized, every
-/// refusal is returned rather than falling back to an approximation.
+/// no complete coaxial chamfer on a cap rim, and the ordinary planar path
+/// should run. Once a blend is recognized, every refusal is returned rather
+/// than falling back to an approximation.
 pub(crate) fn move_planar_faces_with_blends(
     topo: &mut Topology,
     solid: SolidId,
@@ -1523,8 +1524,9 @@ pub(crate) struct PreparedBlendMove {
 }
 
 impl PreparedBlendMove {
-    /// `Ok(None)` when the selection has no tangent analytic blend neighbour,
-    /// so [`move_planar_faces_with_blends`] declines it for every distance.
+    /// `Ok(None)` when the selection has no tangent analytic blend neighbour
+    /// and no chamfered cap rim, so [`move_planar_faces_with_blends`]
+    /// declines it for every distance.
     pub(crate) fn prepare(
         topo: &Topology,
         solid: SolidId,
@@ -2075,6 +2077,14 @@ fn adjacent_blend_seed(
     Ok(None)
 }
 
+/// The first neighbour of the selection that makes the move blend-aware: a
+/// tangent constant-radius blend carrier, or a complete coaxial chamfer cone
+/// on a planar cap's rim ([`cap_chamfer::is_axial_cap_chamfer`]).
+///
+/// A chamfer is not tangent to its cap and carries no blend radius, but it
+/// must still travel with the cap. Left to the plain planar engine, which
+/// keeps every unselected support fixed, its fixed cone re-cut by the moved
+/// plane grows the mouth by the move distance (#1799).
 fn adjacent_analytic_blend_seed(
     topo: &Topology,
     solid: SolidId,
@@ -2085,13 +2095,26 @@ fn adjacent_analytic_blend_seed(
     let mut ordered = selected_faces.to_vec();
     ordered.compact_sort_unstable_by_key(|face| face.index());
     for selected_face in ordered {
+        let cap_normal = topo.face(selected_face)?.effective_plane_normal();
         for edge in face_edges(topo, selected_face)? {
             let mut adjacent = distinct_faces(adjacency.faces_for_edge(edge));
             adjacent.compact_sort_unstable_by_key(|face| face.index());
             for candidate in adjacent {
-                if selected.contains(&candidate)
-                    || blend_surface(topo.face(candidate)?.surface()).is_none()
+                if selected.contains(&candidate) {
+                    continue;
+                }
+                if let Some(direction) = cap_normal
+                    && cap_chamfer::is_axial_cap_chamfer(
+                        topo,
+                        &adjacency,
+                        |face| selected.contains(&face),
+                        candidate,
+                        direction,
+                    )?
                 {
+                    return Ok(Some(candidate));
+                }
+                if blend_surface(topo.face(candidate)?.surface()).is_none() {
                     continue;
                 }
                 if tangent_across(topo, edge, selected_face, candidate)?
@@ -6414,6 +6437,7 @@ pub fn resize_blend_failure_code(error: &OperationsError) -> &'static str {
         | OperationsError::BodyClassMeasureMismatch { .. }
         | OperationsError::BodyClassOperationUnsupported { .. }
         | OperationsError::BodyValidationFailed { .. }
+        | OperationsError::PostconditionFailed { .. }
         | OperationsError::HealingValidationFailed { .. }
         | OperationsError::HealingVerificationUnavailable { .. }
         | OperationsError::HealingRepairRefused { .. }

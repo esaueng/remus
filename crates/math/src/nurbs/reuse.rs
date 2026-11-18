@@ -7,6 +7,61 @@ use crate::MathError;
 use crate::context::OperationContext;
 use crate::diagnostic::{Diagnostic, FailureCategory, ToDiagnostic};
 
+/// Prove that rotational velocity crosses the profile plane in the given
+/// signed normal direction over the whole curve. The required speed along
+/// the normal is `margin * max(1, |velocity|)`.
+///
+/// # Errors
+/// Returns typed refusals for unavailable bounds, cancellation or exhausted work.
+pub fn certify_rotational_crossing(
+    curve: &super::NurbsCurve,
+    origin: crate::vec::Point3,
+    axis: crate::vec::Vec3,
+    signed_normal: crate::vec::Vec3,
+    margin: f64,
+    context: &OperationContext,
+) -> Result<bool, ReuseError> {
+    let mut budget = ReuseBudget::new(1_000_000, context)?;
+    super::reuse_bounds::rotational_crossing(
+        curve,
+        origin,
+        axis,
+        signed_normal,
+        margin,
+        &mut budget,
+    )
+}
+
+/// Prove that each ruling from `inside` to `outside` crosses the cylinder
+/// or cone once, and that `section` is within `band` of that crossing at
+/// each parameter.
+///
+/// All three curves must share knots and positive weights.
+/// `fraction` is measured from `inside` towards `outside`.
+///
+/// # Errors
+/// Returns typed refusals for unavailable bounds, cancellation or exhausted work.
+pub fn certify_ruled_offset_section(
+    inside: &super::NurbsCurve,
+    outside: &super::NurbsCurve,
+    section: &super::NurbsCurve,
+    carrier: crate::analytic_intersection::AnalyticSurface<'_>,
+    fraction: f64,
+    band: f64,
+    context: &OperationContext,
+) -> Result<bool, ReuseError> {
+    let mut budget = ReuseBudget::new(1_000_000, context)?;
+    super::reuse_bounds::ruled_offset_section(
+        inside,
+        outside,
+        section,
+        carrier,
+        fraction,
+        band,
+        &mut budget,
+    )
+}
+
 /// Whole-interval bounds between two rational curves in the same parameter.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CurveDifferenceBounds {

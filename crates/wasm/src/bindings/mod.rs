@@ -54,6 +54,8 @@ mod chamfer_freeform_tests;
 #[cfg(test)]
 mod cylinder_cross_fuse_all_tests;
 #[cfg(test)]
+mod exact_sweep_tests;
+#[cfg(test)]
 mod face_digest_tests;
 #[cfg(test)]
 mod face_move_preview_tests;
@@ -101,6 +103,8 @@ mod sphere_torus_orientation_tests;
 mod store_local_switch_tests;
 #[cfg(test)]
 mod sweep_transaction_tests;
+#[cfg(test)]
+mod wrap_tests;
 
 #[cfg(test)]
 mod transaction_tests;

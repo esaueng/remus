@@ -248,8 +248,8 @@ fn expected_volume(pair: Pair, op: BooleanOp, sphere_first: bool) -> f64 {
 /// sphere and torus inequalities alone, against the kernel's classifiers.
 /// The winding number of `closed_mesh` (a raw mesh already held closed), or
 /// the robust classifier where the mesh is not closed, must agree
-/// everywhere; the count of ray-vote disagreements is returned for the
-/// caller to hold.
+/// everywhere; the lattice indices of ray-vote disagreements are returned
+/// for the caller to hold.
 #[allow(clippy::too_many_arguments)]
 fn assert_material(
     topo: &Topology,
@@ -261,7 +261,7 @@ fn assert_material(
     sphere_first: bool,
     closed_mesh: Option<&TriangleMesh>,
     label: &str,
-) -> usize {
+) -> Vec<[u32; 3]> {
     let [sx, sy, sz] = pair.sphere_center;
     let [tx, ty, tz] = pair.torus_center;
     let lo = [
@@ -279,7 +279,7 @@ fn assert_material(
     let margin = 0.08;
     let options = ClassifyOptions::default();
     let mut coverage = [0_usize; 4];
-    let mut ray_mismatches = 0;
+    let mut ray_mismatches = Vec::new();
     let n = 9_u32;
     for i in 0..n {
         for j in 0..n {
@@ -327,7 +327,7 @@ fn assert_material(
                     "{label}: winding membership at ({x}, {y}, {z})"
                 );
                 if classify_point(topo, solid, point, &options).unwrap() != expected {
-                    ray_mismatches += 1;
+                    ray_mismatches.push([i, j, k]);
                 }
             }
         }
@@ -413,9 +413,16 @@ fn check(pair: Pair, op: BooleanOp, sphere_first: bool, scale: f64, placed: bool
         closed_mesh.as_ref(),
         &label,
     );
-    if !ray_pole_piece_cell(pair, op, sphere_first, placed) {
-        assert_eq!(ray_mismatches, 0, "{label}: ray-vote membership");
-    }
+    // Only the documented B264 probes may disagree, and each of them must.
+    let known: &[[u32; 3]] = if placed {
+        b264_probes(pair, op, sphere_first)
+    } else {
+        &[]
+    };
+    assert_eq!(
+        ray_mismatches, known,
+        "{label}: ray-vote membership (lattice indices of disagreeing probes)"
+    );
 
     // Operands are still the closed-form primitives they were built as.
     for (solid, expected, name) in [
@@ -431,16 +438,45 @@ fn check(pair: Pair, op: BooleanOp, sphere_first: bool, scale: f64, placed: bool
     }
 }
 
-/// The ray vote still miscounts a few probes on the rigidly placed seed-5201
-/// fuse and sphere − torus cut, whose kept sphere piece holds a pole: its trim
-/// cannot be read in the sphere's chart, so it falls back to the 3D polygon
-/// projection (B264, identical on the unpatched kernel). The winding
-/// classifier, validity and volume hold there; the ray vote is witnessed by
-/// `ray_vote_pole_piece_witness`.
-fn ray_pole_piece_cell(pair: Pair, op: BooleanOp, sphere_first: bool, placed: bool) -> bool {
-    pair.name == "seed5201"
-        && placed
-        && (op == BooleanOp::Fuse || (op == BooleanOp::Cut && sphere_first))
+/// The ray vote still miscounts a few probes on the rigidly placed fuse and
+/// sphere − torus cut of both seeds, whose kept sphere piece holds a pole: its
+/// trim cannot be read in the sphere's chart, so it falls back to the 3D
+/// polygon projection (B264; seed 5201 identical on the unpatched kernel,
+/// seed 1146 built only since #1790). The closed-mesh winding number,
+/// validity and volume hold there; the ray vote is witnessed by
+/// `ray_vote_pole_piece_witness`. Each such cell is held to exactly these
+/// probes, as `[i, j, k]` indices into `assert_material`'s 9³ lattice, so any
+/// further disagreement fails the qualified matrix.
+const B264_PROBES: &[(&str, BooleanOp, bool, &[[u32; 3]])] = &[
+    (
+        "seed5201",
+        BooleanOp::Fuse,
+        true,
+        &[[3, 3, 5], [5, 3, 5], [6, 3, 5]],
+    ),
+    (
+        "seed5201",
+        BooleanOp::Fuse,
+        false,
+        &[[3, 3, 5], [4, 3, 2], [5, 3, 5], [6, 3, 5]],
+    ),
+    (
+        "seed5201",
+        BooleanOp::Cut,
+        true,
+        &[[3, 3, 5], [5, 3, 5], [6, 3, 5]],
+    ),
+    ("seed1146", BooleanOp::Fuse, true, &[[3, 5, 2]]),
+    ("seed1146", BooleanOp::Fuse, false, &[[3, 5, 2]]),
+    ("seed1146", BooleanOp::Cut, true, &[[3, 5, 2]]),
+];
+
+/// The documented B264 probes of one placed cell; none for any other cell.
+fn b264_probes(pair: Pair, op: BooleanOp, sphere_first: bool) -> &'static [[u32; 3]] {
+    B264_PROBES
+        .iter()
+        .find(|(name, o, s, _)| *name == pair.name && *o == op && *s == sphere_first)
+        .map_or(&[], |entry| entry.3)
 }
 
 /// What the kernel does with one cell of the matrix.
@@ -454,20 +490,18 @@ enum Outcome {
     Open,
 }
 
-/// The declared domain. Unit scale is qualified, apart from three placed
-/// seed-1146 cells the GFA refuses; the 1e-3 and 1e3 scales refuse, apart
-/// from seed 1146's small-scale fuse and sphere − torus cut, which return
-/// wrong bodies (B38's small-scale class, `small_scale_seed1146_witness`).
-/// None of these limits moved with the orientation repair.
-fn outcome(pair: Pair, op: BooleanOp, sphere_first: bool, scale: f64, placed: bool) -> Outcome {
+/// The declared domain. Unit scale is qualified. The three placed seed-1146
+/// cells that keep the outer sphere were typed refusals until #1790: their
+/// lone shell's corner-fan volume reads about zero, and the outward flux that
+/// decides it skipped the kept hemisphere, whose equator is exact great-circle
+/// arcs. The 1e-3 and 1e3 scales refuse, apart from seed 1146's small-scale
+/// fuse and sphere − torus cut, which return wrong bodies (B38's small-scale
+/// class, `small_scale_seed1146_witness`).
+fn outcome(pair: Pair, op: BooleanOp, sphere_first: bool, scale: f64, _placed: bool) -> Outcome {
     let seed1146 = pair.name == "seed1146";
     let keeps_outer_sphere = op == BooleanOp::Fuse || (op == BooleanOp::Cut && sphere_first);
     if (scale - 1.0).abs() < f64::EPSILON {
-        if seed1146 && placed && keeps_outer_sphere {
-            Outcome::Refused
-        } else {
-            Outcome::Exact
-        }
+        Outcome::Exact
     } else if seed1146 && scale < 1.0 && keeps_outer_sphere {
         Outcome::Open
     } else {
@@ -540,20 +574,22 @@ fn small_scale_seed1146_witness() {
     }
 }
 
-/// B264: the ray vote miscounts probes of the placed seed-5201 fuse and
-/// sphere − torus cut (a pole-holding sphere piece read through the 3D
+/// B264: the ray vote miscounts probes of the placed fuse and sphere − torus
+/// cut of both seeds (a pole-holding sphere piece read through the 3D
 /// polygon fallback). Remove the ignore once the classifier reads it.
 #[test]
 #[ignore = "open: ray-vote trim of a pole-holding sphere piece miscounts (B264)"]
 fn ray_vote_pole_piece_witness() {
-    for (op, sphere_first) in [
-        (BooleanOp::Fuse, true),
-        (BooleanOp::Fuse, false),
-        (BooleanOp::Cut, true),
-    ] {
+    for (pair, op, sphere_first) in [SEED_5201, SEED_1146].into_iter().flat_map(|pair| {
+        [
+            (pair, BooleanOp::Fuse, true),
+            (pair, BooleanOp::Fuse, false),
+            (pair, BooleanOp::Cut, true),
+        ]
+    }) {
         let place = placement(true);
         let mut topo = Topology::new();
-        let (sphere, torus) = build(&mut topo, SEED_5201, 1.0, place);
+        let (sphere, torus) = build(&mut topo, pair, 1.0, place);
         let (a, b) = if sphere_first {
             (sphere, torus)
         } else {
@@ -562,13 +598,13 @@ fn ray_vote_pole_piece_witness() {
         let solid = boolean_with_context(&mut topo, op, a, b, &exact())
             .unwrap()
             .solid;
-        let label = format!("seed5201 placed {op:?} sphere_first={sphere_first}");
+        let label = format!("{} placed {op:?} sphere_first={sphere_first}", pair.name);
         let mesh = tessellate_solid(&topo, solid, 0.02).unwrap();
         assert_eq!(boundary_edge_count(&mesh), 0, "{label}");
         let mismatches = assert_material(
             &topo,
             solid,
-            SEED_5201,
+            pair,
             1.0,
             place,
             op,
@@ -576,7 +612,10 @@ fn ray_vote_pole_piece_witness() {
             Some(&mesh),
             &label,
         );
-        assert_eq!(mismatches, 0, "{label}: ray-vote membership");
+        assert!(
+            mismatches.is_empty(),
+            "{label}: ray-vote membership: {mismatches:?}"
+        );
     }
 }
 

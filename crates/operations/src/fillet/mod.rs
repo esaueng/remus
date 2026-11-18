@@ -1360,12 +1360,73 @@ fn fillet_variable_transacted(
         vertex_fillet_endpoints.insert(edge.end().index());
     }
 
+    // Faces the positional `FaceSpec` vocabulary cannot describe (#1789).
+    //
+    // Every spec below except `FaceSpec::Existing` states a wire as a list of
+    // vertex positions, from which the assembler mints straight edges. A bore
+    // or boss rim is ONE closed circle edge, a single position, so a cap that
+    // carries it lost the hole and the cylinder wall bounded by it fell out of
+    // the shell as a separate, open component: any body with a circular edge
+    // anywhere refused the round. A face the blend does not reach that has a
+    // hole or a curved edge is copied whole; a trimmed planar face whose holes
+    // the blend does not reach keeps them verbatim under its rebuilt outer
+    // wire. Neighbours rebuilt from positions share the copied edges through
+    // the assembler's vertex dedup.
+    let touches_blend = |edge: &remus_topology::edge::Edge, edge_id: EdgeId| {
+        target_set.contains(&edge_id.index())
+            || vertex_fillet_endpoints.contains(&edge.start().index())
+            || vertex_fillet_endpoints.contains(&edge.end().index())
+    };
+    let mut verbatim_faces: HashSet<usize> = HashSet::default();
+    let mut untouched_faces: HashSet<usize> = HashSet::default();
+    let mut untouched_inner_faces: HashSet<usize> = HashSet::default();
+    for &face_id in &shell_face_ids {
+        let face = topo.face(face_id)?;
+        let mut closed_edge = false;
+        let mut curved_edge = false;
+        let mut outer_touched = false;
+        let mut inner_touched = false;
+        for (index, wid) in std::iter::once(face.outer_wire())
+            .chain(face.inner_wires().iter().copied())
+            .enumerate()
+        {
+            for oe in topo.wire(wid)?.edges() {
+                let edge = topo.edge(oe.edge())?;
+                closed_edge |= edge.start() == edge.end();
+                curved_edge |= !matches!(edge.curve(), EdgeCurve::Line);
+                let touched = touches_blend(edge, oe.edge());
+                if index == 0 {
+                    outer_touched |= touched;
+                } else {
+                    inner_touched |= touched;
+                }
+            }
+        }
+        let touched = outer_touched || inner_touched;
+        if !face.inner_wires().is_empty() || closed_edge || (curved_edge && !touched) {
+            verbatim_faces.insert(face_id.index());
+        }
+        if !touched {
+            untouched_faces.insert(face_id.index());
+        }
+        if !inner_touched {
+            untouched_inner_faces.insert(face_id.index());
+        }
+    }
+
     // Trim planar faces by replacing each filleted-edge boundary vertex with
     // the shared contact point. The NURBS canal surface replaces the fillet face.
     let mut all_specs: Vec<FaceSpec> = Vec::new();
     let mut boundary_curves = Vec::new();
 
     for &face_id in &shell_face_ids {
+        if verbatim_faces.contains(&face_id.index()) && untouched_faces.contains(&face_id.index()) {
+            all_specs.push(FaceSpec::Existing {
+                face: face_id,
+                outer: None,
+            });
+            continue;
+        }
         let Some(poly) = face_polygons.get(&face_id.index()) else {
             let face = topo.face(face_id)?;
             let verts = crate::boolean::face_polygon(topo, face_id)?;
@@ -1471,6 +1532,18 @@ fn fillet_variable_transacted(
             }
         }
 
+        if verbatim_faces.contains(&face_id.index())
+            && untouched_inner_faces.contains(&face_id.index())
+        {
+            // A trimmed face whose holes the blend does not reach: rebuild
+            // the outer wire from the contacts, copy each hole verbatim so a
+            // bore rim stays the edge its wall is bounded by.
+            all_specs.push(FaceSpec::Existing {
+                face: face_id,
+                outer: Some(new_verts),
+            });
+            continue;
+        }
         let new_d = dot_normal_point(poly.normal, new_verts[0]);
         all_specs.push(poly.spec(new_verts, new_d));
     }

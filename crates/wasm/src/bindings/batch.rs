@@ -358,6 +358,9 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "sweepWithOptions"
         | "helicalSweep"
         | "helicalSweepInPlace"
+        | "sweepExact"
+        | "wrapProfileOnCylinder"
+        | "wrapProfileOnCone"
         | "multiSectionSweep"
         | "guidedSweep"
         | "minkowskiSum"
@@ -2065,6 +2068,63 @@ impl RemusKernel {
                 let turns = get_f64(args, "turns")?;
                 let result = self
                     .helical_sweep_in_place_impl(profile, origin, axis_dir, pitch, turns)
+                    .map_err(StructuredWasmError::from)?;
+                Ok(serde_json::json!(result))
+            }
+            "wrapProfileOnCylinder" => {
+                let profile = get_u32(args, "profile")?;
+                let vector = |key: &str| -> Result<[f64; 3], StructuredWasmError> {
+                    Ok([
+                        get_f64(args, &format!("{key}X"))?,
+                        get_f64(args, &format!("{key}Y"))?,
+                        get_f64(args, &format!("{key}Z"))?,
+                    ])
+                };
+                let result = self
+                    .wrap_profile_on_cylinder_impl(
+                        profile,
+                        vector("origin")?,
+                        vector("axis")?,
+                        vector("ref")?,
+                        [
+                            get_f64(args, "radius")?,
+                            get_f64(args, "inner")?,
+                            get_f64(args, "outer")?,
+                        ],
+                    )
+                    .map_err(StructuredWasmError::from)?;
+                Ok(serde_json::json!(result))
+            }
+            "wrapProfileOnCone" => {
+                let profile = get_u32(args, "profile")?;
+                let vector = |key: &str| -> Result<[f64; 3], StructuredWasmError> {
+                    Ok([
+                        get_f64(args, &format!("{key}X"))?,
+                        get_f64(args, &format!("{key}Y"))?,
+                        get_f64(args, &format!("{key}Z"))?,
+                    ])
+                };
+                let result = self
+                    .wrap_profile_on_cone_impl(
+                        profile,
+                        vector("apex")?,
+                        vector("axis")?,
+                        vector("ref")?,
+                        vector("origin")?,
+                        [
+                            get_f64(args, "halfAngle")?,
+                            get_f64(args, "inner")?,
+                            get_f64(args, "outer")?,
+                        ],
+                    )
+                    .map_err(StructuredWasmError::from)?;
+                Ok(serde_json::json!(result))
+            }
+            "sweepExact" => {
+                let profile = get_u32(args, "profile")?;
+                let edges: Vec<u32> = get_u32_array(args, "edges")?;
+                let result = self
+                    .sweep_exact_impl(profile, &edges)
                     .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(result))
             }

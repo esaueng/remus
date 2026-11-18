@@ -126,6 +126,32 @@ class RemusIo {
         return v2;
     }
     /**
+     * Write the solids of an arena document as exact IGES 5.3 manifold
+     * solid B-rep objects (UTF-8 bytes), in millimetres.
+     *
+     * `options` is a JSON string with `fileName`, `productName`,
+     * `timestamp` (`YYYYMMDD.HHMMSS`) and `unit` (`MM`, `CM`, `M` or `IN`:
+     * the unit the geometry is already in, stated, not applied) fields;
+     * missing fields keep their defaults. Carriers keep their exact class; a closed edge with no
+     * carrier is refused.
+     * @param {Uint8Array} bodies
+     * @param {string | null} [options]
+     * @returns {Uint8Array}
+     */
+    exportIgesBrep(bodies, options) {
+        const ptr0 = passArray8ToWasm0(bodies, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        var ptr1 = isLikeNone(options) ? 0 : passStringToWasm0(options, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        var len1 = WASM_VECTOR_LEN;
+        const ret = wasm.remusio_exportIgesBrep(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v3 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v3;
+    }
+    /**
      * Tessellate the solids of an arena document into one OBJ (UTF-8 bytes).
      * @param {Uint8Array} bodies
      * @param {number} deflection
@@ -236,6 +262,28 @@ class RemusIo {
         return v2;
     }
     /**
+     * Restate an IGES file's 186 solids as ISO 10303-21 text in millimetres
+     * (UTF-8 bytes): exactly what `importIgesBrep` builds its solids from.
+     * A consumer that stores STEP sources can keep this as an IGES import's
+     * replayable source; `importStepBodies` on it gives `importIgesBrep`'s
+     * solids. Refuses what `importIgesBrep` refuses before any geometry.
+     * @param {Uint8Array} data
+     * @param {number | null} [max_input_bytes]
+     * @param {number | null} [max_entities]
+     * @returns {Uint8Array}
+     */
+    igesBrepAsStep(data, max_input_bytes, max_entities) {
+        const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remusio_igesBrepAsStep(this.__wbg_ptr, ptr0, len0, !isLikeNone(max_input_bytes), isLikeNone(max_input_bytes) ? 0 : max_input_bytes, !isLikeNone(max_entities), isLikeNone(max_entities) ? 0 : max_entities);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v2;
+    }
+    /**
      * Read a 3MF package; every build item becomes a solid root of one
      * document, in build order and placed by its item transform (an object
      * listed twice gives two solids). Without build items, every object no
@@ -307,6 +355,32 @@ class RemusIo {
         const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.remusio_importIges(this.__wbg_ptr, ptr0, len0, !isLikeNone(max_input_bytes), isLikeNone(max_input_bytes) ? 0 : max_input_bytes, !isLikeNone(max_entities), isLikeNone(max_entities) ? 0 : max_entities);
+        if (ret[3]) {
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+        return v2;
+    }
+    /**
+     * Read every IGES 5.3 manifold solid B-rep object (type 186) as an
+     * exact solid; returns a solid document for `deserializeSolids`.
+     *
+     * The qualified IGES path (`importIges` remains a lossy preview). Reads
+     * planes, cylinders, cones, spheres, tori (190–198) and B-spline
+     * surfaces (128) with 110/100/104/126 edges, rigid 124 frames and the
+     * declared unit, and builds them through the strict STEP body reader.
+     * A surface model (trimmed surfaces with no 186 solid), other entity
+     * types and non-rigid frames are refused by name.
+     * @param {Uint8Array} data
+     * @param {number | null} [max_input_bytes]
+     * @param {number | null} [max_entities]
+     * @returns {Uint8Array}
+     */
+    importIgesBrep(data, max_input_bytes, max_entities) {
+        const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remusio_importIgesBrep(this.__wbg_ptr, ptr0, len0, !isLikeNone(max_input_bytes), isLikeNone(max_input_bytes) ? 0 : max_input_bytes, !isLikeNone(max_entities), isLikeNone(max_entities) ? 0 : max_entities);
         if (ret[3]) {
             throw takeFromExternrefTable0(ret[2]);
         }
@@ -404,6 +478,32 @@ class RemusIo {
         const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.remusio_importStepBodies(this.__wbg_ptr, ptr0, len0, !isLikeNone(max_input_bytes), isLikeNone(max_input_bytes) ? 0 : max_input_bytes, !isLikeNone(max_entities), isLikeNone(max_entities) ? 0 : max_entities);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return StepImportResult.__wrap(ret[0]);
+    }
+    /**
+     * Read a STEP file's solids with their product structure.
+     *
+     * Every product occurrence is a node of `report.structure.nodes`
+     * (`name`, `parent`), parents first. Every placed occurrence of a solid
+     * is its own root of `solids`, moved by its composed placement, so a
+     * repeated part comes back once per occurrence. `report.structure.solids`
+     * gives each root's `node`, its own `name`, and its surface `color` and
+     * uniform `faceColor` (sRGB, `[0, 1]`); the colours also travel as
+     * attributes in the arena document. Styles it cannot apply are counted in
+     * `report.structure.presentation`, never refused. Unlike the flat readers,
+     * an assembly's parts come back where the assembly places them.
+     * @param {Uint8Array} data
+     * @param {number | null} [max_input_bytes]
+     * @param {number | null} [max_entities]
+     * @returns {StepImportResult}
+     */
+    importStepStructure(data, max_input_bytes, max_entities) {
+        const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remusio_importStepStructure(this.__wbg_ptr, ptr0, len0, !isLikeNone(max_input_bytes), isLikeNone(max_input_bytes) ? 0 : max_input_bytes, !isLikeNone(max_entities), isLikeNone(max_entities) ? 0 : max_entities);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }

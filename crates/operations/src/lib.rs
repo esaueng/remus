@@ -26,6 +26,7 @@
 
 use remus_math::vec::{Point3, Vec3};
 
+pub mod exact_sweep;
 pub mod extrude;
 pub mod gear;
 pub mod helix;
@@ -37,6 +38,7 @@ pub mod projection;
 pub mod revolve;
 pub mod sweep;
 pub mod thread;
+pub mod wrap;
 
 pub mod copy;
 pub mod mirror;
@@ -385,6 +387,26 @@ pub enum OperationsError {
         body_class: &'static str,
         /// Number of error-severity validation findings.
         error_count: usize,
+    },
+
+    /// An operation built a result from its input, and that result failed the
+    /// operation's own validation postcondition: it carries Error-severity
+    /// validation issues the input did not have. The engine failed, not the
+    /// input; the result was refused and the topology rolled back.
+    ///
+    /// Returned by the fillet and chamfer engines in place of
+    /// [`InvalidInput`], which they used before for the same refusal. Input
+    /// that is invalid before an engine runs is still [`InvalidInput`].
+    ///
+    /// [`InvalidInput`]: Self::InvalidInput
+    #[error("{operation} postcondition validation failed with {error_count} error(s): {summary}")]
+    PostconditionFailed {
+        /// Name of the operation whose result was refused.
+        operation: &'static str,
+        /// Number of Error-severity validation issues on the result.
+        error_count: usize,
+        /// The first few Error-severity issue descriptions, `; `-separated.
+        summary: String,
     },
 
     /// Healing completed its mutation pass, but the result did not satisfy

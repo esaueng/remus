@@ -6,6 +6,45 @@ historical predecessor-line records, retained for provenance. The
 
 ## Unreleased
 
+### ⚠ BREAKING CHANGES
+
+* **operations,wasm:** a fillet or chamfer whose result fails its own
+  validation postcondition on a valid input now refuses with the new
+  `OperationsError::PostconditionFailed { operation, error_count, summary }`
+  instead of `OperationsError::InvalidInput` (#1814). The input was not at
+  fault: the engine built a result with validation errors the input did not
+  have. The message text is unchanged apart from the `invalid input: `
+  prefix (`fillet postcondition validation failed with 2 error(s): …`).
+  `blend_failure_code` returns `postcondition-failed` for it, where it
+  returned `invalid-input`; the JS projection is in the WASM changelog. Input
+  refused before an engine runs (a non-positive radius, no edges) is still
+  `InvalidInput`. **Migration:** code that matches `InvalidInput` (or the
+  `invalid-input` code) to detect a blend refusal must also match
+  `PostconditionFailed` (`postcondition-failed`). `chamfer_v2` treats it as
+  it treated the `InvalidInput` it replaces, and the fillet cascades fall
+  back on it as on any refusal, so no result that built before changes.
+
+* **math,blend,wasm:** a NURBS face that a blend engine builds as an exact
+  closed form is no longer reported as approximate (#1824). A
+  `NurbsSurface` can now carry an `ExactForm`, recorded by the engine that
+  constructs the net (`with_exact_form`), kept by clones, and absent from
+  every other construction, from deserialization and from equality. The
+  chamfer floor chain records it on its elliptic cone bands over leaning
+  rounds (#1743), which are affine images of exact rational arcs. The
+  detailed blend twins (`filletDetailed`, `chamferDetailed`,
+  `filletV2Detailed`, `chamferV2Detailed`, `chamferDistanceAngleDetailed`,
+  `filletVariableDetailed` and their batch ops) now list under
+  `approximateFaces` only new NURBS faces that record no exact form. **Contract
+  change:** a chamfer over the rounds of a drafted body now returns
+  `quality: "exact"` with no `approximateFaces` (it was `"approximate"` with
+  the four cones listed), and `exactOnly: true` accepts it (it was refused
+  with `exact_only_unattainable`). Fitted, sampled, lofted and walked NURBS
+  faces are unchanged and still refused, including the fillet stripes over
+  leaning rounds from #1778, a loft through sampled sections. The chamfer
+  distance over a leaning round still drifts from `d` by up to 0.06% at a 2°
+  draft (#1743); that is a property of the constant-`ρ` construction, not
+  of the surface, and is not disclosed in `details`.
+
 ### Fixed
 
 * **operations,wasm:** `section` keeps the closed-form curves of a cross
@@ -33,6 +72,21 @@ historical predecessor-line records, retained for provenance. The
   laid down ending, not starting, at its vertex, so the seam of a cone or
   torus face was crossed one rim sample off and its section carried a dent
   there (0.03 deep on a frustum of radius 7).
+
+* **algo,operations:** a region wrapped onto a cylinder or cone with
+  curved edges can now be embossed onto or engraved into the body it was
+  wrapped on (#1847 follow-up). The exact boolean refused every such pair:
+  marching the wrapped wall against the face stopped at the loop's turning
+  points and left an open fragment, and a closed edge's wall, seamed by one
+  ruling used twice, could not be split. The face–face intersection now
+  takes a wall ruled between two offsets of a cylinder or cone exactly as
+  its iso-curve at offset zero, shared by every ruling (only when every
+  ruling crosses, the crossings agree and the curve lies on the surface
+  within the fits' scale), and the wrap splits a closed profile edge into
+  two halves so every wall is a four-sided patch. A disc engraved into or
+  embossed onto a radius-10 post now matches the closed-form volume to
+  1e-10, across the post's seam or beside it.
+
 * **operations,wasm:** a thread cut at the default tolerance can be exported
   again (#1806). The edges of a thread from `cut_thread` /
   `cutThreadDetailed` hold their proven distance from the exact thread as
@@ -73,7 +127,22 @@ historical predecessor-line records, retained for provenance. The
   rounds that lean builds each stripe over a round between that round's
   seams, bounded by the exact contact ellipses, with the stripe itself a
   NURBS surface (it has no closed form). Chamfering a loop over leaning
-  rounds is still refused with `trimming-failure`.
+  rounds: see the next entry.
+* **blend,operations,wasm:** a chamfer of a loop over rounds that lean, the
+  top or bottom loop of a drafted box whose uprights are rounded or the
+  floor loop of a pocket cut by a drafted rounded tool, no longer refuses
+  with `trimming-failure` (#1743). Each band now sets its contacts the same
+  distance `ρ` off the opposite face, `ρ = d·sin α` with `α` the angle
+  between the floor and the flanking walls, which is the distance `d` along
+  each face that the straight bands already used. Over a round the two
+  contacts are exact ellipses and the band between them is an elliptic cone,
+  stored as the rational surface that is exactly it; the straight bands
+  beside it end on its first and last rulings, before or after the chain's
+  vertex. Over the round the distance along each face is `ρ / sin α` at the
+  local angle, within 0.06% of `d` on a 2° draft. Rounds whose two flanks
+  meet the floor at different angles keep their refusal. The cones record
+  their exact form, so `chamferDetailed` reports the result as exact and
+  `exactOnly` accepts it (#1824, above).
 * **algo,operations:** an exact cut of a drilled hole tangent to a wall, or
   crossing a fillet band, no longer depends on where the tool's seam sits
   (#1739). A hole tangent to a wall from the inside leaves a wall of zero
@@ -366,6 +435,79 @@ historical predecessor-line records, retained for provenance. The
   which drops from 1.59 s to 0.18 s natively (1.72 s to 0.20 s tilted).
 
 ### Added
+
+* **operations,wasm:** wrap a planar profile onto a cylinder
+  (`wrap::wrap_profile_solid`, `wrapProfileOnCylinder`), preserving arc
+  length, as the solid between two radii: the material an emboss adds or an
+  engrave removes. A profile in a plane parallel to the axis maps its
+  arc-length and axial coordinates to angle `s / R` and height. Inner and
+  outer faces are exact cylinders; an edge along the axis walls a radial
+  plane and one across it a plane square to the axis, with straight and
+  circular edges. Every other edge (an oblique line wraps to a helix, an arc
+  or spline to a curve with no rational form) is a cubic B-spline certified
+  within `1e-7` of the wrap's scale by the Hermite remainder, from a
+  fourth-derivative bound built from the profile curve's own derivative
+  bounds, fitted span by span between a spline's knots and joined `C⁰`;
+  its wall is the exact ruled surface between the inner and outer
+  fits, every ruling radial. A wrapped region of area `A` encloses
+  `A·(ro² − ri²)/(2R)`. A profile not parallel to the axis, one spanning a
+  full turn (its angular extent certified from samples and a bound on how
+  fast the angle moves between them), a rational curve other than a circle or ellipse and an empty
+  radius range are refused, leaving the topology unchanged. Arc length is
+  measured along the profile plane itself (`axis × normal`, the normal
+  turned away from the axis), so turning the reference direction moves the
+  wrap round the axis without scaling it, and a region lands under where it
+  is drawn whichever way its plane faces.
+
+* **operations,wasm:** wrap a planar profile onto a cone
+  (`wrap::wrap_profile_on_cone`, `wrapProfileOnCone`), preserving arc length
+  through the cone's development, as the solid between two normal offsets
+  from it. The profile (in a plane parallel to the axis) is read as the
+  flattened cone about its apex: its coordinates are arc length and length
+  along the generator from the circle at a chosen axis point. Inner and
+  outer faces are exact cones (a cone offset along its normal is a cone
+  with the same axis and half-angle). Every edge is a cubic B-spline
+  certified within `1e-7` of the wrap's scale, from a closed-form
+  fourth-derivative bound: the development map is homogeneous about the
+  apex, so its derivatives are bounded through Wirtinger derivatives of
+  `w^p·w̄^q`. Each wall is the exact ruled surface between an edge's inner
+  and outer fits, which share their spans; every ruling is the normal
+  segment. An annular sector of the development encloses its closed form
+  within `1e-6`. A profile reaching the apex, one spanning a full turn of
+  the cone, an offset past an apex and a degenerate cone are refused,
+  leaving the topology unchanged. Measured by `solid_volume`, a cone face
+  trimmed by a curved `(u, v)` boundary still reads to the face
+  integrator's boundary chording (a wrapped disc reads 1.3e-4 low; a fine
+  mesh converges on the closed form).
+
+* **operations,wasm:** exact path sweep along lines and circular arcs
+  (`exact_sweep::sweep_exact`, `sweepExact(face, edges)`). The profile stays
+  where it is and is carried by the path's rigid motions — a line translates
+  it, an arc turns it about the arc's axis, which along a tangent-continuous
+  chain is exactly the rotation-minimizing frame — so nothing is sampled: each
+  profile edge sweeps into one face per path segment, a plane, cylinder, cone
+  or torus where the pair has one and the exact rational tensor product of the
+  edge with the motion otherwise. A circle swept 270° about r = 30 is one
+  torus band and two caps at the closed-form volume (the sampled `sweep` built
+  902 planes, 2.16% short); a line–arc–line bend is two cylinders and a torus
+  quadrant. A corner between two straight runs is mitred exactly: the joint
+  section is the profile projected onto the bisector plane, which both runs'
+  prisms cut in the same curve (a round profile meets on an exact rational
+  ellipse), so an L is two cylinders at the area times the centre-line
+  length. Path edges may come in any order and direction; a closed chain
+  builds a capless ring. A corner next to an arc, a path edge that is not a
+  line or circular arc, a profile that reaches an arc's axis or lies along
+  the path, a run too short for its mitres and a chain that passes closer to
+  itself than the profile's reach are refused, leaving the topology
+  unchanged. `sweep`,
+  `sweepWithOptions` and `sweepAlongEdges` are unchanged.
+* **operations:** `solid_volume` reads a body of planes and four-sided curved
+  windows (every non-planar face an unholed cylinder, cone, torus or NURBS
+  patch bounded by four edges, no sphere) off its certified face integrals,
+  as it already did for caps and full-turn bands. The whole-solid mesh read a
+  circle swept round a bend 5.7e-4 low; the certified reading is its closed
+  form. Every guard of the certified route still applies; a declined body
+  keeps the mesh.
 
 * **topology,io,wasm:** whole-session snapshots. `Topology::image_view` /
   `to_image` / `from_image` (`remus_topology::image`) expose a topology as

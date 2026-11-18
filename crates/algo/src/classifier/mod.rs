@@ -7,6 +7,7 @@
 
 mod analytic;
 mod ray_cast;
+mod sphere_patch;
 mod torus_patch;
 pub(crate) use torus_patch::{TorusTrim, rectangular_torus_domain};
 

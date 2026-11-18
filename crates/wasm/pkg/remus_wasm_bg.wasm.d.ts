@@ -414,6 +414,7 @@ export const remuskernel_surfaceKnotRemoveU: (a: number, b: number, c: number, d
 export const remuskernel_surfaceKnotRemoveV: (a: number, b: number, c: number, d: number, e: number) => [number, number];
 export const remuskernel_sweep: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number, number];
 export const remuskernel_sweepAlongEdges: (a: number, b: number, c: number, d: number) => [number, number, number];
+export const remuskernel_sweepExact: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const remuskernel_sweepSmooth: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number, number];
 export const remuskernel_sweepWire: (a: number, b: number, c: number) => [number, number, number];
 export const remuskernel_sweepWithOptions: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number, number];
@@ -445,6 +446,8 @@ export const remuskernel_validateSolidWithOptions: (a: number, b: number, c: num
 export const remuskernel_volume: (a: number, b: number, c: number) => [number, number, number];
 export const remuskernel_weldShellsAndFaces: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const remuskernel_wireLength: (a: number, b: number) => [number, number, number];
+export const remuskernel_wrapProfileOnCone: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number) => [number, number, number];
+export const remuskernel_wrapProfileOnCylinder: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number) => [number, number, number];
 export const setLogLevel: (a: number, b: number) => [number, number];
 export const __wbg_set_jsvec3_x: (a: number, b: number) => void;
 export const jsvec3_new: (a: number, b: number, c: number) => number;

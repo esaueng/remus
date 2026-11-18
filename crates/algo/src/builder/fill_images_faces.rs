@@ -2360,6 +2360,8 @@ fn build_section_edges(
         .unwrap_or_default();
 
     let mut sections = Vec::new();
+    // Closed curved sections already threaded into this face.
+    let mut emitted_closed: Vec<EdgeCurve> = Vec::new();
 
     for source in sources {
         match source {
@@ -2477,6 +2479,25 @@ fn build_section_edges(
                     if (ct1 - ct0).abs() < DEGENERATE_ARC_SPAN {
                         continue;
                     }
+                }
+
+                // A closed section this face already received from another
+                // partner adds no split: the partner's surface is split
+                // along that very curve into faces that each meet this face
+                // in all of it (a plane through a sphere's equator, the seam
+                // of its two hemispheres, meets both). Threaded twice, the
+                // splitter makes the same hole twice and the face bounds it
+                // with two copies of one loop.
+                let closed = (end - start).length() < tol * 100.0;
+                if closed
+                    && emitted_closed
+                        .iter()
+                        .any(|seen| closed_curves_coincide(seen, &curve_ds.curve, tol))
+                {
+                    continue;
+                }
+                if closed {
+                    emitted_closed.push(curve_ds.curve.clone());
                 }
 
                 // Seam-anchored closed circles: re-parameterize so the
@@ -2910,12 +2931,12 @@ fn circle_inside_face(
     Ok(true)
 }
 
-/// Check whether a closed section curve (Circle/Ellipse) coincides with
-/// one of the face's own closed boundary edges.
-fn closed_curve_coincides_with_boundary(
-    topo: &Topology,
-    face_id: FaceId,
-    curve: &remus_topology::edge::EdgeCurve,
+/// Whether two closed Circle or Ellipse curves trace the same point set:
+/// same centre, size and plane (either normal sense), and for a true ellipse
+/// the same major axis (either sense). Any other pairing is `false`.
+fn closed_curves_coincide(
+    a: &remus_topology::edge::EdgeCurve,
+    b: &remus_topology::edge::EdgeCurve,
     tol: f64,
 ) -> bool {
     use remus_topology::edge::EdgeCurve;
@@ -2943,6 +2964,31 @@ fn closed_curve_coincides_with_boundary(
         a.u_axis().dot(b.u_axis()).abs() > 1.0 - 1e-9
     };
 
+    match (a, b) {
+        (EdgeCurve::Circle(a), EdgeCurve::Circle(b)) => circles_match(a, b),
+        (EdgeCurve::Ellipse(a), EdgeCurve::Ellipse(b)) => ellipses_match(a, b),
+        (
+            EdgeCurve::Line
+            | EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Circle(_)
+            | EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_),
+            _,
+        ) => false,
+    }
+}
+
+/// Check whether a closed section curve (Circle/Ellipse) coincides with
+/// one of the face's own closed boundary edges.
+fn closed_curve_coincides_with_boundary(
+    topo: &Topology,
+    face_id: FaceId,
+    curve: &remus_topology::edge::EdgeCurve,
+    tol: f64,
+) -> bool {
+    use remus_topology::edge::EdgeCurve;
+
     if !matches!(curve, EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_)) {
         return false;
     }
@@ -2964,20 +3010,7 @@ fn closed_curve_coincides_with_boundary(
             if edge.start() != edge.end() {
                 continue;
             }
-            let coincides = match (curve, edge.curve()) {
-                (EdgeCurve::Circle(a), EdgeCurve::Circle(b)) => circles_match(a, b),
-                (EdgeCurve::Ellipse(a), EdgeCurve::Ellipse(b)) => ellipses_match(a, b),
-                (
-                    EdgeCurve::Line
-                    | EdgeCurve::NurbsCurve(_)
-                    | EdgeCurve::Circle(_)
-                    | EdgeCurve::Ellipse(_)
-                    | EdgeCurve::Hyperbola(_)
-                    | EdgeCurve::Parabola(_),
-                    _,
-                ) => false,
-            };
-            if coincides {
+            if closed_curves_coincide(curve, edge.curve(), tol) {
                 return true;
             }
         }

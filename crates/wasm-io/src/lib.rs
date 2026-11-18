@@ -150,6 +150,127 @@ struct StepReport<V> {
     validation: Option<V>,
 }
 
+/// `importStepStructure`'s report: the flat report's counts plus the
+/// product tree, each solid's node, name and colours, and the presentation
+/// pass's counts.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StepStructureReport {
+    solid_count: usize,
+    sheet_count: usize,
+    diagnostics: Vec<StepImportDiagnostic>,
+    structure: StepStructureJson,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StepStructureJson {
+    nodes: Vec<StepNodeJson>,
+    solids: Vec<StepSolidJson>,
+    presentation: StepPresentationJson,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StepNodeJson {
+    name: String,
+    parent: Option<usize>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StepSolidJson {
+    /// Index into `nodes`; `null` for a solid no product reaches.
+    node: Option<usize>,
+    /// The solid's own `MANIFOLD_SOLID_BREP` name, when the file gives one.
+    name: Option<String>,
+    /// The solid's surface colour, sRGB channels in `[0, 1]`.
+    color: Option<[f64; 3]>,
+    /// The one colour every face carries explicitly, when they all agree.
+    face_color: Option<[f64; 3]>,
+    /// Faces with an explicit colour of their own.
+    colored_faces: usize,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StepPresentationJson {
+    solid_colors: usize,
+    face_colors: usize,
+    unapplied_styles: usize,
+    conflicting_styles: usize,
+    invalid_colors: usize,
+}
+
+fn channels(color: remus_topology::attributes::ColorRgb) -> [f64; 3] {
+    [color.r(), color.g(), color.b()]
+}
+
+fn step_structure_result(
+    topo: &Topology,
+    result: &remus_io::step::StepStructureReadResult,
+    limits: ImportLimits,
+) -> Result<StepImportResult, IoWasmError> {
+    let mut solids = Vec::with_capacity(result.solids.len());
+    for (&solid, &node) in result.solids.iter().zip(&result.solid_nodes) {
+        let attributes = topo.attributes().solid(solid);
+        let faces = remus_topology::explorer::solid_faces(topo, solid).map_err(IoError::from)?;
+        let face_colors: Vec<_> = faces
+            .iter()
+            .filter_map(|&face| topo.attributes().face(face).and_then(|a| a.color))
+            .collect();
+        let face_color = (face_colors.len() == faces.len())
+            .then(|| face_colors.first().copied())
+            .flatten()
+            .filter(|first| face_colors.iter().all(|color| color == first))
+            .map(channels);
+        solids.push(StepSolidJson {
+            node,
+            name: attributes.and_then(|a| a.name.clone()),
+            color: attributes.and_then(|a| a.color).map(channels),
+            face_color,
+            colored_faces: face_colors.len(),
+        });
+    }
+    let presentation = result.presentation;
+    let report = StepStructureReport {
+        solid_count: result.solids.len(),
+        sheet_count: 0,
+        diagnostics: result
+            .diagnostics
+            .iter()
+            .map(StepImportDiagnostic::from)
+            .collect(),
+        structure: StepStructureJson {
+            nodes: result
+                .nodes
+                .iter()
+                .map(|node| StepNodeJson {
+                    name: node.name.clone(),
+                    parent: node.parent,
+                })
+                .collect(),
+            solids,
+            presentation: StepPresentationJson {
+                solid_colors: presentation.solid_colours,
+                face_colors: presentation.face_colours,
+                unapplied_styles: presentation.unapplied_styles,
+                conflicting_styles: presentation.conflicting_styles,
+                invalid_colors: presentation.invalid_colours,
+            },
+        },
+    };
+    Ok(StepImportResult {
+        solids: solids_document_with_limits(topo, &result.solids, limits)?,
+        sheets: Vec::new(),
+        report: String::from_utf8(arena_io::serialize_json_with_limit(
+            &report,
+            limits.max_input_bytes,
+        )?)
+        .map_err(|error| IoWasmError::invalid(format!("STEP report encoding failed: {error}")))?,
+    })
+}
+
 // ── Shared helpers ─────────────────────────────────────────────────
 
 /// Build [`ImportLimits`] from optional JS overrides.
@@ -312,6 +433,39 @@ impl RemusIo {
         Ok(step.into_bytes())
     }
 
+    fn export_iges_brep_impl(bodies: &[u8], options: Option<&str>) -> Result<Vec<u8>, IoWasmError> {
+        let (topo, solids) = load_solids(bodies)?;
+        let options: remus_io::iges::IgesWriteOptions = match options {
+            None => remus_io::iges::IgesWriteOptions::default(),
+            Some(json) => serde_json::from_str(json).map_err(|error| {
+                IoWasmError::invalid(format!("invalid IGES write options JSON: {error}"))
+            })?,
+        };
+        Ok(remus_io::iges::write_iges_brep(&topo, &solids, &options)?.into_bytes())
+    }
+
+    fn import_iges_brep_impl(
+        data: &[u8],
+        max_input_bytes: Option<f64>,
+        max_entities: Option<f64>,
+    ) -> Result<Vec<u8>, IoWasmError> {
+        let limits = import_limits_from(max_input_bytes, max_entities)?;
+        let text = utf8(data, "IGES")?;
+        let mut topo = Topology::new();
+        let result = remus_io::iges::read_iges_brep(text, &mut topo, limits)?;
+        Ok(solids_document_with_limits(&topo, &result.solids, limits)?)
+    }
+
+    fn iges_brep_as_step_impl(
+        data: &[u8],
+        max_input_bytes: Option<f64>,
+        max_entities: Option<f64>,
+    ) -> Result<Vec<u8>, IoWasmError> {
+        let limits = import_limits_from(max_input_bytes, max_entities)?;
+        let text = utf8(data, "IGES")?;
+        Ok(remus_io::iges::iges_brep_as_step(text, limits)?.into_bytes())
+    }
+
     fn export_iges_impl(bodies: &[u8]) -> Result<Vec<u8>, IoWasmError> {
         let (topo, solids) = load_solids(bodies)?;
         Ok(remus_io::iges::writer::write_iges(&topo, &solids)?.into_bytes())
@@ -427,6 +581,18 @@ impl RemusIo {
         let mut topo = Topology::new();
         let result = remus_io::step::read_step_with_limits_and_report(text, &mut topo, limits)?;
         step_result(&topo, &result, false, limits)
+    }
+
+    fn import_step_structure_impl(
+        data: &[u8],
+        max_input_bytes: Option<f64>,
+        max_entities: Option<f64>,
+    ) -> Result<StepImportResult, IoWasmError> {
+        let limits = import_limits_from(max_input_bytes, max_entities)?;
+        let text = utf8(data, "STEP")?;
+        let mut topo = Topology::new();
+        let result = remus_io::step::read_step_structure_with_limits(text, &mut topo, limits)?;
+        step_structure_result(&topo, &result, limits)
     }
 
     fn import_step_with_validation_impl(
@@ -717,6 +883,31 @@ impl RemusIo {
         )?)
     }
 
+    /// Read a STEP file's solids with their product structure.
+    ///
+    /// Every product occurrence is a node of `report.structure.nodes`
+    /// (`name`, `parent`), parents first. Every placed occurrence of a solid
+    /// is its own root of `solids`, moved by its composed placement, so a
+    /// repeated part comes back once per occurrence. `report.structure.solids`
+    /// gives each root's `node`, its own `name`, and its surface `color` and
+    /// uniform `faceColor` (sRGB, `[0, 1]`); the colours also travel as
+    /// attributes in the arena document. Styles it cannot apply are counted in
+    /// `report.structure.presentation`, never refused. Unlike the flat readers,
+    /// an assembly's parts come back where the assembly places them.
+    #[wasm_bindgen(js_name = "importStepStructure")]
+    pub fn import_step_structure(
+        &self,
+        data: &[u8],
+        max_input_bytes: Option<f64>,
+        max_entities: Option<f64>,
+    ) -> Result<StepImportResult, JsError> {
+        Ok(Self::import_step_structure_impl(
+            data,
+            max_input_bytes,
+            max_entities,
+        )?)
+    }
+
     /// Read a STEP file's solids with bounded-healing diagnostics.
     #[wasm_bindgen(js_name = "importStepWithReport")]
     pub fn import_step_with_report(
@@ -750,6 +941,65 @@ impl RemusIo {
             max_input_bytes,
             max_entities,
         )?)
+    }
+
+    /// Read every IGES 5.3 manifold solid B-rep object (type 186) as an
+    /// exact solid; returns a solid document for `deserializeSolids`.
+    ///
+    /// The qualified IGES path (`importIges` remains a lossy preview). Reads
+    /// planes, cylinders, cones, spheres, tori (190–198) and B-spline
+    /// surfaces (128) with 110/100/104/126 edges, rigid 124 frames and the
+    /// declared unit, and builds them through the strict STEP body reader.
+    /// A surface model (trimmed surfaces with no 186 solid), other entity
+    /// types and non-rigid frames are refused by name.
+    #[wasm_bindgen(js_name = "importIgesBrep")]
+    pub fn import_iges_brep(
+        &self,
+        data: &[u8],
+        max_input_bytes: Option<f64>,
+        max_entities: Option<f64>,
+    ) -> Result<Vec<u8>, JsError> {
+        Ok(Self::import_iges_brep_impl(
+            data,
+            max_input_bytes,
+            max_entities,
+        )?)
+    }
+
+    /// Restate an IGES file's 186 solids as ISO 10303-21 text in millimetres
+    /// (UTF-8 bytes): exactly what `importIgesBrep` builds its solids from.
+    /// A consumer that stores STEP sources can keep this as an IGES import's
+    /// replayable source; `importStepBodies` on it gives `importIgesBrep`'s
+    /// solids. Refuses what `importIgesBrep` refuses before any geometry.
+    #[wasm_bindgen(js_name = "igesBrepAsStep")]
+    pub fn iges_brep_as_step(
+        &self,
+        data: &[u8],
+        max_input_bytes: Option<f64>,
+        max_entities: Option<f64>,
+    ) -> Result<Vec<u8>, JsError> {
+        Ok(Self::iges_brep_as_step_impl(
+            data,
+            max_input_bytes,
+            max_entities,
+        )?)
+    }
+
+    /// Write the solids of an arena document as exact IGES 5.3 manifold
+    /// solid B-rep objects (UTF-8 bytes), in millimetres.
+    ///
+    /// `options` is a JSON string with `fileName`, `productName`,
+    /// `timestamp` (`YYYYMMDD.HHMMSS`) and `unit` (`MM`, `CM`, `M` or `IN`:
+    /// the unit the geometry is already in, stated, not applied) fields;
+    /// missing fields keep their defaults. Carriers keep their exact class; a closed edge with no
+    /// carrier is refused.
+    #[wasm_bindgen(js_name = "exportIgesBrep")]
+    pub fn export_iges_brep(
+        &self,
+        bodies: &[u8],
+        options: Option<String>,
+    ) -> Result<Vec<u8>, JsError> {
+        Ok(Self::export_iges_brep_impl(bodies, options.as_deref())?)
     }
 
     /// Read an IGES file; returns a solid document, or no bytes when empty.
@@ -840,6 +1090,81 @@ mod tests {
     use super::*;
     use remus_operations::measure::solid_volume;
     use remus_operations::primitives::make_box;
+
+    #[test]
+    fn step_structure_translator_reports_nodes_placements_names_and_colours() {
+        let input = include_bytes!("../../io/tests/data/step_structure/nested_assembly_ap214.step");
+        let result = RemusIo::import_step_structure_impl(input, None, None).unwrap();
+        let report: serde_json::Value = serde_json::from_str(&result.report()).unwrap();
+        assert_eq!(report["solidCount"], 5);
+        let nodes = report["structure"]["nodes"].as_array().unwrap();
+        assert_eq!(nodes.len(), 8);
+        assert_eq!(nodes[0]["name"], "Fixture");
+        assert!(nodes[0]["parent"].is_null());
+        assert_eq!(nodes[2]["name"], "Pin pair");
+        assert_eq!(nodes[2]["parent"], 0);
+        let solids = report["structure"]["solids"].as_array().unwrap();
+        assert_eq!(solids.len(), 5);
+        assert_eq!(solids[0]["node"], 1);
+        assert!(solids[0]["name"].is_null());
+        let plate = solids[0]["color"].as_array().unwrap();
+        assert!((plate[0].as_f64().unwrap() - 0.484_529_207_832).abs() < 1e-12);
+        assert_eq!(report["structure"]["presentation"]["solidColors"], 2);
+        // Every occurrence is its own placed root; the document carries the
+        // colours as attributes too.
+        let document = result.solids();
+        let actual = volumes(&document);
+        assert_eq!(actual.len(), 5);
+        assert!((actual[0] - 6000.).abs() < 1e-6);
+        let mut topo = Topology::new();
+        let roots = arena_io::deserialize_solids(&document, &mut topo).unwrap();
+        assert!(topo.attributes().solid(roots[4]).unwrap().color.is_some());
+        assert!(RemusIo::import_step_structure_impl(input, Some(10.), None).is_err());
+        assert!(RemusIo::import_step_structure_impl(&[0xff], None, None).is_err());
+    }
+
+    #[test]
+    fn step_structure_translator_reports_a_uniform_face_colour() {
+        let input =
+            include_bytes!("../../io/tests/data/step_structure/part_solid_and_face_colours.step");
+        let result = RemusIo::import_step_structure_impl(input, None, None).unwrap();
+        let report: serde_json::Value = serde_json::from_str(&result.report()).unwrap();
+        let solids = report["structure"]["solids"].as_array().unwrap();
+        assert_eq!(solids[0]["coloredFaces"], 1);
+        assert!(solids[0]["faceColor"].is_null());
+        assert!(solids[1]["color"].is_null());
+        assert_eq!(report["structure"]["nodes"][0]["name"], "Bracket");
+    }
+
+    #[test]
+    fn iges_brep_translator_round_trips_exact_solids() {
+        let input = include_bytes!("../../io/tests/data/iges_brep/cavity_brep_in.igs");
+        let document = RemusIo::import_iges_brep_impl(input, None, None).unwrap();
+        let actual = volumes(&document);
+        assert_eq!(actual.len(), 1);
+        assert!((actual[0] - 24_855.339_415).abs() < 1e-3);
+        let written = RemusIo::export_iges_brep_impl(
+            &document,
+            Some(r#"{"fileName":"cavity.igs","productName":"Cavity"}"#),
+        )
+        .unwrap();
+        let text = String::from_utf8(written.clone()).unwrap();
+        assert!(text.contains("10Hcavity.igs"));
+        let again = RemusIo::import_iges_brep_impl(&written, None, None).unwrap();
+        assert!((volumes(&again)[0] - actual[0]).abs() < 1e-6);
+        // The restated STEP reads to the same solid.
+        let step = RemusIo::iges_brep_as_step_impl(input, None, None).unwrap();
+        let bodies = RemusIo::import_step_bodies_impl(&step, None, None).unwrap();
+        assert!((volumes(&bodies.solids())[0] - actual[0]).abs() < 1e-6);
+        // A stated unit scales nothing: the same solid read as inches.
+        let inches = RemusIo::export_iges_brep_impl(&document, Some(r#"{"unit":"IN"}"#)).unwrap();
+        let read = volumes(&RemusIo::import_iges_brep_impl(&inches, None, None).unwrap())[0];
+        assert!((read - actual[0] * 25.4f64.powi(3)).abs() < 1e-3 * read);
+        assert!(RemusIo::export_iges_brep_impl(&document, Some(r#"{"unit":"FT"}"#)).is_err());
+        let surfaces = include_bytes!("../../io/tests/data/iges_brep/holed_plate_faces_mm.igs");
+        assert!(RemusIo::import_iges_brep_impl(surfaces, None, None).is_err());
+        assert!(RemusIo::export_iges_brep_impl(&document, Some("{")).is_err());
+    }
 
     #[test]
     fn brep_translator_returns_exact_arena_and_enforces_api_limits() {

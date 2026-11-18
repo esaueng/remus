@@ -2981,10 +2981,13 @@ class RemusKernel {
      * cascade and whole-selection rule, with the legacy method's return
      * value and thrown errors unchanged. On success `details.engine` names
      * the blend engine (`walking`, `rollingBall`, or `mixed`). A result
-     * that introduces a NURBS face — a sampled blend wall with no closed
-     * form — reports `quality: "approximate"` and lists those faces under
-     * `approximateFaces`. With `exactOnly: true` such a result is rolled
-     * back and refused (`quality_refused` / `exact_only_unattainable`).
+     * that introduces a NURBS face approximating its surface — a sampled,
+     * fitted or lofted blend wall with no closed form — reports `quality:
+     * "approximate"` and lists those faces under `approximateFaces`. A
+     * NURBS face its engine built as an exact closed form (the elliptic
+     * cone a chamfer lays over a leaning round) is exact and not listed.
+     * With `exactOnly: true` an approximate result is rolled back and
+     * refused (`quality_refused` / `exact_only_unattainable`).
      * @param {number} solid
      * @param {Uint32Array} edge_handles
      * @param {number} radius
@@ -9275,6 +9278,39 @@ class RemusKernel {
         return ret[0] >>> 0;
     }
     /**
+     * Sweep a planar face exactly along a tangent-continuous chain of line
+     * and circular-arc edges.
+     *
+     * The profile stays where it is and is carried by the path's rigid
+     * motions (a line translates it, an arc turns it about the arc's axis),
+     * starting from the chain end nearer the profile's plane. Every face is
+     * an exact plane, cylinder, cone, torus or rational NURBS surface;
+     * nothing is sampled. A closed chain builds a capless ring.
+     *
+     * Returns a solid handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns an error for an empty or broken chain, a path edge that is not
+     * a line or circular arc, a corner that is not tangent-continuous, a
+     * non-planar profile, a profile the motion does not cross transversally
+     * (it touches an arc's axis or lies along the path), or a chain that
+     * passes closer to itself than the profile's reach. The session is left
+     * unchanged.
+     * @param {number} face
+     * @param {Uint32Array} edge_handles
+     * @returns {number}
+     */
+    sweepExact(face, edge_handles) {
+        const ptr0 = passArray32ToWasm0(edge_handles, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_sweepExact(this.__wbg_ptr, face, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
      * Sweep a face along a path with smooth NURBS side surfaces.
      *
      * Like `sweep()`, but produces a single NURBS surface per edge strip
@@ -9930,6 +9966,97 @@ class RemusKernel {
             throw takeFromExternrefTable0(ret[1]);
         }
         return ret[0];
+    }
+    /**
+     * Wrap a planar face onto a cone, preserving arc length, as the solid
+     * between normal offsets `inner` and `outer` from the cone (negative is
+     * inside it).
+     *
+     * The cone has its apex at `(apex_*)`, axis `(axis_*)` into the cone
+     * and remus half-angle `half_angle` (from the radial plane to a
+     * generator). The face lies in a plane parallel to the axis and is read
+     * in the cone's development: arc length runs along `axis × normal`,
+     * length along the generator along the axis, from `(origin_*)` on the
+     * axis, whose circle is the profile's zero; angle zero is at
+     * `(ref_*)`. Inner and outer faces are exact cones; walls are exact
+     * ruled surfaces between certified fits of the wrapped edges.
+     *
+     * Returns a solid handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns an error for a degenerate cone or offset range, an origin
+     * not beyond the apex, a face not parallel to the axis, a profile that
+     * reaches the apex or spans a full turn, an offset past an apex, or a
+     * profile curve that is not a line, circle, ellipse or non-rational
+     * spline. The session is left unchanged.
+     * @param {number} face
+     * @param {number} apex_x
+     * @param {number} apex_y
+     * @param {number} apex_z
+     * @param {number} axis_x
+     * @param {number} axis_y
+     * @param {number} axis_z
+     * @param {number} ref_x
+     * @param {number} ref_y
+     * @param {number} ref_z
+     * @param {number} origin_x
+     * @param {number} origin_y
+     * @param {number} origin_z
+     * @param {number} half_angle
+     * @param {number} inner
+     * @param {number} outer
+     * @returns {number}
+     */
+    wrapProfileOnCone(face, apex_x, apex_y, apex_z, axis_x, axis_y, axis_z, ref_x, ref_y, ref_z, origin_x, origin_y, origin_z, half_angle, inner, outer) {
+        const ret = wasm.remuskernel_wrapProfileOnCone(this.__wbg_ptr, face, apex_x, apex_y, apex_z, axis_x, axis_y, axis_z, ref_x, ref_y, ref_z, origin_x, origin_y, origin_z, half_angle, inner, outer);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Wrap a planar face onto a cylinder, preserving arc length, as the
+     * solid between `inner` and `outer` radii.
+     *
+     * The face lies in a plane parallel to the axis through
+     * `(origin_*)` along `(axis_*)`; arc length runs along
+     * `axis × normal` (the face's own direction across the axis), from
+     * `origin`'s foot, and lands round the axis from the angle of
+     * `(ref_*)`, measured at `radius`.
+     * Inner and outer faces are exact cylinders, walls along or across the
+     * axis exact planes; other walls are exact ruled surfaces between
+     * certified fits of the wrapped edges.
+     *
+     * Returns a solid handle (`u32`).
+     *
+     * # Errors
+     *
+     * Returns an error for a degenerate frame or radius range, a face not
+     * parallel to the axis, a profile spanning a full turn, or a profile
+     * curve that is not a line, circle, ellipse or non-rational spline. The
+     * session is left unchanged.
+     * @param {number} face
+     * @param {number} origin_x
+     * @param {number} origin_y
+     * @param {number} origin_z
+     * @param {number} axis_x
+     * @param {number} axis_y
+     * @param {number} axis_z
+     * @param {number} ref_x
+     * @param {number} ref_y
+     * @param {number} ref_z
+     * @param {number} radius
+     * @param {number} inner
+     * @param {number} outer
+     * @returns {number}
+     */
+    wrapProfileOnCylinder(face, origin_x, origin_y, origin_z, axis_x, axis_y, axis_z, ref_x, ref_y, ref_z, radius, inner, outer) {
+        const ret = wasm.remuskernel_wrapProfileOnCylinder(this.__wbg_ptr, face, origin_x, origin_y, origin_z, axis_x, axis_y, axis_z, ref_x, ref_y, ref_z, radius, inner, outer);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
     }
 }
 if (Symbol.dispose) RemusKernel.prototype[Symbol.dispose] = RemusKernel.prototype.free;

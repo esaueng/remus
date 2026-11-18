@@ -3647,7 +3647,8 @@ pub fn fillet_rolling_ball_with_origins(
             // the three-plane cell: its ball rolls in the air of a strictly
             // concave corner (a drafted pocket's floor), whose leaning walls
             // carry its contacts down past the vertex's section to the floor
-            // (#1780).
+            // (#1780), or in the walls' wedge under convex rims (an undercut
+            // pocket's top), whose walls carry them up to the top (#1815).
             let concave = side > 0.0;
             let edge = topo.edge(edge_id)?;
             for vid in [edge.start(), edge.end()] {

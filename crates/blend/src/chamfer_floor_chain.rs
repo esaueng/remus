@@ -42,11 +42,33 @@
 //! run. Consecutive edges on one wall (a circle split into arcs) share one
 //! band. Every surface and every edge is exact: planes, cones, lines and
 //! circles.
+//!
+//! On a drafted body the rounds between the walls lean: a round's axis is
+//! not square to the floor, so its foot is an ellipse and the band over it
+//! is no circular cone. Every band of the chain then sets its contacts the
+//! same distance `ρ` off the opposite face: the floor contact `ρ` inside the
+//! wall (or round), the wall contact `ρ` above the floor. A straight band's
+//! `d` along each face is that with `ρ = d·sin α`, `α` the angle between
+//! floor and wall, so the rule is the one the straight bands already follow.
+//! Over the round the floor contact is the floor's section of the coaxial
+//! cylinder `ρ` inside the round, the wall contact the round's section by the
+//! floor moved `ρ` along its normal: two exact ellipses, and similar ones
+//! (both are sections of coaxial cylinders by parallel planes). The band
+//! joins them point for point at each angle about the axis, and so is the
+//! cone from their centre of similarity: an elliptic cone, stored as the
+//! rational surface that is exactly it. At each of the round's seams with a
+//! flanking wall its rulings lie in that wall's straight band, so the
+//! straight band ends on that ruling (before or after the chain's vertex)
+//! and the two meet as tangent bands. Over the round the distance along each
+//! face is `ρ / sin α` with `α` the local angle, which varies slightly round
+//! a leaning axis; `ρ` is one value only when both flanks make the same angle
+//! with the floor, and other rounds are declined.
 
-use std::f64::consts::TAU;
+use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
-use remus_math::curves::Circle3D;
+use remus_math::curves::{Circle3D, Ellipse3D};
 use remus_math::det_hash::DetHashMap;
+use remus_math::nurbs::surface::{ExactForm, NurbsSurface};
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::adjacency::AdjacencyIndex;
@@ -77,10 +99,20 @@ struct Element {
     /// For a circular run: the circle's centre on the floor and its normal,
     /// oriented so the run is counter-clockwise about it, and the swept angle.
     arc: Option<(Point3, Vec3, f64)>,
+    /// For a band over a leaning round: its exact contact ellipses, each
+    /// running in run order with its parameter.
+    oblique: Option<[Ellipse3D; 2]>,
     /// Floor contact at the band's start and end cross-sections.
     floor: [Point3; 2],
     /// Wall contact at the band's start and end cross-sections.
     wall_points: [Point3; 2],
+}
+
+impl Element {
+    /// A straight band: a plane along a line.
+    const fn is_straight(&self) -> bool {
+        self.arc.is_none() && self.oblique.is_none()
+    }
 }
 
 /// Where two consecutive bands meet.
@@ -340,8 +372,8 @@ pub fn chamfer(
         let mut run_contacts = Vec::with_capacity(run.elements.len());
         for (k, element) in run.elements.iter().enumerate() {
             let (start, end) = side_crosses(r, k);
-            let floor_edge = contact_edge(topo, element, start.floor, end.floor)?;
-            let wall_edge = contact_edge(topo, element, start.wall, end.wall)?;
+            let floor_edge = contact_edge(topo, element, 0, start.floor, end.floor)?;
+            let wall_edge = contact_edge(topo, element, 1, start.wall, end.wall)?;
             run_contacts.push((floor_edge, wall_edge));
         }
         contacts.push(run_contacts);
@@ -593,11 +625,12 @@ fn detect(
     for &edge in edges {
         match topo.edge(edge)?.curve() {
             EdgeCurve::Line => {}
-            EdgeCurve::Circle(_) => circular = true,
-            EdgeCurve::NurbsCurve(_)
-            | EdgeCurve::Ellipse(_)
-            | EdgeCurve::Hyperbola(_)
-            | EdgeCurve::Parabola(_) => return Ok(None),
+            // An ellipse qualifies only as the foot of a leaning round
+            // (`oblique_element`).
+            EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_) => circular = true,
+            EdgeCurve::NurbsCurve(_) | EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => {
+                return Ok(None);
+            }
         }
         if topo.edge(edge)?.is_closed() {
             return Ok(None);
@@ -691,6 +724,19 @@ fn detect(
             // A whole rim on one wall is the closed-rim assembler's.
             return Ok(None);
         }
+        // A band over a leaning round must hand over to a straight band on
+        // both sides; an open run cannot end on one.
+        if !closed
+            && [elements.first(), elements.last()]
+                .into_iter()
+                .flatten()
+                .any(|element| element.oblique.is_some())
+        {
+            return Ok(None);
+        }
+        if !hand_over(&mut elements, closed, distance) {
+            return Ok(None);
+        }
         runs.push(Run { elements, closed });
     }
     Ok(Some((floor, runs)))
@@ -705,6 +751,9 @@ fn element_for(
     distance: f64,
 ) -> Result<Option<Element>, BlendError> {
     let edge = oriented.edge();
+    if matches!(topo.edge(edge)?.curve(), EdgeCurve::Ellipse(_)) {
+        return oblique_element(topo, adjacency, floor, oriented, distance);
+    }
     let Ok(result) =
         crate::chamfer_builder::compute_chamfer_stripe(topo, adjacency, edge, distance, distance)
     else {
@@ -786,16 +835,267 @@ fn element_for(
         wall,
         surface: stripe.surface,
         arc,
+        oblique: None,
         floor: [f0, f1],
         wall_points: [w0, w1],
     }))
+}
+
+/// The band along `oriented`, the elliptic foot of a leaning round on the
+/// floor (see the module notes), or `None` when the edge is not one.
+///
+/// Declined: a wall that is not a cylinder, an axis lying in the floor or
+/// square to it, a round turning half a turn or more, flanks at different angles to the
+/// floor, and a setback that reaches the axis.
+fn oblique_element(
+    topo: &Topology,
+    adjacency: &AdjacencyIndex,
+    floor: FaceId,
+    oriented: OrientedEdge,
+    distance: f64,
+) -> Result<Option<Element>, BlendError> {
+    let edge = oriented.edge();
+    let wall = match *adjacency.faces_for_edge(edge) {
+        [a, b] if a == floor && b != floor => b,
+        [a, b] if b == floor && a != floor => a,
+        _ => return Ok(None),
+    };
+    let FaceSurface::Plane { normal, d: level } = *topo.face(floor)?.surface() else {
+        return Ok(None);
+    };
+    let FaceSurface::Cylinder(cylinder) = topo.face(wall)?.surface() else {
+        return Ok(None);
+    };
+    let level = level / normal.length();
+    let (Ok(normal), Ok(axis)) = (normal.normalize(), cylinder.axis().normalize()) else {
+        return Ok(None);
+    };
+    let (origin, radius) = (cylinder.origin(), cylinder.radius());
+    // An axis in the floor makes the edge a ruling, not an arc; one square
+    // to it is a circle (stored as an ellipse here), the conical bands' case.
+    let lean = normal.dot(axis).abs();
+    if lean <= 1e-6 || lean >= 1.0 - 1e-9 {
+        return Ok(None);
+    }
+    let Some(frames) = crate::analytic::edge_material_frames_at(topo, edge, floor, wall)? else {
+        return Ok(None);
+    };
+    let data = topo.edge(edge)?;
+    let (Ok((t0, t1)), start, end) = (
+        data.strict_domain(),
+        topo.vertex(data.start())?.point(),
+        topo.vertex(data.end())?.point(),
+    ) else {
+        return Ok(None);
+    };
+    let middle = data
+        .curve()
+        .evaluate_with_endpoints(f64::midpoint(t0, t1), start, end);
+    let (start, end) = if oriented.is_forward() {
+        (start, end)
+    } else {
+        (end, start)
+    };
+    let radial = |p: Point3| {
+        let v = p - origin;
+        (v - axis * axis.dot(v)).normalize()
+    };
+    let (Ok(u0), Ok(u_end), Ok(u_mid)) = (radial(start), radial(end), radial(middle)) else {
+        return Ok(None);
+    };
+    // Angles about the axis turned with the run.
+    let axis = if u0.cross(u_mid).dot(axis) >= 0.0 {
+        axis
+    } else {
+        -axis
+    };
+    let w0 = axis.cross(u0);
+    let angle = |u: Vec3| {
+        let a = u.dot(w0).atan2(u.dot(u0));
+        if a < 0.0 { a + TAU } else { a }
+    };
+    let (sweep, mid) = (angle(u_end), angle(u_mid));
+    if !(sweep > 1e-9 && sweep < PI && mid > 0.0 && mid < sweep) {
+        return Ok(None);
+    }
+    let along = |phi: f64| u0 * phi.cos() + w0 * phi.sin();
+    // The round's tangent plane at each seam is its flank's: one setback
+    // serves both only when they make the same angle with the floor.
+    let (sin_start, sin_end) = (
+        normal.cross(along(0.0)).length(),
+        normal.cross(along(sweep)).length(),
+    );
+    if (sin_start - sin_end).abs() > 1e-9 {
+        return Ok(None);
+    }
+    let rho = distance * sin_start;
+    // The floor's material lies toward the axis or away from it; the wall's
+    // on one side of the floor's plane.
+    let floor_radius = if frames.into1.dot(u_mid) < 0.0 {
+        radius - rho
+    } else {
+        radius + rho
+    };
+    if floor_radius <= 1e-9 * radius.max(1.0) {
+        return Ok(None);
+    }
+    let wall_level = level + rho * frames.into2.dot(normal).signum();
+    // Where the cylinder of `r` about the axis meets the plane `n·x = c` at
+    // the axis angle whose radial is `c0 u0 + s0 w0` (unit or not: the map
+    // is affine in `(c0, s0)`, so it carries rational control points too).
+    let at = |r: f64, c: f64, cos: f64, sin: f64| {
+        let base = origin + (u0 * cos + w0 * sin) * r;
+        base + axis * ((c - normal.dot(base - Point3::new(0.0, 0.0, 0.0))) / normal.dot(axis))
+    };
+    let ellipse = |r: f64, c: f64| -> Result<Ellipse3D, BlendError> {
+        let centre = at(0.0, c, 1.0, 0.0);
+        let minor = normal.cross(axis).normalize()?;
+        let major = normal.cross(minor);
+        // Increasing parameter turns with the run.
+        let turn = if normal.dot(axis) > 0.0 {
+            normal
+        } else {
+            -normal
+        };
+        Ok(Ellipse3D::new_with_ref(
+            centre,
+            turn,
+            r / normal.dot(axis).abs(),
+            r,
+            major,
+        )?)
+    };
+    let contacts = [ellipse(floor_radius, level)?, ellipse(radius, wall_level)?];
+    // The band: each row a rational quadratic arc of at most a quarter turn.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss
+    )]
+    let spans = ((sweep / FRAC_PI_2).ceil() as usize).max(1);
+    #[allow(clippy::cast_precision_loss)]
+    let step = sweep / spans as f64;
+    let mut rows = [Vec::new(), Vec::new()];
+    let mut weights = Vec::new();
+    let mut knots = vec![0.0; 3];
+    for span in 0..spans {
+        #[allow(clippy::cast_precision_loss)]
+        let a = step * span as f64;
+        let half = (step / 2.0).cos();
+        let stations = [
+            (a.cos(), a.sin(), 1.0),
+            (
+                (a + step / 2.0).cos() / half,
+                (a + step / 2.0).sin() / half,
+                half,
+            ),
+        ];
+        for &(cos, sin, weight) in &stations {
+            rows[0].push(at(floor_radius, level, cos, sin));
+            rows[1].push(at(radius, wall_level, cos, sin));
+            weights.push(weight);
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let knot = (span + 1) as f64 / spans as f64;
+        knots.extend([knot, knot]);
+    }
+    rows[0].push(at(floor_radius, level, sweep.cos(), sweep.sin()));
+    rows[1].push(at(radius, wall_level, sweep.cos(), sweep.sin()));
+    weights.push(1.0);
+    knots.push(1.0);
+    // Exact, not fitted: `at` is affine in `(cos, sin)`, so each row is the
+    // affine image of an exact rational arc of the unit circle, and affine
+    // jointly in `(r, c)`, so with equal weights in both rows the straight
+    // line between them at each angle is `at` of the interpolated radius
+    // and level: the cone `h + w = ρ`. Recorded so an exact-only caller
+    // takes the band as exact (sampled against the cone in
+    // `regress_issue_1743_two_stripe_vertex.rs`).
+    let surface = NurbsSurface::new(
+        1,
+        2,
+        vec![0.0, 0.0, 1.0, 1.0],
+        knots,
+        rows.to_vec(),
+        vec![weights.clone(), weights],
+    )?
+    .with_exact_form(ExactForm::EllipticCone);
+    let ends = |r: f64, c: f64| [at(r, c, 1.0, 0.0), at(r, c, sweep.cos(), sweep.sin())];
+    Ok(Some(Element {
+        edges: vec![edge],
+        wall,
+        surface: FaceSurface::Nurbs(surface),
+        arc: None,
+        oblique: Some(contacts),
+        floor: ends(floor_radius, level),
+        wall_points: ends(radius, wall_level),
+    }))
+}
+
+/// End each straight band beside a band over a leaning round on that band's
+/// seam ruling, which lies in it (see the module notes). `false` when a
+/// neighbour is not a straight band through the ruling.
+fn hand_over(elements: &mut [Element], closed: bool, distance: f64) -> bool {
+    let touch = 1e-6 * distance.max(1.0);
+    let count = elements.len();
+    let off_line = |p: Point3, a: Point3, b: Point3| {
+        let Ok(dir) = (b - a).normalize() else {
+            return f64::INFINITY;
+        };
+        let v = p - a;
+        (v - dir * dir.dot(v)).length()
+    };
+    for k in 0..count {
+        if elements[k].oblique.is_none() {
+            continue;
+        }
+        let neighbours = [
+            (k > 0 || closed).then(|| (k + count - 1) % count),
+            (k + 1 < count || closed).then(|| (k + 1) % count),
+        ];
+        for (side, neighbour) in neighbours.into_iter().enumerate() {
+            let Some(n) = neighbour else {
+                return false;
+            };
+            // The ruling at the round's start meets the band before it at
+            // that band's end, and the other way round.
+            let (floor_point, wall_point) =
+                (elements[k].floor[side], elements[k].wall_points[side]);
+            let other = &mut elements[n];
+            if n == k || !other.is_straight() {
+                return false;
+            }
+            let end = 1 - side;
+            if off_line(floor_point, other.floor[0], other.floor[1]) > touch
+                || off_line(wall_point, other.wall_points[0], other.wall_points[1]) > touch
+            {
+                return false;
+            }
+            let (keep_floor, keep_wall) = (other.floor[side], other.wall_points[side]);
+            let sense = |kept: Point3, old: Point3, new: Point3| {
+                let (before, after) = if end == 1 {
+                    (old - kept, new - kept)
+                } else {
+                    (kept - old, kept - new)
+                };
+                before.dot(after) > 0.0 && after.length() > touch
+            };
+            if !sense(keep_floor, other.floor[end], floor_point)
+                || !sense(keep_wall, other.wall_points[end], wall_point)
+            {
+                return false;
+            }
+            other.floor[end] = floor_point;
+            other.wall_points[end] = wall_point;
+        }
+    }
+    true
 }
 
 /// Whether `next` continues `last`'s band: the same wall, the same carrier
 /// and a shared cross-section.
 fn mergeable(last: &Element, next: &Element, distance: f64) -> bool {
     let touch = 1e-6 * distance.max(1.0);
-    if last.wall != next.wall {
+    if last.wall != next.wall || last.oblique.is_some() || next.oblique.is_some() {
         return false;
     }
     if (last.floor[1] - next.floor[0]).length() > touch
@@ -841,7 +1141,7 @@ fn joint_kind(
     }
     // A mitre between two straight bands whose planar walls meet in a
     // straight corner edge at the shared vertex.
-    if a.arc.is_some() || b.arc.is_some() {
+    if !a.is_straight() || !b.is_straight() {
         return Ok(None);
     }
     for wall in [a.wall, b.wall] {
@@ -1307,13 +1607,38 @@ fn run_vertex(topo: &Topology, element: &Element, end: bool) -> Result<VertexId,
 }
 
 /// The exact contact edge of `element` from `from` to `to`: a line along a
-/// straight band, an arc about the run's circle along a conical one.
+/// straight band, an arc about the run's circle along a conical one, an arc
+/// of the contact's ellipse over a leaning round. `side` is 0 for the floor
+/// contact, 1 for the wall's.
 fn contact_edge(
     topo: &mut Topology,
     element: &Element,
+    side: usize,
     from: VertexId,
     to: VertexId,
 ) -> Result<EdgeId, BlendError> {
+    if let Some(contacts) = &element.oblique {
+        let ellipse = contacts[side].clone();
+        let start = topo.vertex(from)?.point();
+        let end = topo.vertex(to)?.point();
+        let t0 = ellipse.project(start);
+        // Both lie in (-π, π]: one turn puts the end after the start.
+        let mut t1 = ellipse.project(end);
+        if t1 <= t0 {
+            t1 += TAU;
+        }
+        let scale = ellipse.semi_major().max(1.0);
+        if t1 - t0 >= PI
+            || (ellipse.evaluate(t0) - start).length() > 1e-6 * scale
+            || (ellipse.evaluate(t1) - end).length() > 1e-6 * scale
+        {
+            return Err(BlendError::InvalidInput {
+                reason: "chamfer floor chain: an ellipse contact does not reach its ends"
+                    .to_owned(),
+            });
+        }
+        return add_certified_curve_edge(topo, from, to, EdgeCurve::Ellipse(ellipse), (t0, t1));
+    }
     let Some((center, normal, sweep)) = element.arc else {
         return Ok(topo.add_edge(Edge::new(from, to, EdgeCurve::Line)));
     };

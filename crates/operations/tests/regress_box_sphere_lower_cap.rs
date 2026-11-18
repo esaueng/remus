@@ -20,8 +20,9 @@
 //! A cut or fuse with the centre below the box top (z = 12, 15) never reached
 //! the first defect and is kept as a control; its intersect keeps the
 //! sphere's equator seam, three faces, so the gate never refused it. z = 20 puts the equator in the box top:
-//! its cut and fuse stay refused (tracked on #1790), and its intersect, the
-//! lower hemisphere, now builds.
+//! its intersect, the lower hemisphere, builds since the gate fix, and its cut
+//! and fuse since the box top stopped receiving the equator twice (see
+//! `regress_box_sphere_equator.rs`).
 //!
 //! Every oracle is a closed form: the spherical cap `πh²(3r − h)/3` and its
 //! centroid `3(2r − h)²/(4(3r − h))` below the sphere centre.
@@ -83,7 +84,7 @@ fn assert_rel(got: f64, want: f64, what: &str) {
 fn cut_and_fuse_keep_the_lower_sphere_cap() {
     let box_volume = BOX.0 * BOX.1 * BOX.2;
     let sphere_volume = 4.0 * PI * R.powi(3) / 3.0;
-    for centre_z in [12.0, 15.0, 24.0, 27.0, 29.0] {
+    for centre_z in [12.0, 15.0, 20.0, 24.0, 27.0, 29.0] {
         let cap = cap_volume(cap_height(centre_z));
         for (op, want) in [
             (BooleanOp::Cut, box_volume - cap),
@@ -148,16 +149,14 @@ fn intersect_is_the_lower_cap_closed_by_a_disc() {
     }
 }
 
-/// A radius-2 sphere already cut above z = 1, then cut below z = -1. On main
-/// the second cut silently returned its input (volume of the top-trimmed
-/// sphere, not the slab): the ray-cast classifier approximates each sphere
-/// face by its boundary polygon, so it read the trimmed sphere's interior as
-/// outside and dropped the closing disc, while the centroid fallback kept the
-/// lower cap. With the cap now classified on the sphere, the dropped disc
-/// leaves an open shell and the exact-only boolean refuses. The cut must
-/// either refuse with the typed exact-only reason or build the slab.
+/// A radius-2 sphere already cut above z = 1, then cut below z = -1, is the
+/// slab between the planes. The second cut once silently returned its input,
+/// then refused (#1816): the GFA ray caster flattened each sphere face into
+/// its boundary polygon, read the trimmed sphere's interior as outside and
+/// dropped the closing disc. `regress_trimmed_sphere_second_cap.rs` covers
+/// the variants.
 #[test]
-fn second_cut_of_a_trimmed_sphere_refuses_or_builds_the_slab() {
+fn second_cut_of_a_trimmed_sphere_builds_the_slab() {
     let mut topo = Topology::new();
     let sphere = make_sphere(&mut topo, 2.0, 16).unwrap();
     let above = make_box(&mut topo, 20.0, 20.0, 20.0).unwrap();
@@ -174,20 +173,12 @@ fn second_cut_of_a_trimmed_sphere_refuses_or_builds_the_slab() {
 
     let below = make_box(&mut topo, 20.0, 20.0, 20.0).unwrap();
     transform_solid(&mut topo, below, &Mat4::translation(-10.0, -10.0, -21.0)).unwrap();
-    match boolean(&mut topo, BooleanOp::Cut, trimmed, below) {
-        Ok(slab) => assert_rel(
-            mass_properties(&topo, slab).unwrap().mass,
-            sphere_volume - 2.0 * cap,
-            "slab between z = -1 and z = 1",
-        ),
-        Err(error) => assert!(
-            matches!(
-                error,
-                remus_operations::OperationsError::ExactOnlyUnattainable
-            ),
-            "a refusal must be the typed exact-only one: {error:?}"
-        ),
-    }
+    let slab = boolean(&mut topo, BooleanOp::Cut, trimmed, below).unwrap();
+    assert_rel(
+        mass_properties(&topo, slab).unwrap().mass,
+        sphere_volume - 2.0 * cap,
+        "slab between z = -1 and z = 1",
+    );
 }
 
 /// The sphere as the object: a radius-2 sphere at the origin cut by a box
@@ -268,15 +259,8 @@ fn solid_volume_reads_an_upper_cap_exactly() {
                 &Mat4::translation(BOX.0 / 2.0, BOX.1 / 2.0, centre_z),
             )
             .unwrap();
-            // The 32-segment hemisphere (z = 20) is still a typed refusal of
-            // #1790; every 16-segment cap builds. Only a built body is measured.
-            let body = match boolean(&mut topo, BooleanOp::Intersect, block, sphere) {
-                Ok(body) => body,
-                Err(error) if segments == 32 && error.to_string().contains("exact-only policy") => {
-                    continue;
-                }
-                Err(error) => panic!("{what}: {error}"),
-            };
+            let body = boolean(&mut topo, BooleanOp::Intersect, block, sphere)
+                .unwrap_or_else(|error| panic!("{what}: {error}"));
             assert_rel(
                 mass_properties(&topo, body).unwrap().mass,
                 cap_volume(h),

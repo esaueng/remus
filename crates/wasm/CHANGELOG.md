@@ -19,6 +19,45 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
 
 ### ⚠ BREAKING CHANGES
 
+* A fillet or chamfer whose result fails its own validation postcondition
+  on a valid input is now an engine failure, not an input error (#1814).
+  The direct blend methods that prefix their message with
+  `blend_failure_code` (`fillet`, `filletWithEvolution`, `filletV2`,
+  `chamfer`, `chamferV2`, `chamferDistanceAngle`, `filletVariable` and
+  their evolution forms) now throw `postcondition-failed: fillet
+  postcondition validation failed with …` where they threw `invalid-input:
+  invalid input: fillet postcondition validation failed with …`.
+  `executeBatchV2` and the structured errors report `code:
+  "operation_failed"`, `category: "internal"`, `details.kernelCode:
+  "postcondition-failed"` and `details.errorCount`, where they reported
+  `invalid_argument` / `invalid_input` (blend ops also carried `kernelCode:
+  "invalid-input"`), and the typed `*Detailed` refusals (`filletDetailed`,
+  `chamferDetailed`, `filletVariableDetailed`, …) report `code:
+  "postcondition-failed"` where they reported `invalid-input` or
+  `invalid_argument`. A request refused before the
+  engine runs (a non-positive radius, no edges) keeps `invalid-input` /
+  `invalid_argument`. **Migration:** a caller that branches on
+  `invalid-input`, `invalid_argument` or `invalid_input` to detect a fillet
+  or chamfer refusal must also accept `postcondition-failed` /
+  `operation_failed`; one that retries with other edges or a smaller
+  radius should treat it as a refusal of this request, not as a malformed
+  argument.
+
+* The detailed blend twins (`filletDetailed`, `chamferDetailed`,
+  `filletV2Detailed`, `chamferV2Detailed`, `chamferDistanceAngleDetailed`,
+  `filletVariableDetailed`, and the same-named `executeBatch` /
+  `executeBatchV2` ops) no longer treat every new NURBS face as approximate
+  (#1824). A NURBS face whose engine built it as an exact closed form is
+  exact: it is not listed under `details.approximateFaces`, and with no
+  other approximate face the result reports `quality: "exact"` and
+  `exactOnly: true` accepts it. Today that is the elliptic cone band a
+  chamfer lays over a leaning round (the top loop of a drafted box with
+  rounded uprights, say): such a chamfer used to return `quality:
+  "approximate"` with the four cones listed, or refuse with
+  `exact_only_unattainable` under `exactOnly`. Fitted, sampled, lofted and
+  walked NURBS faces are still listed and refused, including the fillet
+  stripes over the same leaning rounds. A caller that read "any new NURBS
+  face" as approximate should read `approximateFaces` instead.
 * A move-face refusal outside the qualified cells
   (`OffsetError::UnsupportedMoveFace`) now projects as category
   `unsupported` with `details.kernelCode = "unsupported_move_face"`, plus

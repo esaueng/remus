@@ -152,7 +152,7 @@ Quick reference — find the right file for any task:
 | NURBS curve evaluation/manipulation | `nurbs/curve.rs` |
 | Bit-identity oracle for `NurbsCurve::evaluate`'s basis buffer against the verbatim pre-widening evaluate, degrees 1–12 (tests) | `nurbs/curve/eval_stack_oracle_tests.rs` |
 | Compact band storage for NURBS interpolation | `nurbs/banded.rs` |
-| NURBS surface evaluation | `nurbs/surface.rs` |
+| NURBS surface evaluation; `ExactForm`, the closed form a rational surface exactly is, as recorded by the engine that built it | `nurbs/surface.rs` |
 | Bit-identity oracle for `NurbsSurface::evaluate`'s u/v basis buffers against the verbatim pre-widening evaluate, degrees 1–12 (tests) | `nurbs/surface/eval_stack_oracle_tests.rs` |
 | Bit-identity oracle for the loop-based `evaluate` contraction, the lane first-order solve, the allocation-free `normal`, the fused `evaluate_and_partials_from`/`point_and_normal(_with)` and the per-axis `first_order_at` tables against the verbatim pre-change code, degrees 1–5, 9 and 11 (tests) | `nurbs/surface/contraction_oracle_tests.rs` |
 | The cached periodicity flags against the control-net comparisons kept verbatim, `with_control_points` against `NurbsSurface::new` on copied knots and weights bit for bit, and their work counts: one net comparison per surface, no knot-vector comparison per sample (tests) | `nurbs/surface/shared_storage_tests.rs` |
@@ -335,6 +335,7 @@ Quick reference — find the right file for any task:
 | Closed-form and differential oracles for the ray-cast polygon gate and shared plane hits (tests) | `classifier/ray_cast/gate_oracle_tests.rs` |
 | Differential oracles for the ray-cast torus line cull: no quartic roots on a cleared line, ray triples against the unculled vote loop, near and far past the reach cap, near-miss roots only the margin keeps (tests) | `classifier/ray_cast/torus_cull_oracle_tests.rs` |
 | Bit-identity oracle for the ray-cast plane, cylinder and cone hits routed through `remus_math::ray`: the pre-routing functions kept verbatim, on random, tangent, near-tangent, axis- and generator-parallel and in-plane rays at scales 1e-3 to 1e6 (tests) | `classifier/ray_cast/quadric_policy_oracle_tests.rs` |
+| Trim membership of a ray hit on a sphere face bounded by circular arcs on its sphere | `classifier/sphere_patch.rs` |
 | Recognition of bounded rectangular torus patches | `classifier/torus_patch.rs` |
 | Shell assembly (4-phase `BuilderSolid`) | `builder/builder_solid.rs` |
 | Boolean preflight diagnostics | `diagnostic.rs` |
@@ -377,7 +378,7 @@ Quick reference — find the right file for any task:
 | Analytic fast paths (plane-plane, plane-cyl, etc.) | `analytic.rs` |
 | Fillet builder (orchestration) | `fillet_builder.rs` |
 | Chamfer builder (orchestration) | `chamfer_builder.rs` |
-| Exact chamfers along tangent and mitred edge chains on one planar floor (plane strips, cones on arcs) | `chamfer_floor_chain.rs` |
+| Exact chamfers along tangent and mitred edge chains on one planar floor (plane strips, cones on arcs, elliptic cones over leaning rounds) | `chamfer_floor_chain.rs` |
 | Exact straight-ridge chamfers on proven spline extrusion supports | `chamfer_extrusion.rs` |
 | Ruled chamfers on monotone spline rims of linear extrusions | `chamfer_spline_rim.rs` |
 | Whole-carrier hole clearance for spline chamfers | `chamfer_clearance.rs` |
@@ -584,6 +585,9 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Mesh boolean (co-refinement) | `mesh_boolean.rs` |
 | Robust triangle-triangle intersection: the narrow phase shared by mesh co-refinement and validation's component-overlap check | `triangle_intersection.rs` |
 | Extrude, Revolve, Sweep, Loft, Pipe | `extrude.rs`, `revolve.rs`, `sweep.rs`, `loft.rs`, `pipe.rs` |
+| Exact path sweep along a tangent-continuous chain of lines and circular arcs: the profile carried in place by the path's rigid motions (translations along lines, turns about arc axes, the rotation-minimizing frame exactly), one face per profile edge per segment — planes, cylinders, cones and tori where they apply, exact rational tensor-product NURBS otherwise — shared rails and joint sections, capless rings for closed chains; refusals for corners, folds, self-approach and non-line/arc paths | `exact_sweep.rs`, `exact_sweep/tests.rs` |
+| Wrap a planar profile onto a cylinder preserving arc length, as the solid between two radii (B73 emboss/engrave): exact cylinder faces, planar walls for edges along or across the axis, exact ruled walls between certified Hermite fits of the other wrapped edges (fourth-derivative bound from the profile curve's derivative bounds); refusals for a profile not parallel to the axis, one spanning a full turn and rational curves other than circles and ellipses | `wrap.rs`, `wrap/tests.rs` |
+| Wrap a planar profile onto a cone preserving arc length through the cone's development, as the solid between two normal offsets: exact cone faces, every edge a certified Hermite fit from a closed-form fourth-derivative bound of the homogeneous development map, walls ruled along the normal between an edge's two equal-span fits; refusals for a profile reaching the apex or spanning a full turn and an offset past an apex | `wrap/cone.rs`, `wrap/cone/tests.rs` |
 | Extrusion nesting preflight, separate island caps, and closed-form material/void regressions | `extrude/nesting.rs`, `extrude/nesting_tests.rs` |
 | Main-comparison profile families, unnested sweep compatibility, disjoint ellipse/spline holes with overlapping boxes and split-circle seam alignment (tests) | `extrude/profile_compatibility_tests.rs` |
 | Exact loft between parallel full circles: coaxial cylinder/cone bands, and laterally offset (oblique) circles as one exact rational ruled band per section pair with circular rims | `loft.rs` (`try_loft_coaxial_circle_stack`, `try_loft_parallel_circle_stack`), `loft/tests.rs` |
@@ -623,7 +627,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Rolling-ball arc stripe between a plane and a coaxial cylinder as an exact torus, or a sphere triangle at the band's own radius (a fillet riding an earlier band's end) | `fillet/arc_torus.rs` |
 | Two convex stripes mitred over a reflex corner whose concave edge stays sharp | `fillet/mitre.rs` |
 | Rolling-ball stripe between a plane and a cylinder that crosses it at a lean (an earlier round's end on a drafted body): closed-form sections between the round's two seams, where the neighbouring wall stripes hand over | `fillet/oblique_arc.rs` |
-| Lone straight rolling-ball stripes ending at a strictly convex planar corner, or a concave one at a strictly concave corner (a drafted pocket's floor): contacts run out past the vertex onto one side plane, or (convex only) onto two (a chamfered box's mitred corner) with the end boundary kinked where the band crosses their shared edge | `fillet/rolling_ball/split_runout.rs` |
+| Lone straight rolling-ball stripes ending at a strictly convex planar corner, or a concave one at a strictly concave corner (a drafted pocket's floor) or under two convex rims (an undercut pocket's top, a hole corner): contacts run out past the vertex onto one side plane, or (convex only) onto two (a chamfered box's mitred corner) with the end boundary kinked where the band crosses their shared edge | `fillet/rolling_ball/split_runout.rs` |
 | Spatial grid behind the rolling-ball Phase 5d vertex dedup and snap (the linear scans' winners and ties), with its oracle tests | `fillet/vertex_snap.rs` |
 | Shell (hollow solid) | `shell_op.rs` |
 | Draft (taper faces): the sharp construction (corners relocated to three-plane intersections, only the wires they sit on rebuilt), which names the curved faces it refuses on | `draft.rs` |
@@ -778,6 +782,8 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | FreeCAD saved-shape ASCII BREP read and bounded planar loop classification | `brep/mod.rs`, `brep/reader.rs`, `brep/planar.rs` |
 | Saved-shape analytic line/circle and plane/cylinder carriers, rigid location words, bounded placed occurrences, circular caps and cylindrical seam bands | `brep/reader/carriers.rs`, `brep/reader/locations.rs`, `brep/reader/placed.rs`, `brep/reader/curved.rs` |
 | STEP read/write | `step/reader.rs`, `step/writer.rs` |
+| STEP product structure: product-occurrence tree, every placed occurrence as its own exact root, `STYLED_ITEM` solid and face colours (`read_step_structure`, translator `importStepStructure`) | `step/reader/structure.rs` |
+| Exact IGES 5.3 B-rep (type 186) read and write: carriers kept exact, read through the STEP body reader (`read_iges_brep`, `write_iges_brep`) | `iges/brep.rs` |
 | Verbatim STEP string-decoder oracle, deterministic fuzz, linear-work guards and hostile-name imports (tests) | `step/reader/directive_oracle_tests.rs` |
 | Relative planar-bound sampling: loops whose areas the coarser chords cannot order are flagged for re-sampling at the absolute deflection (tests) | `step/reader/bound_sampling_tests.rs` |
 | STEP export seam placement: a cylindrical band whose seam runs through one of its own inner wires is written, on a private arena copy, with the seam and its rim vertices moved into the widest free angular gap | `step/writer/seam.rs` |
@@ -841,6 +847,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Source-relative live face moves preserve accepted geometry on refusal (tests) | `bindings/face_move_preview_tests.rs` |
 | Batch `getFaceNormal` returns the outward normal of reversed planar faces and refuses curved faces, matching the direct method (tests) | `bindings/face_normal_contract_tests.rs` |
 | Differential oracle: the modifier twins' full-copy rollback envelope kept verbatim, against the rollback scope (tests) | `bindings/modifier_detailed/envelope_oracle_tests.rs` |
+| Exact-only blend twins accept NURBS faces built as exact closed forms (the chamfer's elliptic cones over leaning rounds) and keep refusing lofted ones (#1824) (tests) | `bindings/modifier_detailed/exact_nurbs_tests.rs` |
 | Bounded fillet twins (`filletDetailedWithCancellation`, `filletV2DetailedWithCancellation`): cancellation token, `maxWalkSteps` budget, typed `cancelled`/`resource_limit` refusals, `details.walkSteps` | `bindings/modifier_detailed/governed.rs` |
 | Typed construction results (`extrudeDetailed`, `revolveDetailed`) | `bindings/construction_detailed.rs` |
 | Certified spline-island success and undecided nesting refusals retaining the unsupported category and document/session state through direct and batch routes (tests) | `bindings/profile_nesting_tests.rs` |
@@ -909,6 +916,8 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Growing-holder recipe `volume` contract (B54: closed-form −5440 width step through `executeBatch`) | `bindings/growing_holder_volume_tests.rs` |
 | Store-local boolean switch (`setStoreLocalCuts` / `storeLocalCutsEnabled`, direct and batch) contract tests | `bindings/store_local_switch_tests.rs` |
 | Sweep bindings refuse atomically (`multiSectionSweep` direct and batch; kernel review WASM-6) | `bindings/sweep_transaction_tests.rs` |
+| `sweepExact` contract: the exact pipe bend directly and through `executeBatch`, and a corner refused with the session unchanged | `bindings/exact_sweep_tests.rs` |
+| `wrapProfileOnCylinder` and `wrapProfileOnCone` contract: a label wrapped directly and through `executeBatch`, and refused wraps leaving the session unchanged | `bindings/wrap_tests.rs` |
 | Batch `sewFaces` without `tolerance` sews at the batch default `TOL`, not 1e-6 (contract test) | `bindings/sew_faces_default_tests.rs` |
 | Direct and both batch contracts for the bounded P-Class 7.1 hollow taper | `bindings/tapered_hollow_sweep_tests.rs` |
 | WASM contract tests for the mixed-notch L-bracket boundary | `bindings/mixed_notch_tests.rs` |

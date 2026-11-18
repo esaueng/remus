@@ -1691,6 +1691,225 @@ impl RemusKernel {
         Ok(solid_id_to_u32(solid_id))
     }
 
+    // ── Exact Sweep ───────────────────────────────────────────────
+
+    /// Sweep a planar face exactly along a tangent-continuous chain of line
+    /// and circular-arc edges.
+    ///
+    /// The profile stays where it is and is carried by the path's rigid
+    /// motions (a line translates it, an arc turns it about the arc's axis),
+    /// starting from the chain end nearer the profile's plane. Every face is
+    /// an exact plane, cylinder, cone, torus or rational NURBS surface;
+    /// nothing is sampled. A closed chain builds a capless ring.
+    ///
+    /// Returns a solid handle (`u32`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an empty or broken chain, a path edge that is not
+    /// a line or circular arc, a corner that is not tangent-continuous, a
+    /// non-planar profile, a profile the motion does not cross transversally
+    /// (it touches an arc's axis or lies along the path), or a chain that
+    /// passes closer to itself than the profile's reach. The session is left
+    /// unchanged.
+    #[wasm_bindgen(js_name = "sweepExact")]
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn sweep_exact(&mut self, face: u32, edge_handles: Vec<u32>) -> Result<u32, JsError> {
+        Ok(self.sweep_exact_impl(face, &edge_handles)?)
+    }
+
+    pub(crate) fn sweep_exact_impl(
+        &mut self,
+        face: u32,
+        edge_handles: &[u32],
+    ) -> Result<u32, WasmError> {
+        let face_id = self.resolve_face(face)?;
+        let edges = edge_handles
+            .iter()
+            .map(|&h| self.resolve_edge(h))
+            .collect::<Result<Vec<_>, _>>()?;
+        let solid_id =
+            remus_operations::exact_sweep::sweep_exact(self.topo_mut(), face_id, &edges)?;
+        Ok(solid_id_to_u32(solid_id))
+    }
+
+    // ── Cylinder Wrap ─────────────────────────────────────────────
+
+    /// Wrap a planar face onto a cylinder, preserving arc length, as the
+    /// solid between `inner` and `outer` radii.
+    ///
+    /// The face lies in a plane parallel to the axis through
+    /// `(origin_*)` along `(axis_*)`; arc length runs along
+    /// `axis × normal` (the face's own direction across the axis), from
+    /// `origin`'s foot, and lands round the axis from the angle of
+    /// `(ref_*)`, measured at `radius`.
+    /// Inner and outer faces are exact cylinders, walls along or across the
+    /// axis exact planes; other walls are exact ruled surfaces between
+    /// certified fits of the wrapped edges.
+    ///
+    /// Returns a solid handle (`u32`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a degenerate frame or radius range, a face not
+    /// parallel to the axis, a profile spanning a full turn, or a profile
+    /// curve that is not a line, circle, ellipse or non-rational spline. The
+    /// session is left unchanged.
+    #[wasm_bindgen(js_name = "wrapProfileOnCylinder")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn wrap_profile_on_cylinder(
+        &mut self,
+        face: u32,
+        origin_x: f64,
+        origin_y: f64,
+        origin_z: f64,
+        axis_x: f64,
+        axis_y: f64,
+        axis_z: f64,
+        ref_x: f64,
+        ref_y: f64,
+        ref_z: f64,
+        radius: f64,
+        inner: f64,
+        outer: f64,
+    ) -> Result<u32, JsError> {
+        Ok(self.wrap_profile_on_cylinder_impl(
+            face,
+            [origin_x, origin_y, origin_z],
+            [axis_x, axis_y, axis_z],
+            [ref_x, ref_y, ref_z],
+            [radius, inner, outer],
+        )?)
+    }
+
+    pub(crate) fn wrap_profile_on_cylinder_impl(
+        &mut self,
+        face: u32,
+        origin: [f64; 3],
+        axis: [f64; 3],
+        reference: [f64; 3],
+        [radius, inner, outer]: [f64; 3],
+    ) -> Result<u32, WasmError> {
+        for (name, value) in [
+            ("origin", origin),
+            ("axis", axis),
+            ("reference", reference),
+            ("radii", [radius, inner, outer]),
+        ] {
+            for v in value {
+                validate_finite(v, name)?;
+            }
+        }
+        let face_id = self.resolve_face(face)?;
+        let cylinder = remus_operations::wrap::WrapCylinder {
+            origin: Point3::new(origin[0], origin[1], origin[2]),
+            axis: Vec3::new(axis[0], axis[1], axis[2]),
+            reference: Vec3::new(reference[0], reference[1], reference[2]),
+            radius,
+        };
+        let solid_id = remus_operations::wrap::wrap_profile_solid(
+            self.topo_mut(),
+            face_id,
+            &cylinder,
+            inner,
+            outer,
+        )?;
+        Ok(solid_id_to_u32(solid_id))
+    }
+
+    // ── Cone Wrap ─────────────────────────────────────────────────
+
+    /// Wrap a planar face onto a cone, preserving arc length, as the solid
+    /// between normal offsets `inner` and `outer` from the cone (negative is
+    /// inside it).
+    ///
+    /// The cone has its apex at `(apex_*)`, axis `(axis_*)` into the cone
+    /// and remus half-angle `half_angle` (from the radial plane to a
+    /// generator). The face lies in a plane parallel to the axis and is read
+    /// in the cone's development: arc length runs along `axis × normal`,
+    /// length along the generator along the axis, from `(origin_*)` on the
+    /// axis, whose circle is the profile's zero; angle zero is at
+    /// `(ref_*)`. Inner and outer faces are exact cones; walls are exact
+    /// ruled surfaces between certified fits of the wrapped edges.
+    ///
+    /// Returns a solid handle (`u32`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a degenerate cone or offset range, an origin
+    /// not beyond the apex, a face not parallel to the axis, a profile that
+    /// reaches the apex or spans a full turn, an offset past an apex, or a
+    /// profile curve that is not a line, circle, ellipse or non-rational
+    /// spline. The session is left unchanged.
+    #[wasm_bindgen(js_name = "wrapProfileOnCone")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn wrap_profile_on_cone(
+        &mut self,
+        face: u32,
+        apex_x: f64,
+        apex_y: f64,
+        apex_z: f64,
+        axis_x: f64,
+        axis_y: f64,
+        axis_z: f64,
+        ref_x: f64,
+        ref_y: f64,
+        ref_z: f64,
+        origin_x: f64,
+        origin_y: f64,
+        origin_z: f64,
+        half_angle: f64,
+        inner: f64,
+        outer: f64,
+    ) -> Result<u32, JsError> {
+        Ok(self.wrap_profile_on_cone_impl(
+            face,
+            [apex_x, apex_y, apex_z],
+            [axis_x, axis_y, axis_z],
+            [ref_x, ref_y, ref_z],
+            [origin_x, origin_y, origin_z],
+            [half_angle, inner, outer],
+        )?)
+    }
+
+    pub(crate) fn wrap_profile_on_cone_impl(
+        &mut self,
+        face: u32,
+        apex: [f64; 3],
+        axis: [f64; 3],
+        reference: [f64; 3],
+        origin: [f64; 3],
+        [half_angle, inner, outer]: [f64; 3],
+    ) -> Result<u32, WasmError> {
+        for (name, value) in [
+            ("apex", apex),
+            ("axis", axis),
+            ("reference", reference),
+            ("origin", origin),
+            ("angle and offsets", [half_angle, inner, outer]),
+        ] {
+            for v in value {
+                validate_finite(v, name)?;
+            }
+        }
+        let face_id = self.resolve_face(face)?;
+        let cone = remus_operations::wrap::WrapCone {
+            apex: Point3::new(apex[0], apex[1], apex[2]),
+            axis: Vec3::new(axis[0], axis[1], axis[2]),
+            reference: Vec3::new(reference[0], reference[1], reference[2]),
+            half_angle,
+            origin: Point3::new(origin[0], origin[1], origin[2]),
+        };
+        let solid_id = remus_operations::wrap::wrap_profile_on_cone(
+            self.topo_mut(),
+            face_id,
+            &cone,
+            inner,
+            outer,
+        )?;
+        Ok(solid_id_to_u32(solid_id))
+    }
+
     // ── Sweep Along Edges ─────────────────────────────────────────
 
     /// Sweep a face along a path defined by a chain of edges.
