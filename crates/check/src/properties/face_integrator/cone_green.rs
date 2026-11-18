@@ -12,8 +12,10 @@
 //! vector area, the same policy the cylinder applies to fitted trims (see
 //! its module docs). A face trimmed only by lines, circles and ellipses keeps
 //! the sampled reading bit for bit, and so does every certificate reading of
-//! `solid_volume`. The area entry point (`analytic_face_area`) already reduces
-//! these trims to the boundary.
+//! `solid_volume`. An area-only request on a fitted face
+//! (`integrate_face_area`) is answered by the moment reading, so it takes
+//! this path under the same guard; `analytic_face_area` reduces these trims
+//! to the boundary on its own.
 //!
 //! On a cone `P(u, v) = A + v (cos a ρ(u) + sin a â)` the surface Jacobian
 //! `∂P/∂u × ∂P/∂v` is `v` times a function of `u` and `P` is affine in `v`,

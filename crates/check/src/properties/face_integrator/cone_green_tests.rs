@@ -43,20 +43,20 @@ use super::{
 
 /// One oblique section of a cone, in a frame with the cone's axis `â` and
 /// the tilt direction `t̂` (unit, perpendicular to `â`).
-struct Section {
-    apex: Point3,
-    axis: Vec3,
-    tilt_dir: Vec3,
+pub(super) struct Section {
+    pub(super) apex: Point3,
+    pub(super) axis: Vec3,
+    pub(super) tilt_dir: Vec3,
     /// The cone's half-angle from its radial plane.
-    a: f64,
+    pub(super) a: f64,
     /// The plane normal's angle from the axis.
-    theta: f64,
+    pub(super) theta: f64,
     /// The plane's distance from the apex.
-    d: f64,
+    pub(super) d: f64,
 }
 
 impl Section {
-    fn normal(&self) -> Vec3 {
+    pub(super) fn normal(&self) -> Vec3 {
         self.tilt_dir * self.theta.sin() + self.axis * self.theta.cos()
     }
 
@@ -70,7 +70,7 @@ impl Section {
     }
 
     /// The exact section: centre, unit major direction, semi-axes.
-    fn ellipse(&self) -> (Point3, Vec3, f64, f64) {
+    pub(super) fn ellipse(&self) -> (Point3, Vec3, f64, f64) {
         let n = self.normal();
         let [g1, g2] = self.generators();
         let p1 = self.apex + g1 * (self.d / n.dot(g1));
@@ -88,7 +88,7 @@ impl Section {
     /// The section as an exact rational quadratic NURBS on the cone, run in
     /// `−u` (clockwise seen from the axis tip), the way an outer rim above a
     /// pointed cone's material runs in `(u, v)`.
-    fn rim(&self) -> NurbsCurve {
+    pub(super) fn rim(&self) -> NurbsCurve {
         let (sin_a, cos_a) = self.a.sin_cos();
         // The direction circle `cos a ρ(u) + sin a â` about the apex.
         let circle = Circle3D::new(self.apex + self.axis * sin_a, -self.axis, cos_a).unwrap();
@@ -106,13 +106,13 @@ impl Section {
         NurbsCurve::new(2, directions.knots().to_vec(), points, weights).unwrap()
     }
 
-    fn cone(&self) -> ConicalSurface {
+    pub(super) fn cone(&self) -> ConicalSurface {
         ConicalSurface::new(self.apex, self.axis, self.a).unwrap()
     }
 
     /// The lateral face's exact `(volume, first volume moments)` about
     /// `reference`: the solid cone's minus the planar cap's.
-    fn lateral_terms(&self, reference: Point3) -> (f64, [f64; 3]) {
+    pub(super) fn lateral_terms(&self, reference: Point3) -> (f64, [f64; 3]) {
         let n = self.normal();
         let (centre, major, semi_major, semi_minor) = self.ellipse();
         let base = PI * semi_major * semi_minor;
@@ -148,7 +148,7 @@ fn reversed(curve: &NurbsCurve) -> NurbsCurve {
     NurbsCurve::new(curve.degree(), knots, points, weights).unwrap()
 }
 
-fn closed_nurbs_edge(topo: &mut Topology, curve: NurbsCurve) -> (EdgeId, VertexId) {
+pub(super) fn closed_nurbs_edge(topo: &mut Topology, curve: NurbsCurve) -> (EdgeId, VertexId) {
     let start = curve.evaluate(curve.domain().0);
     let vertex = topo.add_vertex(Vertex::new(start, 1e-9));
     let domain = curve.domain();
@@ -198,11 +198,19 @@ fn pointed_face(topo: &mut Topology, section: &Section) -> FaceId {
     topo.add_face(Face::new(wire, vec![], FaceSurface::Cone(section.cone())))
 }
 
-fn rel(measured: f64, exact: f64, scale: f64) -> f64 {
+/// Options that request refinement, which keeps the sampled trim.
+pub(super) fn refined() -> PropertiesOptions {
+    PropertiesOptions {
+        adaptive_eps: 1e-8,
+        ..PropertiesOptions::default()
+    }
+}
+
+pub(super) fn rel(measured: f64, exact: f64, scale: f64) -> f64 {
     (measured - exact).abs() / scale
 }
 
-fn sections(scale: f64) -> Vec<Section> {
+pub(super) fn sections(scale: f64) -> Vec<Section> {
     let tilt = |phi: f64, axis: Vec3| {
         let helper = if axis.x().abs() < 0.9 {
             Vec3::new(1.0, 0.0, 0.0)
@@ -288,9 +296,18 @@ fn an_oblique_section_integrates_to_the_closed_form_cone() {
                     "{label}: area {} vs {area}",
                     contribution.area
                 );
-                // The sampled trim (the area-only reading keeps it) chords
-                // the section: the oracle tells the two paths apart.
-                let sampled = integrate_face_area(&topo, face, 5).unwrap();
+                // The area-only rule reads the face with its moments, so on
+                // the boundary too (it once kept the sampled trim).
+                let area_only = integrate_face_area(&topo, face, 5).unwrap();
+                assert!(
+                    rel(area_only, area, area) < 1e-12,
+                    "{label}: area-only {area_only} vs {area}"
+                );
+                // The sampled trim (explicit refinement keeps it) chords the
+                // section: the oracle tells the two paths apart.
+                let sampled = integrate_face_about(&topo, face, &refined(), reference)
+                    .unwrap()
+                    .area;
                 assert!(
                     rel(sampled, area, area) > 1e-8,
                     "{label}: sampled area {sampled} already exact"
@@ -350,6 +367,13 @@ fn the_face_cache_matches_the_uncached_boundary_reading() {
             .integrate_face_volume_about(&topo, face, 5, reference)
             .unwrap();
         assert_eq!(after.volume.to_bits(), fresh_volume.volume.to_bits());
+        // The area-only family reads the boundary too, cold and warm.
+        let uncached_area = integrate_face_area(&topo, face, 5).unwrap();
+        assert_eq!(uncached_area.to_bits(), uncached.area.to_bits());
+        for _ in 0..2 {
+            let cached = cache.integrate_face_area(&topo, face, 5).unwrap();
+            assert_eq!(cached.to_bits(), uncached_area.to_bits());
+        }
     }
 }
 
@@ -415,7 +439,9 @@ fn rule(flux: Option<&Cell<Option<Vec3>>>) -> IntegrationRule<'_> {
 }
 
 /// Faces with only exact trims, vector-area readings and area-only readings
-/// never take the boundary path, so their results stay bit for bit.
+/// never take the boundary path, so their results stay bit for bit. (An
+/// area-only request on a fitted face reaches it through the moments
+/// reading instead; see `integrate_face_area`.)
 #[test]
 fn the_boundary_path_is_scoped_to_fitted_moment_readings() {
     let section = &sections(1.0)[0];

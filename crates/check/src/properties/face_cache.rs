@@ -963,25 +963,8 @@ fn memoized(topo: &Topology, face: FaceId, request: Request) -> Result<Answer, C
 /// boundary where a flux-collecting reading samples the trim. Unreadable
 /// faces answer `false`; the integrator reports their error.
 fn reads_fitted_boundary(topo: &Topology, face: FaceId) -> bool {
-    let Ok(face_data) = topo.face(face) else {
-        return false;
-    };
-    if !matches!(
-        face_data.surface(),
-        FaceSurface::Cylinder(_) | FaceSurface::Cone(_)
-    ) {
-        return false;
-    }
-    std::iter::once(face_data.outer_wire())
-        .chain(face_data.inner_wires().iter().copied())
-        .any(|wire| {
-            topo.wire(wire).is_ok_and(|wire| {
-                wire.edges().iter().any(|oriented| {
-                    topo.edge(oriented.edge())
-                        .is_ok_and(|edge| matches!(edge.curve(), EdgeCurve::NurbsCurve(_)))
-                })
-            })
-        })
+    topo.face(face)
+        .is_ok_and(|face| face_integrator::has_fitted_curved_trim(face, topo))
 }
 
 /// How a real in the key may move when the face is translated.

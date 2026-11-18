@@ -247,7 +247,105 @@ fn cross_drilled_shaft_integrals_are_pinned() {
     .unwrap();
     let tool = translated(&mut topo, tool, -5.0, 0.0, 6.0);
     let solid = boolean(&mut topo, BooleanOp::Cut, shaft, tool).unwrap();
+    // Both walls carry the fitted bore rims, which sit up to 3e-4 off the
+    // exact section, so the faces the B-rep stores differ from the ideal
+    // drilled shaft by that fit (the shaft wall reads 8e-7 under its ideal
+    // `72π − 2 ∫ 2 cos²φ / √(1 − sin²φ / 9) dφ`). Their oracle is the stored
+    // trims themselves: each wall's chart `(angle, axial)` has the constant
+    // area element `r`, so `A = r |∮ h dθ|` over the trims densely sampled.
+    // About the origin `P·n` is 3 on the shaft wall, so its volume term is
+    // `A`; on the bore's it is `−(1 + 6 cos φ)`. The area-only rule read
+    // both from the sampled trim before (2.3e-4 and 6.1e-6 off).
+    let mut walls = 0;
+    for id in solid_faces(&topo, solid).unwrap() {
+        let FaceSurface::Cylinder(cylinder) = topo.face(id).unwrap().surface() else {
+            continue;
+        };
+        walls += 1;
+        if cylinder.radius() > 2.0 {
+            let [area, _] = chart_moments(&topo, id, |p| (p.y().atan2(p.x()), p.z()));
+            assert_wall_reads(&topo, id, 3.0 * area, 3.0 * area, 1e-9);
+        } else {
+            let [area, cos] = chart_moments(&topo, id, |p| (p.y().atan2(p.z() - 6.0), p.x()));
+            assert_wall_reads(&topo, id, area, -area / 3.0 - 2.0 * cos, 1e-9);
+        }
+    }
+    assert_eq!(walls, 2);
     assert_golden("cross_drilled_shaft.golden", &render(&topo, solid));
+}
+
+/// The mean of a smooth `2π`-periodic function: the trapezoid rule, which
+/// converges geometrically on such integrands, at 4096 points.
+fn periodic_mean(f: impl Fn(f64) -> f64) -> f64 {
+    let n = 4096_u32;
+    (0..n)
+        .map(|k| f(TAU * f64::from(k) / f64::from(n)))
+        .sum::<f64>()
+        / f64::from(n)
+}
+
+/// `[∬ dθ dh, ∬ cos θ dθ dh]` over a cylinder face in the chart `(θ, h)`
+/// that `chart` reads off a model point, by Green's theorem
+/// (`∬ g(θ) dθ dh = −∮ h g(θ) dθ`) on its stored trims, each edge sampled at
+/// 20 000 chords. Signs follow the area's, whichever way the wires run.
+fn chart_moments(topo: &Topology, face: FaceId, chart: impl Fn(Point3) -> (f64, f64)) -> [f64; 2] {
+    let n = 20_000_u32;
+    let face = topo.face(face).unwrap();
+    let mut sums = [0.0_f64; 2];
+    for wire in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+        for oriented in topo.wire(wire).unwrap().edges() {
+            let edge = topo.edge(oriented.edge()).unwrap();
+            let (t0, t1) = edge.strict_domain().unwrap();
+            let (start, end) = (
+                topo.vertex(edge.start()).unwrap().point(),
+                topo.vertex(edge.end()).unwrap().point(),
+            );
+            let mut points: Vec<(f64, f64)> = (0..=n)
+                .map(|k| {
+                    let t = (t1 - t0).mul_add(f64::from(k) / f64::from(n), t0);
+                    chart(edge.curve().evaluate_with_endpoints(t, start, end))
+                })
+                .collect();
+            if !oriented.is_forward() {
+                points.reverse();
+            }
+            for pair in points.windows(2) {
+                let ((a, ha), (b, hb)) = (pair[0], pair[1]);
+                let step = (b - a + PI).rem_euclid(TAU) - PI;
+                let h = 0.5 * (ha + hb);
+                sums[0] -= h * step;
+                sums[1] -= h * 0.5f64.mul_add(step, a).cos() * step;
+            }
+        }
+    }
+    let sign = sums[0].signum();
+    [sums[0] * sign, sums[1] * sign]
+}
+
+/// The fixed rule and the area-only rule both read the wall `face` at its
+/// independent `area`, and the fixed rule its `volume` term about the
+/// origin, at orders 1, 5 and 8, to `relative` of the area.
+fn assert_wall_reads(topo: &Topology, face: FaceId, area: f64, volume: f64, relative: f64) {
+    for order in [1, 5, 8] {
+        let wall =
+            integrate_face_fixed_about(topo, face, order, Point3::new(0.0, 0.0, 0.0)).unwrap();
+        let area_only = integrate_face_area(topo, face, order).unwrap();
+        let tolerance = relative * area;
+        assert!(
+            (wall.area - area).abs() < tolerance,
+            "order {order}: {} vs {area}",
+            wall.area
+        );
+        assert!(
+            (area_only - area).abs() < tolerance,
+            "order {order}: area-only {area_only} vs {area}"
+        );
+        assert!(
+            (wall.volume - volume).abs() < tolerance,
+            "order {order}: {} vs {volume}",
+            wall.volume
+        );
+    }
 }
 
 /// A frustum with an off-axis bore through its lateral wall.
@@ -263,7 +361,9 @@ fn cross_drilled_shaft_integrals_are_pinned() {
 /// `r = 4 − z/3` and `k = √(10)/3`, integrated by Simpson's rule in `φ`
 /// (`z = 3 + 0.8 sin φ`) to 114.937_419_762_766. On this cone `P·n` is the
 /// constant `4/k`, so the wall's volume term is `4A/(3k)`. The previous
-/// sampled reading was 1.9e-4 high.
+/// sampled reading was 1.9e-4 high, and the area-only rule kept it until it
+/// read fitted cone and cylinder trims with their moments; both walls are now
+/// checked against independent integrals through both rules.
 #[test]
 fn drilled_cone_frustum_integrals_are_pinned() {
     let mut topo = Topology::new();
@@ -279,20 +379,40 @@ fn drilled_cone_frustum_integrals_are_pinned() {
     let solid = boolean(&mut topo, BooleanOp::Cut, frustum, tool).unwrap();
     let reference_area = 114.937_419_762_766_f64;
     let k = 10.0_f64.sqrt() / 3.0;
+    // The same reference again by the periodic trapezoid rule: with
+    // `z = 3 + 0.8 sin φ` the patch integrand is even in `cos φ`, so its half
+    // period is half the whole one.
+    let patches = periodic_mean(|phi| {
+        let r = 4.0 - 0.8f64.mul_add(phi.sin(), 3.0) / 3.0;
+        4.0 * k * r * (0.8 * phi.cos() / r).asin() * 0.8 * phi.cos()
+    }) * PI;
+    let cone_area = 6.0f64.mul_add(PI * 40.0_f64.sqrt(), -patches);
+    assert!((cone_area - reference_area).abs() < 1e-9, "{cone_area}");
+    // The bore wall `(x, 0.8 sin φ, 3 + 0.8 cos φ)` spans `|x| ≤ √(r² − y²)`
+    // inside the cone; its normal points at the bore's axis, so `P·n` about
+    // the origin is `−(0.8 + 3 cos φ)`.
+    let chord = |phi: f64| {
+        let r = 4.0 - 0.8f64.mul_add(phi.cos(), 3.0) / 3.0;
+        2.0 * r.mul_add(r, -(0.8 * phi.sin()).powi(2)).sqrt()
+    };
+    let bore_area = periodic_mean(|phi| 0.8 * chord(phi)) * TAU;
+    let bore_volume =
+        -periodic_mean(|phi| 0.8 * chord(phi) * 3.0f64.mul_add(phi.cos(), 0.8) / 3.0) * TAU;
     let mut walls = 0;
     for id in solid_faces(&topo, solid).unwrap() {
-        if matches!(topo.face(id).unwrap().surface(), FaceSurface::Cone(_)) {
-            walls += 1;
-            for order in [1, 5, 8] {
-                let wall = integrate_face_fixed_about(&topo, id, order, Point3::new(0.0, 0.0, 0.0))
-                    .unwrap();
-                assert!((wall.area - reference_area).abs() < 1e-8, "{}", wall.area);
-                let volume = 4.0 * reference_area / (3.0 * k);
-                assert!((wall.volume - volume).abs() < 1e-8, "{}", wall.volume);
+        match topo.face(id).unwrap().surface() {
+            FaceSurface::Cone(_) => {
+                walls += 1;
+                assert_wall_reads(&topo, id, cone_area, 4.0 * cone_area / (3.0 * k), 1e-10);
             }
+            FaceSurface::Cylinder(_) => {
+                walls += 1;
+                assert_wall_reads(&topo, id, bore_area, bore_volume, 1e-10);
+            }
+            _ => {}
         }
     }
-    assert_eq!(walls, 1);
+    assert_eq!(walls, 2);
     assert_golden("drilled_cone_frustum.golden", &render(&topo, solid));
 }
 
