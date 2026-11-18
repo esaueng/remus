@@ -1693,8 +1693,9 @@ impl RemusKernel {
 
     // ── Exact Sweep ───────────────────────────────────────────────
 
-    /// Sweep a planar face exactly along a tangent-continuous chain of line
-    /// and circular-arc edges.
+    /// Sweep a planar face exactly along a chain of line and circular-arc
+    /// edges, tangent-continuous except at corners between two straight runs,
+    /// which are mitred.
     ///
     /// The profile stays where it is and is carried by the path's rigid
     /// motions (a line translates it, an arc turns it about the arc's axis),
@@ -1707,11 +1708,11 @@ impl RemusKernel {
     /// # Errors
     ///
     /// Returns an error for an empty or broken chain, a path edge that is not
-    /// a line or circular arc, a corner that is not tangent-continuous, a
-    /// non-planar profile, a profile the motion does not cross transversally
-    /// (it touches an arc's axis or lies along the path), or a chain that
-    /// passes closer to itself than the profile's reach. The session is left
-    /// unchanged.
+    /// a line or circular arc, a corner next to an arc, a corner within about
+    /// 0.1° of turning straight back, a non-planar profile, a profile the
+    /// motion does not cross transversally (it touches an arc's axis or lies
+    /// along the path), a run too short for its mitres, or a swept body that
+    /// could meet itself. The session is left unchanged.
     #[wasm_bindgen(js_name = "sweepExact")]
     #[allow(clippy::needless_pass_by_value)]
     pub fn sweep_exact(&mut self, face: u32, edge_handles: Vec<u32>) -> Result<u32, JsError> {

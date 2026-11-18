@@ -26,13 +26,25 @@
 //! ## Refusals
 //!
 //! A path edge that is not a line or a circular arc, a chain whose edges do
-//! not meet end to end, a corner where the chain is not tangent-continuous, a
-//! non-planar profile, a profile the motion does not cross transversally (it
-//! would fold through itself: the profile touches or crosses an arc's axis,
-//! or lies along a line), a closed chain that does not bring the profile back
-//! to its start, and a chain whose non-adjacent segments pass closer than the
-//! profile's reach (the swept body could meet itself). Every refusal leaves
-//! the topology unchanged.
+//! not meet end to end, a corner next to an arc (only a corner between two
+//! straight runs is mitred), a corner within about 0.1° of turning straight
+//! back (its mitre is too ill-conditioned), a non-planar profile, a profile
+//! the motion does not cross transversally (it would fold through itself:
+//! the profile touches or crosses an arc's axis, or lies along a line), a run
+//! too short for its mitres, a closed chain that does not bring the profile
+//! back to its start, and a swept body that could meet itself. Every refusal
+//! leaves the topology unchanged.
+//!
+//! ## Self-clearance
+//!
+//! The body must not meet itself, and that is certified rather than
+//! sampled. Bounds over the profile are taken on its boundary pieces in
+//! closed form (circle and ellipse arcs) or by their control points. Each
+//! run's centre line is extended over every ruling its mitres leave, an arc
+//! of more than a half turn is halved, and consecutive turns about one axis
+//! form one rotation. Neighbouring pieces must lie on either side of their
+//! joint's section or mitre plane; every other pair must stay twice the
+//! profile's reach apart.
 
 use std::f64::consts::FRAC_PI_2;
 
@@ -53,15 +65,20 @@ use remus_topology::vertex::{Vertex, VertexId};
 use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
 use crate::OperationsError;
-use crate::helix::in_place::{Loop, is_ccw, read_profile_loop};
+use crate::helix::in_place::{Loop, Piece, is_ccw, read_profile_loop};
 
 /// Largest angle between the incoming and outgoing tangents at a joint that
 /// still counts as tangent-continuous, in radians.
 const G1_ANGLE_TOLERANCE: f64 = 1e-6;
 
-/// The sharpest corner a mitre takes, in radians (175°): beyond it the
-/// bisector plane runs almost along both runs.
-const MAX_MITRE_TURN: f64 = 175.0 * std::f64::consts::PI / 180.0;
+/// The smallest `cos(φ/2)` a mitre takes, for a corner turning by `φ`
+/// (about 179.885°). A mitre projects each section along its run onto the
+/// bisector plane, which stretches it by `1 / cos(φ/2)`; below this floor
+/// that stretch amplifies rounding past the linear tolerance at the scales
+/// the kernel models. It is a conditioning floor only: whether a sharp corner
+/// folds the body through itself is decided by the certified run-length and
+/// clearance checks in [`sweep_exact`], not by the angle.
+const MIN_MITRE_COSINE: f64 = 1e-3;
 
 /// Bounds on the points per arc in the self-clearance check.
 const CLEARANCE_POINTS: (usize, usize) = (16, 4096);
@@ -119,6 +136,15 @@ impl Rigid {
 
     fn point(&self, p: Point3) -> Point3 {
         to_point(self.vec(to_vec(p)) + self.translation)
+    }
+
+    /// `Rᵀ·g`, so that `g·(R·p + t) = (Rᵀ·g)·p + g·t`.
+    fn transpose_vec(&self, g: Vec3) -> Vec3 {
+        Vec3::new(
+            self.columns[0].dot(g),
+            self.columns[1].dot(g),
+            self.columns[2].dot(g),
+        )
     }
 
     /// `self` after `first`: `p ↦ self(first(p))`.
@@ -640,10 +666,11 @@ fn chain_joints(chain: &[Segment], closed: bool) -> Result<Vec<Joint>, Operation
                 angle.to_degrees()
             )));
         }
-        if angle >= MAX_MITRE_TURN {
+        // `|t_in + t_out| = 2 cos(φ/2)` for unit tangents.
+        if 0.5 * (incoming + outgoing).length() < MIN_MITRE_COSINE {
             return Err(unsupported(format!(
                 "the sweep path turns back on itself at joint {i} ({:.4}°); a corner that sharp \
-                 has no mitre",
+                 has no well-conditioned mitre",
                 angle.to_degrees()
             )));
         }
@@ -910,27 +937,396 @@ fn crossing_sign(
     }
 }
 
-/// Refuse a chain whose non-adjacent segments come within twice the
-/// profile's reach of each other, where the swept body could meet itself.
-/// The distance used is a certified lower bound, never a sampled estimate.
+/// Rounding slack for a bound summed from terms of magnitude `size`.
+fn rounding(size: f64) -> f64 {
+    64.0 * f64::EPSILON * size
+}
+
+/// The largest value of `base + a cos t + b sin t` for `t` in `[lo, hi]`.
+fn trig_sup(base: f64, a: f64, b: f64, lo: f64, hi: f64) -> f64 {
+    let at = |t: f64| b.mul_add(t.sin(), a.mul_add(t.cos(), base));
+    let peak = base + a.hypot(b);
+    if hi - lo >= std::f64::consts::TAU {
+        return peak;
+    }
+    // The first angle at or after `lo` where the sinusoid peaks.
+    let crest = b.atan2(a);
+    let crest = crest + ((lo - crest) / std::f64::consts::TAU).ceil() * std::f64::consts::TAU;
+    if crest <= hi {
+        peak
+    } else {
+        at(lo).max(at(hi))
+    }
+}
+
+/// An upper bound on `g·p` over the points `p` of one profile piece: exact
+/// for a circle or ellipse arc, the control points otherwise (a NURBS curve
+/// with positive weights lies in their convex hull, so an affine function
+/// peaks on one of them).
+fn piece_sup(piece: &Piece, g: Vec3) -> f64 {
+    let span = piece.trim.map(|(a, b)| (a.min(b), a.max(b)));
+    let conic = match (&piece.cap, span) {
+        (EdgeCurve::Circle(c), Some((lo, hi))) => Some((
+            c.center(),
+            c.u_axis() * c.radius(),
+            c.v_axis() * c.radius(),
+            lo,
+            hi,
+        )),
+        (EdgeCurve::Ellipse(e), Some((lo, hi))) => Some((
+            e.center(),
+            e.u_axis() * e.semi_major(),
+            e.v_axis() * e.semi_minor(),
+            lo,
+            hi,
+        )),
+        _ => None,
+    };
+    if let Some((center, u, v, lo, hi)) = conic {
+        let base = g.dot(to_vec(center));
+        let size = g.length() * (to_vec(center).length() + u.length() + v.length());
+        return trig_sup(base, g.dot(u), g.dot(v), lo, hi) + rounding(size);
+    }
+    piece
+        .nurbs
+        .control_points()
+        .iter()
+        .map(|&p| g.dot(to_vec(p)) + rounding(g.length() * to_vec(p).length()))
+        .fold(f64::NEG_INFINITY, f64::max)
+}
+
+/// An upper bound on `g·x` over the boundary of the profile placed by
+/// `placement`: `g·(R·p + t) = (Rᵀ·g)·p + g·t`. An affine function peaks on
+/// a region's boundary, so this bounds the whole profile.
+fn profile_sup(loops: &[Loop], placement: &Rigid, g: Vec3) -> f64 {
+    let local = placement.transpose_vec(g);
+    let on_profile = loops
+        .iter()
+        .flat_map(|lp| &lp.pieces)
+        .map(|piece| piece_sup(piece, local))
+        .fold(f64::NEG_INFINITY, f64::max);
+    let shift = g.dot(placement.translation);
+    on_profile + shift + rounding(g.length() * placement.translation.length())
+}
+
+/// A lower bound on `g·x` over the placed profile.
+fn profile_inf(loops: &[Loop], placement: &Rigid, g: Vec3) -> f64 {
+    -profile_sup(loops, placement, -g)
+}
+
+/// An upper bound on the distance from `q` to the profile in its own
+/// position: `|p − q|` is convex, so it peaks on the boundary. A circle or
+/// ellipse arc is bounded in closed form, `|p − q|² = |c − q|² + |p − c|² +
+/// 2 (c − q)·(p − c)` with `|p − c|` at most the major semi-axis; any other
+/// piece by its control points.
+fn profile_reach(loops: &[Loop], q: Point3) -> f64 {
+    let piece_reach = |piece: &Piece| -> f64 {
+        let conic = match &piece.cap {
+            EdgeCurve::Circle(c) if piece.trim.is_some() => Some((c.center(), c.radius())),
+            EdgeCurve::Ellipse(e) if piece.trim.is_some() => {
+                Some((e.center(), e.semi_major().max(e.semi_minor())))
+            }
+            _ => None,
+        };
+        if let Some((center, radius)) = conic {
+            let g = center - q;
+            let across = piece_sup(piece, g) - g.dot(to_vec(center));
+            let squared = 2.0f64.mul_add(across, radius.mul_add(radius, g.dot(g)));
+            return squared.max(0.0).sqrt();
+        }
+        piece
+            .nurbs
+            .control_points()
+            .iter()
+            .map(|&p| (p - q).length())
+            .fold(0.0, f64::max)
+    };
+    let reach = loops
+        .iter()
+        .flat_map(|lp| &lp.pieces)
+        .map(piece_reach)
+        .fold(0.0, f64::max);
+    reach + rounding(reach + to_vec(q).length())
+}
+
+/// One stretch of the swept body for the self-clearance certificate: a
+/// straight run, its centre line extended over every ruling its mitres
+/// leave, or an arc of at most a half turn.
+#[derive(Debug, Clone, Copy)]
+struct Stretch {
+    /// The chain segment it comes from.
+    segment: usize,
+    /// Consecutive stretches turning about one axis in one sense share a
+    /// group: together they are one rotation of the profile.
+    group: usize,
+    path: Segment,
+    /// The profile's placement at the stretch's start.
+    placement: Rigid,
+}
+
+/// Two arcs turning about the same axis line in the same sense.
+fn co_rotational(a: &Segment, b: &Segment, margin: f64) -> bool {
+    match (a.motion, b.motion) {
+        (
+            Motion::Rotate {
+                origin: o1,
+                axis: a1,
+                ..
+            },
+            Motion::Rotate {
+                origin: o2,
+                axis: a2,
+                ..
+            },
+        ) => {
+            let d = o2 - o1;
+            (a1 - a2).length() <= G1_ANGLE_TOLERANCE && (d - a1 * d.dot(a1)).length() <= margin
+        }
+        _ => false,
+    }
+}
+
+/// How a body meets the plane of one of its end sections.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Side {
+    /// On one side of the plane, meeting it in that section alone.
+    Strict,
+    /// On one side, within the margin; it may also touch the plane far from
+    /// the section (an arc of a half turn lays its other end section in it).
+    Weak,
+}
+
+/// Which side of its section plane the body of an arc lies on.
+///
+/// The section is the profile placed by `placement`, its plane's `normal`
+/// pointing the way the profile moves. Turning a section point `x` by `α`
+/// about `axis` through `origin` moves it off the plane by
+/// `f(α) = A (cos α − 1) + B sin α = 2 sin(α/2) (B cos(α/2) − A sin(α/2))`,
+/// with `B = n·(axis × r) > 0` by transversality (`r` the radial offset).
+/// `B cos β − A sin β` is a sinusoid with zeros π apart that starts
+/// positive, so for a turn of at most π it stays non-negative over
+/// `[0, angle/2]` exactly when it is at the end: `f ≥ 0` over the whole turn.
+/// That end value is `(x − origin)·(m × axis)` with `m` the normal turned by
+/// `−angle/2`: affine in `x`, so its minimum over the profile is bounded on
+/// the boundary.
+#[allow(clippy::too_many_arguments)]
+fn arc_side(
+    loops: &[Loop],
+    placement: &Rigid,
+    normal: Vec3,
+    origin: Point3,
+    axis: Vec3,
+    angle: f64,
+    margin: f64,
+    segment: usize,
+) -> Result<Side, OperationsError> {
+    let w = rotate_vec(normal, axis, -0.5 * angle).cross(axis);
+    let low = profile_inf(loops, placement, w) - to_vec(origin).dot(w);
+    if low > margin {
+        Ok(Side::Strict)
+    } else if low >= -margin {
+        Ok(Side::Weak)
+    } else {
+        Err(invalid(format!(
+            "the sweep profile, turned along path arc {segment}, swings back across the plane of \
+             its section at a joint: the swept body could meet itself (square the profile to the \
+             path or shorten the arc)"
+        )))
+    }
+}
+
+/// The certified pieces the self-clearance check works on: every line
+/// extended over `extents` (along its unit direction from its start), every
+/// arc of more than a half turn halved, and consecutive turns about one axis
+/// grouped.
+fn stretches(
+    chain: &[Segment],
+    closed: bool,
+    placements: &[Rigid],
+    extents: &[(f64, f64)],
+    margin: f64,
+) -> Result<Vec<Stretch>, OperationsError> {
+    let mut out: Vec<Stretch> = Vec::with_capacity(2 * chain.len());
+    for (k, segment) in chain.iter().enumerate() {
+        let placement = placements[k];
+        match segment.motion {
+            Motion::Translate(d) => {
+                let t = d.normalize()?;
+                let (lo, hi) = extents[k];
+                let (start, end) = (segment.start + t * lo, segment.start + t * hi);
+                out.push(Stretch {
+                    segment: k,
+                    group: 0,
+                    path: Segment {
+                        start,
+                        end,
+                        start_tangent: t,
+                        end_tangent: t,
+                        motion: Motion::Translate(end - start),
+                    },
+                    placement,
+                });
+            }
+            Motion::Rotate { angle, .. } => {
+                let halves = (angle > std::f64::consts::PI + Tolerance::new().angular)
+                    .then(|| segment.halves())
+                    .flatten();
+                if let Some((first, second)) = halves {
+                    let middle = first.motion.rigid().after(&placement);
+                    for (path, placement) in [(first, placement), (second, middle)] {
+                        out.push(Stretch {
+                            segment: k,
+                            group: 0,
+                            path,
+                            placement,
+                        });
+                    }
+                } else {
+                    out.push(Stretch {
+                        segment: k,
+                        group: 0,
+                        path: *segment,
+                        placement,
+                    });
+                }
+            }
+        }
+    }
+    let turn = |s: &Stretch| match s.path.motion {
+        Motion::Rotate { angle, .. } => angle,
+        Motion::Translate(_) => 0.0,
+    };
+    let mut angles: Vec<f64> = Vec::with_capacity(out.len());
+    for i in 0..out.len() {
+        if i > 0 && co_rotational(&out[i - 1].path, &out[i].path, margin) {
+            out[i].group = out[i - 1].group;
+            let last = angles.len() - 1;
+            angles[last] += turn(&out[i]);
+        } else {
+            out[i].group = angles.len();
+            angles.push(turn(&out[i]));
+        }
+    }
+    let m = out.len();
+    if closed && m > 1 && out[m - 1].group != out[0].group {
+        let (tail, head) = (out[m - 1].group, out[0].group);
+        if co_rotational(&out[m - 1].path, &out[0].path, margin) {
+            for s in out.iter_mut().filter(|s| s.group == tail) {
+                s.group = head;
+            }
+            angles[head] += angles[tail];
+            angles[tail] = 0.0;
+        }
+    }
+    if let Some(i) = angles
+        .iter()
+        .position(|&a| a > std::f64::consts::TAU + Tolerance::new().angular)
+    {
+        let segment = out.iter().find(|s| s.group == i).map_or(0, |s| s.segment);
+        return Err(invalid(format!(
+            "the sweep path turns more than once about the axis of path arc {segment}: the swept \
+             body would meet itself"
+        )));
+    }
+    Ok(out)
+}
+
+/// Refuse a chain whose swept body could meet itself.
+///
+/// The body is cut into [`stretches`]. Within one group it is a single turn
+/// of a transversal profile by at most a full turn, which is embedded.
+/// Consecutive stretches of different groups share their joint section and
+/// are separated by its plane: a run's rulings all end (or start) on it, a
+/// mitred run's on the bisector plane, and an arc is certified by
+/// [`arc_side`]; where both sides only touch the plane, their far ends must
+/// clear each other. Every other pair must keep twice the profile's reach
+/// apart, measured with a certified lower bound, never a sampled estimate.
+#[allow(clippy::too_many_arguments)]
 fn check_clearance(
     chain: &[Segment],
     closed: bool,
+    loops: &[Loop],
+    placements: &[Rigid],
+    extents: &[(f64, f64)],
+    normal: Vec3,
     reach: f64,
     margin: f64,
 ) -> Result<(), OperationsError> {
-    let n = chain.len();
+    let stretches = stretches(chain, closed, placements, extents, margin)?;
+    let m = stretches.len();
     let limit = 2.0 * reach + margin;
-    for i in 0..n {
-        for j in (i + 2)..n {
-            if closed && i == 0 && j == n - 1 {
+    let mut joints: Vec<(usize, usize)> = (1..m).map(|j| (j - 1, j)).collect();
+    if closed && m > 1 {
+        joints.push((m - 1, 0));
+    }
+    for &(u, v) in &joints {
+        let (before, after) = (&stretches[u], &stretches[v]);
+        if before.group == after.group {
+            continue;
+        }
+        let incoming = match before.path.motion {
+            Motion::Translate(_) => Side::Strict,
+            Motion::Rotate {
+                origin,
+                axis,
+                angle,
+            } => {
+                let end = before.path.motion.rigid().after(&before.placement);
+                arc_side(
+                    loops,
+                    &end,
+                    -end.vec(normal),
+                    origin,
+                    -axis,
+                    angle,
+                    margin,
+                    before.segment,
+                )?
+            }
+        };
+        let outgoing = match after.path.motion {
+            Motion::Translate(_) => Side::Strict,
+            Motion::Rotate {
+                origin,
+                axis,
+                angle,
+            } => arc_side(
+                loops,
+                &after.placement,
+                after.placement.vec(normal),
+                origin,
+                axis,
+                angle,
+                margin,
+                after.segment,
+            )?,
+        };
+        if incoming == Side::Weak && outgoing == Side::Weak {
+            let apart = (before.path.start - after.path.end).length();
+            if apart <= limit {
+                return Err(invalid(format!(
+                    "path arcs {} and {} both end a half turn from their joint, {apart} apart, \
+                     within twice the sweep profile's reach ({reach}): the swept body could meet \
+                     itself",
+                    before.segment, after.segment
+                )));
+            }
+        }
+    }
+    for i in 0..m {
+        for j in (i + 1)..m {
+            let (a, b) = (&stretches[i], &stretches[j]);
+            let neighbours = j == i + 1 || (closed && i == 0 && j == m - 1);
+            if a.group == b.group || neighbours {
                 continue;
             }
-            let closest = distance_lower_bound(&chain[i], &chain[j], reach);
+            let closest = distance_lower_bound(&a.path, &b.path, reach);
             if closest <= limit {
                 return Err(invalid(format!(
-                    "path segments {i} and {j} pass within {} of each other, within twice the \
+                    "path segments {} and {} pass within {} of each other, within twice the \
                      sweep profile's reach ({reach}): the swept body could meet itself",
+                    a.segment,
+                    b.segment,
                     closest.max(0.0)
                 )));
             }
@@ -1073,11 +1469,13 @@ struct Section {
 ///
 /// [`OperationsError::InvalidInput`] for an empty or broken chain, a
 /// zero-length edge, a non-planar profile, a profile the motion does not cross
-/// transversally, a closed chain that does not bring the profile back to its
-/// start, or segments that pass closer than the profile's reach.
+/// transversally, a run too short for its mitres, a closed chain that does
+/// not bring the profile back to its start, or a body that could meet itself
+/// (see [Self-clearance](self#self-clearance)).
 /// [`OperationsError::Unsupported`] for a path edge that is not a line or a
-/// circular arc, and for a corner that is not tangent-continuous. Every error
-/// leaves the topology unchanged.
+/// circular arc, a corner next to an arc, and a corner too sharp to mitre
+/// well-conditioned (`cos(φ/2) < 1e-3`, about 179.885°). Every error leaves
+/// the topology unchanged.
 pub fn sweep_exact(
     topo: &mut Topology,
     profile: FaceId,
@@ -1119,10 +1517,10 @@ fn sweep_exact_impl(
 
     let samples: Vec<Vec<Point3>> = loops.iter().map(Loop::samples).collect();
     let all: Vec<Point3> = samples.iter().flatten().copied().collect();
-    let reach = all
-        .iter()
-        .map(|&p| (p - chain[0].start).length())
-        .fold(0.0, f64::max);
+    // Every placement carries the path's start point to the path point it
+    // stands on, so no profile point is farther than this from its own path
+    // point anywhere along the sweep.
+    let reach = profile_reach(&loops, chain[0].start);
     let scale = all
         .iter()
         .map(|&p| to_vec(p).length())
@@ -1196,27 +1594,41 @@ fn sweep_exact_impl(
         }
     }
     let sigma = sigma.unwrap_or(1.0);
-    // A mitre must leave every profile point some run: past it the two
-    // corners' planes cross and the run would fold through itself.
+    // A run's ruling through section point `x` runs along it from `from(x)`
+    // to `to(x)`: 0 and the run's length, or the reach to a mitre plane. Both
+    // are affine in `x`, so their extremes over the profile are certified on
+    // its boundary. A mitre must leave every profile point some run (past it
+    // the two corners' planes cross and the run would fold through itself),
+    // and `extents[k]` spans every ruling, for the clearance check.
+    let mut extents = vec![(0.0, 0.0); n];
     for k in 0..n {
-        let (start, end) = (start_projection(k), end_projection(k));
-        if start.is_none() && end.is_none() {
-            continue;
-        }
         let Motion::Translate(d) = chain[k].motion else {
             continue;
         };
-        for &p in &all {
-            let x = placements[k].point(p);
-            let from = start.map_or(0.0, |projection| projection.reach(x));
-            let to = end.map_or_else(|| d.length(), |projection| projection.reach(x));
-            if to - from <= margin {
+        let length = d.length();
+        // `reach(x) = (point − x)·n / (t·n) = offset − x·slope`.
+        let affine = |projection: Option<Projection>, otherwise: f64| {
+            projection.map_or((otherwise, Vec3::new(0.0, 0.0, 0.0)), |p| {
+                let slope = p.normal * (1.0 / p.direction.dot(p.normal));
+                (to_vec(p.point).dot(slope), slope)
+            })
+        };
+        let (start, end) = (start_projection(k), end_projection(k));
+        let (from_offset, from_slope) = affine(start, 0.0);
+        let (to_offset, to_slope) = affine(end, length);
+        if start.is_some() || end.is_some() {
+            let shortest = (to_offset - from_offset)
+                - profile_sup(&loops, &placements[k], to_slope - from_slope);
+            if shortest <= margin {
                 return Err(invalid(format!(
                     "path segment {k} is too short for its mitred corners: the profile would \
                      fold through itself (lengthen the run or shrink the profile)"
                 )));
             }
         }
+        let lowest = from_offset - profile_sup(&loops, &placements[k], from_slope);
+        let highest = to_offset - profile_inf(&loops, &placements[k], to_slope);
+        extents[k] = (lowest.min(0.0), highest.max(length));
     }
     if closed {
         let mut last = placements[n];
@@ -1234,7 +1646,16 @@ fn sweep_exact_impl(
             )));
         }
     }
-    check_clearance(&chain, closed, reach, margin)?;
+    check_clearance(
+        &chain,
+        closed,
+        &loops,
+        &placements,
+        &extents,
+        normal * sigma,
+        reach,
+        margin,
+    )?;
 
     // Sections 0..=n; a closed chain's last section is its first.
     let section_count = if closed { chain.len() } else { chain.len() + 1 };
