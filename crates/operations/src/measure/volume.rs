@@ -1105,6 +1105,13 @@ fn surface_gap(
             remus_math::nurbs::projection::project_point_to_surface_with_grid(nurbs, p, 1e-9, grid)
                 .map_or(f64::INFINITY, |projection| projection.distance)
         }),
+        // Below its apex a cone's own chart reads a point back mirrored
+        // across the axis; the reversed-axis cone charts it at `v > 0`.
+        FaceSurface::Cone(cone) if cone.project_point(p).1 < 0.0 => {
+            let flipped = cone.with_reversed_axis();
+            let (u, v) = flipped.project_point(p);
+            (p - flipped.evaluate(u, v)).length()
+        }
         FaceSurface::Cylinder(_)
         | FaceSurface::Cone(_)
         | FaceSurface::Sphere(_)
