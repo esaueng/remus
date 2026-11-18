@@ -783,6 +783,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Saved-shape analytic line/circle and plane/cylinder carriers, rigid location words, bounded placed occurrences, circular caps and cylindrical seam bands | `brep/reader/carriers.rs`, `brep/reader/locations.rs`, `brep/reader/placed.rs`, `brep/reader/curved.rs` |
 | STEP read/write | `step/reader.rs`, `step/writer.rs` |
 | STEP product structure: product-occurrence tree, every placed occurrence as its own exact root, `STYLED_ITEM` solid and face colours (`read_step_structure`, translator `importStepStructure`) | `step/reader/structure.rs` |
+| Product-name storage and expansion budget regressions (tests) | `step/reader/structure/name_storage_tests.rs` |
 | Exact IGES 5.3 B-rep (type 186) read and write: carriers kept exact, read through the STEP body reader (`read_iges_brep`, `write_iges_brep`) | `iges/brep.rs` |
 | Verbatim STEP string-decoder oracle, deterministic fuzz, linear-work guards and hostile-name imports (tests) | `step/reader/directive_oracle_tests.rs` |
 | Relative planar-bound sampling: loops whose areas the coarser chords cannot order are flagged for re-sampling at the absolute deflection (tests) | `step/reader/bound_sampling_tests.rs` |
