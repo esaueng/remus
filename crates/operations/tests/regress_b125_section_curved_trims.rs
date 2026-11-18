@@ -10,10 +10,11 @@
 //!
 //! Oracles are closed-form areas: a disc, an ellipse (the oblique cone cut, a
 //! focal conic `r = ℓ / (1 − e cos θ)` in projection), and a circular segment.
-//! The section polylines keep the 64-chord sampling of the carrier circle, so
-//! the areas carry its chord deficit, at most `(2π²/3)/64² ≈ 1.6e-3` relative;
-//! the bound below is twice that. `classify_point` probes check that a
-//! section region lies in the material and that a missed plane really misses.
+//! The sections are their circles and ellipses themselves (they were 64-chord
+//! polylines of the carrier, short of these areas by up to `(2π²/3)/64² ≈
+//! 1.6e-3` relative), so the areas hold to rounding. `classify_point` probes
+//! check that a section region lies in the material and that a missed plane
+//! really misses.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::f64::consts::{PI, TAU};
@@ -24,6 +25,7 @@ use remus_math::surfaces::SphericalSurface;
 use remus_math::vec::{Point3, Vec3};
 use remus_operations::boolean::{BooleanOp, boolean};
 use remus_operations::classify::{PointClassification, classify_point};
+use remus_operations::loft::{loft, loft_smooth};
 use remus_operations::measure::{face_area, solid_volume};
 use remus_operations::primitives::{make_box, make_cone, make_torus};
 use remus_operations::revolve::revolve;
@@ -38,8 +40,10 @@ use remus_topology::solid::{Solid, SolidId};
 use remus_topology::vertex::Vertex;
 use remus_topology::wire::{OrientedEdge, Wire};
 
-/// Twice the 64-chord area deficit of the sampled section loops.
-const CHORD_BOUND: f64 = 3.3e-3;
+/// The relative error allowed against a closed-form area: the sections here
+/// are exact arcs, measured at 2e-15 to 9e-15. (It was 3.3e-3, twice the
+/// area deficit of the 64-chord loops the sections used to be.)
+const AREA_BOUND: f64 = 1e-12;
 
 fn section_area(topo: &mut Topology, solid: SolidId, point: Point3, normal: Vec3) -> f64 {
     let faces = section(topo, solid, point, normal).unwrap().faces;
@@ -52,7 +56,7 @@ fn section_area(topo: &mut Topology, solid: SolidId, point: Point3, normal: Vec3
 fn assert_area(area: f64, expected: f64, what: &str) {
     let rel = (area - expected).abs() / expected;
     assert!(
-        rel <= CHORD_BOUND,
+        rel <= AREA_BOUND,
         "{what}: section area {area}, closed form {expected} ({rel:e})"
     );
 }
@@ -61,6 +65,57 @@ fn assert_area(area: f64, expected: f64, what: &str) {
 /// sharing one closed rim circle.
 fn dome(topo: &mut Topology) -> SolidId {
     dome_above(topo, 0.5)
+}
+
+#[test]
+fn clipped_dome_sections_remain_loft_profiles() {
+    assert_dome_sections_loft(0.0, 0.2);
+}
+
+#[test]
+fn clipped_dome_loft_keeps_junctions_across_a_sampling_threshold() {
+    assert_dome_sections_loft(0.231_617_760_9, 0.233_617_760_9);
+}
+
+fn assert_dome_sections_loft(from: f64, to: f64) {
+    let mut topo = Topology::new();
+    let solid = dome(&mut topo);
+    let profiles = [from, f64::midpoint(from, to), to].map(|x| {
+        let faces = section(
+            &mut topo,
+            solid,
+            Point3::new(x, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap()
+        .faces;
+        assert_eq!(faces.len(), 1);
+        let wire = topo.face(faces[0]).unwrap().outer_wire();
+        let edges = topo.wire(wire).unwrap().edges();
+        assert_eq!(edges.len(), 2, "each section keeps its arc and chord");
+        assert!(
+            edges
+                .iter()
+                .any(|oe| matches!(topo.edge(oe.edge()).unwrap().curve(), EdgeCurve::Circle(_)))
+        );
+        faces[0]
+    });
+
+    let ruled = loft(&mut topo, &[profiles[0], profiles[2]]).unwrap();
+    let smooth = loft_smooth(&mut topo, &profiles).unwrap();
+
+    // The true circular-segment sections shrink over this interval. Bound
+    // the volume by their extreme areas, allowing for chordal sampling.
+    let section_area = |x: f64| {
+        let radius_sq = 1.0 - x * x;
+        radius_sq * (0.5 / radius_sq.sqrt()).acos() - 0.5 * (radius_sq - 0.25).sqrt()
+    };
+    for lofted in [ruled, smooth] {
+        let volume = solid_volume(&topo, lofted, 1e-4).unwrap();
+        let min = 0.99 * (to - from) * section_area(to);
+        let max = 1.01 * (to - from) * section_area(from);
+        assert!((min..=max).contains(&volume), "loft volume {volume}");
+    }
 }
 
 /// The unit sphere's cap above `z = cut`, as [`dome`].
@@ -170,15 +225,13 @@ fn b125_section_keeps_a_span_narrower_than_a_chord() {
         Vec3::new(0.0, 1.0, 0.0),
         Vec3::new(-0.28, 0.96, 0.0),
     ] {
-        // The strip ends on the rims' sampled 32-gons (the planar arm's
-        // `wire_polygon`), so it can fall short of the circle by their
-        // relative sagitta, 1 − cos(π/32) ≈ 4.8e-3, on top of the arcs' own
-        // 64-chord deficit.
+        // The strip's arcs end on the rims' exact crossings with the plane
+        // (not on their sampled 32-gons), so it is the strip itself.
         let area = section_area(&mut topo, solid, Point3::new(0.0, 0.0, 0.0), normal);
         let expected = segment(0.5) - segment(top);
         let rel = (area - expected).abs() / expected;
         assert!(
-            rel <= 1.0 - (PI / 32.0).cos() + 0.5 * CHORD_BOUND,
+            rel <= AREA_BOUND,
             "{normal:?}: section area {area}, closed form {expected} ({rel:e})"
         );
     }
@@ -464,13 +517,10 @@ fn b125_section_crosses_a_closed_rim_between_its_samples() {
         (extent - half_chord).abs() < 1e-9,
         "base reaches {extent}, the rim crosses at ±{half_chord}"
     );
-    // The circular segment, against its 64-chord sampling: its arc spans
-    // under two chords, so only a lower bound is meaningful.
+    // The circular segment itself: its arc is one edge between the rim's
+    // crossings (as chords it spanned under two, and fell short).
     let r = (1.0 - c * c).sqrt();
     let segment = r * r * (0.5 / r).acos() - 0.5 * (r * r - 0.25).sqrt();
     let area = face_area(&topo, faces[0], 1e-3).unwrap();
-    assert!(
-        area > 0.0 && area <= segment * (1.0 + 1e-9),
-        "{area} vs {segment}"
-    );
+    assert_area(area, segment, "narrow segment");
 }

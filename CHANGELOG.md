@@ -47,6 +47,32 @@ historical predecessor-line records, retained for provenance. The
 
 ### Fixed
 
+* **operations,wasm:** `section` keeps the closed-form curves of a cross
+  section (#1826). Every curved piece of a section was chorded into `Line`
+  edges, 64 or more to a circle or ellipse. An 80×40 plate with two r=3 holes cut at mid-thickness
+  came back as 4 + 64 + 64 lines and measured 3143.542127 for the analytic
+  3200 − 18π = 3143.451332, and a consumer that exports the section got
+  polygons where the part has holes. **Behavior change:** a plane cuts a
+  sphere in one `Circle` edge, a cylinder or cone (across every generator)
+  in one `Circle` or `Ellipse` edge, and a torus on its symmetry planes
+  (square to its axis, or through it) in `Circle` edges; a curve the face
+  holds whole is one closed edge on one vertex with the trim `[0, 2π]`, and
+  one the face's boundary clips is an arc whose trim is its parameter span.
+  `face_area` / `faceArea` of the section is then the analytic area, and
+  `getEdgeCurveType` reports `CIRCLE` / `ELLIPSE` where it reported 64
+  `LINE`s, so a consumer that counted line edges or pinned the polygon's
+  area sees different numbers. Inner wires are grouped by exact containment:
+  a ray from the hole is counted against the outline's own lines and arcs
+  (a wire of one closed circle has a single vertex), and is sent clear of
+  every vertex and tangent of the outline.
+  Still chorded, as `Line` edges that nothing marks as approximate: a torus
+  off its symmetry planes, a NURBS face, and the parabola and hyperbola
+  branches of a cone.
+  One wrong crossing went with it: a closed rim traversed backwards was
+  laid down ending, not starting, at its vertex, so the seam of a cone or
+  torus face was crossed one rim sample off and its section carried a dent
+  there (0.03 deep on a frustum of radius 7).
+
 * **algo,operations:** a region wrapped onto a cylinder or cone with
   curved edges can now be embossed onto or engraved into the body it was
   wrapped on (#1847 follow-up). The exact boolean refused every such pair:
