@@ -415,7 +415,66 @@ type Sweep = fn(&mut Topology) -> Result<SolidId, OperationsError>;
 
 #[test]
 fn refusals_are_typed_and_leave_the_topology_unchanged() {
-    let cases: [(&str, Sweep, bool, &str); 8] = [
+    let cases: [(&str, Sweep, bool, &str); 12] = [
+        (
+            "a corner too sharp to mitre",
+            |topo| {
+                let profile = circle_face(topo, p(-10.0, 0.0, 0.0), X, 0.001);
+                let turn = 179.95_f64.to_radians();
+                let path = [
+                    line(topo, p(-10.0, 0.0, 0.0), p(0.0, 0.0, 0.0)),
+                    line(
+                        topo,
+                        p(0.0, 0.0, 0.0),
+                        p(10.0 * turn.cos(), 10.0 * turn.sin(), 0.0),
+                    ),
+                ];
+                sweep_exact(topo, profile, &path)
+            },
+            false,
+            "well-conditioned mitre",
+        ),
+        (
+            "a mitre's tip into a later run",
+            |topo| {
+                let (profile, path) = mitre_tip_into_a_later_run(topo);
+                sweep_exact(topo, profile, &path)
+            },
+            true,
+            "meet itself",
+        ),
+        (
+            "a nearly full turn into a tangent line",
+            |topo| {
+                let (profile, path) = nearly_full_turn_then_line(topo);
+                sweep_exact(topo, profile, &path)
+            },
+            true,
+            "meet itself",
+        ),
+        (
+            "an oblique profile turned back into its own run",
+            |topo| {
+                // 340° about (10, 5): the arc ends at (8.29, 0.30, 0), inside
+                // the unit tube of the run it started from.
+                let tilt = 30.0_f64.to_radians();
+                let normal = Vec3::new(tilt.cos(), -tilt.sin(), 0.0);
+                let profile = circle_face(topo, p(0.0, 0.0, 0.0), normal, 1.0);
+                let path = [
+                    line(topo, p(0.0, 0.0, 0.0), p(10.0, 0.0, 0.0)),
+                    arc(
+                        topo,
+                        p(10.0, 5.0, 0.0),
+                        5.0,
+                        -FRAC_PI_2,
+                        250.0_f64.to_radians(),
+                    ),
+                ];
+                sweep_exact(topo, profile, &path)
+            },
+            true,
+            "meet itself",
+        ),
         (
             "edges that do not meet",
             |topo| {
@@ -682,4 +741,381 @@ fn grazing_crossing_lines_measure_zero_apart() {
         p(0.0, 5.0, 2.0),
     );
     assert!((skew - 2.0).abs() < 1e-12 && skew <= 2.0, "{skew}");
+}
+
+/// Five runs where the first corner turns 170°: the first run's mitre
+/// reaches 1.14 past the corner on its outer side, into the last run 1.0
+/// beyond it, though the runs' centre lines stay 1.0 apart. A thin tube, so
+/// twice its reach is 0.2.
+fn mitre_tip_into_a_later_run(topo: &mut Topology) -> (FaceId, Vec<EdgeId>) {
+    let profile = circle_face(topo, p(-20.0, 0.0, 0.0), X, 0.1);
+    let back = 10.0_f64.to_radians();
+    let b = p(-5.0 * back.cos(), 5.0 * back.sin(), 0.0);
+    let path = vec![
+        line(topo, p(-20.0, 0.0, 0.0), p(0.0, 0.0, 0.0)),
+        line(topo, p(0.0, 0.0, 0.0), b),
+        line(topo, b, p(b.x(), 5.0, 0.0)),
+        line(topo, p(b.x(), 5.0, 0.0), p(1.0, 5.0, 0.0)),
+        line(topo, p(1.0, 5.0, 0.0), p(1.0, -1.0, 0.0)),
+    ];
+    (profile, path)
+}
+
+/// A 350° arc of radius 10, then a tangent line: the line passes 0.15 from
+/// the arc's start, well inside the unit tube there.
+fn nearly_full_turn_then_line(topo: &mut Topology) -> (FaceId, Vec<EdgeId>) {
+    let profile = circle_face(topo, p(10.0, 0.0, 0.0), Y, 1.0);
+    let end = 350.0_f64.to_radians();
+    let turn = arc(topo, p(0.0, 0.0, 0.0), 10.0, 0.0, end);
+    let at = p(10.0 * end.cos(), 10.0 * end.sin(), 0.0);
+    let tangent = Vec3::new(-end.sin(), end.cos(), 0.0);
+    let lead = line(topo, at, at + tangent * 20.0);
+    (profile, vec![turn, lead])
+}
+
+/// The mitre tip that reached a later run used to build an overlapping
+/// body: its distance check measured the run's centre line only up to the
+/// corner, not over the rulings the mitre extends past it.
+#[test]
+fn a_mitre_tip_reaching_a_later_run_is_refused() {
+    let mut topo = Topology::new();
+    let (profile, path) = mitre_tip_into_a_later_run(&mut topo);
+    let slots = topo.allocated_slot_count();
+    let refused = sweep_exact(&mut topo, profile, &path);
+    assert!(
+        matches!(&refused, Err(OperationsError::InvalidInput { reason })
+            if reason.contains("segments 0 and 4") && reason.contains("meet itself")),
+        "{refused:?}"
+    );
+    assert_eq!(topo.allocated_slot_count(), slots);
+    // With the last run moved past the tip, by more than twice the reach, it
+    // builds.
+    let mut topo = Topology::new();
+    let (profile, mut path) = mitre_tip_into_a_later_run(&mut topo);
+    let b = topo
+        .vertex(topo.edge(path[2]).unwrap().end())
+        .unwrap()
+        .point();
+    path.truncate(3);
+    path.push(line(&mut topo, b, p(1.5, 5.0, 0.0)));
+    path.push(line(&mut topo, p(1.5, 5.0, 0.0), p(1.5, -1.0, 0.0)));
+    let solid = sweep_exact(&mut topo, profile, &path).unwrap();
+    assert_valid(&topo, solid, "five runs clear of the tip");
+}
+
+/// A turn of more than half a circle used to go unchecked against the
+/// segment after it; its first half is now held to the distance check.
+#[test]
+fn a_nearly_full_turn_into_a_tangent_line_is_refused() {
+    let mut topo = Topology::new();
+    let (profile, path) = nearly_full_turn_then_line(&mut topo);
+    let slots = topo.allocated_slot_count();
+    let refused = sweep_exact(&mut topo, profile, &path);
+    assert!(
+        matches!(&refused, Err(OperationsError::InvalidInput { reason })
+            if reason.contains("segments 0 and 1") && reason.contains("meet itself")),
+        "{refused:?}"
+    );
+    assert_eq!(topo.allocated_slot_count(), slots);
+}
+
+fn assert_probe(topo: &Topology, solid: SolidId, at: Point3, inside: bool, s: f64, label: &str) {
+    let found = crate::classify::classify_point(topo, solid, at, 0.01 * s, 1e-9 * s).unwrap();
+    let expected = if inside {
+        crate::classify::PointClassification::Inside
+    } else {
+        crate::classify::PointClassification::Outside
+    };
+    assert_eq!(found, expected, "{label}: probe {at:?}");
+}
+
+/// A three-quarter turn, then a tangent line that leaves it: the halved
+/// arc clears the line, so the sweep builds, exact, at every scale.
+#[test]
+fn a_three_quarter_turn_into_a_tangent_line_builds_exactly() {
+    for s in [1e-3, 1.0, 1e3] {
+        let mut topo = Topology::new();
+        let profile = circle_face(&mut topo, p(30.0 * s, 0.0, 0.0), Y, 3.0 * s);
+        let path = [
+            arc(&mut topo, p(0.0, 0.0, 0.0), 30.0 * s, 0.0, 1.5 * PI),
+            line(
+                &mut topo,
+                p(0.0, -30.0 * s, 0.0),
+                p(40.0 * s, -30.0 * s, 0.0),
+            ),
+        ];
+        let solid = sweep_exact(&mut topo, profile, &path).unwrap();
+        let label = format!("turn and lead at {s}");
+        assert_valid(&topo, solid, &label);
+        assert_eq!(census(&topo, solid), (2, 1, 0, 1, 0), "{label}");
+        let exact = PI * 9.0 * s * s * (30.0 * s).mul_add(1.5 * PI, 40.0 * s);
+        let measured = volume(&topo, solid);
+        assert!(
+            rel(measured, exact) < 1e-9,
+            "{label}: {measured} vs {exact}"
+        );
+        let mesh = crate::tessellate::tessellate_solid(&topo, solid, 0.05 * s).unwrap();
+        assert!(crate::tessellate::is_watertight(&mesh), "{label}");
+        let r45 = 30.0 * s * std::f64::consts::FRAC_1_SQRT_2;
+        for (point, inside) in [
+            (p(r45, r45, 0.0), true),
+            (p(20.0 * s, -30.0 * s, 0.0), true),
+            (p(0.0, 0.0, 0.0), false),
+            (p(20.0 * s, -30.0 * s, 3.5 * s), false),
+            (p(r45, r45, 3.5 * s), false),
+        ] {
+            assert_probe(&topo, solid, point, inside, s, &label);
+        }
+    }
+}
+
+/// Two runs meeting at a hairpin corner that turns by `degrees`: 10 along
+/// +X into the corner at the origin, then 10 back out, both times `s`.
+/// Returns the path and the outgoing direction.
+fn hairpin(topo: &mut Topology, s: f64, degrees: f64) -> (Vec<EdgeId>, Vec3) {
+    let turn = degrees.to_radians();
+    let out = Vec3::new(turn.cos(), turn.sin(), 0.0);
+    let origin = p(0.0, 0.0, 0.0);
+    let path = vec![
+        line(topo, p(-10.0 * s, 0.0, 0.0), origin),
+        line(topo, origin, origin + out * (10.0 * s)),
+    ];
+    (path, out)
+}
+
+/// Corners sharper than the old 175° limit mitre exactly. Each run's
+/// rulings all have length (certified on the profile's boundary) and the
+/// two runs lie on either side of the bisector plane, so they meet only in
+/// the mitre section. A tube's mitre is an exact ellipse with semi-major
+/// `r / cos(φ/2)`, 57 and 229 times the radius here; with the profile's
+/// centroid on the path the volume is still the area times the centre-line
+/// length.
+#[test]
+fn hairpin_corners_past_the_old_limit_mitre_exactly() {
+    let origin = p(0.0, 0.0, 0.0);
+    for (degrees, radius) in [(178.0, 0.1), (179.5, 0.02)] {
+        for s in [1e-3, 1.0, 1e3] {
+            let label = format!("{degrees} degree hairpin tube at {s}");
+            let mut topo = Topology::new();
+            let r = radius * s;
+            let profile = circle_face(&mut topo, p(-10.0 * s, 0.0, 0.0), X, r);
+            let (path, out) = hairpin(&mut topo, s, degrees);
+            let solid = sweep_exact(&mut topo, profile, &path).unwrap();
+            assert_valid(&topo, solid, &label);
+            assert_eq!(census(&topo, solid), (2, 2, 0, 0, 0), "{label}");
+            let exact = PI * r * r * 20.0 * s;
+            let measured = volume(&topo, solid);
+            assert!(
+                rel(measured, exact) < 1e-9,
+                "{label}: {measured} vs {exact}"
+            );
+            let read = crate::measure::solid_volume(&topo, solid, 0.01 * r).unwrap();
+            assert!(
+                rel(read, exact) < 1e-6,
+                "{label}: solid_volume {read} vs {exact}"
+            );
+            // The display mesh is checked from scale 1 up: at 1e-3 the
+            // tessellator stitches the seam of these long, thin mitred walls
+            // with mismatched vertices, as it already does for a 170° mitre
+            // (see `small_mitred_tube_seam_tessellates_watertight`).
+            if s >= 1.0 {
+                for deflection in [0.2 * r, 0.05 * r] {
+                    let mesh =
+                        crate::tessellate::tessellate_solid(&topo, solid, deflection).unwrap();
+                    assert!(
+                        crate::tessellate::is_watertight(&mesh),
+                        "{label}: watertight at {deflection}"
+                    );
+                    let enclosed = mesh_volume(&mesh);
+                    assert!(
+                        rel(enclosed, exact) < 2e-2,
+                        "{label}: mesh {enclosed} vs {exact}"
+                    );
+                }
+            }
+            // The bisector plane's in-plane direction toward the corner's
+            // outside, where the incoming run reaches past the corner.
+            let bisector = (X + out).normalize().unwrap();
+            let outward = Vec3::new(bisector.y(), -bisector.x(), 0.0);
+            let tip = r / (0.5 * (X + out).length());
+            // Midway between the runs, 9.5 back from the corner.
+            let gap = p(
+                0.5 * 9.5 * s * (out.x() - 1.0),
+                0.5 * 9.5 * s * out.y(),
+                0.0,
+            );
+            for (point, inside) in [
+                (p(-5.0 * s, 0.0, 0.0), true),
+                (origin + out * (5.0 * s), true),
+                (origin + outward * (0.5 * tip), true),
+                (origin + outward * (1.2 * tip), false),
+                (gap, false),
+                (p(-5.0 * s, 0.0, 1.5 * r), false),
+            ] {
+                assert_probe(&topo, solid, point, inside, s, &label);
+            }
+        }
+    }
+}
+
+/// Ready repro, not fixed here: a 170° mitre (accepted before the corner
+/// limit was lifted) on a tube of radius 1e-4 tessellates with an open seam
+/// at deflections from the radius down to a fifth of it; it closes at 1e-5
+/// and at larger scales.
+#[test]
+#[ignore = "pre-existing: small mitred tube seams tessellate open (tessellator)"]
+fn small_mitred_tube_seam_tessellates_watertight() {
+    let s = 1e-3;
+    let mut topo = Topology::new();
+    let r = 0.1 * s;
+    let profile = circle_face(&mut topo, p(-10.0 * s, 0.0, 0.0), X, r);
+    let (path, _) = hairpin(&mut topo, s, 170.0);
+    let solid = sweep_exact(&mut topo, profile, &path).unwrap();
+    assert_valid(&topo, solid, "170 degree tube at 1e-3");
+    let mesh = crate::tessellate::tessellate_solid(&topo, solid, r).unwrap();
+    assert_eq!(open_mesh_edges(&mesh), 0);
+}
+
+/// The same hairpins with a rectangle: four planes per run, mitred on the
+/// bisector, and the area times the centre-line length.
+#[test]
+fn hairpin_rectangles_mitre_on_planes() {
+    let origin = p(0.0, 0.0, 0.0);
+    for (degrees, half) in [(178.0, 0.1), (179.5, 0.02)] {
+        for s in [1e-3, 1.0, 1e3] {
+            let label = format!("{degrees} degree hairpin bar at {s}");
+            let mut topo = Topology::new();
+            let (hy, hz) = (half * s, 0.5 * half * s);
+            let x = -10.0 * s;
+            let profile = polygon_face(
+                &mut topo,
+                &[p(x, -hy, -hz), p(x, hy, -hz), p(x, hy, hz), p(x, -hy, hz)],
+            );
+            let (path, out) = hairpin(&mut topo, s, degrees);
+            let solid = sweep_exact(&mut topo, profile, &path).unwrap();
+            assert_valid(&topo, solid, &label);
+            assert_eq!(census(&topo, solid), (10, 0, 0, 0, 0), "{label}");
+            let exact = 4.0 * hy * hz * 20.0 * s;
+            let measured = volume(&topo, solid);
+            assert!(
+                rel(measured, exact) < 1e-9,
+                "{label}: {measured} vs {exact}"
+            );
+            let mesh = crate::tessellate::tessellate_solid(&topo, solid, 0.1 * hz).unwrap();
+            assert!(crate::tessellate::is_watertight(&mesh), "{label}");
+            let enclosed = mesh_volume(&mesh);
+            assert!(rel(enclosed, exact) < 1e-6, "{label}: mesh {enclosed}");
+            for (point, inside) in [
+                (p(-5.0 * s, 0.0, 0.0), true),
+                (origin + out * (5.0 * s), true),
+                (p(-5.0 * s, 0.0, 1.5 * hz), false),
+                (p(-5.0 * s, -1.5 * hy, 0.0), false),
+            ] {
+                assert_probe(&topo, solid, point, inside, s, &label);
+            }
+        }
+    }
+}
+
+/// A unit circle tilted by `tilt` from square to the path, swept along a
+/// run of 10 into a turn of radius 5 about (10, 5) (a half turn or a
+/// quarter turn), or back along the same path from the turn's far end.
+/// Returns the solid and the turn's middle point, all times `s`.
+fn oblique_run_and_turn(
+    topo: &mut Topology,
+    s: f64,
+    tilt: f64,
+    turn: f64,
+    reversed: bool,
+) -> Result<SolidId, OperationsError> {
+    let centre = p(10.0 * s, 5.0 * s, 0.0);
+    let start = -FRAC_PI_2;
+    let path = [
+        line(topo, p(0.0, 0.0, 0.0), p(10.0 * s, 0.0, 0.0)),
+        arc(topo, centre, 5.0 * s, start, start + turn),
+    ];
+    // Where the sweep starts, and the way it travels there.
+    let (at, travel) = if reversed {
+        let end = start + turn;
+        (
+            centre + Vec3::new(end.cos(), end.sin(), 0.0) * (5.0 * s),
+            Vec3::new(end.sin(), -end.cos(), 0.0),
+        )
+    } else {
+        (p(0.0, 0.0, 0.0), X)
+    };
+    let across = Z.cross(travel);
+    let normal = travel * tilt.cos() + across * tilt.sin();
+    let profile = circle_face(topo, at, normal, s);
+    sweep_exact(topo, profile, &path)
+}
+
+/// A profile that is not square to its path swings across a joint's
+/// section plane once it has turned far enough (`2·atan(B/A)`, past 106°
+/// for a 30° tilt into a half turn), far from the run before it. Those
+/// bodies are clean and build; the turn beyond the certified angle is held
+/// to the distance check instead. A tilted section sweeps the volume
+/// `area · cos(tilt) · centre-line length` (the flux of the motion through
+/// it), here `π cos(tilt) (10 + 5 turn) s³`.
+#[test]
+fn oblique_profiles_into_a_turn_build_exactly() {
+    let cases = [
+        (30.0, PI, false),
+        (-30.0, PI, false),
+        (0.5, PI, false),
+        (0.01, PI, false),
+        (-0.5, PI, false),
+        (-0.01, PI, false),
+        (60.0, FRAC_PI_2, false),
+        (-60.0, FRAC_PI_2, false),
+        (30.0, PI, true),
+        (-30.0, PI, true),
+        (60.0, FRAC_PI_2, true),
+        (-60.0, FRAC_PI_2, true),
+    ];
+    for (degrees, turn, reversed) in cases {
+        for s in [1e-3, 1.0, 1e3] {
+            let label = format!("tilt {degrees}, turn {turn}, reversed {reversed}, scale {s}");
+            let mut topo = Topology::new();
+            let tilt = f64::to_radians(degrees);
+            let solid = oblique_run_and_turn(&mut topo, s, tilt, turn, reversed)
+                .unwrap_or_else(|e| panic!("{label}: {e:?}"));
+            assert_valid(&topo, solid, &label);
+            // An oblique circle moved along a run or turned about an axis
+            // its centre is off the plane of is exact rational NURBS.
+            assert_eq!(census(&topo, solid), (2, 0, 0, 0, 2), "{label}");
+            let exact = PI * tilt.cos() * 5.0f64.mul_add(turn, 10.0) * s * s * s;
+            let measured = volume(&topo, solid);
+            // `mass_properties` integrates these NURBS sides to a few 1e-6 at
+            // scale 1e-3 (an absolute integration floor) and 1e-10 from 1 up.
+            let bound = if s < 1.0 { 1e-5 } else { 1e-8 };
+            assert!(
+                rel(measured, exact) < bound,
+                "{label}: {measured} vs {exact}"
+            );
+            let mesh = crate::tessellate::tessellate_solid(&topo, solid, 0.02 * s).unwrap();
+            assert!(crate::tessellate::is_watertight(&mesh), "{label}");
+            let enclosed = mesh_volume(&mesh);
+            assert!(
+                rel(enclosed, exact) < 1e-2,
+                "{label}: mesh {enclosed} vs {exact}"
+            );
+            let middle = -FRAC_PI_2 + 0.5 * turn;
+            for (point, inside) in [
+                (p(5.0 * s, 0.0, 0.0), true),
+                (
+                    p(
+                        5.0f64.mul_add(middle.cos(), 10.0) * s,
+                        5.0f64.mul_add(middle.sin(), 5.0) * s,
+                        0.0,
+                    ),
+                    true,
+                ),
+                (p(10.0 * s, 5.0 * s, 0.0), false),
+                (p(5.0 * s, 0.0, 1.5 * s), false),
+            ] {
+                assert_probe(&topo, solid, point, inside, s, &label);
+            }
+        }
+    }
 }
