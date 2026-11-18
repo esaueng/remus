@@ -8,7 +8,11 @@
 //!   and removal trusts a cluster its caller has just recognized on the same
 //!   arena; neither may change a result. The chained diameters 12 -> 14.6 ->
 //!   17 -> 21.1 -> 14.7 are pinned to the results the route produced before
-//!   (entity counts, face census, volume to 1e-9 relative).
+//!   (entity counts, face census, volume to 1e-9 relative). The volumes were
+//!   re-pinned once since, when `solid_volume` began reading the three
+//!   cylinder faces whose trims are fitted on their own boundary: each of
+//!   those faces' terms is checked here against an independent quadrature
+//!   (`fitted_face_oracle`).
 //! - **Work.** The route recognizes the group once on its private copy and
 //!   once on the caller's solid (identity carry), never again inside the
 //!   removal.
@@ -21,6 +25,8 @@
 //!   validation when checked afterwards.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+mod fitted_face_oracle;
 
 use remus_blend::cap_reblend::{
     MeasuredCarrier, sampled_canal_measured, sampled_project_measured,
@@ -82,11 +88,18 @@ const RADII: [f64; 4] = [7.3, 8.5, 10.55, 7.35];
 /// What the journaled route produced for each step of [`RADII`] before
 /// the recognition reuse: entity counts `(F, E, V)`, face census and
 /// volume.
+///
+/// The volumes moved by −1.25e-3, −1.78e-3, −2.85e-3 and −1.27e-3 (7e-8 to
+/// 1.2e-7 relative) when the three cylinder faces with fitted trims began
+/// to be read on their own boundary; every other face's term stayed bit for
+/// bit. They had read 128-sample trim polygons, 2.4e-4 to 2.4e-3 high of the
+/// independent quadrature their terms now meet to 1e-8 (checked in
+/// [`journaled_boss_resizes_match_the_pinned_results`]).
 const PINNED: [(&str, &str, f64); 4] = [
-    ("(15, 37, 24)", CENSUS, 18_001.190_268_393_137),
-    ("(15, 37, 24)", CENSUS, 19_808.976_432_619_187),
-    ("(15, 37, 24)", CENSUS, 23_523.128_256_833_133),
-    ("(15, 37, 24)", CENSUS, 18_071.117_682_090_964),
+    ("(15, 37, 24)", CENSUS, 18_001.189_017_538_36),
+    ("(15, 37, 24)", CENSUS, 19_808.974_648_606_447),
+    ("(15, 37, 24)", CENSUS, 23_523.125_403_921_076),
+    ("(15, 37, 24)", CENSUS, 18_071.116_410_758_805),
 ];
 
 /// The face census every step keeps.
@@ -142,6 +155,12 @@ fn journaled_boss_resizes_match_the_pinned_results() {
         assert_eq!(counts, pinned_counts, "step {index} counts");
         assert_eq!(types, pinned_types, "step {index} census");
         assert_volume(volume, pinned_volume, &format!("step {index}"));
+        // The three cylinder faces with fitted trims.
+        assert_eq!(
+            fitted_face_oracle::assert_fitted_faces_match(&topo, result, 1e-8),
+            3,
+            "step {index}"
+        );
         solid = result;
     }
 }

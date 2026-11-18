@@ -62,6 +62,34 @@ fn plus_x_face(topo: &Topology, solid: SolidId) -> FaceId {
         .unwrap()
 }
 
+/// The cylinder and cone faces with a fitted (NURBS) trim. `solid_volume`
+/// reads them on their own boundary, and the face cache serves such a
+/// reading only about the reference it was taken about (whether the
+/// boundary reading is taken turns on it), so an edit integrates them
+/// afresh, and the volume's convergence check takes no order-3 term for
+/// them (their certificate replaces it).
+fn fitted_faces(topo: &Topology, solid: SolidId) -> u64 {
+    let mut count = 0;
+    for face in solid_faces(topo, solid).unwrap() {
+        let data = topo.face(face).unwrap();
+        let fitted = matches!(
+            data.surface(),
+            FaceSurface::Cylinder(_) | FaceSurface::Cone(_)
+        ) && std::iter::once(data.outer_wire())
+            .chain(data.inner_wires().iter().copied())
+            .any(|wire| {
+                topo.wire(wire).unwrap().edges().iter().any(|oriented| {
+                    matches!(
+                        topo.edge(oriented.edge()).unwrap().curve(),
+                        remus_topology::edge::EdgeCurve::NurbsCurve(_)
+                    )
+                })
+            });
+        count += u64::from(fitted);
+    }
+    count
+}
+
 /// The strict probe's signed volume and verdict.
 fn probe(topo: &Topology, solid: SolidId) -> (bool, f64) {
     let (report, probes) =
@@ -89,12 +117,16 @@ fn hammer_move_reads_its_unchanged_faces_and_measures_its_volume_once() {
     let moved = move_faces(&mut edit, solid, &[face], -6.0).expect("move");
     let during = (thread_face_cache_stats(), thread_volume_memo_stats());
     let integrated = during.0.misses - before.0.misses;
+    let fitted = fitted_faces(&edit, moved);
     // Only the faces the move re-limits (the carriers whose boundary slid)
-    // are integrated; every unchanged face is re-expressed about the
-    // result's reference and every moved one read as a translation. 14 on
-    // this body when recorded.
+    // and the fitted faces (read about each new reference afresh, see
+    // `fitted_faces`) are integrated; every other unchanged face is
+    // re-expressed about the result's reference and every moved one read
+    // as a translation. 14 re-limited faces on this body when recorded, and
+    // 24 integrations once its 8 fitted faces were read on their boundary.
+    assert_eq!(fitted, 8);
     assert!(
-        integrated <= 20,
+        integrated <= 20 + 2 * fitted,
         "the move integrated {integrated} faces afresh"
     );
     assert!(
@@ -121,7 +153,8 @@ fn hammer_move_reads_its_unchanged_faces_and_measures_its_volume_once() {
     // planar face has no quadrature order and its convergence term is that
     // same reading, so only the curved faces take an order-3 term: new only
     // for the curved faces among the ones the move re-limited and integrated
-    // afresh (6 of its 14 on this body when recorded).
+    // afresh (6 of its 14 on this body when recorded). A fitted face's
+    // convergence term is its own certificate, read with the term itself.
     let curved = solid_faces(&after, moved)
         .unwrap()
         .iter()
@@ -134,9 +167,9 @@ fn hammer_move_reads_its_unchanged_faces_and_measures_its_volume_once() {
     );
     assert_eq!(
         end.0.hits - start.0.hits,
-        2 * faces + curved - fresh_terms,
+        2 * faces + curved - fitted - fresh_terms,
         "the probe and the volume each read every face, and the convergence \
-         guard each curved face once more"
+         guard each curved face but the fitted ones once more"
     );
     assert_eq!(read.to_bits(), signed.abs().to_bits());
     assert_eq!(

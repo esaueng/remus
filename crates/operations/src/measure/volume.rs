@@ -707,7 +707,9 @@ fn edge_samples(curve: &EdgeCurve) -> u32 {
 /// * no face is in a class it is known to mis-measure
 ///   ([`gauss_unqualified_face`]);
 /// * every shell closes: `|Σ N|` is at most [`FACE_INTEGRAL_CLOSURE`] times `Σ A`, which a
-///   face integrated over the wrong region breaks;
+///   face integrated over the wrong region breaks, plus the closure
+///   allowance of each cylinder or cone face read on its fitted boundary
+///   (see [`qualified_shell_volume`]);
 /// * every edge lies on each face it bounds, within the larger of its own
 ///   tolerance and [`BOUNDARY_GAP`] of the body's extent
 ///   ([`boundary_lies_on_faces`]).
@@ -718,10 +720,13 @@ fn edge_samples(curve: &EdgeCurve) -> u32 {
 /// * every face's order-5 term agrees with an independent order-3 one, summed
 ///   face by face to [`ORDER_AGREEMENT`] of the volume, so a face the fixed
 ///   rule has not resolved is caught even where closure, which tests only the
-///   vector-area integrand, holds.
+///   vector-area integrand, holds. A face read on its fitted boundary, which
+///   no order changes, counts its own span-by-span against halved-span
+///   disagreement instead.
 ///
 /// Its residual is the curved faces' trim outlines' chord error, 128 samples
-/// per curved edge; planar faces integrate qualified polynomial boundaries exactly. The hammer holder reads 50245.22, the limit of ever
+/// per curved edge, except where a cylinder or cone face reads its trims on
+/// its own boundary; planar faces integrate qualified polynomial boundaries exactly. The hammer holder reads 50245.22, the limit of ever
 /// finer meshes, where the clamp mesh reads 50241.71 (and the 32-chord outline
 /// its planar faces took before, 50245.53).
 fn qualified_face_integral_volume(
@@ -799,6 +804,19 @@ fn qualified_face_integral_volume(
 /// closes within [`FACE_INTEGRAL_CLOSURE`]; `None` when it does not, or a face
 /// did not integrate or report its vector area. With `refine`, a face's
 /// disagreement may instead be read against [`REFINEMENT_ORDER`].
+///
+/// A cylinder or cone face read on its own fitted boundary (its term carries
+/// a [`FittedBoundaryReading`]) does not depend on the order, so two
+/// orders would agree on it whatever its error. Its disagreement is instead
+/// its fitted edges' span-by-span against halved-span volume terms, and its
+/// reading has already agreed with the sampled trim's to the integrator's
+/// guard. It reads each fitted point at its projection onto its surface, so
+/// the shell's closure bound is widened by the certificate's allowance, the
+/// bound on how far that moves the face's vector area off the stored
+/// boundary's (`remus_check`'s `cylinder_green::FittedEdges::add`). A shell
+/// with no such face is checked exactly as before.
+///
+/// [`FittedBoundaryReading`]: remus_check::properties::face_integrator::FittedBoundaryReading
 fn qualified_shell_volume(
     topo: &Topology,
     shell: remus_topology::shell::ShellId,
@@ -811,6 +829,8 @@ fn qualified_shell_volume(
     };
     let (mut volume, mut area, mut disagreement) = (0.0, 0.0, 0.0);
     let mut vector_area = Vec3::new(0.0, 0.0, 0.0);
+    // How far the fitted-boundary readings may leave the shell open.
+    let mut allowance = 0.0;
     for fid in faces {
         let _face_span = crate::performance::span(match topo.face(fid)?.surface() {
             FaceSurface::Plane { .. } => "volume.face.plane",
@@ -840,6 +860,14 @@ fn qualified_shell_volume(
             });
             return Ok(None);
         };
+        if let Some(fitted_reading) = term.fitted_boundary {
+            area += term.area;
+            vector_area += n;
+            allowance += fitted_reading.closure_allowance;
+            volume += term.volume;
+            disagreement += fitted_reading.span_disagreement;
+            continue;
+        }
         // Gauss orders are not nested, so a lower one is an independent
         // reading: the two agree only where both have converged on the face.
         // A planar face has no quadrature: its term is its boundary's exact
@@ -880,12 +908,14 @@ fn qualified_shell_volume(
         disagreement += face_disagreement;
     }
     let closure = vector_area.length();
-    if closure.is_nan() || closure > FACE_INTEGRAL_CLOSURE * area {
+    // `mul_add` with a zero allowance rounds exactly as the product alone.
+    if closure.is_nan() || closure > FACE_INTEGRAL_CLOSURE.mul_add(area, allowance) {
         vol_trace(|| {
             format!(
-                "face integrals declined: shell {} closes to {:.3e} of its area",
+                "face integrals declined: shell {} closes to {:.3e} of its area (fitted-boundary allowance {:.3e})",
                 shell.index(),
-                closure / area
+                closure / area,
+                allowance / area
             )
         });
         return Ok(None);
@@ -2632,9 +2662,10 @@ fn quantize_down(x: f64) -> f64 {
 /// With the thread's face-integral cache enabled (off by default; the WASM
 /// kernel enables it), faces whose content — or a rigid translation of it —
 /// was integrated before are re-expressed about this shell's reference
-/// instead of integrated again. The sum then differs from an uncached one by
-/// rounding (~1e-15 of the shell's own scale), never by a sign the probe
-/// could read.
+/// instead of integrated again (a cylinder or cone face with a fitted trim
+/// only from a reading about this very reference). The sum then differs from
+/// an uncached one by rounding (~1e-15 of the shell's own scale), never by
+/// a sign the probe could read.
 pub fn shell_signed_volume(
     topo: &Topology,
     shell: remus_topology::shell::ShellId,
@@ -7019,6 +7050,98 @@ mod face_integral_certificate_tests {
             qualified_shell_volume(&topo, open, order, false).unwrap(),
             None
         );
+    }
+
+    /// The closure bound a fitted-boundary reading widens it by covers only
+    /// what reading the fitted rims on their own faces moves; a rim that
+    /// stands off its neighbour along the surface, as a fit error that large
+    /// would, still breaks closure and is refused, as before.
+    ///
+    /// A disc wrapped onto a cylinder has its outer face's rim replaced by the
+    /// rim of a disc `δ` wider, wrapped the same way: still a fitted curve on
+    /// that face (its allowance stays at the fit's own size), but `δ` along
+    /// the surface from the walls' rails. At `δ = 0` the shell measures.
+    #[test]
+    fn a_fitted_rim_off_its_neighbour_breaks_closure_whatever_the_allowance() {
+        use crate::wrap::{WrapCylinder, wrap_profile_solid};
+        use remus_topology::builder::make_circle_edge;
+        use remus_topology::face::Face;
+        use remus_topology::wire::{OrientedEdge, Wire};
+
+        let x = Vec3::new(1.0, 0.0, 0.0);
+        let frame = WrapCylinder {
+            origin: Point3::new(0.0, 0.0, 0.0),
+            axis: Vec3::new(0.0, 0.0, 1.0),
+            reference: x,
+            radius: 10.0,
+        };
+        let wrap = |topo: &mut Topology, radius: f64| {
+            let edge =
+                make_circle_edge(topo, Point3::new(10.0, 0.0, 5.0), x, radius, 1e-7).unwrap();
+            let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap());
+            let profile = topo.add_face(Face::new(
+                wire,
+                vec![],
+                FaceSurface::Plane { normal: x, d: 10.0 },
+            ));
+            wrap_profile_solid(topo, profile, &frame, 9.5, 11.0).unwrap()
+        };
+        let outer_face = |topo: &Topology, solid| {
+            remus_topology::explorer::solid_faces(topo, solid)
+                .unwrap()
+                .into_iter()
+                .find(|&f| {
+                    matches!(topo.face(f).unwrap().surface(),
+                        FaceSurface::Cylinder(c) if (c.radius() - 11.0).abs() < 1e-12)
+                })
+                .unwrap()
+        };
+        let order = remus_check::properties::PropertiesOptions::default().gauss_order;
+        for (delta, closes) in [(0.0, true), (1e-3, false)] {
+            let mut topo = Topology::new();
+            let solid = wrap(&mut topo, 4.0);
+            let wider = wrap(&mut topo, 4.0 + delta);
+            let face = outer_face(&topo, solid);
+            let rim = topo.face(outer_face(&topo, wider)).unwrap().outer_wire();
+            topo.set_face_boundary_wires(face, rim, vec![]).unwrap();
+            let shell = topo.solid(solid).unwrap().outer_shell();
+            let faces = topo.shell(shell).unwrap().faces().to_vec();
+            let reference = shell_reference(&topo, &faces).unwrap().unwrap();
+            let (mut flux, mut area, mut allowance) = (Vec3::new(0.0, 0.0, 0.0), 0.0, 0.0);
+            for &f in &faces {
+                let term =
+                    super::super::guard_readings::integrate(&topo, f, order, reference).unwrap();
+                flux += term.vector_area.unwrap();
+                area += term.area;
+                allowance += term.fitted_boundary.map_or(0.0, |c| c.closure_allowance);
+            }
+            // The replaced rim is read on its boundary too, at the fit's size.
+            assert!(
+                allowance > 0.0 && allowance < 1e-6 * area,
+                "{allowance} of {area}"
+            );
+            let limit = FACE_INTEGRAL_CLOSURE.mul_add(area, allowance);
+            assert_eq!(
+                flux.length() <= limit,
+                closes,
+                "{} vs {limit}",
+                flux.length()
+            );
+            assert_eq!(
+                qualified_shell_volume(&topo, shell, order, false)
+                    .unwrap()
+                    .is_some(),
+                closes,
+                "δ = {delta}"
+            );
+            assert_eq!(
+                qualified_face_integral_volume(&topo, solid)
+                    .unwrap()
+                    .is_some(),
+                closes,
+                "δ = {delta}"
+            );
+        }
     }
 
     #[test]

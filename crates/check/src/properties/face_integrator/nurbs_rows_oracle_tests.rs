@@ -458,6 +458,7 @@ fn both<const AREA_ONLY: bool>(
             ruled_guard: false,
             flux: Some(&flux),
             cone_apex: None,
+            boundary: None,
         };
         let result = if reference_path {
             integrate_parametric_reference::<_, AREA_ONLY>(
