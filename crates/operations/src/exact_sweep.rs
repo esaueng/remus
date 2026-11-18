@@ -986,22 +986,29 @@ fn trig_sup(base: f64, a: f64, b: f64, lo: f64, hi: f64) -> f64 {
 /// peaks on one of them).
 fn piece_sup(piece: &Piece, g: Vec3) -> f64 {
     let span = piece.trim.map(|(a, b)| (a.min(b), a.max(b)));
-    let conic = match (&piece.cap, span) {
-        (EdgeCurve::Circle(c), Some((lo, hi))) => Some((
-            c.center(),
-            c.u_axis() * c.radius(),
-            c.v_axis() * c.radius(),
-            lo,
-            hi,
-        )),
-        (EdgeCurve::Ellipse(e), Some((lo, hi))) => Some((
-            e.center(),
-            e.u_axis() * e.semi_major(),
-            e.v_axis() * e.semi_minor(),
-            lo,
-            hi,
-        )),
-        _ => None,
+    let conic = match &piece.cap {
+        EdgeCurve::Circle(c) => span.map(|(lo, hi)| {
+            (
+                c.center(),
+                c.u_axis() * c.radius(),
+                c.v_axis() * c.radius(),
+                lo,
+                hi,
+            )
+        }),
+        EdgeCurve::Ellipse(e) => span.map(|(lo, hi)| {
+            (
+                e.center(),
+                e.u_axis() * e.semi_major(),
+                e.v_axis() * e.semi_minor(),
+                lo,
+                hi,
+            )
+        }),
+        EdgeCurve::Line
+        | EdgeCurve::NurbsCurve(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => None,
     };
     if let Some((center, u, v, lo, hi)) = conic {
         let base = g.dot(to_vec(center));
@@ -1043,11 +1050,14 @@ fn profile_inf(loops: &[Loop], placement: &Rigid, g: Vec3) -> f64 {
 fn profile_reach(loops: &[Loop], q: Point3) -> f64 {
     let piece_reach = |piece: &Piece| -> f64 {
         let conic = match &piece.cap {
-            EdgeCurve::Circle(c) if piece.trim.is_some() => Some((c.center(), c.radius())),
-            EdgeCurve::Ellipse(e) if piece.trim.is_some() => {
-                Some((e.center(), e.semi_major().max(e.semi_minor())))
-            }
-            _ => None,
+            EdgeCurve::Circle(c) => piece.trim.map(|_| (c.center(), c.radius())),
+            EdgeCurve::Ellipse(e) => piece
+                .trim
+                .map(|_| (e.center(), e.semi_major().max(e.semi_minor()))),
+            EdgeCurve::Line
+            | EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => None,
         };
         if let Some((center, radius)) = conic {
             let g = center - q;
