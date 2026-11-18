@@ -214,7 +214,7 @@ fn a_seamless_band_under_an_oblique_cylinder_rim_reads_its_closed_form() {
 
 /// The circle where the cone of `section` meets the plane normal to its axis
 /// `height` above the apex, as a section at `θ = 0`.
-fn latitude(section: &Section, height: f64) -> Section {
+fn level_section(section: &Section, height: f64) -> Section {
     Section {
         theta: 0.0,
         d: height,
@@ -222,13 +222,9 @@ fn latitude(section: &Section, height: f64) -> Section {
     }
 }
 
-/// `latitude`'s rim as an exact circle, run in `−u` (the way a pointed
+/// `level_section`'s rim as an exact circle, run in `−u` (the way a pointed
 /// face's rim runs), starting at parameter `start`.
-fn latitude_rim(
-    topo: &mut Topology,
-    section: &Section,
-    start: f64,
-) -> remus_topology::edge::EdgeId {
+fn level_rim(topo: &mut Topology, section: &Section, start: f64) -> remus_topology::edge::EdgeId {
     let radius = section.d / section.a.tan();
     let circle = Circle3D::new_with_ref(
         section.apex + section.axis * section.d,
@@ -257,9 +253,9 @@ fn a_pointed_face_with_a_seam_to_the_apex_reads_the_closed_form_cone() {
             .into_iter()
             .flat_map(move |start| [(a, start, false), (a, start, true)])
     }) {
-        let section = latitude(&Section { a, ..*base }, 2.0);
+        let section = level_section(&Section { a, ..*base }, 2.0);
         let mut topo = Topology::new();
-        let rim = latitude_rim(&mut topo, &section, start);
+        let rim = level_rim(&mut topo, &section, start);
         let rim_vertex = topo.edge(rim).unwrap().start();
         let apex = topo.add_vertex(Vertex::new(section.apex, 1e-9));
         let up = topo.add_edge(Edge::new(rim_vertex, apex, EdgeCurve::Line));
@@ -330,9 +326,9 @@ fn a_band_over_an_oblique_inner_rim_reads_the_difference_of_two_cones() {
     for scale in [1e-3, 1.0, 1e3] {
         for (index, section) in sections(scale).iter().take(2).enumerate() {
             for rim_along_u in [true, false] {
-                let top = latitude(section, 3.0 * section.d);
+                let top = level_section(section, 3.0 * section.d);
                 let mut topo = Topology::new();
-                let outer_rim = latitude_rim(&mut topo, &top, 0.0);
+                let outer_rim = level_rim(&mut topo, &top, 0.0);
                 let outer = topo
                     .add_wire(Wire::new(vec![OrientedEdge::new(outer_rim, true)], true).unwrap());
                 let rim = if rim_along_u {
