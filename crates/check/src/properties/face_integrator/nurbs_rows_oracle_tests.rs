@@ -382,6 +382,7 @@ pub(super) fn trims() -> Vec<(&'static str, FaceUv)> {
         bands: Vec::new(),
         u_periodic: periodic,
         hole_vs: Vec::new(),
+        seamless_outer: false,
     };
     vec![
         (

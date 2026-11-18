@@ -286,6 +286,7 @@ fn trims(domain: ((f64, f64), (f64, f64))) -> Vec<FaceUv> {
         bands: Vec::new(),
         u_periodic: false,
         hole_vs: Vec::new(),
+        seamless_outer: false,
     };
     let notch = vec![
         (0.05, 0.1),

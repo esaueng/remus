@@ -18,8 +18,9 @@
 //! path keeps measuring it.
 //!
 //! Fitted trims are read here only for a moment (not area-only) reading,
-//! and only when the caller does not collect the
-//! vector area. The callers that do (the shell-closure and order-convergence
+//! and only when the caller does not collect the vector area. An area-only
+//! request on a fitted face (`integrate_face_area`) is answered by the
+//! moment reading, so it takes this path under the same guard. The callers that do (the shell-closure and order-convergence
 //! certificates of `solid_volume`) qualify the reading they are handed, and a
 //! fitted trim read on the surface sits up to its fit error off the
 //! neighbouring face's own edge, so its vector area would not cancel to their
@@ -142,8 +143,8 @@ pub(super) fn integrate<const AREA_ONLY: bool>(
         off_surface_limit: (NURBS_ON_SURFACE * cylinder.radius()).max(NURBS_ON_SURFACE_ABS),
     };
     // Fitted trims only for a moment reading no certificate qualifies (module
-    // docs). An area-only reading keeps the sampled path: the area entry point
-    // (`analytic_face_area`) already reduces fitted trims to the boundary.
+    // docs). `integrate_face_area` never asks for one area-only: it reads a
+    // fitted face with its moments, whose volume the guard needs.
     let fitted_trims_allowed = !AREA_ONLY && rule.flux.is_none();
     // Every term compared at its own dimension of this length: the radius,
     // plus how far the integration reference lies from the cylinder.

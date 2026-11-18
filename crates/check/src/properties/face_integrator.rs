@@ -43,6 +43,8 @@ mod nested_hole_tests;
 mod nurbs_rows_oracle_tests;
 #[cfg(test)]
 mod parametric_split_oracle_tests;
+#[cfg(test)]
+mod seamless_wrap_tests;
 mod sphere_latitude;
 
 use loop_index::{IntervalIndex, winding_number_over};
@@ -194,6 +196,12 @@ pub struct FaceContribution {
 /// torus with two monotone tube-wrapping rims uses their oriented material
 /// interval instead. Other wrapping torus trims remain outside that qualified
 /// family; callers can use [`integrate_torus_band_face`] to detect this limit.
+///
+/// An OUTER wire that wraps the axis of a cone or a cylinder with no seam
+/// and is not one latitude (an oblique rim) is a strand of a boundary, not a
+/// patch: the face runs from it to the cone's apex, or to the cylinder's
+/// other wrapping rims, wherever an odd number of those strands lie above.
+/// Such a cone face reaching below its apex (`v < 0`) is refused.
 ///
 /// A face whose whole boundary is ONE closed edge has a single boundary
 /// vertex, so it cannot bound its own domain out of the surface's analytic
@@ -419,6 +427,12 @@ fn integrate_face_fixed_flux_impl(
 /// [`integrate_face`]. Parametric faces skip positional moments; planar faces
 /// retain the shared exact boundary integrator.
 ///
+/// A cylinder or cone face with a fitted (NURBS) trim answers exactly
+/// [`integrate_face`]'s area: its boundary reading (`cylinder_green`,
+/// `cone_green`) replaces the sampled trim only where the sampled area and
+/// volume both agree with it, and that guard needs the volume, so such a face
+/// is read with its moments.
+///
 /// # Errors
 ///
 /// Returns the same topology, domain, and integration errors as
@@ -428,21 +442,43 @@ pub fn integrate_face_area(
     face_id: FaceId,
     gauss_order: usize,
 ) -> Result<f64, CheckError> {
-    Ok(integrate_face_impl::<true>(
-        topo,
-        face_id,
-        IntegrationRule {
-            order: gauss_order,
-            adaptive: None,
-            knots: None,
-            reference: Point3::new(0.0, 0.0, 0.0),
-            volume_only: false,
-            ruled_guard: false,
-            flux: None,
-            cone_apex: None,
-        },
-    )?
-    .area)
+    let rule = IntegrationRule {
+        order: gauss_order,
+        adaptive: None,
+        knots: None,
+        reference: Point3::new(0.0, 0.0, 0.0),
+        volume_only: false,
+        ruled_guard: false,
+        flux: None,
+        cone_apex: None,
+    };
+    if has_fitted_curved_trim(topo.face(face_id)?, topo) {
+        return Ok(integrate_face_impl::<false>(topo, face_id, rule)?.area);
+    }
+    Ok(integrate_face_impl::<true>(topo, face_id, rule)?.area)
+}
+
+/// Whether `face` is a cylinder or cone face with a fitted (NURBS) trim: the
+/// faces whose moment readings take their boundary (`cylinder_green`,
+/// `cone_green`) where a sampled or flux-collecting reading chords the trim.
+/// Unreadable wires and edges answer `false`; the integrator reports them.
+pub(crate) fn has_fitted_curved_trim(face: &Face, topo: &Topology) -> bool {
+    if !matches!(
+        face.surface(),
+        FaceSurface::Cylinder(_) | FaceSurface::Cone(_)
+    ) {
+        return false;
+    }
+    std::iter::once(face.outer_wire())
+        .chain(face.inner_wires().iter().copied())
+        .any(|wire| {
+            topo.wire(wire).is_ok_and(|wire| {
+                wire.edges().iter().any(|oriented| {
+                    topo.edge(oriented.edge())
+                        .is_ok_and(|edge| matches!(edge.curve(), EdgeCurve::NurbsCurve(_)))
+                })
+            })
+        })
 }
 
 /// Area of a planar face from its Green's-theorem boundary moments, or
@@ -499,17 +535,33 @@ pub fn analytic_face_area(
     face_id: FaceId,
     fallback_order: usize,
 ) -> Result<f64, CheckError> {
-    let analytic = matches!(
+    if let Some(area) = boundary_face_area(topo, face_id)? {
+        return Ok(area);
+    }
+    integrate_face_area(topo, face_id, fallback_order)
+}
+
+/// The exact boundary reduction behind [`analytic_face_area`] alone.
+///
+/// The area of a cylinder, cone, sphere or torus face, or `None` where the
+/// reduction does not qualify and [`analytic_face_area`] would fall back to
+/// the quadrature. Like [`planar_face_exact_area`], it never substitutes a
+/// quadrature, so a caller can tell the two readings apart.
+///
+/// # Errors
+///
+/// Returns the topology errors of the reduction.
+pub fn boundary_face_area(topo: &Topology, face_id: FaceId) -> Result<Option<f64>, CheckError> {
+    if !matches!(
         topo.face(face_id)?.surface(),
         FaceSurface::Cylinder(_)
             | FaceSurface::Cone(_)
             | FaceSurface::Sphere(_)
             | FaceSurface::Torus(_)
-    );
-    if analytic && let Some(area) = boundary_area::analytic_face_area(topo, face_id)? {
-        return Ok(area);
+    ) {
+        return Ok(None);
     }
-    integrate_face_area(topo, face_id, fallback_order)
+    boundary_area::analytic_face_area(topo, face_id)
 }
 
 /// Integrate a face with the validated numerical controls in [`PropertiesOptions`].
@@ -830,6 +882,21 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
                 ));
             }
             uv.hole_vs = full_revolution_hole_vs(topo, face_id, s);
+            // A seam built of separate edges still reaches the apex, whose
+            // projection has no longitude of its own: such an outer wire is a
+            // rim joined to a seam, never a strand (`define_trimmed_integrator`).
+            let reach = face_boundary_v_extent(topo, face_id, s)
+                .map_or(0.0, |(lo, hi)| lo.abs().max(hi.abs()));
+            for oriented in topo.wire(face.outer_wire())?.edges() {
+                let edge = topo.edge(oriented.edge())?;
+                for vertex in [edge.start(), edge.end()] {
+                    let vertex = topo.vertex(vertex)?;
+                    if (vertex.point() - s.apex()).length() <= vertex.tolerance().max(1e-9 * reach)
+                    {
+                        uv.seamless_outer = false;
+                    }
+                }
+            }
             let sampled = integrate_with_trimming_to_pole::<_, AREA_ONLY>(
                 s,
                 u_range,
@@ -1978,6 +2045,19 @@ impl UvLoop {
     }
 }
 
+/// What the number of band strands beside an abscissa says about it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BandRule {
+    /// The bands are holes: the abscissa is out when an odd number of them
+    /// lie above it.
+    Holes,
+    /// The bands are the face's whole boundary (its outer wire wraps the
+    /// axis with no seam), closed by the other bands or by a cone's apex
+    /// below them all: the abscissa is in when an odd number of them lie
+    /// above it.
+    Boundary,
+}
+
 /// A face's boundary and holes in its surface's UV domain.
 #[derive(Debug, Clone, Default)]
 struct FaceUv {
@@ -1994,6 +2074,10 @@ struct FaceUv {
     /// integration range instead of masking abscissae (see
     /// [`full_revolution_hole_vs`]).
     hole_vs: Vec<f64>,
+    /// Whether the outer wire uses no edge twice: no seam runs through it,
+    /// so an outer wire that wraps the periodic axis is a whole rim, not a
+    /// rim joined to a seam (see `define_trimmed_integrator`).
+    seamless_outer: bool,
 }
 
 /// Bring nonwrapping torus pockets into an already resolved one-period chart.
@@ -2298,6 +2382,12 @@ where
     // A face is its outer wire minus its holes; keeping the face's own wires
     // is the only thing that keeps the two in step.
     debug_assert!(face.inner_wires().len() >= pockets.len() + bands.len());
+    let outer_edges = topo.wire(face.outer_wire())?.edges();
+    let seamless_outer = outer_edges.iter().enumerate().all(|(i, oriented)| {
+        outer_edges[i + 1..]
+            .iter()
+            .all(|other| other.edge() != oriented.edge())
+    });
 
     Ok(FaceUv {
         boundary,
@@ -2305,6 +2395,7 @@ where
         bands,
         u_periodic,
         hole_vs: Vec::new(),
+        seamless_outer,
     })
 }
 
@@ -2316,9 +2407,12 @@ struct UvTrim<'a> {
     outer: Option<&'a UvLoop>,
     /// Holes enclosing a patch: the abscissa is out when inside one.
     pockets: &'a [UvLoop],
-    /// Holes wrapping the periodic axis: the abscissa is out when an odd
-    /// number of them lie above it.
+    /// Loops wrapping the periodic axis, counted by `band_rule`: holes, out
+    /// when an odd number of them lie above the abscissa, unless they are the
+    /// face's whole boundary.
     bands: &'a [UvLoop],
+    /// How `bands` decide membership.
+    band_rule: BandRule,
     /// Whether `u` is periodic on this surface.
     u_periodic: bool,
     /// Segment indexes for the loops above, built once per trim (O06).
@@ -2379,10 +2473,19 @@ impl<'a> UvTrim<'a> {
             outer,
             pockets,
             bands,
+            band_rule: BandRule::Holes,
             u_periodic,
             index,
             min_u_cells: 0,
         }
+    }
+
+    /// A trim whose `bands` are the face's whole boundary (see
+    /// [`BandRule::Boundary`]); `pockets` are its holes.
+    fn wrapping_boundary(pockets: &'a [UvLoop], bands: &'a [UvLoop]) -> Self {
+        let mut trim = Self::new(None, pockets, bands, true);
+        trim.band_rule = BandRule::Boundary;
+        trim
     }
 
     /// This trim with the knot-aligned fixed rule cutting `u` into at least
@@ -2446,7 +2549,7 @@ impl<'a> UvTrim<'a> {
             .zip(&self.index.bands)
             .map(|(band, index)| band.strands_above(index.crossing_u.as_ref(), u, v))
             .sum();
-        strands.is_multiple_of(2)
+        strands.is_multiple_of(2) == (self.band_rule == BandRule::Holes)
     }
 
     /// Whether any loop cuts the domain, so the quadrature must be split on
@@ -5830,8 +5933,28 @@ macro_rules! define_trimmed_integrator {
             let winding = uv.boundary.u_winding();
             let full_revolution = uv.u_periodic && winding.abs() >= tau - WRAP_EPS;
             let v_degenerate = (v_max - v_min) <= 1e-9;
+            // Whether the face's wrapping loops are the strands of its boundary
+            // (see the strand branch below): a seamless outer wire that wraps,
+            // climbing and falling itself, or a latitude with an inner wire
+            // that wraps and climbs and falls.
+            let wavy_band = uv.bands.iter().any(|band| {
+                let (lo, hi) = band
+                    .points
+                    .iter()
+                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| {
+                        (lo.min(p.y()), hi.max(p.y()))
+                    });
+                hi - lo > 1e-9
+            });
+            let strands = full_revolution
+                && uv.seamless_outer
+                && if v_degenerate {
+                    wavy_band
+                } else {
+                    apex_v.is_some() || !uv.bands.is_empty()
+                };
 
-            if full_revolution && v_degenerate {
+            if full_revolution && v_degenerate && !strands {
                 // Polar cap (e.g. a sphere hemisphere bounded only by one latitude
                 // circle): the cap runs from that latitude to a pole. The winding sign
                 // (CCW vs CW boundary) selects which pole — the boundary's interior
@@ -5861,9 +5984,52 @@ macro_rules! define_trimmed_integrator {
                     &UvTrim::pockets_of(uv),
                     scale,
                 )
+            } else if strands {
+                // An outer wire that wraps the axis with no seam and climbs and
+                // falls (an oblique section's rim), or a latitude outer wire
+                // over an inner one that does: the face runs from the rim to
+                // the cone's apex, or between the wrapping rims of a band, not
+                // over the band of the outer rim's own `v` extent (nor from the
+                // latitude to the inner rim's mean `v`), which read such faces
+                // several percent to several times off. Every wrapping loop is
+                // a strand of that boundary; the face is where an odd number of
+                // them lie above.
+                let mut bands = vec![uv.boundary.clone().oriented_along_u()];
+                bands.extend(uv.bands.iter().cloned());
+                let (lo, hi) = bands
+                    .iter()
+                    .flat_map(|band| band.points.iter().map(|p| p.y()))
+                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
+                        (lo.min(v), hi.max(v))
+                    });
+                let v_dom = match apex_v {
+                    None => (lo, hi),
+                    // A strand at the apex (a sampled degenerate apex edge)
+                    // projects to it only to rounding.
+                    Some(apex) if apex <= 1e-9f64.mul_add(hi - lo, lo) => (apex.min(lo), hi),
+                    // Below the apex (`v < 0`) the cone's chart is the
+                    // carrier's mirror image across its axis, which reads the
+                    // area but not the moments; across it, the boundary is not
+                    // on one nappe. Refuse rather than return either.
+                    Some(_) => {
+                        return Err(CheckError::IntegrationFailed(
+                            "a cone face's wrapping boundary reaches below its apex".into(),
+                        ));
+                    }
+                };
+                $integrate::<_, AREA_ONLY>(
+                    surface,
+                    (u_min, u_min + tau),
+                    v_dom,
+                    rule,
+                    sign,
+                    &UvTrim::wrapping_boundary(&uv.pockets, &bands),
+                    scale,
+                )
             } else if full_revolution {
-                // Full-revolution band (cone/cylinder): integrate the whole revolution
-                // over the band's v-extent.
+                // A lone wrapping loop on a cylinder bounds no finite face on
+                // its own: integrate the whole revolution over its v-extent,
+                // as this path always has.
                 $integrate::<_, AREA_ONLY>(
                     surface,
                     (u_min, u_min + tau),
@@ -7182,6 +7348,7 @@ mod tests {
             bands: vec![band],
             u_periodic: true,
             hole_vs: Vec::new(),
+            seamless_outer: false,
         };
         let v_range = (0.0, 3.0);
         let bits = |spans: &[(f64, f64)]| -> Vec<[u64; 2]> {
