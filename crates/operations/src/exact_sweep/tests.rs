@@ -118,6 +118,52 @@ fn circle_along_a_three_quarter_arc_is_one_torus_band_and_exact() {
     assert!(rel(measured, exact) < 1e-9, "{measured} vs {exact}");
 }
 
+#[test]
+fn an_axis_crossing_between_profile_samples_is_refused_atomically() {
+    for (delta, crosses_axis) in [(1e-4, true), (-1e-4, false)] {
+        let mut topo = Topology::new();
+        let u = 33.0_f64 / 64.0;
+        let start = p(u * u - delta, 0.0, 0.0);
+        let end = p((1.0 - u).powi(2) - delta, 0.0, 1.0);
+        let spline = NurbsCurve::new(
+            2,
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            vec![start, p(start.x() - u, 0.0, 0.5), end],
+            vec![1.0; 3],
+        )
+        .unwrap();
+        let edge = remus_topology::builder::make_nurbs_edge(&mut topo, start, end, spline, 1e-7);
+        let upper = p(1.0, 0.0, 1.0);
+        let lower = p(1.0, 0.0, 0.0);
+        let edges = [
+            edge,
+            line(&mut topo, end, upper),
+            line(&mut topo, upper, lower),
+            line(&mut topo, lower, start),
+        ];
+        let wire = topo.add_wire(
+            Wire::new(
+                edges.map(|edge| OrientedEdge::new(edge, true)).to_vec(),
+                true,
+            )
+            .unwrap(),
+        );
+        let profile = plane_face(&mut topo, wire, vec![], Y, start);
+        let path = arc(&mut topo, p(0.0, 0.0, 0.0), 1.0, 0.0, FRAC_PI_2);
+        let slots = topo.allocated_slot_count();
+        let result = sweep_exact(&mut topo, profile, &[path]);
+        if crosses_axis {
+            assert!(
+                matches!(result, Err(OperationsError::InvalidInput { reason }) if reason.contains("transversally"))
+            );
+            assert_eq!(topo.allocated_slot_count(), slots);
+            assert_eq!(topo.num_faces(), 1);
+        } else {
+            assert_valid(&topo, result.unwrap(), "near-axis profile");
+        }
+    }
+}
+
 /// Line, quarter arc, line: two cylinders and a torus quadrant.
 fn bend(topo: &mut Topology) -> Vec<EdgeId> {
     vec![

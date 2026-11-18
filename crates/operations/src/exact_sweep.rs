@@ -36,8 +36,10 @@
 
 use std::f64::consts::FRAC_PI_2;
 
+use remus_math::context::OperationContext;
 use remus_math::curves::{Circle3D, Ellipse3D, Hyperbola3D, Parabola3D};
 use remus_math::nurbs::curve::NurbsCurve;
+use remus_math::nurbs::reuse::{ReuseError, certify_rotational_crossing};
 use remus_math::nurbs::surface::NurbsSurface;
 use remus_math::surfaces::{ConicalSurface, CylindricalSurface, ToroidalSurface};
 use remus_math::tolerance::Tolerance;
@@ -862,10 +864,8 @@ fn analytic_side(
     }
 }
 
-/// Refuse a profile section the motion does not cross transversally: the
-/// speed across the section plane must keep one sign, with a margin, over the
-/// whole boundary (it is affine on the plane, so the boundary decides).
-/// Returns that sign.
+/// Read the crossing sign at the profile samples. For rotations this
+/// nominates the sign for the whole-boundary proof.
 fn crossing_sign(
     samples: &[Point3],
     normal: Vec3,
@@ -1161,16 +1161,33 @@ fn sweep_exact_impl(
     };
 
     // Transversality, with one crossing sense along the whole chain.
+    let context = OperationContext::new();
     let mut sigma = None;
     for (k, segment) in chain.iter().enumerate() {
         let placed: Vec<Point3> = all.iter().map(|&p| placements[k].point(p)).collect();
-        let sign = crossing_sign(
-            &placed,
-            placements[k].vec(normal),
-            &segment.motion,
-            margin,
-            k,
-        )?;
+        let normal = placements[k].vec(normal);
+        let sign = crossing_sign(&placed, normal, &segment.motion, margin, k)?;
+        if let Motion::Rotate { origin, axis, .. } = segment.motion {
+            for piece in loops.iter().flat_map(|lp| &lp.pieces) {
+                let curve = placements[k].nurbs(&piece.nurbs)?;
+                match certify_rotational_crossing(
+                    &curve,
+                    origin,
+                    axis,
+                    normal * sign,
+                    margin,
+                    &context,
+                ) {
+                    Ok(true) => {}
+                    Err(ReuseError::Math(error)) => return Err(error.into()),
+                    _ => {
+                        return Err(invalid(format!(
+                            "path segment {k} cannot be shown to cross the entire sweep profile transversally"
+                        )));
+                    }
+                }
+            }
+        }
         if (*sigma.get_or_insert(sign) > 0.0) != (sign > 0.0) {
             return Err(invalid(format!(
                 "path segment {k} crosses the sweep profile's plane the other way: the sweep \

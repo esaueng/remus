@@ -8,7 +8,8 @@
 
 use super::reuse::{ReuseBudget, ReuseError};
 use super::{NurbsCurve, NurbsSurface};
-use crate::vec::Point3;
+use crate::analytic_intersection::AnalyticSurface;
+use crate::vec::{Point3, Vec3};
 
 const MAX_DEGREE: usize = 12;
 
@@ -684,6 +685,260 @@ fn homogeneous_curve(
         }
     }
     Ok(output)
+}
+
+/// Try every native span, subdividing an undecided hull a bounded number of times.
+fn prove_curve_spans(
+    curve: &NurbsCurve,
+    budget: &mut ReuseBudget<'_>,
+    mut prove: impl FnMut((f64, f64), &mut ReuseBudget<'_>) -> Result<bool, ReuseError>,
+) -> Result<bool, ReuseError> {
+    let breaks = common_breaks(curve.knots(), &[], curve.domain(), budget)?;
+    let mut pending = Vec::new();
+    for span in breaks.windows(2) {
+        pending.push(((span[0], span[1]), 0));
+        while let Some((range, depth)) = pending.pop() {
+            if prove(range, budget)? {
+                continue;
+            }
+            let mid = range.0.midpoint(range.1);
+            if depth == 8 || mid <= range.0 || mid >= range.1 {
+                return Ok(false);
+            }
+            pending.push(((mid, range.1), depth + 1));
+            pending.push(((range.0, mid), depth + 1));
+        }
+    }
+    Ok(true)
+}
+
+fn interval_cross(a: [Interval; 3], b: [Interval; 3]) -> Result<[Interval; 3], ReuseError> {
+    let component = |i: usize, j: usize| a[i].mul(b[j])?.sub(a[j].mul(b[i])?);
+    Ok([component(1, 2)?, component(2, 0)?, component(0, 1)?])
+}
+
+fn interval_dot(a: [Interval; 3], b: [Interval; 3]) -> Result<Interval, ReuseError> {
+    a.into_iter()
+        .zip(b)
+        .try_fold(Interval::ZERO, |sum, (x, y)| sum.add(x.mul(y)?))
+}
+
+pub(super) fn rotational_crossing(
+    curve: &NurbsCurve,
+    origin: Point3,
+    axis: Vec3,
+    signed_normal: Vec3,
+    margin: f64,
+    budget: &mut ReuseBudget<'_>,
+) -> Result<bool, ReuseError> {
+    let axis = axis.0.map(Interval::point);
+    let normal = signed_normal.0.map(Interval::point);
+    let margin = Interval::point(margin);
+    let passes = |position: [Interval; 3], weight: Interval| -> Result<bool, ReuseError> {
+        let velocity = interval_cross(axis, position)?;
+        let along = interval_dot(velocity, normal)?;
+        let speed = interval_dot(velocity, velocity)?
+            .hi
+            .max(0.0)
+            .sqrt()
+            .next_up();
+        Ok(weight.lo > 0.0 && along.lo > margin.mul(Interval::point(speed.max(weight.hi)))?.hi)
+    };
+
+    // The inequality is convex in the velocity. Proving it at all control
+    // points proves it everywhere for positive weights, even on non-clamped
+    // curves. Refine inconclusive hulls in homogeneous Bernstein form.
+    budget.spend(curve.control_points().len())?;
+    let mut in_hull = curve.weights().iter().all(|w| w.is_finite() && *w > 0.0);
+    for point in curve.control_points() {
+        let x = Interval::point(point.x()).sub(Interval::point(origin.x()))?;
+        let y = Interval::point(point.y()).sub(Interval::point(origin.y()))?;
+        let z = Interval::point(point.z()).sub(Interval::point(origin.z()))?;
+        in_hull &= passes([x, y, z], Interval::ONE)?;
+    }
+    if in_hull {
+        return Ok(true);
+    }
+    charge_curve(curve, budget)?;
+    prove_curve_spans(curve, budget, |range, budget| {
+        let h = homogeneous_curve(curve, range, origin, budget)?;
+        for k in 0..=curve.degree() {
+            if !passes(
+                std::array::from_fn(|j| h[j].coefficients[k]),
+                h[3].coefficients[k],
+            )? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    })
+}
+
+/// The sign of the cylinder or forward cone's implicit function on a span.
+/// Keep the positive nappe test separate from the cone's squared equation.
+fn on_quadric_side(
+    h: &[Polynomial; 4],
+    axis: Vec3,
+    carrier: AnalyticSurface<'_>,
+    inside: bool,
+    budget: &mut ReuseBudget<'_>,
+) -> Result<bool, ReuseError> {
+    let component = |j: usize, k: usize, budget: &mut ReuseBudget<'_>| {
+        h[j].scaled(Interval::point(axis.0[k]), budget)?
+            .sub(&h[k].scaled(Interval::point(axis.0[j]), budget)?, budget)
+    };
+    let radial = [
+        component(1, 2, budget)?,
+        component(2, 0, budget)?,
+        component(0, 1, budget)?,
+    ];
+    let radial_squared = polynomial_dot(&radial, &radial, budget)?;
+    let (lhs, rhs) = match carrier {
+        AnalyticSurface::Cylinder(cylinder) => {
+            let axis = axis.0.map(Interval::point);
+            let r = Interval::point(cylinder.radius());
+            let threshold = r.mul(r)?.mul(interval_dot(axis, axis)?)?;
+            (
+                radial_squared,
+                h[3].product(&h[3], budget)?.scaled(threshold, budget)?,
+            )
+        }
+        AnalyticSurface::Cone(cone) => {
+            let height = h[0]
+                .scaled(Interval::point(axis.x()), budget)?
+                .add(&h[1].scaled(Interval::point(axis.y()), budget)?, budget)?
+                .add(&h[2].scaled(Interval::point(axis.z()), budget)?, budget)?;
+            if !inside && height.coefficients.iter().all(|c| c.hi < 0.0) {
+                return Ok(true);
+            }
+            if inside && height.positive_lower().is_err() {
+                return Ok(false);
+            }
+            let (sin, cos) = cone.half_angle().sin_cos();
+            // Include roundoff from the trigonometric evaluation.
+            let trig_error = Interval::rounded(-8.0 * f64::EPSILON, 8.0 * f64::EPSILON)?;
+            let sin = Interval::point(sin).add(trig_error)?;
+            let cos = Interval::point(cos).add(trig_error)?;
+            (
+                radial_squared.scaled(sin.mul(sin)?, budget)?,
+                height
+                    .product(&height, budget)?
+                    .scaled(cos.mul(cos)?, budget)?,
+            )
+        }
+        AnalyticSurface::Sphere(_) | AnalyticSurface::Torus(_) | AnalyticSurface::Plane { .. } => {
+            return Ok(false);
+        }
+    };
+    let signed = if inside {
+        rhs.sub(&lhs, budget)?
+    } else {
+        lhs.sub(&rhs, budget)?
+    };
+    Ok(signed.positive_lower().is_ok())
+}
+
+#[allow(clippy::float_cmp)] // Shared basis identity is an algebraic precondition.
+pub(super) fn ruled_offset_section(
+    inside: &NurbsCurve,
+    outside: &NurbsCurve,
+    section: &NurbsCurve,
+    carrier: AnalyticSurface<'_>,
+    fraction: f64,
+    band: f64,
+    budget: &mut ReuseBudget<'_>,
+) -> Result<bool, ReuseError> {
+    let (origin, axis) = match carrier {
+        AnalyticSurface::Cylinder(c) => (c.origin(), c.axis()),
+        AnalyticSurface::Cone(c) => (c.apex(), c.axis()),
+        AnalyticSurface::Sphere(_) | AnalyticSurface::Torus(_) | AnalyticSurface::Plane { .. } => {
+            return Ok(false);
+        }
+    };
+    for curve in [inside, outside, section] {
+        charge_curve(curve, budget)?;
+        if curve.degree() != inside.degree()
+            || curve.knots() != inside.knots()
+            || curve.weights() != inside.weights()
+        {
+            return Ok(false);
+        }
+    }
+    if !(0.0..=1.0).contains(&fraction) || !band.is_finite() || band <= 0.0 {
+        return Ok(false);
+    }
+
+    // Equal weights make each ruling a linear blend. The control hull gives
+    // one upper bound for all ruling lengths and accounts for rounding in
+    // the emitted section's control points.
+    let mut length = 0.0_f64;
+    let mut error = 0.0_f64;
+    for ((a, b), q) in inside
+        .control_points()
+        .iter()
+        .zip(outside.control_points())
+        .zip(section.control_points())
+    {
+        let mut ruling = Interval::ZERO;
+        let mut residual = Interval::ZERO;
+        for j in 0..3 {
+            let a = Interval::point(a.0[j]);
+            let delta = Interval::point(b.0[j]).sub(a)?;
+            let difference = Interval::point(q.0[j])
+                .sub(a)?
+                .sub(delta.mul(Interval::point(fraction))?)?;
+            ruling = ruling.add(Interval::point(delta.abs_upper()))?;
+            residual = residual.add(Interval::point(difference.abs_upper()))?;
+        }
+        length = length.max(ruling.hi);
+        error = error.max(residual.hi);
+    }
+    if length <= 0.0 || error >= band {
+        return Ok(false);
+    }
+    let width = Interval::point(band)
+        .sub(Interval::point(error))?
+        .div(Interval::point(length))?
+        .lo;
+    let lower = (fraction - width).next_up().max(0.0);
+    let upper = (fraction + width).next_down().min(1.0);
+    if !(lower <= fraction && fraction <= upper) {
+        return Ok(false);
+    }
+
+    // Opposite endpoint signs give exactly one crossing by convexity of
+    // the cylinder or forward cone's interior. A second bracket near the
+    // selected iso-curve bounds the distance to that crossing.
+    prove_curve_spans(inside, budget, |range, budget| {
+        let a = homogeneous_curve(inside, range, origin, budget)?;
+        let b = homogeneous_curve(outside, range, origin, budget)?;
+        if !on_quadric_side(&a, axis, carrier, true, budget)?
+            || !on_quadric_side(&b, axis, carrier, false, budget)?
+        {
+            return Ok(false);
+        }
+        for (v, inside) in [(lower, true), (upper, false)] {
+            if v == 0.0 || v == 1.0 {
+                continue;
+            }
+            let v = Interval::point(v);
+            let complement = Interval::ONE.sub(v)?;
+            let blend = |j: usize, budget: &mut ReuseBudget<'_>| {
+                a[j].scaled(complement, budget)?
+                    .add(&b[j].scaled(v, budget)?, budget)
+            };
+            let h = [
+                blend(0, budget)?,
+                blend(1, budget)?,
+                blend(2, budget)?,
+                a[3].clone(),
+            ];
+            if !on_quadric_side(&h, axis, carrier, inside, budget)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    })
 }
 
 fn homogeneous_surface(
