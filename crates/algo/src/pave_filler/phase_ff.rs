@@ -14,6 +14,7 @@ use remus_math::analytic_intersection;
 use remus_math::context::OperationContext;
 use remus_math::det_hash::{DetHashMap, DetState};
 use remus_math::nurbs::intersection as nurbs_isect;
+use remus_math::nurbs::reuse::{ReuseError, certify_ruled_offset_section};
 use remus_math::tolerance::Tolerance;
 use remus_math::traits::ParametricCurve;
 use remus_math::vec::{Point3, Vec3};
@@ -8915,13 +8916,13 @@ fn compute_raw_curves_banded(
         }
 
         (analytic_surf, FaceSurface::Nurbs(nurbs)) if analytic_surf.as_analytic().is_some() => {
-            match exact_ruled_offset_section(analytic_surf, nurbs, context.tolerance)? {
+            match exact_ruled_offset_section(analytic_surf, nurbs, context)? {
                 Some(exact) => Ok(exact),
                 None => analytic_nurbs_intersection(analytic_surf, v_range_a, nurbs, context),
             }
         }
         (FaceSurface::Nurbs(nurbs), analytic_surf) if analytic_surf.as_analytic().is_some() => {
-            match exact_ruled_offset_section(analytic_surf, nurbs, context.tolerance)? {
+            match exact_ruled_offset_section(analytic_surf, nurbs, context)? {
                 Some(exact) => Ok(exact),
                 None => analytic_nurbs_intersection(analytic_surf, v_range_b, nurbs, context),
             }
@@ -9911,17 +9912,17 @@ fn exact_ruled_plane_section(
 /// points interpolate the two rows. Marching it instead stops at the loop's
 /// turning points and leaves an open fragment, so no face split closes.
 ///
-/// The section is taken only when every sampled ruling crosses the surface
-/// strictly, their crossings agree on one `v*`, and the iso-curve lies on
-/// the surface within the fits' own scale at dense samples; any other wall
-/// keeps the general intersection.
+/// Sampled rulings nominate `v*`. The whole-span certificate then proves one
+/// crossing per ruling and bounds its displacement from the emitted curve.
+/// An undecided wall uses the general intersection.
 #[allow(clippy::float_cmp)] // Knot and weight identity is an algebraic precondition.
 #[cfg_attr(target_arch = "wasm32", inline(never))]
 fn exact_ruled_offset_section(
     analytic: &FaceSurface,
     surface: &remus_math::nurbs::surface::NurbsSurface,
-    tol: Tolerance,
+    context: &OperationContext,
 ) -> Result<Option<Vec<RawCurve>>, AlgoError> {
+    let tol = context.tolerance;
     let points = surface.control_points();
     let weights = surface.weights();
     let knots_v = surface.knots_v();
@@ -9981,34 +9982,17 @@ fn exact_ruled_offset_section(
         });
     let band = (8e-7 * scale).max(4.0 * tol.linear);
     let (v0, v1) = surface.domain_v();
-    // Every knot span is sampled on its own, however short: a span the
-    // samples skipped could leave the surface unseen.
-    let mut spans: Vec<(f64, f64)> = surface
-        .knots_u()
-        .windows(2)
-        .filter(|k| k[1] > k[0])
-        .map(|k| (k[0], k[1]))
-        .collect();
-    if spans.is_empty() {
-        spans.push(surface.domain_u());
-    }
-    let span_params = |per: usize| {
-        let mut params = Vec::with_capacity(spans.len() * per + 1);
-        for &(a, b) in &spans {
-            for j in 0..per {
-                #[allow(clippy::cast_precision_loss)]
-                params.push(a + (b - a) * (j as f64 / per as f64));
-            }
-        }
-        params.push(spans[spans.len() - 1].1);
-        params
-    };
+    let (u0, u1) = surface.domain_u();
+    let inside_at_start = offset(surface.evaluate(u0, v0)) < 0.0;
     let mut fractions = Vec::new();
     let mut longest = 0.0_f64;
-    for u in span_params(8) {
+    // A small grid only nominates a fraction. The certificate below visits
+    // every knot span, including those shorter than the sample spacing.
+    for k in 0..=8 {
+        let u = (u1 - u0).mul_add(f64::from(k) / 8.0, u0);
         let (a, b) = (surface.evaluate(u, v0), surface.evaluate(u, v1));
         let (ga, gb) = (offset(a), offset(b));
-        if !(ga.abs() > band && gb.abs() > band && ga * gb < 0.0) {
+        if !(ga.abs() > band && gb.abs() > band && ga * gb < 0.0 && (ga < 0.0) == inside_at_start) {
             return Ok(None);
         }
         longest = longest.max((b - a).length());
@@ -10039,19 +10023,40 @@ fn exact_ruled_offset_section(
         .map(|row| row[0] + (row[1] - row[0]) * fraction)
         .collect();
     let curve_weights: Vec<f64> = weights.iter().map(|row| row[0]).collect();
-    let curve = remus_math::nurbs::curve::NurbsCurve::new(
-        surface.degree_u(),
-        surface.knots_u().to_vec(),
-        control_points,
-        curve_weights,
-    )?;
-    let domain = curve.domain();
-    // The iso-curve shares the surface's u knots, so its spans are these.
-    for t in span_params(32) {
-        if offset(curve.evaluate(t)).abs() > band {
-            return Ok(None);
-        }
+    let make_curve = |points| {
+        remus_math::nurbs::curve::NurbsCurve::new(
+            surface.degree_u(),
+            surface.knots_u().to_vec(),
+            points,
+            curve_weights.clone(),
+        )
+    };
+    let curve = make_curve(control_points)?;
+    let i = usize::from(!inside_at_start);
+    let inside = make_curve(points.iter().map(|row| row[i]).collect())?;
+    let outside = make_curve(points.iter().map(|row| row[1 - i]).collect())?;
+    let Some(carrier) = analytic.as_analytic() else {
+        return Ok(None);
+    };
+    let from_inside = if inside_at_start {
+        fraction
+    } else {
+        1.0 - fraction
+    };
+    match certify_ruled_offset_section(
+        &inside,
+        &outside,
+        &curve,
+        carrier,
+        from_inside,
+        band,
+        context,
+    ) {
+        Ok(true) => {}
+        Err(ReuseError::Math(error)) => return Err(error.into()),
+        _ => return Ok(None),
     }
+    let domain = curve.domain();
     Ok(Some(vec![RawCurve {
         bbox: curve.aabb(),
         p_start: curve.evaluate(domain.0),

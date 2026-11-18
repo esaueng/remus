@@ -9,12 +9,24 @@ use remus_math::vec::{Point3, Vec3};
 use remus_topology::edge::EdgeCurve;
 use remus_topology::face::FaceSurface;
 
-use super::exact_ruled_offset_section;
+use super::{AlgoError, OperationContext, RawCurve, exact_ruled_offset_section};
 
 const Z: Vec3 = Vec3::new(0.0, 0.0, 1.0);
 
 fn cylinder(x: f64, radius: f64) -> FaceSurface {
     FaceSurface::Cylinder(CylindricalSurface::new(Point3::new(x, 0.0, 0.0), Z, radius).unwrap())
+}
+
+fn section(
+    analytic: &FaceSurface,
+    surface: &NurbsSurface,
+    tol: Tolerance,
+) -> Result<Option<Vec<RawCurve>>, AlgoError> {
+    exact_ruled_offset_section(
+        analytic,
+        surface,
+        &OperationContext::new().with_tolerance(tol),
+    )
 }
 
 /// A wall linear in v from `rows[i].0` to `rows[i].1`, degree one along u.
@@ -48,10 +60,10 @@ fn a_radial_offset_family_meets_the_cylinder_on_its_iso_curve() {
     // dip inside it.
     let surface = wall(vec![0.0, 0.0, 1.0, 2.0, 3.0, 3.0], &rows);
     let tol = Tolerance::loose();
-    let section = exact_ruled_offset_section(&cylinder(0.0, 10.0), &surface, tol).unwrap();
+    let curved = section(&cylinder(0.0, 10.0), &surface, tol).unwrap();
     // The polygon's chords leave radius 10 by up to 10·(1 − cos 0.1) = 0.05,
     // beyond any fit band: the shortcut refuses rather than guess.
-    assert!(section.is_none());
+    assert!(curved.is_none());
 
     // The exact radial family of a straight generator: a line along Z at
     // angle 0, from radius 9 to 11, meets radius 10 on the line x = 10.
@@ -60,7 +72,7 @@ fn a_radial_offset_family_meets_the_cylinder_on_its_iso_curve() {
         (Point3::new(9.0, 0.0, 5.0), Point3::new(11.0, 0.0, 5.0)),
     ];
     let surface = wall(vec![0.0, 0.0, 1.0, 1.0], &rows);
-    let section = exact_ruled_offset_section(&cylinder(0.0, 10.0), &surface, Tolerance::new())
+    let section = section(&cylinder(0.0, 10.0), &surface, Tolerance::new())
         .unwrap()
         .expect("a radial family takes the iso-curve");
     let EdgeCurve::NurbsCurve(curve) = &section[0].curve else {
@@ -87,8 +99,7 @@ fn a_short_knot_span_off_the_family_is_never_skipped() {
             row(1.0, 9.0),
         ],
     );
-    let section =
-        exact_ruled_offset_section(&cylinder(0.0, 10.0), &surface, Tolerance::new()).unwrap();
+    let section = section(&cylinder(0.0, 10.0), &surface, Tolerance::new()).unwrap();
     assert!(section.is_none());
 }
 
@@ -111,7 +122,47 @@ fn a_far_translated_pair_keeps_the_band_of_its_own_size() {
             ),
         ],
     );
-    let section =
-        exact_ruled_offset_section(&cylinder(x, 2000.0), &surface, Tolerance::new()).unwrap();
+    let section = section(&cylinder(x, 2000.0), &surface, Tolerance::new()).unwrap();
     assert!(section.is_none());
+}
+
+#[test]
+fn a_rational_span_can_hide_a_gap_between_sampled_rulings() {
+    let wall = |middle: f64| {
+        let row = |x, y, z| vec![Point3::new(x, y, z), Point3::new(x + 2.0, y, z)];
+        NurbsSurface::new(
+            2,
+            1,
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![
+                row(9.0, 0.0, 0.0),
+                row(middle, 0.0, 1.0),
+                row(9.0, 0.001, 2.0),
+            ],
+            vec![vec![1.0; 2], vec![1e8; 2], vec![1e16; 2]],
+        )
+        .unwrap()
+    };
+    let carrier = cylinder(0.0, 10.0);
+    let surface = wall(12.0);
+    // The inner endpoint goes outside the cylinder at this parameter,
+    // although the 32-point-per-span grid stays inside.
+    assert!(surface.evaluate(1e-8, 0.0).x() > 10.49);
+    for k in 0..=32 {
+        assert!(surface.evaluate(f64::from(k) / 32.0, 0.0).x() < 10.0);
+    }
+    assert!(
+        section(&carrier, &surface, Tolerance::new())
+            .unwrap()
+            .is_none()
+    );
+
+    // The same weights and shape in z do have a section if the middle row
+    // stays near the common offset.
+    assert!(
+        section(&carrier, &wall(9.0), Tolerance::new())
+            .unwrap()
+            .is_some()
+    );
 }
