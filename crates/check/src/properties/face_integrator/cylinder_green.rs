@@ -59,10 +59,10 @@ use crate::CheckError;
 /// Composite pieces per edge and Gauss points per piece. A conic trim's
 /// integrand is a trigonometric polynomial of low order in its parameter (a
 /// cubic on a line), resolved to round-off well before this.
-const EDGE_PIECES: usize = 16;
-const EDGE_ORDER: usize = 16;
+pub(super) const EDGE_PIECES: usize = 16;
+pub(super) const EDGE_ORDER: usize = 16;
 /// Gauss points in the axial integration variable `s ∈ [0, 1]`.
-const AXIAL_ORDER: usize = 3;
+pub(super) const AXIAL_ORDER: usize = 3;
 /// How far a fitted NURBS trim's quadrature points may lie off the cylinder
 /// for the face to integrate on its boundary: the larger of
 /// [`NURBS_ON_SURFACE_ABS`] and this fraction of the radius. Every point is
@@ -70,16 +70,16 @@ const AXIAL_ORDER: usize = 3;
 /// rejects trims that are not curves on this surface; the sampled path reads
 /// the same projected trim. The kernel's crossing-cylinder sections sit up
 /// to 1.4e-3 off a r 10 wall (1.4e-4 of the radius).
-const NURBS_ON_SURFACE: f64 = 1e-3;
+pub(super) const NURBS_ON_SURFACE: f64 = 1e-3;
 /// Absolute floor of the on-surface bound, in model units.
-const NURBS_ON_SURFACE_ABS: f64 = 1e-3;
+pub(super) const NURBS_ON_SURFACE_ABS: f64 = 1e-3;
 /// Relative agreement a fitted trim's span-by-span and halved-span readings
 /// must reach in every term (see `readings_agree`).
 const FITTED_CONVERGENCE: f64 = 1e-9;
 
 /// The edge's velocity `dP/dt` at `t` for an exact trim (line, circle,
 /// ellipse); `None` for anything else.
-fn velocity(curve: &EdgeCurve, t: f64, start: Point3, end: Point3) -> Option<Vec3> {
+pub(super) fn velocity(curve: &EdgeCurve, t: f64, start: Point3, end: Point3) -> Option<Vec3> {
     match curve {
         EdgeCurve::Line => Some(end - start),
         EdgeCurve::Circle(c) => ParametricCurve::derivative_pair(c, t).map(|(d1, _)| d1),
@@ -93,7 +93,7 @@ fn velocity(curve: &EdgeCurve, t: f64, start: Point3, end: Point3) -> Option<Vec
 
 /// `[lo, hi]` cut at every distinct interior knot, each knot span then into
 /// `per_span` equal pieces.
-fn knot_pieces(knots: &[f64], lo: f64, hi: f64, per_span: usize) -> Vec<(f64, f64)> {
+pub(super) fn knot_pieces(knots: &[f64], lo: f64, hi: f64, per_span: usize) -> Vec<(f64, f64)> {
     let mut breaks = vec![lo];
     for &knot in knots {
         if knot > lo && knot < hi && breaks.last().is_none_or(|&last| knot > last) {
@@ -108,7 +108,7 @@ fn knot_pieces(knots: &[f64], lo: f64, hi: f64, per_span: usize) -> Vec<(f64, f6
 }
 
 /// `count` equal quadrature pieces of `[lo, hi]`.
-fn pieces(lo: f64, hi: f64, count: usize) -> impl Iterator<Item = (f64, f64)> {
+pub(super) fn pieces(lo: f64, hi: f64, count: usize) -> impl Iterator<Item = (f64, f64)> {
     let step = (hi - lo) / count as f64;
     (0..count).map(move |k| (step.mul_add(k as f64, lo), step.mul_add((k + 1) as f64, lo)))
 }
@@ -215,7 +215,7 @@ pub(super) fn integrate<const AREA_ONLY: bool>(
 /// length³, the first volume moments as length⁴ and the second as length⁵.
 /// Comparing every term, not only area and volume, keeps a reading whose
 /// higher moments are under-resolved from passing on a lucky cancellation.
-fn readings_agree(coarse: &Accumulator, fine: &Accumulator, length: f64) -> bool {
+pub(super) fn readings_agree(coarse: &Accumulator, fine: &Accumulator, length: f64) -> bool {
     let close = |a: f64, b: f64, power: i32| {
         (a - b).abs() <= FITTED_CONVERGENCE * (b.abs() + length.powi(power))
     };
@@ -239,10 +239,10 @@ fn readings_agree(coarse: &Accumulator, fine: &Accumulator, length: f64) -> bool
 }
 
 /// One boundary edge's curve and end points.
-struct EdgeSpan<'a> {
-    curve: &'a EdgeCurve,
-    start: Point3,
-    end: Point3,
+pub(super) struct EdgeSpan<'a> {
+    pub(super) curve: &'a EdgeCurve,
+    pub(super) start: Point3,
+    pub(super) end: Point3,
 }
 
 /// What every edge of one face is read against.
