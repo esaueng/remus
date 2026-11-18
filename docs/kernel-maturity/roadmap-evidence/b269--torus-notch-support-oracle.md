@@ -1,7 +1,7 @@
 ---
 row: B269
 ---
-Exit met 2026-11-18: the ignored witness is un-ignored and green. It already passes on main at 4b81ce74 (not bisected): the prepared
+Exit met 2026-11-18 (PR #1869): the ignored witness is un-ignored and green. It already passes on main at 4b81ce74 (not bisected): the prepared
 and one-shot classifiers both read (0, 1.3, 0) and (−1, 0, 0.3) `OnBoundary`.
 The witness (`qualify_edge_relations_tests.rs::ray_crossing_torus_tests::ray_crossing_torus_notch_curved_boundary_ready_repro`)
 is now held by a closed-form oracle,

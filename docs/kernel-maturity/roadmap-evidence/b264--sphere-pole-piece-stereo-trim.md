@@ -1,7 +1,7 @@
 ---
 row: B264
 ---
-Exit met 2026-11-18: the ignored witness is un-ignored and green. Two fallbacks, one cause: each projected a sphere trim onto a coordinate
+Exit met 2026-11-18 (PR #1869): the ignored witness is un-ignored and green. Two fallbacks, one cause: each projected a sphere trim onto a coordinate
 plane, which does not bound a strongly curved piece. Seed 5201's kept cap is
 bounded by the section curve and holds a pole, so it reached the 3D polygon
 fallback (`point_in_polygon_3d` along the Newell normal's dominant axis).
