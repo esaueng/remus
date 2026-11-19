@@ -48,6 +48,8 @@ mod nurbs_rows_oracle_tests;
 #[cfg(test)]
 mod parametric_split_oracle_tests;
 #[cfg(test)]
+mod point_edge_tests;
+#[cfg(test)]
 mod seamless_wrap_tests;
 mod sphere_latitude;
 
@@ -3615,6 +3617,25 @@ fn planar_wire_monomial_moments(
                     e2,
                 );
             }
+            EdgeCurve::NurbsCurve(nc) if nurbs_hull_is_point(nc) => {
+                // A curve inside a control hull that is one point to rounding
+                // (the zero-radius arc a partial revolve draws at a profile
+                // vertex on its axis) encloses no area. Its own moments are
+                // rounding noise, which no allowance relative to them can
+                // certify, so it is read as its straight chord, which closes
+                // the loop between its end vertices as the curve does.
+                let d = end - start;
+                accumulate_green_segment(
+                    &mut moments,
+                    (0.0, 1.0),
+                    8,
+                    dir_sign,
+                    |u| (start + d * u, d),
+                    origin,
+                    e1,
+                    e2,
+                );
+            }
             EdgeCurve::NurbsCurve(nc) => {
                 // A NURBS boundary that curve recognition identifies as a
                 // line, circle, ellipse, hyperbola, or parabola IS that curve
@@ -3727,6 +3748,48 @@ fn accumulate_hyperbola_green_segments(
 /// degree 6. This rule is never used for unrecognized rational spans or
 /// higher degrees: both can hide error from the volume order comparison.
 const NURBS_GREEN_ORDER: usize = 16;
+
+/// Control-hull extent per coordinate, in units of `f64::EPSILON` times the
+/// hull's largest coordinate magnitude, up to which [`nurbs_hull_is_point`]
+/// reads a NURBS curve as a point: a few dozen roundings of its coordinates,
+/// far below any curve whose extent the model can represent.
+const POINT_HULL_ROUNDINGS: f64 = 64.0;
+
+/// Whether a NURBS curve is one point to the rounding of its coordinates:
+/// every weight positive and finite (so the curve lies in its control
+/// points' convex hull) and every coordinate of every control point within
+/// [`POINT_HULL_ROUNDINGS`] roundings of the first's.
+///
+/// Such a curve lies in a box the size of its own coordinates' rounding, so
+/// its Green moments differ from its chord's by rounding of the face's
+/// moments at that position. The test reads the curve's data, never samples:
+/// a curve of any real extent fails it. Coordinates are compared one by one,
+/// never through a squared length, which would underflow for a hull of
+/// tiny coordinates and read a real curve there as a point.
+fn nurbs_hull_is_point(nc: &remus_math::nurbs::curve::NurbsCurve) -> bool {
+    let points = nc.control_points();
+    let Some(&first) = points.first() else {
+        return false;
+    };
+    if !nc.weights().iter().all(|w| w.is_finite() && *w > 0.0) {
+        return false;
+    }
+    let mut magnitude = 0.0_f64;
+    for p in points {
+        for c in [p.x(), p.y(), p.z()] {
+            if !c.is_finite() {
+                return false;
+            }
+            magnitude = magnitude.max(c.abs());
+        }
+    }
+    let limit = POINT_HULL_ROUNDINGS * f64::EPSILON * magnitude.max(f64::MIN_POSITIVE);
+    points.iter().all(|p| {
+        (p.x() - first.x()).abs() <= limit
+            && (p.y() - first.y()).abs() <= limit
+            && (p.z() - first.z()).abs() <= limit
+    })
+}
 
 fn has_exact_polynomial_green_rule(nc: &remus_math::nurbs::curve::NurbsCurve) -> bool {
     // Unit weights are an algebraic precondition, not a closeness test.
