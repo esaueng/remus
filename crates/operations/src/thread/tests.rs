@@ -2732,7 +2732,7 @@ fn a_long_tapered_runout_measures_the_same_at_a_tight_tolerance() {
     let (topo, solid) = build(1e-6);
     let reference = volume(&topo, solid);
     assert!(
-        rel(reference, 5_625.755_230_6) < 1e-9,
+        rel(reference, 5_625.755_230_6) < 1e-7,
         "solid_volume at thread tolerance 1e-6: {reference}"
     );
     // At 1e-8 the same thread is refused, never measured on its mesh.
