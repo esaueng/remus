@@ -663,10 +663,14 @@ fn is_closed_full_turn_circle_rim(
         let EdgeCurve::Circle(circle) = edge.curve() else {
             return Ok(false);
         };
-        // Split native rims share their carrier. Other parameter frames keep
-        // the established path rather than inferring a phase from samples.
-        if circle.center() != reference.center()
-            || circle.radius().to_bits() != reference.radius().to_bits()
+        // Split native rims share their carrier, up to the rounding a boolean
+        // that rebuilds an arc can leave in its centre and radius (B275: an
+        // r2 rim split by a box carried arcs of radius 2.0000000000000004,
+        // which kept the doubled seam in the chart and opened the mesh).
+        // Other parameter frames keep the established path rather than
+        // inferring a phase from samples.
+        if (circle.center() - reference.center()).length() > tol
+            || (circle.radius() - reference.radius()).abs() > tol
             || circle.u_axis() != reference.u_axis()
             || circle.v_axis() != reference.v_axis()
         {
@@ -716,13 +720,13 @@ pub(super) fn tessellate_revolved_with_holes(
     use remus_math::cdt::Cdt;
     use remus_math::vec::Point2;
 
-    let outer_wire = topo.wire(face_data.outer_wire())?;
+    let full_outer_wire = topo.wire(face_data.outer_wire())?;
     // Only a doubled use of the same edge is a removable chart seam. Two
     // distinct generator edges can bound a partial cone and must remain.
     let rim_only;
     let outer_wire = if let Some((_, apex_point)) = apex {
         let tol = remus_math::tolerance::Tolerance::default().linear;
-        let boundary = outer_wire.edges();
+        let boundary = full_outer_wire.edges();
         let mut use_counts = DetHashMap::default();
         for oriented in boundary {
             *use_counts.entry(oriented.edge()).or_insert(0_usize) += 1;
@@ -751,13 +755,13 @@ pub(super) fn tessellate_revolved_with_holes(
             .filter_map(|(&oriented, omit)| (!omit).then_some(oriented))
             .collect();
         if kept.len() == boundary.len() || !is_closed_full_turn_circle_rim(topo, &kept)? {
-            outer_wire
+            full_outer_wire
         } else {
             rim_only = remus_topology::wire::Wire::new(kept, true)?;
             &rim_only
         }
     } else {
-        outer_wire
+        full_outer_wire
     };
     let (mut all_positions, mut outer_uvs) =
         sample_cylinder_wire(topo, outer_wire, cyl, deflection, angular_tol, edge_points)?;
@@ -767,12 +771,34 @@ pub(super) fn tessellate_revolved_with_holes(
 
     // A single-rim outer wire (all samples at one `v`) only bounds a chart
     // when the face closes on a cone apex; synthesize that boundary.
-    let rim_v = outer_uvs
-        .iter()
-        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &(_, v)| {
-            (lo.min(v), hi.max(v))
-        });
-    let single_rim = rim_v.1 - rim_v.0 <= 1e-9 * (rim_v.1.abs() + rim_v.0.abs() + 1.0);
+    let v_span = |uvs: &[CylinderUv]| {
+        uvs.iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &(_, v)| {
+                (lo.min(v), hi.max(v))
+            })
+    };
+    let is_single_rim = |(lo, hi): (f64, f64)| hi - lo <= 1e-9 * (hi.abs() + lo.abs() + 1.0);
+    let mut rim_v = v_span(&outer_uvs);
+    if !std::ptr::eq(outer_wire, full_outer_wire) && !is_single_rim(rim_v) {
+        // The rim check accepts arcs whose carriers agree within the linear
+        // tolerance; one that sits off the others along the axis can still
+        // spread the rim over more `v` than the apex synthesis below admits.
+        // Without the synthesized apex the dropped seam leaves the chart
+        // unbounded towards the tip, so keep the face's own outer wire.
+        (all_positions, outer_uvs) = sample_cylinder_wire(
+            topo,
+            full_outer_wire,
+            cyl,
+            deflection,
+            angular_tol,
+            edge_points,
+        )?;
+        if outer_uvs.len() < 3 {
+            return Ok(TriangleMeshUV::default());
+        }
+        rim_v = v_span(&outer_uvs);
+    }
+    let single_rim = is_single_rim(rim_v);
     let mut collapse_apex_v: Option<f64> = None;
     let mut outer_u = outer_uvs
         .iter()
@@ -2575,6 +2601,147 @@ mod tests {
             OrientedEdge::new(minor, false),
         ];
         assert!(!super::is_closed_full_turn_circle_rim(&topo, &disconnected).unwrap());
+    }
+
+    /// B275: a boolean that splits a native rim can rebuild some arcs on a
+    /// carrier whose radius is an ulp off (2.0000000000000004 for r2). The
+    /// pieces still trace one circle, so the rim stays a full turn; a carrier
+    /// off by more than the linear tolerance does not.
+    #[test]
+    fn native_apex_rim_accepts_split_carriers_within_linear_tolerance() {
+        use remus_math::curves::Circle3D;
+        use remus_math::vec::{Point3, Vec3};
+        use remus_topology::Topology;
+        use remus_topology::edge::{Edge, EdgeCurve};
+        use remus_topology::vertex::Vertex;
+        use remus_topology::wire::OrientedEdge;
+        use std::f64::consts::{PI, TAU};
+
+        let centre = Point3::new(0.0, 0.0, 0.0);
+        let axis = Vec3::new(0.0, 0.0, 1.0);
+        let rim = |minor_radius: f64| {
+            let mut topo = Topology::new();
+            let circle = Circle3D::new(centre, axis, 2.0).unwrap();
+            let rebuilt = Circle3D::new(centre, axis, minor_radius).unwrap();
+            let a = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+            let b = topo.add_vertex(Vertex::new(circle.evaluate(PI), 1e-7));
+            let mut major = Edge::new(a, b, EdgeCurve::Circle(circle));
+            major.set_trim(Some((0.0, PI)));
+            let major = topo.add_edge(major);
+            let mut minor = Edge::new(b, a, EdgeCurve::Circle(rebuilt));
+            minor.set_trim(Some((PI, TAU)));
+            let minor = topo.add_edge(minor);
+            let uses = [
+                OrientedEdge::new(major, true),
+                OrientedEdge::new(minor, true),
+            ];
+            super::is_closed_full_turn_circle_rim(&topo, &uses).unwrap()
+        };
+        assert!(rim(2.0));
+        assert!(rim(2.0_f64.next_up()));
+        assert!(!rim(2.0 + 1e-5));
+    }
+
+    /// A split rim whose arcs agree within the linear tolerance but not in
+    /// height (one arc's carrier 6e-8 up the axis, its radius shrunk to stay
+    /// on the cone) passes the rim check, yet spreads the rim over more `v`
+    /// than the apex synthesis admits. Dropping the seam then would leave the
+    /// chart without its tip; the mesher keeps the face's own outer wire and
+    /// still meshes up to the apex.
+    #[test]
+    fn apex_chart_keeps_the_seam_when_a_tolerant_rim_spreads_in_height() {
+        use crate::boolean::{BooleanOp, boolean_with_context};
+        use crate::primitives::{make_box, make_cone, make_cylinder};
+        use crate::transform::transform_solid;
+        use remus_math::context::{FallbackPolicy, OperationContext};
+        use remus_math::curves::Circle3D;
+        use remus_math::mat::Mat4;
+        use remus_math::vec::Vec3;
+        use remus_topology::Topology;
+        use remus_topology::edge::EdgeCurve;
+        use remus_topology::face::FaceSurface;
+
+        let exact = OperationContext::new().with_fallback(FallbackPolicy::ExactOnly);
+        let mut topo = Topology::new();
+        let cone = make_cone(&mut topo, 2.0, 0.0, 4.0).unwrap();
+        let block = make_box(&mut topo, 6.0, 1.0, 1.0).unwrap();
+        transform_solid(&mut topo, block, &Mat4::translation(-3.0, -0.5, -1.0)).unwrap();
+        let base = boolean_with_context(&mut topo, BooleanOp::Fuse, cone, block, &exact)
+            .unwrap()
+            .solid;
+        let rod = make_cylinder(&mut topo, 0.3, 3.0).unwrap();
+        let placement = Mat4::translation(0.0, 0.0, 1.5)
+            * Mat4::rotation_z(1.0)
+            * Mat4::rotation_y(std::f64::consts::FRAC_PI_2);
+        transform_solid(&mut topo, rod, &placement).unwrap();
+        let solid = boolean_with_context(&mut topo, BooleanOp::Fuse, base, rod, &exact)
+            .unwrap()
+            .solid;
+        let wall = remus_topology::explorer::solid_faces(&topo, solid)
+            .unwrap()
+            .into_iter()
+            .find(|&f| matches!(topo.face(f).unwrap().surface(), FaceSurface::Cone(_)))
+            .unwrap();
+        let face = topo.face(wall).unwrap().clone();
+        let FaceSurface::Cone(carrier) = face.surface().clone() else {
+            unreachable!()
+        };
+        let apex = carrier.apex();
+        let mesh = |topo: &Topology| {
+            super::tessellate_revolved_with_holes(
+                topo,
+                &face,
+                &carrier,
+                super::super::nurbs::cone_chart_radius(topo, &face, &carrier),
+                0.05,
+                remus_math::chord::DEFAULT_ANGULAR_TOL,
+                None,
+                Some((0.0, apex)),
+            )
+            .unwrap()
+            .mesh
+        };
+        let reaches_apex = |mesh: &crate::tessellate::TriangleMesh| {
+            mesh.positions.iter().any(|p| (*p - apex).length() < 1e-9)
+        };
+        assert!(
+            reaches_apex(&mesh(&topo)),
+            "the unperturbed wall meshes to its tip"
+        );
+
+        // Lift the arc after the first one (an interior arc of the split rim).
+        let arc = topo.wire(face.outer_wire()).unwrap().edges()[1].edge();
+        let EdgeCurve::Circle(circle) = topo.edge(arc).unwrap().curve().clone() else {
+            unreachable!("the rim is split into circle arcs");
+        };
+        let lifted = Circle3D::with_axes(
+            circle.center() + Vec3::new(0.0, 0.0, 6e-8),
+            circle.normal(),
+            circle.radius() - 3e-8,
+            circle.u_axis(),
+            circle.v_axis(),
+        )
+        .unwrap();
+        let trim = topo.edge(arc).unwrap().trim();
+        let edge = topo.edge_mut(arc).unwrap();
+        edge.set_curve(EdgeCurve::Circle(lifted));
+        edge.set_trim(trim);
+        let uses: Vec<_> = topo
+            .wire(face.outer_wire())
+            .unwrap()
+            .edges()
+            .iter()
+            .copied()
+            .filter(|oe| matches!(topo.edge(oe.edge()).unwrap().curve(), EdgeCurve::Circle(_)))
+            .collect();
+        assert!(
+            super::is_closed_full_turn_circle_rim(&topo, &uses).unwrap(),
+            "the lifted arc stays within the rim check's tolerance"
+        );
+        assert!(
+            reaches_apex(&mesh(&topo)),
+            "the lifted rim keeps the wall's tip"
+        );
     }
 
     #[test]
