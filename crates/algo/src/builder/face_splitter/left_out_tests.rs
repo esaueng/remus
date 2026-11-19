@@ -218,3 +218,52 @@ fn a_section_the_split_rectangle_carries_is_present() {
     ]);
     assert!(!sections_left_out([&dividing], &[below], TOL));
 }
+
+/// The scoped re-check's finding: different edges carried the samples
+/// between them. The rectangle [0, 9] × [−1, 1] left whole, with eight
+/// holes of radius 0.09995 about (k, −0.1): the dropped dividing segment
+/// from (0, 0) to (9, 0) passes 5e-5 above each hole's top, so each of its
+/// eight interior samples (at x = 1 … 8) lies within the band of a
+/// different hole. No chain of edges follows it, and it is left out; the
+/// same face split along the segment carries it.
+#[test]
+fn a_section_whose_samples_lie_near_different_edges_is_left_out() {
+    let dividing = line_section((0.0, 0.0, 0.0), (9.0, 0.0, 0.0));
+    let holes: Vec<Vec<OrientedPCurveEdge>> = (1..=8)
+        .map(|k| vec![circle_edge(&hole(f64::from(k)))])
+        .collect();
+    let mut whole = part(vec![
+        line((0.0, -1.0, 0.0), (9.0, -1.0, 0.0)),
+        line((9.0, -1.0, 0.0), (9.0, 1.0, 0.0)),
+        line((9.0, 1.0, 0.0), (0.0, 1.0, 0.0)),
+        line((0.0, 1.0, 0.0), (0.0, -1.0, 0.0)),
+    ]);
+    whole.inner_wires = holes.clone();
+    assert!(sections_left_out([&dividing], &[whole], TOL));
+
+    let mut below = part(vec![
+        line((0.0, -1.0, 0.0), (9.0, -1.0, 0.0)),
+        line((9.0, -1.0, 0.0), (9.0, 0.0, 0.0)),
+        line((9.0, 0.0, 0.0), (0.0, 0.0, 0.0)),
+        line((0.0, 0.0, 0.0), (0.0, -1.0, 0.0)),
+    ]);
+    below.inner_wires = holes;
+    let above = part(vec![
+        line((0.0, 0.0, 0.0), (9.0, 0.0, 0.0)),
+        line((9.0, 0.0, 0.0), (9.0, 1.0, 0.0)),
+        line((9.0, 1.0, 0.0), (0.0, 1.0, 0.0)),
+        line((0.0, 1.0, 0.0), (0.0, 0.0, 0.0)),
+    ]);
+    assert!(!sections_left_out([&dividing], &[below, above], TOL));
+}
+
+/// The hole of radius 0.09995 about `(x, −0.1, 0)`.
+fn hole(x: f64) -> Circle3D {
+    Circle3D::new_with_ref(
+        Point3::new(x, -0.1, 0.0),
+        Vec3::new(0.0, 0.0, 1.0),
+        0.099_95,
+        Vec3::new(1.0, 0.0, 0.0),
+    )
+    .unwrap()
+}

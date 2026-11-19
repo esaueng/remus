@@ -5944,6 +5944,14 @@ fn subfaces_have_out_and_back(parts: &[SplitSubFace], tol: f64) -> bool {
 /// (a line its wire runs up and back) follows counts only when the seam
 /// follows every sample: the section is that seam.
 ///
+/// Nor does a sample near some edge each time: eight holes along a dropped
+/// dividing segment can each hold one of its samples within the band. So
+/// the edges that carry the section must follow it as a chain: each pair of
+/// consecutive points (its two ends and the samples between) is carried by
+/// one edge, or by two edges that share a vertex. The single-midpoint test
+/// the check began with (every chord a tenth of its length of slack) stays
+/// a necessary condition.
+///
 /// Straight edges other than seams keep the slack of a tenth of their
 /// length that the single-midpoint check was calibrated with, which lets a
 /// section running beside a long edge read as carried
@@ -5967,6 +5975,8 @@ fn sections_left_out<'s>(
         )
     };
     let mut edges: Vec<FollowEdge> = Vec::new();
+    // Every edge's 64-sample polyline, for the single-midpoint test.
+    let mut midpoint_polylines: Vec<Vec<Point3>> = Vec::new();
     for wire in parts
         .iter()
         .flat_map(|part| std::iter::once(&part.outer_wire).chain(part.inner_wires.iter()))
@@ -5988,6 +5998,7 @@ fn sections_left_out<'s>(
                 FollowEdge {
                     chords: vec![(e.start_3d, e.end_3d, slack)],
                     seam,
+                    ends: [key(e.start_3d), key(e.end_3d)],
                 }
             } else {
                 let pts = wire_edge_samples(e, 128);
@@ -6006,32 +6017,67 @@ fn sections_left_out<'s>(
                 FollowEdge {
                     chords,
                     seam: false,
+                    ends: [key(e.start_3d), key(e.end_3d)],
                 }
             });
+            midpoint_polylines.push(wire_edge_samples(e, 64));
         }
     }
     sections.into_iter().any(|s| {
         let (t0, t1) = s.domain();
+        let at = |t: f64| s.curve_3d.evaluate_with_endpoints(t, s.start, s.end);
+        // The single-midpoint test, as the check first read it.
+        let mid = at(0.5 * (t0 + t1));
+        if !midpoint_polylines.iter().any(|poly| {
+            poly.windows(2).any(|w| {
+                segment_distance_3d(mid, w[0], w[1]) <= band + (w[1] - w[0]).length() * 0.1
+            })
+        }) {
+            return true;
+        }
         let mut seam_only = false;
         let mut on_seam_everywhere = true;
-        for k in 1..=FOLLOW_SAMPLES {
+        let mut previous: Option<Vec<usize>> = None;
+        for k in 0..=FOLLOW_SAMPLES + 1 {
             #[allow(clippy::cast_precision_loss)]
             let f = k as f64 / (FOLLOW_SAMPLES + 1) as f64;
-            let p = s
-                .curve_3d
-                .evaluate_with_endpoints(t0 + (t1 - t0) * f, s.start, s.end);
-            let near = |e: &FollowEdge| {
-                e.chords
-                    .iter()
-                    .any(|&(a, b, slack)| segment_distance_3d(p, a, b) <= band + slack)
+            let p = if k == 0 {
+                s.start
+            } else if k == FOLLOW_SAMPLES + 1 {
+                s.end
+            } else {
+                at(t0 + (t1 - t0) * f)
             };
-            let by_seam = edges.iter().any(|e| e.seam && near(e));
-            let by_other = edges.iter().any(|e| !e.seam && near(e));
-            if !by_seam && !by_other {
+            let carriers: Vec<usize> = edges
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| {
+                    e.chords
+                        .iter()
+                        .any(|&(a, b, slack)| segment_distance_3d(p, a, b) <= band + slack)
+                })
+                .map(|(i, _)| i)
+                .collect();
+            if carriers.is_empty() {
                 return true;
             }
-            seam_only |= !by_other;
-            on_seam_everywhere &= by_seam;
+            if let Some(before) = &previous {
+                let linked = before.iter().any(|&i| {
+                    carriers.iter().any(|&j| {
+                        i == j || edges[i].ends.iter().any(|end| edges[j].ends.contains(end))
+                    })
+                });
+                if !linked {
+                    return true;
+                }
+            }
+            if k != 0 && k != FOLLOW_SAMPLES + 1 {
+                let by_other = carriers.iter().any(|&i| !edges[i].seam);
+                let by_seam = carriers.iter().any(|&i| edges[i].seam);
+                seam_only |= !by_other;
+                on_seam_everywhere &= by_seam;
+            }
+            previous = Some(carriers);
         }
         seam_only && !on_seam_everywhere
     })
@@ -6045,6 +6091,8 @@ const FOLLOW_SAMPLES: usize = 8;
 struct FollowEdge {
     chords: Vec<(Point3, Point3, f64)>,
     seam: bool,
+    /// Its two end vertices, quantized at the tolerance.
+    ends: [(i64, i64, i64); 2],
 }
 
 /// Distance from `p` to the segment `ab`.
