@@ -553,26 +553,30 @@ fn b53_tangent_rim_single_lump_family() {
     assert_member_at((4.0, 1.0, 2.0), 2.0, 2.5, 1e-4, 1e-4);
 }
 
-/// Ready-repro (B53 remainder): the single-lump tangent cut's cone wall
-/// meshes sparse below d ≈ 8e-5. The non-planar CDT skips its dense trim rows
-/// once they would exceed the boundary-test budget, so the wall drops from
-/// 25,328 triangles at d = 1e-4 to 563 at 7e-5 with the same area: watertight,
-/// but the chords sag into the cone and the cut's mesh reads 5.2920 against
-/// the exact 5.2594 (slice integral = Gauss). The B-Rep is exact; the
-/// harness deflection (1e-4 here) is clean. The fix belongs to the mesher's
-/// budget fallback, not to this boolean.
+/// B271 (B53 remainder): the single-lump tangent cut's cone wall must not
+/// mesh coarser at a finer deflection. Its dense trim band was sized up front
+/// against a whole-boundary scan per candidate, so the rows it kept fell as
+/// the deflection shrank (139 at 7e-5, 74 at 2e-5, 19 at 5e-6, 7 at 2e-6) and
+/// the mesh volume stopped converging: 2.6e-5 off at 5e-6 and 6.0e-4 at 2e-6,
+/// after the 5.2920-against-5.2594 collapse first filed here. The band now
+/// charges the row scan's actual work, coarse to fine (see
+/// `dense_trim_band_points`), and keeps every wanted row: the error tracks
+/// the deflection (about 0.96 d) all the way down. The slice integral is
+/// exact (it equals the Gauss volume).
 #[test]
-#[ignore = "open: cone wall meshes sparse below d = 8e-5 when the dense trim rows exceed the budget (B53)"]
 fn b53_single_lump_cut_fine_mesh_volume() {
     let bx = (4.0, 1.0, 2.0);
     let (topo, cut) = exact(bx, 2.0, 2.5, BooleanOp::Cut);
     let slices = slice_cut_volume(bx, 2.0, 2.5);
-    for d in [7e-5, 2e-5] {
-        let mesh = mesh_volume(&topo, cut, d);
+    let mut previous = f64::INFINITY;
+    for d in [7e-5, 2e-5, 5e-6] {
+        let error = (mesh_volume(&topo, cut, d) - slices).abs();
         assert!(
-            (mesh - slices).abs() <= 1e-4 * 8.0,
-            "d={d:e}: mesh volume {mesh:.9} vs slice integral {slices:.9}"
+            error <= 2.0 * d,
+            "d={d:e}: mesh volume {error:e} off the slice integral {slices:.9}"
         );
+        assert!(error < previous, "d={d:e}: error {error:e} did not shrink");
+        previous = error;
     }
 }
 
