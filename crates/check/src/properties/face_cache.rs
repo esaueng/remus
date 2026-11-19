@@ -334,7 +334,12 @@ impl Request {
         if matches!(self, Self::FixedAbout { .. } | Self::Volume { .. }) {
             value.nesting = nesting_stamp(topo, face);
             value.point_chords = face_integrator::planar_point_chord_stamp(topo, face);
-            value.reference_bound = reads_fitted_boundary(topo, face)
+            // A fan-read planar face's reading and certificate are answered
+            // only from an identical entry about the same reference: a
+            // translated face that still matches its anchored key can be
+            // another face to the fan (see `fan_bound`).
+            value.reference_bound = value.planar_fan.is_some()
+                || reads_fitted_boundary(topo, face)
                 || topo
                     .face(face)
                     .is_ok_and(|f| matches!(f.surface(), FaceSurface::Cone(_)));

@@ -120,6 +120,14 @@ pub struct PlanarFanBound {
     /// NURBS control point or a conic's centre: with that vertex's
     /// magnitude it bounds the magnitude every evaluation works at.
     pub reach: f64,
+    /// The largest distance of a sample from the face's stored plane.
+    pub height: f64,
+    /// `Σ (L/2 + m·D)` over the wires' polygons (`L` the perimeter, `m` the
+    /// points, `D` the [`Self::diameter`]): a perturbation of every point by
+    /// at most `d` moves the fan's triangles by `Σ |ΔA_k| ≤ d` times this.
+    pub perturbation_extent: f64,
+    /// How many triangles the fan sums.
+    pub triangles: f64,
 }
 
 impl PlanarFanBound {
@@ -137,10 +145,24 @@ impl PlanarFanBound {
     /// coordinates have L1 magnitude `anchor_magnitude`; `+∞` where none is
     /// certified.
     ///
-    /// The term `(|δ| · area_error + off_plane) / 3` is inflated by
-    /// [`MARGIN`], and `MARGIN · (anchor_distance + diameter) ·
-    /// unsigned_area` covers the rounding of the fan's own sums and of a
-    /// translated cache hit (whose fields equal a fresh reading's to
+    /// The fan sums `Σ (n̂ · p̃_k) Ã_k`, with `p̃_k` its computed triangle
+    /// centroids about the reference and `Ã_k` its computed triangle areas.
+    /// Every sample is subtracted from the reference before anything else
+    /// (`integrate_planar_polygon`), so each local point carries a rounding
+    /// of at most `ε |p − R|`, and each centroid `2 ε |p − R|`: with
+    /// `r = anchor_distance + diameter` bounding `|p − R|`, `d = 2 ε r`.
+    /// Against the face's term `δ · A_face`, the error is at most
+    ///
+    /// * `|δ| · area_error`, the polygon against the face;
+    /// * `height · Σ |A_k|`, the samples off the plane;
+    /// * `(|δ| + height + d) · Σ |ΔA_k|`, where the computed areas move by
+    ///   `Σ |ΔA_k| ≤ d · perturbation_extent + 4 ε (D + 2d)² · triangles`
+    ///   (the perturbed points, then each cross product's rounding);
+    /// * `d · Σ |A_k|`, the centroids' rounding,
+    ///
+    /// all over three. That is inflated by [`MARGIN`], and
+    /// `MARGIN · r · Σ |A_k|` covers the rounding of the fan's own sums and
+    /// of a translated cache hit (whose fields equal a fresh reading's to
     /// rounding of the local geometry).
     #[must_use]
     pub fn volume_bound(
@@ -149,10 +171,20 @@ impl PlanarFanBound {
         anchor_distance: f64,
         anchor_magnitude: f64,
     ) -> f64 {
-        let area = self.area_error(anchor_magnitude);
-        let raw = plane_offset.abs().mul_add(area, self.off_plane) / 3.0;
-        let rounding = MARGIN * (anchor_distance.abs() + self.diameter) * self.unsigned_area;
-        let bound = raw.mul_add(1.0 + MARGIN, rounding);
+        let reach = anchor_distance.abs() + self.diameter;
+        let d = 2.0 * EPS * reach;
+        let spread = 2.0f64.mul_add(d, self.diameter);
+        let moved = d.mul_add(
+            self.perturbation_extent,
+            4.0 * EPS * spread * spread * self.triangles,
+        );
+        let offset = plane_offset.abs();
+        let terms = offset * self.area_error(anchor_magnitude)
+            + self.off_plane
+            + (offset + self.height + d) * moved
+            + d * self.unsigned_area;
+        let rounding = MARGIN * reach * self.unsigned_area;
+        let bound = (terms / 3.0).mul_add(1.0 + MARGIN, rounding);
         if bound.is_nan() { f64::INFINITY } else { bound }
     }
 
@@ -163,6 +195,9 @@ impl PlanarFanBound {
         diameter: f64::INFINITY,
         rounding_length: f64::INFINITY,
         reach: f64::INFINITY,
+        height: f64::INFINITY,
+        perturbation_extent: f64::INFINITY,
+        triangles: f64::INFINITY,
     };
 }
 
@@ -199,6 +234,9 @@ pub(super) fn fan_bound(topo: &Topology, face_id: FaceId) -> Result<PlanarFanBou
     let anchor = topo.vertex(topo.edge(first)?.start())?.point();
     let (mut area_bound, mut rounding_length, mut reach) = (0.0, 0.0, 0.0_f64);
     let (mut height, mut unsigned_area) = (0.0_f64, 0.0);
+    // Per polygon: its perimeter and point count, read after the diameter.
+    let mut outlines: Vec<(f64, f64)> = Vec::new();
+    let mut triangles = 0.0;
     let (mut lo, mut hi) = (
         Point3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY),
         Point3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY),
@@ -206,13 +244,13 @@ pub(super) fn fan_bound(topo: &Topology, face_id: FaceId) -> Result<PlanarFanBou
     for wire in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
         // The polygon the fan integrates, and its rebuilt sequence.
         let polygon = crate::util::wire_polygon(topo, wire)?;
-        match wire_bound(topo, wire, anchor)? {
-            Some(read) if same_points(&read.points, &polygon) => {
-                area_bound += read.bound;
-                rounding_length += read.rounding_length;
-                reach = reach.max(read.reach);
-            }
-            _ => area_bound = f64::INFINITY,
+        let read = wire_bound(topo, wire, anchor)?;
+        if let Some(read) = read.filter(|read| same_points(&read.points, &polygon)) {
+            area_bound += read.bound;
+            rounding_length += read.rounding_length;
+            reach = reach.max(read.reach);
+        } else {
+            area_bound = f64::INFINITY;
         }
         for &p in &polygon {
             height = height.max((normal.dot(p - Point3::new(0.0, 0.0, 0.0)) - level).abs());
@@ -225,7 +263,16 @@ pub(super) fn fan_bound(topo: &Topology, face_id: FaceId) -> Result<PlanarFanBou
                 let (a, b, c) = (polygon[0], polygon[i], polygon[i + 1]);
                 unsigned_area += ((b - a).cross(c - a).dot(normal) * 0.5).abs();
             }
+            #[allow(clippy::cast_precision_loss)]
+            {
+                triangles += (polygon.len() - 2) as f64;
+            }
         }
+        let perimeter: f64 = (0..polygon.len())
+            .map(|i| (polygon[(i + 1) % polygon.len()] - polygon[i]).length())
+            .sum();
+        #[allow(clippy::cast_precision_loss)]
+        outlines.push((perimeter, polygon.len() as f64));
     }
     let diameter = if lo.x() <= hi.x() {
         (hi - lo).length()
@@ -235,6 +282,12 @@ pub(super) fn fan_bound(topo: &Topology, face_id: FaceId) -> Result<PlanarFanBou
     let bound = PlanarFanBound {
         area_bound,
         off_plane: height * unsigned_area,
+        height,
+        perturbation_extent: outlines
+            .iter()
+            .map(|&(perimeter, points)| points.mul_add(diameter, 0.5 * perimeter))
+            .sum(),
+        triangles,
         unsigned_area,
         diameter,
         rounding_length,
@@ -247,6 +300,9 @@ pub(super) fn fan_bound(topo: &Topology, face_id: FaceId) -> Result<PlanarFanBou
         bound.diameter,
         bound.rounding_length,
         bound.reach,
+        bound.height,
+        bound.perturbation_extent,
+        bound.triangles,
     ]
     .iter()
     .all(|v| v.is_finite());
@@ -303,16 +359,14 @@ fn wire_bound(
         let forward = match prev_end {
             Some(pe) if start_vid == pe && end_vid != pe => true,
             Some(pe) if end_vid == pe && start_vid != pe => false,
-            _ if start_vid == end_vid => oe.is_forward(),
-            _ => match prev_end {
-                Some(previous_end) => {
-                    let last = topo.vertex(previous_end)?.point();
-                    let sp = topo.vertex(start_vid)?.point();
-                    let ep = topo.vertex(end_vid)?.point();
-                    (sp - last).length_squared() <= (ep - last).length_squared()
-                }
-                None => oe.is_forward(),
-            },
+            Some(_) | None if start_vid == end_vid => oe.is_forward(),
+            Some(previous_end) => {
+                let last = topo.vertex(previous_end)?.point();
+                let sp = topo.vertex(start_vid)?.point();
+                let ep = topo.vertex(end_vid)?.point();
+                (sp - last).length_squared() <= (ep - last).length_squared()
+            }
+            None => oe.is_forward(),
         };
         let closed = start_vid == end_vid
             && matches!(
@@ -392,6 +446,9 @@ fn closed_edge(
                 .strict_domain()
                 .map_err(crate::error::edge_domain_validation)?;
             let seam = c.project(seam_pt);
+            if !faithful(seam, seam + (t1 - t0), n) {
+                return Ok(None);
+            }
             let points: Vec<Point3> = offsets(t1 - t0)
                 .into_iter()
                 .map(|dt| c.evaluate(seam + dt))
@@ -403,6 +460,9 @@ fn closed_edge(
                 .strict_domain()
                 .map_err(crate::error::edge_domain_validation)?;
             let seam = e.project(seam_pt);
+            if !faithful(seam, seam + (t1 - t0), n) {
+                return Ok(None);
+            }
             let points: Vec<Point3> = offsets(t1 - t0)
                 .into_iter()
                 .map(|dt| e.evaluate(seam + dt))
@@ -418,7 +478,7 @@ fn closed_edge(
             let whole = edge.trim().is_none_or(|(a, b)| {
                 a.min(b).to_bits() == u0.to_bits() && a.max(b).to_bits() == u1.to_bits()
             });
-            if !(whole && span.is_finite() && span > 0.0) {
+            if !(whole && span.is_finite() && span > 0.0 && faithful(u0, u1, n)) {
                 return Ok(None);
             }
             let seam = crate::util::nurbs_seam_parameter(nc, seam_pt, u0, u1);
@@ -480,6 +540,9 @@ fn open_edge(
     let (t0, t1) = edge
         .strict_domain()
         .map_err(crate::error::edge_domain_validation)?;
+    if !faithful(t0, t1, n) {
+        return Ok(None);
+    }
     let traversal_start = topo.vertex(from_vid)?.point();
     #[allow(clippy::cast_precision_loss)]
     let mut seq: Vec<Point3> = (0..=n)
@@ -566,6 +629,32 @@ fn weight_ratio(weights: &[f64]) -> Option<f64> {
     }
     let ratio = hi / lo;
     (ratio <= MAX_WEIGHT_RATIO).then_some(ratio)
+}
+
+/// Whether the sampler's `n` samples over `(t0, t1)` are faithful to the
+/// parameter, so the pieces between them cover exactly the trim the bound
+/// reads:
+///
+/// * the span `t1 − t0` is exact (`t0 + (t1 − t0) = t1`), and the first and
+///   last samples are `t0` and `t1` themselves: `1 − (−2^53)` rounds to
+///   `2^53`, and the last sample then lands on `0`, short of the trim;
+/// * the samples increase strictly in the trim's direction, so no two
+///   collapse onto one parameter;
+/// * the rounding of a parameter near `max(|t0|, |t1|)` is at most `1e-9`
+///   of one sample step.
+fn faithful(t0: f64, t1: f64, n: usize) -> bool {
+    let span = t1 - t0;
+    let magnitude = t0.abs().max(t1.abs());
+    #[allow(clippy::cast_precision_loss)]
+    let step = span.abs() / n as f64;
+    let ends = (t0 + span).to_bits() == t1.to_bits()
+        && sample(t0, t1, 0, n).to_bits() == t0.to_bits()
+        && sample(t0, t1, n, n).to_bits() == t1.to_bits();
+    let monotone = (0..n).all(|i| {
+        let (a, b) = (sample(t0, t1, i, n), sample(t0, t1, i + 1, n));
+        if span > 0.0 { a < b } else { a > b }
+    });
+    span.is_finite() && span != 0.0 && ends && monotone && magnitude * EPS <= 1e-9 * step
 }
 
 /// The sampler's `i`-th of `n` parameters over `(t0, t1)`.

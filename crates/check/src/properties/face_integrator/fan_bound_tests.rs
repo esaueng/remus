@@ -347,10 +347,13 @@ fn a_straight_edged_fan_face_has_a_zero_bound() {
     assert!((reading.contribution.area - 2.0).abs() <= 1e-14);
 }
 
-/// A cached fan reading answers a request about another reference, or for a
-/// translated copy of its face, with its bound: the bound depends on neither.
+/// A fan reading is answered from the cache only by an identical entry
+/// about the same reference (re-check finding 2): about another reference,
+/// or for a translated copy, it is integrated afresh, bit for bit. A
+/// translated face's certificate still equals the source's to rounding, and
+/// the source's margined bound covers the copy's unmargined one.
 #[test]
-fn cached_volume_terms_keep_the_fan_bound() {
+fn cached_fan_readings_are_served_only_identically() {
     use crate::properties::face_cache::FaceIntegralCache;
 
     let mut topo = Topology::new();
@@ -368,44 +371,47 @@ fn cached_volume_terms_keep_the_fan_bound() {
         FaceIntegralCache::disabled()
             .integrate_face_volume_about(&topo, face, 5, reference)
             .unwrap()
-            .planar_fan
-            .expect("a fan reading")
-    };
-    let close = |a: PlanarFanBound, b: PlanarFanBound| {
-        [
-            (a.area_bound, b.area_bound),
-            (a.unsigned_area, b.unsigned_area),
-            (a.diameter, b.diameter),
-            (a.rounding_length, b.rounding_length),
-            (a.reach, b.reach),
-        ]
-        .iter()
-        .all(|&(x, y)| (x - y).abs() <= 1e-12 * y.abs().max(1e-300))
     };
     let (near, far) = (Point3::new(1.0, 2.0, 3.0), Point3::new(-4.0, 0.5, 9.0));
     let mut cache = FaceIntegralCache::new();
-    let first = cache
-        .integrate_face_volume_about(&topo, source, 5, near)
-        .unwrap();
-    assert_eq!(first.planar_fan, Some(cold(source, near)));
-    let rereferenced = cache
-        .integrate_face_volume_about(&topo, source, 5, far)
-        .unwrap();
-    let translated = cache
-        .integrate_face_volume_about(&topo, copy, 5, far)
-        .unwrap();
+    let mut warm = |face, reference| {
+        cache
+            .integrate_face_volume_about(&topo, face, 5, reference)
+            .unwrap()
+    };
+    for (face, reference) in [(source, near), (source, near), (source, far), (copy, far)] {
+        let (w, c) = (warm(face, reference), cold(face, reference));
+        assert_eq!(w.volume.to_bits(), c.volume.to_bits());
+        assert_eq!(w.area.to_bits(), c.area.to_bits());
+        assert_eq!(w.planar_fan, c.planar_fan);
+    }
     let stats = cache.stats();
-    assert_eq!((stats.rereferenced, stats.translated), (1, 1));
-    assert_eq!(rereferenced.planar_fan, first.planar_fan);
-    // Translated: equal to rounding, not bit for bit.
-    let bound = translated.planar_fan.unwrap();
-    let fresh = cold(copy, far);
-    assert!(close(bound, fresh), "{bound:?} vs {fresh:?}");
+    assert_eq!(
+        (stats.hits, stats.rereferenced, stats.translated),
+        (1, 0, 0)
+    );
+    // The certificate depends on the shape alone: equal to rounding.
+    let (bound, fresh) = (
+        cold(source, far).planar_fan.unwrap(),
+        cold(copy, far).planar_fan.unwrap(),
+    );
+    let close = [
+        (bound.area_bound, fresh.area_bound),
+        (bound.unsigned_area, fresh.unsigned_area),
+        (bound.diameter, fresh.diameter),
+        (bound.rounding_length, fresh.rounding_length),
+        (bound.reach, fresh.reach),
+        (bound.perturbation_extent, fresh.perturbation_extent),
+        (bound.triangles, fresh.triangles),
+    ]
+    .iter()
+    .all(|&(x, y)| (x - y).abs() <= 1e-12 * y.abs().max(1e-300));
+    assert!(close, "{bound:?} vs {fresh:?}");
     // Off the plane only by rounding of the copy's position.
     assert!(bound.off_plane <= 64.0 * f64::EPSILON * 16.0 * bound.unsigned_area);
     assert!(fresh.off_plane <= 64.0 * f64::EPSILON * 16.0 * fresh.unsigned_area);
-    // Review finding 5: the reused certificate's volume bound, margin
-    // included, still covers a fresh reading's unmargined bound for the copy.
+    // The first review's finding 5: the source's margined bound covers the
+    // copy's unmargined one.
     let corner = at + Vec3::new(2.5, -1.0, 4.0);
     let (offset, distance) = (corner.z() - far.z(), (corner - far).length());
     let magnitude = corner.x().abs() + corner.y().abs() + corner.z().abs();

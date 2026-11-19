@@ -271,3 +271,120 @@ fn a_gap_between_an_edge_end_and_its_vertex_is_charged() {
         "the fan is {error:.3e} off, bound {bound:.3e}"
     );
 }
+
+/// Re-check finding 1: the fan subtracts the reference before it forms its
+/// triangles, so about a reference `2^54` away every `x` of a unit square
+/// rounds alike and the fan reads zero, where the face's term is a third of
+/// its area times `1e6`.
+#[test]
+fn a_far_reference_charges_the_fans_coordinate_rounding() {
+    // Off the origin in plan, so the loop forces the fan; on `z = 0`.
+    let c = Point3::new(5.0, 3.0, 0.0);
+    let mut topo = Topology::new();
+    let face = planar_face(
+        &mut topo,
+        square(c, 1.0, [None, None, None, None]),
+        vec![],
+        0.0,
+    );
+    let reference = Point3::new(2.0_f64.powi(54), 0.5, -1e6);
+    let read = reading(&topo, face, reference);
+    let exact = 1e6 / 3.0;
+    let error = (read.contribution.volume - exact).abs();
+    let bound = certificate(&read).volume_bound(1e6, (c - reference).length(), 8.0);
+    assert!(
+        error <= bound,
+        "the fan term is {:.6e} against {exact:.6e}, bound {bound:.3e}",
+        read.contribution.volume
+    );
+}
+
+/// Re-check finding 2: a face translated by `2^20` and widened by `2^-28`
+/// still matches an anchored cache entry, but its fan reading is another
+/// one. A fan-read face is served only from an identical entry about the
+/// same reference, so the cached reading is the uncached one bit for bit.
+#[test]
+fn a_fan_read_face_is_never_served_from_a_translated_entry() {
+    use crate::properties::face_cache::FaceIntegralCache;
+
+    let c = Point3::new(5.0, 3.0, 1.0);
+    let shift = Vec3::new(2.0_f64.powi(20), 0.0, 0.0);
+    let mut topo = Topology::new();
+    let source = planar_face(
+        &mut topo,
+        square(c, 1.0, [None, None, None, None]),
+        vec![],
+        1.0,
+    );
+    let copy = planar_face(
+        &mut topo,
+        square(c + shift, 1.0 + 2.0_f64.powi(-28), [None, None, None, None]),
+        vec![],
+        1.0,
+    );
+    let reference = Point3::new(1.0, -2.0, 3.0);
+    let mut cache = FaceIntegralCache::new();
+    cache
+        .integrate_face_volume_about(&topo, source, 5, reference)
+        .unwrap();
+    let warm = cache
+        .integrate_face_volume_about(&topo, copy, 5, reference)
+        .unwrap();
+    let cold = FaceIntegralCache::disabled()
+        .integrate_face_volume_about(&topo, copy, 5, reference)
+        .unwrap();
+    assert!(cold.planar_fan.is_some(), "the copy is read by the fan");
+    assert_eq!(warm.volume.to_bits(), cold.volume.to_bits());
+    assert_eq!(warm.area.to_bits(), cold.area.to_bits());
+    assert_eq!(warm.planar_fan, cold.planar_fan);
+    let stats = cache.stats();
+    assert_eq!((stats.translated, stats.rereferenced), (0, 0));
+    // About another reference, the source itself is integrated afresh too.
+    let again = cache
+        .integrate_face_volume_about(&topo, source, 5, Point3::new(-7.0, 0.5, 2.0))
+        .unwrap();
+    let fresh = FaceIntegralCache::disabled()
+        .integrate_face_volume_about(&topo, source, 5, Point3::new(-7.0, 0.5, 2.0))
+        .unwrap();
+    assert_eq!(again.volume.to_bits(), fresh.volume.to_bits());
+    assert_eq!(cache.stats().rereferenced, 0);
+}
+
+/// Re-check finding 3: an open degree-one NURBS edge trimmed to
+/// `[−2^53, 1]`. `1 − (−2^53)` rounds to `2^53`, so the fan's last
+/// parameter is `0`, not `1`: the samples never reach the detour on
+/// `[0, 1]`. A trim whose parameters cannot be sampled faithfully declines.
+#[test]
+fn a_trim_too_wide_to_sample_faithfully_declines() {
+    let c = Point3::new(5.0, 3.0, 1.0);
+    let at = |x: f64, y: f64| Point3::new(c.x() + x, c.y() + y, c.z());
+    let low = -(2.0_f64.powi(53));
+    let detour = NurbsCurve::new(
+        1,
+        vec![low, low, 0.0, 0.5, 1.0, 1.0],
+        vec![
+            at(0.0, 0.0),
+            at(0.5, 0.0),
+            at(0.75, 0.000_488),
+            at(1.0, 0.0),
+        ],
+        vec![1.0; 4],
+    )
+    .unwrap();
+    let mut topo = Topology::new();
+    let face = planar_face(
+        &mut topo,
+        square(c, 1.0, [Some((detour, (low, 1.0))), None, None, None]),
+        vec![],
+        1.0,
+    );
+    let read = reading(&topo, face, Point3::new(0.0, 0.0, 0.0));
+    // The detour bites ½ · 0.5 · 0.000488 out of the square.
+    let error = (read.contribution.area - (1.0 - 1.22e-4)).abs();
+    let bound = certificate(&read).area_bound;
+    assert!(
+        error <= bound,
+        "the fan is {error:.3e} off, bound {bound:.3e}"
+    );
+    assert!(bound.is_infinite(), "an unfaithfully sampled trim declines");
+}
