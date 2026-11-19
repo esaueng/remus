@@ -626,7 +626,7 @@ pub struct FaceCache {
     sphere_arc_trim: OnceLock<Option<sphere_arcs::SphereArcTrim>>,
     /// Re-centred stereographic trim of a sphere face whose trim holds a pole
     /// of the sphere's chart or winds its axis.
-    sphere_stereo_trim: OnceLock<Option<sphere_stereo::StereoTrim>>,
+    sphere_stereo_trim: OnceLock<sphere_stereo::StereoReading>,
 }
 
 /// UV images of a cylinder, cone or torus face's trim polygons, as
@@ -1011,35 +1011,24 @@ fn count_sphere_cap_crossings(
     count_sphere_cap_crossings_with_trim(topo, face_id, None, hits, sph)
 }
 
-/// [`count_sphere_cap_crossings`] with caller-supplied trim data (`None`
-/// builds it on demand, exactly as the one-shot path always has).
-fn count_sphere_cap_crossings_with_trim(
-    topo: &Topology,
-    face_id: FaceId,
-    trim: Option<&FaceTrimData>,
-    hits: &[Point3],
+/// The plane of a spherical cap's outer loop and the side of it the face
+/// occupies: `(a rim point, unit plane normal, +1 or -1)`, with the cap the
+/// points `x` of the sphere where `(x - rim point) . normal * side >= 0`.
+/// `None` when the outer loop is not planar (not a cap) or its side is not
+/// read.
+fn sphere_cap_plane(
+    trim_data: &FaceTrimData,
     sph: &remus_math::surfaces::SphericalSurface,
-) -> Result<Option<u32>, CheckError> {
-    if hits.is_empty() {
-        return Ok(Some(0));
-    }
-
-    let owned_trim;
-    let trim_data = if let Some(cached) = trim {
-        cached
-    } else {
-        owned_trim = FaceTrimData::build(topo, face_id)?;
-        &owned_trim
-    };
+) -> Option<(Point3, Vec3, f64)> {
     let verts = &trim_data.outer;
     if verts.len() < 3 {
-        return Ok(None);
+        return None;
     }
 
     let plane_normal = polygon_normal(verts);
     let n_len = plane_normal.length();
     if n_len < 1e-12 {
-        return Ok(None); // degenerate or self-intersecting boundary
+        return None; // degenerate or self-intersecting boundary
     }
     let plane_normal = plane_normal * (1.0 / n_len);
     let ref_pt = verts[0];
@@ -1051,7 +1040,7 @@ fn count_sphere_cap_crossings_with_trim(
         .iter()
         .any(|v| ((*v - ref_pt).dot(plane_normal)).abs() > planarity_tol)
     {
-        return Ok(None);
+        return None;
     }
 
     // Which cap does the face occupy? Outward surface normal at a boundary
@@ -1087,35 +1076,98 @@ fn count_sphere_cap_crossings_with_trim(
         }
     }
     if inward_side.abs() < 1e-12 {
-        return Ok(None);
+        return None;
     }
     // +1 when the face lies on the +plane_normal side, -1 otherwise.
     let cap_sign = if inward_side > 0.0 { 1.0 } else { -1.0 };
 
-    let holes = &trim_data.holes;
+    Some((ref_pt, plane_normal, cap_sign))
+}
+
+/// A cap's holes, read on first need.
+enum CapHolesRead {
+    Unread,
+    Read(sphere_stereo::CapHoles),
+    /// Some hole cannot be read: every hit past the rim abstains.
+    Unreadable,
+}
+
+/// Whether `point` (on the sphere, or projected onto it) lies in a cap face:
+/// exactly on the near side of its rim plane, and in none of its holes
+/// ([`sphere_stereo::CapHoles`]). `None` within a hole's band, or when a hole
+/// cannot be read.
+///
+/// # Errors
+///
+/// Returns an error if a topology lookup fails.
+fn sphere_cap_contains(
+    topo: &Topology,
+    face_id: FaceId,
+    (ref_pt, plane_normal, cap_sign): (Point3, Vec3, f64),
+    holes: &mut CapHolesRead,
+    point: Point3,
+    sph: &remus_math::surfaces::SphericalSurface,
+) -> Result<Option<bool>, CheckError> {
+    // Exact: the cap is every point of the sphere on this side of the plane.
+    if (point - ref_pt).dot(plane_normal) * cap_sign < -HALF_SPACE_EPS {
+        return Ok(Some(false));
+    }
+    if topo.face(face_id)?.inner_wires().is_empty() {
+        return Ok(Some(true));
+    }
     // The holes lie in the cap, so the sphere point farthest off it is in
-    // none of them: read from there, each hole bounds its own image (B264).
-    // Projected along the plane normal instead, a hole near the rim folds
-    // over the cap and its shadow takes in hits it does not hold.
-    let cap_holes = if holes.is_empty() {
-        None
-    } else {
-        sphere_stereo::CapHoles::build(holes, sph.center(), plane_normal * -cap_sign)
+    // none of them (B264). Projected onto a coordinate plane instead, a hole
+    // near the rim folds over the cap and its shadow takes in hits it does
+    // not hold.
+    if matches!(holes, CapHolesRead::Unread) {
+        *holes = match sphere_stereo::CapHoles::build(
+            topo,
+            face_id,
+            sph.center(),
+            plane_normal * -cap_sign,
+        )? {
+            Some(cap_holes) => CapHolesRead::Read(cap_holes),
+            None => CapHolesRead::Unreadable,
+        };
+    }
+    let CapHolesRead::Read(cap_holes) = &*holes else {
+        return Ok(None);
     };
+    Ok(cap_holes.in_hole(point).map(|in_hole| !in_hole))
+}
+
+/// [`count_sphere_cap_crossings`] with caller-supplied trim data (`None`
+/// builds it on demand, exactly as the one-shot path always has).
+fn count_sphere_cap_crossings_with_trim(
+    topo: &Topology,
+    face_id: FaceId,
+    trim: Option<&FaceTrimData>,
+    hits: &[Point3],
+    sph: &remus_math::surfaces::SphericalSurface,
+) -> Result<Option<u32>, CheckError> {
+    if hits.is_empty() {
+        return Ok(Some(0));
+    }
+
+    let owned_trim;
+    let trim_data = if let Some(cached) = trim {
+        cached
+    } else {
+        owned_trim = FaceTrimData::build(topo, face_id)?;
+        &owned_trim
+    };
+    let Some(cap) = sphere_cap_plane(trim_data, sph) else {
+        return Ok(None);
+    };
+    let mut holes = CapHolesRead::Unread;
     let mut crossings = 0u32;
     for &hit in hits {
-        // Exact: the cap is every point of the sphere on this side of the plane.
-        if (hit - ref_pt).dot(plane_normal) * cap_sign < -HALF_SPACE_EPS {
-            continue;
-        }
-        let in_hole = cap_holes
-            .as_ref()
-            .and_then(|cap_holes| cap_holes.in_hole(hit))
-            .unwrap_or_else(|| hit_in_hole_3d(holes, hit, plane_normal));
-        if in_hole {
-            continue;
-        }
-        crossings += 1;
+        let Some(inside) = sphere_cap_contains(topo, face_id, cap, &mut holes, hit, sph)? else {
+            return Err(CheckError::ClassificationFailed(
+                super::NURBS_RAY_GRAZE.into(),
+            ));
+        };
+        crossings += u32::from(inside);
     }
 
     Ok(Some(crossings))
@@ -2062,16 +2114,38 @@ fn count_sphere_chart_crossings(
     .map(Some)
 }
 
+/// The stereographic reading of a sphere face's trim, cached per prepared
+/// face.
+///
+/// # Errors
+///
+/// Returns an error if a topology lookup fails.
+fn sphere_stereo_reading<'c>(
+    topo: &Topology,
+    face_id: FaceId,
+    cache: Option<&'c FaceCache>,
+    owned: &'c mut Option<sphere_stereo::StereoReading>,
+    sphere: &remus_math::surfaces::SphericalSurface,
+) -> Result<&'c sphere_stereo::StereoReading, CheckError> {
+    if let Some(cache) = cache {
+        if let Some(reading) = cache.sphere_stereo_trim.get() {
+            return Ok(reading);
+        }
+        let reading = sphere_stereo::StereoTrim::build(topo, face_id, sphere)?;
+        return Ok(cache.sphere_stereo_trim.get_or_init(|| reading));
+    }
+    Ok(owned.insert(sphere_stereo::StereoTrim::build(topo, face_id, sphere)?))
+}
+
 /// Count ray crossings of a sphere face the `(longitude, latitude)` chart
 /// cannot read (a trim that holds a pole or winds the axis) in a
 /// stereographic chart re-centred clear of its loops
-/// ([`sphere_stereo::StereoTrim`], B264). `None` when that chart cannot be
-/// built either, keeping the 3D polygon fallback; a hit whose winding is not
-/// that of a simple trim abstains from the vote.
+/// ([`sphere_stereo::StereoTrim`], B264). `None` only for a face with no
+/// loop of any extent, keeping the 3D polygon fallback; a trim the chart
+/// cannot read, or a hit within a chord's band, abstains from the vote.
 fn count_sphere_stereo_crossings(
     topo: &Topology,
     face_id: FaceId,
-    trim: Option<&FaceTrimData>,
     cache: Option<&FaceCache>,
     hits: &[Point3],
     sphere: &remus_math::surfaces::SphericalSurface,
@@ -2079,47 +2153,33 @@ fn count_sphere_stereo_crossings(
     if hits.is_empty() {
         return Ok(None);
     }
-    let owned_trim;
-    let trim_data = if let Some(cached) = trim {
-        cached
-    } else {
-        owned_trim = FaceTrimData::build(topo, face_id)?;
-        &owned_trim
-    };
-    let owned_chart;
-    let chart = if let Some(cache) = cache {
-        cache
-            .sphere_stereo_trim
-            .get_or_init(|| sphere_stereo::StereoTrim::build(trim_data, sphere))
-    } else {
-        owned_chart = sphere_stereo::StereoTrim::build(trim_data, sphere);
-        &owned_chart
-    };
-    let Some(chart) = chart else {
-        return Ok(None);
-    };
-    let mut count = 0;
-    for &hit in hits {
-        let Some(inside) = chart.contains(hit) else {
-            return Err(CheckError::ClassificationFailed(
-                super::NURBS_RAY_GRAZE.into(),
-            ));
-        };
-        count += u32::from(inside);
+    let abstain = || CheckError::ClassificationFailed(super::NURBS_RAY_GRAZE.into());
+    let mut owned = None;
+    match sphere_stereo_reading(topo, face_id, cache, &mut owned, sphere)? {
+        sphere_stereo::StereoReading::NoBoundary => Ok(None),
+        sphere_stereo::StereoReading::Undecided => Err(abstain()),
+        sphere_stereo::StereoReading::Chart(chart) => {
+            let mut count = 0;
+            for &hit in hits {
+                count += u32::from(chart.contains(hit).ok_or_else(abstain)?);
+            }
+            Ok(Some(count))
+        }
     }
-    Ok(Some(count))
 }
 
 /// Trim membership of a point near a sphere face whose trim the
 /// `(longitude, latitude)` chart cannot read (a pole-holding or axis-winding
-/// trim), read in the re-centred stereographic chart the ray vote uses
-/// ([`count_sphere_stereo_crossings`]). `None` for other faces, for trims the
-/// chart reads, and where the stereographic chart cannot decide: the caller
+/// trim), decided as the ray vote decides it: exactly by the rim plane and
+/// the cap's holes for a cap, else in the re-centred stereographic chart
+/// ([`count_sphere_stereo_crossings`]). `None` for other faces, for trims
+/// the chart reads, and for a face with no loop of any extent: the caller
 /// keeps its projected polygon there.
 ///
 /// # Errors
 ///
-/// Returns an error if a topology lookup fails.
+/// Returns an error if a topology lookup fails, and the vote's abstention
+/// when the point lies within a chord's band or the trim cannot be read.
 pub fn sphere_pole_trim_contains(
     topo: &Topology,
     face_id: FaceId,
@@ -2133,16 +2193,26 @@ pub fn sphere_pole_trim_contains(
     if sphere_trim_reads_in_chart(trim, sphere) {
         return Ok(None);
     }
-    let owned_chart;
-    let chart = if let Some(cache) = cache {
-        cache
-            .sphere_stereo_trim
-            .get_or_init(|| sphere_stereo::StereoTrim::build(trim, sphere))
-    } else {
-        owned_chart = sphere_stereo::StereoTrim::build(trim, sphere);
-        &owned_chart
+    let abstain = || CheckError::ClassificationFailed(super::NURBS_RAY_GRAZE.into());
+    // The ray vote's exact cap test, at the point's radial image.
+    let Ok(direction) = (point - sphere.center()).normalize() else {
+        return Ok(None);
     };
-    Ok(chart.as_ref().and_then(|chart| chart.contains(point)))
+    let on_sphere = sphere.center() + direction * sphere.radius();
+    if let Some(cap) = sphere_cap_plane(trim, sphere) {
+        let mut holes = CapHolesRead::Unread;
+        return sphere_cap_contains(topo, face_id, cap, &mut holes, on_sphere, sphere)?
+            .map(Some)
+            .ok_or_else(abstain);
+    }
+    let mut owned = None;
+    match sphere_stereo_reading(topo, face_id, cache, &mut owned, sphere)? {
+        sphere_stereo::StereoReading::NoBoundary => Ok(None),
+        sphere_stereo::StereoReading::Undecided => Err(abstain()),
+        sphere_stereo::StereoReading::Chart(chart) => {
+            chart.contains(on_sphere).map(Some).ok_or_else(abstain)
+        }
+    }
 }
 
 /// Whether a sphere face's trim polygons are simple loops in its chart.
@@ -2361,7 +2431,7 @@ pub fn count_face_ray_crossings_cached(
                 {
                     Ok(count)
                 } else if let Some(count) =
-                    count_sphere_stereo_crossings(topo, face_id, trim, cache, points, sph)?
+                    count_sphere_stereo_crossings(topo, face_id, cache, points, sph)?
                 {
                     Ok(count)
                 } else {
@@ -2949,6 +3019,9 @@ mod nurbs_bump_ray_tests;
 
 #[cfg(test)]
 mod torus_contact_tests;
+
+#[cfg(test)]
+mod sphere_review_tests;
 
 #[cfg(test)]
 mod uv_loop_center_tests {
