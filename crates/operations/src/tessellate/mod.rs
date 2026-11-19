@@ -21,6 +21,8 @@
 
 pub(crate) mod boundary_plan;
 mod cone_chart;
+#[cfg(test)]
+pub(crate) use cone_chart::chart_decisions;
 pub(crate) use cone_chart::chart_face;
 pub(crate) mod edge_sampling;
 mod face;

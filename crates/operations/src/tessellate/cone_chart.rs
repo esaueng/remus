@@ -39,6 +39,8 @@ pub fn chart_face(
     let FaceSurface::Cone(cone) = face.surface() else {
         return Ok(Cow::Borrowed(face));
     };
+    #[cfg(test)]
+    CHART_DECISIONS.with(|count| count.set(count.get() + 1));
     match remus_check::properties::face_integrator::cone_chart_carrier(topo, face_id, cone) {
         // The chart decision returns the carrier itself or its axis-reversed
         // copy; only the latter changes the face.
@@ -49,6 +51,19 @@ pub fn chart_face(
         }
         Ok(_) | Err(_) => Ok(Cow::Borrowed(face)),
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Cone chart decisions (boundary samples) [`chart_face`] has run on
+    /// this thread, for work-count tests.
+    static CHART_DECISIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Cone chart decisions [`chart_face`] has run on this thread (tests).
+#[cfg(test)]
+pub fn chart_decisions() -> usize {
+    CHART_DECISIONS.with(std::cell::Cell::get)
 }
 
 /// Whether a mesher handed `face_data` for `face_id` may read the face's
