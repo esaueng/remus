@@ -18,8 +18,8 @@ use remus_topology::wire::{OrientedEdge, Wire};
 
 use super::{
     Aabb3, Edge, EdgeCurve, FaceClip, FaceExtent, FaceId, FaceSurface, Point3, RawCurve, Tolerance,
-    Topology, Vec3, Vertex, clip_line_to_face, section_notches_one_rim, single_hit_circle_is_graze,
-    trim_torus_oval_to_box_face,
+    Topology, Vec3, Vertex, clip_line_to_face, marks_to_settle, section_notches_one_rim,
+    single_hit_circle_is_graze, trim_torus_oval_to_box_face,
 };
 
 // ── Shared fixture builders ─────────────────────────────────────────────
@@ -727,6 +727,16 @@ impl TorusCut {
 
     /// Run the trim with the plane face as `fa` and a stand-in torus face.
     fn trim(&self, topo: &mut Topology, plane_face: FaceId) -> Option<Vec<RawCurve>> {
+        self.try_trim(topo, plane_face)
+            .expect("no lens on one box edge")
+    }
+
+    /// [`Self::trim`], refusals included.
+    fn try_trim(
+        &self,
+        topo: &mut Topology,
+        plane_face: FaceId,
+    ) -> Result<Option<Vec<RawCurve>>, crate::error::AlgoError> {
         let torus_surface = FaceSurface::Torus(self.torus.clone());
         let circle = Circle3D::new(self.axis_foot, Vec3::new(0.0, 0.0, 1.0), 0.1).unwrap();
         let torus_wire = closed_circle_wire(topo, &circle, 0.0);
@@ -747,7 +757,6 @@ impl TorusCut {
             &ext,
             tol,
         )
-        .expect("no lens on one box edge")
     }
 }
 
@@ -1916,5 +1925,148 @@ fn exact_equal_frustum_section_declines_partial_holed_and_axially_shifted_bands(
             .unwrap()
             .is_none()
         );
+    }
+}
+
+// ── trim_torus_oval_to_box_face: shallow lenses and close crossings (B266) ──
+
+/// The radius-4 section of a torus `(3, 1.25)` cut `0.75` above its centre.
+fn radius_four_cut() -> TorusCut {
+    let cut = TorusCut::at(Point3::new(0.7, -0.3, 0.2), 3.0, 1.25, 0.75);
+    assert!((cut.outer - 4.0).abs() < 1e-12, "fixture: outer radius 4");
+    cut
+}
+
+/// The rectangle `[x0, x1] × [y0, y1]` in the cut plane (relative to the
+/// torus axis), its bottom edge split at the in-plane `x` values `splits`
+/// into collinear edges.
+fn rectangle_face(
+    topo: &mut Topology,
+    cut: &TorusCut,
+    (x0, x1): (f64, f64),
+    (y0, y1): (f64, f64),
+    splits: &[f64],
+) -> FaceId {
+    let mut corners = vec![cut.in_plane(x0, y0)];
+    corners.extend(splits.iter().map(|&x| cut.in_plane(x, y0)));
+    corners.extend([
+        cut.in_plane(x1, y0),
+        cut.in_plane(x1, y1),
+        cut.in_plane(x0, y1),
+    ]);
+    polygon_face(topo, &corners, Vec3::new(0.0, 0.0, 1.0))
+}
+
+/// Review of #1867, finding 1: the outer section circle pokes `depth` past
+/// a box face's bottom edge, a lens `depth` thick between its two crossings
+/// `± sqrt(8·depth)` apart. Within the band it is dropped, thinner than the
+/// separation distance (`1e-5`) refused, thicker kept, whether the edge is
+/// whole or split between the crossings into two or three collinear edges.
+#[test]
+fn a_shallow_lens_on_a_box_edge_is_read_across_collinear_edges() {
+    let cut = radius_four_cut();
+    for splits in [&[][..], &[0.0][..], &[-1e-3, 1e-3][..]] {
+        for (depth, expected) in [(1e-8, "dropped"), (1e-6, "refused"), (1e-4, "kept")] {
+            let mut topo = Topology::new();
+            let face = rectangle_face(
+                &mut topo,
+                &cut,
+                (-5.0, 5.0),
+                (cut.outer - depth, cut.outer + 5.0),
+                splits,
+            );
+            let label = format!("splits {splits:?} depth {depth:e}");
+            match (cut.try_trim(&mut topo, face), expected) {
+                (Ok(Some(pieces)), "dropped") => assert!(pieces.is_empty(), "{label}"),
+                (Err(_), "refused") => {}
+                (Ok(Some(pieces)), "kept") => {
+                    let half = (8.0 * depth - depth * depth).sqrt();
+                    let ends = [
+                        cut.in_plane(-half, cut.outer - depth),
+                        cut.in_plane(half, cut.outer - depth),
+                    ];
+                    let inside = |p: Point3| p.y() - cut.axis_foot.y() >= cut.outer - depth - 1e-9;
+                    let angle = 2.0 * (half / cut.outer).asin();
+                    assert_kept_arc(&cut, &pieces, ends, angle, &inside, &label);
+                }
+                (got, _) => panic!(
+                    "{label}: expected {expected}, got {:?}",
+                    got.map(|p| p.map(|p| p.len()))
+                ),
+            }
+        }
+    }
+}
+
+/// Dense oval parameter of `p` on `cut`'s outer oval, as
+/// [`trim_torus_oval_to_box_face`] reads it (the nearest of 1024 samples).
+fn dense_frac(cut: &TorusCut, p: Point3) -> f64 {
+    let oval = cut.outer_oval();
+    let at = |f: f64| {
+        let t = oval.t_range.0 + (oval.t_range.1 - oval.t_range.0) * f;
+        oval.curve
+            .evaluate_with_endpoints(t, oval.p_start, oval.p_end)
+    };
+    (0..=1024)
+        .map(|i| f64::from(i) / 1024.0)
+        .min_by(|&a, &b| (at(a) - p).length().total_cmp(&(at(b) - p).length()))
+        .unwrap()
+}
+
+/// The radius-4 oval clipped to `[2, x1] × [-3, 3]`: its crossings with the
+/// `x = x1` edge (close together) and with the `y = ±3` edges (far from
+/// them), as `(close, apart)`.
+fn clipped_crossings(cut: &TorusCut, x1: f64) -> ([Point3; 2], [Point3; 2]) {
+    let near = x1.mul_add(-x1, 16.0).sqrt();
+    let far = 7.0_f64.sqrt();
+    (
+        [cut.in_plane(x1, near), cut.in_plane(x1, -near)],
+        [cut.in_plane(far, 3.0), cut.in_plane(far, -3.0)],
+    )
+}
+
+/// Review of #1867, findings 2 and 3: the radius-4 oval clipped to
+/// `[2, 3.99] × [-3, 3]` crosses the `x = 3.99` edge twice `0.57` apart
+/// (23 dense samples, across the oval's seam) and the `y = ±3` edges far
+/// from them. Only the close pair is settled; the far crossings keep their
+/// dense parameters bit for bit, and a disk cap's crossings are never
+/// settled. With the close pair `1.25` apart (`x = 3.95`, 51 samples, still
+/// settled) the trim keeps the two in-face arcs on the exact section
+/// circle.
+#[test]
+fn only_crossings_next_to_a_close_gap_are_settled() {
+    let cut = radius_four_cut();
+    let (close, apart) = clipped_crossings(&cut, 3.99);
+    let mut fracs: Vec<(f64, bool)> = close
+        .iter()
+        .map(|&p| (dense_frac(&cut, p), true))
+        .chain(apart.iter().map(|&p| (dense_frac(&cut, p), false)))
+        .collect();
+    fracs.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let sorted: Vec<f64> = fracs.iter().map(|f| f.0).collect();
+    let expected: Vec<bool> = fracs.iter().map(|f| f.1).collect();
+    assert_eq!(marks_to_settle(&sorted, 1.0 / 1024.0, true), expected);
+    assert_eq!(
+        marks_to_settle(&sorted, 1.0 / 1024.0, false),
+        vec![false; sorted.len()]
+    );
+
+    let x1 = 3.95;
+    let (close, apart) = clipped_crossings(&cut, x1);
+    let mut topo = Topology::new();
+    let face = rectangle_face(&mut topo, &cut, (2.0, x1), (-3.0, 3.0), &[]);
+    let pieces = cut.trim(&mut topo, face).expect("the in-face arcs");
+    let inside = |p: Point3| {
+        let (x, y) = (p.x() - cut.axis_foot.x(), p.y() - cut.axis_foot.y());
+        (2.0 - 1e-9..=x1 + 1e-9).contains(&x) && (-3.0 - 1e-9..=3.0 + 1e-9).contains(&y)
+    };
+    let angle = (3.0 / 7.0_f64.sqrt()).atan() - ((close[0].y() - cut.axis_foot.y()) / x1).atan();
+    for (upper, ends) in [(false, [apart[1], close[1]]), (true, [close[0], apart[0]])] {
+        let arc: Vec<RawCurve> = pieces
+            .iter()
+            .filter(|p| (p.p_start.y() + p.p_end.y() > 2.0 * cut.axis_foot.y()) == upper)
+            .cloned()
+            .collect();
+        assert_kept_arc(&cut, &arc, ends, angle, &inside, &format!("upper {upper}"));
     }
 }

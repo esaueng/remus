@@ -22,3 +22,4 @@ within `1.5e-5` of a slicing integral, now taken piecewise between the
 integrand's breaks with a cancellation-free cap area
 (`regress_torus_contact_windows.rs::shallow_torus_notch_on_a_box_edge_is_not_dropped`,
 `shallow_torus_notches_across_scales_are_exact_or_refused`).
+Review fixes: the lens is measured against the face outline's straight edges as segments, so a grazed edge split into collinear pieces between the crossings is refused by the same gate (`shallow_notch_across_a_split_grazed_edge_is_exact_or_refused`, `helper_oracle_tests::a_shallow_lens_on_a_box_edge_is_read_across_collinear_edges`); only crossings next to a short gap on a straight-edged face are settled, so disk caps and far crossings keep their dense parameters (`only_crossings_next_to_a_close_gap_are_settled`).

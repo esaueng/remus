@@ -4440,9 +4440,10 @@ fn torus_oval_boundary_witness(
 /// outer arc that wraps most of the tube), not the inner fragment a contiguous
 /// sample run would wrongly keep on a mirror-asymmetric marcher parameterisation.
 ///
-/// A kept arc whose two ends lie on one straight edge of the box face bounds
-/// a lens between itself and that edge, as thick as the arc's farthest
-/// distance from the edge (B266: a torus notch on a box edge). Read against
+/// A kept arc whose two ends lie on straight edges of the box face bounds a
+/// lens between itself and the outline, as thick as the arc's farthest
+/// distance from those edges ([`lens_thickness`]; B266: a torus notch on a
+/// box edge, whole or split into collinear pieces). Read against
 /// the section tolerance model ([`crate::section_tolerance`]):
 ///
 /// - within the model's `band` the lens is the edge, to tolerance: the arc
@@ -4507,10 +4508,10 @@ fn trim_torus_oval_to_box_face(
                 dropped = true;
                 continue;
             }
-            if thickness < model.separate {
+            if thickness.is_nan() || thickness < model.separate {
                 return Err(AlgoError::IntersectionFailed(format!(
                     "plane × torus section on face {plane_face:?}: the arc between \
-                     {:?} and {:?} runs {thickness:e} from the box edge they lie on, \
+                     {:?} and {:?} runs at most {thickness:e} from the box edges, \
                      inside the separation distance {:e}",
                     first.p_start, last.p_end, model.separate
                 )));
@@ -4525,11 +4526,16 @@ fn trim_torus_oval_to_box_face(
 }
 
 /// How far the arc made of `pieces`, from `start` to `end`, runs from the
-/// straight edge of `lines` both its ends lie on (within `model.band`), or
-/// `None` when no one edge holds both ends.
+/// straight edges `lines` of the face's outer wire, when both its ends lie
+/// on them (within `model.band`); `None` when an end does not.
 ///
-/// The distance is the largest over 64 samples of each piece, its ends
-/// included, from the edge's line.
+/// The distance is the largest, over 64 samples of each piece with its ends,
+/// of the distance to the nearest of the edges as segments. Read against
+/// every edge rather than the one its ends lie on, a lens is measured the
+/// same whether that edge is whole or split into collinear pieces between
+/// the ends (review of #1867), and an arc that hugs the outline round a
+/// corner is as thin as it is. A non-finite reading is returned as it is,
+/// for the caller to refuse.
 fn lens_thickness(
     pieces: &[RawCurve],
     start: Point3,
@@ -4537,32 +4543,59 @@ fn lens_thickness(
     lines: &[(Point3, Point3)],
     model: crate::section_tolerance::SectionTolerance,
 ) -> Option<f64> {
-    let distance = |p: Point3, (a, b): (Point3, Point3)| -> Option<f64> {
+    // Distance from `p` to the segment `a → b`; NaN for a degenerate one.
+    let to_segment = |p: Point3, (a, b): (Point3, Point3)| -> f64 {
         let dir = b - a;
-        let len_sq = dir.dot(dir);
-        if len_sq.is_nan() || len_sq <= 0.0 {
-            return None;
-        }
-        Some((p - a).cross(dir).length() / len_sq.sqrt())
+        let t = ((p - a).dot(dir) / dir.dot(dir)).clamp(0.0, 1.0);
+        (p - (a + dir * t)).length()
     };
-    let on_segment = |p: Point3, (a, b): (Point3, Point3)| -> bool {
-        let dir = b - a;
-        let len_sq = dir.dot(dir);
-        let t = (p - a).dot(dir) / len_sq;
-        (0.0..=1.0).contains(&t) && distance(p, (a, b)).is_some_and(|d| d <= model.band)
+    let to_outline = |p: Point3| -> f64 {
+        lines
+            .iter()
+            .map(|&line| to_segment(p, line))
+            .fold(f64::INFINITY, |nearest, d| {
+                if d.is_nan() { nearest } else { nearest.min(d) }
+            })
     };
-    let &line = lines
-        .iter()
-        .find(|&&line| on_segment(start, line) && on_segment(end, line))?;
+    if to_outline(start) > model.band || to_outline(end) > model.band {
+        return None;
+    }
     let mut thickness = 0.0_f64;
     for piece in pieces {
         for i in 0..=64 {
             let t =
                 (piece.t_range.1 - piece.t_range.0).mul_add(f64::from(i) / 64.0, piece.t_range.0);
-            thickness = thickness.max(distance(raw_point_at(piece, t), line)?);
+            let d = to_outline(raw_point_at(piece, t));
+            if !d.is_finite() {
+                return Some(d);
+            }
+            thickness = thickness.max(d);
         }
     }
     Some(thickness)
+}
+
+/// Which of the sorted oval parameters `fracs` of a section's crossings
+/// [`torus_oval_box_arcs`] settles by a closest-point search: on a
+/// straight-edged face, the crossings next to a gap shorter than 64 dense
+/// steps `dense_step` (the last gap wraps past the oval's seam). Every
+/// other crossing, and every crossing on a disk cap, keeps its dense
+/// parameter.
+fn marks_to_settle(fracs: &[f64], dense_step: f64, straight_box: bool) -> Vec<bool> {
+    let n = fracs.len();
+    if !straight_box || n < 2 {
+        return vec![false; n];
+    }
+    // `short[i]`: the gap from crossing `i` to the next one.
+    let short: Vec<bool> = (0..n)
+        .map(|i| {
+            let gap = fracs
+                .get(i + 1)
+                .map_or(fracs[0] + 1.0 - fracs[i], |next| next - fracs[i]);
+            gap < 64.0 * dense_step
+        })
+        .collect();
+    (0..n).map(|i| short[i] || short[(i + n - 1) % n]).collect()
 }
 
 /// The in-box arcs of [`trim_torus_oval_to_box_face`], each as the one or
@@ -4833,21 +4866,17 @@ fn torus_oval_box_arcs(
     // itself; two crossings a few steps apart get the same or neighbouring
     // samples, and the arc runs round the whole oval (B266: a notch 3e-7 to
     // 1e-5 deep enters the box face for 2e-3 to 1.3e-2 of a 2.2 oval, one to
-    // six steps). Settle each crossing's parameter to the closest point of
-    // the oval within a step of the dense one. Crossings further apart keep
-    // their dense parameters.
+    // six steps). On a straight-edged face, settle the parameter of each
+    // crossing next to such a gap to the closest point of the oval within a
+    // step of the dense one ([`marks_to_settle`]). Every other crossing, and
+    // every crossing on a disk cap, keeps its dense parameter.
     #[allow(clippy::cast_precision_loss)]
     let dense_step = 1.0 / n_dense as f64;
-    let close = (0..marks.len()).any(|i| {
-        // Sorted: only the last gap wraps past the oval's seam.
-        let gap = marks
-            .get(i + 1)
-            .map_or(marks[0].0 + 1.0 - marks[i].0, |next| next.0 - marks[i].0);
-        gap < 64.0 * dense_step
-    });
-    if close {
+    let fracs: Vec<f64> = marks.iter().map(|m| m.0).collect();
+    let settle = marks_to_settle(&fracs, dense_step, straight_box);
+    if settle.contains(&true) {
         let distance = |f: f64, p: Point3| (oval_at(f.rem_euclid(1.0)) - p).length();
-        for (frac, p) in &mut marks {
+        for ((frac, p), _) in marks.iter_mut().zip(&settle).filter(|(_, s)| **s) {
             // Golden-section search on the closest-point distance, which is
             // unimodal this close to a crossing the oval passes through.
             let golden = 0.5 * (5.0_f64.sqrt() - 1.0);

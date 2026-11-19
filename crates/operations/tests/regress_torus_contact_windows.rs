@@ -321,6 +321,79 @@ fn graze_cut(depth: f64) -> Graze {
     graze_cut_at(1.0, depth)
 }
 
+/// [`graze_cut_split`] on a plain box.
+fn graze_cut_at(k: f64, depth: f64) -> Graze {
+    graze_cut_split(k, depth, false)
+}
+
+/// A box `l × w × h`, with its top `y = 0` edge split at `x = split_x` on
+/// both faces that use it when `split_x` is given: the same solid, its edge
+/// in two collinear pieces (as an earlier operation or an import can leave
+/// it).
+fn box_with_split_top_edge(
+    topo: &mut Topology,
+    (l, w, h): (f64, f64, f64),
+    split_x: Option<f64>,
+) -> SolidId {
+    let solid = make_box(topo, l, w, h).unwrap();
+    let Some(x) = split_x else {
+        return solid;
+    };
+    let on_edge = |p: Point3| p.y().abs() < 1e-12 && (p.z() - h).abs() < 1e-12;
+    let edges = remus_topology::explorer::solid_edges(topo, solid).unwrap();
+    let grazed = edges
+        .into_iter()
+        .find(|&e| {
+            let edge = topo.edge(e).unwrap();
+            on_edge(topo.vertex(edge.start()).unwrap().point())
+                && on_edge(topo.vertex(edge.end()).unwrap().point())
+        })
+        .unwrap();
+    let (start, end) = {
+        let edge = topo.edge(grazed).unwrap();
+        (edge.start(), edge.end())
+    };
+    let mid = topo.add_vertex(Vertex::new(Point3::new(x, 0.0, h), 1e-7));
+    let first = topo.add_edge(Edge::new(start, mid, EdgeCurve::Line));
+    let second = topo.add_edge(Edge::new(mid, end, EdgeCurve::Line));
+    let shell = topo.solid(solid).unwrap().outer_shell();
+    let faces = topo.shell(shell).unwrap().faces().to_vec();
+    for (slot, face) in faces.into_iter().enumerate() {
+        let wire_id = topo.face(face).unwrap().outer_wire();
+        let wire = topo.wire(wire_id).unwrap();
+        if !wire.edges().iter().any(|oe| oe.edge() == grazed) {
+            continue;
+        }
+        let mut uses = Vec::new();
+        for oe in wire.edges() {
+            if oe.edge() != grazed {
+                uses.push(*oe);
+            } else if oe.is_forward() {
+                uses.extend([
+                    OrientedEdge::new(first, true),
+                    OrientedEdge::new(second, true),
+                ]);
+            } else {
+                uses.extend([
+                    OrientedEdge::new(second, false),
+                    OrientedEdge::new(first, false),
+                ]);
+            }
+        }
+        let wire = topo.add_wire(Wire::new(uses, true).unwrap());
+        let (surface, reversed) = {
+            let old = topo.face(face).unwrap();
+            (old.surface().clone(), old.is_reversed())
+        };
+        let mut split_face = Face::new(wire, vec![], surface);
+        split_face.set_reversed(reversed);
+        let split_face = topo.add_face(split_face);
+        topo.shell_mut(shell).unwrap().faces_mut()[slot] = split_face;
+    }
+    assert!(validate_solid(topo, solid).unwrap().is_valid());
+    solid
+}
+
 /// Cut a box `10·k` on a side by a torus (axis z, `R = 1.5·k`, `r = 0.5·k`)
 /// hung over the box's `y = 0` face, its centre `0.2·k` above the top face,
 /// so that its outer flank at the top face's height reaches `depth` into
@@ -331,8 +404,10 @@ fn graze_cut(depth: f64) -> Graze {
 ///
 /// Panics on a result that is neither exact, nor the unchanged box, nor a
 /// refusal: a valid solid that is wrong.
+/// With `split`, the grazed edge is split at `x = 5·k`, between its two
+/// crossings ([`box_with_split_top_edge`]).
 #[allow(clippy::too_many_lines)]
-fn graze_cut_at(k: f64, depth: f64) -> Graze {
+fn graze_cut_split(k: f64, depth: f64, split: bool) -> Graze {
     let (l, w, h) = (10.0 * k, 10.0 * k, 10.0 * k);
     let (big, small, sink): (f64, f64, f64) = (1.5 * k, 0.5 * k, 0.2 * k);
     let xc = 5.0 * k;
@@ -342,13 +417,13 @@ fn graze_cut_at(k: f64, depth: f64) -> Graze {
     let half = (rho * rho - y0 * y0).sqrt();
     let centre = Point3::new(xc, y0, h + sink);
     let mut topo = Topology::new();
-    let b = make_box(&mut topo, l, w, h).unwrap();
+    let b = box_with_split_top_edge(&mut topo, (l, w, h), split.then_some(xc));
     let t = torus_at(&mut topo, big, small, centre);
     let expect = notch_volume(big, small, y0, sink);
     let Ok(s) = boolean(&mut topo, BooleanOp::Cut, b, t) else {
         return Graze::Refused;
     };
-    let context = format!("scale {k} depth {depth:e}");
+    let context = format!("scale {k} depth {depth:e} split {split}");
     assert!(validate_solid(&topo, s).unwrap().is_valid(), "{context}");
     let faces = remus_topology::explorer::solid_faces(&topo, s).unwrap();
     let torus_faces = faces
@@ -445,7 +520,7 @@ fn graze_cut_at(k: f64, depth: f64) -> Graze {
     // two-plane, one-torus solid whose volume is the slicing integral. (The
     // removed volume above is lost in the box's rounding at these depths.)
     let mut topo = Topology::new();
-    let b = make_box(&mut topo, l, w, h).unwrap();
+    let b = box_with_split_top_edge(&mut topo, (l, w, h), split.then_some(xc));
     let t = torus_at(&mut topo, big, small, centre);
     let notch = boolean(&mut topo, BooleanOp::Intersect, b, t)
         .unwrap_or_else(|e| panic!("{context}: the notch refused ({e:?}) where the cut built"));
@@ -572,4 +647,38 @@ fn shallow_torus_notches_across_scales_are_exact_or_refused() {
             );
         }
     }
+}
+
+/// Review of #1867, finding 1: the grazed edge split between its two
+/// crossings (at `x = 5`, on both faces that use it) leaves the arc's ends
+/// on two collinear edges. The lens is measured against the outline's
+/// edges, so the split changes nothing: refused by the lens gate itself at
+/// `1e-6` and `3e-6` (before the review fix the arc went on downstream and
+/// assembly happened to fail on it), exact or refused at `1e-5`, exact at
+/// `1e-4`. Never the unchanged box.
+#[test]
+fn shallow_notch_across_a_split_grazed_edge_is_exact_or_refused() {
+    for depth in [1e-6, 3e-6] {
+        assert_eq!(graze_cut_split(1.0, depth, true), Graze::Refused);
+        // The refusal is the section's, by name.
+        let (big, small, sink): (f64, f64, f64) = (1.5, 0.5, 0.2);
+        let rho = big + (small * small - sink * sink).sqrt();
+        let mut topo = Topology::new();
+        let b = box_with_split_top_edge(&mut topo, (10.0, 10.0, 10.0), Some(5.0));
+        let t = torus_at(
+            &mut topo,
+            big,
+            small,
+            Point3::new(5.0, depth - rho, 10.0 + sink),
+        );
+        let refusal = remus_algo::gfa::boolean(&mut topo, remus_algo::bop::BooleanOp::Cut, b, t)
+            .expect_err("a lens thinner than the separation distance");
+        assert!(
+            matches!(&refusal, remus_algo::error::AlgoError::IntersectionFailed(why)
+                if why.contains("separation distance")),
+            "depth {depth:e}: {refusal:?}"
+        );
+    }
+    assert_ne!(graze_cut_split(1.0, 1e-5, true), Graze::Unchanged);
+    assert_eq!(graze_cut_split(1.0, 1e-4, true), Graze::Exact);
 }
