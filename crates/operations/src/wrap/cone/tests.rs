@@ -366,3 +366,166 @@ fn a_disc_wrapped_on_a_frustum_embosses_and_engraves_as_one_body() {
         );
     }
 }
+
+/// `solid_volume` reads the wrapped cone faces on their fitted rims (see the
+/// check crate's `cone_green`), so the disc of
+/// [`a_disc_wraps_at_its_developed_volume`] measures the B-rep it stores.
+/// Before, its certificate readings kept the rims as 128-sample polygons and
+/// read 13.0619748, 3.4e-5 low.
+///
+/// The oracle is an independently written divergence-theorem quadrature of
+/// the stored B-rep (`volume_oracle`): the cone faces reduced to their rims
+/// in closed form in their own polar chart, the ruled walls over their
+/// parameter rectangles. Every face matches its term in the sum
+/// `solid_volume` takes, and the cone faces carry the boundary reading's
+/// certificate: halved-span agreement to round-off, and a closure allowance
+/// from the rims' measured offsets below a millionth of the shell's area.
+#[test]
+fn solid_volume_reads_wrapped_cone_faces_on_their_fitted_rims() {
+    let beta = 50f64;
+    let mut topo = Topology::new();
+    let edge = make_circle_edge(&mut topo, Point3::new(20.0, 1.5, 12.0), X, 2.0, 1e-7).unwrap();
+    let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap());
+    let profile = plane_face(&mut topo, wire, vec![]);
+    let solid = wrap_profile_on_cone(&mut topo, profile, &cone(beta), 0.0, 1.0).unwrap();
+    let measured = crate::measure::solid_volume(&topo, solid, 0.1).unwrap();
+    let oracle = super::super::volume_oracle::stored_brep_volume(&topo, solid);
+    assert!(rel(measured, oracle) < 1e-12, "{measured} vs {oracle}");
+    // The fit's own distance from the developed closed form (see
+    // `a_disc_wraps_at_its_developed_volume`): 5.3e-8 low.
+    assert!(
+        rel(measured, 13.062_415_572_511_936) < 2e-7,
+        "{measured} against the developed disc"
+    );
+    assert!(rel(measured, volume(&topo, solid)) < 1e-13);
+
+    let faces = solid_faces(&topo, solid).unwrap();
+    let reference = super::super::volume_oracle::vertex_box_centre(&topo, &faces);
+    let (mut area, mut allowance, mut cones) = (0.0, 0.0, 0);
+    for &face in &faces {
+        let term = remus_check::properties::face_cache::integrate_face_volume_about_memoized(
+            &topo, face, 5, reference,
+        )
+        .unwrap();
+        let oracle = super::super::volume_oracle::face_volume(&topo, face, reference);
+        assert!(
+            (term.volume - oracle).abs() < 1e-12 * measured,
+            "face {}: {} vs {oracle}",
+            face.index(),
+            term.volume
+        );
+        area += term.area;
+        if let FaceSurface::Cone(_) = topo.face(face).unwrap().surface() {
+            let fitted_reading = term.fitted_boundary.expect("a fitted boundary reading");
+            assert!(fitted_reading.span_disagreement < 1e-12 * measured);
+            allowance += fitted_reading.closure_allowance;
+            cones += 1;
+        } else {
+            assert!(term.fitted_boundary.is_none());
+        }
+    }
+    assert_eq!(cones, 2);
+    assert!(
+        allowance > 0.0 && allowance < 1e-6 * area,
+        "{allowance} of {area}"
+    );
+}
+
+/// The wrapped disc of [`solid_volume_reads_wrapped_cone_faces_on_their_fitted_rims`]
+/// with both cone faces written on their carriers' lower nappes (each axis
+/// reversed): the same B-rep, so `solid_volume` reads the same volume, with
+/// the cone faces still read on their fitted rims (`cone_green` reached
+/// through the reversed-axis chart, the reading that collects the vector
+/// area), cached and uncached.
+///
+/// The oracle is `volume_oracle` on the faces as built: it reads a cone face
+/// through `ConicalSurface::project_point`, so it is taken before the
+/// carriers are reversed. Before the nappe fix the reversed faces read their
+/// mirror images across the axis.
+#[test]
+fn solid_volume_reads_fitted_cone_faces_below_the_apex() {
+    use remus_check::properties::face_cache;
+
+    let mut topo = Topology::new();
+    let edge = make_circle_edge(&mut topo, Point3::new(20.0, 1.5, 12.0), X, 2.0, 1e-7).unwrap();
+    let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap());
+    let profile = plane_face(&mut topo, wire, vec![]);
+    let solid = wrap_profile_on_cone(&mut topo, profile, &cone(50.0), 0.0, 1.0).unwrap();
+    let faces = solid_faces(&topo, solid).unwrap();
+    let oracle = super::super::volume_oracle::stored_brep_volume(&topo, solid);
+    let reference = super::super::volume_oracle::vertex_box_centre(&topo, &faces);
+    let face_oracles: Vec<f64> = faces
+        .iter()
+        .map(|&face| super::super::volume_oracle::face_volume(&topo, face, reference))
+        .collect();
+
+    let mut lowered = 0;
+    for &face in &faces {
+        let FaceSurface::Cone(carrier) = topo.face(face).unwrap().surface().clone() else {
+            continue;
+        };
+        let reversed = carrier.with_reversed_axis();
+        let wire = topo.wire(topo.face(face).unwrap().outer_wire()).unwrap();
+        for oriented in wire.edges() {
+            let point = topo
+                .vertex(topo.edge(oriented.edge()).unwrap().start())
+                .unwrap()
+                .point();
+            assert!(reversed.project_point(point).1 < 0.0, "below the apex");
+        }
+        let edges = wire
+            .edges()
+            .iter()
+            .map(OrientedEdge::edge)
+            .collect::<Vec<_>>();
+        assert!(
+            edges
+                .iter()
+                .any(|&e| matches!(topo.edge(e).unwrap().curve(), EdgeCurve::NurbsCurve(_))),
+            "a fitted trim"
+        );
+        topo.face_mut(face)
+            .unwrap()
+            .set_surface(FaceSurface::Cone(reversed));
+        lowered += 1;
+    }
+    assert_eq!(lowered, 2);
+
+    // Uncached: the thread's face cache and volume memo are off by default.
+    face_cache::set_thread_face_cache_limits(0, 0);
+    let cold = crate::measure::solid_volume(&topo, solid, 0.1).unwrap();
+    assert!(rel(cold, oracle) < 1e-12, "uncached {cold} vs {oracle}");
+
+    face_cache::enable_thread_face_cache();
+    face_cache::clear_thread_face_cache();
+    let primed = crate::measure::solid_volume(&topo, solid, 0.1).unwrap();
+    let warm = crate::measure::solid_volume(&topo, solid, 0.1).unwrap();
+    assert!(face_cache::thread_face_cache_stats().hits > 0);
+    for (what, got) in [("priming", primed), ("warm", warm)] {
+        assert_eq!(
+            got.to_bits(),
+            cold.to_bits(),
+            "{what}: {got} vs uncached {cold}"
+        );
+    }
+    // Each face's term, read through the cache, against its oracle; the
+    // lowered cone faces still on their fitted boundaries.
+    for (&face, &want) in faces.iter().zip(&face_oracles) {
+        let term =
+            face_cache::integrate_face_volume_about_memoized(&topo, face, 5, reference).unwrap();
+        assert!(
+            (term.volume - want).abs() < 1e-12 * oracle,
+            "face {}: {} vs {want}",
+            face.index(),
+            term.volume
+        );
+        let is_cone = matches!(topo.face(face).unwrap().surface(), FaceSurface::Cone(_));
+        assert_eq!(
+            term.fitted_boundary.is_some(),
+            is_cone,
+            "face {}",
+            face.index()
+        );
+    }
+    face_cache::set_thread_face_cache_limits(0, 0);
+}

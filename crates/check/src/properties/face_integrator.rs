@@ -33,6 +33,8 @@ mod cone_nappe_tests;
 mod cylinder_band_tests;
 mod cylinder_green;
 #[cfg(test)]
+mod fitted_boundary_tests;
+#[cfg(test)]
 mod flat_loop_oracle_tests;
 mod knot_axis;
 #[cfg(test)]
@@ -70,11 +72,16 @@ struct IntegrationRule<'a> {
     ruled_guard: bool,
     /// Where a fixed-rule path records the face's vector area `∫ n dA`, taken
     /// over exactly the samples (or the closed form) its volume came from;
-    /// see [`integrate_face_fixed_flux_about`]. Adaptive paths leave it unset.
+    /// see [`integrate_face_fixed_flux_with_boundary_about`]. Adaptive paths
+    /// leave it unset.
     flux: Option<&'a Cell<Option<Vec3>>>,
     /// Analytic cone apex used only for stable adaptive volume density:
     /// `(P - R)·N = (apex - R)·N` on every cone generator.
     cone_apex: Option<Point3>,
+    /// Where a fixed-rule path that collects the vector area records the
+    /// certificate of a reading it took on a fitted boundary
+    /// (`cylinder_green`, `cone_green`).
+    boundary: Option<&'a Cell<Option<FittedBoundaryReading>>>,
 }
 
 impl<'a> IntegrationRule<'a> {
@@ -105,6 +112,7 @@ impl<'a> IntegrationRule<'a> {
             ruled_guard: self.ruled_guard,
             flux: self.flux,
             cone_apex: self.cone_apex,
+            boundary: self.boundary,
         }
     }
 
@@ -115,6 +123,43 @@ impl<'a> IntegrationRule<'a> {
             sink.set(Some(vector_area));
         }
     }
+
+    /// Record a boundary reading's vector area and certificate, when it
+    /// replaces the sampled reading.
+    fn record_boundary_reading(
+        self,
+        vector_area: Vec3,
+        fitted_reading: Option<FittedBoundaryReading>,
+    ) {
+        self.record_flux(vector_area);
+        if let Some(sink) = self.boundary {
+            sink.set(fitted_reading);
+        }
+    }
+}
+
+/// What certifies a cylinder or cone face's reading on its own fitted
+/// (NURBS) boundary (`cylinder_green`, `cone_green`).
+///
+/// It is for a caller that qualifies the reading it is handed, such as the
+/// shell-closure and convergence certificates of `solid_volume`.
+///
+/// That reading does not depend on the Gauss order, so comparing two orders
+/// tests nothing on it: its convergence is the agreement of each fitted
+/// edge's span-by-span and halved-span readings. And it reads every fitted
+/// point at its projection onto the face's surface, so its vector area
+/// stands off the one the stored boundary bounds by up to what that
+/// projection moves, which a closure check must allow for.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FittedBoundaryReading {
+    /// `Σ |V_span − V_halved|` over the fitted edges, the volume term's own
+    /// quadrature disagreement (about the reading's reference).
+    pub span_disagreement: f64,
+    /// Estimated bound on `|N − N_stored|`, the reading's vector area against
+    /// the one its stored boundary bounds, from the fitted edges' offsets
+    /// read at the quadrature points; not certified between them (see
+    /// `cylinder_green::FittedEdges::add`).
+    pub closure_allowance: f64,
 }
 
 /// Contribution of a single face to global geometric properties.
@@ -177,8 +222,8 @@ pub struct FaceContribution {
 ///   chording of that polygon. Cylinder faces trimmed by exact curves, and
 ///   cylinder and cone faces trimmed by fitted NURBS curves on the surface,
 ///   integrate exactly on their own boundary instead where the sampled
-///   reading agrees (see `cylinder_green` and `cone_green`; fitted trims
-///   only for readings that do not collect the vector area).
+///   reading agrees (see `cylinder_green` and `cone_green`; a reading that
+///   collects the vector area also gets the fitted edges' certificate).
 /// * **NURBS faces** keep every Gauss cell inside one knot span of the
 ///   carrier (see `integrate_knot_aligned`), so they converge with the order
 ///   up to the same trim chording.
@@ -259,48 +304,105 @@ pub fn integrate_face_fixed_about(
             ruled_guard: false,
             flux: None,
             cone_apex: None,
+            boundary: None,
         },
     )
 }
 
 /// [`integrate_face_fixed_about`] that also returns the face's vector area
 /// `∫ n dA`, read from the same Gauss samples (or the same closed form) as
-/// the volume.
+/// the volume, and the certificate of a reading taken on a fitted boundary.
 ///
 /// The volume term `(1/3) Σ wᵢ (Pᵢ − R) · nᵢ` is affine in the reference, so
 /// with `N = Σ wᵢ nᵢ` the contribution about another reference is
 /// `volume − (1/3)(R' − R) · N` — the same sum regrouped, equal to a fresh
-/// integration about `R'` up to rounding. `None` when the path that measured
-/// the face does not report it.
+/// integration about `R'` up to rounding. The vector area is `None` when the
+/// path that measured the face does not report it.
+///
+/// With `volume_only`, only area, signed volume and vector area are read,
+/// with exactly the full fixed rule's samples and accumulation order for
+/// these three quantities (and its choice of path on a fitted boundary).
+/// Other contribution fields are then unspecified and must never answer a
+/// full-property request.
 ///
 /// # Errors
 ///
 /// Exactly the errors of [`integrate_face_fixed_about`].
+pub(crate) fn integrate_face_fixed_flux_with_boundary_about(
+    topo: &Topology,
+    face_id: FaceId,
+    gauss_order: usize,
+    reference: Point3,
+    volume_only: bool,
+) -> Result<FluxReading, CheckError> {
+    if ![reference.x(), reference.y(), reference.z()]
+        .iter()
+        .all(|c| c.is_finite())
+    {
+        return Err(CheckError::IntegrationFailed(
+            "integration reference point must be finite".into(),
+        ));
+    }
+    let flux = Cell::new(None);
+    let boundary = Cell::new(None);
+    let contribution = integrate_face_impl::<false>(
+        topo,
+        face_id,
+        IntegrationRule {
+            order: gauss_order,
+            adaptive: None,
+            knots: None,
+            reference,
+            volume_only,
+            ruled_guard: false,
+            flux: Some(&flux),
+            cone_apex: None,
+            boundary: Some(&boundary),
+        },
+    )?;
+    Ok(FluxReading {
+        contribution,
+        vector_area: flux.get(),
+        fitted_boundary: boundary.get(),
+    })
+}
+
+/// A fixed-rule reading that collects the vector area: what
+/// [`integrate_face_fixed_flux_with_boundary_about`] returns.
+#[derive(Debug, Clone)]
+pub(crate) struct FluxReading {
+    pub(crate) contribution: FaceContribution,
+    /// `∫ n dA` from the same samples, when the path reports it.
+    pub(crate) vector_area: Option<Vec3>,
+    /// The certificate of a reading taken on a fitted boundary, which
+    /// replaces the order comparison and widens the closure check for it.
+    pub(crate) fitted_boundary: Option<FittedBoundaryReading>,
+}
+
+/// The contribution and vector area of
+/// [`integrate_face_fixed_flux_with_boundary_about`], every moment read.
+#[cfg(test)]
 pub(crate) fn integrate_face_fixed_flux_about(
     topo: &Topology,
     face_id: FaceId,
     gauss_order: usize,
     reference: Point3,
 ) -> Result<(FaceContribution, Option<Vec3>), CheckError> {
-    integrate_face_fixed_flux_impl(topo, face_id, gauss_order, reference, false)
+    integrate_face_fixed_flux_with_boundary_about(topo, face_id, gauss_order, reference, false)
+        .map(|reading| (reading.contribution, reading.vector_area))
 }
 
-/// Fixed-rule area, signed volume and vector area only.
-///
-/// Uses exactly the full fixed rule's samples and accumulation order for
-/// these three quantities. Other contribution fields are unspecified and
-/// must never answer a full-property request.
-///
-/// # Errors
-///
-/// Exactly the errors of [`integrate_face_fixed_about`].
+/// The contribution and vector area of
+/// [`integrate_face_fixed_flux_with_boundary_about`], volume only.
+#[cfg(test)]
 pub(crate) fn integrate_face_fixed_volume_flux_about(
     topo: &Topology,
     face_id: FaceId,
     gauss_order: usize,
     reference: Point3,
 ) -> Result<(FaceContribution, Option<Vec3>), CheckError> {
-    integrate_face_fixed_flux_impl(topo, face_id, gauss_order, reference, true)
+    integrate_face_fixed_flux_with_boundary_about(topo, face_id, gauss_order, reference, true)
+        .map(|reading| (reading.contribution, reading.vector_area))
 }
 
 /// Whether a NURBS face is a whole full-turn band: closed in one parameter
@@ -385,6 +487,7 @@ pub fn integrate_ruled_guard_volume_about(
             ruled_guard: true,
             flux: Some(&flux),
             cone_apex: None,
+            boundary: None,
         },
     )?;
     Ok(Some(RuledGuardVolumeTerm {
@@ -392,39 +495,6 @@ pub fn integrate_ruled_guard_volume_about(
         volume: term.volume,
         vector_area: flux.get(),
     }))
-}
-
-fn integrate_face_fixed_flux_impl(
-    topo: &Topology,
-    face_id: FaceId,
-    gauss_order: usize,
-    reference: Point3,
-    volume_only: bool,
-) -> Result<(FaceContribution, Option<Vec3>), CheckError> {
-    if ![reference.x(), reference.y(), reference.z()]
-        .iter()
-        .all(|c| c.is_finite())
-    {
-        return Err(CheckError::IntegrationFailed(
-            "integration reference point must be finite".into(),
-        ));
-    }
-    let flux = Cell::new(None);
-    let contribution = integrate_face_impl::<false>(
-        topo,
-        face_id,
-        IntegrationRule {
-            order: gauss_order,
-            adaptive: None,
-            knots: None,
-            reference,
-            volume_only,
-            ruled_guard: false,
-            flux: Some(&flux),
-            cone_apex: None,
-        },
-    )?;
-    Ok((contribution, flux.get()))
 }
 
 /// Integrate a face's area with the same fixed quadrature and trim rule as
@@ -455,6 +525,7 @@ pub fn integrate_face_area(
         ruled_guard: false,
         flux: None,
         cone_apex: None,
+        boundary: None,
     };
     if has_fitted_curved_trim(topo.face(face_id)?, topo) {
         return Ok(integrate_face_impl::<false>(topo, face_id, rule)?.area);
@@ -633,6 +704,7 @@ pub fn integrate_face_about(
             ruled_guard: false,
             flux: None,
             cone_apex: None,
+            boundary: None,
         },
     )
 }
@@ -640,8 +712,8 @@ pub fn integrate_face_about(
 /// The cone face's reading on its own boundary when it qualifies (see
 /// `cone_green`), else `sampled`, under the cylinder's guard: the boundary
 /// reading replaces the sampled one only where both agree to the sampling
-/// error. Faces with only exact trims, area-only and vector-area readings,
-/// and explicit refinement requests keep the sampled reading unchanged.
+/// error. Faces with only exact trims, area-only readings and explicit
+/// refinement requests keep the sampled reading unchanged.
 fn cone_boundary_or_sampled<const AREA_ONLY: bool>(
     topo: &Topology,
     face: &Face,
@@ -651,15 +723,15 @@ fn cone_boundary_or_sampled<const AREA_ONLY: bool>(
     sampled: FaceContribution,
 ) -> Result<FaceContribution, CheckError> {
     if rule.requested_refinement().is_none()
-        && let Some((exact, flux)) =
-            cone_green::integrate::<AREA_ONLY>(topo, face, cone, &rule, sign)?
+        && let Some(reading) = cone_green::integrate::<AREA_ONLY>(topo, face, cone, &rule, sign)?
     {
+        let exact = reading.contribution;
         let scale = sampled.area.max(f64::MIN_POSITIVE);
         let agrees = (exact.area - sampled.area).abs() <= 1e-3 * scale
             && (exact.volume - sampled.volume).abs()
                 <= 1e-3 * sampled.volume.abs().max(scale * scale.sqrt());
         if agrees {
-            rule.record_flux(flux);
+            rule.record_boundary_reading(reading.flux, reading.fitted);
             return Ok(exact);
         }
     }
@@ -783,9 +855,10 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
             // (their accuracy is part of the options contract).
             let sampled = sampled?;
             if rule.requested_refinement().is_none()
-                && let Some((exact, flux)) =
+                && let Some(reading) =
                     cylinder_green::integrate::<AREA_ONLY>(topo, face, s, &rule, sign)?
             {
+                let exact = reading.contribution;
                 let scale = sampled.area.max(f64::MIN_POSITIVE);
                 let agrees = (exact.area - sampled.area).abs() <= 1e-3 * scale
                     && (AREA_ONLY
@@ -793,7 +866,7 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
                             <= 1e-3 * sampled.volume.abs().max(scale * s.radius()));
                 if agrees {
                     if !AREA_ONLY {
-                        rule.record_flux(flux);
+                        rule.record_boundary_reading(reading.flux, reading.fitted);
                     }
                     return Ok(exact);
                 }
@@ -1687,6 +1760,7 @@ pub fn integrate_torus_band_face_about(
             ruled_guard: false,
             flux: None,
             cone_apex: None,
+            boundary: None,
         },
         if face.is_reversed() { -1.0 } else { 1.0 },
     )
@@ -6381,6 +6455,7 @@ mod tests {
                     ruled_guard: false,
                     flux: None,
                     cone_apex: None,
+                    boundary: None,
                 },
                 1.0,
                 &UvTrim::holes_of(uv),
@@ -7523,6 +7598,7 @@ mod tests {
                 ruled_guard: false,
                 flux: None,
                 cone_apex: None,
+                boundary: None,
             };
             integrate_knot_aligned::<_, false>(
                 &cylinder,
@@ -7591,6 +7667,7 @@ mod tests {
             ruled_guard: false,
             flux: None,
             cone_apex: None,
+            boundary: None,
         };
         assert!(matches!(
             integrate_knot_aligned::<_, false>(
@@ -7730,6 +7807,7 @@ mod tests {
                 ruled_guard: false,
                 flux: None,
                 cone_apex: None,
+                boundary: None,
             };
             FORCE_KNOT_ALIGNED_PREFLIGHT.set(forced);
             NORMAL_EVALUATIONS.with(|count| count.set(0));
@@ -7849,6 +7927,7 @@ mod tests {
             ruled_guard: false,
             flux: None,
             cone_apex: None,
+            boundary: None,
         };
         let trim = UvTrim::new(None, &[], &[], false);
         let area = integrate_knot_aligned::<_, true>(
@@ -7893,6 +7972,7 @@ mod tests {
             ruled_guard: false,
             flux: None,
             cone_apex: None,
+            boundary: None,
         };
         let area = integrate_knot_aligned::<_, true>(
             &cylinder,
@@ -7938,6 +8018,7 @@ mod tests {
             ruled_guard: false,
             flux: None,
             cone_apex: None,
+            boundary: None,
         };
         let area = integrate_knot_aligned::<_, true>(
             &NarrowSpan,
@@ -7987,6 +8068,7 @@ mod tests {
             ruled_guard: false,
             flux: None,
             cone_apex: None,
+            boundary: None,
         };
         let area = integrate_knot_aligned::<_, true>(
             &NarrowSpan,
@@ -8059,6 +8141,7 @@ mod cylinder_row_tests {
                     ruled_guard: false,
                     flux: Some(&flux),
                     cone_apex: None,
+                    boundary: None,
                 },
                 sign,
                 trim,
@@ -8078,6 +8161,7 @@ mod cylinder_row_tests {
                     ruled_guard: false,
                     flux: Some(&flux),
                     cone_apex: None,
+                    boundary: None,
                 },
                 sign,
                 trim,
@@ -8195,6 +8279,7 @@ mod cylinder_row_tests {
                     ruled_guard: false,
                     flux,
                     cone_apex: None,
+                    boundary: None,
                 };
                 let (fresh_flux, reused_flux) = (Cell::new(None), Cell::new(None));
                 let fresh = integrate_parametric::<_, false>(

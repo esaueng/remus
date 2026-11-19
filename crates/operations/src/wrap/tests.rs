@@ -447,3 +447,41 @@ fn a_closed_profile_edge_wraps_to_two_walls() {
     // used twice.
     assert_eq!(walls, 2);
 }
+
+/// `solid_volume` reads the wrapped cylinder faces on their fitted rims, so a
+/// wrapped disc and annulus measure the B-rep they store. Before, its
+/// certificate readings kept those rims as 128-sample polygons and read both
+/// 3.5e-5 low (77.2804896 and 57.9603483).
+///
+/// The oracle is an independently written divergence-theorem quadrature of
+/// the stored B-rep (`volume_oracle`): the cylinder faces reduced to their
+/// rims in closed form in their own polar chart, the ruled walls over their
+/// parameter rectangles. The ideal wrap, `A (ro² − ri²) / (2R)`, holds to the
+/// fits' certified tolerance (1e-7 of the scale): the stored bodies read
+/// 1.2e-8 and 7.9e-9 inside it.
+#[test]
+fn solid_volume_reads_wrapped_cylinder_faces_on_their_fitted_rims() {
+    for (hole, area) in [(false, 16.0 * PI), (true, 12.0 * PI)] {
+        let mut topo = Topology::new();
+        let outer = circle_wire(&mut topo, 0.0, 5.0, 4.0, true);
+        let holes = if hole {
+            vec![circle_wire(&mut topo, 0.0, 5.0, 2.0, false)]
+        } else {
+            vec![]
+        };
+        let profile = plane_face(&mut topo, outer, holes);
+        let solid = wrap_profile_solid(&mut topo, profile, &cylinder(), 9.5, 11.0).unwrap();
+        let measured = crate::measure::solid_volume(&topo, solid, 0.1).unwrap();
+        let oracle = super::volume_oracle::stored_brep_volume(&topo, solid);
+        assert!(
+            rel(measured, oracle) < 1e-12,
+            "hole {hole}: {measured} vs {oracle}"
+        );
+        assert!(
+            rel(measured, exact(area, 9.5, 11.0)) < 1e-7,
+            "hole {hole}: {measured}"
+        );
+        // The same reading `mass_properties` takes.
+        assert!(rel(measured, volume(&topo, solid)) < 1e-13, "hole {hole}");
+    }
+}

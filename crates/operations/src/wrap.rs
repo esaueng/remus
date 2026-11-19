@@ -970,3 +970,5 @@ pub use cone::{WrapCone, wrap_profile_on_cone};
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod volume_oracle;

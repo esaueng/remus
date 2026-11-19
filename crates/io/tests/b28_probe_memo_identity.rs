@@ -26,9 +26,18 @@
 //! trimmed rule began laying NURBS edges along a carrier's own iso curves as
 //! chords: three faces' outlines lost the projection noise of 128 dense
 //! samples, and the one that moved most (6e-7 of its area) now sits about
-//! ten times closer to the limit of its ever finer meshes.
+//! ten times closer to the limit of its ever finer meshes. It was
+//! re-recorded once more (50 245.219 470 636 64 before, 1.73e-3 lower) when
+//! the probe began reading cylinder and cone faces with fitted trims on
+//! their own boundary: its eight such faces had read 128-sample trim
+//! polygons, 9e-5 to 2.3e-3 off an independent quadrature of their stored
+//! boundary that they now meet to 3e-12 (checked below); every other face's
+//! term is unchanged.
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
+
+#[path = "../../operations/tests/fitted_face_oracle/mod.rs"]
+mod fitted_face_oracle;
 
 use remus_check::properties::face_cache::{
     enable_thread_face_cache, set_thread_face_cache_limits, thread_face_cache_stats,
@@ -47,7 +56,7 @@ const FIXTURES: [(&str, &str, usize, f64); 4] = [
         "hammer holder",
         include_str!("data/shapr3d_hammer_holder.step"),
         160,
-        50_245.219_470_636_635,
+        50_245.217_741_724_84,
     ),
     (
         "bored plate",
@@ -141,6 +150,10 @@ fn b28_probes_are_identical_with_the_face_cache() {
             (measured - signed).abs() <= signed.abs() * 1e-12,
             "{label}: signed volume {measured} moved from the recorded {signed}"
         );
+        // The faces read on their fitted boundary: eight on the hammer
+        // holder, none on the plates.
+        let fitted = fitted_face_oracle::assert_fitted_faces_match(&topo, solid, 1e-9);
+        assert_eq!(fitted, usize::from(label == "hammer holder") * 8, "{label}");
 
         enable_thread_face_cache();
         let cold = read(&topo, solid);
