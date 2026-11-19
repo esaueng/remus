@@ -246,8 +246,9 @@ fn the_fan_bound_covers_the_chord_slivers_and_is_tight() {
                     let reading = fixed_reading(&topo, face);
                     assert!(reading.fitted_boundary.is_none(), "{label}");
                     let bound = reading
-                        .planar_fan_area_bound
-                        .unwrap_or_else(|| panic!("{label}: a fan reading carries its bound"));
+                        .planar_fan
+                        .unwrap_or_else(|| panic!("{label}: a fan reading carries its bound"))
+                        .area_bound;
                     let hole_area = hole.map_or(0.0, |(radius, _)| PI * radius * radius);
                     let exact = PI * r * r / 4.0 - hole_area;
                     // The slivers the fan's chords cut off, each a circular
@@ -294,7 +295,7 @@ fn exact_planar_readings_carry_no_fan_bound() {
             let mut topo = Topology::new();
             let face = quarter_disc(&mut topo, Point3::new(5.0, 3.0, 1.0), 2.0, arc, None, hole);
             let reading = fixed_reading(&topo, face);
-            assert_eq!(reading.planar_fan_area_bound, None, "{arc:?} {hole:?}");
+            assert_eq!(reading.planar_fan, None, "{arc:?} {hole:?}");
             let exact = PI - hole.map_or(0.0, |(radius, _)| PI * radius * radius);
             assert!((reading.contribution.area - exact).abs() <= 1e-13 * exact);
         }
@@ -340,7 +341,7 @@ fn a_straight_edged_fan_face_has_a_zero_bound() {
             .is_none()
     );
     let reading = fixed_reading(&topo, face);
-    let bound = reading.planar_fan_area_bound.unwrap();
+    let bound = reading.planar_fan.unwrap().area_bound;
     // Only the loop's own hull: δ wide, about 2δ long.
     assert!(bound <= 1e-15, "{bound:.3e}");
     assert!((reading.contribution.area - 2.0).abs() <= 1e-14);
@@ -367,15 +368,26 @@ fn cached_volume_terms_keep_the_fan_bound() {
         FaceIntegralCache::disabled()
             .integrate_face_volume_about(&topo, face, 5, reference)
             .unwrap()
-            .planar_fan_area_bound
+            .planar_fan
             .expect("a fan reading")
+    };
+    let close = |a: PlanarFanBound, b: PlanarFanBound| {
+        [
+            (a.area_bound, b.area_bound),
+            (a.unsigned_area, b.unsigned_area),
+            (a.diameter, b.diameter),
+            (a.rounding_length, b.rounding_length),
+            (a.reach, b.reach),
+        ]
+        .iter()
+        .all(|&(x, y)| (x - y).abs() <= 1e-12 * y.abs().max(1e-300))
     };
     let (near, far) = (Point3::new(1.0, 2.0, 3.0), Point3::new(-4.0, 0.5, 9.0));
     let mut cache = FaceIntegralCache::new();
     let first = cache
         .integrate_face_volume_about(&topo, source, 5, near)
         .unwrap();
-    assert_eq!(first.planar_fan_area_bound, Some(cold(source, near)));
+    assert_eq!(first.planar_fan, Some(cold(source, near)));
     let rereferenced = cache
         .integrate_face_volume_about(&topo, source, 5, far)
         .unwrap();
@@ -384,11 +396,23 @@ fn cached_volume_terms_keep_the_fan_bound() {
         .unwrap();
     let stats = cache.stats();
     assert_eq!((stats.rereferenced, stats.translated), (1, 1));
-    assert_eq!(
-        rereferenced.planar_fan_area_bound,
-        first.planar_fan_area_bound
-    );
-    let bound = translated.planar_fan_area_bound.unwrap();
+    assert_eq!(rereferenced.planar_fan, first.planar_fan);
+    // Translated: equal to rounding, not bit for bit.
+    let bound = translated.planar_fan.unwrap();
     let fresh = cold(copy, far);
-    assert!((bound - fresh).abs() <= 1e-12 * fresh, "{bound} vs {fresh}");
+    assert!(close(bound, fresh), "{bound:?} vs {fresh:?}");
+    // Off the plane only by rounding of the copy's position.
+    assert!(bound.off_plane <= 64.0 * f64::EPSILON * 16.0 * bound.unsigned_area);
+    assert!(fresh.off_plane <= 64.0 * f64::EPSILON * 16.0 * fresh.unsigned_area);
+    // Review finding 5: the reused certificate's volume bound, margin
+    // included, still covers a fresh reading's unmargined bound for the copy.
+    let corner = at + Vec3::new(2.5, -1.0, 4.0);
+    let (offset, distance) = (corner.z() - far.z(), (corner - far).length());
+    let magnitude = corner.x().abs() + corner.y().abs() + corner.z().abs();
+    let fresh_raw = offset
+        .abs()
+        .mul_add(fresh.area_error(magnitude), fresh.off_plane)
+        / 3.0;
+    let reused = bound.volume_bound(offset, distance, magnitude);
+    assert!(reused >= fresh_raw, "{reused:e} < {fresh_raw:e}");
 }

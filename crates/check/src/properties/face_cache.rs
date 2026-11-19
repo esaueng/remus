@@ -156,7 +156,7 @@ use remus_topology::edge::EdgeCurve;
 use remus_topology::face::{FaceId, FaceSurface};
 use smallvec::SmallVec;
 
-use super::face_integrator::{self, FaceContribution, FittedBoundaryReading};
+use super::face_integrator::{self, FaceContribution, FittedBoundaryReading, PlanarFanBound};
 use super::loop_nesting::{InnerLoopNesting, inner_loop_nesting};
 use crate::CheckError;
 
@@ -237,7 +237,7 @@ pub struct FaceVolumeTerm {
     /// term's volume is then off by at most a third of it times the plane's
     /// distance from the reference. Neither a reference nor a translation
     /// changes it.
-    pub planar_fan_area_bound: Option<f64>,
+    pub planar_fan: Option<PlanarFanBound>,
 }
 
 /// What an entry remembers about one integration.
@@ -254,7 +254,7 @@ struct Value {
     /// The certificate of a reading taken on a fitted boundary.
     fitted_boundary: Option<FittedBoundaryReading>,
     /// The chord-polygon bound of a planar face read by its polygon.
-    planar_fan_area_bound: Option<f64>,
+    planar_fan: Option<PlanarFanBound>,
     /// Whether the integrator's choice of path turns on the reference (a
     /// cylinder or cone face with a fitted trim), or its reading on decisions
     /// against an apex (every cone face; see the module docs): such an entry
@@ -353,7 +353,7 @@ impl Request {
                     reference,
                     flux: None,
                     fitted_boundary: None,
-                    planar_fan_area_bound: None,
+                    planar_fan: None,
                     reference_bound: true,
                     nesting: None,
                     point_chords: None,
@@ -369,7 +369,7 @@ impl Request {
                     reference,
                     flux: reading.vector_area,
                     fitted_boundary: reading.fitted_boundary,
-                    planar_fan_area_bound: reading.planar_fan_area_bound,
+                    planar_fan: reading.planar_fan,
                     reference_bound: false,
                     nesting: None,
                     point_chords: None,
@@ -385,7 +385,7 @@ impl Request {
                     reference,
                     flux: reading.vector_area,
                     fitted_boundary: reading.fitted_boundary,
-                    planar_fan_area_bound: reading.planar_fan_area_bound,
+                    planar_fan: reading.planar_fan,
                     reference_bound: false,
                     nesting: None,
                     point_chords: None,
@@ -399,7 +399,7 @@ impl Request {
                     reference: Point3::new(0.0, 0.0, 0.0),
                     flux: None,
                     fitted_boundary: None,
-                    planar_fan_area_bound: None,
+                    planar_fan: None,
                     reference_bound: false,
                     nesting: None,
                     point_chords: None,
@@ -413,7 +413,7 @@ impl Request {
                     reference: Point3::new(0.0, 0.0, 0.0),
                     flux: None,
                     fitted_boundary: None,
-                    planar_fan_area_bound: None,
+                    planar_fan: None,
                     reference_bound: false,
                     nesting: None,
                     point_chords: None,
@@ -443,7 +443,7 @@ impl Request {
                 volume: value.contribution.volume,
                 vector_area: value.flux,
                 fitted_boundary: value.fitted_boundary,
-                planar_fan_area_bound: value.planar_fan_area_bound,
+                planar_fan: value.planar_fan,
             }),
             Self::Area { .. } | Self::AnalyticArea { .. } => Answer::Area(value.contribution.area),
         }
@@ -478,7 +478,7 @@ impl Request {
                             volume: value.contribution.volume,
                             vector_area: value.flux,
                             fitted_boundary: value.fitted_boundary,
-                            planar_fan_area_bound: value.planar_fan_area_bound,
+                            planar_fan: value.planar_fan,
                         }),
                     ));
                 }
@@ -506,7 +506,7 @@ impl Request {
                         volume,
                         vector_area: Some(flux),
                         fitted_boundary: None,
-                        planar_fan_area_bound: value.planar_fan_area_bound,
+                        planar_fan: value.planar_fan,
                     }),
                 ))
             }

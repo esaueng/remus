@@ -819,14 +819,15 @@ fn qualified_face_integral_volume(
 ///
 /// A planar face is read exactly at every order, except where the exact
 /// reader declines a boundary curve and the face falls to its chord polygon
-/// (its term carries `planar_fan_area_bound`). That reading is also the same
+/// (its term carries `planar_fan`). That reading is also the same
 /// at every order, and the polygon loses its chord slivers: a quarter disc
 /// read 4.04e-4 short. Errors of opposite sign on opposite caps cancel in
 /// the closure, so closure alone accepted a half cylinder 1.35e-4 short. Its
 /// disagreement is instead the certified bound on its volume term's chord
-/// error, a third of the area bound times the plane's distance from the
-/// reference (see [`planar_face_reach`]), and a face with no certified bound
-/// declines the reading. The closure bound is not widened for it. A shell
+/// error (`PlanarFanBound::volume_bound`: the area bound times the
+/// reference's distance from the face's stored plane, its samples' distance
+/// off that plane, and rounding; see [`planar_face_offsets`]), and a face
+/// with no certified bound declines the reading. The closure bound is not widened for it. A shell
 /// with no such face is checked exactly as before.
 ///
 /// [`FittedBoundaryReading`]: remus_check::properties::face_integrator::FittedBoundaryReading
@@ -881,15 +882,15 @@ fn qualified_shell_volume(
             disagreement += fitted_reading.span_disagreement;
             continue;
         }
-        if let Some(area_bound) = term.planar_fan_area_bound {
+        if let Some(fan) = term.planar_fan {
             // A planar face the exact reader declined, read by its chord
             // polygon: no order changes that reading, so its disagreement is
-            // the bound on its chord error. The polygon lies in the face's
-            // plane, so its volume term is a third of its area times the
-            // plane's distance from the reference, and is off by at most a
-            // third of the area bound times that distance.
-            let reach = planar_face_reach(topo, fid, reference)?;
-            let bound = area_bound * reach / 3.0;
+            // the certified bound on its volume term's error: its chord
+            // slivers times the reference's distance from the face's plane,
+            // its samples' distance off that plane, and rounding.
+            let (plane_offset, anchor_distance, anchor_magnitude) =
+                planar_face_offsets(topo, fid, reference)?;
+            let bound = fan.volume_bound(plane_offset, anchor_distance, anchor_magnitude);
             if !bound.is_finite() {
                 vol_trace(|| {
                     format!(
@@ -960,37 +961,40 @@ fn qualified_shell_volume(
     Ok(Some((volume, disagreement)))
 }
 
-/// The largest distance along a planar face's unit normal from `reference`
-/// to a vertex of its wires: how far its plane lies from the reference, to
-/// the vertices' own tolerance. Infinite for a face with no unit plane
-/// normal, which then declines the reading.
-fn planar_face_reach(
+/// `reference`'s distance from a planar face's stored plane and from the
+/// first vertex of its outer wire, and that vertex's L1 magnitude: what
+/// [`remus_check::properties::face_integrator::PlanarFanBound::volume_bound`]
+/// reads. Infinite for a face with no unit plane normal or no vertex, which
+/// then declines the reading.
+fn planar_face_offsets(
     topo: &Topology,
     face: FaceId,
     reference: Point3,
-) -> Result<f64, crate::OperationsError> {
+) -> Result<(f64, f64, f64), crate::OperationsError> {
     let data = topo.face(face)?;
-    let normal = match data.surface() {
-        FaceSurface::Plane { normal, .. } => normal.normalize().ok(),
+    let plane = match data.surface() {
+        FaceSurface::Plane { normal, d } => {
+            let length = normal.length();
+            normal.normalize().ok().map(|unit| (unit, *d / length))
+        }
         FaceSurface::Cylinder(_)
         | FaceSurface::Cone(_)
         | FaceSurface::Sphere(_)
         | FaceSurface::Torus(_)
         | FaceSurface::Nurbs(_) => None,
     };
-    let Some(normal) = normal else {
-        return Ok(f64::INFINITY);
+    let first = topo
+        .wire(data.outer_wire())?
+        .edges()
+        .first()
+        .map(remus_topology::OrientedEdge::edge);
+    let (Some((normal, level)), Some(first)) = (plane, first) else {
+        return Ok((f64::INFINITY, f64::INFINITY, f64::INFINITY));
     };
-    let mut reach = 0.0_f64;
-    for wid in std::iter::once(data.outer_wire()).chain(data.inner_wires().iter().copied()) {
-        for oe in topo.wire(wid)?.edges() {
-            let edge = topo.edge(oe.edge())?;
-            for vid in [edge.start(), edge.end()] {
-                reach = reach.max((topo.vertex(vid)?.point() - reference).dot(normal).abs());
-            }
-        }
-    }
-    Ok(reach)
+    let anchor = topo.vertex(topo.edge(first)?.start())?.point();
+    let offset = level - normal.dot(reference - Point3::new(0.0, 0.0, 0.0));
+    let magnitude = anchor.x().abs() + anchor.y().abs() + anchor.z().abs();
+    Ok((offset, (anchor - reference).length(), magnitude))
 }
 
 /// Precompute the fixed source's two independent guard orders. Qualification

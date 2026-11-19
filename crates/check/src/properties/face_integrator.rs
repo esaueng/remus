@@ -34,6 +34,8 @@ mod cylinder_band_tests;
 mod cylinder_green;
 mod fan_bound;
 #[cfg(test)]
+mod fan_bound_review_tests;
+#[cfg(test)]
 mod fan_bound_tests;
 #[cfg(test)]
 mod fitted_boundary_tests;
@@ -56,6 +58,7 @@ pub(super) mod point_edge_tests;
 mod seamless_wrap_tests;
 mod sphere_latitude;
 
+pub use fan_bound::PlanarFanBound;
 use loop_index::{IntervalIndex, winding_number_over};
 use remus_math::fma::FusedMulAdd;
 
@@ -95,9 +98,9 @@ struct IntegrationRule<'a> {
 enum ReadingCertificate {
     /// A cylinder or cone face read on its fitted boundary.
     Fitted(FittedBoundaryReading),
-    /// A planar face read by its chord polygon: a bound on how far the
-    /// polygon's area is from the face's (see `fan_bound`).
-    PlanarFan { area_bound: f64 },
+    /// A planar face read by its chord polygon: how far that reading may be
+    /// from the face's (see `fan_bound`).
+    PlanarFan(PlanarFanBound),
 }
 
 impl<'a> IntegrationRule<'a> {
@@ -376,16 +379,16 @@ pub(crate) fn integrate_face_fixed_flux_with_boundary_about(
             boundary: Some(&boundary),
         },
     )?;
-    let (fitted_boundary, planar_fan_area_bound) = match boundary.get() {
+    let (fitted_boundary, planar_fan) = match boundary.get() {
         Some(ReadingCertificate::Fitted(reading)) => (Some(reading), None),
-        Some(ReadingCertificate::PlanarFan { area_bound }) => (None, Some(area_bound)),
+        Some(ReadingCertificate::PlanarFan(bound)) => (None, Some(bound)),
         None => (None, None),
     };
     Ok(FluxReading {
         contribution,
         vector_area: flux.get(),
         fitted_boundary,
-        planar_fan_area_bound,
+        planar_fan,
     })
 }
 
@@ -402,7 +405,7 @@ pub(crate) struct FluxReading {
     /// For a planar face read by its chord polygon (the exact reader
     /// declined it), a bound on `|A_polygon − A_face|`; `+∞` where none is
     /// certified. `None` for every other reading.
-    pub(crate) planar_fan_area_bound: Option<f64>,
+    pub(crate) planar_fan: Option<PlanarFanBound>,
 }
 
 /// The contribution and vector area of
@@ -825,9 +828,9 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
             // The chord polygon's reading does not depend on the order, so a
             // caller that qualifies it gets a bound on its chord error instead.
             if fan && let Some(sink) = rule.boundary {
-                sink.set(Some(ReadingCertificate::PlanarFan {
-                    area_bound: fan_bound::fan_area_bound(topo, face_id)?,
-                }));
+                sink.set(Some(ReadingCertificate::PlanarFan(fan_bound::fan_bound(
+                    topo, face_id,
+                )?)));
             }
             // Both planar paths integrate `(P − reference) · n̂` against the
             // unit effective normal over a region of `area` (the closed form
