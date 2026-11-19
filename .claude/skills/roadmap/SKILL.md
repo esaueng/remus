@@ -159,7 +159,7 @@ ignore reason as written.
 B51's three closures, B275 to B278 and the 5.7b offset changes are retained;
 B7's two witnesses and B265's and B266's now run un-ignored. Listed, not re-run, except
 B272, B275 to B278 and the three 5.7b witnesses (failed as pinned).
-**27 open engine witnesses**, each with an owner row:
+**29 open engine witnesses**, each with an owner row:
 - four B26 property ready-repros in `operations/tests/prop_boolean_invariants.rs`:
   finding 13 sphere–torus ×3 (B38) and finding 20 sphere–cone (B33);
 - `regress_b52_box_cylinder_rim_notch.rs` (B270) and
@@ -171,6 +171,8 @@ B272, B275 to B278 and the three 5.7b witnesses (failed as pinned).
   F6 (B267); `bracket_campaign.rs` every-edge r2 (B268);
 - `wasm/src/bindings/qualify_edge_relations_tests.rs` torus containment (B269);
 - `regress_split_rim_cone_wall_pierce.rs` bar through a split-rim cone wall (B275);
+- `regress_shelled_wall_rim_notch.rs` seam beside the sections' vertex (`solid_volume` route) and
+  `algo/src/builder/face_splitter/left_out_tests.rs` long-edge slack (B265 residuals);
 - `video_parity_full_order.rs` A4 chamfer 5 (B272),
   `io/tests/video_workflow_baseline.rs` (B273) and
   `wasm/src/bindings/gecko_edit_tests.rs` unequal-group re-edit (B274);
@@ -283,7 +285,7 @@ harness's own option-honoured floor misreading a correct 0.05 fillet on an
 - **A curved face an earlier cut trimmed is not its height band:** a hole or a bay in a cylinder wall broke the FF extent, the ray-cast wall model and the splitter dispatch at once, so classify a grid of the OPERAND against its primitives before debugging the cut that consumes it (B7, `operations/tests/regress_b7_section_pave_attachment.rs`).
 - **A section loop strictly inside a plane face's OUTER wire can still cross one of its holes;** a shortcut that admits closed loops against the outer polygon alone carves overlapping holes, and an all-planar mesh fallback is nearly as compact as the exact result, so only the disclosed quality shows it (B79, `operations/tests/regress_b79_holed_plane_internal_section.rs`).
 - **A notch thinner than the separation distance (`100 · band`) is welded away into a valid unchanged solid, not refused:** a section entering a face for less than a sample pitch needs exact witnesses (its boundary crossings) to survive phase FF's prefilter, and the lens it bounds with the boundary edge must then be read against `section_tolerance` and refused by name below `separate` (B266, `phase_ff.rs::trim_torus_oval_to_box_face`, `operations/tests/regress_torus_contact_windows.rs`).
-- **A periodic lateral's seam is a line as long as the face, beside every closed section on it; a sagitta slack scaled by chord length must not reach it:** a tenth of a steeply tilted cylinder's seam took in its dropped sections, so the whole lateral passed the left-out check and the certified re-partition never ran. Tightening every line instead refused the verified hammer opening replay (B265, `face_splitter/mod.rs::sections_left_out`).
+- **A section is carried only if an edge follows it at many samples, not because one point of it is near an edge:** a steep cylinder's seam, a line as long as the face beside every closed section, stood in for its dropped sections at their midpoints, so the certified re-partition never ran; a seam now counts only where it follows every sample. Holding every line to the band instead refused the verified hammer opening replay (B265, `face_splitter/mod.rs::sections_left_out`, `left_out_tests.rs`).
 - **Splitter interior points of notched or symmetric pieces land on
   feature-plane intersections by construction;** classification must survive
   on-plane samples (`classifier/ray_cast.rs` per-ray degeneracy re-cast).

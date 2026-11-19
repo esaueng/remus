@@ -27,6 +27,8 @@ mod conversion;
 mod edge_splitting;
 #[cfg(test)]
 mod hole_split_tests;
+#[cfg(test)]
+mod left_out_tests;
 mod outline_touch;
 mod periodic_face_chart;
 mod plane_chart;
@@ -5929,8 +5931,26 @@ fn subfaces_have_out_and_back(parts: &[SplitSubFace], tol: f64) -> bool {
     })
 }
 
-/// Some section's midpoint lies on no sub-face edge: the section was left
-/// out of the partition.
+/// Some section is not followed by the partition's edges: the section was
+/// left out of it.
+///
+/// A section is followed when each of its [`FOLLOW_SAMPLES`] interior
+/// samples lies within `band` of a sub-face edge, plus that chord's own
+/// sagitta for a curve (twice its midpoint's deviation from the chord). A
+/// sample near a point of some edge proves nothing about the section: a
+/// dropped closed section of a tilted cylinder crosses its lateral's seam,
+/// and with the seam turned beside the sections' midpoints the midpoint
+/// alone read the seam as the section (B265). So a sample that only a seam
+/// (a line its wire runs up and back) follows counts only when the seam
+/// follows every sample: the section is that seam.
+///
+/// Straight edges other than seams keep the slack of a tenth of their
+/// length that the single-midpoint check was calibrated with, which lets a
+/// section running beside a long edge read as carried
+/// (`left_out_tests.rs`, ignored): holding them to the band sends the
+/// established partition of a trimmed fillet in the hammer opening replay,
+/// which omits a ruling section, to a re-partition that cannot certify it,
+/// and refuses a result that passes that replay's checks.
 fn sections_left_out<'s>(
     sections: impl IntoIterator<Item = &'s SectionEdge>,
     parts: &[SplitSubFace],
@@ -5946,9 +5966,7 @@ fn sections_left_out<'s>(
             (p.z() * q).round() as i64,
         )
     };
-    // Each edge's samples, and whether it is a seam: a line its wire also
-    // runs the other way (a periodic lateral's seam, up and back).
-    let mut polylines: Vec<(Vec<Point3>, bool)> = Vec::new();
+    let mut edges: Vec<FollowEdge> = Vec::new();
     for wire in parts
         .iter()
         .flat_map(|part| std::iter::once(&part.outer_wire).chain(part.inner_wires.iter()))
@@ -5959,42 +5977,86 @@ fn sections_left_out<'s>(
             .map(|e| (key(e.start_3d), key(e.end_3d)))
             .collect();
         for e in wire {
-            let seam = matches!(e.curve_3d, EdgeCurve::Line)
-                && (e.start_3d - e.end_3d).length() > tol
-                && lines.contains(&(key(e.end_3d), key(e.start_3d)));
-            polylines.push((wire_edge_samples(e, 64), seam));
+            edges.push(if matches!(e.curve_3d, EdgeCurve::Line) {
+                let seam = (e.start_3d - e.end_3d).length() > tol
+                    && lines.contains(&(key(e.end_3d), key(e.start_3d)));
+                let slack = if seam {
+                    0.0
+                } else {
+                    0.1 * (e.end_3d - e.start_3d).length()
+                };
+                FollowEdge {
+                    chords: vec![(e.start_3d, e.end_3d, slack)],
+                    seam,
+                }
+            } else {
+                let pts = wire_edge_samples(e, 128);
+                let chords = (0..pts.len().saturating_sub(2))
+                    .step_by(2)
+                    .map(|k| {
+                        let (a, m, b) = (pts[k], pts[k + 1], pts[k + 2]);
+                        let mid = Point3::new(
+                            0.5 * (a.x() + b.x()),
+                            0.5 * (a.y() + b.y()),
+                            0.5 * (a.z() + b.z()),
+                        );
+                        (a, b, 2.0 * (m - mid).length())
+                    })
+                    .collect();
+                FollowEdge {
+                    chords,
+                    seam: false,
+                }
+            });
         }
     }
     sections.into_iter().any(|s| {
         let (t0, t1) = s.domain();
-        let mid = s
-            .curve_3d
-            .evaluate_with_endpoints(0.5 * (t0 + t1), s.start, s.end);
-        !polylines.iter().any(|(poly, seam)| {
-            poly.windows(2).any(|w| {
-                let d = w[1] - w[0];
-                let len2 = d.length_squared();
-                let t = if len2 > 0.0 {
-                    ((mid - w[0]).dot(d) / len2).clamp(0.0, 1.0)
-                } else {
-                    0.0
-                };
-                // A chord of a 64-sample polyline sits within its sagitta of
-                // the curve, far below a tenth of the chord. A seam is a line,
-                // its own chord, and runs the lateral's whole length beside
-                // every closed section on it: a tenth of a steeply tilted
-                // cylinder's seam took in its sections' midpoints 1.4 radii
-                // away (B265), so it gets no slack. Other edges keep
-                // the slack the check was calibrated with; holding every line
-                // to the band sends established partitions that omit a
-                // section of a trimmed wall (the hammer opening replay's
-                // fillet) to a re-partition that cannot certify them, and
-                // refuses results that were verified exact.
-                let slack = if *seam { 0.0 } else { len2.sqrt() * 0.1 };
-                (w[0] + d * t - mid).length() <= band + slack
-            })
-        })
+        let mut seam_only = false;
+        let mut on_seam_everywhere = true;
+        for k in 1..=FOLLOW_SAMPLES {
+            #[allow(clippy::cast_precision_loss)]
+            let f = k as f64 / (FOLLOW_SAMPLES + 1) as f64;
+            let p = s
+                .curve_3d
+                .evaluate_with_endpoints(t0 + (t1 - t0) * f, s.start, s.end);
+            let near = |e: &FollowEdge| {
+                e.chords
+                    .iter()
+                    .any(|&(a, b, slack)| segment_distance_3d(p, a, b) <= band + slack)
+            };
+            let by_seam = edges.iter().any(|e| e.seam && near(e));
+            let by_other = edges.iter().any(|e| !e.seam && near(e));
+            if !by_seam && !by_other {
+                return true;
+            }
+            seam_only |= !by_other;
+            on_seam_everywhere &= by_seam;
+        }
+        seam_only && !on_seam_everywhere
     })
+}
+
+/// Interior samples of a section that [`sections_left_out`] reads.
+const FOLLOW_SAMPLES: usize = 8;
+
+/// A sub-face edge as [`sections_left_out`] reads it: chords with the slack
+/// each is allowed, and whether it is a seam.
+struct FollowEdge {
+    chords: Vec<(Point3, Point3, f64)>,
+    seam: bool,
+}
+
+/// Distance from `p` to the segment `ab`.
+fn segment_distance_3d(p: Point3, a: Point3, b: Point3) -> f64 {
+    let d = b - a;
+    let len2 = d.length_squared();
+    let t = if len2 > 0.0 {
+        ((p - a).dot(d) / len2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    (a + d * t - p).length()
 }
 
 /// Conservative upper bound of `u · p` over a boundary edge's carrier: the
