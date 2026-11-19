@@ -459,8 +459,8 @@ fn a_face_on_both_nappes_is_refused() {
 /// the cache; the same band with only its carrier's apex raised `3e-9`
 /// reaches both nappes and is refused uncached. The cache matches it to the
 /// primed entry as a translation within rounding, and must refuse it too
-/// rather than answer the primed term: its nappe decision is rechecked on a
-/// translated hit.
+/// rather than answer the primed term: a cone face is served only from an
+/// identical entry.
 #[test]
 fn a_translated_cache_hit_rechecks_the_nappe() {
     use crate::properties::face_cache::FaceIntegralCache;
@@ -528,4 +528,130 @@ fn a_cone_too_flat_to_tell_its_nappes_apart_is_refused() {
             "unexpected error: {error}"
         );
     }
+}
+
+/// The re-check's warm-cache repro: a 45° band on a cone with its apex at
+/// `x = 1e6`, between a circular outer rim at `z = 1` and an inner rim cut
+/// by the plane `z = 2e-9 + y / 2` (heights relative to the apex), vertex
+/// tolerance `1e-8`, primes the cache; the same band with only its
+/// carrier's apex raised `4e-9` is refused uncached by the wrapping-trim
+/// reader (its inner rim now reaches below the apex) although its nappe
+/// stamp still reads `Upper`. A cone face is served only from an identical
+/// entry, so the cache refuses it too.
+#[test]
+fn a_translated_cache_hit_never_hides_a_wrapping_cone_refusal() {
+    use crate::properties::face_cache::FaceIntegralCache;
+    use remus_math::curves::Ellipse3D;
+
+    let apex = Point3::new(1e6, 0.0, 0.0);
+    let z = Vec3::new(0.0, 0.0, 1.0);
+    let a = std::f64::consts::FRAC_PI_4;
+    // The plane `z = c + k y` meets the cone `z = √(x² + y²)` in the ellipse
+    // whose major axis joins `(0, y, y)` at `y = c / (1 − k)` and
+    // `(0, −y, y)` at `y = c / (1 + k)`; its minor axis is the cone's
+    // half-chord `√(z₀² − y₀²)` across its centre.
+    let (c, k) = (2e-9, 0.5);
+    let (y1, y2) = (c / (1.0 - k), -c / (1.0 + k));
+    let (p1, p2) = (Vec3::new(0.0, y1, y1), Vec3::new(0.0, y2, -y2));
+    let centre = (p1 + p2) * 0.5;
+    let semi_major = (p1 - p2).length() / 2.0;
+    let semi_minor = (centre.z() * centre.z() - centre.y() * centre.y()).sqrt();
+    let ellipse = Ellipse3D::new_with_ref(
+        apex + centre,
+        Vec3::new(0.0, -k, 1.0),
+        semi_major,
+        semi_minor,
+        p1 - p2,
+    )
+    .unwrap();
+    let circle = Circle3D::new(apex + z, z, 1.0).unwrap();
+
+    let mut topo = Topology::new();
+    let mut band = |carrier: ConicalSurface| {
+        let mut wire_of = |curve: EdgeCurve, start: Point3, forward: bool| {
+            let vertex = topo.add_vertex(Vertex::new(start, 1e-8));
+            let mut edge = Edge::new(vertex, vertex, curve);
+            edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+            let edge = topo.add_edge(edge);
+            topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, forward)], true).unwrap())
+        };
+        let outer = wire_of(
+            EdgeCurve::Circle(circle.clone()),
+            circle.evaluate(0.0),
+            false,
+        );
+        let inner = wire_of(
+            EdgeCurve::Ellipse(ellipse.clone()),
+            ellipse.evaluate(0.0),
+            true,
+        );
+        topo.add_face(Face::new(outer, vec![inner], FaceSurface::Cone(carrier)))
+    };
+    let primed = band(ConicalSurface::new(apex, z, a).unwrap());
+    let raised = band(ConicalSurface::new(apex + z * 4e-9, z, a).unwrap());
+    let reference = apex + Vec3::new(0.25, -0.5, 0.5);
+
+    let fresh = integrate_face_fixed_volume_flux_about(&topo, primed, 8, reference);
+    assert!(fresh.is_ok(), "the primed band reads: {fresh:?}");
+    let refusal = integrate_face_fixed_volume_flux_about(&topo, raised, 8, reference).unwrap_err();
+    assert!(refusal.to_string().contains("below its apex"), "{refusal}");
+    // Its nappe decision still reads the upper nappe: only the wrapping
+    // reader's own threshold at the apex refuses it.
+    assert!(
+        super::upper_nappe_cone(
+            &topo,
+            raised,
+            &ConicalSurface::new(apex + z * 4e-9, z, a).unwrap()
+        )
+        .unwrap()
+        .is_none()
+    );
+
+    let mut cache = FaceIntegralCache::new();
+    cache
+        .integrate_face_volume_about(&topo, primed, 8, reference)
+        .unwrap();
+    let warm = cache.integrate_face_volume_about(&topo, raised, 8, reference);
+    assert!(
+        warm.as_ref()
+            .is_err_and(|e| e.to_string().contains("below its apex")),
+        "the warm cache answered a face the integrator refuses: {warm:?}"
+    );
+    // Re-referenced: the primed band about another point integrates afresh,
+    // bit for bit as the uncached reading.
+    let other = reference + Vec3::new(1.0, 2.0, 3.0);
+    let warm = cache
+        .integrate_face_volume_about(&topo, primed, 8, other)
+        .unwrap();
+    let (cold, _) = integrate_face_fixed_volume_flux_about(&topo, primed, 8, other).unwrap();
+    assert_eq!(warm.volume.to_bits(), cold.volume.to_bits());
+}
+
+/// A band below its carrier's apex with one vertex whose tolerance (10)
+/// exceeds the band's whole reach from the apex is still charted on the
+/// reversed-axis carrier: only a vertex at the apex lends its tolerance to
+/// the nappe decision, and the nappe is the side the boundary reaches
+/// farther into.
+#[test]
+fn a_sloppy_vertex_does_not_keep_a_band_on_its_carrier() {
+    let band = Band {
+        apex: Point3::new(1.0, -2.0, 3.0),
+        a: 0.6,
+        s: (1.0, 2.5),
+        phi: (0.3, 0.3 + std::f64::consts::FRAC_PI_2),
+        sigma: -1.0,
+    };
+    let carrier = ConicalSurface::new(band.apex, Vec3::new(0.0, 0.0, 1.0), band.a).unwrap();
+    let mut topo = Topology::new();
+    let face = band.face(&mut topo, carrier);
+    let wire = topo.face(face).unwrap().outer_wire();
+    let edge = topo.wire(wire).unwrap().edges()[0].edge();
+    let vertex = topo.edge(edge).unwrap().start();
+    topo.vertex_mut(vertex)
+        .unwrap()
+        .set_tolerance(10.0)
+        .unwrap();
+    let reference = band.apex + Vec3::new(-0.7, 1.9, 0.4);
+    let got = integrate_face_fixed_about(&topo, face, 8, reference).unwrap();
+    assert_close("sloppy vertex", &got, &band.oracle(reference), 8.0, 1e-9);
 }

@@ -86,11 +86,12 @@
 //! nesting is undecided is refused by the integrator, and refusals are never
 //! cached.
 //!
-//! A cone face is likewise charted on the nappe of its carrier its boundary
-//! lies on, a decision made against vertex tolerances that rounding can tip
-//! for a boundary near the apex. Its entries record that nappe, and a
-//! translated face whose own decision differs (or is a refusal) is integrated
-//! afresh.
+//! A cone face's reading turns on decisions made against its apex (which
+//! nappe it is charted on, whether a wrapping trim reaches below the apex)
+//! that rounding of a translated input, or a carrier moved within the key's
+//! rounding, can tip into a refusal. Its volume terms are therefore served
+//! only from an identical entry about the same reference, never re-referenced
+//! or translated, so a hit is always the uncached reading.
 //!
 //! # Key
 //!
@@ -239,15 +240,14 @@ struct Value {
     /// The certificate of a reading taken on a fitted boundary.
     fitted_boundary: Option<FittedBoundaryReading>,
     /// Whether the integrator's choice of path turns on the reference (a
-    /// cylinder or cone face with a fitted trim): such an entry answers only
-    /// a request about its own reference.
+    /// cylinder or cone face with a fitted trim), or its reading on decisions
+    /// against an apex (every cone face; see the module docs): such an entry
+    /// answers only a request about its own reference, from identical
+    /// content.
     reference_bound: bool,
     /// The inner-loop nesting the integration used, for a planar face with
     /// at least two inner wires (see [`nesting_stamp`]).
     nesting: Option<InnerLoopNesting>,
-    /// The nappe the integration charted a cone face on (see
-    /// [`face_integrator::cone_nappe`]); `None` for any other face.
-    nappe: Option<face_integrator::ConeNappe>,
 }
 
 #[derive(Debug, Clone)]
@@ -313,8 +313,10 @@ impl Request {
         let mut value = self.integrate(topo, face)?;
         if matches!(self, Self::FixedAbout { .. } | Self::Volume { .. }) {
             value.nesting = nesting_stamp(topo, face);
-            value.nappe = face_integrator::cone_nappe(topo, face);
-            value.reference_bound = reads_fitted_boundary(topo, face);
+            value.reference_bound = reads_fitted_boundary(topo, face)
+                || topo
+                    .face(face)
+                    .is_ok_and(|f| matches!(f.surface(), FaceSurface::Cone(_)));
         }
         Ok(value)
     }
@@ -332,7 +334,6 @@ impl Request {
                     fitted_boundary: None,
                     reference_bound: true,
                     nesting: None,
-                    nappe: None,
                 })
             }
             Self::FixedAbout { order, reference } => {
@@ -347,7 +348,6 @@ impl Request {
                     fitted_boundary: reading.fitted_boundary,
                     reference_bound: false,
                     nesting: None,
-                    nappe: None,
                 })
             }
             Self::Volume { order, reference } => {
@@ -362,7 +362,6 @@ impl Request {
                     fitted_boundary: reading.fitted_boundary,
                     reference_bound: false,
                     nesting: None,
-                    nappe: None,
                 })
             }
             Self::Area { order } => {
@@ -375,7 +374,6 @@ impl Request {
                     fitted_boundary: None,
                     reference_bound: false,
                     nesting: None,
-                    nappe: None,
                 })
             }
             Self::AnalyticArea { order } => {
@@ -388,7 +386,6 @@ impl Request {
                     fitted_boundary: None,
                     reference_bound: false,
                     nesting: None,
-                    nappe: None,
                 })
             }
         }
@@ -740,8 +737,6 @@ impl FaceIntegralCache {
         // The face's own nesting, read at most once, and only to vet a
         // translated reading.
         let mut stamp: Option<Option<InnerLoopNesting>> = None;
-        // Likewise its cone nappe decision.
-        let mut nappe: Option<Option<face_integrator::ConeNappe>> = None;
         if let Some(seqs) = self.index.get(&hash) {
             for &seq in seqs {
                 let Some(entry) = seq
@@ -761,16 +756,6 @@ impl FaceIntegralCache {
                     && entry.value.nesting.is_some()
                     && *stamp.get_or_insert_with(|| nesting_stamp(topo, face))
                         != entry.value.nesting
-                {
-                    continue;
-                }
-                // So can a cone's nappe decision (a boundary within its
-                // tolerances of the apex): reuse only the decision that was
-                // integrated, and never answer a face the integrator refuses.
-                if rank == Rank::Translated
-                    && entry.value.nappe.is_some()
-                    && *nappe.get_or_insert_with(|| face_integrator::cone_nappe(topo, face))
-                        != entry.value.nappe
                 {
                     continue;
                 }
