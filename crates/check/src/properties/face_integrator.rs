@@ -48,7 +48,7 @@ mod nurbs_rows_oracle_tests;
 #[cfg(test)]
 mod parametric_split_oracle_tests;
 #[cfg(test)]
-mod point_edge_tests;
+pub(super) mod point_edge_tests;
 #[cfg(test)]
 mod seamless_wrap_tests;
 mod sphere_latitude;
@@ -3749,23 +3749,32 @@ fn accumulate_hyperbola_green_segments(
 /// higher degrees: both can hide error from the volume order comparison.
 const NURBS_GREEN_ORDER: usize = 16;
 
-/// Control-hull extent per coordinate, in units of `f64::EPSILON` times the
-/// hull's largest coordinate magnitude, up to which [`nurbs_hull_is_point`]
-/// reads a NURBS curve as a point: a few dozen roundings of its coordinates,
-/// far below any curve whose extent the model can represent.
+/// Control-hull extent along each axis, in units of `f64::EPSILON` times the
+/// hull's largest coordinate magnitude on that axis, up to which
+/// [`nurbs_hull_is_point`] reads a NURBS curve as a point: a few dozen
+/// roundings of its own coordinates.
 const POINT_HULL_ROUNDINGS: f64 = 64.0;
 
 /// Whether a NURBS curve is one point to the rounding of its coordinates:
 /// every weight positive and finite (so the curve lies in its control
-/// points' convex hull) and every coordinate of every control point within
-/// [`POINT_HULL_ROUNDINGS`] roundings of the first's.
+/// points' convex hull) and, on each axis separately, every control point's
+/// coordinate within [`POINT_HULL_ROUNDINGS`] roundings of the first point's,
+/// a rounding being `f64::EPSILON` times the hull's largest coordinate
+/// magnitude on that axis.
 ///
 /// Such a curve lies in a box the size of its own coordinates' rounding, so
 /// its Green moments differ from its chord's by rounding of the face's
-/// moments at that position. The test reads the curve's data, never samples:
-/// a curve of any real extent fails it. Coordinates are compared one by one,
-/// never through a squared length, which would underflow for a hull of
-/// tiny coordinates and read a real curve there as a point.
+/// moments at that position. The test reads the curve's data, never samples.
+///
+/// Each axis is judged against its own coordinates: a large coordinate on
+/// one axis (a face far out of its own plane) never excuses a difference on
+/// another. The bound this leaves is inherent to rounding: a genuine curve is
+/// read as its chord only when its whole extent along every axis is within
+/// 64 ulps of its own coordinates on that axis, i.e. when it sits so far
+/// along an axis that its coordinates there cannot resolve it. Coordinates
+/// are compared one by one, never through a squared length, which would
+/// underflow for a hull of tiny coordinates and read a real curve there as a
+/// point.
 fn nurbs_hull_is_point(nc: &remus_math::nurbs::curve::NurbsCurve) -> bool {
     let points = nc.control_points();
     let Some(&first) = points.first() else {
@@ -3774,21 +3783,49 @@ fn nurbs_hull_is_point(nc: &remus_math::nurbs::curve::NurbsCurve) -> bool {
     if !nc.weights().iter().all(|w| w.is_finite() && *w > 0.0) {
         return false;
     }
-    let mut magnitude = 0.0_f64;
+    let coordinates = |p: &Point3| [p.x(), p.y(), p.z()];
+    let mut magnitude = [0.0_f64; 3];
     for p in points {
-        for c in [p.x(), p.y(), p.z()] {
+        for (m, c) in magnitude.iter_mut().zip(coordinates(p)) {
             if !c.is_finite() {
                 return false;
             }
-            magnitude = magnitude.max(c.abs());
+            *m = m.max(c.abs());
         }
     }
-    let limit = POINT_HULL_ROUNDINGS * f64::EPSILON * magnitude.max(f64::MIN_POSITIVE);
+    let limit = magnitude.map(|m| POINT_HULL_ROUNDINGS * f64::EPSILON * m.max(f64::MIN_POSITIVE));
+    let first = coordinates(&first);
     points.iter().all(|p| {
-        (p.x() - first.x()).abs() <= limit
-            && (p.y() - first.y()).abs() <= limit
-            && (p.z() - first.z()).abs() <= limit
+        coordinates(p)
+            .into_iter()
+            .zip(first)
+            .zip(limit)
+            .all(|((c, f), l)| (c - f).abs() <= l)
     })
+}
+
+/// Which NURBS edges of a planar face, in wire order (outer wire first, then
+/// each inner wire), the planar reader takes as point chords
+/// ([`nurbs_hull_is_point`]); `None` for a face that is not planar or has no
+/// NURBS edge.
+///
+/// The predicate reads absolute coordinates, so a translation of a face can
+/// flip it: the face-integral cache stamps its entries with this and reuses
+/// a translated reading only where the two stamps agree.
+pub(crate) fn planar_point_chord_stamp(topo: &Topology, face_id: FaceId) -> Option<Vec<bool>> {
+    let face = topo.face(face_id).ok()?;
+    if !matches!(face.surface(), FaceSurface::Plane { .. }) {
+        return None;
+    }
+    let mut stamp = Vec::new();
+    for &wire_id in std::iter::once(&face.outer_wire()).chain(face.inner_wires()) {
+        for oe in topo.wire(wire_id).ok()?.edges() {
+            if let EdgeCurve::NurbsCurve(nc) = topo.edge(oe.edge()).ok()?.curve() {
+                stamp.push(nurbs_hull_is_point(nc));
+            }
+        }
+    }
+    (!stamp.is_empty()).then_some(stamp)
 }
 
 fn has_exact_polynomial_green_rule(nc: &remus_math::nurbs::curve::NurbsCurve) -> bool {

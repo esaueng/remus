@@ -1205,3 +1205,136 @@ fn analytic_area_is_its_own_family() {
     clear_thread_face_cache();
     set_thread_face_cache_limits(0, 0);
 }
+
+/// The right triangle `c, c + (2, 0, 0), c + (0, 2, 0)` at `c = (s, s, 0)`,
+/// its corner at `c` closed by a rational arc whose middle control point is
+/// `2^-37` off `c` in x and y. About `s = 1` that is 512 roundings of its
+/// coordinates: a curve. About `s = 1024` it is half of the 64 the point test
+/// allows: a point chord. The faces are exact translations of each other.
+fn corner_with_tiny_arc(topo: &mut Topology, s: f64) -> FaceId {
+    let d = 2.0_f64.powi(-37);
+    let c = Point3::new(s, s, 0.0);
+    let arc = NurbsCurve::new(
+        2,
+        vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+        vec![c, Point3::new(s + d, s + d, 0.0), c],
+        vec![1.0, std::f64::consts::FRAC_1_SQRT_2, 1.0],
+    )
+    .unwrap();
+    let a = topo.add_vertex(Vertex::new(c, 1e-9));
+    let b = topo.add_vertex(Vertex::new(Point3::new(s + 2.0, s, 0.0), 1e-9));
+    let p = topo.add_vertex(Vertex::new(Point3::new(s, s + 2.0, 0.0), 1e-9));
+    let a2 = topo.add_vertex(Vertex::new(c, 1e-9));
+    let mut arc_edge = Edge::new(a2, a, EdgeCurve::NurbsCurve(arc));
+    arc_edge.set_trim(Some((0.0, 1.0)));
+    let edges = [
+        Edge::new(a, b, EdgeCurve::Line),
+        Edge::new(b, p, EdgeCurve::Line),
+        Edge::new(p, a2, EdgeCurve::Line),
+        arc_edge,
+    ]
+    .into_iter()
+    .map(|e| OrientedEdge::new(topo.add_edge(e), true))
+    .collect();
+    let wire = topo.add_wire(Wire::new(edges, true).unwrap());
+    topo.add_face(Face::new(
+        wire,
+        vec![],
+        FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, 1.0),
+            d: 0.0,
+        },
+    ))
+}
+
+fn cold_volume(topo: &Topology, face: FaceId, reference: Point3) -> FaceVolumeTerm {
+    FaceIntegralCache::disabled()
+        .integrate_face_volume_about(topo, face, 5, reference)
+        .unwrap()
+}
+
+/// A translation that flips which edges the planar reader takes as point
+/// chords is never served from its source: the copy is integrated afresh,
+/// bit for bit, in either order (#1874 review).
+#[test]
+fn a_translation_that_flips_a_point_chord_is_integrated_afresh() {
+    let mut topo = Topology::new();
+    let near = corner_with_tiny_arc(&mut topo, 1.0);
+    let far = corner_with_tiny_arc(&mut topo, 1024.0);
+    assert_eq!(
+        face_integrator::planar_point_chord_stamp(&topo, near),
+        Some(vec![false])
+    );
+    assert_eq!(
+        face_integrator::planar_point_chord_stamp(&topo, far),
+        Some(vec![true])
+    );
+    let reference = Point3::new(3.0, -2.0, 1.0);
+    for (first, second) in [(near, far), (far, near)] {
+        let mut cache = FaceIntegralCache::new();
+        cache
+            .integrate_face_volume_about(&topo, first, 5, reference)
+            .unwrap();
+        let warm = cache
+            .integrate_face_volume_about(&topo, second, 5, reference)
+            .unwrap();
+        let stats = cache.stats();
+        assert_eq!((stats.misses, stats.translated), (2, 0));
+        let cold = cold_volume(&topo, second, reference);
+        assert_eq!(warm.area.to_bits(), cold.area.to_bits());
+        assert_eq!(warm.volume.to_bits(), cold.volume.to_bits());
+    }
+}
+
+/// A translation that keeps every edge's reading is still served from its
+/// source and reads what a cold integration reads to rounding: the review's
+/// Bézier corner lifted to `z = 64` (a curve at both; at `z = 2^46` it is a
+/// curve too, but a volume term there carries `2^46` rounding cold or warm),
+/// and the tiny arc at 1024 moved to 2048 (a point chord at both).
+#[test]
+fn a_translation_that_keeps_its_point_chords_is_served_from_its_source() {
+    let mut topo = Topology::new();
+    let pairs = [
+        (
+            face_integrator::point_edge_tests::bezier_corner(&mut topo, 0.0),
+            face_integrator::point_edge_tests::bezier_corner(&mut topo, 64.0),
+        ),
+        (
+            corner_with_tiny_arc(&mut topo, 1024.0),
+            corner_with_tiny_arc(&mut topo, 2048.0),
+        ),
+    ];
+    for (source, copy) in pairs {
+        let stamp = face_integrator::planar_point_chord_stamp(&topo, source);
+        assert!(stamp.is_some());
+        assert_eq!(
+            stamp,
+            face_integrator::planar_point_chord_stamp(&topo, copy)
+        );
+        for (first, second) in [(source, copy), (copy, source)] {
+            let reference = anchor_of(&topo, second) + Vec3::new(0.5, -1.0, 2.0);
+            let mut cache = FaceIntegralCache::new();
+            cache
+                .integrate_face_volume_about(&topo, first, 5, reference)
+                .unwrap();
+            let warm = cache
+                .integrate_face_volume_about(&topo, second, 5, reference)
+                .unwrap();
+            assert_eq!(cache.stats().translated, 1);
+            let cold = cold_volume(&topo, second, reference);
+            assert!(
+                (warm.area - cold.area).abs() <= 1e-12 * cold.area,
+                "area {} vs cold {}",
+                warm.area,
+                cold.area
+            );
+            let scale = rounding_scale(cold.area, reference, anchor_of(&topo, second));
+            assert!(
+                (warm.volume - cold.volume).abs() <= 1e-12 * scale,
+                "volume {} vs cold {}",
+                warm.volume,
+                cold.volume
+            );
+        }
+    }
+}
