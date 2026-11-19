@@ -707,7 +707,9 @@ fn edge_samples(curve: &EdgeCurve) -> u32 {
 /// * no face is in a class it is known to mis-measure
 ///   ([`gauss_unqualified_face`]);
 /// * every shell closes: `|Σ N|` is at most [`FACE_INTEGRAL_CLOSURE`] times `Σ A`, which a
-///   face integrated over the wrong region breaks;
+///   face integrated over the wrong region breaks, plus the closure
+///   allowance of each cylinder or cone face read on its fitted boundary
+///   (see [`qualified_shell_volume`]);
 /// * every edge lies on each face it bounds, within the larger of its own
 ///   tolerance and [`BOUNDARY_GAP`] of the body's extent
 ///   ([`boundary_lies_on_faces`]).
@@ -718,10 +720,13 @@ fn edge_samples(curve: &EdgeCurve) -> u32 {
 /// * every face's order-5 term agrees with an independent order-3 one, summed
 ///   face by face to [`ORDER_AGREEMENT`] of the volume, so a face the fixed
 ///   rule has not resolved is caught even where closure, which tests only the
-///   vector-area integrand, holds.
+///   vector-area integrand, holds. A face read on its fitted boundary, which
+///   no order changes, counts its own span-by-span against halved-span
+///   disagreement instead.
 ///
 /// Its residual is the curved faces' trim outlines' chord error, 128 samples
-/// per curved edge; planar faces integrate qualified polynomial boundaries exactly. The hammer holder reads 50245.22, the limit of ever
+/// per curved edge, except where a cylinder or cone face reads its trims on
+/// its own boundary; planar faces integrate qualified polynomial boundaries exactly. The hammer holder reads 50245.22, the limit of ever
 /// finer meshes, where the clamp mesh reads 50241.71 (and the 32-chord outline
 /// its planar faces took before, 50245.53).
 fn qualified_face_integral_volume(
@@ -799,6 +804,19 @@ fn qualified_face_integral_volume(
 /// closes within [`FACE_INTEGRAL_CLOSURE`]; `None` when it does not, or a face
 /// did not integrate or report its vector area. With `refine`, a face's
 /// disagreement may instead be read against [`REFINEMENT_ORDER`].
+///
+/// A cylinder or cone face read on its own fitted boundary (its term carries
+/// a [`FittedBoundaryReading`]) does not depend on the order, so two
+/// orders would agree on it whatever its error. Its disagreement is instead
+/// its fitted edges' span-by-span against halved-span volume terms, and its
+/// reading has already agreed with the sampled trim's to the integrator's
+/// guard. It reads each fitted point at its projection onto its surface, so
+/// the shell's closure bound is widened by the certificate's allowance, the
+/// bound on how far that moves the face's vector area off the stored
+/// boundary's (`remus_check`'s `cylinder_green::FittedEdges::add`). A shell
+/// with no such face is checked exactly as before.
+///
+/// [`FittedBoundaryReading`]: remus_check::properties::face_integrator::FittedBoundaryReading
 fn qualified_shell_volume(
     topo: &Topology,
     shell: remus_topology::shell::ShellId,
@@ -811,6 +829,8 @@ fn qualified_shell_volume(
     };
     let (mut volume, mut area, mut disagreement) = (0.0, 0.0, 0.0);
     let mut vector_area = Vec3::new(0.0, 0.0, 0.0);
+    // How far the fitted-boundary readings may leave the shell open.
+    let mut allowance = 0.0;
     for fid in faces {
         let _face_span = crate::performance::span(match topo.face(fid)?.surface() {
             FaceSurface::Plane { .. } => "volume.face.plane",
@@ -840,6 +860,14 @@ fn qualified_shell_volume(
             });
             return Ok(None);
         };
+        if let Some(fitted_reading) = term.fitted_boundary {
+            area += term.area;
+            vector_area += n;
+            allowance += fitted_reading.closure_allowance;
+            volume += term.volume;
+            disagreement += fitted_reading.span_disagreement;
+            continue;
+        }
         // Gauss orders are not nested, so a lower one is an independent
         // reading: the two agree only where both have converged on the face.
         // A planar face has no quadrature: its term is its boundary's exact
@@ -880,12 +908,14 @@ fn qualified_shell_volume(
         disagreement += face_disagreement;
     }
     let closure = vector_area.length();
-    if closure.is_nan() || closure > FACE_INTEGRAL_CLOSURE * area {
+    // `mul_add` with a zero allowance rounds exactly as the product alone.
+    if closure.is_nan() || closure > FACE_INTEGRAL_CLOSURE.mul_add(area, allowance) {
         vol_trace(|| {
             format!(
-                "face integrals declined: shell {} closes to {:.3e} of its area",
+                "face integrals declined: shell {} closes to {:.3e} of its area (fitted-boundary allowance {:.3e})",
                 shell.index(),
-                closure / area
+                closure / area,
+                allowance / area
             )
         });
         return Ok(None);
@@ -1105,6 +1135,13 @@ fn surface_gap(
             remus_math::nurbs::projection::project_point_to_surface_with_grid(nurbs, p, 1e-9, grid)
                 .map_or(f64::INFINITY, |projection| projection.distance)
         }),
+        // Below its apex a cone's own chart reads a point back mirrored
+        // across the axis; the reversed-axis cone charts it at `v > 0`.
+        FaceSurface::Cone(cone) if cone.project_point(p).1 < 0.0 => {
+            let flipped = cone.with_reversed_axis();
+            let (u, v) = flipped.project_point(p);
+            (p - flipped.evaluate(u, v)).length()
+        }
         FaceSurface::Cylinder(_)
         | FaceSurface::Cone(_)
         | FaceSurface::Sphere(_)
@@ -2632,9 +2669,10 @@ fn quantize_down(x: f64) -> f64 {
 /// With the thread's face-integral cache enabled (off by default; the WASM
 /// kernel enables it), faces whose content — or a rigid translation of it —
 /// was integrated before are re-expressed about this shell's reference
-/// instead of integrated again. The sum then differs from an uncached one by
-/// rounding (~1e-15 of the shell's own scale), never by a sign the probe
-/// could read.
+/// instead of integrated again (a cylinder or cone face with a fitted trim
+/// only from a reading about this very reference). The sum then differs from
+/// an uncached one by rounding (~1e-15 of the shell's own scale), never by
+/// a sign the probe could read.
 pub fn shell_signed_volume(
     topo: &Topology,
     shell: remus_topology::shell::ShellId,
@@ -4173,12 +4211,13 @@ fn line_circle_cone_signed_volume(
     reference: Point3,
 ) -> Option<f64> {
     let face = topo.face(face_id).ok()?;
-    let FaceSurface::Cone(cone) = face.surface() else {
+    let FaceSurface::Cone(carrier) = face.surface() else {
         return None;
     };
     if !face.inner_wires().is_empty() {
         return None;
     }
+    let cone = &cone_volume_carrier(topo, face_id, carrier).ok()?;
     let tolerance = remus_math::tolerance::Tolerance::new();
     let (sin_a, cos_a) = cone.half_angle().sin_cos();
     let apex = cone.apex() - reference;
@@ -4276,6 +4315,32 @@ fn line_circle_cone_signed_volume(
     Some(if face.is_reversed() { -volume } else { volume })
 }
 
+/// The carrier the closed-form cone integrators read `face_id` on: the
+/// face integrator's own choice ([`cone_chart_carrier`]), from the boundary
+/// sampled along every edge.
+///
+/// Below the apex (`v < 0`) `project_point` answers a point's own longitude,
+/// half a turn round the axis from where the chart puts it, so the
+/// integrators' `g(u)` (the radial part of `n(u)`) would be read at the
+/// mirrored longitude while `v²` keeps the axial part: the axial term right,
+/// the radial one flipped. The reversed-axis cone charts the same nappe at
+/// `v > 0`, with the same outward normal.
+///
+/// [`cone_chart_carrier`]: remus_check::properties::face_integrator::cone_chart_carrier
+///
+/// # Errors
+///
+/// [`crate::OperationsError::Check`] for a face whose boundary reaches both
+/// nappes or a carrier too flat to tell them apart, and the boundary's
+/// topology errors.
+fn cone_volume_carrier(
+    topo: &Topology,
+    face_id: FaceId,
+    cone: &remus_math::surfaces::ConicalSurface,
+) -> Result<remus_math::surfaces::ConicalSurface, crate::OperationsError> {
+    Ok(remus_check::properties::face_integrator::cone_chart_carrier(topo, face_id, cone)?)
+}
+
 /// Exact signed volume contribution of a conical face via the divergence
 /// theorem: `V = (1/3) integral P.n dA`.
 ///
@@ -4291,7 +4356,7 @@ fn analytic_cone_signed_volume(
     reference: Point3,
 ) -> Result<f64, crate::OperationsError> {
     let face = topo.face(face_id)?;
-    let cone = match face.surface() {
+    let carrier = match face.surface() {
         FaceSurface::Cone(c) => c,
         // Typed precondition guard: only a cone face may reach this
         // integrator. Named per variant so a future surface is a compile
@@ -4306,6 +4371,7 @@ fn analytic_cone_signed_volume(
             });
         }
     };
+    let cone = &cone_volume_carrier(topo, face_id, carrier)?;
 
     let wire = topo.wire(face.outer_wire())?;
     let mut u_vals = Vec::new();
@@ -7021,6 +7087,98 @@ mod face_integral_certificate_tests {
         );
     }
 
+    /// The closure bound a fitted-boundary reading widens it by covers only
+    /// what reading the fitted rims on their own faces moves; a rim that
+    /// stands off its neighbour along the surface, as a fit error that large
+    /// would, still breaks closure and is refused, as before.
+    ///
+    /// A disc wrapped onto a cylinder has its outer face's rim replaced by the
+    /// rim of a disc `δ` wider, wrapped the same way: still a fitted curve on
+    /// that face (its allowance stays at the fit's own size), but `δ` along
+    /// the surface from the walls' rails. At `δ = 0` the shell measures.
+    #[test]
+    fn a_fitted_rim_off_its_neighbour_breaks_closure_whatever_the_allowance() {
+        use crate::wrap::{WrapCylinder, wrap_profile_solid};
+        use remus_topology::builder::make_circle_edge;
+        use remus_topology::face::Face;
+        use remus_topology::wire::{OrientedEdge, Wire};
+
+        let x = Vec3::new(1.0, 0.0, 0.0);
+        let frame = WrapCylinder {
+            origin: Point3::new(0.0, 0.0, 0.0),
+            axis: Vec3::new(0.0, 0.0, 1.0),
+            reference: x,
+            radius: 10.0,
+        };
+        let wrap = |topo: &mut Topology, radius: f64| {
+            let edge =
+                make_circle_edge(topo, Point3::new(10.0, 0.0, 5.0), x, radius, 1e-7).unwrap();
+            let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap());
+            let profile = topo.add_face(Face::new(
+                wire,
+                vec![],
+                FaceSurface::Plane { normal: x, d: 10.0 },
+            ));
+            wrap_profile_solid(topo, profile, &frame, 9.5, 11.0).unwrap()
+        };
+        let outer_face = |topo: &Topology, solid| {
+            remus_topology::explorer::solid_faces(topo, solid)
+                .unwrap()
+                .into_iter()
+                .find(|&f| {
+                    matches!(topo.face(f).unwrap().surface(),
+                        FaceSurface::Cylinder(c) if (c.radius() - 11.0).abs() < 1e-12)
+                })
+                .unwrap()
+        };
+        let order = remus_check::properties::PropertiesOptions::default().gauss_order;
+        for (delta, closes) in [(0.0, true), (1e-3, false)] {
+            let mut topo = Topology::new();
+            let solid = wrap(&mut topo, 4.0);
+            let wider = wrap(&mut topo, 4.0 + delta);
+            let face = outer_face(&topo, solid);
+            let rim = topo.face(outer_face(&topo, wider)).unwrap().outer_wire();
+            topo.set_face_boundary_wires(face, rim, vec![]).unwrap();
+            let shell = topo.solid(solid).unwrap().outer_shell();
+            let faces = topo.shell(shell).unwrap().faces().to_vec();
+            let reference = shell_reference(&topo, &faces).unwrap().unwrap();
+            let (mut flux, mut area, mut allowance) = (Vec3::new(0.0, 0.0, 0.0), 0.0, 0.0);
+            for &f in &faces {
+                let term =
+                    super::super::guard_readings::integrate(&topo, f, order, reference).unwrap();
+                flux += term.vector_area.unwrap();
+                area += term.area;
+                allowance += term.fitted_boundary.map_or(0.0, |c| c.closure_allowance);
+            }
+            // The replaced rim is read on its boundary too, at the fit's size.
+            assert!(
+                allowance > 0.0 && allowance < 1e-6 * area,
+                "{allowance} of {area}"
+            );
+            let limit = FACE_INTEGRAL_CLOSURE.mul_add(area, allowance);
+            assert_eq!(
+                flux.length() <= limit,
+                closes,
+                "{} vs {limit}",
+                flux.length()
+            );
+            assert_eq!(
+                qualified_shell_volume(&topo, shell, order, false)
+                    .unwrap()
+                    .is_some(),
+                closes,
+                "δ = {delta}"
+            );
+            assert_eq!(
+                qualified_face_integral_volume(&topo, solid)
+                    .unwrap()
+                    .is_some(),
+                closes,
+                "δ = {delta}"
+            );
+        }
+    }
+
     #[test]
     fn edges_are_sampled_per_knot_span_up_to_the_trim_density() {
         let nurbs = |spans: usize| {
@@ -7762,6 +7920,307 @@ mod line_circle_cone_tests {
                 (exact - expected).abs() <= 1e-9 * expected,
                 "r {bottom}..{top}: {exact} vs {expected}"
             );
+        }
+    }
+
+    /// The quarter frustum wall between radius 2 at `z = 0` and radius 1 at
+    /// `z = 2`, over `φ ∈ [0, π/2]`, bounded by two rim arcs and two rulings,
+    /// on `carrier`.
+    fn quarter_wall(topo: &mut Topology, carrier: remus_math::surfaces::ConicalSurface) -> FaceId {
+        use remus_math::curves::Circle3D;
+        use remus_topology::edge::Edge;
+        use remus_topology::face::Face;
+        use remus_topology::vertex::Vertex;
+        use remus_topology::wire::{OrientedEdge, Wire};
+        let z = Vec3::new(0.0, 0.0, 1.0);
+        let at = |r: f64, phi: f64, h: f64| Point3::new(r * phi.cos(), r * phi.sin(), h);
+        let half = std::f64::consts::FRAC_PI_2;
+        let corners = [
+            at(2.0, 0.0, 0.0),
+            at(2.0, half, 0.0),
+            at(1.0, half, 2.0),
+            at(1.0, 0.0, 2.0),
+        ];
+        let vertices: Vec<_> = corners
+            .iter()
+            .map(|&p| topo.add_vertex(Vertex::new(p, 1e-9)))
+            .collect();
+        let mut arc = |from: usize, to: usize, r: f64, h: f64| {
+            let circle = Circle3D::new(Point3::new(0.0, 0.0, h), z, r).unwrap();
+            let t0 = circle.project(corners[from]);
+            let mut t1 = circle.project(corners[to]);
+            if t1 <= t0 {
+                t1 += std::f64::consts::TAU;
+            }
+            let mut edge = Edge::new(vertices[from], vertices[to], EdgeCurve::Circle(circle));
+            edge.set_trim(Some((t0, t1)));
+            topo.add_edge(edge)
+        };
+        let bottom = arc(0, 1, 2.0, 0.0);
+        let top = arc(3, 2, 1.0, 2.0);
+        let right = topo.add_edge(Edge::new(vertices[1], vertices[2], EdgeCurve::Line));
+        let left = topo.add_edge(Edge::new(vertices[3], vertices[0], EdgeCurve::Line));
+        let wire = topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(bottom, true),
+                    OrientedEdge::new(right, true),
+                    OrientedEdge::new(top, false),
+                    OrientedEdge::new(left, true),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        topo.add_face(Face::new(wire, vec![], FaceSurface::Cone(carrier)))
+    }
+
+    /// `(1/3) ∬ (P − reference) · n dA` over the quarter wall, by a Gauss
+    /// product rule on its own parametrisation `(φ, t) ↦ (ρ cos φ, ρ sin φ,
+    /// 2t)`, `ρ = 2 − t`, with the normal turned away from the axis.
+    fn quarter_wall_oracle(reference: Point3) -> f64 {
+        let gauss = remus_math::quadrature::gauss_legendre_points(16);
+        let half = std::f64::consts::FRAC_PI_4;
+        let mut sum = 0.0;
+        for gp in gauss {
+            let phi = half.mul_add(gp.x, half);
+            for gt in gauss {
+                let t = 0.5f64.mul_add(gt.x, 0.5);
+                let rho = 2.0 - t;
+                let d_phi = Vec3::new(-rho * phi.sin(), rho * phi.cos(), 0.0);
+                let d_t = Vec3::new(-phi.cos(), -phi.sin(), 2.0);
+                let mut n = d_phi.cross(d_t);
+                if n.x() * phi.cos() + n.y() * phi.sin() < 0.0 {
+                    n = -n;
+                }
+                let p = Point3::new(rho * phi.cos(), rho * phi.sin(), 2.0 * t) - reference;
+                sum += gp.w * half * gt.w * 0.5 * p.dot(n) / 3.0;
+            }
+        }
+        sum
+    }
+
+    /// The quarter frustum `x ≥ 0, y ≥ 0` between radius 2 at `z = 0` and
+    /// radius 1 at `z = 2` (its trapezoid profile revolved a quarter turn),
+    /// with its cone walls written on the lower nappe when `lower`.
+    fn quarter_frustum(lower: bool) -> (Topology, SolidId) {
+        use remus_topology::builder::make_polygon_wire;
+        use remus_topology::face::Face;
+        let mut topo = Topology::new();
+        let profile = make_polygon_wire(
+            &mut topo,
+            &[
+                Point3::new(0.0, 0.0, 0.0),
+                Point3::new(2.0, 0.0, 0.0),
+                Point3::new(1.0, 0.0, 2.0),
+                Point3::new(0.0, 0.0, 2.0),
+            ],
+            1e-7,
+        )
+        .unwrap();
+        let face = topo.add_face(Face::new(
+            profile,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, -1.0, 0.0),
+                d: 0.0,
+            },
+        ));
+        let solid = crate::revolve::revolve(
+            &mut topo,
+            face,
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            std::f64::consts::FRAC_PI_2,
+        )
+        .unwrap();
+        let mut walls = 0;
+        for wall in remus_topology::explorer::solid_faces(&topo, solid).unwrap() {
+            let FaceSurface::Cone(cone) = topo.face(wall).unwrap().surface().clone() else {
+                continue;
+            };
+            walls += 1;
+            if lower {
+                topo.face_mut(wall)
+                    .unwrap()
+                    .set_surface(FaceSurface::Cone(cone.with_reversed_axis()));
+            }
+        }
+        assert!(walls > 0);
+        (topo, solid)
+    }
+
+    /// The review's repro: the quarter frustum measures `7π/6` through the
+    /// direct face route on either nappe (it read `7π/6 + 4` with its walls
+    /// below the apex), and `solid_volume` agrees. The direct route meshes
+    /// the revolved caps' NURBS-bounded planes, so it holds the closed form
+    /// to their chords; the two nappes read the same wall to rounding.
+    #[test]
+    fn a_quarter_frustum_measures_its_closed_form_on_either_nappe() {
+        let expected = 7.0 * std::f64::consts::PI / 6.0;
+        let read = |lower: bool| {
+            let (topo, solid) = quarter_frustum(lower);
+            (
+                volume_from_direct_face_tessellation(&topo, solid, 1e-3).unwrap(),
+                solid_volume(&topo, solid, 1e-3).unwrap(),
+            )
+        };
+        let (upper_direct, _) = read(false);
+        for lower in [false, true] {
+            let (direct, volume) = read(lower);
+            assert!(
+                (direct - expected).abs() <= 1e-3 * expected,
+                "lower nappe {lower}, direct faces: {direct} vs {expected}"
+            );
+            assert!(
+                (direct - upper_direct).abs() <= 1e-12 * expected,
+                "lower nappe {lower}, direct faces: {direct} vs the upper carrier's {upper_direct}"
+            );
+            assert!(
+                (volume - expected).abs() <= 1e-9 * expected,
+                "lower nappe {lower}, solid_volume: {volume} vs {expected}"
+            );
+        }
+    }
+
+    /// The re-check's first repro: the quarter wall below its carrier's apex
+    /// with one vertex of tolerance 5, larger than the wall's whole reach
+    /// from the apex (`|v| ≤ √20`). That tolerance once excused the whole
+    /// wall as "at the apex", kept it on its own carrier and flipped the
+    /// radial term; the nappe is the one the boundary lies on, and a vertex
+    /// tolerance only counts where the vertex is at the apex.
+    #[test]
+    fn a_sloppy_vertex_does_not_keep_a_lower_wall_on_its_carrier() {
+        let above = remus_math::surfaces::ConicalSurface::new(
+            Point3::new(0.0, 0.0, 4.0),
+            Vec3::new(0.0, 0.0, -1.0),
+            4.0_f64.atan2(2.0),
+        )
+        .unwrap();
+        let mut topo = Topology::new();
+        let face = quarter_wall(&mut topo, above.with_reversed_axis());
+        let wire = topo.face(face).unwrap().outer_wire();
+        let edge = topo.wire(wire).unwrap().edges()[0].edge();
+        let vertex = topo.edge(edge).unwrap().start();
+        topo.vertex_mut(vertex).unwrap().set_tolerance(5.0).unwrap();
+        let reference = Point3::new(0.7, -1.3, 2.9);
+        let want = quarter_wall_oracle(reference);
+        let chart = line_circle_cone_signed_volume(&topo, face, reference).unwrap();
+        let rectangle = analytic_cone_signed_volume(&topo, face, reference).unwrap();
+        for (path, got) in [("chart", chart), ("rectangle", rectangle)] {
+            assert!(
+                (got - want).abs() <= 1e-9 * want.abs(),
+                "{path}: {got} vs {want}"
+            );
+        }
+    }
+
+    /// The re-check's second repro: an unholed cone face whose spline trim
+    /// starts and ends above the apex but dips below it on the way (a
+    /// quadratic through the control point `(0, 0, −2)` under an apex at the
+    /// origin), closed by a rim arc. Its vertices all lie on the upper
+    /// nappe; its boundary reaches both, so both readers refuse it, as the
+    /// face integrator does, rather than return a volume term.
+    #[test]
+    fn a_trim_that_dips_below_the_apex_is_refused() {
+        use remus_math::curves::Circle3D;
+        use remus_math::nurbs::NurbsCurve;
+        use remus_topology::edge::Edge;
+        use remus_topology::face::Face;
+        use remus_topology::vertex::Vertex;
+        use remus_topology::wire::{OrientedEdge, Wire};
+
+        let z = Vec3::new(0.0, 0.0, 1.0);
+        let cone = remus_math::surfaces::ConicalSurface::new(
+            Point3::new(0.0, 0.0, 0.0),
+            z,
+            std::f64::consts::FRAC_PI_4,
+        )
+        .unwrap();
+        let (a, b) = (Point3::new(1.0, 0.0, 1.0), Point3::new(-1.0, 0.0, 1.0));
+        let mut topo = Topology::new();
+        let va = topo.add_vertex(Vertex::new(a, 1e-9));
+        let vb = topo.add_vertex(Vertex::new(b, 1e-9));
+        let dip = NurbsCurve::new(
+            2,
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            vec![a, Point3::new(0.0, 0.0, -2.0), b],
+            vec![1.0; 3],
+        )
+        .unwrap();
+        let mut spline = Edge::new(va, vb, EdgeCurve::NurbsCurve(dip));
+        spline.set_trim(Some((0.0, 1.0)));
+        let spline = topo.add_edge(spline);
+        let circle = Circle3D::new(Point3::new(0.0, 0.0, 1.0), z, 1.0).unwrap();
+        let (t0, mut t1) = (circle.project(b), circle.project(a));
+        if t1 <= t0 {
+            t1 += std::f64::consts::TAU;
+        }
+        let mut rim = Edge::new(vb, va, EdgeCurve::Circle(circle));
+        rim.set_trim(Some((t0, t1)));
+        let rim = topo.add_edge(rim);
+        let wire = topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(spline, true),
+                    OrientedEdge::new(rim, true),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        let face = topo.add_face(Face::new(wire, vec![], FaceSurface::Cone(cone.clone())));
+        for vertex in [a, b] {
+            assert!(
+                cone.project_point(vertex).1 > 0.0,
+                "vertices above the apex"
+            );
+        }
+        let reference = Point3::new(0.7, -1.3, 2.9);
+        let rectangle = analytic_cone_signed_volume(&topo, face, reference);
+        assert!(
+            rectangle
+                .as_ref()
+                .is_err_and(|e| e.to_string().contains("both nappes")),
+            "the rectangle read a face on both nappes: {rectangle:?}"
+        );
+        assert!(line_circle_cone_signed_volume(&topo, face, reference).is_none());
+        let integrated =
+            remus_check::properties::face_integrator::integrate_face(&topo, face, 8).unwrap_err();
+        assert!(
+            integrated.to_string().contains("both nappes"),
+            "{integrated}"
+        );
+    }
+
+    /// A quarter wall written on either nappe of its carrier: the chart and
+    /// the rectangle integrators read the physical wall's volume term about
+    /// references on and off the axis.
+    #[test]
+    fn a_quarter_wall_reads_its_volume_term_on_either_nappe() {
+        let above = remus_math::surfaces::ConicalSurface::new(
+            Point3::new(0.0, 0.0, 4.0),
+            Vec3::new(0.0, 0.0, -1.0),
+            4.0_f64.atan2(2.0),
+        )
+        .unwrap();
+        for (nappe, carrier) in [
+            ("upper", above.clone()),
+            ("lower", above.with_reversed_axis()),
+        ] {
+            let mut topo = Topology::new();
+            let face = quarter_wall(&mut topo, carrier);
+            for reference in [Point3::new(0.0, 0.0, 0.0), Point3::new(0.7, -1.3, 2.9)] {
+                let want = quarter_wall_oracle(reference);
+                let chart = line_circle_cone_signed_volume(&topo, face, reference).unwrap();
+                let rectangle = analytic_cone_signed_volume(&topo, face, reference).unwrap();
+                for (path, got) in [("chart", chart), ("rectangle", rectangle)] {
+                    assert!(
+                        (got - want).abs() <= 1e-9 * want.abs().max(1.0),
+                        "{nappe} nappe, {path} about {reference:?}: {got} vs {want}"
+                    );
+                }
+            }
         }
     }
 }

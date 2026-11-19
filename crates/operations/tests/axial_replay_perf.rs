@@ -2,6 +2,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::print_stdout)]
 
+mod fitted_face_oracle;
+
 use remus_math::vec::Vec3;
 use remus_operations::blend_ops::fillet_cascade;
 use remus_operations::boolean::{BooleanOp, boolean};
@@ -129,7 +131,15 @@ fn axial_replay_preserves_exact_geometry_and_history() {
         solid = journaled.solid;
     }
     let volume = remus_operations::measure::solid_volume(&topo, solid, 0.01).unwrap();
-    assert!((volume - 15_537.695_980_506_103).abs() < 1e-7);
+    // 7.47e-4 below the 15 537.695 980 506 it read while the three cylinder
+    // faces with fitted trims read 128-sample trim polygons (3.0e-5 to
+    // 3.9e-4 high each); every other face's term is unchanged, and these
+    // three now meet an independent quadrature of their boundary.
+    assert!((volume - 15_537.695_233_411_308).abs() < 1e-7);
+    assert_eq!(
+        fitted_face_oracle::assert_fitted_faces_match(&topo, solid, 1e-8),
+        3
+    );
     let phases = remus_operations::performance::drain();
     remus_operations::performance::configure(None);
     assert!(

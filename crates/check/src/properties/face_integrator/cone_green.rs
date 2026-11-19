@@ -8,14 +8,14 @@
 //! curves on two offset cones) read its volume 1.3e-4 low that way.
 //!
 //! Only faces with at least one fitted NURBS trim take this path, and only
-//! for a moment (not area-only) reading whose caller does not collect the
-//! vector area, the same policy the cylinder applies to fitted trims (see
-//! its module docs). A face trimmed only by lines, circles and ellipses keeps
-//! the sampled reading bit for bit, and so does every certificate reading of
-//! `solid_volume`. An area-only request on a fitted face
-//! (`integrate_face_area`) is answered by the moment reading, so it takes
-//! this path under the same guard; `analytic_face_area` reduces these trims
-//! to the boundary on its own.
+//! for a moment (not area-only) reading, the same policy the cylinder
+//! applies to fitted trims (see its module docs): a reading that collects
+//! the vector area also gets the certificate of its fitted edges. A face
+//! trimmed only by lines, circles and ellipses keeps the sampled reading bit
+//! for bit. An area-only request on a fitted face (`integrate_face_area`) is
+//! answered by the moment reading, so it takes this path under the same
+//! guard; `analytic_face_area` reduces these trims to the boundary on its
+//! own.
 //!
 //! On a cone `P(u, v) = A + v (cos a ρ(u) + sin a â)` the surface Jacobian
 //! `∂P/∂u × ∂P/∂v` is `v` times a function of `u` and `P` is affine in `v`,
@@ -43,16 +43,16 @@ use remus_math::nurbs::surface::DerivativeScratch;
 use remus_math::quadrature::gauss_legendre_points;
 use remus_math::surfaces::ConicalSurface;
 use remus_math::traits::ParametricSurface;
-use remus_math::vec::{Point3, Vec3};
+use remus_math::vec::Point3;
 use remus_topology::Topology;
 use remus_topology::edge::EdgeCurve;
 use remus_topology::face::Face;
 
 use super::cylinder_green::{
-    AXIAL_ORDER, EDGE_ORDER, EDGE_PIECES, EdgeSpan, NURBS_ON_SURFACE, NURBS_ON_SURFACE_ABS,
-    knot_pieces, pieces, readings_agree, velocity,
+    AXIAL_ORDER, EDGE_ORDER, EDGE_PIECES, EdgeMeasure, EdgeSpan, FittedEdges, GreenReading,
+    NURBS_ON_SURFACE, NURBS_ON_SURFACE_ABS, finish, knot_pieces, pieces, readings_agree, velocity,
 };
-use super::{Accumulator, FaceContribution, IntegrationRule};
+use super::{Accumulator, IntegrationRule};
 use crate::CheckError;
 
 /// How close to the axis, relative to the face's length scale, a boundary
@@ -60,24 +60,24 @@ use crate::CheckError;
 /// the apex the angular rate is singular and the edge rule loses accuracy.
 const APEX_CLEARANCE: f64 = 1e-6;
 
-/// The face's contribution and vector area by Green's theorem.
+/// The face's contribution and vector area by Green's theorem, with the
+/// certificate of its fitted edges.
 ///
-/// `None` when the face has no fitted (NURBS) trim, when the caller collects
-/// the vector area or reads area only, when a boundary edge is a hyperbola or
-/// parabola or has no stored domain, when a boundary point leaves the cone
-/// or nears its apex, when a fitted edge's two readings disagree, or when the
-/// boundary does not enclose positive area: the caller keeps its sampled
-/// path then.
+/// `None` when the face has no fitted (NURBS) trim, when the caller reads
+/// area only, when a boundary edge is a hyperbola or parabola or has no
+/// stored domain, when a boundary point leaves the cone or nears its apex,
+/// when a fitted edge's two readings disagree or measure something
+/// non-finite, or when the boundary does not enclose positive area: the
+/// caller keeps its sampled path then.
 pub(super) fn integrate<const AREA_ONLY: bool>(
     topo: &Topology,
     face: &Face,
     cone: &ConicalSurface,
     rule: &IntegrationRule<'_>,
     sign: f64,
-) -> Result<Option<(FaceContribution, Vec3)>, CheckError> {
-    // Fitted trims only, and only for a moment reading no certificate
-    // qualifies (module docs).
-    if AREA_ONLY || rule.flux.is_some() {
+) -> Result<Option<GreenReading>, CheckError> {
+    // Fitted trims only, and only for a moment reading (module docs).
+    if AREA_ONLY {
         return Ok(None);
     }
     let wires: Vec<_> = std::iter::once(face.outer_wire())
@@ -102,6 +102,7 @@ pub(super) fn integrate<const AREA_ONLY: bool>(
         ..Accumulator::default()
     };
     let mut acc = fresh();
+    let mut fitted_edges = FittedEdges::default();
     // Every term compared at its own dimension of this length: how far the
     // boundary reaches from the apex, plus how far the integration reference
     // lies from it.
@@ -132,7 +133,13 @@ pub(super) fn integrate<const AREA_ONLY: bool>(
             };
             let EdgeCurve::NurbsCurve(nurbs) = span.curve else {
                 let intervals: Vec<_> = pieces(lo, hi, EDGE_PIECES).collect();
-                if !reading.edge::<AREA_ONLY>(&span, direction, &intervals, &mut acc) {
+                if !reading.edge::<AREA_ONLY>(
+                    &span,
+                    direction,
+                    &intervals,
+                    &mut acc,
+                    &mut EdgeMeasure::default(),
+                ) {
                     return Ok(None);
                 }
                 continue;
@@ -143,23 +150,39 @@ pub(super) fn integrate<const AREA_ONLY: bool>(
                 knot_pieces(nurbs.knots(), lo, hi, 1),
                 knot_pieces(nurbs.knots(), lo, hi, 2),
             );
-            let (mut coarse, mut fine) = (fresh(), fresh());
-            if !reading.edge::<AREA_ONLY>(&span, direction, &coarse_pieces, &mut coarse)
-                || !reading.edge::<AREA_ONLY>(&span, direction, &fine_pieces, &mut fine)
-            {
+            // Every term, even for a volume-only rule: the edge is kept on
+            // the same agreement whatever the request, so a volume-only
+            // reading takes the path the full one takes, bit for bit.
+            let (mut coarse, mut fine) = (Accumulator::default(), Accumulator::default());
+            let (mut coarse_measure, mut fine_measure) =
+                (EdgeMeasure::default(), EdgeMeasure::default());
+            if !reading.edge::<AREA_ONLY>(
+                &span,
+                direction,
+                &coarse_pieces,
+                &mut coarse,
+                &mut coarse_measure,
+            ) || !reading.edge::<AREA_ONLY>(
+                &span,
+                direction,
+                &fine_pieces,
+                &mut fine,
+                &mut fine_measure,
+            ) {
                 return Ok(None);
             }
             if !readings_agree(&coarse, &fine, length_scale) {
                 return Ok(None);
             }
+            fitted_edges.add(
+                (&coarse, coarse_measure),
+                (&fine, fine_measure),
+                span.end_reach(lo, hi, rule.reference),
+            );
             acc.absorb(&fine);
         }
     }
-    if !acc.area.is_finite() || acc.area <= 0.0 {
-        return Ok(None);
-    }
-    let flux = acc.flux(sign);
-    Ok(Some((acc.finish(sign), flux)))
+    Ok(finish(acc, sign, &fitted_edges))
 }
 
 /// What every edge of one face is read against.
@@ -171,15 +194,17 @@ struct Reading<'a> {
 
 impl Reading<'_> {
     /// Add `−∮ F du` along `span` over `intervals` (run in `direction`), one
-    /// Gauss–Legendre rule per interval. `false` when the edge is not a curve
-    /// this path reads, or a point lies off the cone, at or beyond its apex,
-    /// or too near its axis.
+    /// Gauss–Legendre rule per interval, and what its points read of the edge
+    /// to `measure`. `false` when the edge is not a curve this path reads, or
+    /// a point lies off the cone, at or beyond its apex, or too near its
+    /// axis.
     fn edge<const AREA_ONLY: bool>(
         &self,
         span: &EdgeSpan<'_>,
         direction: f64,
         intervals: &[(f64, f64)],
         acc: &mut Accumulator,
+        measure: &mut EdgeMeasure,
     ) -> bool {
         let mut scratch = DerivativeScratch::new();
         let edge_points = gauss_legendre_points(EDGE_ORDER);
@@ -209,19 +234,31 @@ impl Reading<'_> {
                 }
                 // Distance from the generator through the point's own
                 // meridian.
-                if fitted
-                    && (rho * sin_a - height * cos_a).abs()
-                        > (NURBS_ON_SURFACE * rho).max(NURBS_ON_SURFACE_ABS)
-                {
+                let off = if fitted {
+                    (rho * sin_a - height * cos_a).abs()
+                } else {
+                    0.0
+                };
+                if off > (NURBS_ON_SURFACE * rho).max(NURBS_ON_SURFACE_ABS) {
                     return false;
                 }
-                let (_, du_vec, _, _, _) =
+                let (_, du_vec, dv_vec, _, _) =
                     cone.span_hinted_point_and_partials_with_scratch(u, v, &mut scratch);
                 // ∂P/∂u has the chart radius `v cos a` as its length; a point
                 // at its own radius ρ moves in u at that radius over ρ times
                 // the plain quotient. Exact trims keep the plain quotient.
                 let rate_scale = if fitted { du_vec.length() / rho } else { 1.0 };
                 let du_dt = rate_scale * dp_dt.dot(du_vec) / du_vec.dot(du_vec);
+                // The point is read at its own height (`v = h / sin a`, see
+                // `ConicalSurface::project_point`), which moves it radially
+                // by `off / sin a`, and at that height's rate.
+                let dv_dt = dp_dt.dot(axis) / sin_a;
+                measure.add(
+                    gp.w * half,
+                    off / sin_a,
+                    dp_dt.length(),
+                    (du_vec * du_dt + dv_vec * dv_dt).length(),
+                );
                 // −∮ F du, F(u, v) = v ∫₀¹ f(u, v s) ds.
                 let line_weight = -(direction * gp.w * half) * du_dt * v;
                 for sp in axial_points {

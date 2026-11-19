@@ -1243,10 +1243,161 @@ fn dedupe_rechecks_preserved_collisions_after_positions_change_within_grid_cells
     assert!(mesh.indices.is_empty());
 }
 
+/// Two facets thinner than the grid whose corners sit apart by a sizeable
+/// share of their own thickness are distinct, whatever cells they share: the
+/// polar pair touching at one corner, and two slivers folded ten degrees
+/// across a shared chord (a 170° mitre of a 1e-4 tube, whose cancellation
+/// opened both walls), and two folded only 2° (review finding 2 of #1868).
 #[test]
-fn dedupe_preserves_legacy_resolution_for_unresolved_candidates() {
+fn dedupe_keeps_thin_facets_the_grid_cannot_resolve() {
     let mut touching = fine_grid_polar_pair();
     touching.positions[3] = touching.positions[0];
+    // A chord of 6e-6 along x, and two apexes 3e-7 from it, folded 10°
+    // about it: every corner shares its cell with its partner.
+    let (half, h) = (5f64.to_radians(), 3e-7);
+    let base = Point3::new(1.0e-3, 2.0e-3, 3.0e-3);
+    let fold = TriangleMesh {
+        positions: vec![
+            base,
+            base + Vec3::new(6e-6, 0.0, 0.0),
+            base + Vec3::new(3e-6, h * half.cos(), h * half.sin()),
+            base + Vec3::new(3e-6, h * half.cos(), -h * half.sin()),
+        ],
+        normals: vec![Vec3::new(0.0, 0.0, 1.0); 4],
+        indices: vec![0, 1, 2, 1, 0, 3],
+    };
+    for (label, mut mesh) in [("touching", touching), ("fold", fold)] {
+        let mut reference = mesh.clone();
+        super::tests::mesh_passes::reference::dedupe_coincident_triangles(&mut reference, None);
+        assert!(
+            reference.indices.is_empty(),
+            "{label}: the grid alone cancels"
+        );
+        let before = mesh.clone();
+        assert!(
+            !super::mesh_ops::dedupe_coincident_triangles(&mut mesh, None),
+            "{label}"
+        );
+        assert_eq!(mesh.indices, before.indices, "{label}");
+    }
+    // Review finding 2 of #1868: a 1° fold of two facets about a 60e-6
+    // chord, apexes 8e-6 out and 2.79e-7 apart (both in one cell). The
+    // pass that cut off at a twentieth of the altitude deleted both and
+    // left a four-edge hole.
+    let (fold_half, h) = (1f64.to_radians(), 8e-6);
+    let mut shallow = TriangleMesh {
+        positions: vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(60e-6, 0.0, 0.0),
+            Point3::new(30e-6, h * fold_half.cos(), h * fold_half.sin()),
+            Point3::new(30e-6, h * fold_half.cos(), -h * fold_half.sin()),
+        ],
+        normals: vec![Vec3::new(0.0, 0.0, 1.0); 4],
+        indices: vec![0, 1, 2, 1, 0, 3],
+    };
+    let mut reference = shallow.clone();
+    super::tests::mesh_passes::reference::dedupe_coincident_triangles(&mut reference, None);
+    assert!(
+        reference.indices.is_empty(),
+        "shallow fold: the grid alone cancels"
+    );
+    assert!(!super::mesh_ops::dedupe_coincident_triangles(
+        &mut shallow,
+        None
+    ));
+    assert_eq!(shallow.indices.len(), 6, "a 1° fold keeps both facets");
+
+    // Re-check of #1868 (finding 1): the same chord at x = 1e8 with apexes
+    // (1e8 + 30e-6, 8e-6, ±4e-7). The 8e-7 between the apexes lies along z,
+    // where nothing is near 1e8: it is resolved there and is no rounding,
+    // although rounding along x reaches 1.4e-6.
+    let x = 1.0e8;
+    let mut far = TriangleMesh {
+        positions: vec![
+            Point3::new(x, 0.0, 0.0),
+            Point3::new(x + 60e-6, 0.0, 0.0),
+            Point3::new(x + 30e-6, 8e-6, 4e-7),
+            Point3::new(x + 30e-6, 8e-6, -4e-7),
+        ],
+        normals: vec![Vec3::new(0.0, 0.0, 1.0); 4],
+        indices: vec![0, 1, 2, 1, 0, 3],
+    };
+    let mut reference = far.clone();
+    super::tests::mesh_passes::reference::dedupe_coincident_triangles(&mut reference, None);
+    assert!(
+        reference.indices.is_empty(),
+        "far fold: the grid alone cancels"
+    );
+    assert!(!super::mesh_ops::dedupe_coincident_triangles(
+        &mut far, None
+    ));
+    assert_eq!(
+        far.indices.len(),
+        6,
+        "a fold far from the origin keeps both facets"
+    );
+}
+
+/// True copies of one facet still cancel (opposite windings) or collapse
+/// (same winding): identical corners on distinct vertices, and (review
+/// finding 1 of #1868) two coplanar slivers 0.02 long and 2e-7 high near
+/// x = 1e8 whose apexes sit 2 and 3 ULPs above 1e8, one ULP (1.49e-8)
+/// apart, which is rounding, not a second wall.
+#[test]
+fn dedupe_cancels_true_copies_of_thin_facets() {
+    let copies = |base: Point3, apex: [Point3; 2]| TriangleMesh {
+        positions: vec![
+            base,
+            base + Vec3::new(0.02, 0.0, 0.0),
+            apex[0],
+            base,
+            base + Vec3::new(0.02, 0.0, 0.0),
+            apex[1],
+        ],
+        normals: vec![Vec3::new(0.0, 0.0, 1.0); 6],
+        indices: vec![0, 1, 2, 4, 3, 5],
+    };
+    let identical = {
+        let base = Point3::new(1.0e-3, 2.0e-3, 3.0e-3);
+        let apex = base + Vec3::new(0.01, 2e-7, 0.0);
+        copies(base, [apex, apex])
+    };
+    let rounded = {
+        let x = 1.0e8_f64;
+        let ulp = |n: u64| f64::from_bits(x.to_bits() + n);
+        assert!((ulp(3) - ulp(2) - 1.490_116_119_384_765_6e-8).abs() < 1e-20);
+        copies(
+            Point3::new(x - 0.01, 0.0, 0.0),
+            [
+                Point3::new(ulp(2), 2e-7, 0.0),
+                Point3::new(ulp(3), 2e-7, 0.0),
+            ],
+        )
+    };
+    for (label, mesh) in [("identical", identical), ("rounded", rounded)] {
+        for same_winding in [false, true] {
+            let mut mesh = mesh.clone();
+            if same_winding {
+                mesh.indices.swap(3, 4);
+            }
+            let mut reference = mesh.clone();
+            super::tests::mesh_passes::reference::dedupe_coincident_triangles(&mut reference, None);
+            assert!(
+                super::mesh_ops::dedupe_coincident_triangles(&mut mesh, None),
+                "{label}"
+            );
+            assert_eq!(mesh.indices, reference.indices, "{label} {same_winding}");
+            assert_eq!(
+                mesh.indices.len(),
+                if same_winding { 3 } else { 0 },
+                "{label} {same_winding}"
+            );
+        }
+    }
+}
+
+#[test]
+fn dedupe_preserves_legacy_resolution_for_unresolved_candidates() {
     let mut non_finite = fine_grid_polar_pair();
     for i in [0, 3] {
         let p = non_finite.positions[i];
@@ -1263,7 +1414,7 @@ fn dedupe_preserves_legacy_resolution_for_unresolved_candidates() {
     ];
     let mut larger_group = fine_grid_polar_pair();
     larger_group.indices.extend_from_slice(&[0, 1, 2]);
-    for mut mesh in [touching, non_finite, collinear, larger_group] {
+    for mut mesh in [non_finite, collinear, larger_group] {
         let mut reference = mesh.clone();
         super::tests::mesh_passes::reference::dedupe_coincident_triangles(&mut reference, None);
         assert!(super::mesh_ops::dedupe_coincident_triangles(

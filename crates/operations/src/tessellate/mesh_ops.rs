@@ -391,7 +391,10 @@ pub(super) fn dedupe_coincident_triangles_cached(
                     group.push((tj, parity[tj]));
                 }
             }
-            if group.len() == 2 && strictly_separated_facets(mesh, group[0].0, group[1].0) {
+            if group.len() == 2
+                && (strictly_separated_facets(mesh, group[0].0, group[1].0)
+                    || grid_unresolved_facets(mesh, &ids.of, group[0].0, group[1].0))
+            {
                 continue;
             }
             if group.len() >= 2 {
@@ -510,6 +513,85 @@ fn strictly_separated_facets(mesh: &TriangleMesh, first: usize, second: usize) -
         })
     };
     separated(a, b, areas[0]) || separated(b, a, areas[1])
+}
+
+/// Whether two facets that share a key are distinct facets the grid cannot
+/// resolve rather than copies of one facet.
+///
+/// The grid is absolute (1 µm), so on a small part two slivers less than a
+/// micrometre thick share every cell although each lies clear of the other
+/// on its own scale: where two tubes of radius 1e-4 meet at a 170° mitre,
+/// one sliver of each wall on either side of a shared chord, and at a 179.5°
+/// mitre two walls half a degree apart near the mitre's tip. Cancelling such
+/// a pair opened both walls.
+///
+/// Copies differ by rounding at most, so a pair counts as distinct only when
+/// some pair of corners in one cell differs on some axis by more than that
+/// axis's rounding floor (`64 ε` times the larger of the two coordinates
+/// compared there, so a difference along an axis near zero is not dismissed
+/// because another axis is far out), and then only when the facets' planes
+/// meet at an angle (sine at least 1e-3, and at least four times the tilt
+/// rounding, `8 ε` times the largest coordinate, can give the thinner facet)
+/// or their corners lie at least a twentieth of the thinner facet's least
+/// altitude apart. A fold
+/// is read from the planes, not the corner distance, so a shallow fold of a
+/// wide facet is kept as well as a sharp one. Degenerate facets keep the old
+/// policy.
+fn grid_unresolved_facets(
+    mesh: &TriangleMesh,
+    cell_of: &[u32],
+    first: usize,
+    second: usize,
+) -> bool {
+    let corner = |t: usize, k: usize| mesh.indices[3 * t + k] as usize;
+    let points = |t: usize| [0, 1, 2].map(|k| mesh.positions[corner(t, k)]);
+    let (a, b) = (points(first), points(second));
+    // Rounding of a coordinate is relative to that coordinate, so a corner
+    // difference is resolved when one of its components exceeds `64 ε` times
+    // the larger of the two coordinates it compares on that axis. A pair
+    // with no resolved component differs by rounding alone.
+    let floor = |u: f64, v: f64| 64.0 * f64::EPSILON * u.abs().max(v.abs());
+    let mut apart = 0.0_f64;
+    let mut resolved = false;
+    for (i, &p) in a.iter().enumerate() {
+        let cell = cell_of[corner(first, i)];
+        let Some(j) = (0..3).find(|&j| cell_of[corner(second, j)] == cell) else {
+            return false;
+        };
+        let q = b[j];
+        resolved |= (p.x() - q.x()).abs() > floor(p.x(), q.x())
+            || (p.y() - q.y()).abs() > floor(p.y(), q.y())
+            || (p.z() - q.z()).abs() > floor(p.z(), q.z());
+        apart = apart.max((p - q).length());
+    }
+    if !(resolved && apart.is_finite()) {
+        return false;
+    }
+    // The tilt rounding can give a facet: a few units of the largest
+    // coordinate's rounding over the facet's thickness.
+    let magnitude = a
+        .iter()
+        .chain(&b)
+        .map(|p| p.x().abs().max(p.y().abs()).max(p.z().abs()))
+        .fold(0.0_f64, f64::max);
+    let rounding = 8.0 * f64::EPSILON * magnitude;
+    // The least altitude: twice the area over the longest side.
+    let normal = |p: [Point3; 3]| (p[1] - p[0]).cross(p[2] - p[0]);
+    let thickness = |p: [Point3; 3]| {
+        let longest = (p[1] - p[0])
+            .length()
+            .max((p[2] - p[1]).length())
+            .max((p[0] - p[2]).length());
+        normal(p).length() / longest
+    };
+    let thinner = thickness(a).min(thickness(b));
+    if !thinner.is_finite() || thinner <= 0.0 {
+        return false;
+    }
+    let (na, nb) = (normal(a), normal(b));
+    let sine = na.cross(nb).length() / (na.length() * nb.length());
+    let folded = sine.is_finite() && sine >= (4.0 * rounding / thinner).max(1e-3);
+    folded || apart >= 0.05 * thinner
 }
 
 /// Removal rule for one group of position-coincident triangles (in index

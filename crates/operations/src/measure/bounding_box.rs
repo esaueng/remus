@@ -1040,21 +1040,34 @@ fn expand_cone_patch(
     face_id: FaceId,
     cone: &remus_math::surfaces::ConicalSurface,
 ) {
-    let Some(domain) = ruled_patch_domain(topo, face_id, |p| cone.project_point(p)) else {
+    let Some(mut domain) = ruled_patch_domain(topo, face_id, |p| cone.project_point(p)) else {
         return;
     };
+    // Below the apex `project_point` answers a point's own longitude, half a
+    // turn from where `evaluate` puts it at `v < 0`: chart such a face on the
+    // reversed-axis cone, where it lies at `v > 0`.
+    let flipped;
+    let mut cone = cone;
+    if domain.v.1 <= 0.0 {
+        flipped = cone.with_reversed_axis();
+        let Some(upper) = ruled_patch_domain(topo, face_id, |p| flipped.project_point(p)) else {
+            return;
+        };
+        domain = upper;
+        cone = &flipped;
+    }
     let (sin_a, cos_a) = cone.half_angle().sin_cos();
     let frame = [cone.x_axis(), cone.y_axis(), cone.axis()];
     for v in [domain.v.0, domain.v.1] {
+        // A face across the apex: its lower slice's longitudes are not the
+        // chart's, so take that whole ring (a bound, not the exact box).
+        let u = if v < 0.0 { (0.0, TAU) } else { domain.u };
         let (lo, hi) = ring_patch_box(
             cone.apex() + cone.axis() * (v * sin_a),
             frame,
-            v * cos_a,
+            v.abs() * cos_a,
             0.0,
-            PatchDomain {
-                u: domain.u,
-                v: (0.0, 0.0),
-            },
+            PatchDomain { u, v: (0.0, 0.0) },
         );
         aabb_include(aabb, lo);
         aabb_include(aabb, hi);

@@ -339,11 +339,28 @@ fn chart_for(
             if sin_a <= 1e-9 {
                 return Ok(None);
             }
+            // A face below the apex is read in the frame of the cone with
+            // its axis reversed, where it lies at `z > 0` (the integrand
+            // `k z²` holds on one nappe only; see `upper_nappe_cone`). The
+            // nappe is the one of the vertex farthest along the axis; a
+            // boundary on both still leaves through the `z < 0` refusal.
+            let mut height = 0.0_f64;
+            for p in vertices {
+                let h = (*p - s.apex()).dot(s.axis());
+                if h.abs() > height.abs() {
+                    height = h;
+                }
+            }
+            let (y, z) = if height < 0.0 {
+                (-s.y_axis(), -s.axis())
+            } else {
+                (s.y_axis(), s.axis())
+            };
             Chart {
                 origin: s.apex(),
                 x: s.x_axis(),
-                y: s.y_axis(),
-                z: s.axis(),
+                y,
+                z,
                 kernel: Kernel::Cone {
                     k: cos_a / (2.0 * sin_a * sin_a),
                 },

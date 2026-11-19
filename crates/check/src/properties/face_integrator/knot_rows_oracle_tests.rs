@@ -46,6 +46,7 @@ fn ruled_planar_patch_has_closed_form_volume_and_flux() {
                 ruled_guard: true,
                 flux: Some(&flux),
                 cone_apex: None,
+                boundary: None,
             },
             sign,
             &UvTrim::new(None, &[], &[], true),
@@ -107,6 +108,7 @@ fn ruled_generators_agree_with_independent_tensor_quadrature() {
                         ruled_guard: false,
                         flux: Some(&old_flux),
                         cone_apex: None,
+                        boundary: None,
                     };
                     let trim = UvTrim::boundary_of(&uv);
                     let old = integrate_knot_aligned_reference::<_, false>(
@@ -183,6 +185,7 @@ fn knot_aligned_rows_match_every_original_sample_bit_for_bit() {
                         ruled_guard: false,
                         flux: Some(&old_flux),
                         cone_apex: None,
+                        boundary: None,
                     };
                     let trim = UvTrim::boundary_of(&uv);
                     let old = integrate_knot_aligned_reference::<_, false>(

@@ -390,6 +390,26 @@ impl ConicalSurface {
         })
     }
 
+    /// The same double cone with its axis reversed: same apex and
+    /// half-angle, frame `(x̂, −ŷ, −â)` (still right-handed).
+    ///
+    /// `evaluate` is the double cone `apex + v (cos a ρ(u) + sin a â)`, whose
+    /// `v < 0` nappe puts the point of longitude `u` at `−ρ(u)`, half a turn
+    /// from the longitude [`Self::project_point`] answers there. That nappe
+    /// is this cone's `v > 0` nappe, where projection and evaluation invert
+    /// each other, and its parametric normal `∂P/∂u × ∂P/∂v` points away from
+    /// the axis as the original's does at `v < 0`.
+    #[must_use]
+    pub fn with_reversed_axis(&self) -> Self {
+        Self {
+            apex: self.apex,
+            axis: -self.axis,
+            half_angle: self.half_angle,
+            x_axis: self.x_axis,
+            y_axis: -self.y_axis,
+        }
+    }
+
     /// Returns a copy of this cone with its apex translated by `offset`.
     #[must_use]
     pub fn translated(&self, offset: Vec3) -> Self {
