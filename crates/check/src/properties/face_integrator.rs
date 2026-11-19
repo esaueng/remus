@@ -1543,6 +1543,35 @@ fn face_boundary_v_extent<S: ParametricSurface>(
     }
 }
 
+/// Which nappe of its carrier a cone face is charted on (see
+/// [`upper_nappe_cone`]); `Both` for a face it refuses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConeNappe {
+    /// At `v > 0`: read on the carrier itself.
+    Upper,
+    /// At `v < 0`: read on the reversed-axis carrier.
+    Lower,
+    /// Refused: the boundary reaches both nappes (or cannot be read).
+    Both,
+}
+
+/// The nappe decision for `face_id`, `None` for a face that is not a cone.
+///
+/// The face cache stamps its cone entries with it: the decision compares
+/// the boundary's `v` extent with vertex tolerances, so rounding of a
+/// translated face can tip it, and a translated hit must then integrate
+/// afresh (or refuse) as the uncached call does.
+pub(crate) fn cone_nappe(topo: &Topology, face_id: FaceId) -> Option<ConeNappe> {
+    let FaceSurface::Cone(cone) = topo.face(face_id).ok()?.surface() else {
+        return None;
+    };
+    Some(match upper_nappe_cone(topo, face_id, cone) {
+        Ok(None) => ConeNappe::Upper,
+        Ok(Some(_)) => ConeNappe::Lower,
+        Err(_) => ConeNappe::Both,
+    })
+}
+
 /// The carrier a cone face is read on: `None` for `cone` itself, or the
 /// cone with its axis reversed when the face lies below `cone`'s apex.
 ///
@@ -1559,17 +1588,26 @@ fn face_boundary_v_extent<S: ParametricSurface>(
 ///
 /// A face whose boundary reaches both nappes beyond its vertices'
 /// tolerances (and rounding of its reach) is refused: no single chart reads
-/// it.
+/// it. A face lying wholly within its vertex tolerance of the apex keeps the
+/// carrier itself: it is below tolerance by construction, on either nappe.
+/// A cone whose half-angle has `sin a ≤ 1e-15` is refused too: there
+/// `project_point` reads `v` off the radius, never negative, so the nappes
+/// cannot be told apart.
 ///
 /// # Errors
 ///
-/// [`CheckError::IntegrationFailed`] for a face on both nappes, and the
-/// errors of [`face_boundary_v_extent`].
+/// [`CheckError::IntegrationFailed`] for a face on both nappes or on a
+/// degenerate cone, and the errors of [`face_boundary_v_extent`].
 fn upper_nappe_cone(
     topo: &Topology,
     face_id: FaceId,
     cone: &remus_math::surfaces::ConicalSurface,
 ) -> Result<Option<remus_math::surfaces::ConicalSurface>, CheckError> {
+    if cone.half_angle().sin() <= 1e-15 {
+        return Err(CheckError::IntegrationFailed(
+            "a cone face's carrier is too flat to tell its nappes apart".into(),
+        ));
+    }
     let (lo, hi) = face_boundary_v_extent(topo, face_id, cone)?;
     if lo >= 0.0 {
         return Ok(None);

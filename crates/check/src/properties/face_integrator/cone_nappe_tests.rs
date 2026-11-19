@@ -29,6 +29,7 @@ use remus_topology::wire::{OrientedEdge, Wire};
 use super::{
     FaceContribution, analytic_face_area, boundary_face_area, integrate_face_area,
     integrate_face_fixed_about, integrate_face_fixed_flux_about,
+    integrate_face_fixed_volume_flux_about,
 };
 
 /// A band of the cone with apex `apex`, axis `ẑ`, half-angle `a`, between
@@ -102,6 +103,16 @@ impl Band {
     /// The band as a face on `carrier`, wound counter-clockwise about the
     /// outward normal: two rim arcs and two generator lines.
     fn face(&self, topo: &mut Topology, carrier: ConicalSurface) -> FaceId {
+        self.face_with_tolerance(topo, carrier, 1e-9)
+    }
+
+    /// [`Self::face`] with vertices of tolerance `tolerance`.
+    fn face_with_tolerance(
+        &self,
+        topo: &mut Topology,
+        carrier: ConicalSurface,
+        tolerance: f64,
+    ) -> FaceId {
         let (sin_a, cos_a) = self.a.sin_cos();
         let z = Vec3::new(0.0, 0.0, 1.0);
         let corners = [
@@ -112,7 +123,7 @@ impl Band {
         ];
         let vertices: Vec<_> = corners
             .iter()
-            .map(|&p| topo.add_vertex(Vertex::new(p, 1e-9)))
+            .map(|&p| topo.add_vertex(Vertex::new(p, tolerance)))
             .collect();
         let rim =
             |s: f64| Circle3D::new(self.apex + z * (self.sigma * s * sin_a), z, s * cos_a).unwrap();
@@ -441,4 +452,80 @@ fn a_face_on_both_nappes_is_refused() {
     refusal(integrate_face_fixed_about(&topo, face, 8, above.apex).unwrap_err());
     refusal(integrate_face_area(&topo, face, 8).unwrap_err());
     assert!(boundary_face_area(&topo, face).unwrap().is_none());
+}
+
+/// The review's warm-cache repro: a 45° quarter band near `x = 1e6` whose
+/// near rim stands `5e-10` above the apex (vertex tolerance `1e-10`) primes
+/// the cache; the same band with only its carrier's apex raised `3e-9`
+/// reaches both nappes and is refused uncached. The cache matches it to the
+/// primed entry as a translation within rounding, and must refuse it too
+/// rather than answer the primed term: its nappe decision is rechecked on a
+/// translated hit.
+#[test]
+fn a_translated_cache_hit_rechecks_the_nappe() {
+    use crate::properties::face_cache::FaceIntegralCache;
+
+    let a = std::f64::consts::FRAC_PI_4;
+    let band = Band {
+        apex: Point3::new(1e6, 0.0, 0.0),
+        a,
+        s: (5e-10 / a.sin(), 1.25 / a.sin()),
+        phi: (0.3, 0.3 + std::f64::consts::FRAC_PI_2),
+        sigma: 1.0,
+    };
+    let z = Vec3::new(0.0, 0.0, 1.0);
+    let mut topo = Topology::new();
+    let primed = band.face_with_tolerance(
+        &mut topo,
+        ConicalSurface::new(band.apex, z, a).unwrap(),
+        1e-10,
+    );
+    let raised = band.face_with_tolerance(
+        &mut topo,
+        ConicalSurface::new(band.apex + z * 3e-9, z, a).unwrap(),
+        1e-10,
+    );
+    let reference = band.apex + Vec3::new(0.5, -0.25, 0.75);
+    let refusal = integrate_face_fixed_volume_flux_about(&topo, raised, 8, reference).unwrap_err();
+    assert!(refusal.to_string().contains("both nappes"), "{refusal}");
+
+    let mut cache = FaceIntegralCache::new();
+    let term = cache
+        .integrate_face_volume_about(&topo, primed, 8, reference)
+        .unwrap();
+    let (fresh, _) = integrate_face_fixed_volume_flux_about(&topo, primed, 8, reference).unwrap();
+    assert_eq!(term.volume.to_bits(), fresh.volume.to_bits());
+    let warm = cache.integrate_face_volume_about(&topo, raised, 8, reference);
+    assert!(
+        warm.as_ref()
+            .is_err_and(|e| e.to_string().contains("both nappes")),
+        "the warm cache answered a face the integrator refuses: {warm:?}"
+    );
+}
+
+/// A cone whose half-angle is so small that `sin a ≤ 1e-15` projects every
+/// point to `v ≥ 0` (its `v` read off the radius), so its lower nappe cannot
+/// be seen: every reading refuses it rather than chart a face blindly.
+/// `ConicalSurface::new` accepts any angle in `(0, π/2)`.
+#[test]
+fn a_cone_too_flat_to_tell_its_nappes_apart_is_refused() {
+    let band = Band {
+        apex: Point3::new(1.0, -2.0, 3.0),
+        a: 1e-16,
+        s: (1.0, 2.5),
+        phi: (0.3, 1.8),
+        sigma: -1.0,
+    };
+    let carrier = ConicalSurface::new(band.apex, Vec3::new(0.0, 0.0, 1.0), band.a).unwrap();
+    let mut topo = Topology::new();
+    let face = band.face(&mut topo, carrier);
+    for error in [
+        integrate_face_fixed_about(&topo, face, 8, band.apex).unwrap_err(),
+        integrate_face_area(&topo, face, 8).unwrap_err(),
+    ] {
+        assert!(
+            error.to_string().contains("too flat"),
+            "unexpected error: {error}"
+        );
+    }
 }

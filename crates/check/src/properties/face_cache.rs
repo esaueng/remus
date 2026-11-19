@@ -78,6 +78,12 @@
 //! nesting is undecided is refused by the integrator, and refusals are never
 //! cached.
 //!
+//! A cone face is likewise charted on the nappe of its carrier its boundary
+//! lies on, a decision made against vertex tolerances that rounding can tip
+//! for a boundary near the apex. Its entries record that nappe, and a
+//! translated face whose own decision differs (or is a refusal) is integrated
+//! afresh.
+//!
 //! # Key
 //!
 //! The key holds:
@@ -220,6 +226,9 @@ struct Value {
     /// The inner-loop nesting the integration used, for a planar face with
     /// at least two inner wires (see [`nesting_stamp`]).
     nesting: Option<InnerLoopNesting>,
+    /// The nappe the integration charted a cone face on (see
+    /// [`face_integrator::cone_nappe`]); `None` for any other face.
+    nappe: Option<face_integrator::ConeNappe>,
 }
 
 #[derive(Debug, Clone)]
@@ -285,6 +294,7 @@ impl Request {
         let mut value = self.integrate(topo, face)?;
         if matches!(self, Self::FixedAbout { .. } | Self::Volume { .. }) {
             value.nesting = nesting_stamp(topo, face);
+            value.nappe = face_integrator::cone_nappe(topo, face);
         }
         Ok(value)
     }
@@ -300,6 +310,7 @@ impl Request {
                     reference,
                     flux: None,
                     nesting: None,
+                    nappe: None,
                 })
             }
             Self::FixedAbout { order, reference } => {
@@ -311,6 +322,7 @@ impl Request {
                     reference,
                     flux,
                     nesting: None,
+                    nappe: None,
                 })
             }
             Self::Volume { order, reference } => {
@@ -323,6 +335,7 @@ impl Request {
                     reference,
                     flux,
                     nesting: None,
+                    nappe: None,
                 })
             }
             Self::Area { order } => {
@@ -333,6 +346,7 @@ impl Request {
                     reference: Point3::new(0.0, 0.0, 0.0),
                     flux: None,
                     nesting: None,
+                    nappe: None,
                 })
             }
             Self::AnalyticArea { order } => {
@@ -343,6 +357,7 @@ impl Request {
                     reference: Point3::new(0.0, 0.0, 0.0),
                     flux: None,
                     nesting: None,
+                    nappe: None,
                 })
             }
         }
@@ -683,6 +698,8 @@ impl FaceIntegralCache {
         // The face's own nesting, read at most once, and only to vet a
         // translated reading.
         let mut stamp: Option<Option<InnerLoopNesting>> = None;
+        // Likewise its cone nappe decision.
+        let mut nappe: Option<Option<face_integrator::ConeNappe>> = None;
         if let Some(seqs) = self.index.get(&hash) {
             for &seq in seqs {
                 let Some(entry) = seq
@@ -702,6 +719,16 @@ impl FaceIntegralCache {
                     && entry.value.nesting.is_some()
                     && *stamp.get_or_insert_with(|| nesting_stamp(topo, face))
                         != entry.value.nesting
+                {
+                    continue;
+                }
+                // So can a cone's nappe decision (a boundary within its
+                // tolerances of the apex): reuse only the decision that was
+                // integrated, and never answer a face the integrator refuses.
+                if rank == Rank::Translated
+                    && entry.value.nappe.is_some()
+                    && *nappe.get_or_insert_with(|| face_integrator::cone_nappe(topo, face))
+                        != entry.value.nappe
                 {
                     continue;
                 }
