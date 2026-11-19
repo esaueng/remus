@@ -55,7 +55,7 @@
 //! `resizeCylindricalFace`).
 
 use std::cell::Cell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use remus_blend::{BlendEngine, BlendResult};
 use remus_math::compact_sort::CompactSort;
@@ -993,7 +993,16 @@ pub(super) fn carry_member_identities(
     // Bands first acquire their mapped plane/cylinder supports, then corner
     // patches acquire the mapped bands. Recognizing the entire result again
     // would require equal-radius corner recognition after an unequal edit.
-    for _ in 0..before.members.len() {
+    //
+    // Rounds read every face's first key until nothing more binds; only
+    // then does a fallback round read the later keys of faces whose first
+    // key matched nothing, and primary rounds resume if it bound anything.
+    // A face that ever meets two or more candidates is ambiguous for good
+    // (a later claim of one of them is no evidence that the other is the
+    // face), and keeps its deleted/generated history.
+    let mut ambiguous: BTreeSet<usize> = BTreeSet::new();
+    let mut fallback = false;
+    for _ in 0..2 * before.faces().len() + 2 {
         let mut matches = Vec::new();
         for member in &before.members {
             // A two-stripe corner's planar ledge rides with its ball patch
@@ -1065,32 +1074,66 @@ pub(super) fn carry_member_identities(
                     .collect(),
                 _ => continue,
             };
-            // A later key is tried only when an earlier one is readable and
-            // no result face carries it. An earlier key that is not yet
-            // readable waits for a later round, and one that several result
-            // faces carry (a split into like pieces) is an ambiguity no
-            // later key may narrow to one of them: the face keeps its
-            // deleted/generated history.
+            // The later key is tried only when the first is readable and no
+            // result face carries it. A first key that is not yet readable
+            // waits for a later round, and one that several result faces
+            // carry (a split into like pieces) is an ambiguity no later key
+            // may narrow to one of them.
             for (source, keys) in pieces {
-                for supports in keys {
-                    match member_candidates(topo, map, &adjacency, &outputs, source, &supports)?
-                        .as_deref()
-                    {
-                        Some([found]) => {
+                if ambiguous.contains(&source.index()) {
+                    continue;
+                }
+                let Some(first) = keys.first() else {
+                    continue;
+                };
+                let Some(primary) =
+                    member_candidates(topo, map, &adjacency, &outputs, source, first)?
+                else {
+                    continue;
+                };
+                match primary.as_slice() {
+                    [found] => {
+                        matches.push((source.index(), found.index()));
+                        continue;
+                    }
+                    [] => {}
+                    _ => {
+                        ambiguous.insert(source.index());
+                        continue;
+                    }
+                }
+                let (true, Some(later)) = (fallback, keys.get(1)) else {
+                    continue;
+                };
+                let Some(found) =
+                    member_candidates(topo, map, &adjacency, &outputs, source, later)?
+                else {
+                    continue;
+                };
+                match found.as_slice() {
+                    [] => {}
+                    [found] => {
+                        // An empty first key does not prove the face stayed
+                        // whole (its pieces need not touch both supports):
+                        // bind only when no other unclaimed face of its kind
+                        // touches anything either key reads.
+                        let near: Vec<FaceId> = keys.iter().flatten().copied().collect();
+                        let rivals =
+                            touching_candidates(topo, map, &adjacency, &outputs, source, &near)?;
+                        if rivals.as_slice() == [*found] {
                             matches.push((source.index(), found.index()));
-                            break;
+                        } else {
+                            ambiguous.insert(source.index());
                         }
-                        Some([]) => {}
-                        _ => break,
+                    }
+                    _ => {
+                        ambiguous.insert(source.index());
                     }
                 }
             }
         }
         // A many-to-one match is ambiguous, even when each source found only one
         // candidate. Keep the original deleted/generated claims in that case.
-        if matches.is_empty() {
-            break;
-        }
         let mut changed = false;
         for &(source, target) in &matches {
             if matches.iter().filter(|(_, image)| *image == target).count() != 1 {
@@ -1106,11 +1149,54 @@ pub(super) fn carry_member_identities(
             map.origin = crate::evolution::EvolutionOrigin::Geometry;
             changed = true;
         }
-        if !changed {
+        if changed {
+            fallback = false;
+        } else if fallback {
             break;
+        } else {
+            fallback = true;
         }
     }
     Ok(())
+}
+
+/// Every unclaimed result face of `source`'s carrier kind that touches the
+/// image of any face in `near` that has a unique image.
+fn touching_candidates(
+    topo: &Topology,
+    map: &EvolutionMap,
+    adjacency: &remus_topology::adjacency::AdjacencyIndex,
+    outputs: &[FaceId],
+    source: FaceId,
+    near: &[FaceId],
+) -> Result<Vec<FaceId>, OperationsError> {
+    let images: Vec<usize> = near
+        .iter()
+        .filter_map(|face| match map.modified.get(&face.index())?.as_slice() {
+            [image] => Some(*image),
+            _ => None,
+        })
+        .collect();
+    let kind = topo.face(source)?.surface().type_tag();
+    let mut candidates = Vec::new();
+    for &target in outputs {
+        if topo.face(target)?.surface().type_tag() != kind
+            || map
+                .modified
+                .values()
+                .any(|claimed| claimed.contains(&target.index()))
+        {
+            continue;
+        }
+        if adjacency
+            .neighbors_of_face(target)
+            .iter()
+            .any(|face| images.contains(&face.index()))
+        {
+            candidates.push(target);
+        }
+    }
+    Ok(candidates)
 }
 
 /// The result faces that may carry member face `source`: faces of the same

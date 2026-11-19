@@ -250,6 +250,19 @@ fn assert_journal_history(
                 remus_topology::naming::PersistentRef::operation_output(anchor, kind, index);
             let resolution = remus_topology::naming::resolve(k.topo(), &reference);
             let edge = kind == remus_topology::journal::EntityKind::Edge;
+            // The slot's pieces on this edit's input share their face pair
+            // with another input edge: the boundary induction cannot tell
+            // them apart, so the edit may leave the slot unresolved, or
+            // bind it to every result edge of that pair, never to one.
+            let shared = edge
+                && chain.images.get(&index).is_some_and(|pieces| {
+                    pieces.iter().any(|piece| {
+                        let mut pair: Vec<_> =
+                            input_edges[piece].iter().map(|f| f.index()).collect();
+                        pair.compact_sort_unstable();
+                        ambiguous.contains(&pair)
+                    })
+                });
             match &resolution {
                 Resolution::Bound {
                     entity,
@@ -257,6 +270,12 @@ fn assert_journal_history(
                 } => {
                     assert!(live.contains(entity), "{label}: {kind:?} slot {index}");
                     if edge {
+                        assert!(
+                            !shared,
+                            "{label}: edge slot {index}, ambiguous on the input, bound to one \
+                             edge {}",
+                            entity.index
+                        );
                         assert_incidence(&face_images, source_key.index, &[*entity], index);
                         chain.images.insert(index, vec![entity.index]);
                     } else {
@@ -272,6 +291,29 @@ fn assert_journal_history(
                         "{label}: edge slot {index}"
                     );
                     assert_incidence(&face_images, source_key.index, entities, index);
+                    if shared {
+                        // Every result edge between the same two faces.
+                        let pair = &result_edges[&entities[0].index];
+                        let mut pair: Vec<_> = pair.iter().map(|f| f.index()).collect();
+                        pair.compact_sort_unstable();
+                        let mut all: Vec<usize> = result_edges
+                            .iter()
+                            .filter(|(_, faces)| {
+                                let mut f: Vec<_> = faces.iter().map(|f| f.index()).collect();
+                                f.compact_sort_unstable();
+                                f == pair
+                            })
+                            .map(|(&edge, _)| edge)
+                            .collect();
+                        all.compact_sort_unstable();
+                        let mut bound: Vec<usize> = entities.iter().map(|e| e.index).collect();
+                        bound.compact_sort_unstable();
+                        assert_eq!(
+                            bound, all,
+                            "{label}: edge slot {index}, ambiguous on the input, bound to part \
+                             of its face pair"
+                        );
+                    }
                     chain
                         .images
                         .insert(index, entities.iter().map(|e| e.index).collect());
