@@ -413,15 +413,12 @@ fn check(pair: Pair, op: BooleanOp, sphere_first: bool, scale: f64, placed: bool
         closed_mesh.as_ref(),
         &label,
     );
-    // Only the documented B264 probes may disagree, and each of them must.
-    let known: &[[u32; 3]] = if placed {
-        b264_probes(pair, op, sphere_first)
-    } else {
-        &[]
-    };
-    assert_eq!(
-        ray_mismatches, known,
-        "{label}: ray-vote membership (lattice indices of disagreeing probes)"
+    // Every probe's ray vote agrees, the rigidly placed pole pieces included
+    // (B264: the seed-5201 piece is read in a re-centred stereographic chart,
+    // seed 1146's holed hemisphere from the sphere point off its cap).
+    assert!(
+        ray_mismatches.is_empty(),
+        "{label}: ray-vote membership (lattice indices of disagreeing probes): {ray_mismatches:?}"
     );
 
     // Operands are still the closed-form primitives they were built as.
@@ -436,47 +433,6 @@ fn check(pair: Pair, op: BooleanOp, sphere_first: bool, scale: f64, placed: bool
             "{label}: {name} operand volume {volume}"
         );
     }
-}
-
-/// The ray vote still miscounts a few probes on the rigidly placed fuse and
-/// sphere − torus cut of both seeds, whose kept sphere piece holds a pole: its
-/// trim cannot be read in the sphere's chart, so it falls back to the 3D
-/// polygon projection (B264; seed 5201 identical on the unpatched kernel,
-/// seed 1146 built only since #1790). The closed-mesh winding number,
-/// validity and volume hold there; the ray vote is witnessed by
-/// `ray_vote_pole_piece_witness`. Each such cell is held to exactly these
-/// probes, as `[i, j, k]` indices into `assert_material`'s 9³ lattice, so any
-/// further disagreement fails the qualified matrix.
-const B264_PROBES: &[(&str, BooleanOp, bool, &[[u32; 3]])] = &[
-    (
-        "seed5201",
-        BooleanOp::Fuse,
-        true,
-        &[[3, 3, 5], [5, 3, 5], [6, 3, 5]],
-    ),
-    (
-        "seed5201",
-        BooleanOp::Fuse,
-        false,
-        &[[3, 3, 5], [4, 3, 2], [5, 3, 5], [6, 3, 5]],
-    ),
-    (
-        "seed5201",
-        BooleanOp::Cut,
-        true,
-        &[[3, 3, 5], [5, 3, 5], [6, 3, 5]],
-    ),
-    ("seed1146", BooleanOp::Fuse, true, &[[3, 5, 2]]),
-    ("seed1146", BooleanOp::Fuse, false, &[[3, 5, 2]]),
-    ("seed1146", BooleanOp::Cut, true, &[[3, 5, 2]]),
-];
-
-/// The documented B264 probes of one placed cell; none for any other cell.
-fn b264_probes(pair: Pair, op: BooleanOp, sphere_first: bool) -> &'static [[u32; 3]] {
-    B264_PROBES
-        .iter()
-        .find(|(name, o, s, _)| *name == pair.name && *o == op && *s == sphere_first)
-        .map_or(&[], |entry| entry.3)
 }
 
 /// What the kernel does with one cell of the matrix.
@@ -574,11 +530,13 @@ fn small_scale_seed1146_witness() {
     }
 }
 
-/// B264: the ray vote miscounts probes of the placed fuse and sphere − torus
-/// cut of both seeds (a pole-holding sphere piece read through the 3D
-/// polygon fallback). Remove the ignore once the classifier reads it.
+/// B264: the ray vote of the placed fuse and sphere − torus cut of both seeds,
+/// whose kept sphere pieces hold a pole (seed 5201: a cap bounded by the
+/// section curve, read once through the 3D polygon fallback) or carry holes
+/// near their rim (seed 1146: a hemisphere pierced twice by the tube, whose
+/// holes were projected along the equator's normal), agrees with the
+/// closed-form membership at every probe.
 #[test]
-#[ignore = "open: ray-vote trim of a pole-holding sphere piece miscounts (B264)"]
 fn ray_vote_pole_piece_witness() {
     for (pair, op, sphere_first) in [SEED_5201, SEED_1146].into_iter().flat_map(|pair| {
         [
