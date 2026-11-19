@@ -5761,6 +5761,9 @@ mod planar_outline_tests;
 #[cfg(test)]
 mod oblique_cylinder_tests;
 
+#[cfg(test)]
+mod point_edge_cap_tests;
+
 /// B56: the mesh sums are taken about a local reference point. The public
 /// routes are covered in `tests/regress_b56_volume_local_reference.rs`; these
 /// reach the private ones.
