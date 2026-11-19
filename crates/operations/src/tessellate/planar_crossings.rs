@@ -18,9 +18,13 @@
 //! edge picks them up, and every planar face on a split edge is read again in
 //! the next round: a split can make a neighbour's outline cross that was
 //! simple before. A crossing between two straight edges cannot come from
-//! sampling and is left alone. When the crossings cannot be cleared within
-//! the bounds below, every chain goes back to exactly what was sampled, so
-//! all faces keep their old outlines and neighbours never disagree.
+//! sampling and is left alone.
+//!
+//! Planar faces that share an edge form one group, and each group refines
+//! on its own: its splits touch only its edges. When a group's crossings
+//! cannot be cleared within the bounds below, its chains go back to exactly
+//! what was sampled, so its faces keep their old outlines, neighbours never
+//! disagree, and other groups keep their refinement.
 
 use remus_math::compact_sort::CompactSort;
 use remus_math::det_hash::DetHashMap;
@@ -41,7 +45,8 @@ const MAX_ROUNDS: usize = 32;
 /// Only pairs that involve a curved chord and overlap in both axes count.
 const MAX_PAIR_TESTS: usize = 4_000_000;
 
-/// Active-list entries one face's crossing search may visit in one round.
+/// Active-list entries one face's crossing search may read in one round,
+/// pruning scans and survivor scans together.
 const MAX_VISITS: usize = 16 * MAX_PAIR_TESTS;
 
 /// One chord of a planar face's sampled outline.
@@ -88,16 +93,67 @@ pub(super) fn refine_planar_crossings(
             }
         }
     }
+    // Groups: planar faces joined through shared edges (union-find rooted
+    // at the smallest ordinal, so groups come out in face-set order).
+    let mut parent: Vec<usize> = (0..planar.len()).collect();
+    let find = |parent: &mut Vec<usize>, mut x: usize| {
+        while parent[x] != x {
+            parent[x] = parent[parent[x]];
+            x = parent[x];
+        }
+        x
+    };
+    let mut edges: Vec<usize> = users.keys().copied().collect();
+    edges.compact_sort_unstable();
+    for edge in &edges {
+        let faces = &users[edge];
+        for pair in faces.windows(2) {
+            let (ra, rb) = (find(&mut parent, pair[0]), find(&mut parent, pair[1]));
+            if ra != rb {
+                parent[ra.max(rb)] = ra.min(rb);
+            }
+        }
+    }
+    let mut groups: DetHashMap<usize, Vec<usize>> = DetHashMap::default();
+    let mut roots: Vec<usize> = Vec::new();
+    for ordinal in 0..planar.len() {
+        let root = find(&mut parent, ordinal);
+        let members = groups.entry(root).or_default();
+        if members.is_empty() {
+            roots.push(root);
+        }
+        members.push(ordinal);
+    }
+    let mut inserted = 0;
+    for root in roots {
+        let group = &groups[&root];
+        inserted += refine_group(topo, &planar, group, &users, edge_points, edge_params)?;
+    }
+    Ok(inserted)
+}
+
+/// [`refine_planar_crossings`] on one group of planar faces joined through
+/// shared edges: every edge it splits is used by no planar face outside the
+/// group. Restores the group's chains as sampled when its crossings cannot
+/// be cleared, and returns the samples it kept.
+fn refine_group(
+    topo: &Topology,
+    planar: &[FaceId],
+    group: &[usize],
+    users: &DetHashMap<usize, Vec<usize>>,
+    edge_points: &mut SampleChains,
+    edge_params: &mut SampleParams,
+) -> Result<usize, crate::OperationsError> {
     // Each edge's chain as sampled, kept from its first split on, to put back
     // if the crossings cannot be cleared.
     let mut sampled: DetHashMap<usize, (Vec<Point3>, Vec<Option<f64>>)> = DetHashMap::default();
     let mut spent = vec![0_usize; planar.len()];
-    let mut pending: Vec<usize> = (0..planar.len()).collect();
+    let mut pending: Vec<usize> = group.to_vec();
     let mut inserted = 0;
     let mut cleared = false;
     'rounds: for _ in 0..MAX_ROUNDS {
         let mut requests: DetHashMap<usize, Vec<usize>> = DetHashMap::default();
-        let mut requested = vec![false; planar.len()];
+        let mut touched = vec![false; planar.len()];
         for &ordinal in &pending {
             let chords = face_chords(topo, planar[ordinal], edge_points, edge_params)?;
             // Only a curved chord can be bisected: a face of straight edges
@@ -122,7 +178,7 @@ pub(super) fn refine_planar_crossings(
                 let chord = &chords[index];
                 requests.entry(chord.edge).or_default().push(chord.at);
             }
-            requested[ordinal] = true;
+            touched[ordinal] = true;
         }
         if requests.is_empty() {
             cleared = true;
@@ -130,7 +186,6 @@ pub(super) fn refine_planar_crossings(
         }
         let mut edges: Vec<usize> = requests.keys().copied().collect();
         edges.compact_sort_unstable();
-        let mut touched = requested;
         let mut round_inserted = 0;
         for edge in edges {
             let mut at = requests.remove(&edge).unwrap_or_default();
@@ -155,7 +210,9 @@ pub(super) fn refine_planar_crossings(
             break;
         }
         inserted += round_inserted;
-        pending = (0..planar.len())
+        pending = group
+            .iter()
+            .copied()
             .filter(|&ordinal| touched[ordinal])
             .collect();
     }
@@ -234,17 +291,20 @@ fn crossing_splits(chords: &[Chord]) -> Option<Vec<usize>> {
     for &i in &order {
         let chord = &chords[i];
         let x = lo(chord);
+        // Both scans count: the one that prunes a list and the one that
+        // reads its survivors.
         visits += curved.len();
         curved.retain(|&j| hi(&chords[j]) >= x);
         if chord.curved {
             visits += straight.len();
             straight.retain(|&j| hi(&chords[j]) >= x);
         }
+        let (y_lo, y_hi) = (chord.a.y().min(chord.b.y()), chord.a.y().max(chord.b.y()));
+        let straight_others: &[usize] = if chord.curved { &straight } else { &[] };
+        visits += curved.len() + straight_others.len();
         if visits > MAX_VISITS {
             return None;
         }
-        let (y_lo, y_hi) = (chord.a.y().min(chord.b.y()), chord.a.y().max(chord.b.y()));
-        let straight_others: &[usize] = if chord.curved { &straight } else { &[] };
         for &j in curved.iter().chain(straight_others) {
             let other = &chords[j];
             if other.a.y().max(other.b.y()) < y_lo || other.a.y().min(other.b.y()) > y_hi {

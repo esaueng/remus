@@ -1306,6 +1306,36 @@ fn dedupe_keeps_thin_facets_the_grid_cannot_resolve() {
         None
     ));
     assert_eq!(shallow.indices.len(), 6, "a 1° fold keeps both facets");
+
+    // Re-check of #1868 (finding 1): the same chord at x = 1e8 with apexes
+    // (1e8 + 30e-6, 8e-6, ±4e-7). The 8e-7 between the apexes lies along z,
+    // where nothing is near 1e8: it is resolved there and is no rounding,
+    // although rounding along x reaches 1.4e-6.
+    let x = 1.0e8;
+    let mut far = TriangleMesh {
+        positions: vec![
+            Point3::new(x, 0.0, 0.0),
+            Point3::new(x + 60e-6, 0.0, 0.0),
+            Point3::new(x + 30e-6, 8e-6, 4e-7),
+            Point3::new(x + 30e-6, 8e-6, -4e-7),
+        ],
+        normals: vec![Vec3::new(0.0, 0.0, 1.0); 4],
+        indices: vec![0, 1, 2, 1, 0, 3],
+    };
+    let mut reference = far.clone();
+    super::tests::mesh_passes::reference::dedupe_coincident_triangles(&mut reference, None);
+    assert!(
+        reference.indices.is_empty(),
+        "far fold: the grid alone cancels"
+    );
+    assert!(!super::mesh_ops::dedupe_coincident_triangles(
+        &mut far, None
+    ));
+    assert_eq!(
+        far.indices.len(),
+        6,
+        "a fold far from the origin keeps both facets"
+    );
 }
 
 /// True copies of one facet still cancel (opposite windings) or collapse

@@ -526,11 +526,14 @@ fn strictly_separated_facets(mesh: &TriangleMesh, first: usize, second: usize) -
 /// a pair opened both walls.
 ///
 /// Copies differ by rounding at most, so a pair counts as distinct only when
-/// some pair of corners in one cell lies further apart than a rounding floor
-/// (`64 ε` times the largest coordinate), and then only when the facets'
-/// planes meet at an angle (sine at least 1e-3, and at least four times the
-/// tilt the rounding floor can give the thinner facet) or their corners lie
-/// at least a twentieth of the thinner facet's least altitude apart. A fold
+/// some pair of corners in one cell differs on some axis by more than that
+/// axis's rounding floor (`64 ε` times the larger of the two coordinates
+/// compared there, so a difference along an axis near zero is not dismissed
+/// because another axis is far out), and then only when the facets' planes
+/// meet at an angle (sine at least 1e-3, and at least four times the tilt
+/// rounding, `8 ε` times the largest coordinate, can give the thinner facet)
+/// or their corners lie at least a twentieth of the thinner facet's least
+/// altitude apart. A fold
 /// is read from the planes, not the corner distance, so a shallow fold of a
 /// wide facet is kept as well as a sharp one. Degenerate facets keep the old
 /// policy.
@@ -543,23 +546,35 @@ fn grid_unresolved_facets(
     let corner = |t: usize, k: usize| mesh.indices[3 * t + k] as usize;
     let points = |t: usize| [0, 1, 2].map(|k| mesh.positions[corner(t, k)]);
     let (a, b) = (points(first), points(second));
+    // Rounding of a coordinate is relative to that coordinate, so a corner
+    // difference is resolved when one of its components exceeds `64 ε` times
+    // the larger of the two coordinates it compares on that axis. A pair
+    // with no resolved component differs by rounding alone.
+    let floor = |u: f64, v: f64| 64.0 * f64::EPSILON * u.abs().max(v.abs());
     let mut apart = 0.0_f64;
+    let mut resolved = false;
     for (i, &p) in a.iter().enumerate() {
         let cell = cell_of[corner(first, i)];
         let Some(j) = (0..3).find(|&j| cell_of[corner(second, j)] == cell) else {
             return false;
         };
-        apart = apart.max((p - b[j]).length());
+        let q = b[j];
+        resolved |= (p.x() - q.x()).abs() > floor(p.x(), q.x())
+            || (p.y() - q.y()).abs() > floor(p.y(), q.y())
+            || (p.z() - q.z()).abs() > floor(p.z(), q.z());
+        apart = apart.max((p - q).length());
     }
+    if !(resolved && apart.is_finite()) {
+        return false;
+    }
+    // The tilt rounding can give a facet: a few units of the largest
+    // coordinate's rounding over the facet's thickness.
     let magnitude = a
         .iter()
         .chain(&b)
         .map(|p| p.x().abs().max(p.y().abs()).max(p.z().abs()))
         .fold(0.0_f64, f64::max);
-    let rounding = 64.0 * f64::EPSILON * magnitude;
-    if !(apart.is_finite() && apart > rounding) {
-        return false;
-    }
+    let rounding = 8.0 * f64::EPSILON * magnitude;
     // The least altitude: twice the area over the longest side.
     let normal = |p: [Point3; 3]| (p[1] - p[0]).cross(p[2] - p[0]);
     let thickness = |p: [Point3; 3]| {
