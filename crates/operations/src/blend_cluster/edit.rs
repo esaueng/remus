@@ -920,6 +920,10 @@ pub(super) fn reindexed(
 #[path = "edit/source_cluster_tests.rs"]
 mod source_cluster_tests;
 
+#[cfg(test)]
+#[path = "edit/identity_carry_tests.rs"]
+mod identity_carry_tests;
+
 /// Copy `built` from `work` into `topo` (inside a transaction), translating
 /// its face evolution from copy indices to the caller's through `inputs`
 /// (`(copy face index, source face index)`, ascending) and carrying member
@@ -1061,13 +1065,23 @@ pub(super) fn carry_member_identities(
                     .collect(),
                 _ => continue,
             };
+            // A later key is tried only when an earlier one is readable and
+            // no result face carries it. An earlier key that is not yet
+            // readable waits for a later round, and one that several result
+            // faces carry (a split into like pieces) is an ambiguity no
+            // later key may narrow to one of them: the face keeps its
+            // deleted/generated history.
             for (source, keys) in pieces {
                 for supports in keys {
-                    if let Some(found) =
-                        member_image(topo, map, &adjacency, &outputs, source, &supports)?
+                    match member_candidates(topo, map, &adjacency, &outputs, source, &supports)?
+                        .as_deref()
                     {
-                        matches.push((source.index(), found.index()));
-                        break;
+                        Some([found]) => {
+                            matches.push((source.index(), found.index()));
+                            break;
+                        }
+                        Some([]) => {}
+                        _ => break,
                     }
                 }
             }
@@ -1099,18 +1113,18 @@ pub(super) fn carry_member_identities(
     Ok(())
 }
 
-/// The unique result face that carries member face `source`: a face of the
-/// same carrier kind, not yet claimed, adjacent to the images of every face
-/// in `supports`. `None` when a support has no unique image yet, or the
-/// match is not unique.
-fn member_image(
+/// The result faces that may carry member face `source`: faces of the same
+/// carrier kind, not yet claimed, adjacent to the images of every face in
+/// `supports`. `None` when the key cannot be read yet: `source` is already
+/// carried, or a support has no unique image.
+fn member_candidates(
     topo: &Topology,
     map: &EvolutionMap,
     adjacency: &remus_topology::adjacency::AdjacencyIndex,
     outputs: &[FaceId],
     source: FaceId,
     supports: &[FaceId],
-) -> Result<Option<FaceId>, OperationsError> {
+) -> Result<Option<Vec<FaceId>>, OperationsError> {
     if map.modified.contains_key(&source.index()) {
         return Ok(None);
     }
@@ -1152,10 +1166,7 @@ fn member_image(
             candidates.push(target);
         }
     }
-    Ok(match candidates.as_slice() {
-        [target] => Some(*target),
-        _ => None,
-    })
+    Ok(Some(candidates))
 }
 
 fn diameter_refusal(error: OperationsError, radius: f64) -> OperationsError {

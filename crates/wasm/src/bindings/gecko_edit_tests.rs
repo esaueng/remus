@@ -209,6 +209,36 @@ fn assert_journal_history(
         remus_topology::explorer::edge_to_face_map(k.topo(), k.resolve_solid(input).unwrap())
             .unwrap();
     let ambiguous = repeated_pairs(k, input);
+    let imported_edges =
+        remus_topology::explorer::edge_to_face_map(k.topo(), k.resolve_solid(source).unwrap())
+            .unwrap();
+    let result_edges =
+        remus_topology::explorer::edge_to_face_map(k.topo(), k.resolve_solid(result).unwrap())
+            .unwrap();
+    // A bound edge must lie between the images of the faces its imported
+    // edge lay between: liveness alone would accept a wrong binding.
+    let assert_incidence = |face_images: &std::collections::BTreeMap<usize, usize>,
+                            imported: usize,
+                            bound: &[remus_topology::journal::EntityKey],
+                            index: usize| {
+        let mut expected: Vec<usize> = imported_edges[&imported]
+            .iter()
+            .map(|f| face_images[&f.index()])
+            .collect();
+        expected.compact_sort_unstable();
+        for edge in bound {
+            let mut faces: Vec<usize> = result_edges[&edge.index]
+                .iter()
+                .map(|f| f.index())
+                .collect();
+            faces.compact_sort_unstable();
+            assert_eq!(
+                faces, expected,
+                "{label}: edge slot {index} bound to edge {} between other faces",
+                edge.index
+            );
+        }
+    };
     let mut face_images = std::collections::BTreeMap::new();
     for kind in [
         remus_topology::journal::EntityKind::Face,
@@ -227,6 +257,7 @@ fn assert_journal_history(
                 } => {
                     assert!(live.contains(entity), "{label}: {kind:?} slot {index}");
                     if edge {
+                        assert_incidence(&face_images, source_key.index, &[*entity], index);
                         chain.images.insert(index, vec![entity.index]);
                     } else {
                         face_images.insert(source_key.index, entity.index);
@@ -240,6 +271,7 @@ fn assert_journal_history(
                         entities.iter().all(|e| live.contains(e)),
                         "{label}: edge slot {index}"
                     );
+                    assert_incidence(&face_images, source_key.index, entities, index);
                     chain
                         .images
                         .insert(index, entities.iter().map(|e| e.index).collect());
@@ -363,8 +395,15 @@ fn gecko_convex_reedit_after_unequal_group_rebuild() {
     let (keys, anchor) = anchor_import(&mut k, source);
     let imported = geometry(&k, source);
     let mut chain = EdgeChain::new(&keys);
+    let contact = shoulder_contact_slot(&k, source, &keys);
+    let contact_ref = remus_topology::naming::PersistentRef::operation_output(
+        anchor,
+        remus_topology::journal::EntityKind::Edge,
+        contact,
+    );
+    let mut severed_at = None;
     let mut solid = source;
-    for (expected, radius) in [(4.0, 1.5), (1.5, 1.9), (1.9, 4.0)] {
+    for (step, (expected, radius)) in [(4.0, 1.5), (1.5, 1.9), (1.9, 4.0)].into_iter().enumerate() {
         let label = format!("R{expected} -> R{radius}");
         let before = geometry(&k, solid);
         let face = cylinder(&k, solid, true);
@@ -386,9 +425,91 @@ fn gecko_convex_reedit_after_unequal_group_rebuild() {
             &mut chain,
             &label,
         );
+        // The boss-shoulder contact: the first edit splits it at the boss
+        // seam into two arcs of its closed-form circle; the second edit,
+        // from a body holding those two arcs with one face pair, records it
+        // as unresolved rather than guess, and it stays so.
+        let resolution = remus_topology::naming::resolve(k.topo(), &contact_ref);
+        match (step, &resolution) {
+            (
+                0,
+                Resolution::BoundMany {
+                    entities,
+                    provenance: Provenance::Inferred,
+                },
+            ) => {
+                assert_eq!(entities.len(), 2, "{label}: {resolution:?}");
+                for piece in entities {
+                    assert_on_shoulder_contact(&k, piece.index, &label);
+                }
+            }
+            (1, Resolution::UnresolvedAcrossOperation { op, .. }) => {
+                assert_eq!(*op, op_of(&out), "{label}");
+                severed_at = Some(*op);
+            }
+            (2, Resolution::UnresolvedAcrossOperation { op, .. }) => {
+                assert_eq!(Some(*op), severed_at, "{label}");
+            }
+            _ => panic!("{label}: boss-shoulder contact {resolution:?}"),
+        }
         solid = result;
     }
     assert_eq!(geometry(&k, source), imported);
+}
+
+/// The imported edge slot between the boss wall and the shoulder torus.
+fn shoulder_contact_slot(
+    k: &RemusKernel,
+    source: u32,
+    keys: &[remus_topology::journal::EntityKey],
+) -> usize {
+    let id = k.resolve_solid(source).unwrap();
+    let edges = remus_topology::explorer::edge_to_face_map(k.topo(), id).unwrap();
+    let boss = cylinder(k, source, false);
+    let slots: Vec<usize> = keys
+        .iter()
+        .filter(|key| key.kind == remus_topology::journal::EntityKind::Edge)
+        .enumerate()
+        .filter(|(_, key)| {
+            let faces = &edges[&key.index];
+            faces.iter().any(|&f| face_id_to_u32(f) == boss)
+                && faces
+                    .iter()
+                    .any(|&f| matches!(k.topo().face(f).unwrap().surface(), FaceSurface::Torus(_)))
+        })
+        .map(|(slot, _)| slot)
+        .collect();
+    assert_eq!(slots.len(), 1, "one imported boss-shoulder contact");
+    slots[0]
+}
+
+/// Edge `index` lies on the boss-shoulder contact's closed form: the R4
+/// shoulder ball rolls at radius 10 and height 28, so it meets the R6 boss
+/// on the circle of radius 6 about the Z axis at z = 28.
+fn assert_on_shoulder_contact(k: &RemusKernel, index: usize, label: &str) {
+    let edge = k.topo().edge_id_from_index(index).unwrap();
+    let data = k.topo().edge(edge).unwrap();
+    let remus_topology::edge::EdgeCurve::Circle(circle) = data.curve() else {
+        panic!("{label}: contact piece {index} is not a circle");
+    };
+    assert!((circle.radius() - 6.0).abs() < 1e-9, "{label}: {circle:?}");
+    assert!(
+        circle.center().x().abs() < 1e-9
+            && circle.center().y().abs() < 1e-9
+            && (circle.center().z() - 28.0).abs() < 1e-9,
+        "{label}: {circle:?}"
+    );
+    assert!(
+        circle.normal().z().abs() > 1.0 - 1e-12,
+        "{label}: {circle:?}"
+    );
+    for vertex in [data.start(), data.end()] {
+        let p = k.topo().vertex(vertex).unwrap().point();
+        assert!(
+            (p.x().hypot(p.y()) - 6.0).abs() < 1e-7 && (p.z() - 28.0).abs() < 1e-7,
+            "{label}: contact piece {index} ends at {p:?}"
+        );
+    }
 }
 
 #[test]
