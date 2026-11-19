@@ -5937,18 +5937,40 @@ fn sections_left_out<'s>(
     tol: f64,
 ) -> bool {
     let band = (tol * 1e3).max(1e-5);
-    let polylines: Vec<Vec<Point3>> = parts
+    let q = 1.0 / tol.max(1e-9);
+    #[allow(clippy::cast_possible_truncation)]
+    let key = |p: Point3| {
+        (
+            (p.x() * q).round() as i64,
+            (p.y() * q).round() as i64,
+            (p.z() * q).round() as i64,
+        )
+    };
+    // Each edge's samples, and whether it is a seam: a line its wire also
+    // runs the other way (a periodic lateral's seam, up and back).
+    let mut polylines: Vec<(Vec<Point3>, bool)> = Vec::new();
+    for wire in parts
         .iter()
         .flat_map(|part| std::iter::once(&part.outer_wire).chain(part.inner_wires.iter()))
-        .flatten()
-        .map(|e| wire_edge_samples(e, 64))
-        .collect();
+    {
+        let lines: DetHashSet<_> = wire
+            .iter()
+            .filter(|e| matches!(e.curve_3d, EdgeCurve::Line))
+            .map(|e| (key(e.start_3d), key(e.end_3d)))
+            .collect();
+        for e in wire {
+            let seam = matches!(e.curve_3d, EdgeCurve::Line)
+                && (e.start_3d - e.end_3d).length() > tol
+                && lines.contains(&(key(e.end_3d), key(e.start_3d)));
+            polylines.push((wire_edge_samples(e, 64), seam));
+        }
+    }
     sections.into_iter().any(|s| {
         let (t0, t1) = s.domain();
         let mid = s
             .curve_3d
             .evaluate_with_endpoints(0.5 * (t0 + t1), s.start, s.end);
-        !polylines.iter().any(|poly| {
+        !polylines.iter().any(|(poly, seam)| {
             poly.windows(2).any(|w| {
                 let d = w[1] - w[0];
                 let len2 = d.length_squared();
@@ -5958,8 +5980,18 @@ fn sections_left_out<'s>(
                     0.0
                 };
                 // A chord of a 64-sample polyline sits within its sagitta of
-                // the curve, far below a tenth of the chord.
-                (w[0] + d * t - mid).length() <= band + len2.sqrt() * 0.1
+                // the curve, far below a tenth of the chord. A seam is a line,
+                // its own chord, and runs the lateral's whole length beside
+                // every closed section on it: a tenth of a steeply tilted
+                // cylinder's seam took in its sections' midpoints 1.4 radii
+                // away (B265), so it gets no slack. Other edges keep
+                // the slack the check was calibrated with; holding every line
+                // to the band sends established partitions that omit a
+                // section of a trimmed wall (the hammer opening replay's
+                // fillet) to a re-partition that cannot certify them, and
+                // refuses results that were verified exact.
+                let slack = if *seam { 0.0 } else { len2.sqrt() * 0.1 };
+                (w[0] + d * t - mid).length() <= band + slack
             })
         })
     })
