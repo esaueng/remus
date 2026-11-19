@@ -3101,6 +3101,11 @@ pub(super) fn tessellate_nonplanar_cdt(
         hole_boundaries_3d.push(hole);
     }
 
+    // A face charted on another carrier than its stored one (a lower-nappe
+    // cone wall, see `cone_chart`) never reads its stored pcurves: they are
+    // in the stored chart, and a shallow cone can put an old-chart point
+    // within the on-surface check of the new chart.
+    let stored_pcurves = super::cone_chart::reads_stored_pcurves(topo, face_id, face_data);
     let boundary_uv: Vec<Result<(f64, f64), crate::OperationsError>> = boundary_3d
         .iter()
         .map(|(pt, _, edge_id_local, is_fwd)| {
@@ -3109,7 +3114,8 @@ pub(super) fn tessellate_nonplanar_cdt(
             // collapses the seam side of a closed wall chart. Seam edges
             // (two uses on this face) address their own branch via the
             // oriented key; a missing pcurve falls back to projection.
-            if let Some(pcurve) = topo.pcurve_oriented(*edge_id_local, face_id, *is_fwd)
+            if stored_pcurves
+                && let Some(pcurve) = topo.pcurve_oriented(*edge_id_local, face_id, *is_fwd)
                 && let Some(uv) = pcurve_uv(pcurve, *pt, face_data.surface(), nurbs_frame.as_ref())
             {
                 return Ok(uv);
@@ -3443,7 +3449,8 @@ pub(super) fn tessellate_nonplanar_cdt(
         .map(|hole| {
             hole.iter()
                 .map(|(point, _, edge_id, is_fwd)| {
-                    if let Some(pcurve) = topo.pcurve_oriented(*edge_id, face_id, *is_fwd)
+                    if stored_pcurves
+                        && let Some(pcurve) = topo.pcurve_oriented(*edge_id, face_id, *is_fwd)
                         && let Some(uv) =
                             pcurve_uv(pcurve, *point, face_data.surface(), nurbs_frame.as_ref())
                     {

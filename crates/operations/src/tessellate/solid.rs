@@ -2087,6 +2087,15 @@ fn tessellate_faces_core(
             // One coarse projection grid per NURBS face, built on its first
             // fresh contribution, instead of one per projected vertex.
             let mut seed_grids: DetHashMap<FaceId, Option<SeedGrid>> = DetHashMap::default();
+            // The carrier each face was meshed on (see `cone_chart`), read
+            // once per face: only lower-nappe cone walls differ from the
+            // stored one, and their boundary normals are that chart's.
+            let mut charted_surfaces: DetHashMap<FaceId, FaceSurface> = DetHashMap::default();
+            for &fid in all_faces {
+                if let std::borrow::Cow::Owned(charted) = chart_face(topo, fid)? {
+                    charted_surfaces.insert(fid, charted.surface().clone());
+                }
+            }
             for i in 0..n_verts {
                 if !needs_normal[i] {
                     continue;
@@ -2109,19 +2118,20 @@ fn tessellate_faces_core(
                             let contribution = match cached {
                                 face_cache::NormalSlot::Known(normal) => normal,
                                 face_cache::NormalSlot::Unknown => {
-                                    let surf = face_data.surface();
+                                    let surf = charted_surfaces
+                                        .get(&fid)
+                                        .unwrap_or_else(|| face_data.surface());
                                     let grid = seed_grids.entry(fid).or_default();
-                                    let fresh =
-                                        super::surface_normal::face_surface_normal_with_grid(
-                                            surf, pos, grid,
-                                        )
-                                        .map(|n| {
-                                            if face_data.is_reversed() {
-                                                Vec3::new(-n.x(), -n.y(), -n.z())
-                                            } else {
-                                                n
-                                            }
-                                        });
+                                    let fresh = super::surface_normal::face_chart_normal_with_grid(
+                                        surf, pos, grid,
+                                    )
+                                    .map(|n| {
+                                        if face_data.is_reversed() {
+                                            Vec3::new(-n.x(), -n.y(), -n.z())
+                                        } else {
+                                            n
+                                        }
+                                    });
                                     if let Some(session) = cache_session.as_mut() {
                                         session.record_normal(fid, gid, fresh);
                                     }

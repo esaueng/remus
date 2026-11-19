@@ -31,7 +31,7 @@ use remus_topology::face::{Face, FaceId, FaceSurface};
 /// # Errors
 ///
 /// Only a missing face.
-pub(super) fn chart_face(
+pub fn chart_face(
     topo: &Topology,
     face_id: FaceId,
 ) -> Result<Cow<'_, Face>, crate::OperationsError> {
@@ -49,4 +49,31 @@ pub(super) fn chart_face(
         }
         Ok(_) | Err(_) => Ok(Cow::Borrowed(face)),
     }
+}
+
+/// Whether a mesher handed `face_data` for `face_id` may read the face's
+/// stored pcurves: only when `face_data` is charted on the stored carrier.
+/// A lower-nappe cone wall moved by [`chart_face`] never does, whatever its
+/// pcurves evaluate to on the reversed carrier.
+pub(super) fn reads_stored_pcurves(topo: &Topology, face_id: FaceId, face_data: &Face) -> bool {
+    if let (Ok(FaceSurface::Cone(stored)), FaceSurface::Cone(chart)) =
+        (topo.face(face_id).map(Face::surface), face_data.surface())
+    {
+        return stored.axis().dot(chart.axis()) > 0.0;
+    }
+    true
+}
+
+/// Parameters on the stored carrier of a point at `(u, v)` on its
+/// reversed-axis chart ([`ConicalSurface::with_reversed_axis`], frame
+/// `(x̂, −ŷ, −â)`): `(π − u, −v)`.
+///
+/// The chart evaluates to `A + v (cos a (cos u x̂ − sin u ŷ) − sin a â)`;
+/// the stored carrier at `(π − u, −v)` to
+/// `A − v (cos a (−cos u x̂ + sin u ŷ) + sin a â)`, the same point.
+///
+/// [`ConicalSurface::with_reversed_axis`]: remus_math::surfaces::ConicalSurface::with_reversed_axis
+#[must_use]
+pub(super) fn stored_cone_uv(u: f64, v: f64) -> (f64, f64) {
+    (std::f64::consts::PI - u, -v)
 }

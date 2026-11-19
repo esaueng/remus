@@ -482,5 +482,14 @@ pub(super) fn tessellate_with_uvs_floor(
         }
     }
 
+    // The uvs of a face meshed on its reversed-axis chart are carried back
+    // to its stored carrier, where callers evaluate them.
+    if matches!(charted, std::borrow::Cow::Owned(_)) {
+        for uv in &mut result.uvs {
+            let (u, v) = super::cone_chart::stored_cone_uv(uv[0], uv[1]);
+            *uv = [u, v];
+        }
+    }
+
     Ok(result)
 }

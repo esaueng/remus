@@ -371,3 +371,236 @@ fn a_lower_nappe_wall_reads_its_own_normal_and_edge_relations() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+/// A quarter annulus `r_in ≤ r ≤ r_out`, `0 ≤ φ ≤ π/2` on the lower nappe
+/// of the cone of apex `0`, axis `+ẑ` and half-angle `a` (so `z = −r tan a`),
+/// written on that carrier. With `pcurve` its generator edge along `φ = 0`
+/// carries its exact pcurve in that carrier's chart (`u` half a turn from
+/// the edge's longitude, `v = −r / cos a`).
+fn shallow_lower_quarter_wall(
+    a: f64,
+    r_in: f64,
+    r_out: f64,
+    pcurve: bool,
+) -> (Topology, FaceId, remus_math::surfaces::ConicalSurface) {
+    use remus_math::curves::Circle3D;
+    use remus_math::curves2d::{Curve2D, Line2D};
+    use remus_math::vec::{Point2, Vec2};
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::pcurve::PCurve;
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
+    let carrier = remus_math::surfaces::ConicalSurface::with_ref_dir(
+        Point3::new(0.0, 0.0, 0.0),
+        Vec3::new(0.0, 0.0, 1.0),
+        a,
+        Vec3::new(1.0, 0.0, 0.0),
+    )
+    .unwrap();
+    let mut topo = Topology::new();
+    let z = Vec3::new(0.0, 0.0, 1.0);
+    let height = |r: f64| -r * a.tan();
+    let at = |r: f64, phi: f64| Point3::new(r * phi.cos(), r * phi.sin(), height(r));
+    let half = PI / 2.0;
+    let corners = [
+        at(r_out, 0.0),
+        at(r_out, half),
+        at(r_in, half),
+        at(r_in, 0.0),
+    ];
+    let vertices: Vec<_> = corners
+        .iter()
+        .map(|&p| topo.add_vertex(Vertex::new(p, 1e-12)))
+        .collect();
+    let mut arc = |from: usize, to: usize, r: f64| {
+        let circle = Circle3D::new(Point3::new(0.0, 0.0, height(r)), z, r).unwrap();
+        let t0 = circle.project(corners[from]);
+        let mut t1 = circle.project(corners[to]);
+        if t1 <= t0 {
+            t1 += TAU;
+        }
+        let mut edge = Edge::new(vertices[from], vertices[to], EdgeCurve::Circle(circle));
+        edge.set_trim(Some((t0, t1)));
+        topo.add_edge(edge)
+    };
+    let outer = arc(0, 1, r_out);
+    let inner = arc(3, 2, r_in);
+    let side = topo.add_edge(Edge::new(vertices[1], vertices[2], EdgeCurve::Line));
+    let generator = topo.add_edge(Edge::new(vertices[3], vertices[0], EdgeCurve::Line));
+    let wire = topo.add_wire(
+        Wire::new(
+            // The generator first, so the wire's first corner is read off
+            // its pcurve.
+            vec![
+                OrientedEdge::new(generator, true),
+                OrientedEdge::new(outer, true),
+                OrientedEdge::new(side, true),
+                OrientedEdge::new(inner, false),
+            ],
+            true,
+        )
+        .unwrap(),
+    );
+    let face = topo.add_face(Face::new(wire, vec![], FaceSurface::Cone(carrier.clone())));
+    for (corner, &p) in corners.iter().enumerate() {
+        let (_, v) = carrier.project_point(p);
+        assert!(v < 0.0, "corner {corner} below the apex");
+    }
+    if pcurve {
+        // At v < 0 the carrier puts longitude u at −ρ(u): the edge along
+        // φ = 0 is the chart line u = π.
+        let cos_a = a.cos();
+        let line = Line2D::new(Point2::new(PI, -r_in / cos_a), Vec2::new(0.0, -1.0)).unwrap();
+        let curve = PCurve::new(Curve2D::Line(line), 0.0, (r_out - r_in) / cos_a);
+        for t in [0.0, 0.5, 1.0] {
+            let uv = curve.evaluate(t * curve.t_end());
+            let p = carrier.evaluate(uv.x(), uv.y());
+            assert!(
+                p.y().abs() < 1e-12 && p.x() > 0.0,
+                "the pcurve is exact: {p:?}"
+            );
+        }
+        topo.set_pcurve(generator, face, curve).unwrap();
+        assert!(topo.pcurve_oriented(generator, face, true).is_some());
+    }
+    (topo, face, carrier)
+}
+
+/// One face as a sheet body, without the sheet validator (its edge checks
+/// are not what these tests read).
+fn raw_sheet(topo: &mut Topology, face: FaceId) -> remus_topology::shell::ShellId {
+    let shell = topo.add_shell(remus_topology::shell::Shell::new(vec![face]).unwrap());
+    topo.set_shell_body_class(shell, remus_topology::BodyClass::Sheet)
+        .unwrap();
+    shell
+}
+
+/// Review finding 1: a stale chart pcurve fooled the on-surface check.
+/// Evaluated on the reversed-axis carrier the generator's exact old-chart
+/// pcurve lands `2 |v| sin a ≈ 2e-8` off its edge, inside the 1e-7 check,
+/// so the face CDT mixed one negative-`v` corner with projected rim
+/// samples and emitted vertices near radius 5e-4, far outside the wall.
+/// A charted face never reads its stored pcurves.
+#[test]
+fn a_stale_pcurve_does_not_steer_a_lower_nappe_chart() {
+    use remus_operations::tessellate::tessellate_sheet;
+    let (r_in, r_out) = (1.0, 1.001);
+    let mut failures = Vec::new();
+    for pcurve in [false, true] {
+        let (mut topo, face, _) = shallow_lower_quarter_wall(1e-8, r_in, r_out, pcurve);
+        let sheet = raw_sheet(&mut topo, face);
+        for deflection in [1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6] {
+            let mesh = tessellate_sheet(&topo, sheet, deflection).unwrap();
+            if mesh.indices.is_empty() {
+                failures.push(format!("pcurve {pcurve}, {deflection}: empty mesh"));
+            }
+            for p in &mesh.positions {
+                let r = p.x().hypot(p.y());
+                let phi = p.y().atan2(p.x());
+                if r < r_in - 1e-9
+                    || r > r_out + 1e-9
+                    || !(-1e-9..=PI / 2.0 + 1e-9).contains(&phi)
+                    || (p.z() + r * 1e-8_f64.tan()).abs() > 1e-12
+                {
+                    failures.push(format!(
+                        "pcurve {pcurve}, deflection {deflection}: vertex {p:?} (r {r}) off the wall"
+                    ));
+                    break;
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// Review finding 2: `tessellate_with_uvs` returns parameters on the face's
+/// stored carrier, so evaluating them gives the mesh vertices back, on
+/// either nappe and wherever the body is placed.
+#[test]
+fn lower_nappe_uvs_evaluate_to_their_vertices_on_the_stored_carrier() {
+    use remus_math::mat::Mat4;
+    use remus_operations::tessellate::tessellate_with_uvs;
+    use remus_operations::transform::transform_solid;
+    let placements = [
+        Mat4::translation(0.0, 0.0, 0.0),
+        Mat4::translation(3.0, -7.0, 11.0),
+        Mat4::translation(-2.0, 5.0, 1.0) * Mat4::rotation_x(0.7) * Mat4::rotation_z(-1.9),
+    ];
+    let mut failures = Vec::new();
+    for s in [1e-2, 1.0, 1e2] {
+        for (name, sweep) in SWEEPS {
+            for lower in [false, true] {
+                for (index, placement) in placements.iter().enumerate() {
+                    let (mut topo, solid, walls) = frustum(s, sweep, lower);
+                    let mut placed = *placement;
+                    for row in 0..3 {
+                        placed.0[row][3] *= s;
+                    }
+                    transform_solid(&mut topo, solid, &placed).unwrap();
+                    let label =
+                        format!("{name} wall, scale {s}, lower nappe {lower}, placement {index}");
+                    for &wall in &walls {
+                        let FaceSurface::Cone(cone) = topo.face(wall).unwrap().surface().clone()
+                        else {
+                            unreachable!()
+                        };
+                        let meshed = tessellate_with_uvs(&topo, wall, 1e-2 * s).unwrap();
+                        let worst = meshed
+                            .mesh
+                            .positions
+                            .iter()
+                            .zip(&meshed.uvs)
+                            .map(|(&p, &[u, v])| (cone.evaluate(u, v) - p).length())
+                            .fold(0.0_f64, f64::max);
+                        if worst > 1e-12 * s.max(1.0) * 20.0 {
+                            failures
+                                .push(format!("{label}: a uv evaluates {worst} off its vertex"));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// Review finding 3: on a shallow cone (half-angle 5e-10, past the normal
+/// helper's old 1e-9 floor) the chart and the normal readers agree: a wall
+/// on the lower nappe reads its own normal, close to `+ẑ` here, in
+/// `effective_face_normal` and in its mesh.
+#[test]
+fn a_shallow_lower_nappe_wall_reads_the_normal_it_is_meshed_with() {
+    use remus_operations::query::effective_face_normal;
+    use remus_operations::tessellate::tessellate_sheet;
+    let a = 5e-10;
+    let (mut topo, face, _) = shallow_lower_quarter_wall(a, 1.0, 2.0, false);
+    let mut failures = Vec::new();
+    for (r, phi) in [(2.0, 0.3), (1.5, PI / 4.0), (1.0001, 1.5)] {
+        let point = Point3::new(r * f64::cos(phi), r * f64::sin(phi), -r * a.tan());
+        let normal = effective_face_normal(&topo, face, point).unwrap();
+        let radial = Vec3::new(phi.cos(), phi.sin(), 0.0);
+        let want = radial * a.sin() + Vec3::new(0.0, 0.0, a.cos());
+        if (normal - want).length() > 1e-9 {
+            failures.push(format!("normal at {point:?} is {normal:?}, want {want:?}"));
+        }
+    }
+    let sheet = raw_sheet(&mut topo, face);
+    let mesh = tessellate_sheet(&topo, sheet, 1e-3).unwrap();
+    let down = mesh.normals.iter().filter(|n| n.z() < 0.99).count();
+    if down != 0 {
+        failures.push(format!("{down} mesh normals off +z"));
+    }
+    let origin = Point3::new(0.0, 0.0, 0.0);
+    let wound = mesh
+        .indices
+        .chunks_exact(3)
+        .filter(|tri| {
+            let [a, b, c] = [0, 1, 2].map(|k| mesh.positions[tri[k] as usize] - origin);
+            (b - a).cross(c - a).z() <= 0.0
+        })
+        .count();
+    if wound != 0 {
+        failures.push(format!("{wound} triangles wound against +z"));
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}

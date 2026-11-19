@@ -460,24 +460,16 @@ pub fn effective_face_normal(topo: &Topology, face: FaceId, point: Point3) -> Op
         // `effective_plane_normal` has already applied the reversed flag.
         normal
     } else {
-        let normal = match face_data.surface() {
-            // Below a cone's apex projection answers the point's own
-            // longitude while the chart puts that longitude half a turn
-            // away, so the normal there is read on the reversed-axis
-            // carrier, where the two agree (its normal points off the axis
-            // as the face's parametric normal does).
-            FaceSurface::Cone(cone)
-                if crate::tessellate::surface_normal::cone_point_below_apex(cone, point) =>
-            {
-                let chart = cone.with_reversed_axis();
-                let (u, v) = chart.project_point(point);
-                chart.normal(u, v)
-            }
-            surface => {
-                let (u, v) = surface.project_point(point)?;
-                surface.normal(u, v)
-            }
-        };
+        // The normal is read on the carrier the tessellator charts the face
+        // on: a cone wall below its carrier's apex on the reversed-axis
+        // carrier, where projection and evaluation agree (its normal points
+        // off the axis as the face's parametric normal does). Below the
+        // apex the stored carrier's projection answers the point's own
+        // longitude while its chart puts that longitude half a turn away.
+        let charted = crate::tessellate::chart_face(topo, face).ok()?;
+        let surface = charted.surface();
+        let (u, v) = surface.project_point(point)?;
+        let normal = surface.normal(u, v);
         if face_data.is_reversed() {
             -normal
         } else {

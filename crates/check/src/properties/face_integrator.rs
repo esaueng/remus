@@ -1651,7 +1651,7 @@ fn upper_nappe_cone(
     face_id: FaceId,
     cone: &remus_math::surfaces::ConicalSurface,
 ) -> Result<Option<remus_math::surfaces::ConicalSurface>, CheckError> {
-    if cone.half_angle().sin() <= 1e-15 {
+    if cone.half_angle().sin() <= CONE_NAPPE_MIN_SIN {
         return Err(CheckError::IntegrationFailed(
             "a cone face's carrier is too flat to tell its nappes apart".into(),
         ));
@@ -1688,6 +1688,13 @@ fn upper_nappe_cone(
     }
     Ok(below.then(|| cone.with_reversed_axis()))
 }
+
+/// The smallest `sin a` at which a cone's nappes are told apart.
+///
+/// `a` is the half-angle from the radial plane. At or below it `project_point` reads `v` off the
+/// radius, never negative, and [`cone_chart_carrier`] refuses the face;
+/// every reader deciding a point's or a face's nappe uses this one floor.
+pub const CONE_NAPPE_MIN_SIN: f64 = 1e-15;
 
 /// The carrier every exact cone reader charts `face_id` on.
 ///
