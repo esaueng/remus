@@ -3942,49 +3942,46 @@ pub(super) fn tessellate_nonplanar_cdt(
                 let hi = (curved_v_max + dense_dv).min(v_max);
                 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                 let wanted = (((hi - lo) / dense_dv).ceil() as usize).max(1);
-                // This loop includes both end rows and classifies every
-                // candidate against the complete boundary in a single fused
-                // containment-and-clearance scan (see
-                // `classify_dense_candidate`). Bound that work before doing
-                // any classification or allocation: take as many of the
-                // wanted rows as the polygon classification budget admits
-                // (see `dense_trim_rows_within_budget`).
-                let rows = dense_trim_rows_within_budget(wanted, n_u, boundary_uv_ref.len());
-                let dense_candidates = n_u.saturating_sub(1).checked_mul(rows.saturating_add(1));
-                // If not even one row fits, keep the already-bounded base
-                // grid and let the CDT triangulate from the shared boundary.
-                // Do not fail the whole face here: that routes valid cylinder
-                // walls to the independent snap fallback, which can crack at
-                // shared rims.
-                if rows > 0
-                    && validate_interior_polygon_work(
-                        dense_candidates,
-                        Some(boundary_uv_ref.len()),
-                        1,
-                    )
-                    .is_ok()
-                {
+                // The band's rows include both end rows. Bound the
+                // candidates by the grid limit before any allocation, then
+                // classify coarse to fine under the boundary-test budget
+                // (see `dense_trim_band_points`): a trim too finely sampled
+                // for every row keeps a uniformly thinned band, never none.
+                let rows = dense_trim_rows_within_grid(wanted, n_u);
+                if rows > 0 {
                     let boundary_cdt: Vec<Point2> =
                         boundary_uv_ref.iter().map(|&(u, v)| to_cdt(u, v)).collect();
                     let clearance = 0.4 * du / n_u as f64;
-                    let mut row_scan = DenseRowScan::default();
-                    let mut row_points = Vec::with_capacity(n_u.saturating_sub(1));
-                    for row in 0..=rows {
-                        let v = lo + (hi - lo) * (row as f64 / rows as f64);
-                        row_points.clear();
-                        for column in 1..n_u {
-                            let u = u_min + du * (column as f64 / n_u as f64);
-                            row_points.push((u, to_cdt(u, v)));
-                        }
-                        row_scan.classify(
-                            boundary_uv_ref,
-                            &boundary_cdt,
-                            v,
-                            &row_points,
-                            clearance,
-                            |point| interior_pts.push(point),
-                        );
-                    }
+                    interior_pts.extend(dense_trim_band_points(
+                        rows,
+                        MAX_INTERIOR_POLYGON_TESTS,
+                        // Leave room for the ellipse pass below, which adds
+                        // at most one support point per boundary segment.
+                        MAX_INTERIOR_GRID_POINTS
+                            .saturating_sub(interior_pts.len())
+                            .saturating_sub(if has_ellipse_wire {
+                                boundary_pts.len()
+                            } else {
+                                0
+                            }),
+                        |row, scan, kept| {
+                            let v = lo + (hi - lo) * (row as f64 / rows as f64);
+                            let row_points: Vec<(f64, Point2)> = (1..n_u)
+                                .map(|column| {
+                                    let u = u_min + du * (column as f64 / n_u as f64);
+                                    (u, to_cdt(u, v))
+                                })
+                                .collect();
+                            scan.classify(
+                                boundary_uv_ref,
+                                &boundary_cdt,
+                                v,
+                                &row_points,
+                                clearance,
+                                kept,
+                            )
+                        },
+                    ));
                 }
             }
         }
@@ -4216,29 +4213,6 @@ const MAX_INTERIOR_GRID_POINTS: usize = 1_000_000;
 /// grid. Unlike the point limit, this also bounds work when a finely sampled
 /// trim is tested against every grid candidate.
 const MAX_INTERIOR_POLYGON_TESTS: usize = 10_000_000;
-
-fn interior_grid_work_limit_error() -> crate::OperationsError {
-    crate::OperationsError::InvalidInput {
-        reason: format!(
-            "non-planar face tessellation exceeds the {MAX_INTERIOR_POLYGON_TESTS}-boundary-test work limit"
-        ),
-    }
-}
-
-fn validate_interior_polygon_work(
-    candidates: Option<usize>,
-    boundary_segments: Option<usize>,
-    scans_per_candidate: usize,
-) -> Result<(), crate::OperationsError> {
-    let work = candidates
-        .filter(|&count| count <= MAX_INTERIOR_GRID_POINTS)
-        .and_then(|count| count.checked_mul(boundary_segments?))
-        .and_then(|count| count.checked_mul(scans_per_candidate));
-    if work.is_none_or(|count| count > MAX_INTERIOR_POLYGON_TESTS) {
-        return Err(interior_grid_work_limit_error());
-    }
-    Ok(())
-}
 
 pub(super) fn validate_interior_grid_size(
     n_u: usize,
@@ -4772,24 +4746,91 @@ fn stepped_rim_interior_points(
     Ok((!points.is_empty()).then_some(points))
 }
 
-/// Dense trim-band rows, capped to what the interior polygon budget admits.
-///
-/// The band's `rows + 1` lines of `n_u - 1` columns each classify against the
-/// `boundary`-sample trim in one fused containment-and-clearance scan (see
-/// `classify_dense_candidate`), so they cost `(n_u - 1)(rows + 1)·boundary`
-/// tests against [`MAX_INTERIOR_POLYGON_TESTS`]. Past that budget the whole
-/// band used to be dropped, leaving the trim valley to the base grid's
-/// single mid-height row whenever `interior_rows_for_boundary` keeps its
-/// two-row default (a 33–127-sample run): a cylinder cut by a slab tilted
-/// 30° then bridged its ellipse trim with chords spanning a quarter of the
-/// wall at 0.005–0.002 deflection, reading 4.9 % low in volume on a closed,
-/// manifold mesh. Fewer rows still support the valley, so keep as many as
-/// fit; zero only when not even one row does.
-fn dense_trim_rows_within_budget(wanted: usize, n_u: usize, boundary: usize) -> usize {
-    let per_row = n_u.saturating_sub(1).saturating_mul(boundary);
-    MAX_INTERIOR_POLYGON_TESTS
-        .checked_div(per_row)
+/// Dense trim-band rows, capped so the band's `rows + 1` lines of `n_u - 1`
+/// columns stay within [`MAX_INTERIOR_GRID_POINTS`] candidates; zero only
+/// when not even one row (two lines) fits.
+fn dense_trim_rows_within_grid(wanted: usize, n_u: usize) -> usize {
+    MAX_INTERIOR_GRID_POINTS
+        .checked_div(n_u.saturating_sub(1))
         .map_or(wanted, |fit| wanted.min(fit.saturating_sub(1)))
+}
+
+/// Order in which [`dense_trim_band_points`] classifies the band's lines
+/// `0..=rows`, as levels of halving stride: level 0 is every multiple of the
+/// largest power of two `S <= rows` plus the end line `rows`, and level `k`
+/// adds the odd multiples of `S / 2^k`. After any whole level the lines
+/// classified are uniformly spaced (the last gap no wider than the stride),
+/// and every level halves the spacing.
+fn dense_trim_row_levels(rows: usize) -> Vec<Vec<usize>> {
+    if rows == 0 {
+        return vec![vec![0]];
+    }
+    let mut stride = 1_usize << (usize::BITS - 1 - rows.leading_zeros());
+    let mut first: Vec<usize> = (0..=rows).step_by(stride).collect();
+    if first.last() != Some(&rows) {
+        first.push(rows);
+    }
+    let mut levels = vec![first];
+    while stride > 1 {
+        let half = stride / 2;
+        levels.push((half..rows).step_by(stride).collect());
+        stride = half;
+    }
+    levels
+}
+
+/// Interior points of the dense trim band, classified coarse to fine under
+/// `budget` boundary-segment tests and at most `allowance` kept points.
+///
+/// `classify(line, scan, kept)` classifies band line `line` with `scan`,
+/// which charges its work to the budget, pushing the points it keeps; it
+/// returns `false`, keeping nothing, when its line would overdraw the
+/// budget. Lines run in [`dense_trim_row_levels`] order and the band keeps
+/// the lines of every level that completed within both limits, in line
+/// order, so a trim too finely sampled for every line, or a face whose base
+/// grid leaves too little of the interior point limit, still keeps a
+/// uniformly spaced band at a coarser stride.
+///
+/// This used to be decided up front, charging every candidate a scan of the
+/// whole boundary: past `(n_u - 1)·boundary·(rows + 1)` tests the band kept
+/// fewer rows, and the row count fell as the deflection shrank because both
+/// factors grow with it. On B53's single-lump tangent cut the cone wall kept
+/// 139 rows at d = 7e-5, 74 at 2e-5, 7 at 2e-6 and 3 at 1e-6 — a finer
+/// deflection returned a coarser band (B271). The row scan reads only the
+/// segments that straddle or come near a line (a handful), so charging its
+/// actual work admits every row there, and the budget still bounds the work
+/// of any trim. The point allowance keeps the face under the interior grid
+/// limit it is checked against afterwards: at 1e-6 every wanted row there
+/// would take the face past it and send it to a fallback mesher.
+fn dense_trim_band_points(
+    rows: usize,
+    budget: usize,
+    allowance: usize,
+    mut classify: impl FnMut(usize, &mut DenseRowScan, &mut Vec<remus_math::vec::Point2>) -> bool,
+) -> Vec<remus_math::vec::Point2> {
+    let mut scan = DenseRowScan::new(budget);
+    let mut kept_by_line: Vec<Option<Vec<remus_math::vec::Point2>>> = vec![None; rows + 1];
+    let mut kept_points = 0_usize;
+    'levels: for level in dense_trim_row_levels(rows) {
+        let mut level_points = Vec::with_capacity(level.len());
+        let mut level_count = kept_points;
+        for &line in &level {
+            let mut kept = Vec::new();
+            if !classify(line, &mut scan, &mut kept) {
+                break 'levels;
+            }
+            level_count = level_count.saturating_add(kept.len());
+            if level_count > allowance {
+                break 'levels;
+            }
+            level_points.push((line, kept));
+        }
+        kept_points = level_count;
+        for (line, kept) in level_points {
+            kept_by_line[line] = Some(kept);
+        }
+    }
+    kept_by_line.into_iter().flatten().flatten().collect()
 }
 
 /// Estimate the effective radius of a surface for sample density calculation.
@@ -7255,13 +7296,29 @@ pub(super) fn polygon_row_contains(polygon: &[(f64, f64)], xs: &[f64], y: f64) -
 /// clearance runs over the others, in boundary order, with the same
 /// arithmetic. The verdicts are `classify_dense_candidate`'s exactly (see the
 /// tests).
-#[derive(Default)]
+///
+/// `classify` charges its own work to the scan's `budget` in boundary-segment
+/// tests:
+/// one per segment for the segment pass, then one per candidate per
+/// straddling or near segment, and pushes the candidates it keeps onto
+/// `kept`. A row whose pass would overdraw the budget is not classified
+/// (nothing is pushed and `false` is returned), so the
+/// caller's bound holds whatever the trim looks like.
 struct DenseRowScan {
     straddling: Vec<usize>,
     near: Vec<usize>,
+    budget: usize,
 }
 
 impl DenseRowScan {
+    const fn new(budget: usize) -> Self {
+        Self {
+            straddling: Vec::new(),
+            near: Vec::new(),
+            budget,
+        }
+    }
+
     fn classify(
         &mut self,
         boundary_uv: &[(f64, f64)],
@@ -7269,8 +7326,8 @@ impl DenseRowScan {
         v: f64,
         row: &[(f64, remus_math::vec::Point2)],
         clearance: f64,
-        mut keep: impl FnMut(remus_math::vec::Point2),
-    ) {
+        kept: &mut Vec<remus_math::vec::Point2>,
+    ) -> bool {
         // `boundary_cdt` is mapped from `boundary_uv` one-to-one at the call
         // site, so both walk the same segments, in `point_in_polygon_2d`'s
         // order (closing segment last).
@@ -7280,8 +7337,13 @@ impl DenseRowScan {
         self.straddling.clear();
         self.near.clear();
         if n == 0 || row.is_empty() {
-            return;
+            return true;
         }
+        // The segment pass below tests each boundary segment once.
+        let Some(left) = self.budget.checked_sub(n) else {
+            return false;
+        };
+        self.budget = left;
         // The row's extent and the largest coordinate magnitude any of its
         // candidates contributes to its own margin.
         let (mut y_lo, mut y_hi, mut point_scale) = (f64::INFINITY, f64::NEG_INFINITY, 0.0_f64);
@@ -7314,6 +7376,18 @@ impl DenseRowScan {
                 self.near.push(i);
             }
         }
+        // Each candidate then reads at most every straddling and every near
+        // segment once.
+        let Some(left) = self
+            .straddling
+            .len()
+            .checked_add(self.near.len())
+            .and_then(|per_candidate| per_candidate.checked_mul(row.len()))
+            .and_then(|work| self.budget.checked_sub(work))
+        else {
+            return false;
+        };
+        self.budget = left;
         for &(u, point) in row {
             let mut winding = 0i32;
             for &i in &self.straddling {
@@ -7345,9 +7419,10 @@ impl DenseRowScan {
                 }
             });
             if clear {
-                keep(point);
+                kept.push(point);
             }
         }
+        true
     }
 }
 
@@ -7702,7 +7777,7 @@ mod interior_grid_limit_tests {
 
     use super::{
         MAX_INTERIOR_GRID_POINTS, torus_band_within_grid_limit, validate_interior_grid_size,
-        validate_interior_polygon_work, validate_stepped_rim_level_count,
+        validate_stepped_rim_level_count,
     };
 
     #[test]
@@ -7741,28 +7816,6 @@ mod interior_grid_limit_tests {
     #[test]
     fn rejects_stepped_rim_level_count_overflow() {
         assert!(validate_stepped_rim_level_count(usize::MAX, 2).is_err());
-    }
-
-    #[test]
-    fn rejects_multiplicative_polygon_work() {
-        assert!(validate_interior_polygon_work(Some(10_000), Some(1_001), 1).is_err());
-    }
-
-    #[test]
-    fn rejects_dense_grid_actual_row_count() {
-        // The dense loop visits rows + 1 rather than rows - 1. That actual
-        // candidate count exceeds the work cap even at one boundary scan per
-        // candidate (the fused containment-and-clearance pass).
-        let columns = 1_000_usize;
-        let rows = 1_000_usize;
-        let actual_candidates = (columns - 1).checked_mul(rows + 1);
-        assert!(validate_interior_polygon_work(actual_candidates, Some(11), 1).is_err());
-    }
-
-    #[test]
-    fn rejects_polygon_work_overflow() {
-        assert!(validate_interior_polygon_work(Some(usize::MAX), Some(2), 2).is_err());
-        assert!(validate_interior_polygon_work(Some(2), None, 2).is_err());
     }
 
     /// The fused dense-band scan must return exactly the sequential verdicts:
@@ -7915,7 +7968,7 @@ mod interior_grid_limit_tests {
                 ];
                 for to_cdt in charts {
                     let boundary_cdt: Vec<Point2> = uv.iter().map(|&(u, v)| to_cdt(u, v)).collect();
-                    let mut scan = DenseRowScan::default();
+                    let mut scan = DenseRowScan::new(usize::MAX);
                     for clearance in [0.0, 1e-4, 0.0073, 0.05, 0.6].map(|c| c * scale) {
                         // Rows through the vertex levels and between them.
                         let mut vs: Vec<f64> = uv.iter().map(|&(_, v)| v).collect();
@@ -7945,9 +7998,14 @@ mod interior_grid_limit_tests {
                                 .map(|&(_, point)| point)
                                 .collect();
                             let mut kept = Vec::new();
-                            scan.classify(&uv, &boundary_cdt, v, &row, clearance, |point| {
-                                kept.push(point);
-                            });
+                            assert!(scan.classify(
+                                &uv,
+                                &boundary_cdt,
+                                v,
+                                &row,
+                                clearance,
+                                &mut kept,
+                            ));
                             assert_eq!(kept, expected, "row v = {v}, clearance {clearance}");
                             kept_total += kept.len();
                             candidates += row.len();
@@ -7990,19 +8048,7 @@ mod interior_grid_limit_tests {
 mod interior_grid_limit_edge_tests {
     #![allow(clippy::unwrap_used)]
 
-    use super::{
-        MAX_INTERIOR_GRID_POINTS, MAX_INTERIOR_POLYGON_TESTS, validate_interior_polygon_work,
-        validate_stepped_rim_level_count,
-    };
-
-    #[test]
-    fn polygon_work_at_exactly_the_limit_is_accepted() {
-        let candidates = MAX_INTERIOR_GRID_POINTS;
-        let segments = MAX_INTERIOR_POLYGON_TESTS / candidates;
-        assert_eq!(candidates * segments, MAX_INTERIOR_POLYGON_TESTS);
-        validate_interior_polygon_work(Some(candidates), Some(segments), 1).unwrap();
-        assert!(validate_interior_polygon_work(Some(candidates), Some(segments + 1), 1).is_err());
-    }
+    use super::{MAX_INTERIOR_GRID_POINTS, validate_stepped_rim_level_count};
 
     /// Nine rows per level over `n_u - 1` columns must fit the grid budget:
     /// the gate accepts exactly the level counts whose rows fit.
@@ -8150,5 +8196,196 @@ mod interior_rows_oracle_tests {
         }
         let rows = interior_rows_for_boundary(&cylinder(1.0), &uv, (0.0, 10.0), TAU, 1, 2);
         assert!((2..=600).contains(&rows));
+    }
+}
+
+/// B271: the dense trim band is classified coarse to fine under the
+/// boundary-test budget, so a finely sampled trim thins the band uniformly
+/// instead of dropping it, and the work stays bounded.
+#[cfg(test)]
+mod dense_band_budget_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use remus_math::vec::Point2;
+
+    use super::{
+        DenseRowScan, MAX_INTERIOR_GRID_POINTS, dense_trim_band_points, dense_trim_row_levels,
+        dense_trim_rows_within_grid,
+    };
+
+    /// Every line `0..=rows` appears in exactly one level; after each whole
+    /// level the lines classified so far are uniformly spaced (the last gap
+    /// no wider than the others) and always include both end lines; each
+    /// level halves the spacing.
+    #[test]
+    fn levels_cover_every_line_once_and_stay_uniform() {
+        for rows in 0..=300 {
+            let levels = dense_trim_row_levels(rows);
+            let mut seen = vec![0_u32; rows + 1];
+            let mut done: Vec<usize> = Vec::new();
+            let mut previous_gap = usize::MAX;
+            for level in &levels {
+                for &line in level {
+                    seen[line] += 1;
+                }
+                done.extend(level);
+                let mut lines = done.clone();
+                remus_math::compact_sort::CompactSort::compact_sort_unstable(lines.as_mut_slice());
+                assert_eq!(lines.first(), Some(&0), "rows {rows}");
+                assert_eq!(lines.last(), Some(&rows), "rows {rows}");
+                let gaps: Vec<usize> = lines.windows(2).map(|w| w[1] - w[0]).collect();
+                if let Some((&last, inner)) = gaps.split_last() {
+                    let gap = inner.first().copied().unwrap_or(last);
+                    assert!(inner.iter().all(|&g| g == gap), "rows {rows}: {gaps:?}");
+                    assert!(last <= gap, "rows {rows}: {gaps:?}");
+                    assert!(gap < previous_gap, "rows {rows}: spacing did not shrink");
+                    if previous_gap != usize::MAX {
+                        assert_eq!(gap * 2, previous_gap, "rows {rows}");
+                    }
+                    previous_gap = gap;
+                }
+            }
+            assert!(
+                seen.iter().all(|&count| count == 1),
+                "rows {rows}: {seen:?}"
+            );
+        }
+    }
+
+    /// The candidate cap admits exactly the rows whose lines fit the grid
+    /// limit, and keeps at least one row whenever two lines fit.
+    #[test]
+    fn rows_fill_but_never_exceed_the_grid_limit() {
+        for n_u in [2_usize, 1_001, 1_168, 500_001, 500_002] {
+            let rows = dense_trim_rows_within_grid(usize::MAX, n_u);
+            let columns = n_u - 1;
+            assert!(
+                columns * (rows + 1) <= MAX_INTERIOR_GRID_POINTS,
+                "n_u {n_u}"
+            );
+            assert!(columns * (rows + 2) > MAX_INTERIOR_GRID_POINTS, "n_u {n_u}");
+        }
+        assert_eq!(dense_trim_rows_within_grid(37, 100), 37);
+        assert_eq!(dense_trim_rows_within_grid(37, 1), 37);
+    }
+
+    /// A line charging `cost` tests keeps the point `(line, 0)`.
+    fn band(rows: usize, budget: usize, cost: usize) -> (Vec<usize>, usize) {
+        let mut spent = 0;
+        let points = dense_trim_band_points(rows, budget, usize::MAX, |line, scan, kept| {
+            let Some(rest) = scan.budget.checked_sub(cost) else {
+                return false;
+            };
+            scan.budget = rest;
+            spent += cost;
+            #[allow(clippy::cast_precision_loss)]
+            kept.push(Point2::new(line as f64, 0.0));
+            true
+        });
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let lines = points.iter().map(|p| p.x() as usize).collect();
+        (lines, spent)
+    }
+
+    /// With room for every line the band is every line in order (the
+    /// unchanged result whenever the budget admits the whole band); with
+    /// less, it keeps the whole levels that fit — never a partial level, and
+    /// never nothing while the first level fits — and spends no more than
+    /// the budget.
+    #[test]
+    fn a_short_budget_thins_the_band_by_whole_levels() {
+        let (all, spent) = band(100, usize::MAX, 7);
+        assert_eq!(all, (0..=100).collect::<Vec<_>>());
+        assert_eq!(spent, 7 * 101);
+        // Level 0 of 100 rows is 0, 64 and 100; level 1 adds 32 and 96.
+        assert_eq!(band(100, 7 * 3, 7).0, vec![0, 64, 100]);
+        assert_eq!(band(100, 7 * 4, 7).0, vec![0, 64, 100]);
+        assert_eq!(band(100, 7 * 5, 7).0, vec![0, 32, 64, 96, 100]);
+        assert_eq!(band(100, 7 * 3 - 1, 7).0, Vec::<usize>::new());
+        for budget in [0, 50, 333, 700, 706, 707, 5_000] {
+            let (lines, spent) = band(100, budget, 7);
+            assert!(spent <= budget, "budget {budget}: spent {spent}");
+            let levels = dense_trim_row_levels(100);
+            let mut whole = 0;
+            let mut expected: Vec<usize> = Vec::new();
+            for level in &levels {
+                if (whole + level.len()) * 7 > budget {
+                    break;
+                }
+                whole += level.len();
+                expected.extend(level);
+            }
+            remus_math::compact_sort::CompactSort::compact_sort_unstable(expected.as_mut_slice());
+            assert_eq!(lines, expected, "budget {budget}");
+        }
+    }
+
+    /// The point allowance also stops the band at a whole level: each line
+    /// here keeps one point, so an allowance of four keeps level 0 (three
+    /// lines) and not the two of level 1, and an allowance below level 0
+    /// keeps nothing.
+    #[test]
+    fn the_point_allowance_thins_the_band_by_whole_levels() {
+        let thinned = |allowance: usize| {
+            let points = dense_trim_band_points(100, usize::MAX, allowance, |line, _, kept| {
+                #[allow(clippy::cast_precision_loss)]
+                kept.push(Point2::new(line as f64, 0.0));
+                true
+            });
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            points.iter().map(|p| p.x() as usize).collect::<Vec<_>>()
+        };
+        assert_eq!(thinned(101), (0..=100).collect::<Vec<_>>());
+        assert_eq!(thinned(100).len(), 51);
+        assert_eq!(thinned(4), vec![0, 64, 100]);
+        assert_eq!(thinned(5), vec![0, 32, 64, 96, 100]);
+        assert!(thinned(2).is_empty());
+    }
+
+    /// The row scan charges one test per boundary segment for its segment
+    /// pass and one per candidate per straddling or near segment, refuses a
+    /// row it cannot afford without keeping anything, and keeps what an
+    /// unbounded scan keeps when it can.
+    #[test]
+    fn row_scan_charges_its_actual_work() {
+        // A 400-sample circle: a row through its middle straddles two
+        // segments and comes near a handful.
+        let uv: Vec<(f64, f64)> = (0..400)
+            .map(|k| {
+                #[allow(clippy::cast_precision_loss)]
+                let a = k as f64 / 400.0 * std::f64::consts::TAU;
+                (5.0 + 2.0 * a.cos(), 5.0 + 2.0 * a.sin())
+            })
+            .collect();
+        let cdt: Vec<Point2> = uv.iter().map(|&(u, v)| Point2::new(u, v)).collect();
+        #[allow(clippy::cast_precision_loss)]
+        let row: Vec<(f64, Point2)> = (0..=60)
+            .map(|k| {
+                let u = 2.0 + 6.0 * k as f64 / 60.0;
+                (u, Point2::new(u, 5.3))
+            })
+            .collect();
+        let mut scan = DenseRowScan::new(usize::MAX);
+        let mut unbounded = Vec::new();
+        assert!(scan.classify(&uv, &cdt, 5.3, &row, 0.01, &mut unbounded));
+        let charged = usize::MAX - scan.budget;
+        let per_candidate = scan.straddling.len() + scan.near.len();
+        assert_eq!(scan.straddling.len(), 2);
+        assert!(per_candidate < 10, "{per_candidate} segments per candidate");
+        assert_eq!(charged, uv.len() + row.len() * per_candidate);
+        // Far less than the whole-boundary scan per candidate it replaced.
+        assert!(charged * 20 < row.len() * uv.len());
+        assert!(!unbounded.is_empty() && unbounded.len() < row.len());
+
+        let mut exact = DenseRowScan::new(charged);
+        let mut kept = Vec::new();
+        assert!(exact.classify(&uv, &cdt, 5.3, &row, 0.01, &mut kept));
+        assert_eq!((exact.budget, &kept), (0, &unbounded));
+        for short in [0, uv.len() - 1, uv.len(), charged - 1] {
+            let mut scan = DenseRowScan::new(short);
+            let mut kept = Vec::new();
+            assert!(!scan.classify(&uv, &cdt, 5.3, &row, 0.01, &mut kept));
+            assert!(kept.is_empty(), "budget {short}");
+        }
     }
 }
