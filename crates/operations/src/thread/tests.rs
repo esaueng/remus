@@ -2691,16 +2691,15 @@ fn thread_cone_faces_mesh_without_inverted_slivers() {
 
 /// `solid_volume` of a long tapered thread with an end runout (an r6 h120
 /// boss, the gauge-review form, a 119 thread from the face's start, small
-/// end at the end, a runout at `atan(0.04)`) depends on the thread's
-/// tolerance although the body does not: the body built at tolerance 1e-6
-/// measures 5625.755231 (right to 7e-8 relative on the review's runs), the
-/// one built at 1e-8 measures 5625.696082, 1.05e-5 relative (0.059) low,
-/// as at 1e-9, while the two bodies' meshes agree to 8e-8. The untapered
-/// body at 1e-8 refuses as a typed `IntegrationFailed` instead (the
-/// knot-aligned quadrature wants more than 262144 cells). Not traced
-/// further (B278).
+/// end at the end, a runout at `atan(0.04)`) must not depend on the thread's
+/// tolerance while the body does not (B278). Built at 1e-6 the body measures
+/// 5625.755231 on its face integrals (right to 7e-8 relative). Built at 1e-8
+/// its two runout-zone flanks are fitted with 2184 × 112 spans, and their
+/// knot-aligned quadrature needs more than its 2¹⁸-cell work cap: the face
+/// integrals refuse, and the volume used to come from the closed mesh
+/// instead, 5625.696082, 1.05e-5 relative (0.059) low with no error. It is
+/// now the integrator's typed refusal, as `mass_properties` gives.
 #[test]
-#[ignore = "open: solid_volume of a long tapered thread with a runout reads 1.05e-5 low at thread tolerance 1e-8 (B278)"]
 fn a_long_tapered_runout_measures_the_same_at_a_tight_tolerance() {
     let form = gauge_review_form();
     let build = |tolerance: f64| {
@@ -2722,17 +2721,33 @@ fn a_long_tapered_runout_measures_the_same_at_a_tight_tolerance() {
         let outcome = cut_thread(&mut topo, body, face, &form, &options).unwrap();
         let report = validate_solid(&topo, outcome.solid).unwrap();
         assert!(report.is_valid(), "{:?}", report.issues);
-        (volume(&topo, outcome.solid), outcome.deviation_bound)
+        assert!(
+            outcome.deviation_bound < tolerance,
+            "{}",
+            outcome.deviation_bound
+        );
+        (topo, outcome.solid)
     };
-    // The body at 1e-6 is the reference: its measured volume is right to
-    // 7e-8 relative, and the tighter body is the same thread within 1e-6.
-    let (reference, _) = build(1e-6);
-    let (tight, bound) = build(1e-8);
-    assert!(bound < 1e-6, "deviation bound {bound}");
+    // The body at 1e-6 is the reference: its face integrals measure it.
+    let (topo, solid) = build(1e-6);
+    let reference = volume(&topo, solid);
     assert!(
-        rel(tight, reference) < 1e-7,
-        "solid_volume at thread tolerance 1e-8: {tight}, at 1e-6: {reference} (relative {:e})",
-        rel(tight, reference)
+        rel(reference, 5_625.755_230_6) < 1e-9,
+        "solid_volume at thread tolerance 1e-6: {reference}"
+    );
+    // At 1e-8 the same thread is refused, never measured on its mesh.
+    let (topo, solid) = build(1e-8);
+    let refused = |result: Result<f64, crate::OperationsError>, what: &str| match result {
+        Err(crate::OperationsError::Check(error)) => assert!(
+            remus_check::properties::face_integrator::is_knot_aligned_work_refusal(&error),
+            "{what}: {error}"
+        ),
+        other => panic!("{what} at thread tolerance 1e-8: {other:?}, at 1e-6: {reference}"),
+    };
+    refused(solid_volume(&topo, solid, 1e-4), "solid_volume");
+    refused(
+        crate::measure::mass_properties(&topo, solid).map(|props| props.mass),
+        "mass_properties",
     );
 }
 

@@ -694,7 +694,8 @@ fn edge_samples(curve: &EdgeCurve) -> u32 {
 
 /// The volume of `solid` from its boundary-trimmed face integrals, when they
 /// are certified to measure it; `None` sends the caller to the closed
-/// whole-solid mesh. Fixed-order terms use the validator's face-integral
+/// whole-solid mesh, and a face whose quadrature exceeds its work cap is
+/// a typed refusal instead (see [`declined_or_refused`]). Fixed-order terms use the validator's face-integral
 /// cache, or exact-content readings retained by a prepared handle. Qualified
 /// linear-v NURBS spans instead integrate their straight generators
 /// analytically while keeping the independent curved-u quadrature orders.
@@ -856,14 +857,9 @@ fn qualified_shell_volume(
         });
         // The strict validator's own request: after an edit it already holds
         // every face, about this very reference.
-        let Ok(term) = super::guard_readings::integrate(topo, fid, order, reference) else {
-            vol_trace(|| {
-                format!(
-                    "face integrals declined: face {} did not integrate",
-                    fid.index()
-                )
-            });
-            return Ok(None);
+        let term = match super::guard_readings::integrate(topo, fid, order, reference) {
+            Ok(term) => term,
+            Err(error) => return declined_or_refused(fid, error),
         };
         let Some(n) = term.vector_area else {
             vol_trace(|| {
@@ -914,12 +910,10 @@ fn qualified_shell_volume(
         let coarse = if matches!(topo.face(fid)?.surface(), FaceSurface::Plane { .. }) {
             term
         } else {
-            let Ok(coarse) =
-                super::guard_readings::integrate(topo, fid, CONVERGENCE_ORDER, reference)
-            else {
-                return Ok(None);
-            };
-            coarse
+            match super::guard_readings::integrate(topo, fid, CONVERGENCE_ORDER, reference) {
+                Ok(coarse) => coarse,
+                Err(error) => return declined_or_refused(fid, error),
+            }
         };
         area += term.area;
         vector_area += n;
@@ -927,10 +921,11 @@ fn qualified_shell_volume(
         // [`REFINEMENT_ORDER`]; its order-5 term is what the volume sums.
         let mut face_disagreement = (term.volume - coarse.volume).abs();
         if refine && face_disagreement > ORDER_AGREEMENT * term.volume.abs() {
-            let Ok(fine) = super::guard_readings::integrate(topo, fid, REFINEMENT_ORDER, reference)
-            else {
-                return Ok(None);
-            };
+            let fine =
+                match super::guard_readings::integrate(topo, fid, REFINEMENT_ORDER, reference) {
+                    Ok(fine) => fine,
+                    Err(error) => return declined_or_refused(fid, error),
+                };
             vol_trace(|| {
                 format!(
                     "face {}: orders {CONVERGENCE_ORDER}/{order}/{REFINEMENT_ORDER} read {} / {} / {}",
@@ -959,6 +954,34 @@ fn qualified_shell_volume(
         return Ok(None);
     }
     Ok(Some((volume, disagreement)))
+}
+
+/// What [`qualified_shell_volume`] does with a face whose integral failed:
+/// decline the face integrals (`Ok(None)`, the caller measures the body on
+/// its mesh), except when the integrator applies to the face and only
+/// declined the work ([`is_knot_aligned_work_refusal`]). That refusal is
+/// returned instead, as [`mass_properties`] returns it: the mesh would read
+/// the body to its chord error, a long tapered thread fitted at 1e-8 1.05e-5
+/// low where its face integrals at 1e-6 read it to 7e-8 (B278), and a body
+/// the exact route measures must not come back quietly less accurate
+/// because its fit was tightened.
+///
+/// [`is_knot_aligned_work_refusal`]: remus_check::properties::face_integrator::is_knot_aligned_work_refusal
+fn declined_or_refused<T>(
+    face: FaceId,
+    error: remus_check::CheckError,
+) -> Result<Option<T>, crate::OperationsError> {
+    if remus_check::properties::face_integrator::is_knot_aligned_work_refusal(&error) {
+        vol_trace(|| format!("face integrals refused: face {}: {error}", face.index()));
+        return Err(error.into());
+    }
+    vol_trace(|| {
+        format!(
+            "face integrals declined: face {} did not integrate ({error})",
+            face.index()
+        )
+    });
+    Ok(None)
 }
 
 /// `reference`'s distance from a planar face's stored plane and from the
@@ -2926,6 +2949,12 @@ pub fn solid_is_inverted(topo: &Topology, solid: SolidId) -> Result<bool, crate:
 /// on its closed mesh tessellates open, carries a face the exact Gauss
 /// integrator does not measure either, and has no closed mesh at the clamp to
 /// fall back on (see above).
+///
+/// Returns [`crate::OperationsError::Check`] with the integrator's
+/// `IntegrationFailed` when a body whose face integrals measure it has a
+/// NURBS face whose knot-aligned quadrature exceeds its work cap (see
+/// [`remus_check::properties::face_integrator::is_knot_aligned_work_refusal`]),
+/// as [`mass_properties`] does, rather than its mesh's less accurate reading.
 ///
 /// # Memo
 ///
