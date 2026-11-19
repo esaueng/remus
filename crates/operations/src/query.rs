@@ -310,6 +310,7 @@ fn projected_overlap_area(
 
 fn borders_blend(
     topo: &Topology,
+    charts: &FaceCharts,
     adjacency: &remus_topology::adjacency::AdjacencyIndex,
     face: FaceId,
 ) -> Result<bool, OperationsError> {
@@ -318,7 +319,7 @@ fn borders_blend(
             if neighbour == face || topo.face(neighbour)?.surface().is_planar() {
                 continue;
             }
-            if edge_is_g1(topo, edge, face, neighbour)? {
+            if edge_is_g1_with(topo, charts, edge, face, neighbour)? {
                 return Ok(true);
             }
         }
@@ -370,6 +371,7 @@ fn opposing_planar_face_pairs_metered(
     let mut remaining_work = limits.work;
     let faces = preflight_planar_query(topo, solid, limits, &mut remaining_work)?;
     let adjacency = remus_topology::adjacency::AdjacencyIndex::build_from_faces(topo, &faces)?;
+    let charts = FaceCharts::default();
     let mut regions = Vec::new();
     for face in faces {
         let face_data = topo.face(face)?;
@@ -396,7 +398,7 @@ fn opposing_planar_face_pairs_metered(
             outer,
             holes,
             area: face_area(topo, face, tolerance.linear)?,
-            borders_blend: borders_blend(topo, &adjacency, face)?,
+            borders_blend: borders_blend(topo, &charts, &adjacency, face)?,
         });
     }
     regions.compact_sort_by_key(|region| region.face.index());
@@ -453,22 +455,80 @@ pub enum EdgeConcavity {
 /// into their own UV domain before evaluating the surface normal, and the
 /// `reversed` flag flips the result. Returns `None` when projection or
 /// normalization cannot produce a finite unit normal.
+///
+/// A cone is read on the carrier the tessellator charts the face on (see
+/// [`FaceCharts`]). Callers asking for many normals of the same faces use a
+/// [`FaceCharts`] of their own, so each face's chart is decided once.
 #[must_use]
 pub fn effective_face_normal(topo: &Topology, face: FaceId, point: Point3) -> Option<Vec3> {
-    let face_data = topo.face(face).ok()?;
-    let normal = if let Some(normal) = face_data.effective_plane_normal() {
-        // `effective_plane_normal` has already applied the reversed flag.
-        normal
-    } else {
-        let (u, v) = face_data.surface().project_point(point)?;
-        let normal = face_data.surface().normal(u, v);
-        if face_data.is_reversed() {
-            -normal
-        } else {
+    FaceCharts::default().normal(topo, face, point)
+}
+
+/// The carriers faces are charted on for normal queries, decided at most
+/// once per face over the life of the value.
+///
+/// A cone wall below its carrier's apex is charted, as the tessellator
+/// charts it, on the reversed-axis carrier, where projection and evaluation
+/// agree; its normal there points off the axis as the face's parametric
+/// normal does (below the apex the stored carrier's projection answers the
+/// point's own longitude while its chart puts that longitude half a turn
+/// away). Deciding the chart samples the face's boundary, so it is read
+/// only for a point behind the apex: a point on
+/// the upper nappe reads the stored carrier directly, which is that face's
+/// chart unless the face is charted below the apex and the point is off its
+/// nappe.
+#[derive(Default)]
+pub struct FaceCharts {
+    /// Per cone face read below its apex: the charted carrier when it
+    /// differs from the stored one.
+    charted: std::cell::RefCell<remus_math::det_hash::DetHashMap<FaceId, Option<FaceSurface>>>,
+}
+
+impl FaceCharts {
+    /// [`effective_face_normal`], with `face`'s chart decided at most once
+    /// for this value.
+    #[must_use]
+    pub fn normal(&self, topo: &Topology, face: FaceId, point: Point3) -> Option<Vec3> {
+        let face_data = topo.face(face).ok()?;
+        let normal = if let Some(normal) = face_data.effective_plane_normal() {
+            // `effective_plane_normal` has already applied the reversed flag.
             normal
+        } else {
+            let stored = face_data.surface();
+            let mut charted = None;
+            if let FaceSurface::Cone(cone) = stored
+                && crate::tessellate::surface_normal::cone_point_below_apex(cone, point)
+            {
+                charted = self.charted_surface(topo, face).ok()?;
+            }
+            let surface = charted.as_ref().unwrap_or(stored);
+            let (u, v) = surface.project_point(point)?;
+            let normal = surface.normal(u, v);
+            if face_data.is_reversed() {
+                -normal
+            } else {
+                normal
+            }
+        };
+        normal.normalize().ok()
+    }
+
+    /// `face`'s charted carrier when it is not the stored one, decided once.
+    fn charted_surface(
+        &self,
+        topo: &Topology,
+        face: FaceId,
+    ) -> Result<Option<FaceSurface>, OperationsError> {
+        if let Some(known) = self.charted.borrow().get(&face) {
+            return Ok(known.clone());
         }
-    };
-    normal.normalize().ok()
+        let charted = match crate::tessellate::chart_face(topo, face)? {
+            std::borrow::Cow::Owned(charted) => Some(charted.surface().clone()),
+            std::borrow::Cow::Borrowed(_) => None,
+        };
+        self.charted.borrow_mut().insert(face, charted.clone());
+        Ok(charted)
+    }
 }
 
 fn edge_samples(topo: &Topology, edge: EdgeId) -> Result<Vec<Point3>, OperationsError> {
@@ -549,6 +609,7 @@ type NormalSample = (Point3, Vec3, Vec3);
 
 fn sampled_normals(
     topo: &Topology,
+    charts: &FaceCharts,
     edge: EdgeId,
     face_a: FaceId,
     face_b: FaceId,
@@ -556,8 +617,8 @@ fn sampled_normals(
     let mut samples = Vec::new();
     for point in edge_samples(topo, edge)? {
         if let (Some(na), Some(nb)) = (
-            effective_face_normal(topo, face_a, point),
-            effective_face_normal(topo, face_b, point),
+            charts.normal(topo, face_a, point),
+            charts.normal(topo, face_b, point),
         ) {
             samples.push((point, na, nb));
         }
@@ -598,10 +659,22 @@ pub fn edge_is_g1(
     face_a: FaceId,
     face_b: FaceId,
 ) -> Result<bool, OperationsError> {
+    edge_is_g1_with(topo, &FaceCharts::default(), edge, face_a, face_b)
+}
+
+/// [`edge_is_g1`] reading face charts through `charts`, for callers testing
+/// many edges of the same faces.
+fn edge_is_g1_with(
+    topo: &Topology,
+    charts: &FaceCharts,
+    edge: EdgeId,
+    face_a: FaceId,
+    face_b: FaceId,
+) -> Result<bool, OperationsError> {
     if face_a == face_b {
         return Ok(false);
     }
-    let samples = sampled_normals(topo, edge, face_a, face_b)?;
+    let samples = sampled_normals(topo, charts, edge, face_a, face_b)?;
     Ok(samples_are_g1(&samples))
 }
 
@@ -639,6 +712,7 @@ pub fn self_seam_is_g1(
     }
     let samples = edge_samples(topo, edge)?;
     let face_data = topo.face(face)?;
+    let charts = FaceCharts::default();
     let aligned = |a: Vec3, b: Vec3| match (a.normalize(), b.normalize()) {
         (Ok(a), Ok(b)) => 1.0 - a.dot(b) <= 1.0e-10,
         _ => false,
@@ -685,9 +759,11 @@ pub fn self_seam_is_g1(
         FaceSurface::Cylinder(_)
         | FaceSurface::Cone(_)
         | FaceSurface::Sphere(_)
-        | FaceSurface::Torus(_) => samples
-            .into_iter()
-            .all(|point| effective_face_normal(topo, face, point).is_some_and(|n| aligned(n, n))),
+        | FaceSurface::Torus(_) => samples.into_iter().all(|point| {
+            charts
+                .normal(topo, face, point)
+                .is_some_and(|n| aligned(n, n))
+        }),
         FaceSurface::Plane { .. } => false,
     })
 }
@@ -728,7 +804,7 @@ pub fn edge_normal_angle(
     if face_a == face_b {
         return Ok(None);
     }
-    let samples = sampled_normals(topo, edge, face_a, face_b)?;
+    let samples = sampled_normals(topo, &FaceCharts::default(), edge, face_a, face_b)?;
     Ok(samples_normal_angle(&samples))
 }
 
@@ -787,7 +863,7 @@ pub(crate) fn edge_concavity_with(
         return Ok(EdgeConcavity::Unknown);
     }
     let (face_a, face_b) = (faces[0], faces[1]);
-    let samples = sampled_normals(topo, edge, face_a, face_b)?;
+    let samples = sampled_normals(topo, &FaceCharts::default(), edge, face_a, face_b)?;
     edge_concavity_with_samples(topo, edge, face_a, face_b, probe, &samples, |point| {
         classifier.classify(point)
     })
@@ -816,7 +892,7 @@ pub(crate) fn edge_concavity_from_faces(
     if face_a == face_b {
         return Ok(EdgeConcavity::Unknown);
     }
-    let samples = sampled_normals(topo, edge, face_a, face_b)?;
+    let samples = sampled_normals(topo, &FaceCharts::default(), edge, face_a, face_b)?;
     edge_concavity_with_samples(topo, edge, face_a, face_b, probe, &samples, |point| {
         crate::classify::classify_point(topo, solid, point, 0.01, 1.0e-7)
     })
@@ -842,6 +918,8 @@ pub(crate) struct ConcavityProbe<'a> {
     topo: &'a Topology,
     solid: SolidId,
     classifier: ProbeClassifier<'a>,
+    /// Face charts for the sampled normals, decided once per face.
+    charts: FaceCharts,
 }
 
 enum ProbeClassifier<'a> {
@@ -853,11 +931,12 @@ enum ProbeClassifier<'a> {
 impl<'a> ConcavityProbe<'a> {
     /// A probe context for `solid`; nothing is prepared until a probe needs
     /// the classifier.
-    pub(crate) const fn new(topo: &'a Topology, solid: SolidId) -> Self {
+    pub(crate) fn new(topo: &'a Topology, solid: SolidId) -> Self {
         Self {
             topo,
             solid,
             classifier: ProbeClassifier::Unprepared,
+            charts: FaceCharts::default(),
         }
     }
 
@@ -882,7 +961,7 @@ impl<'a> ConcavityProbe<'a> {
         if face_a == face_b {
             return Ok(EdgeConcavity::Unknown);
         }
-        let samples = sampled_normals(self.topo, edge, face_a, face_b)?;
+        let samples = sampled_normals(self.topo, &self.charts, edge, face_a, face_b)?;
         let (topo, solid) = (self.topo, self.solid);
         let classifier = &mut self.classifier;
         edge_concavity_with_samples(topo, edge, face_a, face_b, probe, &samples, |point| {
@@ -931,6 +1010,8 @@ impl<'a> ConcavityProbe<'a> {
 pub(crate) struct EdgeRelationContext<'a> {
     topo: &'a Topology,
     prepared: remus_check::classify::PreparedSolid<'a>,
+    /// Face charts for the sampled normals, decided once per face.
+    charts: FaceCharts,
 }
 
 /// Prepare the shared exact classifier with the session's bounded, content-keyed
@@ -960,7 +1041,11 @@ impl<'a> EdgeRelationContext<'a> {
     /// Returns an error if the solid handle or its faces are invalid.
     pub(crate) fn prepare(topo: &'a Topology, solid: SolidId) -> Result<Self, OperationsError> {
         let prepared = prepare_memoized_classifier(topo, solid)?;
-        Ok(Self { topo, prepared })
+        Ok(Self {
+            topo,
+            prepared,
+            charts: FaceCharts::default(),
+        })
     }
 
     /// Concavity plus the `[0, pi]` normal angle of one manifold edge.
@@ -989,7 +1074,7 @@ impl<'a> EdgeRelationContext<'a> {
         if face_a == face_b {
             return Ok((EdgeConcavity::Unknown, None));
         }
-        let samples = sampled_normals(self.topo, edge, face_a, face_b)?;
+        let samples = sampled_normals(self.topo, &self.charts, edge, face_a, face_b)?;
         let options = remus_check::classify::ClassifyOptions {
             tolerance: 1.0e-7,
             ..Default::default()
@@ -1162,6 +1247,7 @@ pub fn filter_filletable_edges(
     }
 
     let mut result = Vec::new();
+    let charts = FaceCharts::default();
     for &eid in edge_ids {
         let Some(adj_faces) = edge_faces.get(&eid.index()) else {
             continue;
@@ -1169,7 +1255,7 @@ pub fn filter_filletable_edges(
         if adj_faces.len() != 2 {
             continue;
         }
-        if edge_is_tangent(topo, eid, adj_faces)? {
+        if edge_is_tangent_with(topo, &charts, eid, adj_faces)? {
             continue;
         }
         result.push(eid);
@@ -1222,11 +1308,12 @@ fn normalize_blend_selection(
     let filletable = filter_filletable_edges(topo, solid, edge_ids)?;
     let faces = remus_topology::explorer::edge_to_face_map(topo, solid)?;
     let mut kept = Vec::with_capacity(edge_ids.len());
+    let charts = FaceCharts::default();
     for &edge in edge_ids {
         let no_dihedral = !filletable.contains(&edge)
             && match faces.get(&edge.index()).map(|f| &f[..]) {
                 Some(&[a, b]) if a == b => true,
-                Some(&[a, b]) => edge_is_g1(topo, edge, a, b)?,
+                Some(&[a, b]) => edge_is_g1_with(topo, &charts, edge, a, b)?,
                 _ => false,
             };
         if !no_dihedral {
@@ -1251,11 +1338,21 @@ pub(crate) fn edge_is_tangent(
     eid: EdgeId,
     faces: &HashSet<FaceId>,
 ) -> Result<bool, OperationsError> {
+    edge_is_tangent_with(topo, &FaceCharts::default(), eid, faces)
+}
+
+/// [`edge_is_tangent`] reading face charts through `charts`.
+fn edge_is_tangent_with(
+    topo: &Topology,
+    charts: &FaceCharts,
+    eid: EdgeId,
+    faces: &HashSet<FaceId>,
+) -> Result<bool, OperationsError> {
     let mut it = faces.iter().copied();
     let (Some(face_a), Some(face_b)) = (it.next(), it.next()) else {
         return Ok(true);
     };
-    edge_is_g1(topo, eid, face_a, face_b)
+    edge_is_g1_with(topo, charts, eid, face_a, face_b)
 }
 
 /// Material side of an analytic face, determined without any probe.
@@ -2303,6 +2400,107 @@ mod tests {
         );
     }
 
+    /// The half frustum `y ≥ 0` (radii 2 and 1, height 2, bored to 0.5)
+    /// with its cone walls written below the apex when `lower`.
+    fn half_frustum(lower: bool) -> (Topology, SolidId, Vec<FaceId>) {
+        use remus_topology::builder::make_polygon_wire;
+        use remus_topology::face::Face;
+        let mut topo = Topology::new();
+        let profile = make_polygon_wire(
+            &mut topo,
+            &[
+                Point3::new(0.5, 0.0, 0.0),
+                Point3::new(2.0, 0.0, 0.0),
+                Point3::new(1.0, 0.0, 2.0),
+                Point3::new(0.5, 0.0, 2.0),
+            ],
+            1e-7,
+        )
+        .unwrap();
+        let face = topo.add_face(Face::new(
+            profile,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, -1.0, 0.0),
+                d: 0.0,
+            },
+        ));
+        let solid = crate::revolve::revolve(
+            &mut topo,
+            face,
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            std::f64::consts::PI,
+        )
+        .unwrap();
+        let mut walls = Vec::new();
+        for wall in solid_faces(&topo, solid).unwrap() {
+            let FaceSurface::Cone(cone) = topo.face(wall).unwrap().surface().clone() else {
+                continue;
+            };
+            walls.push(wall);
+            if lower {
+                topo.face_mut(wall)
+                    .unwrap()
+                    .set_surface(FaceSurface::Cone(cone.with_reversed_axis()));
+            }
+        }
+        (topo, solid, walls)
+    }
+
+    /// Review (re-check) finding: every sampled normal re-ran the face's
+    /// chart decision, a boundary sample, so the bulk edge queries paid
+    /// once per sample per face. A `FaceCharts` decides each face once: as
+    /// many normals as asked of a lower-nappe wall cost one decision, an
+    /// upper-nappe wall's cost none, and the bulk relations decide each
+    /// wall at most once, with the same normals as the one-shot query.
+    #[test]
+    fn face_charts_decide_each_cone_face_once() {
+        use crate::tessellate::chart_decisions;
+        for lower in [false, true] {
+            let (topo, solid, walls) = half_frustum(lower);
+            let wall = walls[0];
+            for n in [10_u32, 100] {
+                let charts = FaceCharts::default();
+                let before = chart_decisions();
+                for k in 0..n {
+                    let phi = std::f64::consts::PI * (f64::from(k) + 0.5) / f64::from(n);
+                    let point = Point3::new(1.5 * phi.cos(), 1.5 * phi.sin(), 1.0);
+                    let bulk = charts.normal(&topo, wall, point).unwrap();
+                    let single = effective_face_normal(&topo, wall, point).unwrap();
+                    let bits = |n: Vec3| [n.x(), n.y(), n.z()].map(f64::to_bits);
+                    assert_eq!(bits(bulk), bits(single), "lower {lower}, sample {k}");
+                    // The wall's own outward normal, ∝ r̂ + ẑ/2.
+                    let want = Vec3::new(phi.cos(), phi.sin(), 0.5).normalize().unwrap();
+                    assert!((bulk - want).length() < 1e-12, "lower {lower}: {bulk:?}");
+                }
+                let after = chart_decisions();
+                // The one-shot queries decide once each on the lower nappe.
+                let expected = if lower { 1 + n as usize } else { 0 };
+                assert_eq!(after - before, expected, "lower {lower}, {n} normals");
+            }
+            let before = chart_decisions();
+            let relations = solid_edge_relations(&topo, solid, None).unwrap();
+            let decisions = chart_decisions() - before;
+            assert!(
+                decisions <= walls.len() && (lower || decisions == 0),
+                "lower {lower}: {decisions} chart decisions for {} walls and {} edges",
+                walls.len(),
+                relations.len()
+            );
+            let before = chart_decisions();
+            let edges = remus_topology::explorer::solid_edges(&topo, solid).unwrap();
+            let kept = filter_filletable_edges(&topo, solid, &edges).unwrap();
+            let decisions = chart_decisions() - before;
+            assert!(!kept.is_empty());
+            assert!(
+                decisions <= walls.len() && (lower || decisions == 0),
+                "lower {lower}: {decisions} chart decisions filtering {} edges",
+                edges.len()
+            );
+        }
+    }
+
     #[test]
     fn reversed_plane_effective_normal_flips_once() {
         let mut topo = Topology::new();
@@ -2360,7 +2558,7 @@ mod tests {
             return Ok(EdgeConcavity::Unknown);
         }
         let (face_a, face_b) = (faces[0], faces[1]);
-        let samples = sampled_normals(topo, edge, face_a, face_b)?;
+        let samples = sampled_normals(topo, &FaceCharts::default(), edge, face_a, face_b)?;
         edge_concavity_with_samples(topo, edge, face_a, face_b, probe, &samples, |point| {
             crate::classify::classify_point_robust(topo, solid, point, 0.01, 1.0e-7)
         })

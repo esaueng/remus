@@ -6,6 +6,7 @@
 use remus_math::nurbs::projection::{
     SurfaceSeedGrid, project_point_to_surface, project_point_to_surface_with_grid,
 };
+use remus_math::surfaces::ConicalSurface;
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::face::FaceSurface;
@@ -16,7 +17,27 @@ use remus_topology::face::FaceSurface;
 /// For NURBS surfaces, uses the midpoint normal as an approximation (full
 /// point-inversion would be needed for exactness, but this suffices for fillet
 /// cross-section geometry where the point is known to lie on the surface).
+///
+/// A cone is a double cone: a point behind its apex
+/// ([`cone_point_below_apex`]) reads the `v < 0` nappe's parametric normal
+/// `∂P/∂u × ∂P/∂v`, which is the reversed-axis carrier's (still off the
+/// axis, with the axial part turned over).
 pub fn face_surface_normal_at(surface: &FaceSurface, point: Point3) -> Option<Vec3> {
+    if let FaceSurface::Cone(cone) = surface
+        && cone_point_below_apex(cone, point)
+    {
+        return cone_chart_normal(&cone.with_reversed_axis(), point);
+    }
+    face_chart_normal_at(surface, point)
+}
+
+/// The outward normal of `surface`'s own chart at `point`: for a cone, the
+/// `v > 0` nappe's normal at the point's longitude wherever the point is,
+/// as a mesher charting the face on `surface` emits it. The tessellator
+/// reads boundary normals this way on the carrier it meshed each face on
+/// (see `cone_chart`); callers holding only a surface and a point take
+/// [`face_surface_normal_at`].
+fn face_chart_normal_at(surface: &FaceSurface, point: Point3) -> Option<Vec3> {
     match surface {
         FaceSurface::Plane { normal, .. } => Some(*normal),
         FaceSurface::Cylinder(cyl) => {
@@ -27,17 +48,7 @@ pub fn face_surface_normal_at(surface: &FaceSurface, point: Point3) -> Option<Ve
             let on_axis = cyl.origin() + cyl.axis() * along_axis;
             (point - on_axis).normalize().ok()
         }
-        FaceSurface::Cone(cone) => {
-            // For a cone, the normal is perpendicular to the surface.
-            // Project point onto axis, compute the radial direction,
-            // then rotate by (90° - half_angle) around the tangent.
-            let dp = point - cone.apex();
-            let along_axis = dp.dot(cone.axis());
-            let radial = dp - cone.axis() * along_axis;
-            let radial_n = radial.normalize().ok()?;
-            let (sin_a, cos_a) = cone.half_angle().sin_cos();
-            Some(radial_n * sin_a + cone.axis() * (-cos_a))
-        }
+        FaceSurface::Cone(cone) => cone_chart_normal(cone, point),
         FaceSurface::Sphere(sph) => (point - sph.center()).normalize().ok(),
         FaceSurface::Torus(tor) => {
             // Project point onto the major circle plane to find the closest
@@ -63,12 +74,47 @@ pub fn face_surface_normal_at(surface: &FaceSurface, point: Point3) -> Option<Ve
     }
 }
 
-/// [`face_surface_normal_at`] for a NURBS face whose coarse projection grid
-/// the caller keeps, built once per surface: bit for bit the same normal,
-/// without re-evaluating the grid on every call (see
-/// [`SurfaceSeedGrid`]). Other surfaces never project and take
-/// [`face_surface_normal_at`] directly.
-pub fn face_surface_normal_with_grid(
+/// The `v > 0` nappe's normal of `cone` at `point`'s longitude.
+fn cone_chart_normal(cone: &ConicalSurface, point: Point3) -> Option<Vec3> {
+    // For a cone, the normal is perpendicular to the surface.
+    // Project point onto axis, compute the radial direction,
+    // then rotate by (90° - half_angle) around the tangent.
+    let dp = point - cone.apex();
+    let along_axis = dp.dot(cone.axis());
+    let radial = dp - cone.axis() * along_axis;
+    let radial_n = radial.normalize().ok()?;
+    let (sin_a, cos_a) = cone.half_angle().sin_cos();
+    Some(radial_n * sin_a + cone.axis() * (-cos_a))
+}
+
+/// Whether `point` lies on `cone`'s `v < 0` nappe, behind the apex along the
+/// axis, where evaluation and projection are half a turn apart (see
+/// [`ConicalSurface::with_reversed_axis`]).
+///
+/// On the surface the axial reach from the apex is `v sin a` against the
+/// distance `|v|`; half that ratio separates the nappes away from rounding
+/// at the apex, where no normal is defined anyway. A cone too flat to tell
+/// its nappes apart answers `false`, keeping the upper nappe's reading: the
+/// floor is the one below which the chart decision refuses
+/// ([`CONE_NAPPE_MIN_SIN`]), so the floor never disagrees with a face the
+/// tessellator charts on its lower nappe.
+///
+/// [`CONE_NAPPE_MIN_SIN`]: remus_check::properties::face_integrator::CONE_NAPPE_MIN_SIN
+#[must_use]
+pub fn cone_point_below_apex(cone: &ConicalSurface, point: Point3) -> bool {
+    let sin_a = cone.half_angle().sin();
+    let dp = point - cone.apex();
+    sin_a > remus_check::properties::face_integrator::CONE_NAPPE_MIN_SIN
+        && dp.dot(cone.axis()) < -0.5 * sin_a * dp.length()
+}
+
+/// The outward normal of `surface`'s own chart at `point` (see
+/// `face_chart_normal_at`) for a face whose coarse NURBS projection grid
+/// the caller keeps, built once per surface: bit for bit the per-call
+/// normal, without re-evaluating the grid on every call (see
+/// [`SurfaceSeedGrid`]). These are the tessellator's boundary normals, read
+/// on the carrier each face was meshed on.
+pub(super) fn face_chart_normal_with_grid(
     surface: &FaceSurface,
     point: Point3,
     grid: &mut Option<SurfaceSeedGrid>,
@@ -82,7 +128,7 @@ pub fn face_surface_normal_with_grid(
         | FaceSurface::Cylinder(_)
         | FaceSurface::Cone(_)
         | FaceSurface::Sphere(_)
-        | FaceSurface::Torus(_) => face_surface_normal_at(surface, point),
+        | FaceSurface::Torus(_) => face_chart_normal_at(surface, point),
     }
 }
 
@@ -110,8 +156,54 @@ mod tests {
 
     use super::*;
 
+    /// On both nappes of a cone the normal at a point is the parametric
+    /// normal there (the reversed-axis carrier's on the lower nappe), at
+    /// right angles to both surface directions and off the axis; the upper
+    /// nappe keeps its formula bit for bit.
     #[test]
-    fn face_surface_normal_with_grid_matches_the_per_call_projection() {
+    fn a_cone_normal_is_the_parametric_normal_on_either_nappe() {
+        use remus_math::surfaces::ConicalSurface;
+        let cone = ConicalSurface::new(Point3::new(1.0, -2.0, 4.0), Vec3::new(0.0, 0.6, -0.8), 1.1)
+            .expect("cone");
+        let reversed = cone.with_reversed_axis();
+        let surface = FaceSurface::Cone(cone.clone());
+        for (u, v) in [
+            (0.3, 2.0),
+            (2.5, 0.01),
+            (4.0, 7.5),
+            (0.3, -2.0),
+            (5.9, -0.01),
+        ] {
+            let point = cone.evaluate(u, v);
+            let got = face_surface_normal_at(&surface, point).expect("normal");
+            let want = if v > 0.0 {
+                cone.normal(u, v)
+            } else {
+                let (ru, rv) = reversed.project_point(point);
+                reversed.normal(ru, rv)
+            };
+            assert!(
+                (got - want).length() < 1e-12,
+                "({u}, {v}): {got:?} vs {want:?}"
+            );
+            let du = cone.evaluate(u + 1e-6, v) - cone.evaluate(u - 1e-6, v);
+            let dv = cone.evaluate(u, v + 1e-6) - cone.evaluate(u, v - 1e-6);
+            assert!(got.dot(du).abs() < 1e-6 * du.length(), "({u}, {v}) along u");
+            assert!(got.dot(dv).abs() < 1e-6 * dv.length(), "({u}, {v}) along v");
+            let off_axis = point - cone.apex();
+            let radial = off_axis - cone.axis() * off_axis.dot(cone.axis());
+            assert!(got.dot(radial) > 0.0, "({u}, {v}) points off the axis");
+            if v > 0.0 {
+                let (sin_a, cos_a) = cone.half_angle().sin_cos();
+                let formula = radial.normalize().expect("radial") * sin_a + cone.axis() * (-cos_a);
+                let bits = |n: Vec3| [n.x(), n.y(), n.z()].map(f64::to_bits);
+                assert_eq!(bits(got), bits(formula), "({u}, {v}) upper nappe formula");
+            }
+        }
+    }
+
+    #[test]
+    fn face_chart_normal_with_grid_matches_the_per_call_projection() {
         // A doubly curved bicubic patch, so the coarse grid seed and Newton both
         // matter; the kept grid must give the per-call normal bit for bit.
         let rows: Vec<Vec<Point3>> = (0..4)
@@ -139,7 +231,7 @@ mod tests {
             let (u, v) = (f64::from(k % 7) / 6.0, f64::from(k % 5) / 4.0);
             // On-surface and slightly lifted query points.
             let point = srf.evaluate(u, v) + Vec3::new(0.0, 0.0, f64::from(k % 3) * 1e-3);
-            let kept = face_surface_normal_with_grid(&surface, point, &mut grid);
+            let kept = face_chart_normal_with_grid(&surface, point, &mut grid);
             let fresh = face_surface_normal_at(&surface, point);
             let bits = |n: Option<Vec3>| n.map(|n| [n.x(), n.y(), n.z()].map(f64::to_bits));
             assert_eq!(bits(kept), bits(fresh), "query {k} at {point:?}");
