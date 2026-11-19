@@ -156,20 +156,18 @@ The `#[ignore]` inventory (recounted 2026-11-14 on `1632392b`, adding the two
 O2.3d budget-policy probes from #1715: 60 actual attributes in 35 files, all in
 `algo`, `operations`, `io`, `heal`, `math`, `wasm` and `remus`) splits by the
 ignore reason as written.
-B51's three closures, B275 to B278 and the 5.7b offset changes are retained;
-B7's two witnesses and B265's, B266's and B270's now run un-ignored. Listed, not re-run, except
-B272, B275 to B278 and the three 5.7b witnesses (failed as pinned).
-**28 open engine witnesses**, each with an owner row:
+B51's three closures, B276 to B278 and the 5.7b offset changes are retained;
+B7's two witnesses and B265's, B266's, B270's and B275's now run un-ignored. Listed, not re-run, except
+B272, B276 to B278 and the three 5.7b witnesses (failed as pinned).
+**26 open engine witnesses**, each with an owner row:
 - four B26 property ready-repros in `operations/tests/prop_boolean_invariants.rs`:
   finding 13 sphere–torus ×3 (B38) and finding 20 sphere–cone (B33);
-- `regress_b53_finding17_neighborhood.rs` (B271), the B53 remainder;
 - `qualify_boolean_anisotropic.rs` (P-Class 2.6);
 - `regress_opseq_sphere_box_cut.rs` ×2 (F13 equator coedge sense, P-Class 8.1);
 - `regress_opseq_sphere_torus_orientation.rs` ×2 (B38 seed 1146; B264 pole-piece vote);
 - `regress_g1_chain_corner_wall_dig.rs` and `remus/tests/bracket_campaign.rs`
   F6 (B267); `bracket_campaign.rs` every-edge r2 (B268);
 - `wasm/src/bindings/qualify_edge_relations_tests.rs` torus containment (B269);
-- `regress_split_rim_cone_wall_pierce.rs` bar through a split-rim cone wall (B275);
 - `regress_shelled_wall_rim_notch.rs` seam beside the sections' vertex (`solid_volume` route) and
   `algo/src/builder/face_splitter/left_out_tests.rs` long-edge slack (B265 residuals);
 - `video_parity_full_order.rs` A4 chamfer 5 (B272),

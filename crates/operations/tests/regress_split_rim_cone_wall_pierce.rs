@@ -18,16 +18,24 @@
 //! the controls below pin both, so the ignored witness keeps pointing at the
 //! split rim. Pre-existing: identical counts with #1696's cone-wall pre-split
 //! reverted.
+//!
+//! Cause: the fuse rebuilt three of the split rim arcs on carriers of radius
+//! 2.0000000000000004, so the apex chart's full-turn rim check (which wanted
+//! bit-identical carriers) declined the rim and kept the doubled seam line
+//! in the developed chart. The check now accepts carriers within the linear
+//! tolerance.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::f64::consts::FRAC_PI_2;
 
 use remus_math::context::{FallbackPolicy, OperationContext};
 use remus_math::mat::Mat4;
+use remus_math::vec::Point3;
 use remus_operations::boolean::{BooleanOp, BooleanQuality, boolean_with_context};
+use remus_operations::measure::solid_volume;
 use remus_operations::primitives::{make_box, make_cone, make_cylinder};
 use remus_operations::tessellate::{
-    boundary_edge_count, non_manifold_edge_count, tessellate_solid,
+    TriangleMesh, boundary_edge_count, non_manifold_edge_count, tessellate_solid,
 };
 use remus_operations::transform::transform_solid;
 use remus_topology::Topology;
@@ -94,6 +102,19 @@ fn body(on_box: bool, bar: f64) -> (Topology, SolidId) {
     (topo, solid)
 }
 
+/// Signed volume and area of a triangle mesh.
+fn mesh_volume_and_area(mesh: &TriangleMesh) -> (f64, f64) {
+    let (mut volume, mut area) = (0.0, 0.0);
+    for t in mesh.indices.chunks_exact(3) {
+        let [a, b, c] = [0, 1, 2].map(|k| mesh.positions[t[k] as usize]);
+        let o = Point3::new(0.0, 0.0, 0.0);
+        let (a, b, c) = (a - o, b - o, c - o);
+        volume += a.dot(b.cross(c)) / 6.0;
+        area += (b - a).cross(c - a).length() / 2.0;
+    }
+    (volume, area)
+}
+
 /// `(deflection, boundary edges, non-manifold edges)` wherever the mesh is
 /// not closed.
 fn open_meshes(topo: &Topology, solid: SolidId, deflections: &[f64]) -> Vec<(f64, usize, usize)> {
@@ -102,6 +123,18 @@ fn open_meshes(topo: &Topology, solid: SolidId, deflections: &[f64]) -> Vec<(f64
         .filter_map(|&d| {
             let mesh = tessellate_solid(topo, solid, d).unwrap();
             let (b, n) = (boundary_edge_count(&mesh), non_manifold_edge_count(&mesh));
+            if b + n == 0 {
+                // A closed mesh can still be the wrong one (a hole skinned
+                // over, a face doubled): its volume must match the exact
+                // body's to within the slab its chords may cut off.
+                let (volume, area) = mesh_volume_and_area(&mesh);
+                let exact = solid_volume(topo, solid, 1e-4).unwrap();
+                assert!(
+                    (volume - exact).abs() <= d * area,
+                    "deflection {d}: mesh volume {volume}, exact {exact}, slab {}",
+                    d * area
+                );
+            }
             (b + n > 0).then_some((d, b, n))
         })
         .collect()
@@ -110,7 +143,6 @@ fn open_meshes(topo: &Topology, solid: SolidId, deflections: &[f64]) -> Vec<(f64
 const DEFLECTIONS: [f64; 3] = [0.1, 0.01, 1e-3];
 
 #[test]
-#[ignore = "open: a bar through a pointed cone wall whose rim the box splits leaves an open mesh (B275)"]
 fn split_rim_cone_wall_pierce_mesh_is_closed() {
     let mut failures = Vec::new();
     for bar in [0.0, 1.0, FRAC_PI_2] {
