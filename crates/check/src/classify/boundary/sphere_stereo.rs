@@ -20,10 +20,17 @@
 //! samples carries a band the true edge stays within. Stereographic
 //! projection maps circles to circles, so a circle edge's band is the exact
 //! sagitta of its image arc through the chord's ends and the image of the
-//! parameter midpoint; a spline edge's band is twice the largest distance of
-//! interior samples from the chord (measured, not certified). A point
+//! parameter midpoint. A spline edge is split into rational Bézier pieces
+//! (positive weights), and a piece's band is certified: its control hull's
+//! distance from the 3D chord, times a bound of the chart map's derivative
+//! over a ball holding the hull, plus the exact sagitta of the chord's own
+//! image (a great-circle arc seen from the centre, so a circular arc in the
+//! chart); pieces are halved until the band is small. Every band carries
+//! the rounding of points at the sphere's distance from the origin. A point
 //! farther than its band from every chord has the winding the true loops
 //! give it; a point inside some band is undecided and the caller abstains.
+//! A loop too small to tell from a point, or an edge that cannot be bounded,
+//! makes the read abstain; no loop is ever skipped.
 //!
 //! Which side of the loops is the face follows the stored winding the
 //! assembly restores on every curved face (`orient_revolved_face_wires`): the
@@ -64,63 +71,225 @@ const AT_POLE: f64 = 1e-12;
 /// Samples of a circle edge per full turn.
 const CIRCLE_SAMPLES_PER_TURN: f64 = 256.0;
 
-/// Samples of a spline edge, and interior samples per chord measuring its
-/// band.
-const SPLINE_SAMPLES: usize = 64;
-const SPLINE_INTERIOR: usize = 4;
+/// A spline piece is split before reading until its control points lie in a
+/// ball of at most this radius (unit sphere).
+const PIECE_RADIUS: f64 = 0.1;
 
-/// A spline chord's band is this multiple of its measured deviation.
-const SPLINE_BAND_FACTOR: f64 = 2.0;
+/// A spline chord is refined in the chart until its band is at most this
+/// fraction of its ends' chart scale.
+const SPLINE_BAND_TARGET: f64 = 1e-5;
+
+/// Halvings of one spline piece, and spline chords per loop, past which the
+/// read gives up (and the caller abstains).
+const MAX_SPLIT_DEPTH: u32 = 24;
+const MAX_SPLINE_CHORDS: usize = 1 << 16;
 
 /// Relative rounding slack added to every band, against the chart scale of
 /// the chord's ends.
 const BAND_SLACK: f64 = 1e-9;
 
-/// One loop sampled along its edges: unit directions about the centre, and
-/// for the chord from sample `k` to sample `k + 1` (cyclically) the unit
-/// directions of interior points of the edge between them.
+/// A rational Bézier control point in homogeneous unit coordinates about
+/// the sphere centre: `(w x, w y, w z, w)`.
+type Homogeneous = [f64; 4];
+
+fn euclidean(h: Homogeneous) -> Vec3 {
+    Vec3::new(h[0] / h[3], h[1] / h[3], h[2] / h[3])
+}
+
+/// Split a rational Bézier (homogeneous control points) at `s` by de
+/// Casteljau.
+fn split(control: &[Homogeneous], s: f64) -> (Vec<Homogeneous>, Vec<Homogeneous>) {
+    let mut work = control.to_vec();
+    let n = work.len();
+    let mut left = Vec::with_capacity(n);
+    let mut right = Vec::with_capacity(n);
+    left.push(work[0]);
+    right.push(work[n - 1]);
+    for level in 1..n {
+        for i in 0..n - level {
+            for c in 0..4 {
+                work[i][c] = (work[i + 1][c] - work[i][c]).mul_add(s, work[i][c]);
+            }
+        }
+        left.push(work[0]);
+        right.push(work[n - 1 - level]);
+    }
+    right.reverse();
+    (left, right)
+}
+
+/// What bounds the edge between two consecutive samples of a loop.
+#[derive(Debug, Clone)]
+enum ChordBound {
+    /// A circle arc: the unit-coordinate point at its parameter midpoint.
+    /// Stereographic projection maps the arc to a circular arc.
+    Circle(Vec3),
+    /// A rational Bézier piece with positive weights, from this sample to
+    /// the next: the curve lies in the convex hull of its control points.
+    Hull(Vec<Homogeneous>),
+}
+
+/// One loop sampled along its edges, in unit coordinates about the sphere
+/// centre (`(p - centre) / radius`), with what bounds each chord's edge.
 #[derive(Debug, Clone)]
 struct SampledLoop {
     points: Vec<Vec3>,
-    interiors: Vec<Vec<Vec3>>,
-    /// Whether the chord's edge is a circle, whose image is a circle.
-    circular: Vec<bool>,
+    bounds: Vec<ChordBound>,
+    /// Rounding of a unit-coordinate point (and of a hit's direction) at the
+    /// sphere's distance from the origin.
+    rounding: f64,
 }
 
 impl SampledLoop {
-    /// Every sample and interior point, for clearance tests.
+    /// Every sample, circle midpoint and hull control point, for clearance
+    /// tests.
     fn all_points(&self) -> impl Iterator<Item = Vec3> + '_ {
         self.points
             .iter()
             .copied()
-            .chain(self.interiors.iter().flatten().copied())
+            .chain(self.bounds.iter().flat_map(|bound| match bound {
+                ChordBound::Circle(mid) => vec![*mid],
+                ChordBound::Hull(control) => control.iter().map(|&h| euclidean(h)).collect(),
+            }))
     }
 }
 
-/// How a wire reads: as a sampled loop, as no loop at all (a degenerate
-/// wire with no extent), or not at all.
+/// How a wire reads: as a sampled loop, as no loop at all (a wire with no
+/// edge of any length), or not at all (the caller abstains).
 enum WireReading {
     Loop(SampledLoop),
     NoExtent,
     Unsupported,
 }
 
-/// How one edge is walked: `(evaluate, first parameter, signed span,
-/// samples, is a circle)`.
-type EdgeWalk = (Box<dyn Fn(f64) -> Point3>, f64, f64, usize, bool);
+/// A spline edge as Bézier pieces over `[lo, hi]` of its curve, in
+/// parameter order, each split until its control points lie within
+/// [`PIECE_RADIUS`] of their centroid; `None` for a non-positive weight or
+/// past the split budget. Each knot span's Bézier is read by blossoming over
+/// the span's own control points, so a curve of many spans costs one pass.
+fn spline_pieces(
+    curve: &remus_math::nurbs::curve::NurbsCurve,
+    lo: f64,
+    hi: f64,
+    to_unit: &dyn Fn(Point3) -> Vec3,
+) -> Option<Vec<Vec<Homogeneous>>> {
+    let p = curve.degree();
+    let knots = curve.knots();
+    let (points, weights) = (curve.control_points(), curve.weights());
+    let n = points.len();
+    if p == 0 || n <= p || knots.len() != n + p + 1 {
+        return None;
+    }
+    let homogeneous = |index: usize| -> Option<Homogeneous> {
+        let weight = weights[index];
+        if !(weight > 0.0 && weight.is_finite()) {
+            return None;
+        }
+        let unit = to_unit(points[index]);
+        Some([
+            unit.x() * weight,
+            unit.y() * weight,
+            unit.z() * weight,
+            weight,
+        ])
+    };
+    let mut k = (knots[p..=n].partition_point(|&u| u <= lo) + p).saturating_sub(1);
+    k = k.clamp(p, n - 1);
+    let mut pieces = Vec::new();
+    while k < n && knots[k] < hi {
+        let (a, b) = (knots[k].max(lo), knots[k + 1].min(hi));
+        if b > a {
+            let window = (k - p..=k).map(homogeneous).collect::<Option<Vec<_>>>()?;
+            let control: Vec<Homogeneous> = (0..=p)
+                .map(|i| blossom(&window, knots, k, p, a, b, i))
+                .collect();
+            if control.iter().any(|h| !(h[3] > 0.0 && h[3].is_finite())) {
+                return None;
+            }
+            let mut stack = vec![(control, 0_u32)];
+            while let Some((piece, depth)) = stack.pop() {
+                let points: Vec<Vec3> = piece.iter().map(|&h| euclidean(h)).collect();
+                let (_, radius) = enclosing_ball(&points);
+                if radius <= PIECE_RADIUS {
+                    pieces.push(piece);
+                    continue;
+                }
+                if depth >= MAX_SPLIT_DEPTH {
+                    return None;
+                }
+                let (left, right) = split(&piece, 0.5);
+                // Popped last-in first: push the right half first.
+                stack.push((right, depth + 1));
+                stack.push((left, depth + 1));
+            }
+        }
+        k += 1;
+    }
+    Some(pieces)
+}
 
-/// Sample a wire of a sphere face about `center`, edge by edge in traversal
-/// order (chaining edges as `util::wire_polygon` does).
+/// The Bézier control point `i` of knot span `k` restricted to `(a, b)`:
+/// the blossom at `a` repeated `p - i` times and `b` repeated `i` times, by
+/// de Boor's triangle over the span's own control points `window` (as
+/// `properties::loop_nesting` reads spans).
+fn blossom(
+    window: &[Homogeneous],
+    knots: &[f64],
+    k: usize,
+    p: usize,
+    a: f64,
+    b: f64,
+    i: usize,
+) -> Homogeneous {
+    let mut d = window.to_vec();
+    for r in 1..=p {
+        let t = if r <= p - i { a } else { b };
+        for j in (r..=p).rev() {
+            let g = k - p + j;
+            let (lo, hi) = (knots[g], knots[g + p + 1 - r]);
+            let alpha = (t - lo) / (hi - lo);
+            for c in 0..4 {
+                d[j][c] = (d[j][c] - d[j - 1][c]).mul_add(alpha, d[j - 1][c]);
+            }
+        }
+    }
+    d[p]
+}
+
+/// The centroid of `points` and the largest distance from it.
+fn enclosing_ball(points: &[Vec3]) -> (Vec3, f64) {
+    #[allow(clippy::cast_precision_loss)]
+    let count = points.len().max(1) as f64;
+    let sum = points
+        .iter()
+        .fold(Vec3::new(0.0, 0.0, 0.0), |acc, &p| acc + p);
+    let center = sum * (1.0 / count);
+    let radius = points
+        .iter()
+        .map(|&p| (p - center).length())
+        .fold(0.0, f64::max);
+    (center, radius)
+}
+
+/// Sample a wire of a sphere face, edge by edge in traversal order (chaining
+/// edges as `util::wire_polygon` does), in unit coordinates about the
+/// sphere's centre. Circle samples are evaluated from the circle's centre
+/// relative to the sphere's, so they keep their precision far from the
+/// origin.
 #[allow(clippy::too_many_lines, clippy::cast_precision_loss)]
 fn sample_wire(
     topo: &Topology,
     wire_id: WireId,
-    center: Point3,
+    sphere: &SphericalSurface,
 ) -> Result<WireReading, CheckError> {
+    let center = sphere.center();
+    let radius = sphere.radius();
+    let to_unit = move |p: Point3| (p - center) * (1.0 / radius);
+    let origin = Point3::new(0.0, 0.0, 0.0);
+    let rounding = 64.0 * f64::EPSILON * (1.0 + (center - origin).length() / radius);
     let wire = topo.wire(wire_id)?;
-    let mut points: Vec<Point3> = Vec::new();
-    let mut interiors: Vec<Vec<Point3>> = Vec::new();
-    let mut circular: Vec<bool> = Vec::new();
+    let mut points: Vec<Vec3> = Vec::new();
+    let mut bounds: Vec<ChordBound> = Vec::new();
     let mut prev_end = None;
     for oriented in wire.edges() {
         let edge = topo.edge(oriented.edge())?;
@@ -141,113 +310,101 @@ fn sample_wire(
             return Ok(WireReading::Unsupported);
         };
         let closed = start == end;
-        let traversal_start = if forward { start_pt } else { end_pt };
+        let traversal_start = to_unit(if forward { start_pt } else { end_pt });
         prev_end = Some(if closed || forward { end } else { start });
-        let (evaluate, first, span, count, is_circle): EdgeWalk = match edge.curve() {
+        match edge.curve() {
             EdgeCurve::Circle(circle) => {
-                let circle = circle.clone();
+                // Exact in the sphere's frame: the circle's centre less the
+                // sphere's, then the circle's own axes.
+                let offset = (circle.center() - center) * (1.0 / radius);
+                let (u, v) = (circle.u_axis(), circle.v_axis());
+                let r = circle.radius() / radius;
+                let evaluate = |t: f64| offset + u * (r * t.cos()) + v * (r * t.sin());
                 let span = t1 - t0;
                 let count = (CIRCLE_SAMPLES_PER_TURN * span.abs() / std::f64::consts::TAU)
                     .ceil()
                     .max(4.0) as usize;
                 let first = if closed { circle.project(start_pt) } else { t0 };
-                (
-                    Box::new(move |t| circle.evaluate(t)),
-                    first,
-                    span,
-                    count,
-                    true,
-                )
+                let at = |k: f64| span.mul_add(k / count as f64, first);
+                let reversed = if closed {
+                    !forward
+                } else {
+                    (evaluate(at(0.0)) - traversal_start).length_squared()
+                        > (evaluate(at(count as f64)) - traversal_start).length_squared()
+                };
+                let param = |k: f64| {
+                    if reversed {
+                        at(count as f64 - k)
+                    } else {
+                        at(k)
+                    }
+                };
+                for k in 0..count {
+                    let base = k as f64;
+                    points.push(evaluate(param(base)));
+                    bounds.push(ChordBound::Circle(evaluate(param(base + 0.5))));
+                }
             }
             EdgeCurve::NurbsCurve(curve) => {
                 let (u0, u1) = curve.domain();
-                if closed {
-                    let span = u1 - u0;
-                    if !(span.is_finite() && span > 0.0) {
-                        return Ok(WireReading::Unsupported);
-                    }
+                let pieces = if closed {
+                    // From the seam vertex once round.
                     let seam = crate::util::nurbs_seam_parameter(curve, start_pt, u0, u1);
-                    let curve = curve.clone();
-                    (
-                        Box::new(move |t: f64| curve.evaluate(u0 + (t - u0).rem_euclid(span))),
-                        seam,
-                        span,
-                        SPLINE_SAMPLES,
-                        false,
-                    )
+                    spline_pieces(curve, seam, u1, &to_unit).and_then(|mut after| {
+                        after.extend(spline_pieces(curve, u0, seam, &to_unit)?);
+                        Some(after)
+                    })
                 } else {
-                    let curve = curve.clone();
-                    (
-                        Box::new(move |t| curve.evaluate(t)),
-                        t0,
-                        t1 - t0,
-                        SPLINE_SAMPLES,
-                        false,
-                    )
+                    spline_pieces(curve, t0.min(t1), t0.max(t1), &to_unit)
+                };
+                let Some(mut pieces) = pieces else {
+                    return Ok(WireReading::Unsupported);
+                };
+                let (Some(first), Some(last)) = (pieces.first(), pieces.last()) else {
+                    return Ok(WireReading::Unsupported);
+                };
+                let reversed = if closed {
+                    !forward
+                } else {
+                    (euclidean(first[0]) - traversal_start).length_squared()
+                        > (euclidean(last[last.len() - 1]) - traversal_start).length_squared()
+                };
+                if reversed {
+                    pieces.reverse();
+                    for piece in &mut pieces {
+                        piece.reverse();
+                    }
+                }
+                for piece in pieces {
+                    points.push(euclidean(piece[0]));
+                    bounds.push(ChordBound::Hull(piece));
                 }
             }
-            // A degenerate edge (a collapsed pole edge) bounds nothing.
-            EdgeCurve::Line if (end_pt - start_pt).length_squared() < super::COINCIDENT_SQ => {
-                continue;
-            }
+            // A collapsed edge (a pole) bounds nothing; any other line is
+            // not on the sphere.
+            EdgeCurve::Line if (end_pt - start_pt).length() <= rounding * radius => {}
             EdgeCurve::Line
             | EdgeCurve::Ellipse(_)
             | EdgeCurve::Hyperbola(_)
             | EdgeCurve::Parabola(_) => return Ok(WireReading::Unsupported),
-        };
-        let at = |k: f64| span.mul_add(k / count as f64, first);
-        // Walk the edge as the wire traverses it: a closed edge by its use's
-        // direction, an open one positionally from the end the walk enters.
-        let reversed = if closed {
-            !forward
-        } else {
-            (evaluate(at(0.0)) - traversal_start).length_squared()
-                > (evaluate(at(count as f64)) - traversal_start).length_squared()
-        };
-        let param = |k: f64| {
-            if reversed {
-                at(count as f64 - k)
-            } else {
-                at(k)
-            }
-        };
-        let interior_count = if is_circle { 1 } else { SPLINE_INTERIOR };
-        for k in 0..count {
-            let base = k as f64;
-            points.push(evaluate(param(base)));
-            interiors.push(
-                (1..=interior_count)
-                    .map(|i| evaluate(param(base + i as f64 / (interior_count + 1) as f64)))
-                    .collect(),
-            );
-            circular.push(is_circle);
         }
     }
     let Some(&first) = points.first() else {
         return Ok(WireReading::NoExtent);
     };
+    // However small, a loop with samples is never skipped: one that cannot
+    // be told from a point at this scale makes the read abstain.
     if points.len() < 3
         || points
             .iter()
-            .all(|p| (*p - first).length_squared() < super::COINCIDENT_SQ)
+            .all(|p| (*p - first).length() <= 1e3 * rounding)
     {
-        return Ok(WireReading::NoExtent);
+        return Ok(WireReading::Unsupported);
     }
-    let unit = |p: Point3| (p - center).normalize().ok();
-    let Some(points) = points.into_iter().map(unit).collect::<Option<Vec<_>>>() else {
-        return Ok(WireReading::Unsupported);
-    };
-    let Some(interiors) = interiors
-        .into_iter()
-        .map(|chord| chord.into_iter().map(unit).collect::<Option<Vec<_>>>())
-        .collect::<Option<Vec<_>>>()
-    else {
-        return Ok(WireReading::Unsupported);
-    };
     Ok(WireReading::Loop(SampledLoop {
         points,
-        interiors,
-        circular,
+        bounds,
+        rounding,
     }))
 }
 
@@ -289,44 +446,136 @@ impl Chart {
         Some(Point2::new(q.dot(self.e1) / den, q.dot(self.e2) / den))
     }
 
+    /// The chart's conformal factor at a unit direction, `1 / (1 - q . N)`.
+    fn conformal(&self, q: Vec3) -> f64 {
+        1.0 / (1.0 - q.dot(self.pole)).max(AT_POLE)
+    }
+
     /// The unit direction of a point about the centre; `None` at the centre.
     fn direction(&self, point: Point3) -> Option<Vec3> {
         (point - self.center).normalize().ok()
     }
 
+    /// The image of a unit-coordinate point (any distance from the centre).
+    fn unit_image(&self, p: Vec3) -> Option<(Point2, f64)> {
+        let q = p.normalize().ok()?;
+        Some((self.image(q)?, self.conformal(q)))
+    }
+
     /// A sampled loop's image with the band of every chord; `None` when a
-    /// sample is the pole or a circle chord's image arc is not minor.
+    /// sample is the pole, a circle chord's image arc is not minor, or a
+    /// spline chord cannot be bounded within the budget.
     fn read(&self, sampled: &SampledLoop) -> Option<ChartLoop> {
-        let points = sampled
-            .points
-            .iter()
-            .map(|&q| self.image(q))
-            .collect::<Option<Vec<_>>>()?;
-        let n = points.len();
-        let mut bands = Vec::with_capacity(n);
+        let n = sampled.points.len();
+        let mut image = ChartLoop {
+            points: Vec::with_capacity(n),
+            polygon: Vec::with_capacity(n),
+            bands: Vec::with_capacity(n),
+        };
         for k in 0..n {
-            let (a, b) = (points[k], points[(k + 1) % n]);
-            let interior = sampled.interiors[k]
-                .iter()
-                .map(|&q| self.image(q))
-                .collect::<Option<Vec<_>>>()?;
-            let band = if sampled.circular[k] {
-                arc_sagitta(a, *interior.first()?, b)?
-            } else {
-                SPLINE_BAND_FACTOR
-                    * interior
-                        .iter()
-                        .map(|&m| segment_distance_2d(m, a, b))
-                        .fold(0.0, f64::max)
-            };
-            let scale = 1.0 + a.x().abs().max(a.y().abs()) + b.x().abs().max(b.y().abs());
-            bands.push(BAND_SLACK.mul_add(scale, band));
+            match &sampled.bounds[k] {
+                ChordBound::Circle(mid) => {
+                    let (fa, ca) = self.unit_image(sampled.points[k])?;
+                    let (fm, cm) = self.unit_image(*mid)?;
+                    let (fb, cb) = self.unit_image(sampled.points[(k + 1) % n])?;
+                    // A chord too short for the arc's side to be read in
+                    // rounding is bounded by its midpoint's distances.
+                    let band = arc_sagitta(fa, fm, fb).or_else(|| {
+                        let scale = 1.0 + fa.x().abs().max(fa.y().abs());
+                        ((fb - fa).length() <= 1e-9 * scale)
+                            .then(|| (fm - fa).length() + (fm - fb).length())
+                    })?;
+                    image.push(
+                        fa,
+                        band + Self::slack(sampled.rounding, ca.max(cm).max(cb), fa, fb),
+                    );
+                }
+                ChordBound::Hull(control) => {
+                    self.read_hull(control, 0, sampled.rounding, &mut image)?;
+                }
+            }
         }
-        Some(ChartLoop {
-            polygon: points.iter().map(|p| (p.x(), p.y())).collect(),
-            points,
-            bands,
-        })
+        Some(image)
+    }
+
+    /// Rounding slack of a chord whose conformal factor is at most
+    /// `conformal`: unit-coordinate rounding mapped into the chart, plus a
+    /// relative term at the ends' scale.
+    fn slack(rounding: f64, conformal: f64, fa: Point2, fb: Point2) -> f64 {
+        let scale = 1.0 + fa.x().abs().max(fa.y().abs()) + fb.x().abs().max(fb.y().abs());
+        (8.0 * rounding).mul_add(conformal, BAND_SLACK * scale)
+    }
+
+    /// Push the chords of one spline piece with certified bands, halving it
+    /// until each band is at most [`SPLINE_BAND_TARGET`] of its chart scale.
+    ///
+    /// The piece lies in the convex hull of its control points (positive
+    /// weights), within `d`, the hull's largest distance from the chord
+    /// `a b`, of that chord. The chart map `p -> stereo(p / |p|)` has
+    /// derivative norm at most `1 / (|p| (1 - cos angle(p, N)))`, bounded
+    /// over the ball about the hull's centroid that holds the hull, so a
+    /// curve point lies within `L d` of the image of a chord point. That
+    /// image, the chord seen from the centre, is the great-circle arc from
+    /// `a` to `b`, which maps to a circular arc: within its exact sagitta of
+    /// the chart chord.
+    fn read_hull(
+        &self,
+        control: &[Homogeneous],
+        depth: u32,
+        rounding: f64,
+        image: &mut ChartLoop,
+    ) -> Option<()> {
+        let points: Vec<Vec3> = control.iter().map(|&h| euclidean(h)).collect();
+        let (a, b) = (points[0], points[points.len() - 1]);
+        let deviation = points
+            .iter()
+            .map(|&p| segment_distance(p, a, b))
+            .fold(0.0, f64::max);
+        let (centroid, radius) = enclosing_ball(&points);
+        let lipschitz = self.ball_lipschitz(centroid, radius);
+        let bounded = lipschitz.and_then(|lipschitz| {
+            let (fa, _) = self.unit_image(a)?;
+            let (fb, _) = self.unit_image(b)?;
+            let (fm, _) = self.unit_image(a + b)?;
+            // The chord's image lies within `L |b - a|` of `fa` too, which
+            // bounds a chord too short for its arc's side to be read.
+            let reach = lipschitz * (b - a).length();
+            let chord_image = arc_sagitta(fa, fm, fb).map_or(reach, |sagitta| sagitta.min(reach));
+            let band = lipschitz.mul_add(deviation, chord_image);
+            Some((fa, fb, band, lipschitz))
+        });
+        if let Some((fa, fb, band, lipschitz)) = bounded {
+            let scale = 1.0 + fa.x().abs().max(fa.y().abs()) + fb.x().abs().max(fb.y().abs());
+            if band <= SPLINE_BAND_TARGET * scale || depth >= MAX_SPLIT_DEPTH {
+                if image.points.len() >= MAX_SPLINE_CHORDS {
+                    return None;
+                }
+                image.push(fa, band + Self::slack(rounding, lipschitz, fa, fb));
+                return Some(());
+            }
+        } else if depth >= MAX_SPLIT_DEPTH {
+            return None;
+        }
+        let (left, right) = split(control, 0.5);
+        self.read_hull(&left, depth + 1, rounding, image)?;
+        self.read_hull(&right, depth + 1, rounding, image)
+    }
+
+    /// An upper bound of the chart map's derivative norm over the ball
+    /// `(centroid, radius)`; `None` when the ball reaches the centre or the
+    /// pole's direction.
+    fn ball_lipschitz(&self, centroid: Vec3, radius: f64) -> Option<f64> {
+        let distance = centroid.length();
+        if distance <= radius {
+            return None;
+        }
+        let half = (radius / distance).asin();
+        let angle = (centroid.dot(self.pole) / distance).clamp(-1.0, 1.0).acos() - half;
+        if angle <= 0.0 {
+            return None;
+        }
+        let gap = 2.0 * (0.5 * angle).sin().powi(2);
+        Some(1.0 / ((distance - radius) * gap))
     }
 }
 
@@ -368,6 +617,12 @@ struct ChartLoop {
 }
 
 impl ChartLoop {
+    fn push(&mut self, point: Point2, band: f64) {
+        self.points.push(point);
+        self.polygon.push((point.x(), point.y()));
+        self.bands.push(band);
+    }
+
     /// The loop's winding about `p`, or `None` within some chord's band.
     fn winding(&self, p: Point2) -> Option<i32> {
         let n = self.points.len();
@@ -415,7 +670,7 @@ impl StereoTrim {
         let face = topo.face(face_id)?;
         let mut loops = Vec::new();
         for wire in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
-            match sample_wire(topo, wire, sphere.center())? {
+            match sample_wire(topo, wire, sphere)? {
                 WireReading::Loop(sampled) => loops.push(sampled),
                 WireReading::NoExtent => {}
                 WireReading::Unsupported => return Ok(StereoReading::Undecided),
@@ -504,12 +759,13 @@ impl CapHoles {
     pub(super) fn build(
         topo: &Topology,
         face_id: FaceId,
-        center: Point3,
+        sphere: &SphericalSurface,
         outside: Vec3,
     ) -> Result<Option<Self>, CheckError> {
+        let center = sphere.center();
         let mut holes = Vec::new();
         for &wire in topo.face(face_id)?.inner_wires() {
-            let sampled = match sample_wire(topo, wire, center)? {
+            let sampled = match sample_wire(topo, wire, sphere)? {
                 WireReading::Loop(sampled) => sampled,
                 WireReading::NoExtent => continue,
                 WireReading::Unsupported => return Ok(None),
@@ -640,13 +896,26 @@ mod tests {
                         .iter()
                         .any(|p| (*p - polygon[0]).length_squared() >= super::super::COINCIDENT_SQ)
             })
-            .map(|polygon| SampledLoop {
-                points: polygon
+            .map(|polygon| {
+                let points: Vec<Vec3> = polygon
                     .iter()
                     .map(|&p| (p - center).normalize().unwrap())
-                    .collect(),
-                interiors: vec![Vec::new(); polygon.len()],
-                circular: vec![false; polygon.len()],
+                    .collect();
+                let n = points.len();
+                let bounds = (0..n)
+                    .map(|k| {
+                        let (a, b) = (points[k], points[(k + 1) % n]);
+                        ChordBound::Hull(vec![
+                            [a.x(), a.y(), a.z(), 1.0],
+                            [b.x(), b.y(), b.z(), 1.0],
+                        ])
+                    })
+                    .collect();
+                SampledLoop {
+                    points,
+                    bounds,
+                    rounding: 64.0 * f64::EPSILON,
+                }
             })
             .collect();
         if loops.is_empty() {

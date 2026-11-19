@@ -10,26 +10,37 @@ Seed 1146's kept hemisphere is pierced twice by the tube near its rim; the
 cap path decides its planar rim exactly but tested the holes in the same
 axis-aligned projection, which folds once the placement tilts the rim. Both
 now read in stereographic charts (`check/src/classify/boundary/sphere_stereo.rs`),
-with every loop sampled along its own edges and every chord carrying a band
-the edge stays within: the exact sagitta of the image arc for a circle edge
-(stereographic projection maps circles to circles), twice the measured
-interior deviation for a spline edge (not certified). A point inside a band
-abstains. A cap keeps its exact rim half-space; each hole is read in a chart
+with every loop sampled along its own edges in the sphere's own frame
+(circle samples from the circle's centre relative to the sphere's, so they
+keep their precision far from the origin) and every chord carrying a
+certified band the edge stays within: the exact sagitta of the image arc for
+a circle edge (stereographic projection maps circles to circles); for a
+spline edge, split into rational Bézier pieces with positive weights, the
+control hull's distance from the 3D chord times a bound of the chart map's
+derivative over a ball holding the hull, plus the exact sagitta of the
+chord's own image, pieces halved until the band is small. Every band
+carries the rounding of points at the sphere's distance from the origin. A point inside a band
+abstains. A cap (every rim edge a circle on one plane to rounding, read from the carriers, not samples) keeps its exact rim half-space; each hole is read in a chart
 from a pole clear of that hole, against the sphere point farthest off the
 cap (in no hole), so no winding convention is used. A pole-holding or
 axis-winding trim the `(longitude, latitude)` chart declines is read from the
 best of 26 fixed poles clear of every loop, the pole's side taken from the
 loops' total signed area under the stored-normal winding the assembly
 restores; a winding that is not that of a simple trim abstains. Neither path
-falls back to the projection: a trim that cannot be read abstains (a face
-with no loop of any extent keeps the old path). The boundary test
+falls back to the projection: a trim that cannot be read, or a loop too
+small to tell from a point at the sphere's scale, abstains (only a face with
+no edge of any length keeps the old path). The boundary test
 (`face_trim_contains`, one-shot and prepared) decides these faces the same
 way, the cap rim included. Faces the narrower exact sphere paths decide are
 untouched. Independent review (gpt-6.2-sol) found three miscounts in the
 first version (a circle hole's sagitta, a hole too close to the cap's far
 pole falling back to the projection, the boundary test reading a cap rim from
 its inscribed polygon); each has a reproducer in
-`boundary/sphere_review_tests.rs`. Tests:
+`boundary/sphere_review_tests.rs`. Its scoped re-check found four more (a
+spline bump between measured probes, circle samples rounded a billion
+units out, a hole below an absolute size cutoff, a rim of arcs on two
+nearly equal planes taken for a cap), each reproduced in
+`boundary/sphere_recheck_tests.rs` and fixed. Tests:
 `regress_opseq_sphere_torus_orientation.rs::ray_vote_pole_piece_witness`
 un-ignored and the matrix's B264 probe allowance removed (every placed cell
 agrees at all 696 probes); `regress_sphere_pole_piece_trims.rs` (offset bore

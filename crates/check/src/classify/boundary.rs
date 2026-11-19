@@ -1011,36 +1011,60 @@ fn count_sphere_cap_crossings(
     count_sphere_cap_crossings_with_trim(topo, face_id, None, hits, sph)
 }
 
-/// The plane of a spherical cap's outer loop and the side of it the face
-/// occupies: `(a rim point, unit plane normal, +1 or -1)`, with the cap the
-/// points `x` of the sphere where `(x - rim point) . normal * side >= 0`.
-/// `None` when the outer loop is not planar (not a cap) or its side is not
-/// read.
+/// The plane of a spherical cap's rim and the side of it the face occupies:
+/// `(a point of the plane, unit plane normal, +1 or -1)`, with the cap the
+/// points `x` of the sphere where `(x - point) . normal * side >= 0`.
+///
+/// A cap is decided from the rim's own carriers, not its samples: every
+/// outer-wire edge a circle (collapsed edges aside), all on one plane to
+/// rounding. A rim of circle arcs on nearly equal planes passes any sampled
+/// planarity test without being a plane section (#1869 re-check), so it is
+/// left to the paths that read its arcs. `None` when the rim is not one
+/// plane section or its side is not read.
+///
+/// # Errors
+///
+/// Returns an error if a topology lookup fails.
 fn sphere_cap_plane(
+    topo: &Topology,
+    face_id: FaceId,
     trim_data: &FaceTrimData,
     sph: &remus_math::surfaces::SphericalSurface,
-) -> Option<(Point3, Vec3, f64)> {
+) -> Result<Option<(Point3, Vec3, f64)>, CheckError> {
+    let origin = Point3::new(0.0, 0.0, 0.0);
+    let scale = (sph.center() - origin).length() + sph.radius();
+    let rounding = 16.0 * f64::EPSILON;
+    let mut plane: Option<(Point3, Vec3)> = None;
+    for oriented in topo.wire(topo.face(face_id)?.outer_wire())?.edges() {
+        let edge = topo.edge(oriented.edge())?;
+        match edge.curve() {
+            EdgeCurve::Circle(circle) => match plane {
+                None => plane = Some((circle.center(), circle.normal())),
+                Some((point, normal)) => {
+                    if circle.normal().cross(normal).length() > rounding
+                        || (circle.center() - point).dot(normal).abs() > rounding * scale
+                    {
+                        return Ok(None);
+                    }
+                }
+            },
+            EdgeCurve::Line
+                if (topo.vertex(edge.end())?.point() - topo.vertex(edge.start())?.point())
+                    .length()
+                    <= rounding * scale => {}
+            EdgeCurve::Line
+            | EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_)
+            | EdgeCurve::NurbsCurve(_) => return Ok(None),
+        }
+    }
+    let Some((ref_pt, plane_normal)) = plane else {
+        return Ok(None);
+    };
     let verts = &trim_data.outer;
     if verts.len() < 3 {
-        return None;
-    }
-
-    let plane_normal = polygon_normal(verts);
-    let n_len = plane_normal.length();
-    if n_len < 1e-12 {
-        return None; // degenerate or self-intersecting boundary
-    }
-    let plane_normal = plane_normal * (1.0 / n_len);
-    let ref_pt = verts[0];
-
-    // Planar to tolerance? A cap boundary is; a lune's is not.
-    let radius = sph.radius();
-    let planarity_tol = 1e-9_f64.mul_add(radius, 1e-9);
-    if verts
-        .iter()
-        .any(|v| ((*v - ref_pt).dot(plane_normal)).abs() > planarity_tol)
-    {
-        return None;
+        return Ok(None);
     }
 
     // Which cap does the face occupy? Outward surface normal at a boundary
@@ -1076,12 +1100,12 @@ fn sphere_cap_plane(
         }
     }
     if inward_side.abs() < 1e-12 {
-        return None;
+        return Ok(None);
     }
     // +1 when the face lies on the +plane_normal side, -1 otherwise.
     let cap_sign = if inward_side > 0.0 { 1.0 } else { -1.0 };
 
-    Some((ref_pt, plane_normal, cap_sign))
+    Ok(Some((ref_pt, plane_normal, cap_sign)))
 }
 
 /// A cap's holes, read on first need.
@@ -1108,8 +1132,14 @@ fn sphere_cap_contains(
     point: Point3,
     sph: &remus_math::surfaces::SphericalSurface,
 ) -> Result<Option<bool>, CheckError> {
-    // Exact: the cap is every point of the sphere on this side of the plane.
-    if (point - ref_pt).dot(plane_normal) * cap_sign < -HALF_SPACE_EPS {
+    // Exact: the cap is every point of the sphere on this side of the plane,
+    // to the rounding of the side test at the point's distance from the
+    // origin. The closed face holds its rim; a ray through the rim passes
+    // through an edge, where the boundary skeleton makes the vote abstain.
+    let origin = Point3::new(0.0, 0.0, 0.0);
+    let side = (point - ref_pt).dot(plane_normal) * cap_sign;
+    let rounding = 16.0 * f64::EPSILON * ((point - origin).length() + (ref_pt - origin).length());
+    if side < -rounding.max(HALF_SPACE_EPS) {
         return Ok(Some(false));
     }
     if topo.face(face_id)?.inner_wires().is_empty() {
@@ -1120,12 +1150,8 @@ fn sphere_cap_contains(
     // near the rim folds over the cap and its shadow takes in hits it does
     // not hold.
     if matches!(holes, CapHolesRead::Unread) {
-        *holes = match sphere_stereo::CapHoles::build(
-            topo,
-            face_id,
-            sph.center(),
-            plane_normal * -cap_sign,
-        )? {
+        *holes = match sphere_stereo::CapHoles::build(topo, face_id, sph, plane_normal * -cap_sign)?
+        {
             Some(cap_holes) => CapHolesRead::Read(cap_holes),
             None => CapHolesRead::Unreadable,
         };
@@ -1156,7 +1182,7 @@ fn count_sphere_cap_crossings_with_trim(
         owned_trim = FaceTrimData::build(topo, face_id)?;
         &owned_trim
     };
-    let Some(cap) = sphere_cap_plane(trim_data, sph) else {
+    let Some(cap) = sphere_cap_plane(topo, face_id, trim_data, sph)? else {
         return Ok(None);
     };
     let mut holes = CapHolesRead::Unread;
@@ -2199,7 +2225,7 @@ pub fn sphere_pole_trim_contains(
         return Ok(None);
     };
     let on_sphere = sphere.center() + direction * sphere.radius();
-    if let Some(cap) = sphere_cap_plane(trim, sphere) {
+    if let Some(cap) = sphere_cap_plane(topo, face_id, trim, sphere)? {
         let mut holes = CapHolesRead::Unread;
         return sphere_cap_contains(topo, face_id, cap, &mut holes, on_sphere, sphere)?
             .map(Some)
@@ -3022,6 +3048,9 @@ mod torus_contact_tests;
 
 #[cfg(test)]
 mod sphere_review_tests;
+
+#[cfg(test)]
+mod sphere_recheck_tests;
 
 #[cfg(test)]
 mod uv_loop_center_tests {
