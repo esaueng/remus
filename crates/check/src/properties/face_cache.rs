@@ -86,6 +86,13 @@
 //! nesting is undecided is refused by the integrator, and refusals are never
 //! cached.
 //!
+//! A cone face's reading turns on decisions made against its apex (which
+//! nappe it is charted on, whether a wrapping trim reaches below the apex)
+//! that rounding of a translated input, or a carrier moved within the key's
+//! rounding, can tip into a refusal. Its volume terms are therefore served
+//! only from an identical entry about the same reference, never re-referenced
+//! or translated, so a hit is always the uncached reading.
+//!
 //! # Key
 //!
 //! The key holds:
@@ -233,8 +240,10 @@ struct Value {
     /// The certificate of a reading taken on a fitted boundary.
     fitted_boundary: Option<FittedBoundaryReading>,
     /// Whether the integrator's choice of path turns on the reference (a
-    /// cylinder or cone face with a fitted trim): such an entry answers only
-    /// a request about its own reference.
+    /// cylinder or cone face with a fitted trim), or its reading on decisions
+    /// against an apex (every cone face; see the module docs): such an entry
+    /// answers only a request about its own reference, from identical
+    /// content.
     reference_bound: bool,
     /// The inner-loop nesting the integration used, for a planar face with
     /// at least two inner wires (see [`nesting_stamp`]).
@@ -304,7 +313,10 @@ impl Request {
         let mut value = self.integrate(topo, face)?;
         if matches!(self, Self::FixedAbout { .. } | Self::Volume { .. }) {
             value.nesting = nesting_stamp(topo, face);
-            value.reference_bound = reads_fitted_boundary(topo, face);
+            value.reference_bound = reads_fitted_boundary(topo, face)
+                || topo
+                    .face(face)
+                    .is_ok_and(|f| matches!(f.surface(), FaceSurface::Cone(_)));
         }
         Ok(value)
     }

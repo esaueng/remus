@@ -28,6 +28,8 @@ mod cone_green;
 #[cfg(test)]
 mod cone_green_tests;
 #[cfg(test)]
+mod cone_nappe_tests;
+#[cfg(test)]
 mod cylinder_band_tests;
 mod cylinder_green;
 #[cfg(test)]
@@ -246,7 +248,9 @@ pub struct FaceContribution {
 /// and is not one latitude (an oblique rim) is a strand of a boundary, not a
 /// patch: the face runs from it to the cone's apex, or to the cylinder's
 /// other wrapping rims, wherever an odd number of those strands lie above.
-/// Such a cone face reaching below its apex (`v < 0`) is refused.
+/// A cone face below its carrier's apex (`v < 0`) is read on the carrier
+/// with its axis reversed, where it lies at `v > 0`; a face reaching both
+/// nappes is refused.
 ///
 /// A face whose whole boundary is ONE closed edge has a single boundary
 /// vertex, so it cannot bound its own domain out of the surface's analytic
@@ -869,7 +873,12 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
             }
             Ok(sampled)
         }
-        FaceSurface::Cone(s) => {
+        FaceSurface::Cone(carrier) => {
+            // Every reading below charts the face at `v > 0`: a face below
+            // its carrier's apex is read on the reversed-axis carrier, where
+            // it lies above it (see `upper_nappe_cone`).
+            let upper = upper_nappe_cone(topo, face_id, carrier)?;
+            let s = upper.as_ref().unwrap_or(carrier);
             let rule = IntegrationRule {
                 cone_apex: Some(s.apex()),
                 ..rule
@@ -1605,6 +1614,97 @@ fn face_boundary_v_extent<S: ParametricSurface>(
             "face boundary has no finite extent on its surface".into(),
         ))
     }
+}
+
+/// The carrier a cone face is read on: `None` for `cone` itself, or the
+/// cone with its axis reversed when the face lies below `cone`'s apex.
+///
+/// `ConicalSurface` is the double cone `A + v (cos a ρ(u) + sin a â)`. At
+/// `v < 0` the point at longitude `u` lies at `−ρ(u)`, half a turn round the
+/// axis from the longitude `project_point` answers (the point's own), so a
+/// face charted at `v < 0` by projection and read back by evaluation is its
+/// own mirror image across the axis: the right area, the wrong moments. The
+/// same nappe is the `v > 0` nappe of the cone with the axis reversed (same
+/// apex and half-angle, the frame `(x̂, −ŷ, −â)`), where projection and
+/// evaluation invert each other. Its parametric normal `∂P/∂u × ∂P/∂v`
+/// points away from the axis, as the face's own does on that nappe, so the
+/// face's sense carries over unchanged.
+///
+/// The nappe is the side of the apex the sampled boundary reaches farther
+/// into. A face whose boundary also reaches the other side by more than
+/// rounding of its reach (or the tolerance of a vertex at the apex) is
+/// refused: no single chart reads it. A face lying wholly within its vertex
+/// tolerance of the apex keeps the carrier itself: it is below tolerance by
+/// construction, on either nappe.
+/// A cone whose half-angle has `sin a ≤ 1e-15` is refused too: there
+/// `project_point` reads `v` off the radius, never negative, so the nappes
+/// cannot be told apart.
+///
+/// # Errors
+///
+/// [`CheckError::IntegrationFailed`] for a face on both nappes or on a
+/// degenerate cone, and the errors of [`face_boundary_v_extent`].
+fn upper_nappe_cone(
+    topo: &Topology,
+    face_id: FaceId,
+    cone: &remus_math::surfaces::ConicalSurface,
+) -> Result<Option<remus_math::surfaces::ConicalSurface>, CheckError> {
+    if cone.half_angle().sin() <= 1e-15 {
+        return Err(CheckError::IntegrationFailed(
+            "a cone face's carrier is too flat to tell its nappes apart".into(),
+        ));
+    }
+    let (lo, hi) = face_boundary_v_extent(topo, face_id, cone)?;
+    if lo >= 0.0 {
+        return Ok(None);
+    }
+    // How far past the apex the boundary may reach and still be on one
+    // nappe: rounding of its reach, and the tolerance of a vertex that is
+    // the apex within that tolerance (a pointed face's apex vertex). A
+    // vertex elsewhere excuses nothing, however loose.
+    let face = topo.face(face_id)?;
+    let mut slack = 1e-9 * lo.abs().max(hi.abs());
+    for wire in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+        for oriented in topo.wire(wire)?.edges() {
+            let edge = topo.edge(oriented.edge())?;
+            for vertex in [edge.start(), edge.end()] {
+                let vertex = topo.vertex(vertex)?;
+                if (vertex.point() - cone.apex()).length() <= vertex.tolerance() {
+                    slack = slack.max(vertex.tolerance());
+                }
+            }
+        }
+    }
+    // The nappe is the side the boundary reaches farther into; the slack
+    // only excuses the other side's overshoot, so it never keeps a face on
+    // the wrong chart.
+    let below = -lo > hi;
+    if (if below { hi } else { -lo }) > slack {
+        return Err(CheckError::IntegrationFailed(
+            "a cone face's boundary reaches both nappes of its carrier".into(),
+        ));
+    }
+    Ok(below.then(|| cone.with_reversed_axis()))
+}
+
+/// The carrier every exact cone reader charts `face_id` on.
+///
+/// That is `cone` itself, or the cone with its axis reversed when the face's
+/// boundary lies below `cone`'s apex (see the private `upper_nappe_cone` for
+/// the decision). The boundary is sampled along every edge, not only at its
+/// vertices.
+///
+/// # Errors
+///
+/// [`CheckError::IntegrationFailed`] for a face whose boundary reaches both
+/// nappes, or a carrier too flat to tell them apart, and the topology and
+/// edge-domain errors of reading the boundary.
+pub fn cone_chart_carrier(
+    topo: &Topology,
+    face_id: FaceId,
+    cone: &remus_math::surfaces::ConicalSurface,
+) -> Result<remus_math::surfaces::ConicalSurface, CheckError> {
+    Ok(upper_nappe_cone(topo, face_id, cone)?.unwrap_or_else(|| cone.clone()))
 }
 
 /// Integrate a torus face bounded by two monotone tube-wrapping rims.
@@ -6084,7 +6184,9 @@ macro_rules! define_trimmed_integrator {
                     // Below the apex (`v < 0`) the cone's chart is the
                     // carrier's mirror image across its axis, which reads the
                     // area but not the moments; across it, the boundary is not
-                    // on one nappe. Refuse rather than return either.
+                    // on one nappe. The cone arm charts every face at `v > 0`
+                    // (`upper_nappe_cone`), so only a strand it cannot place
+                    // gets here: refuse rather than return either.
                     Some(_) => {
                         return Err(CheckError::IntegrationFailed(
                             "a cone face's wrapping boundary reaches below its apex".into(),

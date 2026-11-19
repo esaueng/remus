@@ -111,20 +111,55 @@ fn a_seamless_pointed_cone_face_reads_the_closed_form_cone() {
 }
 
 /// The same rim on the cone's other nappe (the carrier's axis reversed, so
-/// the face lies at `v < 0`) is refused: there the chart is the carrier's
-/// mirror image across its axis and would read the area but not the
-/// moments.
+/// the face lies at `v < 0`) reads the same closed-form cone. There the
+/// carrier's own chart is the face's mirror image across its axis, which
+/// once read the area but not the moments; the face is charted on the
+/// reversed-axis carrier instead, where it lies at `v > 0`.
 #[test]
-fn a_seamless_face_below_the_apex_is_refused() {
-    let section = &sections(1.0)[1];
-    let mut topo = Topology::new();
-    let below = ConicalSurface::new(section.apex, -section.axis, section.a).unwrap();
-    let face = seamless_face(&mut topo, section, below);
-    let error = integrate_face_fixed_about(&topo, face, 5, section.apex).unwrap_err();
-    assert!(
-        error.to_string().contains("below its apex"),
-        "unexpected refusal: {error}"
-    );
+fn a_seamless_face_below_the_apex_reads_the_closed_form_cone() {
+    for scale in [1e-3, 1.0, 1e3] {
+        for (index, section) in sections(scale).iter().enumerate() {
+            let mut topo = Topology::new();
+            let below = ConicalSurface::new(section.apex, -section.axis, section.a).unwrap();
+            let face = seamless_face(&mut topo, section, below);
+            let reference = section.apex + Vec3::new(0.5, 0.25, -1.0) * scale;
+            let (volume, moments) = section.lateral_terms(reference);
+            let area = lateral_area(section);
+            let v_scale = section.d.powi(3);
+            let label = format!("section {index} below the apex at scale {scale}");
+
+            let exact = integrate_face_about(&topo, face, &PropertiesOptions::default(), reference)
+                .unwrap();
+            assert!(
+                rel(exact.area, area, area) < 1e-12,
+                "{label}: area {} vs {area}",
+                exact.area
+            );
+            assert!(
+                rel(exact.volume, volume, v_scale) < 1e-12,
+                "{label}: volume {} vs {volume}",
+                exact.volume
+            );
+            let measured = [
+                exact.volume_moment_x,
+                exact.volume_moment_y,
+                exact.volume_moment_z,
+            ];
+            let m_scale = v_scale * (section.d + (reference - section.apex).length());
+            for (axis, (measured, exact)) in measured.into_iter().zip(moments).enumerate() {
+                assert!(
+                    rel(measured, exact, m_scale) < 1e-11,
+                    "{label}: moment {axis} {measured} vs {exact}"
+                );
+            }
+            let sampled = integrate_face_about(&topo, face, &refined(), reference).unwrap();
+            assert!(
+                rel(sampled.volume, volume, v_scale) < 1e-3,
+                "{label}: sampled volume {} vs {volume}",
+                sampled.volume
+            );
+        }
+    }
 }
 
 /// The band on a cylinder of radius `r` between the circle `z = 0` and the

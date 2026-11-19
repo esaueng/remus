@@ -669,3 +669,43 @@ fn cone_partial_v_is_unit_at_v1() {
         dv.length()
     );
 }
+
+/// Below the apex `project_point` answers a point's own longitude, which
+/// `evaluate` at `v < 0` puts half a turn away (the mirror across the axis);
+/// the reversed-axis cone charts that nappe at `v > 0`, where the two invert
+/// each other, with the parametric normal still pointing off the axis.
+#[test]
+fn cone_with_reversed_axis_charts_the_lower_nappe() {
+    let cone =
+        ConicalSurface::new(Point3::new(1.0, -2.0, 3.0), Vec3::new(0.3, 0.4, 1.0), 0.7).unwrap();
+    let flipped = cone.with_reversed_axis();
+    assert_eq!(flipped.apex(), cone.apex());
+    assert_eq!(flipped.axis(), -cone.axis());
+    assert!(approx_eq(
+        flipped.x_axis().cross(flipped.y_axis()).dot(flipped.axis()),
+        1.0
+    ));
+    for (u, v) in [(0.4, -1.5), (2.9, -0.2), (5.5, -3.0)] {
+        // A point on the lower nappe at longitude u.
+        let p = cone.evaluate(u + PI, v);
+        let (pu, pv) = cone.project_point(p);
+        assert!(pv < 0.0);
+        // The carrier's own chart reads it back mirrored across the axis.
+        assert!(!point_approx_eq(cone.evaluate(pu, pv), p));
+        let (fu, fv) = flipped.project_point(p);
+        assert!(approx_eq(fv, -v));
+        assert!(point_approx_eq(flipped.evaluate(fu, fv), p));
+        // Both normals point away from the axis.
+        let off_axis = |s: &ConicalSurface, n: Vec3| {
+            let d = p - s.apex();
+            n.dot(d - s.axis() * d.dot(s.axis())) > 0.0
+        };
+        let h = 1e-6;
+        let du = (flipped.evaluate(fu + h, fv) - flipped.evaluate(fu - h, fv)) * (0.5 / h);
+        let dv = (flipped.evaluate(fu, fv + h) - flipped.evaluate(fu, fv - h)) * (0.5 / h);
+        assert!(off_axis(&flipped, du.cross(dv)));
+        let du = (cone.evaluate(u + PI + h, v) - cone.evaluate(u + PI - h, v)) * (0.5 / h);
+        let dv = (cone.evaluate(u + PI, v + h) - cone.evaluate(u + PI, v - h)) * (0.5 / h);
+        assert!(off_axis(&cone, du.cross(dv)));
+    }
+}
