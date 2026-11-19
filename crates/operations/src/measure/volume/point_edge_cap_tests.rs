@@ -11,7 +11,8 @@
 //! about the axis point `A`, with `ρ` linear in `z`, so every volume moment
 //! is a closed-form trigonometric factor times `∫ zᵐ ρ(z)ᵏ dz` (degree ≤ 4,
 //! integrated exactly by Boole's rule); each sector cap's area is `θρ²/2`
-//! and each profile cap's area the trapezoid's.
+//! and each profile cap's area the trapezoid's. About a tilted axis the same
+//! moments are taken in the axis frame and rotated into the world.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -44,12 +45,24 @@ struct Case {
     angle: f64,
     scale: f64,
     axis: Point3,
+    /// Unit axis direction and the profile's radial direction, orthogonal.
+    dir: Vec3,
+    radial: Vec3,
+}
+
+impl Case {
+    /// The frame `(radial, dir × radial, dir)` the revolve turns from its
+    /// first vector toward its second.
+    fn frame(&self) -> [Vec3; 3] {
+        [self.radial, self.dir.cross(self.radial), self.dir]
+    }
 }
 
 fn build(topo: &mut Topology, case: &Case) -> SolidId {
     let (r0, r1, h) = case.profile.dims(case.scale);
     let a = case.axis;
-    let at = |x: f64, z: f64| Point3::new(a.x() + x, a.y(), a.z() + z);
+    let [e1, e2, d] = case.frame();
+    let at = |x: f64, z: f64| a + e1 * x + d * z;
     let wire = make_polygon_wire(
         topo,
         &[at(0.0, 0.0), at(r0, 0.0), at(r1, h), at(0.0, h)],
@@ -60,11 +73,11 @@ fn build(topo: &mut Topology, case: &Case) -> SolidId {
         wire,
         vec![],
         FaceSurface::Plane {
-            normal: Vec3::new(0.0, -1.0, 0.0),
-            d: -a.y(),
+            normal: -e2,
+            d: -e2.dot(a - Point3::new(0.0, 0.0, 0.0)),
         },
     ));
-    crate::revolve::revolve(topo, face, a, Vec3::new(0.0, 0.0, 1.0), case.angle).unwrap()
+    crate::revolve::revolve(topo, face, a, d, case.angle).unwrap()
 }
 
 /// `∫₀ʰ f(z) dz` by Boole's rule: exact through degree 5.
@@ -95,32 +108,63 @@ fn closed_form(case: &Case) -> (f64, Point3, [f64; 6]) {
     let qyz = (1.0 - t.cos()) * iz3;
     let (cx, cy, cz) = (mx / v, my / v, mz / v);
     let (xx, yy, zz) = (qxx - v * cx * cx, qyy - v * cy * cy, qzz - v * cz * cz);
-    let inertia = [
-        yy + zz,
-        xx + zz,
-        xx + yy,
-        qxy - v * cx * cy,
-        qxz - v * cx * cz,
-        qyz - v * cy * cz,
+    let (pxy, pxz, pyz) = (qxy - v * cx * cy, qxz - v * cx * cz, qyz - v * cy * cz);
+    // The inertia matrix in the axis frame, rotated into the world:
+    // J_world = R J Rᵀ with R's columns the frame vectors.
+    let local = [
+        [yy + zz, -pxy, -pxz],
+        [-pxy, xx + zz, -pyz],
+        [-pxz, -pyz, xx + yy],
     ];
-    let a = case.axis;
-    (v, Point3::new(a.x() + cx, a.y() + cy, a.z() + cz), inertia)
+    let frame = case.frame();
+    let r = |i: usize, k: usize| [frame[k].x(), frame[k].y(), frame[k].z()][i];
+    let world = |i: usize, j: usize| {
+        let mut sum = 0.0;
+        for k in 0..3 {
+            for l in 0..3 {
+                sum += r(i, k) * local[k][l] * r(j, l);
+            }
+        }
+        sum
+    };
+    let inertia = [
+        world(0, 0),
+        world(1, 1),
+        world(2, 2),
+        -world(0, 1),
+        -world(0, 2),
+        -world(1, 2),
+    ];
+    let [e1, e2, d] = frame;
+    (v, case.axis + e1 * cx + e2 * cy + d * cz, inertia)
 }
 
 fn cases() -> Vec<Case> {
+    let z = (Vec3::new(0.0, 0.0, 1.0), Vec3::new(1.0, 0.0, 0.0));
+    // A tilted axis: no frame vector along a world axis, so rotating its
+    // on-axis vertex leaves rounding in every coordinate.
+    let tilted = (
+        Vec3::new(1.0, 2.0, 2.0) * (1.0 / 3.0),
+        Vec3::new(2.0, -1.0, 0.0) * (1.0 / 5.0_f64.sqrt()),
+    );
     let mut out = Vec::new();
     for profile in [Profile::Frustum, Profile::Cylinder] {
         for angle in [PI, FRAC_PI_2] {
             for scale in [1e-2, 1.0, 1e2] {
-                for axis in [
-                    Point3::new(5.0 * scale, 3.0 * scale, scale),
-                    Point3::new(0.0, 0.0, 0.0),
+                let off = Point3::new(5.0 * scale, 3.0 * scale, scale);
+                for (axis, (dir, radial)) in [
+                    (off, z),
+                    (Point3::new(0.0, 0.0, 0.0), z),
+                    (off, tilted),
+                    (Point3::new(0.0, 0.0, 0.0), tilted),
                 ] {
                     out.push(Case {
                         profile,
                         angle,
                         scale,
                         axis,
+                        dir,
+                        radial,
                     });
                 }
             }
@@ -131,8 +175,8 @@ fn cases() -> Vec<Case> {
 
 fn label(case: &Case) -> String {
     format!(
-        "{:?} θ={} s={} axis={:?}",
-        case.profile, case.angle, case.scale, case.axis
+        "{:?} θ={} s={} axis={:?} dir={:?}",
+        case.profile, case.angle, case.scale, case.axis, case.dir
     )
 }
 
@@ -168,7 +212,7 @@ fn every_planar_cap_reads_exactly_and_matches_its_closed_form_area() {
             let FaceSurface::Plane { normal, .. } = *topo.face(face).unwrap().surface() else {
                 continue;
             };
-            if normal.z().abs() < 0.5 {
+            if normal.normalize().unwrap().dot(case.dir).abs() < 0.5 {
                 planar.push((face, None));
                 continue;
             }
@@ -179,12 +223,13 @@ fn every_planar_cap_reads_exactly_and_matches_its_closed_form_area() {
                 label(&case)
             );
             let first = remus_topology::explorer::face_edges(&topo, face).unwrap()[0];
-            let z = topo
+            let height = (topo
                 .vertex(topo.edge(first).unwrap().start())
                 .unwrap()
                 .point()
-                .z();
-            let level = usize::from((z - a.z()).abs() > h / 2.0);
+                - a)
+                .dot(case.dir);
+            let level = usize::from(height.abs() > h / 2.0);
             planar.push((face, Some(level)));
         }
         // The revolve splits the turn into equal segments, one sector cap per

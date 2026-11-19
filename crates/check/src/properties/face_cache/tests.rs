@@ -1208,11 +1208,11 @@ fn analytic_area_is_its_own_family() {
 
 /// The right triangle `c, c + (2, 0, 0), c + (0, 2, 0)` at `c = (s, s, 0)`,
 /// its corner at `c` closed by a rational arc whose middle control point is
-/// `2^-37` off `c` in x and y. About `s = 1` that is 512 roundings of its
-/// coordinates: a curve. About `s = 1024` it is half of the 64 the point test
-/// allows: a point chord. The faces are exact translations of each other.
+/// `2^-40` off `c` in x and y. About `s = 1` that is 4096 roundings of its
+/// position: a curve. About `s = 1024` it is 4 of the 16 roundings the point
+/// test allows: a point chord. The faces are exact translations of each other.
 fn corner_with_tiny_arc(topo: &mut Topology, s: f64) -> FaceId {
-    let d = 2.0_f64.powi(-37);
+    let d = 2.0_f64.powi(-40);
     let c = Point3::new(s, s, 0.0);
     let arc = NurbsCurve::new(
         2,
@@ -1296,8 +1296,8 @@ fn a_translation_that_keeps_its_point_chords_is_served_from_its_source() {
     let mut topo = Topology::new();
     let pairs = [
         (
-            face_integrator::point_edge_tests::bezier_corner(&mut topo, 0.0),
-            face_integrator::point_edge_tests::bezier_corner(&mut topo, 64.0),
+            face_integrator::point_edge_tests::bezier_corner(&mut topo, Vec3::new(0.0, 0.0, 0.0)),
+            face_integrator::point_edge_tests::bezier_corner(&mut topo, Vec3::new(0.0, 0.0, 64.0)),
         ),
         (
             corner_with_tiny_arc(&mut topo, 1024.0),
