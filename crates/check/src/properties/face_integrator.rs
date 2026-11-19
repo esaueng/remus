@@ -5729,6 +5729,36 @@ fn integrate_nurbs_grid<const AREA_ONLY: bool>(
 /// for seconds.
 const MAX_KNOT_ALIGNED_CELLS: usize = 1 << 18;
 
+/// The refusal [`integrate_knot_aligned`] returns past
+/// [`MAX_KNOT_ALIGNED_CELLS`]: the face's exact quadrature applies, but its
+/// work would exceed the cap.
+fn knot_aligned_work_refusal() -> CheckError {
+    CheckError::IntegrationFailed(format!(
+        "knot-aligned quadrature needs more than {MAX_KNOT_ALIGNED_CELLS} cells"
+    ))
+}
+
+/// Whether `error` is the knot-aligned quadrature's work-cap refusal.
+///
+/// The integrator applies to the NURBS face but its knot-aligned quadrature
+/// needs more than 2¹⁸ Gauss cells, so it declines the work rather than
+/// failing to measure the face.
+///
+/// A caller that would otherwise measure the body some other way can then
+/// refuse instead of returning a less accurate reading: a long tapered
+/// thread fitted at 1e-8 has two flanks of 2184 × 112 spans, and its closed
+/// mesh measured 1.05e-5 low where the face integrals of the same thread
+/// fitted at 1e-6 measured it to 7e-8 (B278).
+#[must_use]
+pub fn is_knot_aligned_work_refusal(error: &CheckError) -> bool {
+    match (error, knot_aligned_work_refusal()) {
+        (CheckError::IntegrationFailed(message), CheckError::IntegrationFailed(expected)) => {
+            *message == expected
+        }
+        _ => false,
+    }
+}
+
 /// The cell length a knot-aligned axis is tiled with: the fixed rule's own
 /// patch over `range`.
 ///
@@ -7782,9 +7812,13 @@ mod tests {
         // Past it, a typed refusal rather than an unbounded integration.
         let finer = grid(600);
         NORMAL_EVALUATIONS.with(|count| count.set(0));
-        assert!(matches!(
-            run((&finer, &finer)),
-            Err(CheckError::IntegrationFailed(_))
+        let refusal = run((&finer, &finer)).expect_err("past the cap");
+        assert!(matches!(refusal, CheckError::IntegrationFailed(_)));
+        assert!(is_knot_aligned_work_refusal(&refusal), "{refusal}");
+        assert!(!is_knot_aligned_work_refusal(
+            &CheckError::IntegrationFailed(
+                "face trim exceeds the 4096-point integration budget".into()
+            )
         ));
         NORMAL_EVALUATIONS.with(|count| {
             assert_eq!(
@@ -7824,19 +7858,18 @@ mod tests {
             cone_apex: None,
             boundary: None,
         };
-        assert!(matches!(
-            integrate_knot_aligned::<_, false>(
-                &cylinder,
-                (0.0, 1.0),
-                (0.0, 1.0),
-                rule,
-                1.0,
-                &trim,
-                PatchScale::ANGULAR,
-                knots,
-            ),
-            Err(CheckError::IntegrationFailed(_))
-        ));
+        let refusal = integrate_knot_aligned::<_, false>(
+            &cylinder,
+            (0.0, 1.0),
+            (0.0, 1.0),
+            rule,
+            1.0,
+            &trim,
+            PatchScale::ANGULAR,
+            knots,
+        )
+        .expect_err("past the cap");
+        assert!(is_knot_aligned_work_refusal(&refusal), "{refusal}");
     }
 
     /// The bisection reads only a cell's moments, so it evaluates the curve

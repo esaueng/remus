@@ -1,8 +1,8 @@
 //! Recover a knot-budget refusal by sweeping a nonperiodic trim the other way.
 
 use super::{
-    CheckError, FaceContribution, IntegrationRule, MAX_KNOT_ALIGNED_CELLS, NurbsSurface,
-    ParametricSurface, PatchScale, Point2, UvBounds, UvLoop, UvTrim, integrate_knot_aligned,
+    CheckError, FaceContribution, IntegrationRule, NurbsSurface, ParametricSurface, PatchScale,
+    Point2, UvBounds, UvLoop, UvTrim, integrate_knot_aligned, knot_aligned_work_refusal,
 };
 
 /// Retain every admitted quadrature unchanged. Only a preflight refusal may
@@ -19,11 +19,7 @@ pub(super) fn retry<S: ParametricSurface, const AREA_ONLY: bool>(
     trim: &UvTrim<'_>,
     scale: PatchScale,
 ) -> Result<Option<FaceContribution>, CheckError> {
-    let refused = || {
-        CheckError::IntegrationFailed(format!(
-            "knot-aligned quadrature needs more than {MAX_KNOT_ALIGNED_CELLS} cells"
-        ))
-    };
+    let refused = knot_aligned_work_refusal;
     // The generator certificate is tied to linear v. Its caller can retry
     // the ordinary rule, including this transpose, after a budget refusal.
     if rule.ruled_guard {
