@@ -396,6 +396,14 @@ pub(super) fn split_periodic_face_by_chart(
     else {
         return ChartSplit::Unsupported;
     };
+    // A cone's `evaluate` inverts its `project_point` only on the nappe
+    // `v > 0`: below the apex it places `(u, v)` on the opposite generator,
+    // so the chart would put sub-face interior points half a turn away.
+    if matches!(carrier, ChartCarrier::Cone(_))
+        && chart.v_lo.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater)
+    {
+        return ChartSplit::Unsupported;
+    }
     if !sections.iter().all(|s| exact_curve_supported(&s.curve_3d)) {
         return ChartSplit::Unsupported;
     }
@@ -660,17 +668,16 @@ fn partition_admitted(
     // smaller of the two metric scales, times the chord factor `2/π` of an
     // angle step up to `π`. On a cone two points `(u₁, v₁)`, `(u₂, v₂)` lie
     // `√(Δv² + 4 v₁v₂ cos²α sin²(Δu/2))` apart, so its scale is the
-    // smallest radius `|v| cos α` over the band, which must keep off the
-    // apex.
+    // smallest radius `v cos α` over the band (admitted only on `v > 0`).
     let floor = std::f64::consts::FRAC_2_PI
         * match carrier {
             ChartCarrier::Torus(t) => (t.major_radius() - t.minor_radius()).min(t.minor_radius()),
             ChartCarrier::Cylinder(c) => c.radius().min(1.0),
             ChartCarrier::Cone(c) => {
-                if chart.v_lo * chart.v_hi <= 0.0 {
+                if chart.v_lo.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
                     decline!();
                 }
-                (chart.v_lo.abs().min(chart.v_hi.abs()) * c.half_angle().cos()).min(1.0)
+                (chart.v_lo * c.half_angle().cos()).min(1.0)
             }
         };
     if floor.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
@@ -1167,6 +1174,50 @@ mod tests {
             .map(|p| p.outer_wire.iter().any(|e| e.start_3d.z() < -0.4))
             .collect();
         assert_eq!(low.iter().filter(|&&b| b).count(), 1);
+    }
+
+    /// The same notched frustum carried on the lower nappe (`v < 0`) of the
+    /// reversed-axis cone. There `evaluate` does not invert `project_point`
+    /// (it answers the opposite generator), so the chart's interior points
+    /// would land half a turn away: the face is outside the chart family.
+    #[test]
+    fn a_cone_face_below_its_apex_is_unsupported() {
+        let (surface, boundary) = frustum();
+        let FaceSurface::Cone(cone) = &surface else {
+            unreachable!()
+        };
+        let lower = FaceSurface::Cone(cone.with_reversed_axis());
+        let FaceSurface::Cone(reversed) = &lower else {
+            unreachable!()
+        };
+        assert!(reversed.project_point(Point3::new(2.5, 0.0, 0.5)).1 < 0.0);
+        let side_a = frustum_curve((-0.3, 0.3), (0.5, 0.0));
+        let side_b = frustum_curve((1.2, 1.0), (0.0, 0.5));
+        let arc = section(
+            EdgeCurve::Circle(
+                Circle3D::new_with_ref(
+                    Point3::new(0.0, 0.0, 0.0),
+                    Vec3::new(0.0, 0.0, 1.0),
+                    2.0,
+                    Vec3::new(1.0, 0.0, 0.0),
+                )
+                .unwrap(),
+            ),
+            (0.3, 1.2),
+        );
+        assert!(matches!(
+            split_periodic_face_by_chart(
+                &lower,
+                &boundary,
+                false,
+                &[side_a, arc, side_b],
+                Rank::A,
+                false,
+                super::super::chart_arrangement::tests::dummy_face(),
+                1e-7,
+            ),
+            ChartSplit::Unsupported
+        ));
     }
 
     /// A band reaching the apex has no metric floor: the cone chart declines.

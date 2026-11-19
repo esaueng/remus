@@ -5861,8 +5861,17 @@ pub fn split_face_2d(
     }
     // The established result failed its checks. Outside the chart family it
     // stays the established paths' answer; an admitted face whose
-    // certificate failed is reported to the operation's gate.
-    if matches!(rescued, chart_arrangement::ChartSplit::Uncertified) {
+    // certificate failed is reported to the operation's gate. A cone lateral
+    // is the exception: its partition was never measured before the cone
+    // chart existed (B270), and its established result is kept unreported,
+    // as it was then, so the rescue only ever adds certified partitions. At
+    // scale 1e-3 a mirrored equal-frustum fuse keeps an inside piece whose
+    // wire does not close in the chart (it is not selected, and the fuse is
+    // exact) while the rescue cannot place an interior point
+    // (`regress_opseq_equal_frustum_fuse.rs`).
+    if matches!(rescued, chart_arrangement::ChartSplit::Uncertified)
+        && !matches!(surface, FaceSurface::Cone(_))
+    {
         log::debug!("split_face_2d: face {face_id:?} rescue admitted but not certified");
         crate::gfa::note_uncertified_rescue();
     }
@@ -6275,8 +6284,10 @@ fn circle_arc_within(
 /// Two certificates, both exact consequences of the hull property:
 ///
 /// - Separation by a linear height `u · p` that has no critical point on
-///   the carrier (any in-plane `u` on a plane, `±axis` on a cylinder): over
-///   the compact face its maximum is attained on the boundary edges, so a
+///   the carrier (any in-plane `u` on a plane, `±axis` on a cylinder or a
+///   cone, whose only singular point, the apex, is a boundary vertex of any
+///   face holding it): over the compact face its maximum is attained on the
+///   boundary edges, so a
 ///   hull whose least height reaches the boundary's greatest height (less
 ///   the tolerance band) meets the face only within that band. The boundary
 ///   height is bounded above per edge ([`edge_support`]); seam lines only
@@ -6320,6 +6331,12 @@ fn section_clear_of_face(
     match face.surface() {
         FaceSurface::Cylinder(cylinder) => {
             let Ok(axis) = cylinder.axis().normalize() else {
+                return false;
+            };
+            separated(axis) || separated(-axis)
+        }
+        FaceSurface::Cone(cone) => {
+            let Ok(axis) = cone.axis().normalize() else {
                 return false;
             };
             separated(axis) || separated(-axis)
@@ -6407,10 +6424,7 @@ fn section_clear_of_face(
             }
             separated(u)
         }
-        FaceSurface::Nurbs(_)
-        | FaceSurface::Cone(_)
-        | FaceSurface::Sphere(_)
-        | FaceSurface::Torus(_) => false,
+        FaceSurface::Nurbs(_) | FaceSurface::Sphere(_) | FaceSurface::Torus(_) => false,
     }
 }
 
