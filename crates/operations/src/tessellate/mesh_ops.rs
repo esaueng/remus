@@ -516,17 +516,24 @@ fn strictly_separated_facets(mesh: &TriangleMesh, first: usize, second: usize) -
 }
 
 /// Whether two facets that share a key are distinct facets the grid cannot
-/// resolve rather than copies of one facet: some pair of their corners in
-/// one cell lies at least a twentieth of the thinner facet's least altitude
-/// apart (for two facets folded across a shared chord, a fold of about
-/// three degrees). The grid is absolute (1 µm), so on a small part two
-/// slivers less than a micrometre thick share every cell although each lies
-/// well clear of the other on its own scale: where two tubes of radius 1e-4
-/// meet at a 170° mitre, one sliver of each wall on either side of a shared
-/// chord, and at a 179.5° mitre two walls half a degree apart near the
-/// mitre's tip. Cancelling such a pair opened both walls. Copies of one
-/// facet, whose corners agree to within rounding, keep the old policy, as
-/// do degenerate facets.
+/// resolve rather than copies of one facet.
+///
+/// The grid is absolute (1 µm), so on a small part two slivers less than a
+/// micrometre thick share every cell although each lies clear of the other
+/// on its own scale: where two tubes of radius 1e-4 meet at a 170° mitre,
+/// one sliver of each wall on either side of a shared chord, and at a 179.5°
+/// mitre two walls half a degree apart near the mitre's tip. Cancelling such
+/// a pair opened both walls.
+///
+/// Copies differ by rounding at most, so a pair counts as distinct only when
+/// some pair of corners in one cell lies further apart than a rounding floor
+/// (`64 ε` times the largest coordinate), and then only when the facets'
+/// planes meet at an angle (sine at least 1e-3, and at least four times the
+/// tilt the rounding floor can give the thinner facet) or their corners lie
+/// at least a twentieth of the thinner facet's least altitude apart. A fold
+/// is read from the planes, not the corner distance, so a shallow fold of a
+/// wide facet is kept as well as a sharp one. Degenerate facets keep the old
+/// policy.
 fn grid_unresolved_facets(
     mesh: &TriangleMesh,
     cell_of: &[u32],
@@ -536,19 +543,6 @@ fn grid_unresolved_facets(
     let corner = |t: usize, k: usize| mesh.indices[3 * t + k] as usize;
     let points = |t: usize| [0, 1, 2].map(|k| mesh.positions[corner(t, k)]);
     let (a, b) = (points(first), points(second));
-    // The least altitude: twice the area over the longest side.
-    let thickness = |p: [Point3; 3]| {
-        let twice_area = (p[1] - p[0]).cross(p[2] - p[0]).length();
-        let longest = (p[1] - p[0])
-            .length()
-            .max((p[2] - p[1]).length())
-            .max((p[0] - p[2]).length());
-        twice_area / longest
-    };
-    let thinner = thickness(a).min(thickness(b));
-    if !thinner.is_finite() || thinner <= 0.0 {
-        return false;
-    }
     let mut apart = 0.0_f64;
     for (i, &p) in a.iter().enumerate() {
         let cell = cell_of[corner(first, i)];
@@ -557,7 +551,32 @@ fn grid_unresolved_facets(
         };
         apart = apart.max((p - b[j]).length());
     }
-    apart.is_finite() && apart >= 0.05 * thinner
+    let magnitude = a
+        .iter()
+        .chain(&b)
+        .map(|p| p.x().abs().max(p.y().abs()).max(p.z().abs()))
+        .fold(0.0_f64, f64::max);
+    let rounding = 64.0 * f64::EPSILON * magnitude;
+    if !(apart.is_finite() && apart > rounding) {
+        return false;
+    }
+    // The least altitude: twice the area over the longest side.
+    let normal = |p: [Point3; 3]| (p[1] - p[0]).cross(p[2] - p[0]);
+    let thickness = |p: [Point3; 3]| {
+        let longest = (p[1] - p[0])
+            .length()
+            .max((p[2] - p[1]).length())
+            .max((p[0] - p[2]).length());
+        normal(p).length() / longest
+    };
+    let thinner = thickness(a).min(thickness(b));
+    if !thinner.is_finite() || thinner <= 0.0 {
+        return false;
+    }
+    let (na, nb) = (normal(a), normal(b));
+    let sine = na.cross(nb).length() / (na.length() * nb.length());
+    let folded = sine.is_finite() && sine >= (4.0 * rounding / thinner).max(1e-3);
+    folded || apart >= 0.05 * thinner
 }
 
 /// Removal rule for one group of position-coincident triangles (in index

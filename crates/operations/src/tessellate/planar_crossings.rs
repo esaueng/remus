@@ -15,9 +15,12 @@
 //! [`refine_planar_crossings`] bisects, on the curve itself, the longer
 //! curved chord of every crossing pair until no two chords of any planar face
 //! cross. The new samples go into the shared chains, so every face on the
-//! edge picks them up. A crossing between two straight edges cannot come from
-//! sampling and is left alone, as is any face whose crossings the bounded
-//! work below cannot clear: those keep their old outline.
+//! edge picks them up, and every planar face on a split edge is read again in
+//! the next round: a split can make a neighbour's outline cross that was
+//! simple before. A crossing between two straight edges cannot come from
+//! sampling and is left alone. When the crossings cannot be cleared within
+//! the bounds below, every chain goes back to exactly what was sampled, so
+//! all faces keep their old outlines and neighbours never disagree.
 
 use remus_math::compact_sort::CompactSort;
 use remus_math::det_hash::DetHashMap;
@@ -35,7 +38,11 @@ use super::planar::project_by_normal;
 const MAX_ROUNDS: usize = 32;
 
 /// Segment-pair tests one face may spend in one round's crossing search.
+/// Only pairs that involve a curved chord and overlap in both axes count.
 const MAX_PAIR_TESTS: usize = 4_000_000;
+
+/// Active-list entries one face's crossing search may visit in one round.
+const MAX_VISITS: usize = 16 * MAX_PAIR_TESTS;
 
 /// One chord of a planar face's sampled outline.
 struct Chord {
@@ -61,56 +68,103 @@ pub(super) fn refine_planar_crossings(
     edge_points: &mut SampleChains,
     edge_params: &mut SampleParams,
 ) -> Result<usize, crate::OperationsError> {
-    let mut inserted = 0;
-    // Faces still worth reading: a face drops out once its outline is
-    // simple, or once its crossings exceed the work bounds.
-    let mut pending: Vec<(FaceId, usize)> = Vec::new();
+    // The planar faces, in face-set order, and which of them use each edge.
+    let mut planar: Vec<FaceId> = Vec::new();
+    let mut users: DetHashMap<usize, Vec<usize>> = DetHashMap::default();
     for &face_id in all_faces {
-        if matches!(topo.face(face_id)?.surface(), FaceSurface::Plane { .. }) {
-            pending.push((face_id, 0));
+        let face = topo.face(face_id)?;
+        if !matches!(face.surface(), FaceSurface::Plane { .. }) {
+            continue;
+        }
+        let ordinal = planar.len();
+        planar.push(face_id);
+        for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+        {
+            for oriented in topo.wire(wire_id)?.edges() {
+                let faces = users.entry(oriented.edge().index()).or_default();
+                if faces.last() != Some(&ordinal) {
+                    faces.push(ordinal);
+                }
+            }
         }
     }
-    for _ in 0..MAX_ROUNDS {
-        if pending.is_empty() {
-            break;
-        }
+    // Each edge's chain as sampled, kept from its first split on, to put back
+    // if the crossings cannot be cleared.
+    let mut sampled: DetHashMap<usize, (Vec<Point3>, Vec<Option<f64>>)> = DetHashMap::default();
+    let mut spent = vec![0_usize; planar.len()];
+    let mut pending: Vec<usize> = (0..planar.len()).collect();
+    let mut inserted = 0;
+    let mut cleared = false;
+    'rounds: for _ in 0..MAX_ROUNDS {
         let mut requests: DetHashMap<usize, Vec<usize>> = DetHashMap::default();
-        let mut still: Vec<(FaceId, usize)> = Vec::new();
-        for &(face_id, spent) in &pending {
-            let chords = face_chords(topo, face_id, edge_points, edge_params)?;
+        let mut requested = vec![false; planar.len()];
+        for &ordinal in &pending {
+            let chords = face_chords(topo, planar[ordinal], edge_points, edge_params)?;
             // Only a curved chord can be bisected: a face of straight edges
             // has nothing to refine.
             if !chords.iter().any(|chord| chord.curved) {
                 continue;
             }
+            let Some(split) = crossing_splits(&chords) else {
+                break 'rounds;
+            };
+            if split.is_empty() {
+                continue;
+            }
             // Each round may add at most one sample per chord; a face whose
             // crossings need more than its own sample count again is not a
             // sampling artefact.
-            let budget = chords.len().max(64);
-            let Some(split) = crossing_splits(&chords) else {
-                continue;
-            };
-            if split.is_empty() || spent + split.len() > budget {
-                continue;
+            spent[ordinal] += split.len();
+            if spent[ordinal] > chords.len().max(64) {
+                break 'rounds;
             }
             for &index in &split {
                 let chord = &chords[index];
                 requests.entry(chord.edge).or_default().push(chord.at);
             }
-            still.push((face_id, spent + split.len()));
+            requested[ordinal] = true;
         }
         if requests.is_empty() {
+            cleared = true;
             break;
         }
         let mut edges: Vec<usize> = requests.keys().copied().collect();
         edges.compact_sort_unstable();
+        let mut touched = requested;
+        let mut round_inserted = 0;
         for edge in edges {
             let mut at = requests.remove(&edge).unwrap_or_default();
             at.compact_sort_unstable();
             at.dedup();
-            inserted += bisect_chords(topo, edge, &at, edge_points, edge_params)?;
+            if !sampled.contains_key(&edge)
+                && let (Some(points), Some(params)) =
+                    (edge_points.get(&edge), edge_params.get(&edge))
+            {
+                sampled.insert(edge, (points.clone(), params.clone()));
+            }
+            let count = bisect_chords(topo, edge, &at, edge_points, edge_params)?;
+            if count > 0 {
+                for &ordinal in users.get(&edge).into_iter().flatten() {
+                    touched[ordinal] = true;
+                }
+            }
+            round_inserted += count;
         }
-        pending = still;
+        // Nothing could be split: the crossings stay as they are.
+        if round_inserted == 0 {
+            break;
+        }
+        inserted += round_inserted;
+        pending = (0..planar.len())
+            .filter(|&ordinal| touched[ordinal])
+            .collect();
+    }
+    if !cleared {
+        for (edge, (points, params)) in sampled {
+            edge_points.insert(edge, points);
+            edge_params.insert(edge, params);
+        }
+        return Ok(0);
     }
     Ok(inserted)
 }
@@ -161,29 +215,44 @@ fn face_chords(
 }
 
 /// The chords to bisect so that crossing pairs separate: the longer curved
-/// chord of each pair that properly crosses. `None` when the search exceeds
-/// its work bound.
+/// chord of each pair that properly crosses. A pair of straight chords is
+/// never read (sampling cannot have made it cross, and many straight sides
+/// overlapping in `x` must not spend the budget a crescent needs). `None`
+/// when the search exceeds its work bounds.
 fn crossing_splits(chords: &[Chord]) -> Option<Vec<usize>> {
     let lo = |c: &Chord| c.a.x().min(c.b.x());
     let hi = |c: &Chord| c.a.x().max(c.b.x());
     let mut order: Vec<usize> = (0..chords.len()).collect();
     order.compact_sort_by(|&i, &j| lo(&chords[i]).total_cmp(&lo(&chords[j])).then(i.cmp(&j)));
-    let mut active: Vec<usize> = Vec::new();
+    // Chords whose x-extent still reaches the sweep line, curved and
+    // straight apart. The straight list is only read, and so only pruned,
+    // for a curved chord.
+    let mut curved: Vec<usize> = Vec::new();
+    let mut straight: Vec<usize> = Vec::new();
     let mut split: Vec<usize> = Vec::new();
-    let mut tests = 0_usize;
+    let (mut tests, mut visits) = (0_usize, 0_usize);
     for &i in &order {
         let chord = &chords[i];
         let x = lo(chord);
-        active.retain(|&j| hi(&chords[j]) >= x);
+        visits += curved.len();
+        curved.retain(|&j| hi(&chords[j]) >= x);
+        if chord.curved {
+            visits += straight.len();
+            straight.retain(|&j| hi(&chords[j]) >= x);
+        }
+        if visits > MAX_VISITS {
+            return None;
+        }
         let (y_lo, y_hi) = (chord.a.y().min(chord.b.y()), chord.a.y().max(chord.b.y()));
-        for &j in &active {
-            tests += 1;
-            if tests > MAX_PAIR_TESTS {
-                return None;
-            }
+        let straight_others: &[usize] = if chord.curved { &straight } else { &[] };
+        for &j in curved.iter().chain(straight_others) {
             let other = &chords[j];
             if other.a.y().max(other.b.y()) < y_lo || other.a.y().min(other.b.y()) > y_hi {
                 continue;
+            }
+            tests += 1;
+            if tests > MAX_PAIR_TESTS {
+                return None;
             }
             if !properly_cross(chord, other) {
                 continue;
@@ -197,7 +266,11 @@ fn crossing_splits(chords: &[Chord]) -> Option<Vec<usize>> {
             };
             split.extend(pick);
         }
-        active.push(i);
+        if chord.curved {
+            curved.push(i);
+        } else {
+            straight.push(i);
+        }
     }
     split.compact_sort_unstable();
     split.dedup();
@@ -318,3 +391,6 @@ fn bisect_chords(
     }
     Ok(inserted)
 }
+
+#[cfg(test)]
+mod tests;

@@ -11,7 +11,7 @@ crescent inward (221 open edges). New boundary-plan stage A4b
 (`tessellate/planar_crossings.rs`) bisects, on the curve, the longer curved
 chord of every crossing pair of a planar face's sampled outline until none
 cross (bounded: 32 rounds, one sample per chord per round, line-line crossings
-left alone); the samples go into the shared chains, so every face on the edge
+left alone; every planar face on a split edge is read again, and if the bounds run out with crossings left every chain goes back to what was sampled); the samples go into the shared chains, so every face on the edge
 uses them. Witness `thread::tests::fine_pitch_thread_with_a_start_collar_meshes_closed`
 un-ignored: valid, and at 0.01, 0.005 and the scale-derived deflection
 (diagonal × 1e-5) closed, edge-manifold, no inverted triangle off the cones,
