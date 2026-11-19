@@ -5761,8 +5761,9 @@ pub fn split_face_2d(
     // tile the face is not a partition of it (the holed-cap weave turns
     // sections bridging the outer wire and a hole into spurs; a wall section
     // crossing the lateral's seam twice can be closed along the wrong rim
-    // arc). Re-partition such a planar face or cylinder lateral as a
-    // certified arrangement; keep the established result when that declines.
+    // arc). Re-partition such a planar face or cylinder or cone lateral as
+    // a certified arrangement; keep the established result when that
+    // declines.
     if sections.is_empty() {
         return Ok(parts);
     }
@@ -5772,7 +5773,7 @@ pub fn split_face_2d(
     let surface = face.surface().clone();
     if !matches!(
         surface,
-        FaceSurface::Plane { .. } | FaceSurface::Cylinder(_)
+        FaceSurface::Plane { .. } | FaceSurface::Cylinder(_) | FaceSurface::Cone(_)
     ) {
         return Ok(parts);
     }
@@ -6416,8 +6417,8 @@ fn section_clear_of_face(
 /// Whether the sub-faces' chart areas add up to the face's, and no sub-face
 /// boundary crosses itself: a partition closed along the wrong arc, missing
 /// a piece, or run across a seam it was not cut at fails. Planar faces are
-/// measured in their frame, cylinder laterals in the lifted `(u, v)` chart;
-/// other faces are not measured (`true`).
+/// measured in their frame, cylinder and cone laterals in the lifted
+/// `(u, v)` chart; other faces are not measured (`true`).
 ///
 /// Every wire is sampled as chords with their midpoints, and the comparison
 /// allows each chord an area slack of two thirds of its length times its
@@ -6441,12 +6442,11 @@ fn partition_tiles_face(topo: &Topology, face_id: FaceId, parts: &[SplitSubFace]
     };
     let surface = face.surface().clone();
     let carrier = match &surface {
-        FaceSurface::Cylinder(_) => crate::periodic_chart::ChartCarrier::of(&surface),
+        FaceSurface::Cylinder(_) | FaceSurface::Cone(_) => {
+            crate::periodic_chart::ChartCarrier::of(&surface)
+        }
         FaceSurface::Plane { .. } => None,
-        FaceSurface::Nurbs(_)
-        | FaceSurface::Cone(_)
-        | FaceSurface::Sphere(_)
-        | FaceSurface::Torus(_) => return true,
+        FaceSurface::Nurbs(_) | FaceSurface::Sphere(_) | FaceSurface::Torus(_) => return true,
     };
     let frame = match &surface {
         FaceSurface::Plane { normal, d } => Some(PlaneFrame::from_normal_and_point(

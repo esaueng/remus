@@ -1,14 +1,14 @@
-//! Torus and cylinder faces cut open along their seams and partitioned as a
-//! planar arrangement in the lifted `(u, v)` chart.
+//! Torus, cylinder and cone faces cut open along their seams and partitioned
+//! as a planar arrangement in the lifted `(u, v)` chart.
 //!
 //! A face whose boundary is made of iso-parameter curves and which is closed
 //! in at least one direction (see [`crate::periodic_chart`]) — a swept or
 //! imported tube bounded by its two end circles and a seam, a whole torus
-//! bounded only by its two seam circles, a cylinder lateral bounded by its
-//! rims and seam line — lifts to an axis-aligned rectangle whose periodic
-//! sides are copies of one seam edge. Torus faces of that family take this
-//! path first; a cylinder lateral takes it only when its established
-//! partition fails (see `split_face_2d`).
+//! bounded only by its two seam circles, a cylinder or cone lateral bounded
+//! by its rims and seam line — lifts to an axis-aligned rectangle whose
+//! periodic sides are copies of one seam edge. Torus faces of that family
+//! take this path first; a cylinder or cone lateral takes it only when its
+//! established partition fails (see `split_face_2d`).
 //! The band, sector and internal-loop emitters each assume one layout of the
 //! sections on such a face; sections that wrap the tube, cross a seam and
 //! also end on each other (a plane and a cylinder cutting the same tube,
@@ -29,8 +29,8 @@
 //! samples is proven by the arrangement's noding certificate, in which the
 //! seam copies and rims are pieces like any other.
 //!
-//! A face is *admitted* when it is a torus or cylinder face without holes
-//! whose boundary lifts to a chart rectangle and whose sections are all
+//! A face is *admitted* when it is a torus, cylinder or cone face without
+//! holes whose boundary lifts to a chart rectangle and whose sections are all
 //! supported exact curves ([`super::chart_certificate::exact_curve_supported`]).
 //! Outside that, the splitter reports [`ChartSplit::Unsupported`] and the
 //! established paths own the face; an admitted face whose certificates fail
@@ -658,11 +658,20 @@ fn partition_admitted(
     let map = ChartMap::of_carrier(carrier);
     // A chart step `(du, dv)` moves at least `floor·|(du, dv)|` in 3D: the
     // smaller of the two metric scales, times the chord factor `2/π` of an
-    // angle step up to `π`.
+    // angle step up to `π`. On a cone two points `(u₁, v₁)`, `(u₂, v₂)` lie
+    // `√(Δv² + 4 v₁v₂ cos²α sin²(Δu/2))` apart, so its scale is the
+    // smallest radius `|v| cos α` over the band, which must keep off the
+    // apex.
     let floor = std::f64::consts::FRAC_2_PI
         * match carrier {
             ChartCarrier::Torus(t) => (t.major_radius() - t.minor_radius()).min(t.minor_radius()),
             ChartCarrier::Cylinder(c) => c.radius().min(1.0),
+            ChartCarrier::Cone(c) => {
+                if chart.v_lo * chart.v_hi <= 0.0 {
+                    decline!();
+                }
+                (chart.v_lo.abs().min(chart.v_hi.abs()) * c.half_angle().cos()).min(1.0)
+            }
         };
     if floor.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
         decline!();
@@ -1041,5 +1050,162 @@ mod tests {
             &rim,
             tol
         ));
+    }
+
+    /// The frustum lateral `r(z) = 2 + z`, `z ∈ [−0.5, 0.5]` (apex
+    /// `(0, 0, −2)`, half-angle 45°), seam on `+x`: bottom rim, seam up,
+    /// top rim back, seam down.
+    fn frustum() -> (FaceSurface, Vec<OrientedPCurveEdge>) {
+        use remus_math::surfaces::ConicalSurface;
+        let cone = ConicalSurface::new(
+            Point3::new(0.0, 0.0, -2.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            std::f64::consts::FRAC_PI_4,
+        )
+        .unwrap();
+        let rim = |z: f64| {
+            EdgeCurve::Circle(
+                Circle3D::new_with_ref(
+                    Point3::new(0.0, 0.0, z),
+                    Vec3::new(0.0, 0.0, 1.0),
+                    2.0 + z,
+                    Vec3::new(1.0, 0.0, 0.0),
+                )
+                .unwrap(),
+            )
+        };
+        let (bot, top) = (Point3::new(1.5, 0.0, -0.5), Point3::new(2.5, 0.0, 0.5));
+        let seam = |forward: bool| OrientedPCurveEdge {
+            curve_3d: EdgeCurve::Line,
+            trim: None,
+            pcurve: pcurve(),
+            start_uv: Point2::new(0.0, 0.0),
+            end_uv: Point2::new(0.0, 0.0),
+            start_3d: if forward { bot } else { top },
+            end_3d: if forward { top } else { bot },
+            forward: true,
+            source_edge_idx: None,
+            pave_block_id: None,
+            source_topo_edge: None,
+        };
+        let boundary = vec![
+            use_of(rim(-0.5), (0.0, TAU), true),
+            seam(true),
+            use_of(rim(0.5), (0.0, TAU), false),
+            seam(false),
+        ];
+        (FaceSurface::Cone(cone), boundary)
+    }
+
+    /// An interpolated curve through exact frustum points `(θ(s), z(s))`.
+    fn frustum_curve(theta: (f64, f64), z: (f64, f64)) -> SectionEdge {
+        let pts: Vec<Point3> = (0..=32)
+            .map(|k| {
+                let s = f64::from(k) / 32.0;
+                let (t, h) = (theta.0 + (theta.1 - theta.0) * s, z.0 + (z.1 - z.0) * s);
+                Point3::new((2.0 + h) * t.cos(), (2.0 + h) * t.sin(), h)
+            })
+            .collect();
+        section(
+            EdgeCurve::NurbsCurve(interpolate(&pts, 3).unwrap()),
+            (0.0, 1.0),
+        )
+    }
+
+    /// B270: a frustum lateral notched from its top rim by a slanted side
+    /// that crosses the seam mid-band, a parallel arc at `z = 0` and a
+    /// second slanted side. The cone chart is the cone's own `(u, v)`; the
+    /// notch straddles the seam, so it is emitted as the chart pieces on
+    /// either side of it, beside the notched annulus: three regions.
+    #[test]
+    fn a_cone_notch_straddling_the_seam_is_certified_in_three_pieces() {
+        let (surface, boundary) = frustum();
+        let side_a = frustum_curve((-0.3, 0.3), (0.5, 0.0));
+        let arc = section(
+            EdgeCurve::Circle(
+                Circle3D::new_with_ref(
+                    Point3::new(0.0, 0.0, 0.0),
+                    Vec3::new(0.0, 0.0, 1.0),
+                    2.0,
+                    Vec3::new(1.0, 0.0, 0.0),
+                )
+                .unwrap(),
+            ),
+            (0.3, 1.2),
+        );
+        let side_b = frustum_curve((1.2, 1.0), (0.0, 0.5));
+        let ChartSplit::Certified(parts) = split_periodic_face_by_chart(
+            &surface,
+            &boundary,
+            false,
+            &[side_a, arc, side_b],
+            Rank::A,
+            false,
+            super::super::chart_arrangement::tests::dummy_face(),
+            1e-7,
+        ) else {
+            panic!("the straddling notch is certified");
+        };
+        assert_eq!(parts.len(), 3, "annulus plus the notch on each seam side");
+        // Every chart node is the cone's own parameter of its 3D point.
+        let FaceSurface::Cone(cone) = &surface else {
+            unreachable!()
+        };
+        for part in &parts {
+            for e in &part.outer_wire {
+                for (uv, p) in [(e.start_uv, e.start_3d), (e.end_uv, e.end_3d)] {
+                    let (u, v) = cone.project_point(p);
+                    let du = (uv.x() - u).rem_euclid(TAU);
+                    assert!(du.min(TAU - du) < 1e-9 && (uv.y() - v).abs() < 1e-9);
+                }
+            }
+        }
+        // The notch pieces lie between the arc and the top rim; the annulus
+        // reaches the bottom rim.
+        let low: Vec<bool> = parts
+            .iter()
+            .map(|p| p.outer_wire.iter().any(|e| e.start_3d.z() < -0.4))
+            .collect();
+        assert_eq!(low.iter().filter(|&&b| b).count(), 1);
+    }
+
+    /// A band reaching the apex has no metric floor: the cone chart declines.
+    #[test]
+    fn a_cone_band_through_its_apex_is_not_certified() {
+        use remus_math::surfaces::ConicalSurface;
+        let cone = ConicalSurface::new(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            std::f64::consts::FRAC_PI_4,
+        )
+        .unwrap();
+        let carrier = ChartCarrier::Cone(cone);
+        let chart = PeriodicChart {
+            u_lo: 0.0,
+            u_hi: TAU,
+            v_lo: -1.0,
+            v_hi: 1.0,
+            periodic_u: true,
+            periodic_v: false,
+            v_angular: false,
+        };
+        assert!(
+            partition_admitted(
+                &FaceSurface::Cone(match &carrier {
+                    ChartCarrier::Cone(c) => c.clone(),
+                    ChartCarrier::Torus(_) | ChartCarrier::Cylinder(_) => unreachable!(),
+                }),
+                &carrier,
+                &chart,
+                1.0,
+                Vec::new(),
+                &[],
+                Rank::A,
+                false,
+                super::super::chart_arrangement::tests::dummy_face(),
+                1e-7,
+            )
+            .is_none()
+        );
     }
 }
