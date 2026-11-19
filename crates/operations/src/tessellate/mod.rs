@@ -20,6 +20,7 @@
 )]
 
 pub(crate) mod boundary_plan;
+mod cone_chart;
 pub(crate) mod edge_sampling;
 mod face;
 mod face_cache;

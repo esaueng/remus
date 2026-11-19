@@ -202,7 +202,10 @@ pub(super) fn tessellate_with_uvs_floor(
     angular_tol: f64,
     curvature_floor: bool,
 ) -> Result<TriangleMeshUV, crate::OperationsError> {
-    let face_data = topo.face(face)?;
+    // A cone wall below its carrier's apex is charted on the reversed-axis
+    // carrier (see `cone_chart`); every other face is borrowed unchanged.
+    let charted = super::cone_chart::chart_face(topo, face)?;
+    let face_data: &remus_topology::face::Face = &charted;
     let is_reversed = face_data.is_reversed();
 
     let mut result = match face_data.surface() {

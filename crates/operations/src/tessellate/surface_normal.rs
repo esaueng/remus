@@ -6,6 +6,7 @@
 use remus_math::nurbs::projection::{
     SurfaceSeedGrid, project_point_to_surface, project_point_to_surface_with_grid,
 };
+use remus_math::surfaces::ConicalSurface;
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::face::FaceSurface;
@@ -36,6 +37,13 @@ pub fn face_surface_normal_at(surface: &FaceSurface, point: Point3) -> Option<Ve
             let radial = dp - cone.axis() * along_axis;
             let radial_n = radial.normalize().ok()?;
             let (sin_a, cos_a) = cone.half_angle().sin_cos();
+            // On the double cone's `v < 0` nappe the parametric normal
+            // `∂P/∂u × ∂P/∂v` is the reversed-axis carrier's,
+            // `sin a r̂ + cos a â`: still off the axis, with the axial part
+            // turned over.
+            if cone_point_below_apex(cone, point) {
+                return Some(radial_n * sin_a + cone.axis() * cos_a);
+            }
             Some(radial_n * sin_a + cone.axis() * (-cos_a))
         }
         FaceSurface::Sphere(sph) => (point - sph.center()).normalize().ok(),
@@ -61,6 +69,22 @@ pub fn face_surface_normal_at(surface: &FaceSurface, point: Point3) -> Option<Ve
             nurbs_normal_at(srf, point, None)
         }
     }
+}
+
+/// Whether `point` lies on `cone`'s `v < 0` nappe, behind the apex along the
+/// axis, where evaluation and projection are half a turn apart (see
+/// [`ConicalSurface::with_reversed_axis`]).
+///
+/// On the surface the axial reach from the apex is `v sin a` against the
+/// distance `|v|`; half that ratio separates the nappes away from rounding
+/// at the apex, where no normal is defined anyway. A cone too flat to tell
+/// its nappes apart (`sin a ≤ 1e-9`) answers `false`, keeping the upper
+/// nappe's reading.
+#[must_use]
+pub fn cone_point_below_apex(cone: &ConicalSurface, point: Point3) -> bool {
+    let sin_a = cone.half_angle().sin();
+    let dp = point - cone.apex();
+    sin_a > 1e-9 && dp.dot(cone.axis()) < -0.5 * sin_a * dp.length()
 }
 
 /// [`face_surface_normal_at`] for a NURBS face whose coarse projection grid
@@ -109,6 +133,52 @@ mod tests {
     use remus_math::nurbs::surface::NurbsSurface;
 
     use super::*;
+
+    /// On both nappes of a cone the normal at a point is the parametric
+    /// normal there (the reversed-axis carrier's on the lower nappe), at
+    /// right angles to both surface directions and off the axis; the upper
+    /// nappe keeps its formula bit for bit.
+    #[test]
+    fn a_cone_normal_is_the_parametric_normal_on_either_nappe() {
+        use remus_math::surfaces::ConicalSurface;
+        let cone = ConicalSurface::new(Point3::new(1.0, -2.0, 4.0), Vec3::new(0.0, 0.6, -0.8), 1.1)
+            .expect("cone");
+        let reversed = cone.with_reversed_axis();
+        let surface = FaceSurface::Cone(cone.clone());
+        for (u, v) in [
+            (0.3, 2.0),
+            (2.5, 0.01),
+            (4.0, 7.5),
+            (0.3, -2.0),
+            (5.9, -0.01),
+        ] {
+            let point = cone.evaluate(u, v);
+            let got = face_surface_normal_at(&surface, point).expect("normal");
+            let want = if v > 0.0 {
+                cone.normal(u, v)
+            } else {
+                let (ru, rv) = reversed.project_point(point);
+                reversed.normal(ru, rv)
+            };
+            assert!(
+                (got - want).length() < 1e-12,
+                "({u}, {v}): {got:?} vs {want:?}"
+            );
+            let du = cone.evaluate(u + 1e-6, v) - cone.evaluate(u - 1e-6, v);
+            let dv = cone.evaluate(u, v + 1e-6) - cone.evaluate(u, v - 1e-6);
+            assert!(got.dot(du).abs() < 1e-6 * du.length(), "({u}, {v}) along u");
+            assert!(got.dot(dv).abs() < 1e-6 * dv.length(), "({u}, {v}) along v");
+            let off_axis = point - cone.apex();
+            let radial = off_axis - cone.axis() * off_axis.dot(cone.axis());
+            assert!(got.dot(radial) > 0.0, "({u}, {v}) points off the axis");
+            if v > 0.0 {
+                let (sin_a, cos_a) = cone.half_angle().sin_cos();
+                let formula = radial.normalize().expect("radial") * sin_a + cone.axis() * (-cos_a);
+                let bits = |n: Vec3| [n.x(), n.y(), n.z()].map(f64::to_bits);
+                assert_eq!(bits(got), bits(formula), "({u}, {v}) upper nappe formula");
+            }
+        }
+    }
 
     #[test]
     fn face_surface_normal_with_grid_matches_the_per_call_projection() {

@@ -6,7 +6,7 @@ use remus_math::nurbs::projection::SurfaceSeedGrid as SeedGrid;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::edge::EdgeCurve;
-use remus_topology::face::{FaceId, FaceSurface};
+use remus_topology::face::{Face, FaceId, FaceSurface};
 use remus_topology::shell::ShellId;
 use remus_topology::solid::SolidId;
 use remus_topology::{BodyClass, BodyId};
@@ -14,6 +14,7 @@ use remus_topology::{BodyClass, BodyId};
 use super::PointMergeMap;
 use super::TriangleMesh;
 use super::boundary_plan::{BoundaryPlan, BoundaryRefinementRequest, SampleChains, SampleParams};
+use super::cone_chart::chart_face;
 use super::edge_sampling::{
     circle_param_range, sample_edge, sample_edge_with_params, segments_for_chord_deviation_a,
 };
@@ -870,7 +871,8 @@ fn build_boundary_plan(
     {
         use super::edge_sampling::uniform_edge_params;
         for &face_id in all_faces {
-            let face_data = topo.face(face_id)?;
+            let charted = chart_face(topo, face_id)?;
+            let face_data: &Face = &charted;
             if matches!(
                 face_data.surface(),
                 FaceSurface::Cylinder(_) | FaceSurface::Cone(_)
@@ -1112,7 +1114,8 @@ fn build_boundary_plan(
         // later face rescan and clone all earlier insertions (quadratic work).
         let mut refinements: DetHashMap<usize, Vec<(usize, f64, Point3)>> = DetHashMap::default();
         for &face_id in all_faces {
-            let face_data = topo.face(face_id)?;
+            let charted = chart_face(topo, face_id)?;
+            let face_data: &Face = &charted;
             // Cylinder and cone walls share the developed-chart mesher
             // (`tessellate_revolved_with_holes`), so both fabricate the same
             // seam vertex and both need the pre-split (B51: a torus tube
@@ -2360,7 +2363,10 @@ pub(super) fn tessellate_face_with_shared_edges(
     point_to_global: &mut PointMergeMap,
 ) -> Result<bool, crate::OperationsError> {
     let mut nurbs_frame_chart = false;
-    let face_data = topo.face(face_id)?;
+    // A cone wall below its carrier's apex is charted on the reversed-axis
+    // carrier (see `cone_chart`); every other face is borrowed unchanged.
+    let charted = chart_face(topo, face_id)?;
+    let face_data: &Face = &charted;
     let is_reversed = face_data.is_reversed();
 
     let idx_start = merged.indices.len();

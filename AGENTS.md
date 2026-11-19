@@ -589,6 +589,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Tangent line-contact gate of an exact boolean result: closed-form tangent lines of the operand pair within phase FF's tangency band (a plane holding a cylinder ruling, parallel cylinders touching), and the refusal of a result in which one runs through the interior of two faces of one piece (a hole tangent to a wall from inside); its closed-form and below-the-gate oracle tests | `boolean/tangent_contact.rs`, `boolean/tangent_contact_tests.rs` |
 | Drilled holes tangent to a step wall and across an R4 fillet band (#1739): mirror-image setups agree, point contacts build exact with closed-form volumes, census, validation, watertight meshes and ray-cast probes, zero-thickness tangencies refuse under either fallback policy | `tests/regress_tangent_hole_cuts.rs` |
 | A half frustum whose cone walls are written on the carrier's lower nappe measures as on the upper: `solid_volume`, `mass_properties` (closed-form volume, centroid and `Izz`, the whole tensor against the upper carrier), `face_area` and the bounding box at three scales (tests) | `tests/regress_cone_lower_nappe_measure.rs` |
+| Quarter, half and whole bored frustums whose cone walls are written on the carrier's lower nappe mesh as on the upper: closed and manifold, every wall vertex on the physical wall and in its trim, no triangle wound inward, vertices and normals equal to the upper carrier's mesh, mesh volume within the chord slab of `solid_volume`, standalone face meshes, `effective_face_normal` and `solid_edge_relations`, at three scales (tests) | `tests/regress_cone_lower_nappe_tessellate.rs` |
 | Mesh boolean (co-refinement) | `mesh_boolean.rs` |
 | Robust triangle-triangle intersection: the narrow phase shared by mesh co-refinement and validation's component-overlap check | `triangle_intersection.rs` |
 | Extrude, Revolve, Sweep, Loft, Pipe | `extrude.rs`, `revolve.rs`, `sweep.rs`, `loft.rs`, `pipe.rs` |
@@ -784,7 +785,8 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | The journaled boss resize through the Gentle-Gecko blend group pinned to its pre-reuse results (F/E/V, census, volume), its recognition count, `MeasuredCarrier` queries against fresh reads bit for bit, and display-only resizes building the checked bodies (tests) | `tests/blend_group_resize_reuse.rs` |
 | Split-band blend fixtures shared by the blend-editing tests (tests) | `resize_blend/test_fixtures.rs` |
 | Full-turn rim chain recognition | `tessellate/rim_chain.rs` |
-| Outward surface normals of face carriers at a 3D point (shared by the mesh assembler and the fillet engine) | `tessellate/surface_normal.rs` |
+| Outward surface normals of face carriers at a 3D point (shared by the mesh assembler and the fillet engine); a cone's normal below its apex is the lower nappe's parametric normal | `tessellate/surface_normal.rs` |
+| The face a cone wall is meshed as: a wall below its carrier's apex charted on the reversed-axis carrier (`cone_chart_carrier`), every other face borrowed unchanged | `tessellate/cone_chart.rs` |
 | Sphere patches holding a pole (loop winds once around the axis) | `tessellate/sphere_pole_patch.rs` |
 | Pure-topology test assertions (Euler characteristic, manifoldness, point distance, volume conservation); `test-utils` feature for downstream tests | `test_utils.rs` |
 
@@ -803,6 +805,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Whole-sphere `VERTEX_LOOP` faces: an independently produced one-face sphere imports as the native two-hemisphere sphere, framed and as a void; other vertex-loop layouts refuse atomically (tests) | `tests/step_vertex_loop_sphere.rs` |
 | Overlapping-cylinder unions export a seam clear of every window in both orders and after reload, from native and independently produced inputs (tests) | `tests/step_crossed_seam_export.rs` |
 | An independently produced box with `same_sense = .F.` planes shells like the native box, open and closed (tests) | `tests/step_reversed_plane_shell.rs` |
+| A STEP cone wall below its `CONICAL_SURFACE` apex (a lower-nappe half frustum through a STEP round trip) meshes closed on its own wall at three scales (tests) | `tests/step_cone_lower_nappe_tessellate.rs` |
 | Nested-inner-wire top face of `oring_nested_holes.step`: face area, solid volume, mass properties and centre of mass against rounded-square closed forms, warm and cold through the face cache, and on the mesh when the nesting is left undecided (tests) | `tests/regress_measure_nested_holes.rs` |
 | IGES read/write | `iges/reader.rs`, `iges/writer.rs` |
 | STL read/write/import | `stl/reader.rs`, `stl/writer.rs`, `stl/import.rs` |
