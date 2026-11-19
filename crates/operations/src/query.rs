@@ -473,12 +473,10 @@ pub fn effective_face_normal(topo: &Topology, face: FaceId, point: Point3) -> Op
 /// normal does (below the apex the stored carrier's projection answers the
 /// point's own longitude while its chart puts that longitude half a turn
 /// away). Deciding the chart samples the face's boundary, so it is read
-/// only for a point behind the apex ([`cone_point_below_apex`]): a point on
+/// only for a point behind the apex: a point on
 /// the upper nappe reads the stored carrier directly, which is that face's
 /// chart unless the face is charted below the apex and the point is off its
 /// nappe.
-///
-/// [`cone_point_below_apex`]: crate::tessellate::surface_normal::cone_point_below_apex
 #[derive(Default)]
 pub struct FaceCharts {
     /// Per cone face read below its apex: the charted carrier when it
