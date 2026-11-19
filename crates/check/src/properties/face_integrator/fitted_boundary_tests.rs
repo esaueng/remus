@@ -319,6 +319,7 @@ fn the_face_cache_serves_fitted_volume_terms_bit_for_bit() {
             volume: reading.contribution.volume,
             vector_area: reading.vector_area,
             fitted_boundary: reading.fitted_boundary,
+            planar_fan_area_bound: reading.planar_fan_area_bound,
         }
     };
     let section = &sections(1.0)[1];

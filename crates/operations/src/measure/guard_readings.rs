@@ -94,6 +94,7 @@ pub(super) fn integrate(
                 volume: term.volume,
                 vector_area: term.vector_area,
                 fitted_boundary: None,
+                planar_fan_area_bound: None,
             }
         }
         declined => {

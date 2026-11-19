@@ -722,7 +722,8 @@ fn edge_samples(curve: &EdgeCurve) -> u32 {
 ///   rule has not resolved is caught even where closure, which tests only the
 ///   vector-area integrand, holds. A face read on its fitted boundary, which
 ///   no order changes, counts its own span-by-span against halved-span
-///   disagreement instead.
+///   disagreement instead, and a planar face the exact reader declines,
+///   read by its chord polygon, counts the bound on its chord error.
 ///
 /// Its residual is the curved faces' trim outlines' chord error, 128 samples
 /// per curved edge, except where a cylinder or cone face reads its trims on
@@ -816,6 +817,18 @@ fn qualified_face_integral_volume(
 /// boundary's (`remus_check`'s `cylinder_green::FittedEdges::add`). A shell
 /// with no such face is checked exactly as before.
 ///
+/// A planar face is read exactly at every order, except where the exact
+/// reader declines a boundary curve and the face falls to its chord polygon
+/// (its term carries `planar_fan_area_bound`). That reading is also the same
+/// at every order, and the polygon loses its chord slivers: a quarter disc
+/// read 4.04e-4 short. Errors of opposite sign on opposite caps cancel in
+/// the closure, so closure alone accepted a half cylinder 1.35e-4 short. Its
+/// disagreement is instead the certified bound on its volume term's chord
+/// error, a third of the area bound times the plane's distance from the
+/// reference (see [`planar_face_reach`]), and a face with no certified bound
+/// declines the reading. The closure bound is not widened for it. A shell
+/// with no such face is checked exactly as before.
+///
 /// [`FittedBoundaryReading`]: remus_check::properties::face_integrator::FittedBoundaryReading
 fn qualified_shell_volume(
     topo: &Topology,
@@ -866,6 +879,30 @@ fn qualified_shell_volume(
             allowance += fitted_reading.closure_allowance;
             volume += term.volume;
             disagreement += fitted_reading.span_disagreement;
+            continue;
+        }
+        if let Some(area_bound) = term.planar_fan_area_bound {
+            // A planar face the exact reader declined, read by its chord
+            // polygon: no order changes that reading, so its disagreement is
+            // the bound on its chord error. The polygon lies in the face's
+            // plane, so its volume term is a third of its area times the
+            // plane's distance from the reference, and is off by at most a
+            // third of the area bound times that distance.
+            let reach = planar_face_reach(topo, fid, reference)?;
+            let bound = area_bound * reach / 3.0;
+            if !bound.is_finite() {
+                vol_trace(|| {
+                    format!(
+                        "face integrals declined: planar face {} read by its chord polygon has no certified chord error",
+                        fid.index()
+                    )
+                });
+                return Ok(None);
+            }
+            area += term.area;
+            vector_area += n;
+            volume += term.volume;
+            disagreement += bound;
             continue;
         }
         // Gauss orders are not nested, so a lower one is an independent
@@ -921,6 +958,39 @@ fn qualified_shell_volume(
         return Ok(None);
     }
     Ok(Some((volume, disagreement)))
+}
+
+/// The largest distance along a planar face's unit normal from `reference`
+/// to a vertex of its wires: how far its plane lies from the reference, to
+/// the vertices' own tolerance. Infinite for a face with no unit plane
+/// normal, which then declines the reading.
+fn planar_face_reach(
+    topo: &Topology,
+    face: FaceId,
+    reference: Point3,
+) -> Result<f64, crate::OperationsError> {
+    let data = topo.face(face)?;
+    let normal = match data.surface() {
+        FaceSurface::Plane { normal, .. } => normal.normalize().ok(),
+        FaceSurface::Cylinder(_)
+        | FaceSurface::Cone(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_)
+        | FaceSurface::Nurbs(_) => None,
+    };
+    let Some(normal) = normal else {
+        return Ok(f64::INFINITY);
+    };
+    let mut reach = 0.0_f64;
+    for wid in std::iter::once(data.outer_wire()).chain(data.inner_wires().iter().copied()) {
+        for oe in topo.wire(wid)?.edges() {
+            let edge = topo.edge(oe.edge())?;
+            for vid in [edge.start(), edge.end()] {
+                reach = reach.max((topo.vertex(vid)?.point() - reference).dot(normal).abs());
+            }
+        }
+    }
+    Ok(reach)
 }
 
 /// Precompute the fixed source's two independent guard orders. Qualification
@@ -5763,6 +5833,9 @@ mod oblique_cylinder_tests;
 
 #[cfg(test)]
 mod point_edge_cap_tests;
+
+#[cfg(test)]
+mod fan_chord_bound_tests;
 
 /// B56: the mesh sums are taken about a local reference point. The public
 /// routes are covered in `tests/regress_b56_volume_local_reference.rs`; these

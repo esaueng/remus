@@ -32,6 +32,9 @@ mod cone_nappe_tests;
 #[cfg(test)]
 mod cylinder_band_tests;
 mod cylinder_green;
+mod fan_bound;
+#[cfg(test)]
+mod fan_bound_tests;
 #[cfg(test)]
 mod fitted_boundary_tests;
 #[cfg(test)]
@@ -82,8 +85,19 @@ struct IntegrationRule<'a> {
     cone_apex: Option<Point3>,
     /// Where a fixed-rule path that collects the vector area records the
     /// certificate of a reading it took on a fitted boundary
-    /// (`cylinder_green`, `cone_green`).
-    boundary: Option<&'a Cell<Option<FittedBoundaryReading>>>,
+    /// (`cylinder_green`, `cone_green`), or on a planar face's chord polygon.
+    boundary: Option<&'a Cell<Option<ReadingCertificate>>>,
+}
+
+/// What a fixed-rule reading that collects the vector area certifies itself
+/// with, where the order comparison cannot.
+#[derive(Debug, Clone, Copy)]
+enum ReadingCertificate {
+    /// A cylinder or cone face read on its fitted boundary.
+    Fitted(FittedBoundaryReading),
+    /// A planar face read by its chord polygon: a bound on how far the
+    /// polygon's area is from the face's (see `fan_bound`).
+    PlanarFan { area_bound: f64 },
 }
 
 impl<'a> IntegrationRule<'a> {
@@ -135,7 +149,7 @@ impl<'a> IntegrationRule<'a> {
     ) {
         self.record_flux(vector_area);
         if let Some(sink) = self.boundary {
-            sink.set(fitted_reading);
+            sink.set(fitted_reading.map(ReadingCertificate::Fitted));
         }
     }
 }
@@ -362,10 +376,16 @@ pub(crate) fn integrate_face_fixed_flux_with_boundary_about(
             boundary: Some(&boundary),
         },
     )?;
+    let (fitted_boundary, planar_fan_area_bound) = match boundary.get() {
+        Some(ReadingCertificate::Fitted(reading)) => (Some(reading), None),
+        Some(ReadingCertificate::PlanarFan { area_bound }) => (None, Some(area_bound)),
+        None => (None, None),
+    };
     Ok(FluxReading {
         contribution,
         vector_area: flux.get(),
-        fitted_boundary: boundary.get(),
+        fitted_boundary,
+        planar_fan_area_bound,
     })
 }
 
@@ -379,6 +399,10 @@ pub(crate) struct FluxReading {
     /// The certificate of a reading taken on a fitted boundary, which
     /// replaces the order comparison and widens the closure check for it.
     pub(crate) fitted_boundary: Option<FittedBoundaryReading>,
+    /// For a planar face read by its chord polygon (the exact reader
+    /// declined it), a bound on `|A_polygon − A_face|`; `+∞` where none is
+    /// certified. `None` for every other reading.
+    pub(crate) planar_fan_area_bound: Option<f64>,
 }
 
 /// The contribution and vector area of
@@ -796,8 +820,15 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
         FaceSurface::Plane { normal, .. } => {
             crate::perf::bump_planar_face_integration();
             let effective_normal = if reversed { -*normal } else { *normal };
-            let contribution =
+            let (contribution, fan) =
                 integrate_planar_face(topo, face_id, effective_normal, rule.reference)?;
+            // The chord polygon's reading does not depend on the order, so a
+            // caller that qualifies it gets a bound on its chord error instead.
+            if fan && let Some(sink) = rule.boundary {
+                sink.set(Some(ReadingCertificate::PlanarFan {
+                    area_bound: fan_bound::fan_area_bound(topo, face_id)?,
+                }));
+            }
             // Both planar paths integrate `(P − reference) · n̂` against the
             // unit effective normal over a region of `area` (the closed form
             // reads `n̂ · ∫(P − reference) dA`, the fan `n̂ · centroid · area`),
@@ -3165,12 +3196,14 @@ fn unwrap_angle(prev: f64, next: f64) -> f64 {
 /// Inner wires are integrated the same way and subtracted from the
 /// outer-wire contribution, or added back for an island nested inside a hole
 /// (odd nesting depth).
+///
+/// The flag is `true` when the face was read by its chord polygon.
 fn integrate_planar_face(
     topo: &Topology,
     face_id: FaceId,
     normal: Vec3,
     reference: Point3,
-) -> Result<FaceContribution, CheckError> {
+) -> Result<(FaceContribution, bool), CheckError> {
     let normal = normal.normalize().map_err(|_| {
         CheckError::IntegrationFailed("planar face has a zero or non-finite normal".into())
     })?;
@@ -3178,12 +3211,15 @@ fn integrate_planar_face(
     // polygon loses the sagitta sliver; unsupported curves retain that
     // existing approximation rather than claiming a fixed rational rule is exact.
     if let Some(contrib) = integrate_planar_face_exact(topo, face_id, normal, reference)? {
-        return Ok(contrib);
+        return Ok((contrib, false));
     }
     // The sampled-boundary fallback integrates its polygon in closed form, so
     // there is no quadrature for adaptive controls to refine: any validated
     // controls are satisfied and the sampled boundary is the stated residual.
-    integrate_planar_face_fan(topo, face_id, normal, reference)
+    Ok((
+        integrate_planar_face_fan(topo, face_id, normal, reference)?,
+        true,
+    ))
 }
 
 /// The chord-polygon fallback of [`integrate_planar_face`]: each wire's
