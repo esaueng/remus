@@ -1006,71 +1006,70 @@ pub(super) fn carry_member_identities(
                             .is_ok_and(|data| !matches!(data.surface(), FaceSurface::Plane { .. }))
                 })
                 .collect();
-            let [source] = curved.as_slice() else {
-                continue;
-            };
-            if map.modified.contains_key(&source.index()) {
-                continue;
-            }
-            // Unequal radii can move a corner's contact off a root support
-            // onto its neighbouring band. Its incident bands still identify
-            // the same sharp corner; requiring the old direct root contact
-            // would incorrectly delete that corner's handle.
-            let supports = if member.kind == BlendMemberKind::CornerPatch {
+            // Each face to carry, with the keys that may identify it, tried
+            // in order.
+            let blends_touched = |source: FaceId| {
                 source_adjacency
-                    .neighbors_of_face(*source)
+                    .neighbors_of_face(source)
                     .iter()
                     .copied()
                     .filter(|&face| {
                         before.member_of(face).is_some() && !member.faces.contains(&face)
                     })
                     .collect::<Vec<_>>()
-            } else {
-                member.supports.clone()
             };
-            if member.kind == BlendMemberKind::CornerPatch && supports.len() < 2 {
-                continue;
-            }
-            let Some(mut roots) = supports
-                .iter()
-                .map(|face| {
-                    let [image] = map.modified.get(&face.index())?.as_slice() else {
-                        return None;
-                    };
-                    Some(*image)
-                })
-                .collect::<Option<Vec<_>>>()
-            else {
-                continue;
-            };
-            roots.compact_sort_unstable();
-            if roots.is_empty() {
-                continue;
-            }
-            let source_data = topo.face(*source)?;
-            let mut candidates = Vec::new();
-            for &target in &outputs {
-                let data = topo.face(target)?;
-                // Regenerated corner patches can reverse their parameterization;
-                // the face's reversal flag alone is not an orientation witness.
-                if data.surface().type_tag() != source_data.surface().type_tag()
-                    || map
-                        .modified
-                        .values()
-                        .any(|images| images.contains(&target.index()))
-                {
-                    continue;
+            let pieces: Vec<(FaceId, Vec<Vec<FaceId>>)> = match curved.as_slice() {
+                // Unequal radii can move a corner's contact off a root
+                // support onto its neighbouring band. Its incident bands
+                // still identify the same sharp corner; requiring the old
+                // direct root contact would incorrectly delete that corner's
+                // handle.
+                [source] if member.kind == BlendMemberKind::CornerPatch => {
+                    let supports = blends_touched(*source);
+                    if supports.len() < 2 {
+                        continue;
+                    }
+                    vec![(*source, vec![supports])]
                 }
-                let neighbours = adjacency.neighbors_of_face(target);
-                if roots
+                [source] => vec![(*source, vec![member.supports.clone()])],
+                // A band of several faces (a smaller band's straight run and
+                // its walked transition into a seam round, B274): each face
+                // is identified by its own carrier kind (below) and by the
+                // member's supports it touches itself, or else, like a
+                // corner patch, by the other blends it touches (a walked
+                // transition that becomes an equal-radius corner patch
+                // again when the band returns to its neighbours' radius).
+                // Faces that cannot be told apart that way (a band split
+                // into like pieces) find several candidates and keep their
+                // deleted/generated history.
+                faces if member.kind == BlendMemberKind::Band => faces
                     .iter()
-                    .all(|index| neighbours.iter().any(|f| f.index() == *index))
-                {
-                    candidates.push(target);
+                    .map(|&source| {
+                        let touched = source_adjacency.neighbors_of_face(source);
+                        let supports = member
+                            .supports
+                            .iter()
+                            .copied()
+                            .filter(|support| touched.contains(support))
+                            .collect::<Vec<_>>();
+                        let keys = [supports, blends_touched(source)]
+                            .into_iter()
+                            .filter(|key| key.len() >= 2)
+                            .collect();
+                        (source, keys)
+                    })
+                    .collect(),
+                _ => continue,
+            };
+            for (source, keys) in pieces {
+                for supports in keys {
+                    if let Some(found) =
+                        member_image(topo, map, &adjacency, &outputs, source, &supports)?
+                    {
+                        matches.push((source.index(), found.index()));
+                        break;
+                    }
                 }
-            }
-            if let [target] = candidates.as_slice() {
-                matches.push((source.index(), target.index()));
             }
         }
         // A many-to-one match is ambiguous, even when each source found only one
@@ -1098,6 +1097,65 @@ pub(super) fn carry_member_identities(
         }
     }
     Ok(())
+}
+
+/// The unique result face that carries member face `source`: a face of the
+/// same carrier kind, not yet claimed, adjacent to the images of every face
+/// in `supports`. `None` when a support has no unique image yet, or the
+/// match is not unique.
+fn member_image(
+    topo: &Topology,
+    map: &EvolutionMap,
+    adjacency: &remus_topology::adjacency::AdjacencyIndex,
+    outputs: &[FaceId],
+    source: FaceId,
+    supports: &[FaceId],
+) -> Result<Option<FaceId>, OperationsError> {
+    if map.modified.contains_key(&source.index()) {
+        return Ok(None);
+    }
+    let Some(mut roots) = supports
+        .iter()
+        .map(|face| {
+            let [image] = map.modified.get(&face.index())?.as_slice() else {
+                return None;
+            };
+            Some(*image)
+        })
+        .collect::<Option<Vec<_>>>()
+    else {
+        return Ok(None);
+    };
+    roots.compact_sort_unstable();
+    if roots.is_empty() {
+        return Ok(None);
+    }
+    let source_data = topo.face(source)?;
+    let mut candidates = Vec::new();
+    for &target in outputs {
+        let data = topo.face(target)?;
+        // Regenerated corner patches can reverse their parameterization;
+        // the face's reversal flag alone is not an orientation witness.
+        if data.surface().type_tag() != source_data.surface().type_tag()
+            || map
+                .modified
+                .values()
+                .any(|images| images.contains(&target.index()))
+        {
+            continue;
+        }
+        let neighbours = adjacency.neighbors_of_face(target);
+        if roots
+            .iter()
+            .all(|index| neighbours.iter().any(|f| f.index() == *index))
+        {
+            candidates.push(target);
+        }
+    }
+    Ok(match candidates.as_slice() {
+        [target] => Some(*target),
+        _ => None,
+    })
 }
 
 fn diameter_refusal(error: OperationsError, radius: f64) -> OperationsError {

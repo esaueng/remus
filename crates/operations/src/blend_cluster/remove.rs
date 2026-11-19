@@ -1030,19 +1030,44 @@ impl<'a> Rebuild<'a> {
         // seam ruling on a band cut round part of a foot) meets the loop once
         // per contact: each contact takes the pieces from where the loop
         // arrives to where it leaves.
+        //
+        // A retained edge can also land on one END of the open sharp edge
+        // while splitting the band's contact in two (a periodic support's
+        // seam ruling standing on a shoulder band whose contact runs on past
+        // the sharp vertex into the next band's end: a rebuilt
+        // unequal-radius corner, B274). The contact beyond that end restores
+        // no part of the sharp edge: the loop arrives at and leaves from the
+        // same end vertex, and that occurrence contributes nothing.
+        let mut empty = vec![false; runs.len()];
         if runs.len() > 1 {
             for index in 0..runs.len() {
                 let Item::Sharp { edge, .. } = items[index] else {
                     continue;
                 };
-                if self.cluster.sharp_edges[edge].ends.is_none() || runs[index].len() < 2 {
+                if self.cluster.sharp_edges[edge].ends.is_none() {
                     continue;
                 }
-                let previous = &runs[(index + runs.len() - 1) % runs.len()];
+                // The loop arrives from the last run before this one that
+                // still contributes edges.
+                let before = (1..runs.len())
+                    .map(|back| (index + runs.len() - back) % runs.len())
+                    .find(|&other| !empty[other])
+                    .unwrap_or(index);
+                let previous = &runs[before];
                 let next = &runs[(index + 1) % runs.len()];
                 let arrive = oriented_end(work, previous[previous.len() - 1])?;
                 let leave = oriented_start(work, next[0])?;
                 let run = &runs[index];
+                if arrive == leave
+                    && (oriented_start(work, run[0])? == arrive
+                        || oriented_end(work, run[run.len() - 1])? == arrive)
+                {
+                    empty[index] = true;
+                    continue;
+                }
+                if run.len() < 2 {
+                    continue;
+                }
                 let first = run
                     .iter()
                     .map(|oe| oriented_start(work, *oe))
@@ -1062,7 +1087,12 @@ impl<'a> Rebuild<'a> {
                 }
             }
         }
-        let edges: Vec<OrientedEdge> = runs.into_iter().flatten().collect();
+        let edges: Vec<OrientedEdge> = runs
+            .into_iter()
+            .zip(empty)
+            .filter(|(_, empty)| !empty)
+            .flat_map(|(run, _)| run)
+            .collect();
         for (index, &oe) in edges.iter().enumerate() {
             let next = edges[(index + 1) % edges.len()];
             if oriented_end(work, oe)? != oriented_start(work, next)? {

@@ -12,7 +12,7 @@
 //!
 //! - **A2 convex half** (`resize_blend`): each longitudinal top band
 //!   R4 -> 1.5 and R4 -> 1.9, the seams, shoulder and the other band staying
-//!   R4.
+//!   R4; and the rebuilt band edited again, R1.5 -> 1.9 -> 4 -> 1.5 (B274).
 //! - **A2 concave half**: a seam R4 -> 2 under an R4 shoulder builds
 //!   through the group (`fillet_unequal_boss_corner.rs`); a seam too large
 //!   for its wall (R20) has no valid construction and must be a typed
@@ -35,7 +35,7 @@ use remus_math::vec::{Point3, Vec3};
 use remus_operations::OperationsError;
 use remus_operations::blend_cluster::{
     BlendClusterError, Convexity, DiameterRefusalCause, recognize_blend_cluster,
-    resize_band_through_group, resize_cylinder_through_group,
+    remove_blend_cluster, resize_band_through_group, resize_cylinder_through_group,
 };
 use remus_operations::blend_ops::fillet_cascade;
 use remus_operations::measure::solid_volume;
@@ -500,6 +500,139 @@ fn convex_top_band_radius_edits_rebuild_the_group() {
                 "{label}: {:?}",
                 result.evolution
             );
+        }
+    }
+}
+
+/// The exact convex cylinder along `side` (the band's straight run at any
+/// radius).
+fn band_along(topo: &Topology, solid: SolidId, side: Side) -> FaceId {
+    let bands: Vec<FaceId> = solid_faces(topo, solid)
+        .unwrap()
+        .into_iter()
+        .filter(|&face| {
+            matches!(topo.face(face).unwrap().surface(), FaceSurface::Cylinder(c)
+                if c.axis().cross(side.direction()).length() < 1e-9)
+        })
+        .collect();
+    assert_eq!(bands.len(), 1, "one band along {side:?}");
+    bands[0]
+}
+
+/// The filleted Gecko rebuilt from its sharp parent: all five edges at R4
+/// in one call.
+fn uniform_oracle() -> (Topology, SolidId) {
+    let (mut topo, sharp) = gecko_sharp();
+    let edges = sharp_edges(&topo, sharp, 6.0);
+    let mut all = edges.seams.clone();
+    all.extend([edges.shoulder, edges.along_x, edges.along_y]);
+    let solid = fillet_cascade(&mut topo, sharp, &all, 4.0).unwrap().solid;
+    (topo, solid)
+}
+
+/// B274: the band a convex edit rebuilt at a smaller radius (with a walked
+/// transition into its seam round, an unequal-radius corner) is edited
+/// again, and again. Along X the boss wall's periodic seam stands on the
+/// shoulder's sharp end vertex and splits the shoulder's contact there; the
+/// group removal must still restore the exact sharp parent.
+///
+/// Every step of R4 -> 1.5 -> 1.9 -> 4 -> 1.5 matches a fresh cascade on
+/// the sharp part at the step's radii (entity counts, census, volume), meets
+/// the verification bar, leaves its source untouched, accounts for every
+/// result face, and removes back to the sharp part.
+#[test]
+fn convex_band_re_edits_after_an_unequal_group_rebuild() {
+    let (sharp_topo, sharp) = gecko_sharp();
+    for side in [Side::AlongX, Side::AlongY] {
+        let (mut topo, mut solid) = gecko();
+        let mut current = 4.0;
+        for radius in [1.5, 1.9, 4.0, 1.5] {
+            let label = format!("{side:?} R{current} -> R{radius}");
+            let source = fingerprint(&topo, solid);
+            let band = band_along(&topo, solid, side);
+            let result = resize_blend(&mut topo, solid, band, current, radius)
+                .unwrap_or_else(|error| panic!("{label}: {error}"));
+            assert_eq!(fingerprint(&topo, solid).0, source.0, "{label}: source");
+            verify(&topo, result.solid, &label);
+            assert_eq!(census(&topo, result.solid), (7, 5, 1, 2), "{label}");
+            assert_eq!(
+                cylinder_radii(&topo, result.solid, side.direction()),
+                vec![radius],
+                "{label}"
+            );
+            assert_eq!(tori(&topo, result.solid), vec![(10.0, 4.0)], "{label}");
+            let regained = side.probe(side.station(), 0.5, 1.5);
+            let expected = if radius < 4.0 {
+                PointClassification::Inside
+            } else {
+                PointClassification::Outside
+            };
+            assert_eq!(classify(&topo, result.solid, regained), expected, "{label}");
+            let (oracle_topo, oracle) = if radius < 4.0 {
+                convex_oracle(side, radius)
+            } else {
+                uniform_oracle()
+            };
+            assert_matches_oracle(&topo, result.solid, &oracle_topo, oracle, &label);
+            // The same construction as the fresh cascade: volume to 1e-9.
+            let volume = solid_volume(&topo, result.solid, 1e-3).unwrap();
+            let expected = solid_volume(&oracle_topo, oracle, 1e-3).unwrap();
+            assert!(
+                (volume - expected).abs() <= 1e-9 * expected,
+                "{label}: volume {volume} vs oracle {expected}"
+            );
+            // History: the edited band (its straight run) has a unique
+            // successor, and so does the walked transition the previous
+            // edit made (a walked transition again, or the equal-radius
+            // corner patch when the band returns to R4).
+            assert_eq!(
+                result.evolution.modified.get(&band.index()).map(Vec::len),
+                Some(1),
+                "{label}"
+            );
+            if current < 4.0 {
+                let adjacency = topo.build_adjacency(solid).unwrap();
+                let walked: Vec<FaceId> = adjacency
+                    .neighbors_of_face(band)
+                    .iter()
+                    .copied()
+                    .filter(|&face| {
+                        matches!(topo.face(face).unwrap().surface(), FaceSurface::Nurbs(_))
+                    })
+                    .collect();
+                assert_eq!(walked.len(), 1, "{label}: one walked transition");
+                assert_eq!(
+                    result
+                        .evolution
+                        .modified
+                        .get(&walked[0].index())
+                        .map(Vec::len),
+                    Some(1),
+                    "{label}: walked transition"
+                );
+            }
+            let outputs: Vec<usize> = solid_faces(&topo, result.solid)
+                .unwrap()
+                .into_iter()
+                .map(remus_topology::arena::Id::index)
+                .collect();
+            assert!(
+                result.evolution.accounts_for_result(outputs),
+                "{label}: {:?}",
+                result.evolution
+            );
+            // The whole group removes back to the sharp part.
+            let mut removal = topo.clone();
+            let cluster =
+                recognize_blend_cluster(&removal, result.solid, boss_of(&removal, result.solid))
+                    .unwrap();
+            let restored = remove_blend_cluster(&mut removal, result.solid, &cluster)
+                .unwrap_or_else(|error| panic!("{label}: removal: {error}"));
+            let sharp_label = format!("{label}: sharp");
+            verify(&removal, restored.solid, &sharp_label);
+            assert_matches_oracle(&removal, restored.solid, &sharp_topo, sharp, &sharp_label);
+            solid = result.solid;
+            current = radius;
         }
     }
 }
