@@ -122,10 +122,10 @@ fn reading(topo: &Topology, face: FaceId, reference: Point3) -> FluxReading {
     integrate_face_fixed_flux_with_boundary_about(topo, face, 5, reference, true).unwrap()
 }
 
-fn certificate(reading: &FluxReading) -> PlanarFanBound {
+fn fan_reading(reading: &FluxReading) -> PlanarFanBound {
     reading
         .planar_fan
-        .expect("a fan reading carries its certificate")
+        .expect("a fan reading carries its fan bound")
 }
 
 /// Review finding 1: a closed NURBS hole whose carrier laps a square twice,
@@ -166,7 +166,7 @@ fn a_closed_nurbs_edge_trimmed_short_of_its_domain_declines() {
     );
     let read = reading(&topo, face, Point3::new(0.0, 0.0, 0.0));
     let error = (read.contribution.area - (4.0 - 0.25)).abs();
-    let bound = certificate(&read).area_bound;
+    let bound = fan_reading(&read).area_bound;
     assert!(
         error <= bound,
         "the fan is {error:.3e} off, bound {bound:.3e}"
@@ -198,7 +198,7 @@ fn a_detour_with_subnormal_weights_is_charged() {
     let read = reading(&topo, face, Point3::new(0.0, 0.0, 0.0));
     // The detour bites a triangle of area ½ · 0.02 · 0.125 out of the square.
     let error = (read.contribution.area - (1.0 - 0.00125)).abs();
-    let bound = certificate(&read).area_error(c.x() + c.y() + c.z());
+    let bound = fan_reading(&read).area_error(c.x() + c.y() + c.z());
     assert!(
         error <= bound,
         "the fan is {error:.3e} off, bound {bound:.3e}"
@@ -234,7 +234,7 @@ fn samples_off_the_plane_are_charged() {
     let error = read.contribution.volume.abs();
     let anchor = c - reference;
     let magnitude = c.x().abs() + c.y().abs() + c.z().abs();
-    let bound = certificate(&read).volume_bound(0.0, anchor.length(), magnitude);
+    let bound = fan_reading(&read).volume_bound(0.0, anchor.length(), magnitude);
     assert!(
         error > 0.0 && error <= bound,
         "the fan term is {error:.3e}, bound {bound:.3e}"
@@ -265,7 +265,7 @@ fn a_gap_between_an_edge_end_and_its_vertex_is_charged() {
     let face = planar_face(&mut topo, legs, vec![], 1.0);
     let read = reading(&topo, face, Point3::new(0.0, 0.0, 0.0));
     let error = (read.contribution.area - 1.0).abs();
-    let bound = certificate(&read).area_bound;
+    let bound = fan_reading(&read).area_bound;
     assert!(
         error > 1e-10 && error <= bound,
         "the fan is {error:.3e} off, bound {bound:.3e}"
@@ -291,7 +291,7 @@ fn a_far_reference_charges_the_fans_coordinate_rounding() {
     let read = reading(&topo, face, reference);
     let exact = 1e6 / 3.0;
     let error = (read.contribution.volume - exact).abs();
-    let bound = certificate(&read).volume_bound(1e6, (c - reference).length(), 8.0);
+    let bound = fan_reading(&read).volume_bound(1e6, (c - reference).length(), 8.0);
     assert!(
         error <= bound,
         "the fan term is {:.6e} against {exact:.6e}, bound {bound:.3e}",
@@ -381,7 +381,7 @@ fn a_trim_too_wide_to_sample_faithfully_declines() {
     let read = reading(&topo, face, Point3::new(0.0, 0.0, 0.0));
     // The detour bites ½ · 0.5 · 0.000488 out of the square.
     let error = (read.contribution.area - (1.0 - 1.22e-4)).abs();
-    let bound = certificate(&read).area_bound;
+    let bound = fan_reading(&read).area_bound;
     assert!(
         error <= bound,
         "the fan is {error:.3e} off, bound {bound:.3e}"
