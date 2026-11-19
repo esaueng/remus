@@ -3,7 +3,9 @@
 //!
 //! [`super::chart_arrangement`] traces a face partition from pieces of exact
 //! curves (lines, circle and ellipse arcs, positive-weight NURBS) lifted into a
-//! 2D chart: a plane's frame, or the `(u, v)` angles of a torus or cylinder.
+//! 2D chart: a plane's frame, or the `(u, v)` parameters of a torus, cylinder
+//! or cone (a cone's `v` is its local height over the sine of its
+//! half-angle, a fixed scale of the cylinder's `z`).
 //! Sampled polylines can miss a crossing of the exact curves between two
 //! samples, or a touch of a seam or rim. This module proves instead that the
 //! exact curves meet only where the arrangement has a node, or declines.
@@ -409,6 +411,14 @@ pub(super) enum ChartMap {
     Plane { origin: Point3, axes: [Vec3; 3] },
     /// A cylinder: chart `(atan2(y, x), z)`.
     Cylinder { origin: Point3, axes: [Vec3; 3] },
+    /// A cone, framed at its apex: chart `(atan2(y, x), z / sin α)`, the
+    /// cone's own `(u, v)` (`v` the distance from the apex along a
+    /// generator, `α` the half-angle).
+    Cone {
+        origin: Point3,
+        axes: [Vec3; 3],
+        inv_sin: f64,
+    },
     /// A ring torus: chart `(atan2(y, x), atan2(z, ρ − R))`.
     Torus {
         origin: Point3,
@@ -421,7 +431,7 @@ pub(super) enum ChartMap {
 struct Ranges {
     /// Local-frame box of the hull.
     lbox: [Iv; 3],
-    /// Distance range from the axis (torus and cylinder).
+    /// Distance range from the axis (torus, cylinder and cone).
     rho: Iv,
     /// Raw angular ranges of the chart coordinates that are angles.
     ang: [Option<(f64, f64)>; 2],
@@ -437,7 +447,7 @@ impl ChartMap {
         }
     }
 
-    /// The chart of a torus or cylinder carrier.
+    /// The chart of a torus, cylinder or cone carrier.
     pub(super) fn of_carrier(carrier: &ChartCarrier) -> Self {
         match carrier {
             ChartCarrier::Torus(t) => Self::Torus {
@@ -449,6 +459,11 @@ impl ChartMap {
                 origin: c.origin(),
                 axes: [c.x_axis(), c.y_axis(), c.axis()],
             },
+            ChartCarrier::Cone(c) => Self::Cone {
+                origin: c.apex(),
+                axes: [c.x_axis(), c.y_axis(), c.axis()],
+                inv_sin: 1.0 / c.half_angle().sin(),
+            },
         }
     }
 
@@ -456,6 +471,7 @@ impl ChartMap {
         match self {
             Self::Plane { origin, axes }
             | Self::Cylinder { origin, axes }
+            | Self::Cone { origin, axes, .. }
             | Self::Torus { origin, axes, .. } => (*origin, axes),
         }
     }
@@ -464,7 +480,7 @@ impl ChartMap {
     pub(super) const fn angular(&self) -> [bool; 2] {
         match self {
             Self::Plane { .. } => [false, false],
-            Self::Cylinder { .. } => [true, false],
+            Self::Cylinder { .. } | Self::Cone { .. } => [true, false],
             Self::Torus { .. } => [true, true],
         }
     }
@@ -485,6 +501,7 @@ impl ChartMap {
         let out = match self {
             Self::Plane { .. } => (l[0], l[1]),
             Self::Cylinder { .. } => (l[1].atan2(l[0]), l[2]),
+            Self::Cone { inv_sin, .. } => (l[1].atan2(l[0]), l[2] * inv_sin),
             Self::Torus { major, .. } => (l[1].atan2(l[0]), l[2].atan2(l[0].hypot(l[1]) - major)),
         };
         (out.0.is_finite() && out.1.is_finite()).then_some(out)
@@ -524,7 +541,7 @@ impl ChartMap {
                 rho: Iv { lo: 0.0, hi: 0.0 },
                 ang: [None, None],
             }),
-            Self::Cylinder { .. } | Self::Torus { .. } => {
+            Self::Cylinder { .. } | Self::Cone { .. } | Self::Torus { .. } => {
                 let xy: Vec<(f64, f64)> = hull.iter().map(|p| (p[0], p[1])).collect();
                 let near = origin_hull_distance(&xy);
                 if near <= 8.0 * pad {
@@ -554,7 +571,7 @@ impl ChartMap {
         let [dx, dy, dz] = vel;
         let (du, dv) = match self {
             Self::Plane { .. } => (dx, dy),
-            Self::Cylinder { .. } | Self::Torus { .. } => {
+            Self::Cylinder { .. } | Self::Cone { .. } | Self::Torus { .. } => {
                 let num = x.mul(dy).sub(y.mul(dx));
                 let du = num.div(r.rho.sqr())?;
                 if let Self::Torus { major, .. } = self {
@@ -563,6 +580,8 @@ impl ChartMap {
                     let den = s.sqr().add(z.sqr());
                     let dv = s.mul(dz).sub(z.mul(drho)).div(den)?;
                     (du, dv)
+                } else if let Self::Cone { inv_sin, .. } = self {
+                    (du, dz.mul(Iv::new(*inv_sin, *inv_sin)))
                 } else {
                     (du, dz)
                 }

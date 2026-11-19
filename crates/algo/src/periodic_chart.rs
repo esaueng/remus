@@ -1,23 +1,23 @@
-//! The lifted `(u, v)` chart of a torus or cylinder face bounded by
+//! The lifted `(u, v)` chart of a torus, cylinder or cone face bounded by
 //! iso-parameter curves and closed in at least one direction.
 //!
 //! A tube bounded by its two end circles and a seam (a swept or imported
-//! pipe), a whole torus bounded by its two seam circles, or a cylinder
-//! lateral bounded by its two rims and a seam line, lifts to an axis-aligned
-//! rectangle in the `(u, v)` plane whose periodic sides are the two copies of
-//! one seam edge. Membership of a point on the carrier is then exact: lift it
-//! into the rectangle and compare with the bounded sides.
+//! pipe), a whole torus bounded by its two seam circles, or a cylinder or
+//! cone lateral bounded by its two rims and a seam line, lifts to an
+//! axis-aligned rectangle in the `(u, v)` plane whose periodic sides are the
+//! two copies of one seam edge. Membership of a point on the carrier is then
+//! exact: lift it into the rectangle and compare with the bounded sides.
 //!
 //! The recognizer is deliberately narrow. Every boundary edge must be an
 //! iso-parameter curve (a circle on a torus; a rim circle or a ruling line
-//! on a cylinder) lying on one side of the rectangle along its whole span,
-//! the lifted boundary must close, and at least one direction must span a
-//! whole period. A fillet patch (bounded in both directions) or any other
+//! on a cylinder or cone) lying on one side of the rectangle along its whole
+//! span, the lifted boundary must close, and at least one direction must
+//! span a whole period. A fillet patch (bounded in both directions) or any other
 //! trim declines, and its callers keep their established handling.
 
 use std::f64::consts::TAU;
 
-use remus_math::surfaces::{CylindricalSurface, ToroidalSurface};
+use remus_math::surfaces::{ConicalSurface, CylindricalSurface, ToroidalSurface};
 use remus_math::vec::{Point2, Point3};
 use remus_topology::Topology;
 use remus_topology::edge::EdgeCurve;
@@ -35,6 +35,9 @@ pub enum ChartCarrier {
     Torus(ToroidalSurface),
     /// A cylinder: `u` is the angle, `v` the axial height.
     Cylinder(CylindricalSurface),
+    /// A cone: `u` is the angle, `v` the distance from the apex along a
+    /// generator (the cone's own parameters).
+    Cone(ConicalSurface),
 }
 
 impl ChartCarrier {
@@ -45,10 +48,10 @@ impl ChartCarrier {
                 Some(Self::Torus(t.clone()))
             }
             FaceSurface::Cylinder(c) => Some(Self::Cylinder(c.clone())),
+            FaceSurface::Cone(c) => Some(Self::Cone(c.clone())),
             FaceSurface::Torus(_)
             | FaceSurface::Plane { .. }
             | FaceSurface::Nurbs(_)
-            | FaceSurface::Cone(_)
             | FaceSurface::Sphere(_) => None,
         }
     }
@@ -58,6 +61,7 @@ impl ChartCarrier {
         match self {
             Self::Torus(t) => t.project_point(p),
             Self::Cylinder(c) => c.project_point(p),
+            Self::Cone(c) => c.project_point(p),
         }
     }
 
@@ -66,6 +70,7 @@ impl ChartCarrier {
         match self {
             Self::Torus(t) => t.evaluate(u, v),
             Self::Cylinder(c) => c.evaluate(u, v),
+            Self::Cone(c) => c.evaluate(u, v),
         }
     }
 
@@ -223,7 +228,7 @@ pub fn lift_boundary(
     for edge in uses {
         let supported = match carrier {
             ChartCarrier::Torus(_) => matches!(edge.curve, EdgeCurve::Circle(_)),
-            ChartCarrier::Cylinder(_) => {
+            ChartCarrier::Cylinder(_) | ChartCarrier::Cone(_) => {
                 matches!(edge.curve, EdgeCurve::Circle(_) | EdgeCurve::Line)
             }
         };

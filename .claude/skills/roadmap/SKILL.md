@@ -157,13 +157,11 @@ O2.3d budget-policy probes from #1715: 60 actual attributes in 35 files, all in
 `algo`, `operations`, `io`, `heal`, `math`, `wasm` and `remus`) splits by the
 ignore reason as written.
 B51's three closures, B276 to B278 and the 5.7b offset changes are retained;
-B7's two witnesses and B265's, B266's and B275's now run un-ignored. Listed, not re-run, except
+B7's two witnesses and B265's, B266's, B270's and B275's now run un-ignored. Listed, not re-run, except
 B272, B276 to B278 and the three 5.7b witnesses (failed as pinned).
-**28 open engine witnesses**, each with an owner row:
+**26 open engine witnesses**, each with an owner row:
 - four B26 property ready-repros in `operations/tests/prop_boolean_invariants.rs`:
   finding 13 sphere–torus ×3 (B38) and finding 20 sphere–cone (B33);
-- `regress_b52_box_cylinder_rim_notch.rs` (B270) and
-  `regress_b53_finding17_neighborhood.rs` (B271), the B52/B53 remainders;
 - `qualify_boolean_anisotropic.rs` (P-Class 2.6);
 - `regress_opseq_sphere_box_cut.rs` ×2 (F13 equator coedge sense, P-Class 8.1);
 - `regress_opseq_sphere_torus_orientation.rs` ×2 (B38 seed 1146; B264 pole-piece vote);
@@ -284,6 +282,7 @@ harness's own option-honoured floor misreading a correct 0.05 fillet on an
 - **A curved face an earlier cut trimmed is not its height band:** a hole or a bay in a cylinder wall broke the FF extent, the ray-cast wall model and the splitter dispatch at once, so classify a grid of the OPERAND against its primitives before debugging the cut that consumes it (B7, `operations/tests/regress_b7_section_pave_attachment.rs`).
 - **A section loop strictly inside a plane face's OUTER wire can still cross one of its holes;** a shortcut that admits closed loops against the outer polygon alone carves overlapping holes, and an all-planar mesh fallback is nearly as compact as the exact result, so only the disclosed quality shows it (B79, `operations/tests/regress_b79_holed_plane_internal_section.rs`).
 - **A notch thinner than the separation distance (`100 · band`) is welded away into a valid unchanged solid, not refused:** a section entering a face for less than a sample pitch needs exact witnesses (its boundary crossings) to survive phase FF's prefilter, and the lens it bounds with the boundary edge must then be read against `section_tolerance` and refused by name below `separate` (B266, `phase_ff.rs::trim_torus_oval_to_box_face`, `operations/tests/regress_torus_contact_windows.rs`).
+- **A partition check that skips a surface type hides its splitter's failures from the rescue that already exists:** a cone lateral closed its seam-straddling notch the long way round the rim and nothing measured it, while the same failure on a cylinder went to the certified chart re-partition; giving the chart a cone carrier and measuring cones closed every seam placement (B270, `periodic_chart.rs`, `chart_certificate.rs::ChartMap::Cone`, `regress_b52_box_cylinder_rim_notch.rs`).
 - **A section is carried only if a chain of edges follows it at many samples, not because one point of it, or each sample, is near some edge:** a steep cylinder's seam, a line as long as the face beside every closed section, stood in for its dropped sections at their midpoints, so the certified re-partition never ran; a seam now counts only where it follows every sample. Holding every line to the band instead refused the verified hammer opening replay (B265, `face_splitter/mod.rs::sections_left_out`, `left_out_tests.rs`).
 - **Splitter interior points of notched or symmetric pieces land on
   feature-plane intersections by construction;** classification must survive

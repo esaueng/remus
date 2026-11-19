@@ -1,9 +1,10 @@
 //! Oracles for [`section_clear_of_face`], the certificate that lets the
 //! left-out dispatch of [`split_face_2d`] skip a section its face cannot
-//! contain. The faces are the ones the cylinder-gear fuse hands it: a seam
+//! contain. The faces are the ones the cylinder-gear fuse hands it (a seam
 //! disc cap, a bored cap whose hole holds the internal teeth's tip lands, and
-//! a collar lateral beside the helical tooth band. Each certified case has a
-//! crossing or interior counterpart that must stay uncertified.
+//! a collar lateral beside the helical tooth band), and a frustum lateral.
+//! Each certified case has a crossing or interior counterpart that must stay
+//! uncertified.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use super::*;
@@ -221,6 +222,78 @@ fn collar_lateral_certifies_only_sections_outside_its_band() {
         &topo,
         face,
         &rising(12.0, 4.4, 8.5, 9.5),
+        TOL
+    ));
+}
+
+/// A frustum lateral `r(z) = 2 + z`, `z ∈ [−0.5, 0.5]` (apex `(0, 0, −2)`,
+/// half-angle 45°): the axial height has no critical point on a cone face
+/// clear of its apex, so runs on the carrier below or above the band
+/// (including one ending on the top rim) are clear; runs into the band are
+/// not (B270 review).
+#[test]
+fn cone_lateral_certifies_only_sections_outside_its_band() {
+    use remus_math::surfaces::ConicalSurface;
+    let mut topo = Topology::new();
+    let surface =
+        ConicalSurface::new(Point3::new(0.0, 0.0, -2.0), Z, std::f64::consts::FRAC_PI_4).unwrap();
+    let rim = |topo: &mut Topology, z: f64| {
+        let r = 2.0 + z;
+        let v = topo.add_vertex(Vertex::new(Point3::new(r, 0.0, z), TOL));
+        let c = Circle3D::new(Point3::new(0.0, 0.0, z), Z, r).unwrap();
+        let t0 = c.project(Point3::new(r, 0.0, z));
+        let mut e = Edge::new(v, v, EdgeCurve::Circle(c));
+        e.set_trim(Some((t0, t0 + TAU)));
+        (v, topo.add_edge(e))
+    };
+    let (v_bot, be) = rim(&mut topo, -0.5);
+    let (v_top, te) = rim(&mut topo, 0.5);
+    let seam = topo.add_edge(Edge::new(v_bot, v_top, EdgeCurve::Line));
+    let wire = topo.add_wire(
+        Wire::new(
+            vec![
+                OrientedEdge::new(be, true),
+                OrientedEdge::new(seam, true),
+                OrientedEdge::new(te, false),
+                OrientedEdge::new(seam, false),
+            ],
+            true,
+        )
+        .unwrap(),
+    );
+    let face = topo.add_face(Face::new(wire, vec![], FaceSurface::Cone(surface)));
+    let on_cone = |theta: f64, z0: f64, z1: f64| {
+        let pts: Vec<Point3> = (0..=6)
+            .map(|k| {
+                let s = f64::from(k) / 6.0;
+                let (a, z) = (theta + 0.1 * s, z0 + (z1 - z0) * s);
+                Point3::new((2.0 + z) * a.cos(), (2.0 + z) * a.sin(), z)
+            })
+            .collect();
+        fitted(&pts)
+    };
+    assert!(section_clear_of_face(
+        &topo,
+        face,
+        &on_cone(0.4, -1.5, -0.6),
+        TOL
+    ));
+    assert!(section_clear_of_face(
+        &topo,
+        face,
+        &on_cone(1.4, 0.5, 1.2),
+        TOL
+    ));
+    assert!(!section_clear_of_face(
+        &topo,
+        face,
+        &on_cone(2.4, -0.7, 0.0),
+        TOL
+    ));
+    assert!(!section_clear_of_face(
+        &topo,
+        face,
+        &on_cone(3.4, -0.2, 0.2),
         TOL
     ));
 }

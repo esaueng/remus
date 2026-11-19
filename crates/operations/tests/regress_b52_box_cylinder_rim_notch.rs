@@ -28,6 +28,20 @@
 //! The cone twin (B32) is swept across the same seam rotations for all three
 //! operations.
 //!
+//! B270 (2026-11-19): the cone twin refused all three legs whenever its seam
+//! generator crossed a slanted (hyperbolic) notch side — 24 of 768 cells in a
+//! 256-rotation sweep when found, 26 on `f56e621e`. The established splitter closed the lateral's notch
+//! the long way round the top rim (two overlapping sub-faces, both
+//! classified inside; raw fuse V−E+F = 1), and `split_face_2d` never checked
+//! a cone's partition, so the certified chart re-partition that repairs the
+//! same failure on a cylinder lateral never ran. Fixed by giving the lifted
+//! `(u, v)` chart a cone carrier (`ChartCarrier::Cone`, `ChartMap::Cone`:
+//! the cone's own `(u, v)`, its metric floor the smallest radius over the
+//! band) and measuring cone laterals in `partition_tiles_face`; the wrong
+//! partition fails its area check and the re-partition certifies the notch
+//! as the chart pieces on either side of the seam. Every cell of the sweep is
+//! now exact (`b270_box_cone_notch_every_seam_of_256_every_op`).
+//!
 //! Scale × rigid-placement acceptance (2026-09-26) crosses scales 1e-3, 1
 //! and 1e3 with origin / rigid whole-body placements over the same seam
 //! matrix; see the section at the end of this file.
@@ -387,12 +401,44 @@ fn cone_seam_crosses_slanted_side(rot: f64) -> bool {
     (y_side.0..=y_side.1).contains(&a) || (x_side.0..=x_side.1).contains(&a)
 }
 
+/// Box ∩ frustum volume, independent of the kernel. The overlap is
+/// z ∈ [0, 0.5], where the frustum's radius is r = 2 + z about (0.5, −1.5);
+/// each slice is the disc's part with x, y ≥ 0 (it never reaches x = 2.5 or
+/// y = 1 there), of area F(√(r² − 2.25)) − F(−0.5) − 1.5·(√(r² − 2.25) + 0.5)
+/// with F(s) = ½(s√(r² − s²) + r²·asin(s/r)). The smooth slice area is
+/// integrated over z by composite Gauss–Legendre (64 panels of 3 points),
+/// whose error is far below the 1e-7 comparison; the kernel's Gauss volume
+/// of the exact B-Rep reads about 5e-9 low at every seam, the uncrossed ones
+/// included.
+fn cone_inter_closed_form() -> f64 {
+    let area = |r: f64| {
+        let f = |s: f64| 0.5 * s.mul_add((r * r - s * s).sqrt(), r * r * (s / r).asin());
+        let s1 = r.mul_add(r, -2.25).sqrt();
+        1.5f64.mul_add(-(s1 + 0.5), f(s1) - f(-0.5))
+    };
+    let (nodes, weights) = (
+        [-(0.6_f64.sqrt()), 0.0, 0.6_f64.sqrt()],
+        [5.0 / 9.0, 8.0 / 9.0, 5.0 / 9.0],
+    );
+    let panels = 64;
+    let h = 0.5 / f64::from(panels);
+    let mut v = 0.0;
+    for k in 0..panels {
+        let mid = h * (f64::from(k) + 0.5);
+        for (x, w) in nodes.iter().zip(weights) {
+            v += w * 0.5 * h * area(2.0 + mid + 0.5 * h * x);
+        }
+    }
+    v
+}
+
 /// Exact-result battery for the cone twin at the given seam placements:
 /// all three legs exact and analytic, strict-valid, watertight at 0.01,
-/// the intersect volume seam-invariant, and inclusion–exclusion and
-/// the cut complement holding.
+/// the intersect volume equal to its closed form (and so seam-invariant),
+/// and inclusion–exclusion and the cut complement holding.
 fn check_cone_seams(rotations: &[f64]) {
     let v_cone = frustum_volume(1.5, 2.5, 1.0);
+    let want_inter = cone_inter_closed_form();
     let mut reference_inter: Option<f64> = None;
     for &rot in rotations {
         let mut g = [0.0; 3];
@@ -422,6 +468,10 @@ fn check_cone_seams(rotations: &[f64]) {
             "{what}: inter {gi:.9} vs first seam {vi:.9}"
         );
         assert!(
+            (gi - want_inter).abs() / want_inter <= 1e-7,
+            "{what}: inter {gi:.12} vs closed form {want_inter:.12}"
+        );
+        assert!(
             (gf - (V_BOX + v_cone - gi)).abs() / gf <= 1e-6,
             "{what}: fuse {gf:.9} != box + cone − inter"
         );
@@ -445,26 +495,110 @@ fn b52_box_cone_notch_every_seam_every_op() {
     check_cone_seams(&rotations);
 }
 
-/// Ready-repro, discovered extending the B52 sweep to the cone twin
+/// B270 witness, discovered extending the B52 sweep to the cone twin
 /// (2026-09-24): when the cone's seam generator crosses a slanted notch side
-/// (see [`cone_seam_crosses_slanted_side`]), all three legs refuse
-/// `ExactOnlyUnattainable` — 24 of 768 cells in a 256-rotation sweep, with
-/// and without the B52 face-box fix. Not the B52 root: the FF section set is
-/// identical to a passing seam's. The side hyperbola crosses the seam
-/// mid-band, but the seam-meridian section split runs only for WINDING
-/// chains, and a periodic lateral's seam edge is not expanded through its EF
-/// pave, so the lateral's splitter receives the crossing section and the seam
-/// both unsplit; it closes the notch the long way round the top rim and the
-/// kept lateral and bottom cap are lost (raw fuse V−E+F = 1). Splitting the
-/// crossing section at the seam alone keeps the cap but merges the notch into
-/// the kept piece (one 20-edge loop), so the fix needs the splitter to trace a
-/// notch region that straddles the seam. Acceptance target encoded below.
+/// (see [`cone_seam_crosses_slanted_side`]), all three legs refused
+/// `ExactOnlyUnattainable` — 24 of 768 cells in a 256-rotation sweep. The
+/// side hyperbola crosses the seam mid-band, and the lateral's established
+/// splitter closed the notch the long way round the top rim (two
+/// overlapping sub-faces, the kept lateral and bottom cap lost: raw fuse
+/// V−E+F = 1). The partition now fails `partition_tiles_face` and is
+/// re-partitioned in the cone's certified `(u, v)` chart, where the notch is
+/// the two chart pieces on either side of the seam (see the module docs).
 #[test]
-#[ignore = "open: box-cone notch refuses when the cone seam crosses a slanted notch side (found closing B52)"]
 fn b52_box_cone_seam_crossing_slanted_side() {
     let rotations = [0.7, std::f64::consts::FRAC_PI_4, 1.8];
     assert!(rotations.iter().all(|&r| cone_seam_crosses_slanted_side(r)));
     check_cone_seams(&rotations);
+}
+
+/// The B270 sweep: 256 seam placements of the cone twin, every leg exact,
+/// analytic (planes and cones only, at most 20 faces) and valid on the
+/// operations validator, the intersect equal to its closed form and the
+/// fuse and cut to inclusion–exclusion and the cut complement. Ten
+/// placements cross a slanted side: before the fix (on `f56e621e`) the
+/// eight crossing the y = 0 side refused all three legs and the two
+/// crossing the x = 0 side refused the fuse, 26 of 768 cells.
+#[test]
+fn b270_box_cone_notch_every_seam_of_256_every_op() {
+    let v_cone = frustum_volume(1.5, 2.5, 1.0);
+    let want_inter = cone_inter_closed_form();
+    let mut crossing = 0;
+    for k in 0..256 {
+        let rot = f64::from(k) * std::f64::consts::TAU / 256.0;
+        if cone_seam_crosses_slanted_side(rot) {
+            crossing += 1;
+        }
+        let mut g = [0.0; 3];
+        for (i, op) in OPS.into_iter().enumerate() {
+            let what = format!("box-cone {op:?} k={k} rot={rot:.5}");
+            let mut t = Topology::new();
+            let (a, b) = build_cone(&mut t, rot);
+            let s = exact_boolean(&mut t, op, a, b, &what);
+            let faces = remus_topology::explorer::solid_faces(&t, s).unwrap();
+            assert!(
+                faces.iter().all(|&f| matches!(
+                    t.face(f).unwrap().surface(),
+                    FaceSurface::Plane { .. } | FaceSurface::Cone(_)
+                )),
+                "{what}: non-analytic face"
+            );
+            assert!(faces.len() <= 20, "{what}: {} faces", faces.len());
+            let report = remus_operations::validate::validate_solid(&t, s).unwrap();
+            assert!(report.is_valid(), "{what}: ops validator issues");
+            g[i] = gauss_volume(&t, s);
+        }
+        let [gf, gc, gi] = g;
+        let what = format!("box-cone k={k} rot={rot:.5}");
+        assert!(
+            (gi - want_inter).abs() / want_inter <= 1e-7,
+            "{what}: inter {gi:.12} vs closed form {want_inter:.12}"
+        );
+        assert!(
+            (gf - (V_BOX + v_cone - want_inter)).abs() / gf <= 1e-7,
+            "{what}: fuse {gf:.12} != box + cone − inter"
+        );
+        assert!(
+            (gc - (V_BOX - want_inter)).abs() / gc <= 1e-7,
+            "{what}: cut {gc:.12} != box − inter"
+        );
+    }
+    assert_eq!(crossing, 10, "ten placements cross a slanted side");
+}
+
+/// Ray-cast material probes at the three crossing placements of the B270
+/// witness: the cone below the box, the notch (box ∩ cone) beside each
+/// slanted side and in the middle, the box above and beyond the cone, and
+/// clear outside points.
+#[test]
+fn b270_box_cone_notch_material_probes_at_seam_crossings() {
+    // (point, fuse, cut, intersect)
+    let probes: [([f64; 3], [PointClassification; 3]); 8] = {
+        use PointClassification::{Inside as I, Outside as O};
+        [
+            ([0.5, -1.5, -0.25], [I, O, O]),
+            ([1.9, -1.5, -0.4], [I, O, O]),
+            ([0.5, 0.2, 0.25], [I, O, I]),
+            ([2.2, 0.05, 0.4], [I, O, I]),
+            ([0.05, 0.5, 0.3], [I, O, I]),
+            ([0.5, 0.2, 0.75], [I, I, O]),
+            ([2.4, 0.5, 0.25], [I, I, O]),
+            ([0.5, -1.5, -0.6], [O, O, O]),
+        ]
+    };
+    let opts = ClassifyOptions::default();
+    for rot in [0.7, std::f64::consts::FRAC_PI_4, 1.8] {
+        for (col, op) in OPS.into_iter().enumerate() {
+            let mut t = Topology::new();
+            let (a, b) = build_cone(&mut t, rot);
+            let s = exact_boolean(&mut t, op, a, b, &format!("{op:?} rot={rot}"));
+            for (coords, want) in probes {
+                let p = Point3::new(coords[0], coords[1], coords[2]);
+                let got = classify_point(&t, s, p, &opts).unwrap();
+                assert_eq!(got, want[col], "box-cone {op:?} rot={rot}: probe {p:?}");
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
