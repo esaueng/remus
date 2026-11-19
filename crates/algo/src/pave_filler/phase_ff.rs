@@ -4441,9 +4441,10 @@ fn torus_oval_boundary_witness(
 /// sample run would wrongly keep on a mirror-asymmetric marcher parameterisation.
 ///
 /// A kept arc whose two ends lie on straight edges of the box face bounds a
-/// lens between itself and the outline, as thick as the arc's farthest
-/// distance from those edges ([`lens_thickness`]; B266: a torus notch on a
-/// box edge, whole or split into collinear pieces). Read against
+/// lens between itself and those edges, as thick as the arc's farthest
+/// distance from them ([`lens_thickness`]; B266: a torus notch on a box
+/// edge, whole or split into collinear pieces). An unreadable arc is
+/// refused. Read against
 /// the section tolerance model ([`crate::section_tolerance`]):
 ///
 /// - within the model's `band` the lens is the edge, to tolerance: the arc
@@ -4503,19 +4504,28 @@ fn trim_torus_oval_to_box_face(
         let (Some(first), Some(last)) = (group.first(), group.last()) else {
             continue;
         };
-        if let Some(thickness) = lens_thickness(&group, first.p_start, last.p_end, &lines, model) {
-            if thickness <= model.band {
+        match lens_thickness(&group, first.p_start, last.p_end, &lines, model) {
+            LensReading::Off => {}
+            LensReading::Unreadable => {
+                return Err(AlgoError::IntersectionFailed(format!(
+                    "plane × torus section on face {plane_face:?}: the arc between \
+                     {:?} and {:?} cannot be read against the box edges",
+                    first.p_start, last.p_end
+                )));
+            }
+            LensReading::Thickness(thickness) if thickness <= model.band => {
                 dropped = true;
                 continue;
             }
-            if thickness.is_nan() || thickness < model.separate {
+            LensReading::Thickness(thickness) if thickness < model.separate => {
                 return Err(AlgoError::IntersectionFailed(format!(
                     "plane × torus section on face {plane_face:?}: the arc between \
-                     {:?} and {:?} runs at most {thickness:e} from the box edges, \
-                     inside the separation distance {:e}",
+                     {:?} and {:?} runs at most {thickness:e} from the box edges they \
+                     lie on, inside the separation distance {:e}",
                     first.p_start, last.p_end, model.separate
                 )));
             }
+            LensReading::Thickness(_) => {}
         }
         kept.extend(group);
     }
@@ -4525,54 +4535,115 @@ fn trim_torus_oval_to_box_face(
     Ok(Some(kept))
 }
 
+/// What [`lens_thickness`] read of a kept arc against the straight edges of
+/// its face's outline.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum LensReading {
+    /// An end of the arc lies on no straight edge: the arc bounds no lens
+    /// with the outline's straight edges.
+    Off,
+    /// The arc's largest distance from the edges its ends lie on.
+    Thickness(f64),
+    /// A reading of an end or a sample was not finite: no thickness can be
+    /// certified, so the caller refuses.
+    Unreadable,
+}
+
 /// How far the arc made of `pieces`, from `start` to `end`, runs from the
-/// straight edges `lines` of the face's outer wire, when both its ends lie
-/// on them (within `model.band`); `None` when an end does not.
+/// straight edges `lines` of the face's outer wire that its ends lie on
+/// (within `model.band`).
 ///
-/// The distance is the largest, over 64 samples of each piece with its ends,
-/// of the distance to the nearest of the edges as segments. Read against
-/// every edge rather than the one its ends lie on, a lens is measured the
-/// same whether that edge is whole or split into collinear pieces between
-/// the ends (review of #1867), and an arc that hugs the outline round a
-/// corner is as thin as it is. A non-finite reading is returned as it is,
-/// for the caller to refuse.
+/// The arc is read against those edges only, never against an unrelated
+/// edge that happens to lie nearer (re-check of #1867: on a face thinner
+/// than the lens, the far side's edge read a `1.5e-7` lens as `9.5e-8`):
+///
+/// - when an edge holding `start` and an edge holding `end` are collinear
+///   (each within the band of the other's line, as the pieces of a split
+///   edge are), the distance is to that supporting line;
+/// - otherwise (an arc cutting off a corner between two edges), it is to
+///   the nearer of the two edges as segments.
+///
+/// The distance is the largest over 64 samples of each piece, its ends
+/// included. Any non-finite reading, of an end or of a sample, answers
+/// [`LensReading::Unreadable`].
 fn lens_thickness(
     pieces: &[RawCurve],
     start: Point3,
     end: Point3,
     lines: &[(Point3, Point3)],
     model: crate::section_tolerance::SectionTolerance,
-) -> Option<f64> {
-    // Distance from `p` to the segment `a → b`; NaN for a degenerate one.
+) -> LensReading {
+    let finite = |p: Point3| p.x().is_finite() && p.y().is_finite() && p.z().is_finite();
+    if !(finite(start) && finite(end)) {
+        return LensReading::Unreadable;
+    }
+    // Non-degenerate edges only: a zero-length one has no line.
+    let edges: Vec<(Point3, Point3)> = lines
+        .iter()
+        .copied()
+        .filter(|&(a, b)| {
+            let len = (b - a).length();
+            len.is_finite() && len > 0.0
+        })
+        .collect();
     let to_segment = |p: Point3, (a, b): (Point3, Point3)| -> f64 {
         let dir = b - a;
         let t = ((p - a).dot(dir) / dir.dot(dir)).clamp(0.0, 1.0);
         (p - (a + dir * t)).length()
     };
-    let to_outline = |p: Point3| -> f64 {
-        lines
-            .iter()
-            .map(|&line| to_segment(p, line))
-            .fold(f64::INFINITY, |nearest, d| {
-                if d.is_nan() { nearest } else { nearest.min(d) }
-            })
+    let to_line = |p: Point3, (a, b): (Point3, Point3)| -> f64 {
+        let dir = b - a;
+        (p - a).cross(dir).length() / dir.length()
     };
-    if to_outline(start) > model.band || to_outline(end) > model.band {
-        return None;
+    let holding = |p: Point3| -> Vec<(Point3, Point3)> {
+        edges
+            .iter()
+            .copied()
+            .filter(|&edge| to_segment(p, edge) <= model.band)
+            .collect()
+    };
+    let (at_start, at_end) = (holding(start), holding(end));
+    if at_start.is_empty() || at_end.is_empty() {
+        return LensReading::Off;
     }
+    let collinear = |s: (Point3, Point3), e: (Point3, Point3)| {
+        to_line(e.0, s) <= model.band
+            && to_line(e.1, s) <= model.band
+            && to_line(s.0, e) <= model.band
+            && to_line(s.1, e) <= model.band
+    };
+    let line = at_start
+        .iter()
+        .find(|&&s| at_end.iter().any(|&e| collinear(s, e)))
+        .copied();
+    // Distance of `p` from what the arc's ends lie on.
+    let reading = |p: Point3| -> f64 {
+        line.map_or_else(
+            || {
+                let nearest_start = at_start.iter().map(|&s| to_segment(p, s));
+                let nearest_end = at_end.iter().map(|&e| to_segment(p, e));
+                nearest_start
+                    .chain(nearest_end)
+                    .fold(f64::INFINITY, f64::min)
+            },
+            |line| to_line(p, line),
+        )
+    };
     let mut thickness = 0.0_f64;
     for piece in pieces {
         for i in 0..=64 {
             let t =
                 (piece.t_range.1 - piece.t_range.0).mul_add(f64::from(i) / 64.0, piece.t_range.0);
-            let d = to_outline(raw_point_at(piece, t));
+            let p = raw_point_at(piece, t);
+            // `f64::min` drops a NaN, so a sample is checked itself.
+            let d = if finite(p) { reading(p) } else { f64::NAN };
             if !d.is_finite() {
-                return Some(d);
+                return LensReading::Unreadable;
             }
             thickness = thickness.max(d);
         }
     }
-    Some(thickness)
+    LensReading::Thickness(thickness)
 }
 
 /// Which of the sorted oval parameters `fracs` of a section's crossings

@@ -17,9 +17,10 @@ use remus_topology::face::Face;
 use remus_topology::wire::{OrientedEdge, Wire};
 
 use super::{
-    Aabb3, Edge, EdgeCurve, FaceClip, FaceExtent, FaceId, FaceSurface, Point3, RawCurve, Tolerance,
-    Topology, Vec3, Vertex, clip_line_to_face, marks_to_settle, section_notches_one_rim,
-    single_hit_circle_is_graze, trim_torus_oval_to_box_face,
+    Aabb3, Edge, EdgeCurve, FaceClip, FaceExtent, FaceId, FaceSurface, LensReading, Point3,
+    RawCurve, Tolerance, Topology, Vec3, Vertex, clip_line_to_face, lens_thickness,
+    marks_to_settle, section_notches_one_rim, single_hit_circle_is_graze,
+    trim_torus_oval_to_box_face,
 };
 
 // ── Shared fixture builders ─────────────────────────────────────────────
@@ -2069,4 +2070,84 @@ fn only_crossings_next_to_a_close_gap_are_settled() {
             .collect();
         assert_kept_arc(&cut, &arc, ends, angle, &inside, &format!("upper {upper}"));
     }
+}
+
+/// Re-check of #1867, finding 1: a face only `1.9e-7` tall,
+/// `[-5, 5] × [4 − 1.5e-7, 4 + 0.4e-7]`, whose lower edge the radius-4
+/// section circle crosses twice and passes `1.5e-7` beyond. Read against
+/// the nearest outline edge, the arc never got more than `9.5e-8` from the
+/// upper edge, within the band, and the section was dropped. The lens lies
+/// on the lower edge's line and is `1.5e-7` thick: refused.
+#[test]
+fn a_lens_is_read_against_its_own_edge_not_the_nearest_one() {
+    let cut = radius_four_cut();
+    let mut topo = Topology::new();
+    let face = rectangle_face(
+        &mut topo,
+        &cut,
+        (-5.0, 5.0),
+        (cut.outer - 1.5e-7, cut.outer + 0.4e-7),
+        &[],
+    );
+    let got = cut.try_trim(&mut topo, face);
+    assert!(
+        matches!(&got, Err(crate::error::AlgoError::IntersectionFailed(why))
+            if why.contains("separation distance")),
+        "{:?}",
+        got.map(|p| p.map(|p| p.len()))
+    );
+}
+
+/// A straight piece `a → b`, as phase FF carries a line section.
+fn line_piece(a: Point3, b: Point3) -> RawCurve {
+    RawCurve {
+        curve: EdgeCurve::Line,
+        bbox: Aabb3::from_points([a, b]),
+        t_range: (0.0, 1.0),
+        p_start: a,
+        p_end: b,
+    }
+}
+
+/// Re-check of #1867, finding 2: an arc with a sample that evaluates to
+/// NaN, or with an end that does, is unreadable and refused. A sample
+/// distance folded with `min` dropped the NaN and read `+∞`, which passed
+/// as a thick lens and kept the arc; a NaN end read as off the outline.
+#[test]
+fn an_arc_with_a_non_finite_reading_is_unreadable() {
+    let model = crate::section_tolerance::SectionTolerance::at(1e-7, 10.0);
+    let edge = (Point3::new(0.0, 0.0, 0.0), Point3::new(10.0, 0.0, 0.0));
+    let (start, end) = (Point3::new(4.0, 0.0, 0.0), Point3::new(6.0, 0.0, 0.0));
+    let nan = Point3::new(f64::NAN, f64::NAN, f64::NAN);
+
+    // A finite lens 1e-6 thick reads as such.
+    let top = Point3::new(5.0, 1e-6, 0.0);
+    let lens = [line_piece(start, top), line_piece(top, end)];
+    let LensReading::Thickness(thickness) = lens_thickness(&lens, start, end, &[edge], model)
+    else {
+        panic!("a finite lens is read");
+    };
+    assert!((thickness - 1e-6).abs() < 1e-15, "{thickness:e}");
+
+    // A NaN sample between finite ends.
+    let broken = [line_piece(start, nan), line_piece(nan, end)];
+    assert_eq!(
+        lens_thickness(&broken, start, end, &[edge], model),
+        LensReading::Unreadable
+    );
+    // A NaN end.
+    assert_eq!(
+        lens_thickness(&lens, nan, end, &[edge], model),
+        LensReading::Unreadable
+    );
+    assert_eq!(
+        lens_thickness(&lens, start, nan, &[edge], model),
+        LensReading::Unreadable
+    );
+    // An end off every straight edge bounds no lens.
+    let off = Point3::new(6.0, 1e-3, 0.0);
+    assert_eq!(
+        lens_thickness(&lens, start, off, &[edge], model),
+        LensReading::Off
+    );
 }
