@@ -160,7 +160,7 @@ impl PlanarFanBound {
     ///   (the perturbed points, then each cross product's rounding);
     /// * `d · Σ |A_k|`, the centroids' rounding,
     ///
-    /// all over three. That is inflated by [`MARGIN`], and
+    /// all over three. That is inflated by `MARGIN` (64ε), and
     /// `MARGIN · r · Σ |A_k|` covers the rounding of the fan's own sums and
     /// of a translated cache hit (whose fields equal a fresh reading's to
     /// rounding of the local geometry).
