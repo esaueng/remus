@@ -48,6 +48,8 @@ mod nurbs_rows_oracle_tests;
 #[cfg(test)]
 mod parametric_split_oracle_tests;
 #[cfg(test)]
+pub(super) mod point_edge_tests;
+#[cfg(test)]
 mod seamless_wrap_tests;
 mod sphere_latitude;
 
@@ -3615,6 +3617,26 @@ fn planar_wire_monomial_moments(
                     e2,
                 );
             }
+            EdgeCurve::NurbsCurve(nc) if nurbs_edge_is_point_chord(nc, start, end) => {
+                // A curve that leaves from and returns to one point inside a
+                // control hull that is that point to rounding (the zero-radius
+                // arc a partial revolve draws at a profile vertex on its
+                // axis) encloses no area. Its own moments are
+                // rounding noise, which no allowance relative to them can
+                // certify, so it is read as its straight chord, which closes
+                // the loop between its end vertices as the curve does.
+                let d = end - start;
+                accumulate_green_segment(
+                    &mut moments,
+                    (0.0, 1.0),
+                    8,
+                    dir_sign,
+                    |u| (start + d * u, d),
+                    origin,
+                    e1,
+                    e2,
+                );
+            }
             EdgeCurve::NurbsCurve(nc) => {
                 // A NURBS boundary that curve recognition identifies as a
                 // line, circle, ellipse, hyperbola, or parabola IS that curve
@@ -3727,6 +3749,94 @@ fn accumulate_hyperbola_green_segments(
 /// degree 6. This rule is never used for unrecognized rational spans or
 /// higher degrees: both can hide error from the volume order comparison.
 const NURBS_GREEN_ORDER: usize = 16;
+
+/// Control-hull extent, in units of `f64::EPSILON` times the hull's largest
+/// position magnitude, up to which [`nurbs_edge_is_point_chord`] reads a
+/// NURBS edge that leaves from and returns to one point as that point.
+const POINT_HULL_ROUNDINGS: f64 = 16.0;
+
+/// Whether the planar reader takes a NURBS edge from `start` to `end` as its
+/// straight chord: the edge leaves from and returns to one point, as the
+/// zero-radius arc a partial revolve draws at an on-axis profile vertex does.
+///
+/// Both of these must hold, with `L = 16 ε · max |p|` over the control
+/// points `p` (`|p|` the largest coordinate magnitude, within `√3` of the
+/// Euclidean norm and never above it):
+///
+/// * (a) the end points coincide: on every axis `|start − end| ≤ L` (the same
+///   vertex, or two vertices within rounding of each other);
+/// * (b) the control hull is one point to rounding of its position: every
+///   weight positive and finite (so the curve lies in the hull), and on every
+///   axis every control point within `L` of the first.
+///
+/// Condition (a) rejects every curve between distinct points however far it
+/// sits from the origin. Condition (b) measures the hull against the whole
+/// position, so rotation noise in a coordinate near zero (a revolve about a
+/// tilted axis) still reads as a point. The worst a genuine curve that passes
+/// both can be is a closed loop no wider than `L` on any axis: it encloses at
+/// most `L²`, rounding of the face's moments at that position, and the chord
+/// it is read as closes the wire between the same end vertices. Coordinates
+/// are compared one by one, never through a squared length, which would
+/// underflow for a hull of tiny coordinates. The test reads the curve's data,
+/// never samples it.
+fn nurbs_edge_is_point_chord(
+    nc: &remus_math::nurbs::curve::NurbsCurve,
+    start: Point3,
+    end: Point3,
+) -> bool {
+    let points = nc.control_points();
+    let Some(&first) = points.first() else {
+        return false;
+    };
+    if !nc.weights().iter().all(|w| w.is_finite() && *w > 0.0) {
+        return false;
+    }
+    let coordinates = |p: Point3| [p.x(), p.y(), p.z()];
+    let mut magnitude = 0.0_f64;
+    for &p in points {
+        for c in coordinates(p) {
+            if !c.is_finite() {
+                return false;
+            }
+            magnitude = magnitude.max(c.abs());
+        }
+    }
+    let limit = POINT_HULL_ROUNDINGS * f64::EPSILON * magnitude.max(f64::MIN_POSITIVE);
+    let within = |a: Point3, b: Point3| {
+        coordinates(a)
+            .into_iter()
+            .zip(coordinates(b))
+            .all(|(x, y)| (x - y).abs() <= limit)
+    };
+    within(start, end) && points.iter().all(|&p| within(p, first))
+}
+
+/// Which NURBS edges of a planar face, in wire order (outer wire first, then
+/// each inner wire), the planar reader takes as point chords
+/// ([`nurbs_edge_is_point_chord`]); `None` for a face that is not planar or
+/// has no NURBS edge.
+///
+/// The predicate reads absolute coordinates, so a translation of a face can
+/// flip it: the face-integral cache stamps its entries with this and reuses
+/// a translated reading only where the two stamps agree.
+pub(crate) fn planar_point_chord_stamp(topo: &Topology, face_id: FaceId) -> Option<Vec<bool>> {
+    let face = topo.face(face_id).ok()?;
+    if !matches!(face.surface(), FaceSurface::Plane { .. }) {
+        return None;
+    }
+    let mut stamp = Vec::new();
+    for &wire_id in std::iter::once(&face.outer_wire()).chain(face.inner_wires()) {
+        for oe in topo.wire(wire_id).ok()?.edges() {
+            let edge = topo.edge(oe.edge()).ok()?;
+            if let EdgeCurve::NurbsCurve(nc) = edge.curve() {
+                let start = topo.vertex(edge.start()).ok()?.point();
+                let end = topo.vertex(edge.end()).ok()?.point();
+                stamp.push(nurbs_edge_is_point_chord(nc, start, end));
+            }
+        }
+    }
+    (!stamp.is_empty()).then_some(stamp)
+}
 
 fn has_exact_polynomial_green_rule(nc: &remus_math::nurbs::curve::NurbsCurve) -> bool {
     // Unit weights are an algebraic precondition, not a closeness test.

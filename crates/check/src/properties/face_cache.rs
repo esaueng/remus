@@ -86,6 +86,13 @@
 //! nesting is undecided is refused by the integrator, and refusals are never
 //! cached.
 //!
+//! The planar reader takes a NURBS edge whose control hull is one point to
+//! the rounding of its coordinates as its chord, a test of absolute
+//! coordinates that a translation can flip. Each planar entry with NURBS
+//! edges therefore records which edges it read as chords, and a translated
+//! face reuses it only when its own edges read the same; otherwise it is
+//! integrated afresh.
+//!
 //! A cone face's reading turns on decisions made against its apex (which
 //! nappe it is charted on, whether a wrapping trim reaches below the apex)
 //! that rounding of a translated input, or a carrier moved within the key's
@@ -248,6 +255,10 @@ struct Value {
     /// The inner-loop nesting the integration used, for a planar face with
     /// at least two inner wires (see [`nesting_stamp`]).
     nesting: Option<InnerLoopNesting>,
+    /// Which NURBS edges of a planar face the integration read as point
+    /// chords, `None` for a face with none to decide
+    /// ([`face_integrator::planar_point_chord_stamp`]).
+    point_chords: Option<Vec<bool>>,
 }
 
 #[derive(Debug, Clone)]
@@ -313,6 +324,7 @@ impl Request {
         let mut value = self.integrate(topo, face)?;
         if matches!(self, Self::FixedAbout { .. } | Self::Volume { .. }) {
             value.nesting = nesting_stamp(topo, face);
+            value.point_chords = face_integrator::planar_point_chord_stamp(topo, face);
             value.reference_bound = reads_fitted_boundary(topo, face)
                 || topo
                     .face(face)
@@ -334,6 +346,7 @@ impl Request {
                     fitted_boundary: None,
                     reference_bound: true,
                     nesting: None,
+                    point_chords: None,
                 })
             }
             Self::FixedAbout { order, reference } => {
@@ -348,6 +361,7 @@ impl Request {
                     fitted_boundary: reading.fitted_boundary,
                     reference_bound: false,
                     nesting: None,
+                    point_chords: None,
                 })
             }
             Self::Volume { order, reference } => {
@@ -362,6 +376,7 @@ impl Request {
                     fitted_boundary: reading.fitted_boundary,
                     reference_bound: false,
                     nesting: None,
+                    point_chords: None,
                 })
             }
             Self::Area { order } => {
@@ -374,6 +389,7 @@ impl Request {
                     fitted_boundary: None,
                     reference_bound: false,
                     nesting: None,
+                    point_chords: None,
                 })
             }
             Self::AnalyticArea { order } => {
@@ -386,6 +402,7 @@ impl Request {
                     fitted_boundary: None,
                     reference_bound: false,
                     nesting: None,
+                    point_chords: None,
                 })
             }
         }
@@ -737,6 +754,8 @@ impl FaceIntegralCache {
         // The face's own nesting, read at most once, and only to vet a
         // translated reading.
         let mut stamp: Option<Option<InnerLoopNesting>> = None;
+        // Its point-chord stamp, likewise read at most once.
+        let mut chords: Option<Option<Vec<bool>>> = None;
         if let Some(seqs) = self.index.get(&hash) {
             for &seq in seqs {
                 let Some(entry) = seq
@@ -756,6 +775,17 @@ impl FaceIntegralCache {
                     && entry.value.nesting.is_some()
                     && *stamp.get_or_insert_with(|| nesting_stamp(topo, face))
                         != entry.value.nesting
+                {
+                    continue;
+                }
+                // The planar reader takes a NURBS edge as its chord by a test
+                // of its absolute coordinates, which a translation can flip:
+                // reuse the reading only when this face's edges read the same.
+                if rank == Rank::Translated
+                    && entry.value.point_chords.is_some()
+                    && *chords.get_or_insert_with(|| {
+                        face_integrator::planar_point_chord_stamp(topo, face)
+                    }) != entry.value.point_chords
                 {
                     continue;
                 }
