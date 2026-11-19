@@ -25,10 +25,13 @@ mod face;
 mod face_cache;
 #[cfg(test)]
 mod measurement_tests;
+#[cfg(test)]
+pub(crate) mod mesh_audit;
 mod mesh_ops;
 mod nonplanar;
 mod nurbs;
 mod planar;
+mod planar_crossings;
 mod pool_index;
 mod reuse;
 pub(crate) mod rim_chain;

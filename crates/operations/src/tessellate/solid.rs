@@ -1268,6 +1268,17 @@ fn build_boundary_plan(
         }
     }
 
+    // Stage A4b: a planar face triangulates its sampled outline, which must
+    // be simple. Where two of its boundary curves leave a vertex at a small
+    // angle, a coarse chord of one can cross the other's samples; bisect such
+    // chords on their curves, in the shared chains (B276, B277).
+    super::planar_crossings::refine_planar_crossings(
+        topo,
+        all_faces,
+        &mut edge_points,
+        &mut edge_params,
+    )?;
+
     // Stage A5 (PERF-D03): freeze the sampled chains into the explicit
     // boundary plan. From here on every stage reads sample geometry,
     // authority, and identities from `plan` — never from ad-hoc locals — so

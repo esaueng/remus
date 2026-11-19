@@ -2060,16 +2060,18 @@ fn thread_run_to_the_face_end_keeps_its_chamfer_whatever_the_rounding() {
     }
 }
 
-/// B276 ready-repro: the M6-sized boss of the rounding test above with a
-/// pitch-0.5 thread, a 0.5 start collar and a 45° chamfer at the face end.
-/// The body is valid, and its mesh is watertight at deflection 0.005 but
-/// not at 0.01 (the deflection `assert_valid_and_watertight` uses). Offset
-/// 0.5 does not round off, so the snapped-span fix does not bear on it.
+/// B276: the M6-sized boss of the rounding test above with a pitch-0.5
+/// thread, a 0.5 start collar and a 45° chamfer at the face end. The start
+/// collar's shoulder is a crescent between the boss rim and the thread's
+/// first crest, which leaves the rim at a small angle; at deflection 0.01
+/// the rim's chord crossed the crest's samples near the tip, the planar
+/// mesher fanned the self-crossing outline and wound the crescent inward
+/// (221 open edges). The tessellator now bisects such chords on their
+/// curves (`tessellate::planar_crossings`). Closed and sound at 0.01, 0.005
+/// and the scale-derived deflection (bounding diagonal times 1e-5).
 #[test]
-#[ignore = "open: a pitch-0.5 thread with a start collar on an r3 h2.6 boss meshes open at deflection 0.01 (B276)"]
 fn fine_pitch_thread_with_a_start_collar_meshes_closed() {
-    use crate::tessellate::{boundary_edge_count, non_manifold_edge_count};
-    let (r, h, offset, pitch) = (3.0, 2.6, 0.5, 0.5);
+    let (r, h, offset, pitch): (f64, f64, f64, f64) = (3.0, 2.6, 0.5, 0.5);
     let mut topo = Topology::new();
     let (body, face) = boss(&mut topo, r, h);
     let form = ThreadForm::iso_metric(pitch, ThreadKind::External);
@@ -2081,23 +2083,11 @@ fn fine_pitch_thread_with_a_start_collar_meshes_closed() {
     let outcome = cut_thread(&mut topo, body, face, &form, &options).unwrap();
     let report = validate_solid(&topo, outcome.solid).unwrap();
     assert!(report.is_valid(), "{:?}", report.issues);
-    let open: Vec<(f64, usize, usize)> = [0.01, 0.005]
-        .into_iter()
-        .filter_map(|d| {
-            let mesh = tessellate_solid_with_tolerance(&topo, outcome.solid, d, 0.2).unwrap();
-            (!is_watertight(&mesh)).then(|| {
-                (
-                    d,
-                    boundary_edge_count(&mesh),
-                    non_manifold_edge_count(&mesh),
-                )
-            })
-        })
-        .collect();
-    assert!(
-        open.is_empty(),
-        "open meshes [(deflection, boundary, non-manifold)]: {open:?}"
-    );
+    let diagonal = (2.0 * r).hypot(2.0 * r).hypot(h);
+    let expected = volume(&topo, outcome.solid);
+    let deflections = [0.01, 0.005, diagonal * 1e-5];
+    let unsound = unsound_meshes(&topo, outcome.solid, &deflections, expected, false);
+    assert!(unsound.is_empty(), "unsound meshes: {unsound:?}");
 }
 
 /// The fuse fallback, forced: plain threads (on a whole boss, and on a
@@ -2557,21 +2547,49 @@ fn a_gauge_plane_far_beyond_the_thread_refuses() {
     assert_eq!(before, topo.num_faces());
 }
 
-/// A start collar flush with the crest is split into crescents between the
-/// thread and the collar's rim (`flush_end`). Here (an r6 h10 boss, the
-/// gauge-review form, a 2 collar, a 6 thread, plain ends) the exact body is
-/// valid but the display mesh is not closed at display deflections: 14, 45
-/// and 198 boundary edges at 0.3, 0.1 and 0.05 on the taper with its large
-/// end at the collar (and one non-manifold edge at 0.05), 14, 45 and 199 on
-/// the untapered thread; both close at 0.02, 0.01 and 1e-3. Each is a mesh
-/// edge whose two uses run the same way, on the shoulder at z = 2 (r 5.08
-/// to 6), whose triangles are reversed. The B-Rep closes at fine
-/// deflections, so the fault is the tessellator's, not the crescents'
-/// winding; it predates tapered threads. Not traced further (B277).
+/// The display-mesh audit of `solid` at each deflection: closed, edge
+/// manifold, enclosing `expected` to within the chord slab, and with no
+/// inverted triangle on its planar, cylindrical, spherical or toroidal faces
+/// (and on its cones too when `cones` is set). Returns the deflections that
+/// fail, with what the audit read there.
+fn unsound_meshes(
+    topo: &Topology,
+    solid: SolidId,
+    deflections: &[f64],
+    expected: f64,
+    cones: bool,
+) -> Vec<(f64, crate::tessellate::mesh_audit::MeshAudit)> {
+    deflections
+        .iter()
+        .map(|&d| {
+            (
+                d,
+                crate::tessellate::mesh_audit::audit_display_mesh(topo, solid, d, 0.2),
+            )
+        })
+        .filter(|(d, audit)| {
+            !if cones {
+                audit.sound(*d, expected)
+            } else {
+                audit.sound_off_cones(*d, expected)
+            }
+        })
+        .collect()
+}
+
+/// B277: a start collar flush with the crest is split into crescents
+/// between the thread and the collar's rim (`flush_end`). Here (an r6 h10
+/// boss, the gauge-review form, a 2 collar, a 6 thread, plain ends) the
+/// exact body is valid, but at display deflections the shoulder at z = 2
+/// (r 5.08 to 6) meshed with reversed triangles: 14, 45 and 198 open edges
+/// at 0.3, 0.1 and 0.05. The crescent's rim chord crossed the crest's
+/// samples near its tip, and the planar mesher fanned the self-crossing
+/// outline. The tessellator now bisects such chords on their curves
+/// (`tessellate::planar_crossings`). Closed and sound at 0.3, 0.1, 0.05,
+/// 0.02 and the scale-derived deflection, tapered and untapered; the
+/// untapered body reads its closed form.
 #[test]
-#[ignore = "open: a flush start collar's crescents mesh with reversed triangles at display deflections (B277)"]
 fn a_flush_start_collar_meshes_closed_at_display_deflections() {
-    use crate::tessellate::edge_census;
     let form = gauge_review_form();
     let tapers = [
         Some(ThreadTaper {
@@ -2581,13 +2599,15 @@ fn a_flush_start_collar_meshes_closed_at_display_deflections() {
         }),
         None,
     ];
-    let mut open = Vec::new();
+    let (r, h, length): (f64, f64, f64) = (6.0, 10.0, 6.0);
+    let diagonal = (2.0 * r).hypot(2.0 * r).hypot(h);
+    let mut unsound = Vec::new();
     for taper in tapers {
         let mut topo = Topology::new();
-        let (body, face) = boss(&mut topo, 6.0, 10.0);
+        let (body, face) = boss(&mut topo, r, h);
         let options = CylinderThreadOptions {
             offset: 2.0,
-            length: Some(6.0),
+            length: Some(length),
             taper,
             ..CylinderThreadOptions::default()
         };
@@ -2595,24 +2615,78 @@ fn a_flush_start_collar_meshes_closed_at_display_deflections() {
         assert!(outcome.glued);
         let report = validate_solid(&topo, outcome.solid).unwrap();
         assert!(report.is_valid(), "{:?}", report.issues);
-        for deflection in [0.3, 0.1, 0.05, 0.02] {
-            let mesh =
-                tessellate_solid_with_tolerance(&topo, outcome.solid, deflection, 0.2).unwrap();
-            let census = edge_census(&mesh);
-            if census.boundary_edges + census.non_manifold_edges > 0 {
-                open.push((
-                    taper.is_some(),
-                    deflection,
-                    census.boundary_edges,
-                    census.non_manifold_edges,
-                ));
-            }
+        let expected = volume(&topo, outcome.solid);
+        if taper.is_none() {
+            let closed =
+                outline_area(&form, r, r - form.depth) * length + PI * r * r * (h - length);
+            assert!(rel(expected, closed) < 1e-5, "{expected} vs {closed}");
+        }
+        let deflections = [0.3, 0.1, 0.05, 0.02, diagonal * 1e-5];
+        let found = unsound_meshes(&topo, outcome.solid, &deflections, expected, false);
+        for (deflection, audit) in found {
+            unsound.push((taper.is_some(), deflection, audit));
         }
     }
     assert!(
-        open.is_empty(),
-        "open meshes [(tapered, deflection, boundary, non-manifold)]: {open:?}"
+        unsound.is_empty(),
+        "unsound meshes [(tapered, deflection, audit)]: {unsound:?}"
     );
+}
+
+/// Ready repro, not fixed here: the cone faces of the two bodies above (the
+/// B276 chamfer cone, the tapered B277 thread's cones) mesh closed but keep a
+/// few inverted slivers: 1 at deflection 0.005 and 44 at the scale-derived
+/// deflection on the chamfer, 3 at 0.3, 0.1 and 0.05 on the taper. Each
+/// joins two
+/// consecutive boundary samples of a cone face to an interior grid point
+/// (`tessellate_nonplanar_cdt`'s base grid) that lies a few 1e-8 inside
+/// their chord in the chart: inside in the chart, but the cone's curvature
+/// puts it beyond the 3D chord, so the triangle turns over. The base grid
+/// keeps points as close as `1e-10` of the chart's size to a boundary chord;
+/// the dense trim rows already keep a clearance of 0.4 of a column.
+#[test]
+#[ignore = "open: thread cone faces mesh with inverted slivers next to their boundary (non-planar CDT base-grid clearance)"]
+fn thread_cone_faces_mesh_without_inverted_slivers() {
+    let mut unsound = Vec::new();
+    {
+        let (r, h): (f64, f64) = (3.0, 2.6);
+        let mut topo = Topology::new();
+        let (body, face) = boss(&mut topo, r, h);
+        let form = ThreadForm::iso_metric(0.5, ThreadKind::External);
+        let options = CylinderThreadOptions {
+            offset: 0.5,
+            end: ThreadEnd::Chamfer { angle: PI / 4.0 },
+            ..CylinderThreadOptions::default()
+        };
+        let solid = cut_thread(&mut topo, body, face, &form, &options)
+            .unwrap()
+            .solid;
+        let diagonal = (2.0 * r).hypot(2.0 * r).hypot(h);
+        let expected = volume(&topo, solid);
+        let deflections = [0.01, 0.005, diagonal * 1e-5];
+        unsound.extend(unsound_meshes(&topo, solid, &deflections, expected, true));
+    }
+    {
+        let mut topo = Topology::new();
+        let (body, face) = boss(&mut topo, 6.0, 10.0);
+        let options = CylinderThreadOptions {
+            offset: 2.0,
+            length: Some(6.0),
+            taper: Some(ThreadTaper {
+                ratio: 0.0625,
+                small_end: ThreadEndSide::End,
+                gauge_offset: None,
+            }),
+            ..CylinderThreadOptions::default()
+        };
+        let solid = cut_thread(&mut topo, body, face, &gauge_review_form(), &options)
+            .unwrap()
+            .solid;
+        let expected = volume(&topo, solid);
+        let deflections = [0.3, 0.1, 0.05, 0.02];
+        unsound.extend(unsound_meshes(&topo, solid, &deflections, expected, true));
+    }
+    assert!(unsound.is_empty(), "unsound meshes: {unsound:?}");
 }
 
 /// `solid_volume` of a long tapered thread with an end runout (an r6 h120
