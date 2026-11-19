@@ -23,4 +23,4 @@ verification bar, and must remove back to the sharp part. The un-ignored
 R4 → 1.5 → 1.9 → 4 through `resizeBlendJournaled` and checks the history
 from the import after every edit. Remaining: the two boss–shoulder contact
 edges along X share one face pair, so an edit from the R1.5/R1.9 body
-records them as unresolved (ambiguous incidence, the B18 contract).
+records them as unresolved (ambiguous incidence, the B18 contract). PR #1877.
