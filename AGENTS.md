@@ -468,6 +468,8 @@ Quick reference — find the right file for any task:
 | Torus crossings over exterior, interior, triple and quadruple line contacts: a ray counts with the right parity or abstains, never miscounts; a contact whose window reaches the ray origin abstains (tests) | `classify/boundary/torus_contact_tests.rs` |
 | Exact trim of sphere faces bounded by circle arcs on the sphere, any number of supports, non-convex or reversed (first crossing along a great-circle walk) | `classify/boundary/sphere_arcs.rs` |
 | Sphere trims the `(longitude, latitude)` chart cannot read (a pole-holding or axis-winding trim) and a cap's holes, read in a stereographic chart from a pole clear of every loop (B264) | `classify/boundary/sphere_stereo.rs` |
+| Review reproducers for the stereographic sphere trims: a circle hole's sagitta between samples, a hole too near the cap's far pole for one chart, the boundary test on an exactly decided cap rim; correct or abstain, never a miscount (tests) | `classify/boundary/sphere_review_tests.rs` |
+| Re-check reproducers for the stereographic sphere trims: a spline bump between chord probes (certified hull bands), circle samples a billion units from the origin at three scales, a hole below an absolute size cutoff, a rim of arcs on two nearly equal planes; correct or abstain, never a miscount (tests) | `classify/boundary/sphere_recheck_tests.rs` |
 | Boundary skeleton that makes a ray through an edge or vertex abstain from the classification vote | `classify/graze.rs` |
 | CheckId enum, ValidationReport, severity | `validate/checks.rs` |
 | Wire topological checks | `validate/wire.rs` |
