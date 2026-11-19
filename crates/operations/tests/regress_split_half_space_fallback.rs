@@ -357,9 +357,48 @@ fn cylinder_split_by_a_plane_off_the_coordinate_axes() {
     assert!(census(&topo, halves.positive).cylinder >= 1);
 }
 
-/// A plane oblique to a cylinder's axis cuts an elliptical section, which
-/// the exact booleans do not build either. The split stays a typed refusal
-/// naming both routes, and leaves the session untouched.
+/// A plane oblique to a cylinder's axis that crosses only its lateral cuts
+/// an elliptical section. The direct split does not trim the rims' circles
+/// to it, and the exact half-space boolean used to drop the closed section
+/// from the lateral (the B265 left-out check read the section's midpoint as
+/// carried), so the split was refused. The boolean now builds it: each half
+/// holds the closed form `∫∫ (z₀ − n·(x, y)) dA` over the disc (the tilt
+/// integrates to zero), with an exact cylinder face and two planes.
+#[test]
+fn cylinder_split_by_a_plane_oblique_to_its_axis() {
+    for (point, normal, below) in [
+        (
+            Point3::new(0.0, 0.0, 10.0),
+            Vec3::new(0.3, 0.0, 1.0),
+            PI * 100.0 * 10.0,
+        ),
+        (
+            Point3::new(0.0, 0.0, 7.0),
+            Vec3::new(0.3, 0.2, 1.0),
+            PI * 100.0 * 7.0,
+        ),
+    ] {
+        let mut topo = Topology::new();
+        let cyl = make_cylinder(&mut topo, 10.0, 20.0).unwrap();
+        let what = format!("cylinder oblique {normal:?}");
+        let halves = check_split(&mut topo, cyl, point, normal, &what);
+        assert_relative(&what, volume(&topo, halves.negative), below);
+        assert_relative(
+            &what,
+            volume(&topo, halves.positive),
+            PI * 100.0 * 20.0 - below,
+        );
+        for half in [halves.positive, halves.negative] {
+            let c = census(&topo, half);
+            assert_eq!((c.plane, c.cylinder), (2, 1), "{what}: {c:?}");
+        }
+    }
+}
+
+/// A plane oblique to the axis that crosses the rims as well is refused by
+/// both routes: the direct split does not trim the rims' circles, and the
+/// half-space boolean's halves do not conserve the body. The split stays a
+/// typed refusal naming both routes, and leaves the session untouched.
 #[test]
 fn cut_neither_route_builds_is_refused_typed_and_rolled_back() {
     use remus_topology::explorer::solid_entity_counts;
@@ -372,13 +411,13 @@ fn cut_neither_route_builds_is_refused_typed_and_rolled_back() {
         &mut topo,
         cyl,
         Point3::new(0.0, 0.0, 10.0),
-        Vec3::new(0.3, 0.0, 1.0),
+        Vec3::new(2.0, 0.0, 1.0),
     )
     .unwrap_err();
     match err {
         OperationsError::Unsupported { operation, reason } => {
             assert_eq!(operation, "split");
-            assert!(reason.contains("ellipse"), "got: {reason}");
+            assert!(reason.contains("crosses curved edge"), "got: {reason}");
             assert!(
                 reason.contains("half-space boolean fallback also refused"),
                 "got: {reason}"

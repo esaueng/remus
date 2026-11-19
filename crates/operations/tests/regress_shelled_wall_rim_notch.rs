@@ -901,10 +901,17 @@ fn eccentric_case_with_slot(
     .unwrap();
     transform_solid(topo, slot, &Mat4::translation((a - poke) * s, y0 * s, -s)).unwrap();
     let plate = boolean(topo, BooleanOp::Cut, plate, slot).unwrap();
+    // The seam is turned to the side (+y), away from the slot.
+    let (cylinder, length) = tilted_cylinder(topo, s, a, PI / 2.0);
+    (plate, cylinder, length)
+}
 
-    // Axis direction (−sin θ, 0, cos θ) with cos θ = 1/a, through
-    // (0, 0, SLAB); the caps sit at z = −2 and z = SLAB + 2, clear of the
-    // plate. The seam is turned to the side (+y), away from the slot.
+/// The radius-1 cylinder of [`eccentric_case`], its axis direction
+/// (−sin θ, 0, cos θ) with cos θ = 1/a, through (0, 0, SLAB); the caps sit
+/// at z = −2 and z = SLAB + 2, clear of the plate. Its seam is turned by
+/// `seam` about its axis from the side of the sections' major vertex.
+/// Returns the cylinder and its length (unit scale).
+fn tilted_cylinder(topo: &mut Topology, s: f64, a: f64, seam: f64) -> (SolidId, f64) {
     let theta = (1.0 / a).acos();
     let below = (SLAB + 2.0) * a;
     let length = (SLAB + 4.0) * a;
@@ -912,9 +919,9 @@ fn eccentric_case_with_slot(
     let placement = Mat4::translation(0.0, 0.0, SLAB * s)
         * Mat4::rotation_y(-theta)
         * Mat4::translation(0.0, 0.0, -below * s)
-        * Mat4::rotation_z(PI / 2.0);
+        * Mat4::rotation_z(seam);
     transform_solid(topo, cylinder, &placement).unwrap();
-    (plate, cylinder, length)
+    (cylinder, length)
 }
 
 /// Adaptive Simpson quadrature of a function that is smooth between the
@@ -1144,22 +1151,194 @@ fn an_eccentric_section_well_past_a_hole_edge_is_exact() {
     }
 }
 
-/// Open: a tilted cylinder that enters the slot only below the plate's top
-/// face (its top section stops 0.5 short of the slot) comes out of the
-/// engine with validation errors and the wrong volume (the fuse loses most
-/// of the cylinder), and is refused by the acceptance gate, on `main` as
-/// here. The (1000, 1) cases above also build wrong bodies with the slot's
-/// end well inside the section (0.1 past the vertex), which is what still
-/// refuses them at scale 10; whether that is this defect is not established.
+/// The scales of the B265 cases: the suite's three, a thousandth and a
+/// thousand.
+const WIDE_SCALES: [f64; 5] = [1e-3, 0.1, 1.0, 10.0, 1e3];
+
+/// A B265 result: exact by [`assert_eccentric_exact_at`], with the
+/// tunnel's (cut) or the tunnel's and the cylinder's two outside pieces'
+/// (fuse) exact cylinder faces and planes for the rest. At scale 1e-3 the
+/// plate is 5e-5 thick and the band of the cylinder's lateral between its
+/// two sections is narrower in the cylinder's chart than the clearance the
+/// certified re-partition keeps from its curves there (100 tolerances over
+/// the smaller of the radius and 1): the engine refuses it, and the public
+/// boolean with it, by name.
+fn assert_b265_exact_or_refused(
+    topo: &Topology,
+    result: Result<SolidId, OperationsError>,
+    volume: f64,
+    (s, deflections): (f64, &[f64]),
+    (a, op): (f64, BooleanOp),
+    what: &str,
+) {
+    let result = match result {
+        Ok(result) => result,
+        Err(OperationsError::ExactOnlyUnattainable) if s < 0.01 => return,
+        Err(other) => panic!("{what}: {other}"),
+    };
+    let faces = solid_faces(topo, result).unwrap();
+    let cylinders = faces
+        .iter()
+        .filter(|&&f| matches!(topo.face(f).unwrap().surface(), FaceSurface::Cylinder(_)))
+        .count();
+    let planes = faces
+        .iter()
+        .filter(|&&f| topo.face(f).unwrap().surface().is_planar())
+        .count();
+    let wanted = if op == BooleanOp::Cut { 1 } else { 2 };
+    assert_eq!(cylinders, wanted, "{what}: cylinder faces");
+    assert_eq!(cylinders + planes, faces.len(), "{what}: a face is neither");
+    assert_eccentric_exact_at(topo, result, volume, (s, deflections), (a, op), what);
+}
+
+/// A tilted cylinder of axes (10, 1) whose top section stops short of the
+/// slot (B265). Going down through the plate the section slides
+/// `SLAB · tan θ` ≈ 0.4975 toward the slot, so a section stopping 0.3 or
+/// 0.45 short at the top crosses the slot's near end below it: the cylinder
+/// enters the slot through its end wall only, and the bottom face's section
+/// crosses the slot's edge. Stopping 0.5 short (the case first reported) it
+/// misses the slot, passing 2.3e-4 · s from its lower edge.
+///
+/// Each came out of the engine wrong (the fuse lost most of the cylinder),
+/// and the acceptance gate refused it: the established splitter left the
+/// cylinder's lateral face whole, without the closed section(s), and the
+/// check for a section left out of a partition gave the face's straight
+/// seam the slack of a curve's chord, a tenth of its length, which took in
+/// the section's midpoint 0.14 · s away from it; the certified
+/// re-partition was never tried. Measured against the slicing integral,
+/// with the face census, validation, a watertight mesh at two deflections
+/// and the material probes, cut and fused, at five scales.
 #[test]
-#[ignore = "open: a tilted cylinder entering a through slot below the top face builds a wrong body"]
 fn a_tilted_cylinder_entering_a_slot_below_the_top_face_is_exact() {
-    for s in SCALES {
+    for poke in [-0.5, -0.45, -0.3] {
+        for s in WIDE_SCALES {
+            for op in [BooleanOp::Cut, BooleanOp::Fuse] {
+                let what = format!("slot below the top {op:?} poke {poke} scale {s}");
+                let (topo, result, volume) = eccentric_boolean(s, 10.0, poke, op);
+                assert_b265_exact_or_refused(
+                    &topo,
+                    result,
+                    volume,
+                    (s, &[0.01 * s, 0.002 * s]),
+                    (10.0, op),
+                    &what,
+                );
+            }
+        }
+    }
+}
+
+/// The defect of B265 without a slot: a cylinder tilted so far from the
+/// plate's normal (sections ellipses of axes (a, 1), from a ≈ 3.5 on) that
+/// a tenth of its seam line's length reaches across its sections passed
+/// through a plain plate with its lateral face whole and its sections
+/// dropped. Each horizontal section lies whole in the plate, so the plate
+/// shares the closed form `π a · SLAB` with the cylinder. The cylinder is
+/// turned about its axis so that its seam runs beside the sections' minor
+/// vertex (as in the slot cases), near their major vertex, and in between.
+/// One boolean of the plain plate with the cylinder of axes (a, 1) of
+/// [`tilted_cylinder`], its seam turned by `seam`: the topology, the result
+/// and the closed-form volume (scaled). Each horizontal section lies whole
+/// in the plate, so the plate shares `π a · SLAB` with the cylinder.
+fn steep_plate_boolean(
+    s: f64,
+    a: f64,
+    seam: f64,
+    op: BooleanOp,
+) -> (Topology, Result<SolidId, OperationsError>, f64) {
+    let tan = (a * a - 1.0).sqrt();
+    let (x_min, x_max) = (-a - 1.0, a + SLAB * tan + 1.0);
+    let plate_volume = (x_max - x_min) * 6.0 * SLAB;
+    let mut topo = Topology::new();
+    let plate = make_box(&mut topo, (x_max - x_min) * s, 6.0 * s, SLAB * s).unwrap();
+    let at = Mat4::translation(x_min * s, -3.0 * s, 0.0);
+    transform_solid(&mut topo, plate, &at).unwrap();
+    let (cylinder, length) = tilted_cylinder(&mut topo, s, a, seam);
+    let volume = expected(op, plate_volume, PI * length, PI * a * SLAB) * s.powi(3);
+    let result = boolean(&mut topo, op, plate, cylinder);
+    (topo, result, volume)
+}
+
+/// The (100, 1) cylinder is 405 long: mesh it coarser.
+fn steep_plate_mesh(a: f64, s: f64) -> [f64; 2] {
+    if a > 50.0 {
+        [0.05 * s, 0.02 * s]
+    } else {
+        [0.01 * s, 0.002 * s]
+    }
+}
+
+#[test]
+fn a_steeply_tilted_cylinder_through_a_plate_is_exact() {
+    for a in [4.0_f64, 10.0, 100.0] {
+        for seam in [0.5 * PI, 0.3, 2.0] {
+            for s in WIDE_SCALES {
+                for op in [BooleanOp::Cut, BooleanOp::Fuse] {
+                    let what = format!("steep cylinder {op:?} axes ({a}, 1) seam {seam} scale {s}");
+                    let (topo, result, volume) = steep_plate_boolean(s, a, seam, op);
+                    assert_b265_exact_or_refused(
+                        &topo,
+                        result,
+                        volume,
+                        (s, &steep_plate_mesh(a, s)),
+                        (a, op),
+                        &what,
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// The review of B265: the cylinder of axes (10, 1) through the plain
+/// plate with its seam turned within the band of the generator through its
+/// sections' midpoints (their far major vertices). The dropped sections'
+/// midpoints then lay on the seam, the check read the seam as the sections,
+/// the re-partition was skipped, and the gate refused the open result. Each
+/// section is now read at eight interior samples, and a seam stands in for
+/// a section only where it follows all of them.
+#[test]
+fn a_steep_cylinder_with_its_seam_beside_its_sections_midpoints_is_exact() {
+    for seam in [5e-5, -5e-5, 1e-6] {
+        for s in [0.1, 1.0, 10.0] {
+            for op in [BooleanOp::Cut, BooleanOp::Fuse] {
+                let what = format!("seam beside the midpoints {op:?} seam {seam} scale {s}");
+                let (topo, result, volume) = steep_plate_boolean(s, 10.0, seam, op);
+                assert_b265_exact_or_refused(
+                    &topo,
+                    result,
+                    volume,
+                    (s, &steep_plate_mesh(10.0, s)),
+                    (10.0, op),
+                    &what,
+                );
+            }
+        }
+    }
+}
+
+/// Open: with the seam turned within about 1e-3 rad of the generator through
+/// the sections' near major vertices (`π` from the midpoints), the boolean
+/// builds a body that classifies right at 4000 random points round the
+/// tunnel and meshes to the same volume as the other seam turns, but
+/// `solid_volume` reads it through its face-tessellation route (the exact
+/// analytic-face route declines) and comes back 0.08 % low for the fuse.
+/// On `main` the boolean refused these placements.
+#[test]
+#[ignore = "open: solid_volume falls back to face tessellation for a seam within 1e-3 rad of a section vertex"]
+fn a_steep_cylinder_with_its_seam_beside_its_sections_vertex_measures_exactly() {
+    for seam in [PI + 5e-5, PI - 5e-5] {
         for op in [BooleanOp::Cut, BooleanOp::Fuse] {
-            let what = format!("slot below the top {op:?} scale {s}");
-            let (topo, result, volume) = eccentric_boolean(s, 10.0, -0.5, op);
-            let result = result.unwrap_or_else(|e| panic!("{what}: {e}"));
-            assert_eccentric_exact(&topo, result, volume, s, (10.0, op), &what);
+            let what = format!("seam beside the vertex {op:?} seam {seam}");
+            let (topo, result, volume) = steep_plate_boolean(1.0, 10.0, seam, op);
+            assert_b265_exact_or_refused(
+                &topo,
+                result,
+                volume,
+                (1.0, &steep_plate_mesh(10.0, 1.0)),
+                (10.0, op),
+                &what,
+            );
         }
     }
 }

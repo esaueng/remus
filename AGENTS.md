@@ -316,6 +316,7 @@ Quick reference — find the right file for any task:
 | Bounded cylinder arrangement adapter | `builder/face_splitter/arrangement_cyl.rs` |
 | Closed-form oracles for the rim-chain splitter, the orphaned-rim detector and the cone-lateral dispatch (tests) | `builder/face_splitter/rim_chain_oracle_tests.rs` |
 | Hand-placed oracles for splitting a plane-face hole where sections end inside its edges: split points, untouched holes left whole, one hole of a row, only points of an edge split it, and section ends closer than the arrangement's weld refused rather than merged (tests) | `builder/face_splitter/hole_split_tests.rs` |
+| Hand-placed oracles for the splitter's left-out section guard (`sections_left_out`): a section counts as carried only when a chain of edges follows it from end to end; a steep cylinder's seam beside its sections' midpoints, samples near different holes, and controls (whole and split rings, the seam itself, a split rectangle) (tests) | `builder/face_splitter/left_out_tests.rs` |
 | Closed-form oracles for the O2.3b arrangement engine: intersections, tangent order, ray crossing, distance, work budgets, periodic quotient (tests) | `builder/face_splitter/arrangement/oracle_tests.rs` |
 | PCurve computation | `builder/pcurve_compute.rs` |
 | Opt-in per-thread content-keyed memo of planar arc pcurves (bit-identical hits; the WASM kernel enables it) | `pcurve_memo.rs` |
