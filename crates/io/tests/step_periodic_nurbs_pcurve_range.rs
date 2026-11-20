@@ -217,3 +217,26 @@ fn closed_ellipse_loop_round_a_cylinder_round_trips_through_step() {
         );
     }
 }
+
+/// The cap pcurve's own direction decides the use's, not the coedge sense:
+/// with the top cap's control net reversed (the same circle, run the other
+/// way from the same start), the reader still stores the loop running the
+/// way the edge's use does, and the solid still round-trips.
+#[test]
+fn reversed_cap_control_net_still_runs_the_edge_way() {
+    let reversed = FIXTURE
+        .replacen(
+            "B_SPLINE_CURVE(2,(#120,#121,#122,#123,#124,#125,",
+            "B_SPLINE_CURVE(2,(#126,#125,#124,#123,#122,#121,",
+            1,
+        )
+        .replacen("#126),.UNSPECIFIED.", "#120),.UNSPECIFIED.", 1);
+    assert_ne!(reversed, FIXTURE);
+    let (topo, solid) = import(&reversed);
+    assert_cylinder(&topo, solid, "reversed import");
+    assert_cap_pcurves_cover_their_circles(&topo, solid, "reversed import");
+    let written = write_step(&topo, &[solid]).unwrap();
+    let (reread, resolid) = import(&written);
+    assert_cylinder(&reread, resolid, "reversed re-import");
+    assert_cap_pcurves_cover_their_circles(&reread, resolid, "reversed re-import");
+}
