@@ -8,6 +8,7 @@
 
 mod axial_clearance;
 mod cap_chamfer;
+mod planar_travel;
 mod radial_resize;
 pub(crate) use radial_resize::resize_cylindrical_strip;
 mod axial_rim_join;
@@ -2809,12 +2810,13 @@ pub(crate) fn analyze_translation(
             carriers
                 .into_iter()
                 .map(|face| {
-                    axial_clearance::separated_boundary_travel(
-                        topo,
-                        face,
-                        |v| entities.vertices.contains(&v),
-                        direction,
-                    )
+                    let is_moved = |v| entities.vertices.contains(&v);
+                    match axial_clearance::separated_boundary_travel(
+                        topo, face, is_moved, direction,
+                    )? {
+                        Some(interval) => Ok(Some(interval)),
+                        None => planar_travel::clearance(topo, face, is_moved, direction),
+                    }
                 })
                 .collect::<Result<Vec<_>, _>>()?
         }

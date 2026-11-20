@@ -765,6 +765,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Topology-preserving radial edits of closed analytic surfaces of revolution | `resize_blend/radial_resize.rs` |
 | Exact meridian collision and volume checks for the qualified radial cell | `resize_blend/radial_resize/profile.rs` |
 | Exact axial travel limits between a moving shoulder blend and a full fixed rim on their shared cylindrical support | `resize_blend/axial_clearance.rs` |
+| Clearance for planar carriers with trimmed circular edges during a coordinate-axis face move | `resize_blend/planar_travel.rs` |
 | Exact annular chamfers that travel with a planar cap and slide on a bore | `resize_blend/cap_chamfer.rs` |
 | Approximate cap reconstruction after a translating shoulder reaches a fixed rim, or a rounded cap descends into its fixed shoulder, with construction history | `resize_blend/axial_rim_join.rs` |
 | Closed-form vector area of a translating region's construction boundary for the swept-volume sign guard | `resize_blend/translation_shadow.rs` |

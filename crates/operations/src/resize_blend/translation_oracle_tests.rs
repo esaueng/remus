@@ -379,6 +379,69 @@ fn scoped_closure_matches_whole_body_guard() {
     }
 }
 
+/// On the imported holder, the arm has two rounded carriers whose axial
+/// projections overlap. The exact transverse separation is needed to certify
+/// the ordinary edit. Just past first contact a connector would reverse.
+#[test]
+fn hammer_arm_planar_travel_matches_whole_body_guard() {
+    let _reset = Reset;
+    let mut source = Topology::new();
+    let solids = remus_io::step::reader::read_step(
+        include_str!("../../../io/tests/data/shapr3d_hammer_holder.step"),
+        &mut source,
+    )
+    .unwrap();
+    let [solid] = solids[..] else {
+        panic!("expected one holder")
+    };
+    let faces: Vec<_> = remus_topology::explorer::solid_faces(&source, solid)
+        .unwrap()
+        .into_iter()
+        .filter(|&face| {
+            let Some(normal) = source.face(face).unwrap().effective_plane_normal() else {
+                return false;
+            };
+            let bounds = crate::measure::face_bounding_box(&source, face).unwrap();
+            normal.x() > 1.0 - 1e-9
+                && (bounds.min.x() - 48.0).abs() < 1e-6
+                && (bounds.max.x() - 48.0).abs() < 1e-6
+                && bounds.min.y() < 10.0
+                && bounds.max.y() > 45.0
+                && bounds.max.z() > 59.0
+        })
+        .collect();
+    assert_eq!(faces.len(), 1);
+    for (distance, valid) in [(-6.0, true), (-7.234_569, false)] {
+        FORCE_WHOLE_CLOSURE.with(|flag| flag.set(true));
+        let whole = run(
+            &source,
+            move_translation_invariant_blend_region,
+            solid,
+            &faces,
+            distance,
+            false,
+        );
+        FORCE_WHOLE_CLOSURE.with(|flag| flag.set(false));
+        crate::performance::configure(Some(|| 0.0));
+        let scoped = run(
+            &source,
+            move_translation_invariant_blend_region,
+            solid,
+            &faces,
+            distance,
+            false,
+        );
+        let certified = crate::performance::drain()
+            .iter()
+            .any(|p| p.name == "move_faces.blend.translation_boundary_certificate");
+        crate::performance::configure(None);
+        assert_eq!(certified, valid, "route at {distance}");
+        assert_eq!(matches!(scoped.0, Outcome::Moved { .. }), valid);
+        assert_eq!(scoped.0, whole.0, "evolution or refusal at {distance}");
+        assert!(scoped.1 == whole.1, "result topology differs at {distance}");
+    }
+}
+
 fn run(
     source: &Topology,
     mover: Mover,
