@@ -3238,7 +3238,17 @@ fn custom_fit_thread_move_tracks_the_opposite_rim_and_its_vertex() {
     let (outer, minor, h) = (8.0, 2.5, 6.0);
     let (blank, bore) = bored(&mut topo, outer, minor, h);
     let form = ThreadForm::iso_metric(1.0, ThreadKind::Internal);
-    for (tolerance, angle) in [(Some(1e-7), PI / 4.0), (None, 20.0_f64.to_radians())] {
+    for (tolerance, angle, square) in [
+        (Some(1e-7), PI / 4.0, false),
+        (None, 20.0_f64.to_radians(), false),
+        (Some(1e-7), 20.0_f64.to_radians(), false),
+        (Some(1e-7), PI / 4.0, true),
+    ] {
+        let mut form = form.clone();
+        if square {
+            form.upper_flank_angle = 0.0;
+            form.lower_flank_angle = 0.0;
+        }
         let chamfer = ThreadEnd::Chamfer { angle };
         let source = cut_thread(
             &mut topo,
@@ -3528,4 +3538,249 @@ fn a_plain_conical_bore_with_a_spline_seam_uses_ordinary_face_move() {
             .unwrap()
             .is_none()
     );
+}
+
+#[test]
+fn threaded_cap_in_a_coplanar_selection_refuses_direct_and_prepared_moves() {
+    let mut topo = Topology::new();
+    // Two annular top faces separated by a recessed groove.
+    let section = [
+        (2.5, 0.),
+        (12., 0.),
+        (12., 6.),
+        (9., 6.),
+        (9., 4.),
+        (6., 4.),
+        (6., 6.),
+        (2.5, 6.),
+    ]
+    .map(|(r, z)| Point3::new(r, 0., z));
+    let wire = remus_topology::builder::make_polygon_wire(&mut topo, &section, 1e-7).unwrap();
+    let face = remus_topology::builder::make_planar_face_from_wire(&mut topo, wire).unwrap();
+    let blank = crate::revolve::revolve(
+        &mut topo,
+        face,
+        Point3::new(0., 0., 0.),
+        Vec3::new(0., 0., 1.),
+        TAU,
+    )
+    .unwrap();
+    let bore = cylinder_face(&topo, blank, 2.5);
+    let form = ThreadForm::iso_metric(1., ThreadKind::Internal);
+    let source = cut_thread(&mut topo, blank, bore, &form, &both_chamfers(PI / 4.))
+        .unwrap()
+        .solid;
+    let caps: Vec<_> = solid_faces(&topo, source)
+        .unwrap()
+        .into_iter()
+        .filter(|&f| {
+            let FaceSurface::Plane { normal, d } = topo.face(f).unwrap().surface() else {
+                return false;
+            };
+            (normal.z() * d - 6.).abs() < 1e-8
+        })
+        .collect();
+    assert_eq!(caps.len(), 2);
+    let mut prepared =
+        crate::prepared_move::PreparedFaceMove::prepare(&topo, source, &caps).unwrap();
+    for distance in [-0.75, 0.75] {
+        let err = crate::push_pull::move_faces(&mut topo, source, &caps, distance).unwrap_err();
+        assert!(err.to_string().contains("on its own"), "{err}");
+        assert!(
+            prepared
+                .move_faces(&mut topo, distance)
+                .unwrap_err()
+                .to_string()
+                .contains("on its own")
+        );
+    }
+}
+
+#[test]
+fn external_thread_cap_refuses_ordinary_cone_extension() {
+    let mut topo = Topology::new();
+    let (blank, face) = boss(&mut topo, 3., 6.);
+    let source = cut_thread(
+        &mut topo,
+        blank,
+        face,
+        &ThreadForm::iso_metric(1., ThreadKind::External),
+        &both_chamfers(PI / 4.),
+    )
+    .unwrap()
+    .solid;
+    let cap = solid_faces(&topo, source)
+        .unwrap()
+        .into_iter()
+        .find(|&f| topo.face(f).unwrap().effective_plane_normal().is_some())
+        .unwrap();
+    let err = crate::push_pull::move_faces(&mut topo, source, &[cap], 0.2).unwrap_err();
+    assert!(err.to_string().contains("circular inner rim"), "{err}");
+}
+
+#[test]
+fn reversed_plane_caps_keep_thread_rims_oriented_after_offset() {
+    let mut topo = Topology::new();
+    let (blank, bore) = bored(&mut topo, 8.0, 2.5, 6.);
+    let source = cut_thread(
+        &mut topo,
+        blank,
+        bore,
+        &ThreadForm::iso_metric(1., ThreadKind::Internal),
+        &both_chamfers(PI / 4.),
+    )
+    .unwrap()
+    .solid;
+    let caps: Vec<_> = solid_faces(&topo, source)
+        .unwrap()
+        .into_iter()
+        .filter(|&f| topo.face(f).unwrap().effective_plane_normal().is_some())
+        .collect();
+    for &cap in &caps {
+        let face = topo.face(cap).unwrap();
+        let FaceSurface::Plane { normal, d } = *face.surface() else {
+            panic!("expected planar cap")
+        };
+        assert!(!face.is_reversed());
+        let reverse = |topo: &mut Topology, wire| {
+            let edges = topo
+                .wire(wire)
+                .unwrap()
+                .edges()
+                .iter()
+                .rev()
+                .map(|oe| OrientedEdge::new(oe.edge(), !oe.is_forward()))
+                .collect();
+            topo.add_wire(Wire::new(edges, true).unwrap())
+        };
+        let (outer, inner) = (face.outer_wire(), face.inner_wires()[0]);
+        let (outer, inner) = (reverse(&mut topo, outer), reverse(&mut topo, inner));
+        topo.set_face_boundary_wires(cap, outer, vec![inner])
+            .unwrap();
+        let face = topo.face_mut(cap).unwrap();
+        face.set_surface(FaceSurface::Plane {
+            normal: -normal,
+            d: -d,
+        });
+        face.set_reversed(true);
+    }
+    assert_valid_and_watertight(&topo, source);
+    for cap in caps {
+        let out = crate::push_pull::move_faces(&mut topo, source, &[cap], 0.2).unwrap();
+        assert_valid_and_watertight(&topo, out);
+    }
+}
+
+#[test]
+fn split_circular_thread_rim_cannot_fall_back_to_cone_extension() {
+    let mut topo = Topology::new();
+    let (blank, bore) = bored(&mut topo, 8., 2.5, 6.);
+    let source = cut_thread(
+        &mut topo,
+        blank,
+        bore,
+        &ThreadForm::iso_metric(1.0, ThreadKind::Internal),
+        &both_chamfers(PI / 4.),
+    )
+    .unwrap()
+    .solid;
+    let cap = solid_faces(&topo, source)
+        .unwrap()
+        .into_iter()
+        .find(|&f| topo.face(f).unwrap().effective_plane_normal().is_some())
+        .unwrap();
+    let old_wire = topo.face(cap).unwrap().inner_wires()[0];
+    let old_rim = topo.wire(old_wire).unwrap().edges()[0].edge();
+    let adj = topo.build_adjacency(source).unwrap();
+    let incident = adj.faces_for_edge(old_rim).to_vec();
+    let edge = topo.edge(old_rim).unwrap().clone();
+    let EdgeCurve::Circle(circle) = edge.curve() else {
+        panic!("expected a circle")
+    };
+    let (a, b) = edge.strict_domain().unwrap();
+    let mid = a.midpoint(b);
+    let middle = topo.add_vertex(Vertex::new(circle.evaluate(mid), 1e-7));
+    let parts =
+        [(edge.start(), middle, a, mid), (middle, edge.end(), mid, b)].map(|(v, w, start, end)| {
+            let mut part = Edge::new(v, w, edge.curve().clone());
+            part.set_trim(Some((start, end)));
+            topo.add_edge(part)
+        });
+    for face in incident {
+        let f = topo.face(face).unwrap();
+        let mut wires = vec![f.outer_wire()];
+        wires.extend_from_slice(f.inner_wires());
+        for w in &mut wires {
+            let uses = topo.wire(*w).unwrap().edges();
+            let Some(i) = uses.iter().position(|oe| oe.edge() == old_rim) else {
+                continue;
+            };
+            let forward = uses[i].is_forward();
+            let mut uses = uses.to_vec();
+            let [first, last] = parts;
+            let ordered = if forward {
+                [first, last]
+            } else {
+                [last, first]
+            };
+            uses.splice(i..=i, ordered.map(|id| OrientedEdge::new(id, forward)));
+            *w = topo.add_wire(Wire::new(uses, true).unwrap());
+        }
+        topo.set_face_boundary_wires(face, wires[0], wires[1..].to_vec())
+            .unwrap();
+    }
+    assert!(validate_solid(&topo, source).unwrap().is_valid());
+    assert!(super::face_move::is_mouth(&topo, source, &[cap]));
+    let err = crate::push_pull::move_faces(&mut topo, source, &[cap], 0.2).unwrap_err();
+    assert!(err.to_string().contains("circular inner rim"), "{err}");
+}
+
+#[test]
+fn moving_a_single_threaded_pad_keeps_the_second_bore_on_its_fixed_cap() {
+    let mut topo = Topology::new();
+    let section = [
+        (2.5, 0.),
+        (16., 0.),
+        (16., 4.),
+        (7., 4.),
+        (7., 8.),
+        (2.5, 8.),
+    ]
+    .map(|(r, z)| Point3::new(r, 0., z));
+    let wire = remus_topology::builder::make_polygon_wire(&mut topo, &section, 1e-7).unwrap();
+    let face = remus_topology::builder::make_planar_face_from_wire(&mut topo, wire).unwrap();
+    let blank = crate::revolve::revolve(
+        &mut topo,
+        face,
+        Point3::new(0., 0., 0.),
+        Vec3::new(0., 0., 1.),
+        TAU,
+    )
+    .unwrap();
+    let tool = make_cylinder(&mut topo, 2., 6.).unwrap();
+    transform_solid(&mut topo, tool, &Mat4::translation(11., 0., -1.)).unwrap();
+    let mut body = boolean(&mut topo, BooleanOp::Cut, blank, tool).unwrap();
+    let form = ThreadForm::iso_metric(1., ThreadKind::Internal);
+    for radius in [2.5, 2.] {
+        let bore = cylinder_face(&topo, body, radius);
+        body = cut_thread(&mut topo, body, bore, &form, &both_chamfers(PI / 4.))
+            .unwrap()
+            .solid;
+    }
+    let cap=solid_faces(&topo,body).unwrap().into_iter().find(|&f| matches!(topo.face(f).unwrap().surface(),FaceSurface::Plane{normal,d} if (normal.z()*d-8.).abs()<1e-8)).unwrap();
+    let before = volume(&topo, body);
+    let area = PI * 49. - outline_area(&form, 2.5, 2.5 + form.depth);
+    for d in [-0.2, 0.2] {
+        let moved = crate::push_pull::move_faces(&mut topo, body, &[cap], d).unwrap();
+        assert!(validate_solid(&topo, moved).unwrap().is_valid());
+        assert!(rel(volume(&topo, moved), before + d * area) < 1e-6);
+        assert!(
+            solid_faces(&topo, moved).unwrap().iter().any(|&f| topo
+                .face(f)
+                .unwrap()
+                .inner_wires()
+                .len()
+                == 2)
+        );
+    }
 }

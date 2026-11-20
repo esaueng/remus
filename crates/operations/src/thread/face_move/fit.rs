@@ -17,8 +17,7 @@ pub(super) fn tolerance(topo: &Topology, bore: &Bore) -> Option<f64> {
         v - bore.frame.axis * v.dot(bore.frame.axis)
     };
     let mut estimate = 0.0_f64;
-    let mut profile_radius = bore.root;
-    let mut axial_step = 0.0_f64;
+    let rate = TAU / bore.form.lead();
     for &face in &bore.wall {
         let FaceSurface::Nurbs(s) = topo.face(face).ok()?.surface() else {
             continue;
@@ -38,16 +37,16 @@ pub(super) fn tolerance(topo: &Topology, bore: &Bore) -> Option<f64> {
             }
             // A land wrapping beyond one turn in a chamfer zone is a screw
             // sweep of an exact rational circular arc. Only its axial fit counts.
-            2 => {}
+            1 | 2 => {}
             _ => return None,
         }
-        axial_step = axial_step.max(span(s.knots_u()));
+        // Axial span width and profile radius belong to the same sweep.
+        let mut profile_radius = bore.root;
         for &p in s.control_points().first()? {
             profile_radius = profile_radius.max(radial(p).length());
         }
+        estimate = estimate.max(profile_radius * (span(s.knots_u()) * rate).powi(4));
     }
-    let rate = TAU / bore.form.lead();
-    estimate = estimate.max(profile_radius * (axial_step * rate).powi(4));
     for mouth in &bore.ends {
         for id in face_edges(topo, mouth.cone).ok()? {
             let edge = topo.edge(id).ok()?;

@@ -365,6 +365,45 @@ mod tests {
     }
 
     #[test]
+    fn inward_tapering_ledge_cannot_sweep_through_a_nonadjacent_post() {
+        use remus_math::vec::Point3;
+        use remus_topology::builder::{make_planar_face_from_wire, make_polygon_wire};
+        let mut topo = Topology::new();
+        // At z=0 the rim clears the post by 4. At z=5 the cone closes
+        // the opening to radius 5 and intersects the radius-6 post.
+        let section = [
+            (0., -4.),
+            (20., -4.),
+            (20., 0.),
+            (10., 0.),
+            (12., -2.),
+            (4., -2.),
+            (4., 1.),
+            (6., 1.),
+            (6., 10.),
+            (0., 10.),
+        ]
+        .map(|(r, z)| Point3::new(r, 0., z));
+        let wire = make_polygon_wire(&mut topo, &section, 1e-7).unwrap();
+        let profile = make_planar_face_from_wire(&mut topo, wire).unwrap();
+        let source = crate::revolve::revolve(
+            &mut topo,
+            profile,
+            Point3::new(0., 0., 0.),
+            UP,
+            std::f64::consts::TAU,
+        )
+        .unwrap();
+        let ledge = planar_face(&topo, source, 0.);
+        let err = crate::push_pull::move_faces(&mut topo, source, &[ledge], 5.).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("swept face reaches nonadjacent face"),
+            "{err}"
+        );
+    }
+
+    #[test]
     fn cone_radius_uses_the_angle_from_the_radial_plane() {
         let mut topo = Topology::new();
         let moved = disc(&mut topo);

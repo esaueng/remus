@@ -52,10 +52,13 @@ impl Bore {
                 }
             }
         }
-        let [last]: [super::Mouth; 1] = mouths(topo, adj, other?).try_into().ok()?;
-        if !wall.contains(&last.cone) {
-            return None;
-        }
+        let [last]: [super::Mouth; 1] = mouths(topo, adj, other?)?
+            .into_iter()
+            .filter(|m| wall.contains(&m.cone))
+            .collect::<Vec<_>>()
+            .try_into()
+            .ok()?;
+
         let axis = cylinders.first()?.1.axis();
         let ends = if (last.center - first.center).dot(axis) > 0.0 {
             [first, last]
@@ -84,7 +87,7 @@ impl Bore {
         let length = separation.dot(axis);
         let origin = ends[0].center;
         let frame = Frame::new(origin, axis, cylinders.first()?.1.x_axis()).ok()?;
-        let (frame, crest, root, form) = recover_form(topo, &cylinders, frame)?;
+        let (frame, crest, root, form) = recover_form(topo, &cylinders, &wall, frame)?;
         Some(Self {
             frame,
             ends,
@@ -102,28 +105,20 @@ impl Bore {
 fn recover_form(
     topo: &Topology,
     cylinders: &[(FaceId, &CylindricalSurface)],
+    wall: &BTreeSet<FaceId>,
     frame: Frame,
 ) -> Option<(Frame, f64, f64, ThreadForm)> {
     let origin = frame.origin;
     let axis = frame.axis;
-    let &(crest_face, c) = cylinders
+    let &(land, _) = cylinders
         .iter()
         .min_by(|a, b| a.1.radius().total_cmp(&b.1.radius()))?;
-    let crest = c.radius();
-    let root = cylinders
-        .iter()
-        .map(|p| p.1.radius())
-        .max_by(f64::total_cmp)?;
-    let depth = root - crest;
-    if depth <= Tolerance::new().linear {
-        return None;
-    }
     let theta = |point: Point3| {
         let v = point - origin;
         v.dot(frame.y).atan2(v.dot(frame.x))
     };
     let z = |p: Point3| (p - origin).dot(axis);
-    let edges = face_edges(topo, crest_face).ok()?;
+    let edges = face_edges(topo, land).ok()?;
     let mut rate = None;
     let mut level = None;
     for e in edges {
@@ -148,10 +143,11 @@ fn recover_form(
     }
     let rate = rate?;
     let level = level?;
-    let mut crest_arc = None;
-    let mut root_arc = None;
+    // A land spanning a full turn is stored as a rational spline surface.
+    // Its transverse boundary remains circular in either representation.
+    let mut arcs = Vec::new();
     let mut seen = BTreeSet::new();
-    for &(face, cylinder) in cylinders {
+    for &face in wall {
         for e in face_edges(topo, face).ok()? {
             if !seen.insert(e) {
                 continue;
@@ -160,7 +156,7 @@ fn recover_form(
             let EdgeCurve::Circle(circle) = edge.curve() else {
                 continue;
             };
-            if (z(circle.center()) - level).abs() > Tolerance::new().linear {
+            if edge.is_closed() || (z(circle.center()) - level).abs() > Tolerance::new().linear {
                 continue;
             }
             let (a, b) = edge.strict_domain().ok()?;
@@ -174,22 +170,25 @@ fn recover_form(
                 start: sign * theta(circle.evaluate(start)),
                 span: (b - a).abs(),
             };
-            let dest = if (cylinder.radius() - crest).abs() < Tolerance::new().linear {
-                &mut crest_arc
-            } else if (cylinder.radius() - root).abs() < Tolerance::new().linear {
-                &mut root_arc
-            } else {
-                return None;
-            };
-            if dest.replace(arc).is_some() {
-                return None;
-            }
+            arcs.push((circle.radius(), arc));
         }
     }
-    let crest_arc = crest_arc?;
-    let root_arc = root_arc?;
-    let upper = (root_arc.start - crest_arc.start - crest_arc.span).rem_euclid(TAU) / rate.abs();
-    let lower = (crest_arc.start - root_arc.start - root_arc.span).rem_euclid(TAU) / rate.abs();
+    let [a, b]: [_; 2] = arcs.try_into().ok()?;
+    let [(crest, crest_arc), (root, root_arc)] = if a.0 < b.0 { [a, b] } else { [b, a] };
+    let depth = root - crest;
+    if depth <= Tolerance::new().linear {
+        return None;
+    }
+    let gap = |delta: f64| {
+        let arc = delta.rem_euclid(TAU);
+        if TAU - arc <= Tolerance::new().angular || arc <= Tolerance::new().angular {
+            0.0
+        } else {
+            arc / rate.abs()
+        }
+    };
+    let upper = gap(root_arc.start - crest_arc.start - crest_arc.span);
+    let lower = gap(crest_arc.start - root_arc.start - root_arc.span);
     let form = ThreadForm {
         pitch: TAU / rate.abs(),
         starts: 1,

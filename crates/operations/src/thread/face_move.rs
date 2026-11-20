@@ -34,39 +34,33 @@ struct Mouth {
     rim: remus_topology::edge::EdgeId,
 }
 
+// An outer or split circular rim still belongs to a thread, but the
+// through-hole rebuilder only knows how to sew a single closed inner edge.
 fn mouths(
     topo: &Topology,
     adj: &remus_topology::adjacency::AdjacencyIndex,
     cap: FaceId,
-) -> Vec<Mouth> {
-    let Ok(face) = topo.face(cap) else {
-        return vec![];
-    };
+) -> Option<Vec<Mouth>> {
+    let face = topo.face(cap).ok()?;
+    let mut found = Vec::new();
     let Some(normal) = face.effective_plane_normal() else {
-        return vec![];
+        return Some(found);
     };
-    face.inner_wires()
-        .iter()
-        .filter_map(|&wire| {
-            let [rim] = topo.wire(wire).ok()?.edges() else {
-                return None;
-            };
+    for &wire in std::iter::once(&face.outer_wire()).chain(face.inner_wires()) {
+        let edges = topo.wire(wire).ok()?.edges();
+        for rim in edges {
             let edge = topo.edge(rim.edge()).ok()?;
             let EdgeCurve::Circle(circle) = edge.curve() else {
-                return None;
+                continue;
             };
-            if !edge.is_closed() {
-                return None;
-            }
-            let &cone = adj.faces_for_edge(rim.edge()).iter().find(|&&f| f != cap)?;
+            let Some(&cone) = adj.faces_for_edge(rim.edge()).iter().find(|&&f| f != cap) else {
+                continue;
+            };
             let FaceSurface::Cone(surface) = topo.face(cone).ok()?.surface() else {
-                return None;
+                continue;
             };
             if normal.cross(surface.axis()).length() > Tolerance::new().angular
                 || !face_edges(topo, cone).ok()?.iter().any(|&e| {
-                    // A modeled thread shares its conical helical trim with
-                    // a spline flank. A countersink can also acquire spline
-                    // edges from its seam or an intersecting plane/cylinder.
                     topo.edge(e)
                         .is_ok_and(|e| matches!(e.curve(), EdgeCurve::NurbsCurve(_)))
                         && adj.faces_for_edge(e).iter().any(|&f| {
@@ -75,27 +69,45 @@ fn mouths(
                         })
                 })
             {
+                continue;
+            }
+            if wire == face.outer_wire() || edges.len() != 1 || !edge.is_closed() {
                 return None;
             }
-            Some(Mouth {
+            found.push(Mouth {
                 cap,
                 rim: rim.edge(),
                 cone,
                 center: circle.center(),
                 angle: std::f64::consts::FRAC_PI_2 - surface.half_angle(),
+            });
+        }
+    }
+    Some(found)
+}
+
+fn has_circular_trim(topo: &Topology, cap: FaceId) -> bool {
+    topo.face(cap)
+        .is_ok_and(|f| f.effective_plane_normal().is_some())
+        && face_edges(topo, cap).is_ok_and(|edges| {
+            edges.into_iter().any(|e| {
+                topo.edge(e)
+                    .is_ok_and(|e| matches!(e.curve(), EdgeCurve::Circle(_)))
             })
         })
-        .collect()
 }
 
 /// A possible chamfered screw mouth needs the full move path during a drag.
 pub fn is_mouth(topo: &Topology, solid: SolidId, faces: &[FaceId]) -> bool {
-    let [face] = faces else { return false };
-    topo.face(*face)
-        .is_ok_and(|f| f.effective_plane_normal().is_some() && !f.inner_wires().is_empty())
-        && topo
-            .build_adjacency(solid)
-            .is_ok_and(|adj| !mouths(topo, &adj, *face).is_empty())
+    let mut candidates = faces
+        .iter()
+        .copied()
+        .filter(|&f| has_circular_trim(topo, f))
+        .peekable();
+    candidates.peek().is_some()
+        && topo.build_adjacency(solid).is_ok_and(|adj| {
+            candidates.any(|f| mouths(topo, &adj, f).is_none_or(|m| !m.is_empty()))
+        })
 }
 
 struct Bore {
@@ -148,22 +160,28 @@ pub fn rebuild(
     faces: &[FaceId],
     distance: f64,
 ) -> Result<Option<DirectEditEvolution>, OperationsError> {
-    let [cap] = faces else { return Ok(None) };
     if !distance.is_finite()
         || distance.abs() <= Tolerance::new().linear
-        || topo.face(*cap)?.effective_plane_normal().is_none()
-        || topo.face(*cap)?.inner_wires().is_empty()
+        || !faces.iter().any(|&f| has_circular_trim(topo, f))
     {
         return Ok(None);
     }
     let adjacency = topo.build_adjacency(solid)?;
-    let mut candidates = mouths(topo, &adjacency, *cap).into_iter();
-    let Some(first) = candidates.next() else {
-        return Ok(None);
-    };
-    if candidates.next().is_some() {
-        return Err(failure("the moving cap has multiple threaded mouths"));
+    let mut first = None;
+    for &face in faces {
+        let found = mouths(topo, &adjacency, face)
+            .ok_or_else(|| failure("the thread does not have a single circular inner rim"))?;
+        for mouth in found {
+            if faces.len() != 1 {
+                return Err(failure("a threaded cap must be moved on its own"));
+            }
+            if first.replace(mouth).is_some() {
+                return Err(failure("the moving cap has multiple threaded mouths"));
+            }
+        }
     }
+    let Some(first) = first else { return Ok(None) };
+    let cap = first.cap;
     let bore = Bore::recognize(topo, &adjacency, first)
         .ok_or_else(|| failure("could not reconstruct the complete thread form"))?;
     let verifies = |tolerance| {
@@ -213,7 +231,7 @@ pub fn rebuild(
         .collect();
     let mut frame = bore.frame;
     let mut phase = 0.0;
-    if bore.ends[0].cap == *cap {
+    if bore.ends[0].cap == cap {
         frame.origin = frame.origin - frame.axis * distance;
         let hand = if bore.form.hand == ThreadHand::Right {
             1.
@@ -312,7 +330,7 @@ fn attach_rims(
                     .then_some(*rim)
             })
             .ok_or_else(|| failure("missing thread end rim"))?;
-        let [opening] = topo.wire(rim)?.edges() else {
+        let &[opening] = topo.wire(rim)?.edges() else {
             return Err(failure("the thread mouth is not a single circle"));
         };
         let EdgeCurve::Circle(circle) = topo.edge(opening.edge())?.curve() else {
@@ -334,6 +352,16 @@ fn attach_rims(
         let face = topo.face(new_cap)?;
         let outer = face.outer_wire();
         let mut inner = face.inner_wires().to_vec();
+        // Ring caps use forward faces. Preserve the effective traversal
+        // when the receiving plane has the opposite topological sense.
+        let rim = if face.is_reversed() {
+            topo.add_wire(Wire::new(
+                vec![OrientedEdge::new(opening.edge(), !opening.is_forward())],
+                true,
+            )?)
+        } else {
+            rim
+        };
         inner.push(rim);
         let old_edge = topo.edge(end.rim)?;
         boundary.push((
