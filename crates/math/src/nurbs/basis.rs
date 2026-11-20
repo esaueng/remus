@@ -322,14 +322,13 @@ pub fn ders_basis_funs_into(
 /// last two upper-triangle columns (degree `p - 1` and `p` basis functions)
 /// and the last lower-triangle row (knot differences) are ever read, so this
 /// rolls those through three short stack arrays and spells the `k = 1` step
-/// out — same operations, same order, same fused multiply-adds, nothing else. The
+/// out with the same recurrence and rounding as the general routine. The
 /// general routine zero-fills a 121-entry table and walks its index
 /// arithmetic per call; a quadrature abscissa calls this twice.
 ///
 /// `out` must have length `>= 2 * (degree + 1)`: `out[j]` receives
 /// `N_{span-degree+j}(u)` and `out[degree + 1 + j]` its first derivative.
 /// Degrees above the stack bound take [`ders_basis_funs_into`].
-#[allow(clippy::cast_precision_loss)]
 pub fn ders_basis_funs_first_into(
     span: usize,
     u: f64,
@@ -337,15 +336,32 @@ pub fn ders_basis_funs_first_into(
     knots: &[f64],
     out: &mut [f64],
 ) {
-    let p = degree;
-    if p > MAX_STACK_DEGREE {
-        ders_basis_funs_into(span, u, p, 1, knots, out);
-        return;
+    // Fixed degrees let the compiler unroll the same recurrence for common
+    // CAD surfaces while preserving its arithmetic at repeated knots.
+    match degree {
+        1 => first_order_stack::<2>(span, u, 1, knots, out),
+        2 => first_order_stack::<3>(span, u, 2, knots, out),
+        3 => first_order_stack::<4>(span, u, 3, knots, out),
+        p if p <= MAX_STACK_DEGREE => {
+            first_order_stack::<{ MAX_STACK_DEGREE + 1 }>(span, u, p, knots, out);
+        }
+        p => ders_basis_funs_into(span, u, p, 1, knots, out),
     }
+}
+
+#[inline]
+#[allow(clippy::cast_precision_loss)]
+fn first_order_stack<const BOUND: usize>(
+    span: usize,
+    u: f64,
+    p: usize,
+    knots: &[f64],
+    out: &mut [f64],
+) {
     let stride = p + 1;
     let out = &mut out[..2 * stride];
-    let mut left = [0.0_f64; MAX_STACK_DEGREE + 1];
-    let mut right = [0.0_f64; MAX_STACK_DEGREE + 1];
+    let mut left = [0.0_f64; BOUND];
+    let mut right = [0.0_f64; BOUND];
     // `cols[j & 1]` is upper-triangle column `j` of `ndu` (`ndu[r][j]`), so
     // `prev`/`cur` alternate between the two buffers instead of copying a
     // column per step, and the last column (`j == p`) is written straight
@@ -354,8 +370,8 @@ pub fn ders_basis_funs_first_into(
     // reads only `prev[0..j]`, so stale entries are never observed.
     // `lower`: lower-triangle row `j`, `ndu[j][r]`. After the loop column
     // `p - 1` and row `p` are all the first derivative reads.
-    let mut cols = [[0.0_f64; MAX_STACK_DEGREE + 1]; 2];
-    let mut lower = [0.0_f64; MAX_STACK_DEGREE + 1];
+    let mut cols = [[0.0_f64; BOUND]; 2];
+    let mut lower = [0.0_f64; BOUND];
     cols[0][0] = 1.0;
     if p == 0 {
         out[0] = 1.0;
@@ -370,8 +386,18 @@ pub fn ders_basis_funs_first_into(
         let cur: &mut [f64] = if j == p { &mut out[..stride] } else { col };
         left[j] = u - knots[span + 1 - j];
         right[j] = knots[span + j] - u;
-        let mut saved = 0.0;
-        for r in 0..j {
+        // With a +0 addend a normal product already has the fused result.
+        // Keep the FMA for exceptional values, including the sign of an exact zero.
+        lower[0] = right[1] + left[j];
+        let first = prev[0] / lower[0];
+        let product = right[1] * first;
+        cur[0] = if product.is_normal() {
+            product
+        } else {
+            right[1].fma(first, 0.0)
+        };
+        let mut saved = left[j] * first;
+        for r in 1..j {
             lower[r] = right[r + 1] + left[j - r];
             let temp = prev[r] / lower[r];
             cur[r] = right[r + 1].fma(temp, saved);
@@ -608,6 +634,19 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn first_order_signed_zero_end_knot_matches_general_bitwise() {
+        let knots = [-1.0, -1.0, -1.0, -1.0, -0.0, -0.0, -0.0, -0.0];
+        for u in [-0.0, 0.0] {
+            let span = find_span(4, 3, u, &knots);
+            let mut general = [0.0; 8];
+            let mut first = [0.0; 8];
+            ders_basis_funs_into(span, u, 3, 1, &knots, &mut general);
+            ders_basis_funs_first_into(span, u, 3, &knots, &mut first);
+            assert_eq!(first.map(f64::to_bits), general.map(f64::to_bits));
         }
     }
 
