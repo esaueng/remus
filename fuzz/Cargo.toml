@@ -90,7 +90,7 @@ bench = false
 doc = false
 name = "modifier_ops"
 path = "fuzz_targets/modifier_ops.rs"
-test = false
+test = true
 
 [[bin]]
 bench = false
