@@ -12,8 +12,8 @@ Models: 43 passed / 50 total (86.00%).
 
 ## Boolean quality
 
-- Exact: 21
-- Approximate: 23
+- Exact: 22
+- Approximate: 22
 
 ## Failure taxonomy
 
