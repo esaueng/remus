@@ -9762,6 +9762,19 @@ export class RemusKernel {
         return takeFromExternrefTable0(ret[0]);
     }
     /**
+     * Merge co-surface faces only if the candidate passes strict validation.
+     * Returns the number of faces removed, or zero for a declined merge.
+     * @param {number} solid
+     * @returns {number}
+     */
+    unifyFacesIfStrict(solid) {
+        const ret = wasm.remuskernel_unifyFacesIfStrict(this.__wbg_ptr, solid);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
      * Untrim a NURBS face by fitting a new surface to the trimmed region.
      *
      * Returns a new face handle.

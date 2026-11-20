@@ -436,6 +436,7 @@ export const remuskernel_trimSheetBySheet: (a: number, b: number, c: number, d: 
 export const remuskernel_trimSheetBySolid: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const remuskernel_unifyFaces: (a: number, b: number) => [number, number, number];
 export const remuskernel_unifyFacesChecked: (a: number, b: number) => [number, number, number];
+export const remuskernel_unifyFacesIfStrict: (a: number, b: number) => [number, number, number];
 export const remuskernel_untrimFace: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const remuskernel_validateSheetBody: (a: number, b: number) => [number, number, number];
 export const remuskernel_validateSolid: (a: number, b: number) => [number, number, number];

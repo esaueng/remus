@@ -5282,6 +5282,11 @@ export class RemusKernel {
      */
     unifyFacesChecked(solid: number): any;
     /**
+     * Merge co-surface faces only if the candidate passes strict validation.
+     * Returns the number of faces removed, or zero for a declined merge.
+     */
+    unifyFacesIfStrict(solid: number): number;
+    /**
      * Untrim a NURBS face by fitting a new surface to the trimmed region.
      *
      * Returns a new face handle.
