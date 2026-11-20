@@ -2715,6 +2715,16 @@
       "reason": "already typed with the unify report (JSON string); tsify replacement pending per O4.7(b)"
     },
     {
+      "js": "unifyFacesIfStrict",
+      "rust": "unify_faces_if_strict",
+      "file": "bindings/heal.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "uncovered",
+      "owner": "O4.7",
+      "reason": "strict in-place face merge returns removed-face count; typed status pending alongside unifyFaces"
+    },
+    {
       "js": "untrimFace",
       "rust": "untrim_face",
       "file": "bindings/operations.rs",

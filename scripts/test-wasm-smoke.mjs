@@ -218,6 +218,29 @@ assert.equal(typeof kernel.exportStep, 'undefined', 'translators must not ship i
 assert.equal(typeof kernel.serializeSolids, 'function', 'arena codec must ship in the kernel');
 console.log('ok - RemusIo created; kernel module carries the arena codec only');
 
+// Pattern previews need only the chosen solid. Check the shipped JS binding
+// against the full unification report on the same unfused face boundaries.
+{
+  const k = new RemusKernel();
+  try {
+    const a = k.makeBox(10, 10, 10);
+    assert.equal(k.unifyFacesIfStrict(a), 0);
+    const b = k.copyAndTransformSolid(a, new Float64Array([
+      1, 0, 0, 5, 0, 1, 0, 5, 0, 0, 1, 0, 0, 0, 0, 1,
+    ]));
+    const merged = k.fuseAll(Uint32Array.of(a, b));
+    const [checked] = k.deserializeSolids(k.serializeSolids(Uint32Array.of(merged)));
+    const report = JSON.parse(k.unifyFacesChecked(checked));
+    assert.equal(report.resultErrors, 0);
+    assert.ok(report.facesMerged > 0);
+    assert.equal(k.unifyFacesIfStrict(merged), report.facesMerged);
+    assert.deepEqual(k.serializeSolids(Uint32Array.of(merged)), k.serializeSolids(Uint32Array.of(checked)));
+  } finally {
+    k.free();
+  }
+  console.log('ok - strict face merge matches the checked solid');
+}
+
 // A full radius-8 sphere fits inside this radius-10 finite cylinder even
 // though corners of the sphere's enclosing box do not. Protect the emitted
 // artifact's whole-carrier support certificate and the enclosed cavity.
