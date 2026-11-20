@@ -1,8 +1,8 @@
 ---
 row: B290
-state: Done (2026-11-20, `fix/chamfer-skips-seam-edge`)
+state: Done (2026-11-20, [#1895](https://github.com/esaueng/remus/pull/1895))
 ---
-**Fixed (2026-11-20, `fix/chamfer-skips-seam-edge`):** the drop stays (a seam
+**Fixed (2026-11-20, [#1895](https://github.com/esaueng/remus/pull/1895)):** the drop stays (a seam
 or tangent join has no dihedral, and "every edge of the body" stays a valid
 selection), but it is no longer silent. `BlendResult` gains `skipped:
 Vec<(EdgeId, BlendSkip)>`, `BlendSkip` being `Seam` (a closed face meeting
@@ -22,7 +22,7 @@ an exact cone about the axis through both contact circles, the body valid,
 closed, manifold and mesh-watertight, and its volume within 1e-9 of
 `π r² h − 2π a b (r − a/3)` at deflections 1e-4 and 1e-5. Four of the five
 fail with the disclosure line removed (`skipped` empty). Wasm:
-`modifier_detailed::tests::chamfer_v2_twin_names_the_cylinder_seam_it_skips`.
+`modifier_detailed::tests::chamfer_v2_twin_names_the_cylinder_seam_it_skips` (`chamferV2Detailed` and `chamferDistanceAngleDetailed`, direct and both batch routes); `remus` `model::tests::{fillet,journaled_fillet}_skips_a_cylinder_seam_in_a_whole_body_selection` pin the seam in `skipped`.
 The fuzz oracle I8 now counts `succeeded + skipped`. Not changed:
 `fillet_v2` still refuses the cylinder's rims-plus-seam selection with an
 unsupported vertex blend (the walking engine reads the seam as a stripe), the

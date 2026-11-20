@@ -999,6 +999,20 @@ mod tests {
         assert!(volume < 1000.0 && volume > 990.0, "{volume}");
     }
 
+    /// The seam (the one line edge) of a cylinder primitive.
+    fn cylinder_seam(model: &Model, solid: SolidId) -> remus_topology::edge::EdgeId {
+        remus_topology::explorer::solid_edges(model.topology(), solid)
+            .unwrap()
+            .into_iter()
+            .find(|&e| {
+                matches!(
+                    model.topology().edge(e).unwrap().curve(),
+                    remus_topology::edge::EdgeCurve::Line
+                )
+            })
+            .unwrap()
+    }
+
     #[test]
     fn fillet_skips_a_cylinder_seam_in_a_whole_body_selection() {
         let mut model = Model::new();
@@ -1007,6 +1021,14 @@ mod tests {
         let result = model.fillet(solid, &edges, 1.0).unwrap();
         assert!(!result.succeeded.is_empty());
         assert!(result.succeeded.len() < edges.len(), "the seam is dropped");
+        assert_eq!(
+            result.skipped,
+            vec![(
+                cylinder_seam(&model, solid),
+                remus_operations::blend_ops::BlendSkip::Seam
+            )]
+        );
+        assert_eq!(result.succeeded.len() + result.skipped.len(), edges.len());
     }
 
     #[test]
@@ -1018,6 +1040,13 @@ mod tests {
         let journaled = model.fillet_journaled(solid, &edges, 1.0).unwrap();
         assert!(!journaled.result.is_partial);
         assert!(journaled.result.succeeded.len() < edges.len());
+        assert_eq!(
+            journaled.result.skipped,
+            vec![(
+                cylinder_seam(&model, solid),
+                remus_operations::blend_ops::BlendSkip::Seam
+            )]
+        );
         assert!(model.validate(journaled.result.solid).unwrap().is_valid());
         assert!(model.volume(journaled.result.solid, 0.01).unwrap() < source_volume);
         assert_eq!(

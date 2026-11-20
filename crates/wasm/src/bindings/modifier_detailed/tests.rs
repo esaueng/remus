@@ -1748,4 +1748,31 @@ fn chamfer_v2_twin_names_the_cylinder_seam_it_skips() {
         rims_only["details"].get("skippedEdges").is_none(),
         "{rims_only}"
     );
+
+    // The distance-angle twin goes through the same selection: 0.05 at 45°
+    // is the same chamfer, and it names the same seam on every route.
+    let angle = std::f64::consts::FRAC_PI_4;
+    let mut kernel = RemusKernel::new();
+    let solid = kernel.make_cylinder_solid(6.0, 6.0).unwrap();
+    let direct =
+        envelope(kernel.chamfer_distance_angle_detailed_impl(solid, &all, 0.05, angle, true));
+    assert_eq!(direct["status"], "ok", "{direct}");
+    assert_eq!(
+        direct["details"]["skippedEdges"],
+        json!([{"edge": edge_id_to_u32(seam), "reason": "seam"}]),
+        "{direct}"
+    );
+    let got = volume(&kernel, handle(&direct["value"]));
+    assert!(
+        (got - expected).abs() < 1e-9 * expected,
+        "{got} vs {expected}"
+    );
+    let ops = json!([
+        {"op": "makeCylinder", "args": {"radius": 6, "height": 6}},
+        {"op": "chamferDistanceAngleDetailed",
+         "args": {"solid": solid, "edges": all, "distance": 0.05, "angle": angle,
+                  "exactOnly": true}},
+    ]);
+    assert_eq!(batch_v2(&mut RemusKernel::new(), &ops)[1]["ok"], direct);
+    assert_eq!(batch_legacy(&mut RemusKernel::new(), &ops)[1]["ok"], direct);
 }
