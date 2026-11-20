@@ -1519,3 +1519,53 @@ fn planar_sampling_respects_descending_nurbs_trim() {
     // the lower curve's carried range folds the polygon to zero area.
     assert!((1.3..1.34).contains(&area), "{area}");
 }
+
+#[test]
+fn chord_band_samples_follow_both_arcs_and_reject_an_off_edge_point() {
+    use remus_math::curves::Circle3D;
+    use remus_math::vec::Point2;
+    use remus_topology::edge::Edge;
+    use remus_topology::face::Face;
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
+
+    let mut topo = Topology::new();
+    let normal = Vec3::new(0.0, 0.0, 1.0);
+    let circle = Circle3D::new(Point3::new(0.0, 0.0, 0.0), normal, 1.0).unwrap();
+    let right = topo.add_vertex(Vertex::new(Point3::new(1.0, 0.0, 0.0), 1e-7));
+    let left = topo.add_vertex(Vertex::new(Point3::new(-1.0, 0.0, 0.0), 1e-7));
+    let first = topo.add_edge(Edge::new(right, left, EdgeCurve::Circle(circle.clone())));
+    let second = topo.add_edge(Edge::new(left, right, EdgeCurve::Circle(circle)));
+    let wire = topo.add_wire(
+        Wire::new(
+            vec![
+                OrientedEdge::new(first, true),
+                OrientedEdge::new(second, true),
+            ],
+            true,
+        )
+        .unwrap(),
+    );
+    let face = Face::new(wire, vec![], FaceSurface::Plane { normal, d: 0.0 });
+    let polygon = [
+        Point2::new(1.0, 0.0),
+        Point2::new(0.0, 1.0),
+        Point2::new(-1.0, 0.0),
+        Point2::new(0.0, -1.0),
+    ];
+    let d = std::f64::consts::FRAC_1_SQRT_2;
+    let mut uv = vec![
+        Point2::new(d, d),
+        Point2::new(-d, d),
+        Point2::new(0.0, 0.0),
+        Point2::new(-d, -d),
+        Point2::new(d, -d),
+    ];
+    let contained = |uv: &[Point2]| {
+        let samples: Vec<_> = uv.iter().map(|p| Point3::new(p.x(), p.y(), 0.0)).collect();
+        samples_inside_or_on_outline(&topo, &face, &samples, uv, &polygon, Tolerance::new())
+    };
+    assert!(contained(&uv));
+    uv.push(Point2::new(d + 0.001, -d));
+    assert!(!contained(&uv));
+}
