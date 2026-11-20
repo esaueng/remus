@@ -3104,6 +3104,12 @@ fn shallow_chamfers_build_by_default_wherever_the_whole_tolerance_fits() {
 /// phase and the volume changes by exactly one constant-section slice.
 #[test]
 fn offset_either_saved_thread_mouth_keeps_the_opposite_end_and_form() {
+    for hand in [ThreadHand::Left, ThreadHand::Right] {
+        check_saved_thread_mouth_offsets(hand);
+    }
+}
+
+fn check_saved_thread_mouth_offsets(hand: ThreadHand) {
     use crate::prepared_move::PreparedFaceMove;
     use remus_io::arena_io::{deserialize_solid, serialize_solid};
     let mut original = Topology::new();
@@ -3116,7 +3122,7 @@ fn offset_either_saved_thread_mouth_keeps_the_opposite_end_and_form() {
         upper_flank_angle: PI / 6.0,
         lower_flank_angle: PI / 4.0,
         starts: 1,
-        hand: ThreadHand::Left,
+        hand,
     };
     let chamfer = ThreadEnd::Chamfer { angle: PI / 4.0 };
     let options = CylinderThreadOptions {
@@ -3326,4 +3332,200 @@ fn a_cap_shared_by_two_thread_mouths_refuses_before_generic_offset() {
                 .contains("multiple threaded mouths")
         );
     }
+}
+
+#[test]
+fn ledge_beside_a_modeled_thread_offsets_in_both_directions() {
+    let mut topo = Topology::new();
+    let section = [
+        (2.5, 0.0),
+        (16.0, 0.0),
+        (16.0, 4.0),
+        (8.0, 4.0),
+        (8.0, 8.0),
+        (2.5, 8.0),
+    ]
+    .map(|(radius, z)| Point3::new(radius, 0.0, z));
+    let wire = remus_topology::builder::make_polygon_wire(&mut topo, &section, 1e-7).unwrap();
+    let face = remus_topology::builder::make_planar_face_from_wire(&mut topo, wire).unwrap();
+    let blank = crate::revolve::revolve(
+        &mut topo,
+        face,
+        Point3::new(0., 0., 0.),
+        Vec3::new(0., 0., 1.),
+        TAU,
+    )
+    .unwrap();
+    let bore = cylinder_face(&topo, blank, 2.5);
+    let form = ThreadForm::iso_metric(1.0, ThreadKind::Internal);
+    let chamfer = ThreadEnd::Chamfer { angle: PI / 4.0 };
+    let thread = cut_thread(
+        &mut topo,
+        blank,
+        bore,
+        &form,
+        &CylinderThreadOptions {
+            start: chamfer,
+            end: chamfer,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let ledge = solid_faces(&topo, thread.solid)
+        .unwrap()
+        .into_iter()
+        .find(|&f| {
+            let Some(n) = topo.face(f).unwrap().effective_plane_normal() else {
+                return false;
+            };
+            n.z() > 0.99
+                && remus_topology::explorer::face_vertices(&topo, f)
+                    .unwrap()
+                    .iter()
+                    .all(|v| (topo.vertex(*v).unwrap().point().z() - 4.0).abs() < 1e-8)
+        })
+        .unwrap();
+    let initial = volume(&topo, thread.solid);
+    for d in [-1.0, 1.0] {
+        let result = crate::push_pull::move_faces(&mut topo, thread.solid, &[ledge], d).unwrap();
+        assert_valid_and_watertight(&topo, result);
+        assert!(
+            rel(
+                volume(&topo, result),
+                initial + d * (16.0 * 16.0 - 8.0 * 8.0) * PI
+            ) < 1e-6
+        );
+    }
+}
+
+#[test]
+fn offset_thread_preserves_fixed_end_flanks_lands_and_their_boundaries() {
+    use remus_topology::{
+        explorer::{face_edges, face_vertices},
+        journal::EntityKey,
+    };
+    let mut topo = Topology::new();
+    let (blank, bore) = bored(&mut topo, 8.0, 2.5, 6.0);
+    let form = ThreadForm::iso_metric(1.0, ThreadKind::Internal);
+    let chamfer = ThreadEnd::Chamfer { angle: PI / 4.0 };
+    let source = cut_thread(
+        &mut topo,
+        blank,
+        bore,
+        &form,
+        &CylinderThreadOptions {
+            start: chamfer,
+            end: chamfer,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let cap = solid_faces(&topo, source.solid)
+        .unwrap()
+        .into_iter()
+        .find(|&f| {
+            topo.face(f)
+                .unwrap()
+                .effective_plane_normal()
+                .is_some_and(|n| n.z() > 0.99)
+        })
+        .unwrap();
+    let (result, history) =
+        crate::push_pull::move_faces_with_entity_evolution(&mut topo, source.solid, &[cap], 0.2)
+            .unwrap();
+    for role in [
+        ThreadFaceRole::UpperFlank,
+        ThreadFaceRole::LowerFlank,
+        ThreadFaceRole::Root,
+    ] {
+        let old = role_faces(&source, role)
+            .into_iter()
+            .min_by(|&a, &b| {
+                let top = |f| {
+                    face_vertices(&topo, f)
+                        .unwrap()
+                        .iter()
+                        .map(|v| topo.vertex(*v).unwrap().point().z())
+                        .fold(f64::NEG_INFINITY, f64::max)
+                };
+                top(a).total_cmp(&top(b))
+            })
+            .unwrap();
+        assert!(!result.evolution.deleted.contains(&old.index()), "{role:?}");
+        let [successor] = result.evolution.modified[&old.index()].as_slice() else {
+            panic!("expected a unique successor for {role:?}")
+        };
+        let new = topo.face_id_from_index(*successor).unwrap();
+        let new_edges = face_edges(&topo, new).unwrap();
+        for old_edge in face_edges(&topo, old).unwrap() {
+            let successors: Vec<_> = new_edges
+                .iter()
+                .filter(|e| {
+                    history.contains(&(
+                        EntityKey::edge(old_edge.index()),
+                        EntityKey::edge(e.index()),
+                    ))
+                })
+                .collect();
+            let [edge] = successors.as_slice() else {
+                panic!("expected one edge successor")
+            };
+            let a = topo.edge(old_edge).unwrap();
+            let b = topo.edge(**edge).unwrap();
+            for (v, w) in [(a.start(), b.start()), (a.end(), b.end())] {
+                assert!(
+                    history.contains(&(EntityKey::vertex(v.index()), EntityKey::vertex(w.index())))
+                );
+                assert!(
+                    (topo.vertex(v).unwrap().point() - topo.vertex(w).unwrap().point()).length()
+                        < 1e-8
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_plain_conical_bore_with_a_spline_seam_uses_ordinary_face_move() {
+    use remus_topology::explorer::face_edges;
+    let mut topo = Topology::new();
+    let blank = make_cylinder(&mut topo, 8.0, 6.0).unwrap();
+    let cutter = crate::primitives::make_cone(&mut topo, 2.0, 4.0, 8.0).unwrap();
+    transform_solid(&mut topo, cutter, &Mat4::translation(0.0, 0.0, -1.0)).unwrap();
+    let solid = boolean(&mut topo, BooleanOp::Cut, blank, cutter).unwrap();
+    let faces = solid_faces(&topo, solid).unwrap();
+    let cap = *faces
+        .iter()
+        .find(|&&f| {
+            topo.face(f)
+                .unwrap()
+                .effective_plane_normal()
+                .is_some_and(|n| n.z() > 0.99)
+        })
+        .unwrap();
+    let cone = *faces
+        .iter()
+        .find(|&&f| matches!(topo.face(f).unwrap().surface(), FaceSurface::Cone(_)))
+        .unwrap();
+    let seam = face_edges(&topo, cone)
+        .unwrap()
+        .into_iter()
+        .find(|&e| matches!(topo.edge(e).unwrap().curve(), EdgeCurve::Line))
+        .unwrap();
+    let edge = topo.edge(seam).unwrap();
+    let curve = remus_geometry::convert::line_to_nurbs(
+        topo.vertex(edge.start()).unwrap().point(),
+        topo.vertex(edge.end()).unwrap().point(),
+    )
+    .unwrap();
+    let trim = curve.domain();
+    let edge = topo.edge_mut(seam).unwrap();
+    edge.set_curve(EdgeCurve::NurbsCurve(curve));
+    edge.set_trim(Some(trim));
+    assert!(!super::face_move::is_mouth(&topo, solid, &[cap]));
+    assert!(
+        super::face_move::rebuild(&mut topo, solid, &[cap], 0.2)
+            .unwrap()
+            .is_none()
+    );
 }

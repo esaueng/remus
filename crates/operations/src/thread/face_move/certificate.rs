@@ -2,25 +2,63 @@
 //! Index faces by their lowest vertex along the thread axis. Each half turn
 //! contributes just one section of candidates at that height.
 use super::{Bore, Ring};
+use crate::{OperationsError, evolution::EvolutionMap};
 use remus_math::compact_sort::CompactSort;
 use remus_math::{tolerance::Tolerance, vec::Point3};
+use remus_topology::journal::EntityKey;
 use remus_topology::{
     Topology,
     edge::{EdgeCurve, EdgeId},
     explorer::face_vertices,
     face::{FaceId, FaceSurface},
 };
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
+/// The fixed end can retain entire screw segments, even when the middle is
+/// repartitioned. Track their trimmed faces and the same oriented boundary.
+pub(super) fn record_unchanged(
+    topo: &Topology,
+    bore: &Bore,
+    ring: &Ring,
+    evolution: &mut EvolutionMap,
+    boundary: &mut Vec<(EntityKey, EntityKey)>,
+) -> Result<BTreeSet<FaceId>, OperationsError> {
+    let mut unchanged = BTreeSet::new();
+    for (old, (new, shift)) in matches(topo, bore, topo, ring)
+        .ok_or_else(|| super::failure("ambiguous thread wall correspondence"))?
+    {
+        evolution.deleted.remove(&old.index());
+        evolution.add_modified(old.index(), new.index());
+        unchanged.insert(new);
+        let old_edges = topo.wire(topo.face(old)?.outer_wire())?.edges();
+        let new_edges = topo.wire(topo.face(new)?.outer_wire())?.edges();
+        for (a, b) in old_edges.iter().cycle().skip(shift).zip(new_edges) {
+            boundary.push((
+                EntityKey::edge(a.edge().index()),
+                EntityKey::edge(b.edge().index()),
+            ));
+            let a = topo.edge(a.edge())?;
+            let b = topo.edge(b.edge())?;
+            for (from, to) in [(a.start(), b.start()), (a.end(), b.end())] {
+                boundary.push((
+                    EntityKey::vertex(from.index()),
+                    EntityKey::vertex(to.index()),
+                ));
+            }
+        }
+    }
+    boundary.compact_sort_unstable();
+    boundary.dedup();
+    Ok(unchanged)
+}
+
+/// Each entry maps a source face to a regenerated face and its wire rotation.
 pub(super) fn matches(
     topo: &Topology,
     bore: &Bore,
     template: &Topology,
     ring: &Ring,
-) -> Option<()> {
-    if bore.wall.len() != ring.face_roles.len() {
-        return None;
-    }
+) -> Option<BTreeMap<FaceId, (FaceId, usize)>> {
     let level = |t: &Topology, f| {
         face_vertices(t, f)
             .ok()?
@@ -38,7 +76,7 @@ pub(super) fn matches(
         .map(|&f| Some((level(topo, f)?, f)))
         .collect::<Option<Vec<_>>>()?;
     levels.compact_sort_by(|a, b| a.0.total_cmp(&b.0));
-    let mut used = BTreeSet::new();
+    let mut matches = BTreeMap::new();
     for &(face, _) in &ring.face_roles {
         let z = level(template, face)?;
         let tol = Tolerance::new().linear;
@@ -47,29 +85,30 @@ pub(super) fn matches(
         let mut candidates = levels[lo..hi]
             .iter()
             .map(|p| p.1)
-            .filter(|f| !used.contains(f) && same_face(template, face, topo, *f));
-        let found = candidates.next()?;
-        if candidates.next().is_some() {
+            .filter_map(|old| Some((old, wire_shift(template, face, topo, old)?)));
+        let Some((old, shift)) = candidates.next() else {
+            continue;
+        };
+        if candidates.next().is_some() || matches.insert(old, (face, shift)).is_some() {
             return None;
         }
-        used.insert(found);
     }
-    Some(())
+    Some(matches)
 }
-fn same_face(template: &Topology, a: FaceId, topo: &Topology, existing: FaceId) -> bool {
+fn wire_shift(template: &Topology, a: FaceId, topo: &Topology, existing: FaceId) -> Option<usize> {
     let (Ok(f), Ok(g)) = (template.face(a), topo.face(existing)) else {
-        return false;
+        return None;
     };
     if f.is_reversed() != g.is_reversed()
         || !f.inner_wires().is_empty()
         || !g.inner_wires().is_empty()
     {
-        return false;
+        return None;
     }
     let same_carrier = match f.surface() {
         FaceSurface::Nurbs(a) => {
             let FaceSurface::Nurbs(b) = g.surface() else {
-                return false;
+                return None;
             };
             a.degree_u() == b.degree_u()
                 && a.degree_v() == b.degree_v()
@@ -92,23 +131,25 @@ fn same_face(template: &Topology, a: FaceId, topo: &Topology, existing: FaceId) 
         FaceSurface::Plane { .. } | FaceSurface::Sphere(_) | FaceSurface::Torus(_) => false,
     };
     if !same_carrier {
-        return false;
+        return None;
     }
     let (Ok(wa), Ok(wb)) = (template.wire(f.outer_wire()), topo.wire(g.outer_wire())) else {
-        return false;
+        return None;
     };
     let x = wa.edges();
     let y = wb.edges();
-    x.len() == y.len()
-        && (0..x.len()).any(|shift| {
-            x.iter().zip(y.iter().cycle().skip(shift)).all(|(a, b)| {
-                a.is_forward() == b.is_forward()
-                    && topo
-                        .pcurve_oriented(b.edge(), existing, b.is_forward())
-                        .is_none()
-                    && edge_match(template, a.edge(), topo, b.edge()).unwrap_or(false)
-            })
+    if x.len() != y.len() {
+        return None;
+    }
+    (0..x.len()).find(|&shift| {
+        x.iter().zip(y.iter().cycle().skip(shift)).all(|(a, b)| {
+            a.is_forward() == b.is_forward()
+                && topo
+                    .pcurve_oriented(b.edge(), existing, b.is_forward())
+                    .is_none()
+                && edge_match(template, a.edge(), topo, b.edge()).unwrap_or(false)
         })
+    })
 }
 // A change of angular reference translates the spline parameter origin.
 fn knots(x: &[f64], y: &[f64]) -> bool {

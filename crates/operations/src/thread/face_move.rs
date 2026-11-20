@@ -64,8 +64,15 @@ fn mouths(
             };
             if normal.cross(surface.axis()).length() > Tolerance::new().angular
                 || !face_edges(topo, cone).ok()?.iter().any(|&e| {
+                    // A modeled thread shares its conical helical trim with
+                    // a spline flank. A countersink can also acquire spline
+                    // edges from its seam or an intersecting plane/cylinder.
                     topo.edge(e)
                         .is_ok_and(|e| matches!(e.curve(), EdgeCurve::NurbsCurve(_)))
+                        && adj.faces_for_edge(e).iter().any(|&f| {
+                            topo.face(f)
+                                .is_ok_and(|f| matches!(f.surface(), FaceSurface::Nurbs(_)))
+                        })
                 })
             {
                 return None;
@@ -162,7 +169,11 @@ pub fn rebuild(
     let verifies = |tolerance| {
         let mut template = Topology::new();
         bore.ring(&mut template, &bore.frame, bore.length, 0.0, tolerance)
-            .is_ok_and(|ring| certificate::matches(topo, &bore, &template, &ring).is_some())
+            .is_ok_and(|ring| {
+                ring.face_roles.len() == bore.wall.len()
+                    && certificate::matches(topo, &bore, &template, &ring)
+                        .is_some_and(|matches| matches.len() == bore.wall.len())
+            })
     };
     let inferred = fit::tolerance(topo, &bore);
     let tolerance = if let Some(t) = inferred
@@ -239,9 +250,14 @@ pub fn rebuild(
     // These cap handles belong to the temporary defeatured copy.
     let mut evolution = crate::blend_cluster::reblend::compose_evolution(&map, &resized.evolution);
     attach_rims(topo, &bore.ends, ring.solid, &evolution, &mut boundary)?;
+    let unchanged =
+        certificate::record_unchanged(topo, &bore, &ring, &mut evolution, &mut boundary)?;
     let mut shell_faces = solid_faces(topo, resized.solid)?;
     for (face, role) in ring.face_roles {
         shell_faces.push(face);
+        if unchanged.contains(&face) {
+            continue;
+        }
         if let ThreadFaceRole::Chamfer(side) = role {
             let index = usize::from(side == ThreadEndSide::End);
             let source = bore.ends[index].cone.index();
