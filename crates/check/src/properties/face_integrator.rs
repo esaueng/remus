@@ -4929,6 +4929,7 @@ impl CylinderRowNormal {
 #[cfg(test)]
 std::thread_local! {
     static NORMAL_EVALUATIONS: Cell<usize> = const { Cell::new(0) };
+    static REUSED_AXIAL_SPANS: Cell<usize> = const { Cell::new(0) };
 }
 
 /// Original unnormalized cross product and Jacobian length, without regrouping.
@@ -5248,8 +5249,50 @@ fn interior_knots(knots: &[f64], range: (f64, f64)) -> Vec<f64> {
     inside
 }
 
+/// Axial sample positions for a repeated trim span. The quadrature order
+/// and patch scale are fixed for one integration. An isolated span uses the
+/// scalar loop without filling the buffer.
+#[derive(Default)]
+struct RepeatedSpanNodes {
+    previous: Option<(u64, u64)>,
+    nodes: Vec<(f64, f64)>,
+}
+
+impl RepeatedSpanNodes {
+    #[allow(clippy::cast_precision_loss)]
+    fn repeated(
+        &mut self,
+        span: (f64, f64),
+        patches: usize,
+        width: f64,
+        gauss: &[GaussPoint],
+    ) -> Option<&[(f64, f64)]> {
+        let key = (span.0.to_bits(), span.1.to_bits());
+        if self.previous.replace(key) != Some(key) {
+            self.nodes.clear();
+            return None;
+        }
+        if self.nodes.is_empty() {
+            let scale = width / 2.0;
+            for i in 0..patches {
+                let mid = width.fma(i as f64, span.0) + scale;
+                for point in gauss {
+                    self.nodes.push((scale.fma(point.x, mid), point.w));
+                }
+            }
+        }
+        Some(&self.nodes)
+    }
+}
+
 /// Static sample expansion keeps the ordinary loop's original direct call.
 macro_rules! quadrature_sample {
+    (fresh; reuse_axial_spans) => {
+        false
+    };
+    (cylinder; reuse_axial_spans) => {
+        true
+    };
     (fresh; init $normals:ident) => {};
     (cylinder; init $normals:ident) => {
         let mut $normals = CylinderRowNormal::default();
@@ -5410,6 +5453,7 @@ fn $name<S: ParametricSurface, const AREA_ONLY: bool>(
     quadrature_sample!($sampler; init normals);
 
     if trim.splits_domain() {
+        let mut span_nodes = RepeatedSpanNodes::default();
         let breaks = trim.u_breaks(u_range);
         let eps = (u_range.1 - u_range.0).abs() * 1e-12;
         // Span buffers shared by every abscissa below.
@@ -5451,6 +5495,17 @@ fn $name<S: ParametricSurface, const AREA_ONLY: bool>(
                         let nv = patch_count(b - a, scale.v);
                         let dv_patch = (b - a) / nv as f64;
                         let v_scale = dv_patch / 2.0;
+                        if quadrature_sample!($sampler; reuse_axial_spans)
+                            && let Some(nodes) = span_nodes.repeated((a, b), nv, dv_patch, gauss_pts)
+                        {
+                            #[cfg(test)]
+                            REUSED_AXIAL_SPANS.with(|count| count.set(count.get() + 1));
+                            for &(v, w) in nodes {
+                                quadrature_sample!($sampler; normals, acc, surface, u, v,
+                                    gpu.w * w * u_scale * v_scale, rule.reference, scratch, AREA_ONLY);
+                            }
+                            continue;
+                        }
                         for iv in 0..nv {
                             let v_mid = dv_patch.fma(iv as f64, a) + v_scale;
                             for gpv in gauss_pts {
@@ -8285,6 +8340,35 @@ mod cylinder_row_tests {
     use super::*;
     use remus_math::surfaces::CylindricalSurface;
 
+    #[test]
+    fn repeated_axial_span_preserves_nodes_and_restarts_after_a_trim_change() {
+        for order in [1, 3, 5, 8] {
+            let gauss = gauss_legendre_points(order);
+            let mut spans = RepeatedSpanNodes::default();
+            for (a, b, n) in [(-0.0, 10.0, 13_u32), (0.0, 10.0, 13), (2.125, 2.25, 1)] {
+                let width = (b - a) / f64::from(n);
+                let scale = width / 2.0;
+                let mut expected = Vec::new();
+                for i in 0..n {
+                    let mid = width.fma(f64::from(i), a) + scale;
+                    for point in gauss {
+                        expected.push((scale.fma(point.x, mid).to_bits(), point.w.to_bits()));
+                    }
+                }
+                assert!(spans.repeated((a, b), n as usize, width, gauss).is_none());
+                for _ in 0..2 {
+                    let actual: Vec<_> = spans
+                        .repeated((a, b), n as usize, width, gauss)
+                        .unwrap()
+                        .iter()
+                        .map(|&(v, w)| (v.to_bits(), w.to_bits()))
+                        .collect();
+                    assert_eq!(actual, expected);
+                }
+            }
+        }
+    }
+
     fn bits(c: &FaceContribution) -> [u64; 14] {
         [
             c.area,
@@ -8362,6 +8446,45 @@ mod cylinder_row_tests {
             flux.get().unwrap_or(Vec3::new(0.0, 0.0, 0.0)),
             NORMAL_EVALUATIONS.with(Cell::get),
         )
+    }
+
+    #[test]
+    fn repeated_axial_spans_match_scalar_integration_across_a_partial_hole() {
+        let rectangle = |u0, u1, v0, v1| {
+            UvLoop::new(
+                vec![
+                    Point2::new(u0, v0),
+                    Point2::new(u1, v0),
+                    Point2::new(u1, v1),
+                    Point2::new(u0, v1),
+                ],
+                false,
+                false,
+            )
+        };
+        let outer = rectangle(0.125, 0.875, -0.375, 7.625);
+        let hole = [rectangle(0.375, 0.625, 1.125, 3.75)];
+        let surface = CylindricalSurface::new(
+            Point3::new(23.25, -17.125, 4.5),
+            Vec3::new(0.3, -0.4, 0.8),
+            2.375,
+        )
+        .unwrap();
+        for holes in [&[][..], &hole[..]] {
+            let trim = UvTrim::new(Some(&outer), holes, &[], false);
+            for order in [3, 5, 8] {
+                for volume_only in [false, true] {
+                    let fresh =
+                        integrate::<false>(&surface, order, volume_only, false, &trim, -1.0);
+                    REUSED_AXIAL_SPANS.with(|count| count.set(0));
+                    let reused =
+                        integrate::<false>(&surface, order, volume_only, true, &trim, -1.0);
+                    assert!(REUSED_AXIAL_SPANS.with(Cell::get) > 0);
+                    assert_eq!(bits(&fresh.0), bits(&reused.0));
+                    assert_eq!(fresh.1.0.map(f64::to_bits), reused.1.0.map(f64::to_bits));
+                }
+            }
+        }
     }
 
     #[test]
