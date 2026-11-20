@@ -2625,6 +2625,7 @@ mod bounded_tab_supports {
                 succeeded: seeds.to_vec(),
                 failed: Vec::new(),
                 is_partial: false,
+                skipped: Vec::new(),
                 face_origins: Some(origins),
                 engine: remus_blend::BlendEngine::RollingBall,
             })

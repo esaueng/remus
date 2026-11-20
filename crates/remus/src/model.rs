@@ -323,7 +323,8 @@ impl Model {
     /// binding runs, so both surfaces return the same geometry for the same
     /// request. Like that binding, it first drops edges with no dihedral to
     /// round — tangent edges and the flat seams a fuse leaves between coplanar
-    /// faces — so "every edge of the body" is a valid selection.
+    /// faces — so "every edge of the body" is a valid selection. The dropped
+    /// edges are named in [`BlendResult::skipped`].
     ///
     /// # Errors
     ///
@@ -336,9 +337,19 @@ impl Model {
         edges: &[EdgeId],
         radius: f64,
     ) -> Result<BlendResult, OperationsError> {
-        let edges =
-            remus_operations::query::normalize_fillet_selection(&self.topology, solid, edges)?;
-        remus_operations::blend_ops::fillet_cascade(&mut self.topology, solid, &edges, radius)
+        let selection = remus_operations::query::normalize_fillet_selection_with_skips(
+            &self.topology,
+            solid,
+            edges,
+        )?;
+        let mut result = remus_operations::blend_ops::fillet_cascade(
+            &mut self.topology,
+            solid,
+            &selection.kept,
+            radius,
+        )?;
+        result.skipped = selection.skipped;
+        Ok(result)
     }
 
     /// Chamfers selected edges with the v2 validated blend engine.

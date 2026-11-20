@@ -1278,6 +1278,19 @@ pub fn normalize_fillet_selection(
     solid: SolidId,
     edge_ids: &[EdgeId],
 ) -> Result<Vec<EdgeId>, OperationsError> {
+    Ok(normalize_fillet_selection_with_skips(topo, solid, edge_ids)?.kept)
+}
+
+/// [`normalize_fillet_selection`], also naming each edge it dropped and why.
+///
+/// # Errors
+///
+/// Same as [`normalize_fillet_selection`].
+pub fn normalize_fillet_selection_with_skips(
+    topo: &Topology,
+    solid: SolidId,
+    edge_ids: &[EdgeId],
+) -> Result<NormalizedBlendSelection, OperationsError> {
     normalize_blend_selection(topo, solid, edge_ids, "filletable")
 }
 
@@ -1292,7 +1305,34 @@ pub fn normalize_chamfer_selection(
     solid: SolidId,
     edge_ids: &[EdgeId],
 ) -> Result<Vec<EdgeId>, OperationsError> {
+    Ok(normalize_chamfer_selection_with_skips(topo, solid, edge_ids)?.kept)
+}
+
+/// [`normalize_chamfer_selection`], also naming each edge it dropped and why.
+///
+/// # Errors
+///
+/// Same as [`normalize_chamfer_selection`].
+pub fn normalize_chamfer_selection_with_skips(
+    topo: &Topology,
+    solid: SolidId,
+    edge_ids: &[EdgeId],
+) -> Result<NormalizedBlendSelection, OperationsError> {
     normalize_blend_selection(topo, solid, edge_ids, "chamferable")
+}
+
+/// A blend selection split into the edges the blend is asked to build and
+/// the edges dropped because they have no dihedral.
+///
+/// A blend over `kept` reports `skipped` in
+/// [`BlendResult::skipped`](remus_blend::BlendResult::skipped), so its caller
+/// can account for every edge it asked for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NormalizedBlendSelection {
+    /// The edges to blend, in request order (repeats kept as requested).
+    pub kept: Vec<EdgeId>,
+    /// The dropped edges, each once, in request order, with the reason.
+    pub skipped: Vec<(EdgeId, remus_blend::BlendSkip)>,
 }
 
 fn normalize_blend_selection(
@@ -1300,7 +1340,7 @@ fn normalize_blend_selection(
     solid: SolidId,
     edge_ids: &[EdgeId],
     label: &str,
-) -> Result<Vec<EdgeId>, OperationsError> {
+) -> Result<NormalizedBlendSelection, OperationsError> {
     // Only edges this solid joins smoothly, and its periodic seams, are
     // dropped. Anything else the filter would skip (a foreign or
     // non-manifold edge) stays, so the cascade refuses rather than
@@ -1308,16 +1348,27 @@ fn normalize_blend_selection(
     let filletable = filter_filletable_edges(topo, solid, edge_ids)?;
     let faces = remus_topology::explorer::edge_to_face_map(topo, solid)?;
     let mut kept = Vec::with_capacity(edge_ids.len());
+    let mut skipped: Vec<(EdgeId, remus_blend::BlendSkip)> = Vec::new();
     let charts = FaceCharts::default();
     for &edge in edge_ids {
-        let no_dihedral = !filletable.contains(&edge)
-            && match faces.get(&edge.index()).map(|f| &f[..]) {
-                Some(&[a, b]) if a == b => true,
-                Some(&[a, b]) => edge_is_g1_with(topo, &charts, edge, a, b)?,
-                _ => false,
-            };
-        if !no_dihedral {
-            kept.push(edge);
+        let skip = if filletable.contains(&edge) {
+            None
+        } else {
+            match faces.get(&edge.index()).map(|f| &f[..]) {
+                Some(&[a, b]) if a == b => Some(remus_blend::BlendSkip::Seam),
+                Some(&[a, b]) if edge_is_g1_with(topo, &charts, edge, a, b)? => {
+                    Some(remus_blend::BlendSkip::Tangent)
+                }
+                _ => None,
+            }
+        };
+        match skip {
+            None => kept.push(edge),
+            Some(reason) => {
+                if !skipped.iter().any(|&(e, _)| e == edge) {
+                    skipped.push((edge, reason));
+                }
+            }
         }
     }
     if kept.is_empty() {
@@ -1327,7 +1378,7 @@ fn normalize_blend_selection(
             ),
         });
     }
-    Ok(kept)
+    Ok(NormalizedBlendSelection { kept, skipped })
 }
 
 /// Whether the two faces of `eid` meet tangentially (G1) — their effective
