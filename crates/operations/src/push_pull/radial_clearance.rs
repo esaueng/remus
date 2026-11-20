@@ -9,6 +9,109 @@ use remus_topology::{
     face::{FaceId, FaceSurface},
 };
 
+/// The projection of the candidate box fits in a disk about its projected
+/// center. If even this disk misses the trimmed face, their boxes overlapped
+/// across empty space, as on a ledge curving around a threaded boss.
+pub(super) fn outside_planar_sweep(
+    topo: &Topology,
+    moved: FaceId,
+    candidate: FaceId,
+    delta: Vec3,
+) -> bool {
+    let Ok(face) = topo.face(moved) else {
+        return false;
+    };
+    let FaceSurface::Plane { normal, d } = face.surface() else {
+        return false;
+    };
+    // Only line and circle trims have certified boundary extrema.
+    let Ok(edges) = remus_topology::explorer::face_edges(topo, moved) else {
+        return false;
+    };
+    if !edges.iter().all(|&e| {
+        topo.edge(e).is_ok_and(|e| {
+            matches!(
+                e.curve(),
+                remus_topology::edge::EdgeCurve::Line | remus_topology::edge::EdgeCurve::Circle(_)
+            )
+        })
+    }) {
+        return false;
+    }
+    let Ok(candidate_face) = topo.face(candidate) else {
+        return false;
+    };
+    let origin = Point3::new(0.0, 0.0, 0.0);
+    let (projected, radius) = if let FaceSurface::Cylinder(cylinder) = candidate_face.surface() {
+        // On a transverse plane a cylinder cuts an ellipse with major radius
+        // r / |axis · normal|. The ellipse center travels along a segment as
+        // the plane moves. Enclose the whole segment and all its ellipses.
+        let axis = cylinder.axis();
+        let cosine = axis.dot(*normal);
+        if cosine.abs() <= Tolerance::new().angular {
+            return false;
+        }
+        // Fitted trim curves and sewn endpoints may extend beyond their
+        // analytic carrier. Include their complete radial extent in the proof.
+        let Some(radius) = cylinder_envelope(topo, candidate, cylinder) else {
+            return false;
+        };
+        let center =
+            cylinder.origin() + axis * ((*d - normal.dot(cylinder.origin() - origin)) / cosine);
+        let travel = axis * (normal.dot(delta) / cosine) - delta;
+        (
+            center + travel * 0.5,
+            radius / cosine.abs() + travel.length() * 0.5,
+        )
+    } else {
+        let Ok(bound) = remus_check::distance::face_bounds::face_bound(topo, candidate) else {
+            return false;
+        };
+        if !bound.prunable {
+            return false;
+        }
+        let half = (bound.aabb.max - bound.aabb.min) * 0.5;
+        let center = bound.aabb.min + half;
+        (
+            center - *normal * (normal.dot(center - origin) - *d),
+            half.length() + (delta - *normal * normal.dot(delta)).length(),
+        )
+    };
+    remus_check::distance::point_to_face(topo, projected, moved).is_ok_and(|result| {
+        result.is_some_and(|(distance, _)| distance > radius + Tolerance::new().linear)
+    })
+}
+
+fn cylinder_envelope(
+    topo: &Topology,
+    face: FaceId,
+    cylinder: &remus_math::surfaces::CylindricalSurface,
+) -> Option<f64> {
+    use remus_topology::edge::EdgeCurve;
+    let radial = |p: Point3| (p - cylinder.origin()).cross(cylinder.axis()).length();
+    let mut radius = cylinder.radius();
+    for id in remus_topology::explorer::face_edges(topo, face).ok()? {
+        let edge = topo.edge(id).ok()?;
+        for vertex in [edge.start(), edge.end()] {
+            radius = radius.max(radial(topo.vertex(vertex).ok()?.point()));
+        }
+        match edge.curve() {
+            EdgeCurve::Line => {}
+            EdgeCurve::Circle(c) => radius = radius.max(radial(c.center()) + c.radius()),
+            EdgeCurve::NurbsCurve(c) if c.weights().iter().all(|&w| w > 0.0) => {
+                for &p in c.control_points() {
+                    radius = radius.max(radial(p));
+                }
+            }
+            EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Ellipse(_)
+            | EdgeCurve::Parabola(_)
+            | EdgeCurve::Hyperbola(_) => return None,
+        }
+    }
+    radius.is_finite().then_some(radius)
+}
+
 /// A circular planar face stays inside its circular boundary when translated
 /// along its axis. Coaxial curved supports outside that cylinder cannot be
 /// reached, even though their full periodic bounding boxes include the axis.
@@ -238,6 +341,27 @@ mod tests {
         transform_solid(topo, tool, &Mat4::translation(0.0, 0.0, -10.0)).unwrap();
         let tube = boolean(topo, BooleanOp::Cut, blank, tool).unwrap();
         planar_face(topo, tube, 10.0)
+    }
+
+    #[test]
+    fn swept_annulus_excludes_a_cylinder_in_the_opening_but_keeps_contact() {
+        let mut topo = Topology::new();
+        let face = annulus(&mut topo, 8.0);
+        for (offset, clear) in [(0.0, true), (6.0, false), (7.0, false)] {
+            let cylinder = make_cylinder(&mut topo, 2.0, 15.0).unwrap();
+            transform_solid(&mut topo, cylinder, &Mat4::translation(offset, 0.0, 0.0)).unwrap();
+            let wall = solid_faces(&topo, cylinder)
+                .unwrap()
+                .into_iter()
+                .find(|&f| matches!(topo.face(f).unwrap().surface(), FaceSurface::Cylinder(_)))
+                .unwrap();
+            for sign in [-1.0, 1.0] {
+                assert_eq!(
+                    super::outside_planar_sweep(&topo, face, wall, UP * sign),
+                    clear
+                );
+            }
+        }
     }
 
     #[test]

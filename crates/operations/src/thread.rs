@@ -53,6 +53,7 @@
 //! where its major cone meets the pipe).
 
 mod chamfer;
+pub(crate) mod face_move;
 pub(crate) mod profile;
 mod runout;
 

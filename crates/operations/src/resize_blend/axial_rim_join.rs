@@ -277,7 +277,7 @@ fn original_plan(
     let analysis = crate::performance::timed("move_faces.cap_join.analysis", || {
         analyze_translation(topo, solid, faces)
     })?;
-    analysis.swept.check(distance)?;
+    analysis.swept.check(topo, distance)?;
     let reached: DetHashSet<_> = analysis
         .axial_clearance
         .iter()
@@ -558,7 +558,7 @@ fn joined_plan(
         &excluded,
         direction,
     )?;
-    swept.check(distance)?;
+    swept.check(topo, distance)?;
     Ok(CapJoinPlan {
         source_faces,
         direction,
@@ -643,7 +643,7 @@ fn descending_plan(
         let analysis = crate::performance::timed("move_faces.cap_join.analysis", || {
             analyze_translation(topo, solid, faces)
         })?;
-        analysis.swept.check(distance)?;
+        analysis.swept.check(topo, distance)?;
         let reached: Vec<_> = analysis
             .axial_clearance
             .iter()

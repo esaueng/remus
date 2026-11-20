@@ -57,8 +57,11 @@ pub struct MoveFacesResult {
     pub evolution: EvolutionMap,
 }
 
-/// Move a supported face selection while preserving the solid's adjacency
-/// graph.
+/// Move a supported face selection.
+///
+/// A chamfered end of a recognized cylindrical
+/// through-thread can move axially, repartitioning the screw faces when the
+/// new length requires a different number of half-turn segments.
 ///
 /// A coplanar group of planar faces moves along its common outward normal.
 /// Recognized constant-radius blend regions that meet the selection are
@@ -115,8 +118,14 @@ pub(crate) fn move_faces_with_entity_evolution(
 ) -> Result<DirectEditEvolution, crate::OperationsError> {
     let snapshot = remus_topology::transaction::RollbackSnapshot::capture(topo);
     let outcome = (|| -> Result<DirectEditEvolution, crate::OperationsError> {
-        let boundary_pairs;
         let source_faces = solid_faces(topo, solid)?;
+        if let [cap] = faces
+            && source_faces.contains(cap)
+            && let Some(edit) = crate::thread::face_move::rebuild(topo, solid, faces, distance)?
+        {
+            return Ok(edit);
+        }
+        let boundary_pairs;
         let result = if let Some((face, new_radius)) =
             cylindrical_bore_move_request(topo, solid, faces, distance)?
         {
@@ -309,6 +318,9 @@ impl PreparedPlanarMove {
         {
             return Ok(None);
         }
+        if crate::thread::face_move::is_mouth(topo, solid, faces) {
+            return Ok(None);
+        }
         let blend = crate::resize_blend::PreparedBlendMove::prepare(topo, solid, faces)?;
         let mut swept = None;
         let mut prismatic = None;
@@ -362,7 +374,7 @@ impl PreparedPlanarMove {
                 }
             } else {
                 if let Some(swept) = &self.swept {
-                    swept.check(distance)?;
+                    swept.check(topo, distance)?;
                 }
                 let moved = crate::performance::timed("move_faces.offset_engine", || {
                     remus_offset::move_faces_with_entity_map(topo, solid, faces, distance)
@@ -695,7 +707,7 @@ pub(crate) fn refuse_swept_region_intersections(
     distance: f64,
 ) -> Result<(), crate::OperationsError> {
     SweptRegionCheck::prepare(topo, solid, swept_faces, excluded_candidates, normal)?
-        .check(distance)
+        .check(topo, distance)
 }
 
 /// The distance-independent half of [`refuse_swept_region_intersections`]:
@@ -753,7 +765,11 @@ impl SweptRegionCheck {
     }
 
     /// Refuses a move by `distance` whose swept region reaches a candidate.
-    pub(crate) fn check(&self, distance: f64) -> Result<(), crate::OperationsError> {
+    pub(crate) fn check(
+        &self,
+        topo: &Topology,
+        distance: f64,
+    ) -> Result<(), crate::OperationsError> {
         let delta = self.normal * distance;
         for (moved_face, original, candidates) in &self.swept {
             let destination = Aabb3 {
@@ -761,10 +777,10 @@ impl SweptRegionCheck {
                 max: original.max + delta,
             };
             let swept = original.union(destination);
-            if let Some((candidate, _)) = candidates
-                .iter()
-                .find(|(_, candidate_box)| swept.intersects(*candidate_box))
-            {
+            if let Some((candidate, _)) = candidates.iter().find(|(candidate, bounds)| {
+                swept.intersects(*bounds)
+                    && !radial_clearance::outside_planar_sweep(topo, *moved_face, *candidate, delta)
+            }) {
                 return Err(remus_offset::OffsetError::TopologyChange {
                     face: Some(*moved_face),
                     edge: None,
