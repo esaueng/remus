@@ -1230,45 +1230,12 @@ fn planar_faces_overlap(
         }
         sign != 0.0
     };
-    let on_true_outer_boundary =
-        |p: remus_math::vec::Point3, face: &remus_topology::face::Face| -> bool {
-            topo.wire(face.outer_wire()).is_ok_and(|wire| {
-                wire.edges().iter().any(|oe| {
-                    topo.edge(oe.edge()).is_ok_and(|edge| {
-                        let Ok(start) = topo
-                            .vertex(edge.start())
-                            .map(remus_topology::vertex::Vertex::point)
-                        else {
-                            return false;
-                        };
-                        let Ok(end) = topo
-                            .vertex(edge.end())
-                            .map(remus_topology::vertex::Vertex::point)
-                        else {
-                            return false;
-                        };
-                        super::fill_images_faces::point_on_edge(
-                            edge.curve(),
-                            start,
-                            end,
-                            p,
-                            tol.linear * 10.0,
-                        )
-                    })
-                })
-            })
-        };
     let safely_contained = |points: &[remus_math::vec::Point3],
                             projected: &[remus_math::vec::Point2],
                             container: &[remus_math::vec::Point2],
-                            face: &remus_topology::face::Face|
-     -> bool {
+                            face: &remus_topology::face::Face| {
         convex(container)
-            && points.len() == projected.len()
-            && points.iter().zip(projected).all(|(&point, &uv)| {
-                super::classify_2d::point_in_polygon_2d(uv, container)
-                    || on_true_outer_boundary(point, face)
-            })
+            && samples_inside_or_on_outline(topo, face, points, projected, container, tol)
     };
     let contained_to_tolerance =
         |candidate: &[remus_math::vec::Point2], container: &[remus_math::vec::Point2]| {
@@ -1339,6 +1306,52 @@ fn planar_faces_overlap(
     face_i.inner_wires().is_empty()
         && face_j.inner_wires().is_empty()
         && polygons_overlap_majority(&poly_i, &poly_j, tol)
+}
+
+/// A chord polygon can exclude samples on its true analytic boundary.
+fn samples_inside_or_on_outline(
+    topo: &Topology,
+    face: &remus_topology::face::Face,
+    points: &[remus_math::vec::Point3],
+    projected: &[remus_math::vec::Point2],
+    container: &[remus_math::vec::Point2],
+    tol: Tolerance,
+) -> bool {
+    if points.len() != projected.len() {
+        return false;
+    }
+    let boundary = topo
+        .wire(face.outer_wire())
+        .ok()
+        .map(remus_topology::wire::Wire::edges)
+        .unwrap_or_default();
+    let exact_edge = |oe: &remus_topology::wire::OrientedEdge| {
+        let edge = topo.edge(oe.edge()).ok()?;
+        Some((
+            edge.curve(),
+            topo.vertex(edge.start()).ok()?.point(),
+            topo.vertex(edge.end()).ok()?.point(),
+        ))
+    };
+    let on_edge = |point, (curve, start, end)| {
+        super::fill_images_faces::point_on_edge(curve, start, end, point, tol.linear * 10.0)
+    };
+    let mut previous = None;
+    points.iter().zip(projected).all(|(&point, &uv)| {
+        // Consecutive wire samples often follow the same analytic edge.
+        if previous.is_some_and(|edge| on_edge(point, edge)) {
+            return true;
+        }
+        if super::classify_2d::point_in_polygon_2d(uv, container) {
+            previous = None;
+            return true;
+        }
+        previous = boundary
+            .iter()
+            .filter_map(exact_edge)
+            .find(|&edge| on_edge(point, edge));
+        previous.is_some()
+    })
 }
 
 /// Whether the projected point `p` lies inside the planar wire `wire_id`,
