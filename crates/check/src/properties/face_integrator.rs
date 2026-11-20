@@ -5536,7 +5536,9 @@ const NURBS_ROW_WINDOWS: usize = 4;
 /// fixed for the face), so a repeated window — every row of a face whose
 /// boundary runs along the v-iso lines of its domain — reuses its table, and
 /// every sample computes exactly what the per-abscissa scratch solve
-/// computes.
+/// computes. In knot-aligned integration, a complete interior knot span
+/// has the same endpoints and cell count on every row of this face. Small
+/// tables for these spans can therefore be retained by knot index.
 struct NurbsRows<'s> {
     surface: &'s NurbsSurface,
     gauss_pts: &'static [GaussPoint],
@@ -5544,6 +5546,8 @@ struct NurbsRows<'s> {
     u_axis: FirstOrderAxis<'s>,
     /// `((a, b) bits, bases over (iv, gpv))` of recently used windows.
     windows: Vec<((u64, u64, usize), FirstOrderAxis<'s>)>,
+    /// Complete interior knot spans have fixed bounds and cell count on every row.
+    knot_windows: Vec<Option<FirstOrderAxis<'s>>>,
     /// Slot the next new window replaces once `windows` is full.
     next: usize,
     params: Vec<f64>,
@@ -5557,6 +5561,7 @@ impl<'s> NurbsRows<'s> {
             scale_v,
             u_axis: surface.first_order_axis_u(&[]),
             windows: Vec::with_capacity(NURBS_ROW_WINDOWS),
+            knot_windows: Vec::new(),
             next: 0,
             params: Vec::new(),
         }
@@ -5570,20 +5575,12 @@ impl<'s> NurbsRows<'s> {
         self.window_cells(a, b, patch_count(b - a, self.scale_v))
     }
 
-    #[allow(clippy::cast_precision_loss)]
     fn window_cells(&mut self, a: f64, b: f64, nv: usize) -> usize {
         let key = (a.to_bits(), b.to_bits(), nv);
         if let Some(index) = self.windows.iter().position(|(seen, _)| *seen == key) {
             return index;
         }
-        let dv_patch = (b - a) / nv as f64;
-        let v_scale = dv_patch / 2.0;
-        self.params.clear();
-        for iv in 0..nv {
-            let v_mid = dv_patch.fma(iv as f64, a) + v_scale;
-            self.params
-                .extend(self.gauss_pts.iter().map(|gpv| v_scale.fma(gpv.x, v_mid)));
-        }
+        Self::fill_window_params(&mut self.params, self.gauss_pts, a, b, nv);
         if self.windows.len() < NURBS_ROW_WINDOWS {
             let table = self.surface.first_order_axis_v(&self.params);
             self.windows.push((key, table));
@@ -5594,6 +5591,23 @@ impl<'s> NurbsRows<'s> {
         self.windows[index].0 = key;
         self.windows[index].1.refill(&self.params);
         index
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    fn fill_window_params(
+        params: &mut Vec<f64>,
+        gauss_pts: &[GaussPoint],
+        a: f64,
+        b: f64,
+        nv: usize,
+    ) {
+        let dv_patch = (b - a) / nv as f64;
+        let v_scale = dv_patch / 2.0;
+        params.clear();
+        for iv in 0..nv {
+            let v_mid = dv_patch.fma(iv as f64, a) + v_scale;
+            params.extend(gauss_pts.iter().map(|gpv| v_scale.fma(gpv.x, v_mid)));
+        }
     }
 
     /// One `u` abscissa's samples over `spans`, in the trimmed loop's order
@@ -5610,7 +5624,13 @@ impl<'s> NurbsRows<'s> {
         self.u_axis.refill(&[u]);
         for &(a, b) in spans {
             let nv = patch_count(b - a, self.scale_v);
-            self.add_window::<AREA_ONLY>(acc, (u, gpu_w, u_scale), (a, b, nv), reference, scratch);
+            self.add_window::<AREA_ONLY>(
+                acc,
+                (u, gpu_w, u_scale),
+                (a, b, nv, None),
+                reference,
+                scratch,
+            );
         }
     }
 
@@ -5620,14 +5640,29 @@ impl<'s> NurbsRows<'s> {
         &mut self,
         acc: &mut Accumulator,
         (u, gpu_w, u_scale): (f64, f64, f64),
-        (a, b, nv): (f64, f64, usize),
+        (a, b, nv, span): (f64, f64, usize, Option<usize>),
         reference: Point3,
         scratch: &mut DerivativeScratch,
     ) {
         let dv_patch = (b - a) / nv as f64;
         let v_scale = dv_patch / 2.0;
-        let window = self.window_cells(a, b, nv);
-        let table = &self.windows[window].1;
+        // Limit the extra tables to 64 small spans, at most 256 words of
+        // spans and derivatives each. Trims and larger tables use the FIFO.
+        let words_per_point = 2 * (self.surface.degree_v() + 1) + 1;
+        let table = if let Some(index) =
+            span.filter(|&index| index < 64 && nv <= 256 / words_per_point / self.gauss_pts.len())
+        {
+            if self.knot_windows.len() <= index {
+                self.knot_windows.resize_with(index + 1, || None);
+            }
+            self.knot_windows[index].get_or_insert_with(|| {
+                Self::fill_window_params(&mut self.params, self.gauss_pts, a, b, nv);
+                self.surface.first_order_axis_v(&self.params)
+            })
+        } else {
+            let window = self.window_cells(a, b, nv);
+            &self.windows[window].1
+        };
         let mut k = 0;
         for iv in 0..nv {
             for gpv in self.gauss_pts {
@@ -5941,7 +5976,7 @@ fn integrate_knot_aligned<S: ParametricSurface, const AREA_ONLY: bool>(
                         let inner = knots_v.get(first..last).unwrap_or(&[]);
                         let lows = std::iter::once(a).chain(inner.iter().copied());
                         let highs = inner.iter().copied().chain(std::iter::once(b));
-                        for (p0, p1) in lows.zip(highs) {
+                        for (piece, (p0, p1)) in lows.zip(highs).enumerate() {
                             let nv = knot_aligned_cells(p1 - p0, cell_v);
                             lines = lines.saturating_add(nv);
                             if lines > budget {
@@ -5985,7 +6020,12 @@ fn integrate_knot_aligned<S: ParametricSurface, const AREA_ONLY: bool>(
                                 rows.add_window::<AREA_ONLY>(
                                     &mut acc,
                                     (u, gpu.w, u_scale),
-                                    (p0, p1, nv),
+                                    (
+                                        p0,
+                                        p1,
+                                        nv,
+                                        (piece > 0 && piece < inner.len()).then_some(first + piece),
+                                    ),
                                     rule.reference,
                                     &mut scratch,
                                 );
