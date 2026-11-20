@@ -193,6 +193,11 @@ impl WeldedMeshQuality {
 /// triangles are skipped.
 #[must_use]
 pub fn welded_mesh_quality(mesh: &TriangleMesh) -> WeldedMeshQuality {
+    compact_welded_mesh_quality(mesh).unwrap_or_else(|| sparse_welded_mesh_quality(mesh))
+}
+
+/// Hash the positions of referenced corners directly for small or sparse inputs.
+fn sparse_welded_mesh_quality(mesh: &TriangleMesh) -> WeldedMeshQuality {
     type Q = (i64, i64, i64);
     let s = 1.0 / COINCIDENT_DEDUPE_GRID;
     #[allow(clippy::cast_possible_truncation)]
@@ -245,6 +250,81 @@ pub fn welded_mesh_quality(mesh: &TriangleMesh) -> WeldedMeshQuality {
         non_manifold_edges: edges.values().filter(|&&c| c > 2).count(),
         euler_characteristic: verts.len() as i64 - edges.len() as i64 + face_count,
     }
+}
+
+/// Compare compact welded vertex IDs instead of pairs of coordinate triples.
+fn compact_welded_mesh_quality(mesh: &TriangleMesh) -> Option<WeldedMeshQuality> {
+    // Avoid work proportional to unused source positions on sparse inputs.
+    if mesh.positions.len() > mesh.indices.len() || mesh.indices.len() < 300 {
+        return None;
+    }
+    let ids = quantized_vertex_ids(mesh)?;
+    let mut referenced = vec![false; ids.distinct];
+    // Count incident sides by lower endpoint. Ordinary manifold vertices have
+    // few neighbours, so compare only the upper endpoints inside each bucket.
+    let mut starts = vec![0_usize; ids.distinct + 1];
+    let mut triangle_count = 0;
+    for triangle in mesh.indices.chunks_exact(3) {
+        let a = *ids.of.get(triangle[0] as usize)?;
+        let b = *ids.of.get(triangle[1] as usize)?;
+        let c = *ids.of.get(triangle[2] as usize)?;
+        if a == b || a == c || b == c {
+            continue;
+        }
+        triangle_count += 1;
+        for (from, to) in [(a, b), (b, c), (c, a)] {
+            referenced[from as usize] = true;
+            starts[from.min(to) as usize + 1] += 1;
+        }
+    }
+    let vertex_count = referenced.into_iter().filter(|used| *used).count();
+    // A surface normally has about two triangles per welded vertex. Repeated
+    // facets can have arbitrarily more. Hash their distinct edges instead of
+    // materializing three endpoints for every duplicate.
+    if triangle_count > vertex_count.saturating_mul(16) {
+        return None;
+    }
+    for endpoint in 0..ids.distinct {
+        starts[endpoint + 1] += starts[endpoint];
+    }
+    let mut ends = vec![0_u32; triangle_count * 3];
+    let mut next = starts.clone();
+    // All complete triples were bounds-checked in the counting pass.
+    for triangle in mesh.indices.chunks_exact(3) {
+        let a = ids.of[triangle[0] as usize];
+        let b = ids.of[triangle[1] as usize];
+        let c = ids.of[triangle[2] as usize];
+        if a == b || a == c || b == c {
+            continue;
+        }
+        for (from, to) in [(a, b), (b, c), (c, a)] {
+            let slot = &mut next[from.min(to) as usize];
+            ends[*slot] = from.max(to);
+            *slot += 1;
+        }
+    }
+    let mut unique_edges = 0_i64;
+    let mut boundary_edges = 0;
+    let mut non_manifold_edges = 0;
+    for span in starts.windows(2) {
+        let bucket = &mut ends[span[0]..span[1]];
+        bucket.compact_sort_unstable();
+        for run in bucket.chunk_by(|a, b| a == b) {
+            unique_edges += 1;
+            match run.len() {
+                1 => boundary_edges += 1,
+                2 => (),
+                _ => non_manifold_edges += 1,
+            }
+        }
+    }
+    #[allow(clippy::cast_possible_wrap)]
+    Some(WeldedMeshQuality {
+        triangle_count,
+        boundary_edges,
+        non_manifold_edges,
+        euler_characteristic: vertex_count as i64 - unique_edges + triangle_count as i64,
+    })
 }
 
 /// Remove duplicate triangles, cancelling opposing pairs and dedup same-winding pairs.
