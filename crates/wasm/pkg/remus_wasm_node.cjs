@@ -5498,6 +5498,14 @@ class RemusKernel {
      *   correspondence starts: vertex k of each section connects to vertex k
      *   of the next, counted from there. Not combined with an apex point; a
      *   point that is not a section vertex is refused.
+     * - `guide: {degree, knots, controlPoints: [[x, y, z], …], weights?}` — a
+     *   clamped NURBS curve (rational allowed) through one corner of every
+     *   straight-edged section, first to last, that the loft follows
+     *   exactly; that corner is the section's connection start. `ruled`
+     *   (default true) varies the sections' offsets from the guide linearly
+     *   between sections, `false` smoothly. Not combined with `connections`
+     *   or an apex point; curved sections and unequal corner counts are
+     *   refused as unsupported.
      * @param {Uint32Array} faces
      * @param {string} options
      * @returns {number}
