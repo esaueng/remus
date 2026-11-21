@@ -248,10 +248,11 @@ pub(super) fn loft_with_options_impl(
 pub(super) fn parse_exact_sweep_options(
     options: &serde_json::Value,
 ) -> Result<remus_operations::exact_sweep::ExactSweepOptions, String> {
+    use remus_operations::exact_sweep::ExactSweepOrientation;
+
     let object = options
         .as_object()
         .ok_or_else(|| "sweepExactWithOptions: options must be an object".to_owned())?;
-    use remus_operations::exact_sweep::ExactSweepOrientation;
     let mut parsed = remus_operations::exact_sweep::ExactSweepOptions::default();
     for (key, value) in object {
         let number = || {
