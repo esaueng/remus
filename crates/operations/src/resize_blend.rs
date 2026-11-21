@@ -10,6 +10,7 @@ mod axial_clearance;
 mod cap_chamfer;
 mod planar_travel;
 mod radial_resize;
+mod riding_chamfer;
 pub(crate) use radial_resize::resize_cylindrical_strip;
 mod axial_rim_join;
 mod sphere_seam;
@@ -2257,6 +2258,13 @@ fn translation_invariant_blend_region(
             "no translation-dependent analytic blend region bounds the selected plane",
         ));
     }
+
+    // Sharp chamfer bands bounded only by the moving cluster and faces the
+    // move slides along travel with it.
+    let moving: HashSet<FaceId> = selected.union(&region).copied().collect();
+    region.extend(riding_chamfer::riding_chamfer_faces(
+        topo, &adjacency, &moving, direction,
+    )?);
 
     let mut translated_nurbs_supports = HashSet::new();
     // Face order, not set order, so a refusal always names the same face.
