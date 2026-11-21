@@ -432,6 +432,25 @@ fn joined_plan(
             "selected shoulder has mixed or unsupported section radii",
         ));
     }
+    // The shoulder's own boss axes. A cap group elsewhere on the body, on
+    // another boss, is no partner of this shoulder even when its rim radius
+    // qualifies; without a toroidal seed every cap is considered as before.
+    let tol = Tolerance::new();
+    let seed_axes: Vec<_> = seed_faces
+        .iter()
+        .filter_map(|&face| match topo.face(face).ok()?.surface() {
+            FaceSurface::Torus(torus) if torus.z_axis().cross(direction).length() < 1e-10 => {
+                Some(torus.center())
+            }
+            _ => None,
+        })
+        .collect();
+    let on_seed_axis = |center: remus_math::vec::Point3| {
+        seed_axes.is_empty()
+            || seed_axes
+                .iter()
+                .any(|&axis| (center - axis).cross(direction).length() <= tol.linear)
+    };
     let mut caps = Vec::new();
     for &cap in &source_faces {
         if cap == *selected
@@ -449,7 +468,10 @@ fn joined_plan(
         let Some(radius) = bands
             .iter()
             .find_map(|&face| match topo.face(face).ok()?.surface() {
-                FaceSurface::Torus(torus) if torus.z_axis().cross(direction).length() < 1e-10 => {
+                FaceSurface::Torus(torus)
+                    if torus.z_axis().cross(direction).length() < 1e-10
+                        && on_seed_axis(torus.center()) =>
+                {
                     Some(torus.minor_radius())
                 }
                 FaceSurface::Plane { .. }

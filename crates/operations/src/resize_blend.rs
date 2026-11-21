@@ -890,10 +890,8 @@ pub fn blend_region(
             }
             if let Some((_, other_radius)) = blend_surface(topo.face(*other)?.surface())
                 && tol.approx_eq(radius, other_radius)
-                && !band.contains(other)
-                && same_ball_side(topo, edge, current, *other)?
+                && band.insert(*other)
             {
-                band.insert(*other);
                 queue.push_back(*other);
             }
         }
@@ -909,74 +907,6 @@ pub fn blend_region(
         )));
     }
     Ok(BlendRegion { faces, radius })
-}
-
-/// Whether two tangent constant-radius bands keep their rolling ball on the
-/// same side of the material across `edge`.
-///
-/// One rolling ball sweeps one band, so its faces are all convex (the ball
-/// inside the material) or all concave. Where a concave shoulder hands over
-/// to an equal convex rim on a shared spring the two are tangent and share a
-/// radius, but they are two blends meeting in an S-bend, not one region.
-fn same_ball_side(
-    topo: &Topology,
-    edge: EdgeId,
-    first: FaceId,
-    second: FaceId,
-) -> Result<bool, OperationsError> {
-    let data = topo.edge(edge)?;
-    let (lo, hi) = crate::authoritative_edge_domain(data, "blend region side")?;
-    let point = data.curve().evaluate_with_endpoints(
-        f64::midpoint(lo, hi),
-        topo.vertex(data.start())?.point(),
-        topo.vertex(data.end())?.point(),
-    );
-    match (
-        ball_inside_material(topo, first, point)?,
-        ball_inside_material(topo, second, point)?,
-    ) {
-        (Some(a), Some(b)) => Ok(a == b),
-        // A side that cannot be read keeps the tangency-only rule.
-        _ => Ok(true),
-    }
-}
-
-/// Whether the band's outward normal at `point` points away from the centre
-/// of the ball that rolled it, which puts that ball inside the material: a
-/// convex round. `None` where the carrier has no centre spine or the point
-/// does not project onto it.
-fn ball_inside_material(
-    topo: &Topology,
-    face: FaceId,
-    point: Point3,
-) -> Result<Option<bool>, OperationsError> {
-    let data = topo.face(face)?;
-    let surface = data.surface();
-    let from_spine = match surface {
-        FaceSurface::Cylinder(cylinder) => {
-            let offset = point - cylinder.origin();
-            offset - cylinder.axis() * offset.dot(cylinder.axis())
-        }
-        FaceSurface::Torus(torus) => {
-            let offset = point - torus.center();
-            let radial = offset - torus.z_axis() * offset.dot(torus.z_axis());
-            let Ok(direction) = radial.normalize() else {
-                return Ok(None);
-            };
-            point - (torus.center() + direction * torus.major_radius())
-        }
-        FaceSurface::Sphere(sphere) => point - sphere.center(),
-        FaceSurface::Plane { .. } | FaceSurface::Cone(_) | FaceSurface::Nurbs(_) => {
-            return Ok(None);
-        }
-    };
-    let Some((u, v)) = surface.project_point(point) else {
-        return Ok(None);
-    };
-    let normal = surface.normal(u, v);
-    let outward = if data.is_reversed() { -normal } else { normal };
-    let along = outward.dot(from_spine);
-    Ok((along.abs() > Tolerance::new().linear).then_some(along > 0.0))
 }
 
 fn blend_region_supports(
@@ -2310,12 +2240,9 @@ fn translation_invariant_blend_region(
                 {
                     continue;
                 }
-                // Across an S-bend the neighbouring band is another blend,
-                // rolled on the other side of the material, which stays put.
                 if !tangent_across(topo, edge, current, candidate)?
                     || surface_translation_invariant(topo.face(candidate)?.surface(), direction)
                     || !is_local_blend_face(topo, &adjacency, candidate)?
-                    || !same_ball_side(topo, edge, current, candidate)?
                 {
                     continue;
                 }

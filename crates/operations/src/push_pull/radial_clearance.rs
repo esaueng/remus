@@ -206,7 +206,10 @@ fn planar_face_axis_clearance(
         })?;
     let mut lower = f64::INFINITY;
     let mut tilt_allowance = 0.0_f64;
-    let mut scale = 0.0_f64;
+    // Rounding in `p - origin` and in the projection is relative to the
+    // world coordinates' magnitude, however small the projected ones are.
+    let magnitude = |p: Point3| p.x().abs().max(p.y().abs()).max(p.z().abs());
+    let mut scale = magnitude(origin);
     let mut loops = Vec::with_capacity(1 + data.inner_wires().len());
     for wire in std::iter::once(data.outer_wire()).chain(data.inner_wires().iter().copied()) {
         let mut edges = Vec::new();
@@ -214,6 +217,10 @@ fn planar_face_axis_clearance(
             let edge = topo.edge(oriented.edge())?;
             let start = topo.vertex(edge.start())?.point();
             let end = topo.vertex(edge.end())?.point();
+            scale = scale.max(magnitude(start)).max(magnitude(end));
+            if let remus_topology::edge::EdgeCurve::Circle(circle) = edge.curve() {
+                scale = scale.max(magnitude(circle.center()) + circle.radius());
+            }
             let Ok((first, last)) = edge.strict_domain() else {
                 return Ok(None);
             };
@@ -233,8 +240,6 @@ fn planar_face_axis_clearance(
             };
             let distance = match projected {
                 PlanarLoopEdge::Segment(a, b) => {
-                    scale = scale.max(a.x().abs()).max(a.y().abs());
-                    scale = scale.max(b.x().abs()).max(b.y().abs());
                     let (along, offset) = (b - a, pierce - a);
                     let span = along.length_squared();
                     let t = if span > 0.0 {
@@ -253,9 +258,6 @@ fn planar_face_axis_clearance(
                             .map_or(1.0, |normal| normal.cross(unit).length());
                         tilt_allowance = tilt_allowance.max(radius * tilt);
                     }
-                    scale = scale
-                        .max(center.x().abs() + radius)
-                        .max(center.y().abs() + radius);
                     ((pierce - center).length() - radius).abs()
                 }
             };
@@ -279,8 +281,9 @@ fn planar_face_axis_clearance(
         in_hole |= inside;
     }
     // Each coordinate and the distance read from it carry a few rounding
-    // steps relative to `scale`; 1e-12 of it is orders of magnitude above
-    // that and still far below the modeling tolerance at part scale.
+    // steps relative to the world `scale`; 1e-12 of it is orders of
+    // magnitude above that and still far below the modeling tolerance at
+    // part scale.
     let lower = 1e-12_f64.mul_add(-scale, lower - tilt_allowance);
     Ok((!in_outer || in_hole).then_some(lower))
 }
@@ -630,5 +633,46 @@ mod tests {
             matches!(surface, FaceSurface::Sphere(_))
         });
         assert!(!coaxial_sweep_is_radially_disjoint(&topo, top, shell, UP).unwrap());
+    }
+
+    #[test]
+    fn far_axial_coordinates_keep_their_rounding_allowance() {
+        // A plate moving along (0, 1, 1) passes 1.0000025 from the axis of
+        // a sphere of radius 1.000003 centred 2^33 out along that axis: the
+        // sweep reaches it. The large axial coordinates cancel in the
+        // projection, so the allowance must follow their scale.
+        let mut topo = Topology::new();
+        let plate = make_box(&mut topo, 2.0, 2.0, 1.0).unwrap();
+        transform_solid(
+            &mut topo,
+            plate,
+            &Mat4::translation(1.000_002_5, -1.0, -1.0),
+        )
+        .unwrap();
+        transform_solid(
+            &mut topo,
+            plate,
+            &Mat4::rotation_x(-std::f64::consts::FRAC_PI_4),
+        )
+        .unwrap();
+        let diagonal = Vec3::new(0.0, 1.0, 1.0).normalize().unwrap();
+        let top = solid_faces(&topo, plate)
+            .unwrap()
+            .into_iter()
+            .find(|&face| {
+                topo.face(face)
+                    .unwrap()
+                    .effective_plane_normal()
+                    .is_some_and(|normal| normal.dot(diagonal) > 1.0 - 1e-12)
+            })
+            .expect("plate face along the diagonal");
+        let direction = topo.face(top).unwrap().effective_plane_normal().unwrap();
+        let far = 2.0_f64.powi(33);
+        let ball = make_sphere(&mut topo, 1.000_003, 16).unwrap();
+        transform_solid(&mut topo, ball, &Mat4::translation(0.0, far, far)).unwrap();
+        let shell = face_on(&topo, ball, |surface| {
+            matches!(surface, FaceSurface::Sphere(_))
+        });
+        assert!(!coaxial_sweep_is_radially_disjoint(&topo, top, shell, direction).unwrap());
     }
 }
