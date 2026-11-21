@@ -9,13 +9,13 @@
 //! exact prismatic extension the rest of the cluster already makes.
 
 use crate::OperationsError;
-use remus_math::compact_sort::CompactSort;
+use remus_math::det_hash::DetHashSet;
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::Vec3;
 use remus_topology::Topology;
 use remus_topology::adjacency::AdjacencyIndex;
 use remus_topology::face::{FaceId, FaceSurface};
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 
 /// More faces than any chamfer band round one moved end carries; a component
 /// this large is a body region, not a detail, and abstains.
@@ -47,8 +47,8 @@ fn is_chamfer_surface(
     })
 }
 
-/// The chamfer faces that must translate with `moving`, a selection and its
-/// blend cluster, when the move runs along `direction`.
+/// The chamfer faces that must translate with `moving_faces` (in face
+/// order), a selection and its blend cluster, when the move runs along `direction`.
 ///
 /// Each connected component of non-invariant faces next to `moving` is
 /// carried whole when every face in it is a chamfer surface and every face
@@ -58,9 +58,10 @@ fn is_chamfer_surface(
 pub(super) fn riding_chamfer_faces(
     topo: &Topology,
     adjacency: &AdjacencyIndex,
-    moving: &HashSet<FaceId>,
+    moving_faces: &[FaceId],
     direction: Vec3,
-) -> Result<HashSet<FaceId>, OperationsError> {
+) -> Result<DetHashSet<FaceId>, OperationsError> {
+    let moving: DetHashSet<FaceId> = moving_faces.iter().copied().collect();
     let is_invariant = |face: FaceId| -> Result<bool, OperationsError> {
         let surface = topo.face(face)?.surface();
         Ok(!matches!(surface, FaceSurface::Nurbs(_))
@@ -70,9 +71,7 @@ pub(super) fn riding_chamfer_faces(
     // Seeds in face order so the components, and any refusal downstream,
     // do not depend on set iteration order.
     let mut seeds = Vec::new();
-    let mut ordered_moving: Vec<FaceId> = moving.iter().copied().collect();
-    ordered_moving.compact_sort_unstable_by_key(|face| face.index());
-    for &face in &ordered_moving {
+    for &face in moving_faces {
         for edge in super::face_edges(topo, face)? {
             for adjacent in super::distinct_faces(adjacency.faces_for_edge(edge)) {
                 if !moving.contains(&adjacent) && !is_invariant(adjacent)? {
@@ -82,8 +81,8 @@ pub(super) fn riding_chamfer_faces(
         }
     }
 
-    let mut carried = HashSet::new();
-    let mut visited = HashSet::new();
+    let mut carried = DetHashSet::default();
+    let mut visited = DetHashSet::default();
     for seed in seeds {
         if !visited.insert(seed) {
             continue;

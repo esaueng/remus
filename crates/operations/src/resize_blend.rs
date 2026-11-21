@@ -2190,7 +2190,7 @@ struct BlendTranslationRegion {
     /// The chamfer faces among `translated_faces` that ride with the
     /// cluster. They lead the move like the selection does, so the move
     /// sweeps them too.
-    riding_chamfers: HashSet<FaceId>,
+    riding_chamfers: remus_math::det_hash::DetHashSet<FaceId>,
 }
 
 fn translation_invariant_blend_region(
@@ -2265,7 +2265,8 @@ fn translation_invariant_blend_region(
 
     // Sharp chamfer bands bounded only by the moving cluster and faces the
     // move slides along travel with it.
-    let moving: HashSet<FaceId> = selected.union(&region).copied().collect();
+    let mut moving: Vec<FaceId> = selected.union(&region).copied().collect();
+    moving.compact_sort_unstable_by_key(|face| face.index());
     let riding_chamfers =
         riding_chamfer::riding_chamfer_faces(topo, &adjacency, &moving, direction)?;
     region.extend(riding_chamfers.iter().copied());
