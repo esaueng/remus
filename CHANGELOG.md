@@ -58,8 +58,10 @@ historical predecessor-line records, retained for provenance. The
   cluster when everything it meets either moves too or is a face the move
   slides along. The result is the exact prismatic extension: the same
   topology, and the volume changes by the distance times the block's
-  rounded cross-section. A plane square to the move, or a band that meets
-  any other surface, is still left in place and refuses as before.
+  rounded cross-section. The band is swept with the moved face, so a move
+  that would carry it through other material (a cavity in the foot) refuses.
+  A plane square to the move, or a band that meets any other surface, is
+  still left in place and refuses as before.
 
 * **operations,wasm:** `section` keeps the closed-form curves of a cross
   section (#1826). Every curved piece of a section was chorded into `Line`

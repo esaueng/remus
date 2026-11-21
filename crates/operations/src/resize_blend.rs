@@ -2187,6 +2187,10 @@ fn invariant_boundary_carriers(
 struct BlendTranslationRegion {
     translated_faces: HashSet<FaceId>,
     translated_nurbs_supports: HashSet<FaceId>,
+    /// The chamfer faces among `translated_faces` that ride with the
+    /// cluster. They lead the move like the selection does, so the move
+    /// sweeps them too.
+    riding_chamfers: HashSet<FaceId>,
 }
 
 fn translation_invariant_blend_region(
@@ -2262,9 +2266,9 @@ fn translation_invariant_blend_region(
     // Sharp chamfer bands bounded only by the moving cluster and faces the
     // move slides along travel with it.
     let moving: HashSet<FaceId> = selected.union(&region).copied().collect();
-    region.extend(riding_chamfer::riding_chamfer_faces(
-        topo, &adjacency, &moving, direction,
-    )?);
+    let riding_chamfers =
+        riding_chamfer::riding_chamfer_faces(topo, &adjacency, &moving, direction)?;
+    region.extend(riding_chamfers.iter().copied());
 
     let mut translated_nurbs_supports = HashSet::new();
     // Face order, not set order, so a refusal always names the same face.
@@ -2298,6 +2302,7 @@ fn translation_invariant_blend_region(
     Ok(BlendTranslationRegion {
         translated_faces: region,
         translated_nurbs_supports,
+        riding_chamfers,
     })
 }
 
@@ -2781,6 +2786,13 @@ pub(crate) fn analyze_translation(
         translation_invariant_blend_region(topo, solid, faces, direction)
     })?;
     let source_counts = remus_topology::explorer::solid_entity_counts(topo, solid)?;
+    // A riding chamfer travels as far as the selection, through material the
+    // selection's own sweep need not cover (a cavity under the foot).
+    let swept_faces: HashSet<FaceId> = faces
+        .iter()
+        .copied()
+        .chain(region.riding_chamfers.iter().copied())
+        .collect();
     let mut moved_faces: HashSet<FaceId> = faces.iter().copied().collect();
     moved_faces.extend(region.translated_faces);
     moved_faces.extend(region.translated_nurbs_supports);
@@ -2795,7 +2807,6 @@ pub(crate) fn analyze_translation(
         |face| invariant_carriers.contains(&face),
         direction,
     )?;
-    let swept_faces = faces.iter().copied().collect();
     let excluded_candidates = moved_faces.union(&invariant_carriers).copied().collect();
     let swept = crate::push_pull::SweptRegionCheck::prepare(
         topo,

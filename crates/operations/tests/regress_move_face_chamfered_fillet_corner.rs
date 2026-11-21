@@ -15,12 +15,15 @@
 
 use std::f64::consts::PI;
 
+use remus_math::mat::Mat4;
 use remus_math::vec::Vec3;
 use remus_operations::blend_ops::{chamfer_v2, fillet_cascade, planar_chamfer_with_origins};
-use remus_operations::measure::{solid_bounding_box, solid_volume};
+use remus_operations::boolean::{BooleanOp, boolean};
+use remus_operations::measure::{face_area, solid_bounding_box, solid_volume};
 use remus_operations::primitives::make_box;
 use remus_operations::push_pull::move_faces;
 use remus_operations::tessellate::{is_watertight, tessellate_solid_with_tolerance};
+use remus_operations::transform::transform_solid;
 use remus_operations::validate::validate_solid;
 use remus_topology::Topology;
 use remus_topology::edge::EdgeId;
@@ -82,9 +85,10 @@ fn chamfered_rounded_block(topo: &mut Topology) -> SolidId {
     }
 }
 
-/// The one planar face whose outward normal is `normal`.
+/// The largest planar face whose outward normal is `normal`: the block's
+/// own face, not a wall of a cavity facing the same way.
 fn face_facing(topo: &Topology, solid: SolidId, normal: Vec3) -> FaceId {
-    let faces: Vec<FaceId> = solid_faces(topo, solid)
+    solid_faces(topo, solid)
         .unwrap()
         .into_iter()
         .filter(|&face| {
@@ -93,11 +97,12 @@ fn face_facing(topo: &Topology, solid: SolidId, normal: Vec3) -> FaceId {
                 .effective_plane_normal()
                 .is_some_and(|n| n.dot(normal) > 1.0 - 1e-9)
         })
-        .collect();
-    let [face] = faces.as_slice() else {
-        panic!("expected one face facing {normal:?}, found {}", faces.len());
-    };
-    *face
+        .max_by(|&a, &b| {
+            face_area(topo, a, 0.01)
+                .unwrap()
+                .total_cmp(&face_area(topo, b, 0.01).unwrap())
+        })
+        .unwrap_or_else(|| panic!("no face facing {normal:?}"))
 }
 
 /// The block's cross-section across its prismatic middle: the rectangle less
@@ -160,4 +165,40 @@ fn side_face_pulls_out_past_its_chamfered_corners() {
 #[test]
 fn side_face_pushes_in_past_its_chamfered_corners() {
     check_move(Vec3::new(0.0, -1.0, 0.0), -3.0, rounded_section(X));
+}
+
+/// The block with a sealed 0.2 mm cube of a cavity at `corner`, inside the
+/// foot just behind the end's chamfer.
+fn block_with_cavity(topo: &mut Topology, corner: [f64; 3]) -> SolidId {
+    let block = chamfered_rounded_block(topo);
+    let cavity = make_box(topo, 0.2, 0.2, 0.2).unwrap();
+    transform_solid(
+        topo,
+        cavity,
+        &Mat4::translation(corner[0], corner[1], corner[2]),
+    )
+    .unwrap();
+    boolean(topo, BooleanOp::Cut, block, cavity).unwrap()
+}
+
+/// The end face's own sweep passes above a cavity low in the foot, but the
+/// chamfer riding with it does not: the move must refuse, not carry the
+/// chamfer through the cavity (or past it, leaving its shell outside).
+#[test]
+fn riding_chamfer_refuses_to_sweep_through_a_cavity() {
+    for (corner, distance) in [([24.55, 9.0, 0.3], -5.0), ([25.0, 9.0, 0.3], -9.0)] {
+        let mut topo = Topology::new();
+        let solid = block_with_cavity(&mut topo, corner);
+        let face = face_facing(&topo, solid, Vec3::new(1.0, 0.0, 0.0));
+        let counts = solid_entity_counts(&topo, solid).unwrap();
+        let error = move_faces(&mut topo, solid, &[face], distance)
+            .expect_err("the chamfer would sweep through the cavity");
+        assert!(
+            error
+                .to_string()
+                .contains("swept face reaches nonadjacent face"),
+            "{corner:?} by {distance}: {error}"
+        );
+        assert_eq!(solid_entity_counts(&topo, solid).unwrap(), counts);
+    }
 }
