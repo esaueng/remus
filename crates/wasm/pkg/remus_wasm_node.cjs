@@ -9312,6 +9312,48 @@ class RemusKernel {
         return ret[0] >>> 0;
     }
     /**
+     * `sweepExact` with options, as a JSON object; every key is optional
+     * and an unknown key is refused (an older kernel never ignores an
+     * option it cannot build):
+     *
+     * - `twist`: total turn of the profile about the path, in radians,
+     *   right-handed about the direction of travel (default `0`);
+     * - `endScale`: scale of the profile at the far end, about the point
+     *   where the path crosses it (default `1`);
+     * - `orientation`: `"normal"` (default) turns the profile with the path,
+     *   `"parallel"` translates it along the path unturned, exactly along
+     *   any path curve and through corners;
+     * - `corner`: `"mitre"` (default) or `"round"` with `cornerRadius`, the
+     *   radius of the arc tangent to both runs that replaces each corner.
+     *
+     * Both are linear in the distance travelled, and need a straight path
+     * with the profile square to it. With neither set this is `sweepExact`.
+     *
+     * Returns a solid handle (`u32`).
+     *
+     * # Errors
+     *
+     * As `sweepExact`; a malformed options object; a non-finite twist or a
+     * non-positive end scale; a twist or scale along a path that bends or
+     * closes, or with a profile not square to the path; a profile curve the
+     * construction cannot carry. The session is left unchanged.
+     * @param {number} face
+     * @param {Uint32Array} edge_handles
+     * @param {string} options
+     * @returns {number}
+     */
+    sweepExactWithOptions(face, edge_handles, options) {
+        const ptr0 = passArray32ToWasm0(edge_handles, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(options, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_sweepExactWithOptions(this.__wbg_ptr, face, ptr0, len0, ptr1, len1);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
      * Sweep a face along a path with smooth NURBS side surfaces.
      *
      * Like `sweep()`, but produces a single NURBS surface per edge strip
@@ -9769,6 +9811,19 @@ class RemusKernel {
             throw takeFromExternrefTable0(ret[1]);
         }
         return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * Merge co-surface faces only if the candidate passes strict validation.
+     * Returns the number of faces removed, or zero for a declined merge.
+     * @param {number} solid
+     * @returns {number}
+     */
+    unifyFacesIfStrict(solid) {
+        const ret = wasm.remuskernel_unifyFacesIfStrict(this.__wbg_ptr, solid);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
     }
     /**
      * Untrim a NURBS face by fitting a new surface to the trimmed region.
