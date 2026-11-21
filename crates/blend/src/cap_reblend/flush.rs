@@ -626,8 +626,10 @@ fn rebuild(
     faces.extend(created.iter().map(|(f, _)| *f));
     let shell = topo.add_shell(Shell::new(faces)?);
     let result = topo.add_solid(Solid::new(shell, cavities));
+    let _ = permission;
     Ok(Some(CapReblendOutcome {
-        corner_stations: permission.stations,
+        // Every carrier is exact: no corner is sampled.
+        corner_stations: 0,
         edge_images: vec![],
         result: BlendResult {
             solid: result,

@@ -72,6 +72,14 @@ pub(crate) fn edit_with_quality(
                 else {
                     return Err(error);
                 };
+                let quality = if moved.sampled {
+                    FaceMoveQuality::SampledCapJoin {
+                        stations: permission.stations,
+                    }
+                } else {
+                    FaceMoveQuality::Exact
+                };
+                let moved = moved.entities;
                 Ok((
                     (
                         MoveFacesResult {
@@ -80,9 +88,7 @@ pub(crate) fn edit_with_quality(
                         },
                         moved.boundary_pairs,
                     ),
-                    FaceMoveQuality::SampledCapJoin {
-                        stations: permission.stations,
-                    },
+                    quality,
                 ))
             })
         }

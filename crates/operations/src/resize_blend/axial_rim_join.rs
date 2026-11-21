@@ -28,7 +28,7 @@ pub fn move_with_cap_reblend(
     faces: &[FaceId],
     distance: f64,
     permission: CapReblendApproximation,
-) -> Result<Option<BlendMoveEntities>, OperationsError> {
+) -> Result<Option<CapJoinMove>, OperationsError> {
     check_translation_distance(distance)?;
     let _total = crate::performance::span("move_faces.cap_join");
     let Ok(plan) = original_plan(topo, solid, faces, distance)
@@ -184,6 +184,7 @@ pub fn move_with_cap_reblend(
             )
         }
     })?;
+    let sampled = rebuilt.corner_stations > 0;
     let result = rebuilt.result.solid;
     crate::performance::timed("move_faces.cap_join.validate", || {
         validate_exact_result(topo, result, "cap contour reconstruction")
@@ -266,11 +267,21 @@ pub fn move_with_cap_reblend(
             .map(|(source, target)| (EntityKey::vertex(source), EntityKey::vertex(target.index()))),
     );
     log::debug!(target: "remus_approx", "move_faces: sampled cap reconstruction uses {} stations per corner", permission.stations);
-    Ok(Some(BlendMoveEntities {
-        solid: result,
-        evolution,
-        boundary_pairs,
+    Ok(Some(CapJoinMove {
+        entities: BlendMoveEntities {
+            solid: result,
+            evolution,
+            boundary_pairs,
+        },
+        sampled,
     }))
+}
+
+/// A cap join's result and whether it sampled any corner. A flush cap is
+/// rebuilt from exact carriers only.
+pub struct CapJoinMove {
+    pub entities: BlendMoveEntities,
+    pub sampled: bool,
 }
 
 struct CapJoinPlan {

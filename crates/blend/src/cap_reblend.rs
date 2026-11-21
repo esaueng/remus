@@ -54,7 +54,8 @@ pub struct CapReblendApproximation {
 pub struct CapReblendOutcome {
     /// Constructed body and construction-derived face origins.
     pub result: BlendResult,
-    /// Number of stations used per sampled corner.
+    /// Number of stations used per sampled corner; zero when the
+    /// reconstruction sampled none.
     pub corner_stations: usize,
     /// Surviving children of split source edges, recorded by construction.
     pub edge_images: Vec<(EdgeId, EdgeId)>,

@@ -1279,10 +1279,8 @@ fn openzcad_boss_block_moves_flush_from_either_top() {
         let face = top_at(&topo, solid, height);
         let moved = move_faces_with_quality(&mut topo, solid, &[face], distance, permission)
             .unwrap_or_else(|error| panic!("{height} by {distance}: {error}"));
-        assert_eq!(
-            moved.quality,
-            FaceMoveQuality::SampledCapJoin { stations: 256 }
-        );
+        // Every carrier is exact, so the move reports no sampled corner.
+        assert_eq!(moved.quality, FaceMoveQuality::Exact);
         let moved = moved.result.solid;
         let reference = expected
             .iter()
