@@ -1130,3 +1130,57 @@ fn joined_shoulder_ignores_an_equal_rim_on_another_boss() {
     top_at(&topo, retreat, 28.5);
     top_at(&topo, retreat, 40.0);
 }
+
+/// The OpenZCAD body the user dragged, serialized from the session: a
+/// 30 x 34 x 29 block fused with an R6 x 35 boss at its corner, the seam,
+/// shoulder and block edges rounded R2 in one selection (approximate NURBS
+/// mitres where they meet), the boss rim R2 and the remaining block top
+/// edges R2 with sphere corners.
+fn openzcad_boss_block(topo: &mut Topology) -> SolidId {
+    remus_io::arena_io::deserialize_solids(
+        include_bytes!("data/equal_radius_boss_block.arena.json"),
+        topo,
+    )
+    .unwrap()[0]
+}
+
+#[test]
+fn openzcad_boss_block_joins_from_either_top_and_moves_on() {
+    // Dragging the cap down 4 mm joined the blends; dragging the block top
+    // up 4 mm was refused, and so was any second drag of a joined top. The
+    // block top's own R2 edge rounds and their sphere corners ride with it,
+    // and the seam corners are approximate NURBS mitres.
+    let permission = Some(FaceMoveApproximation { stations: 256 });
+    let mut topo = Topology::new();
+    let solid = openzcad_boss_block(&mut topo);
+    let source = remus_io::arena_io::serialize_solid(&topo, solid).unwrap();
+    for (height, distance) in [(29.0, 2.0), (29.0, 4.0), (35.0, -2.0), (35.0, -4.0)] {
+        let face = top_at(&topo, solid, height);
+        let moved = move_faces_with_quality(&mut topo, solid, &[face], distance, permission)
+            .unwrap_or_else(|error| panic!("{height} by {distance}: {error}"));
+        assert_eq!(
+            moved.quality,
+            FaceMoveQuality::SampledCapJoin { stations: 256 }
+        );
+        let moved = moved.result.solid;
+        assert!(validate_solid(&topo, moved).unwrap().is_valid());
+        let level = height + distance;
+        top_at(&topo, moved, level);
+        top_at(&topo, moved, if height < 30.0 { 35.0 } else { 29.0 });
+        if distance.abs() > 3.0 {
+            let again = top_at(&topo, moved, level);
+            for step in [0.5, -0.5] {
+                let result = move_faces_with_quality(&mut topo, moved, &[again], step, permission)
+                    .unwrap_or_else(|error| panic!("{height} by {distance} then {step}: {error}"))
+                    .result
+                    .solid;
+                assert!(validate_solid(&topo, result).unwrap().is_valid());
+                top_at(&topo, result, level + step);
+            }
+        }
+        assert_eq!(
+            remus_io::arena_io::serialize_solid(&topo, solid).unwrap(),
+            source
+        );
+    }
+}

@@ -445,6 +445,16 @@ fn joined_plan(
             _ => None,
         })
         .collect();
+    // A joined shoulder rises toward its cap: the cap lies ahead of it along
+    // the move normal. With equal radii a cap above a rounded block top is
+    // otherwise indistinguishable from a block top below a rounded cap.
+    let level = |face: FaceId| -> Result<f64, OperationsError> {
+        match topo.face(face)?.surface() {
+            FaceSurface::Plane { normal, d } => Ok(*d * normal.dot(direction)),
+            _ => Err(reconstruction("joined shoulder levels require planes")),
+        }
+    };
+    let selected_level = level(*selected)?;
     let on_seed_axis = |center: remus_math::vec::Point3| {
         seed_axes.is_empty()
             || seed_axes
@@ -459,6 +469,9 @@ fn joined_plan(
                 .effective_plane_normal()
                 .is_some_and(|normal| normal.dot(direction) > 1.0 - 1e-10)
         {
+            continue;
+        }
+        if level(cap)? <= selected_level + tol.linear {
             continue;
         }
         let bands: Vec<_> = neighbours(cap)?.into_iter().collect();
@@ -508,6 +521,29 @@ fn joined_plan(
                 }
                 let surface = topo.face(face)?.surface();
                 if surface_translation_invariant(surface, direction) {
+                    continue;
+                }
+                // A sampled corner patch tangent to the shoulder, with no
+                // circular section of its own (an approximate mitre from an
+                // earlier fillet), is carried rigidly as the translation
+                // planner carries its NURBS supports; the boundary checks
+                // below still require everything beyond it to be invariant.
+                if matches!(surface, FaceSurface::Nurbs(_))
+                    && section_radius(topo, face).is_none()
+                    && tangent_across(topo, edge, current, face)?
+                {
+                    moved.insert(face);
+                    continue;
+                }
+                // A ball corner where the block top's edge rounds meet is
+                // the shoulder's own radius, rolled about a point: it moves
+                // with them.
+                if let FaceSurface::Sphere(sphere) = surface
+                    && (sphere.radius() - shoulder_radius).abs() <= 1e-7
+                    && tangent_across(topo, edge, current, face)?
+                {
+                    moved.insert(face);
+                    queue.push_back(face);
                     continue;
                 }
                 if face == *cap
