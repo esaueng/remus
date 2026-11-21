@@ -66,7 +66,7 @@ fn restore_touching(
             match topo.face(face)?.surface() {
                 FaceSurface::Torus(torus)
                     if torus.z_axis().dot(axis) > 1.0 - 1e-10
-                        && torus.minor_radius() > cap_torus.minor_radius()
+                        && torus.minor_radius() + 1e-7 >= cap_torus.minor_radius()
                         && (torus.major_radius() - torus.minor_radius() - boss_radius).abs()
                             < 1e-7 =>
                 {
@@ -222,7 +222,7 @@ fn rebuild(
             if !rims.contains(&shoulder)
                 && cylinder.axis().dot(axis) > 1.0 - 1e-10
                 && torus.z_axis().dot(axis) > 1.0 - 1e-10
-                && torus.minor_radius() > radius
+                && torus.minor_radius() + 1e-7 >= radius
                 && (height(torus.center(), axis) - level).abs() < 1e-9
                 && (torus.major_radius() - torus.minor_radius() - cylinder.radius()).abs() < 1e-7
                 && (circle.radius() - cylinder.radius()).abs() < 1e-7

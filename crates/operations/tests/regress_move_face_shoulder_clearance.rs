@@ -949,3 +949,137 @@ fn block_top_rises_into_an_equal_radius_rim() {
         );
     }
 }
+
+/// Volumes of one face of a fresh equal-radius shoulder moved to each of
+/// `distances`, every result a valid closed solid with both tops in place.
+fn equal_radius_moves(cap: bool, distances: [f64; 3]) -> Vec<(f64, usize, FaceMoveQuality)> {
+    let (mut topo, solid, top) = shoulder_with(29.0, 35.0, 2.0, 2.0);
+    let face = if cap { top_at(&topo, solid, 35.0) } else { top };
+    let source = remus_io::arena_io::serialize_solid(&topo, solid).unwrap();
+    let permission = Some(FaceMoveApproximation { stations: 256 });
+    distances
+        .into_iter()
+        .map(|distance| {
+            let moved = move_faces_with_quality(&mut topo, solid, &[face], distance, permission)
+                .unwrap_or_else(|error| panic!("move by {distance}: {error}"));
+            let result = moved.result.solid;
+            assert!(validate_solid(&topo, result).unwrap().is_valid());
+            let (block, boss) = if cap {
+                (29.0, 35.0 + distance)
+            } else {
+                (29.0 + distance, 35.0)
+            };
+            top_at(&topo, result, block);
+            top_at(&topo, result, boss);
+            closed_mesh_volume(&topo, result, 0.05);
+            assert_eq!(
+                remus_io::arena_io::serialize_solid(&topo, solid).unwrap(),
+                source
+            );
+            (
+                solid_volume(&topo, result, 0.01).unwrap(),
+                solid_faces(&topo, result).unwrap().len(),
+                moved.quality,
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn equal_radius_shoulder_and_rim_share_their_spring_at_contact_onset() {
+    // The R2 shoulder's spring on the R6 boss sits at the block top plus 2,
+    // the R2 rim's at the cap less 2. Where they coincide the boss strip
+    // between them closes to a curve: the shoulder hands over to the rim on
+    // the existing spring, a tangent S-bend, from either side. The onset
+    // builder took this incidence only for a shoulder wider than the rim,
+    // so an equal pair fell to the corner-band contour, which refuses a
+    // contour lying along an existing edge.
+    for cap in [false, true] {
+        let sense = if cap { -1.0 } else { 1.0 };
+        let moves = equal_radius_moves(cap, [1.9 * sense, 2.0 * sense, 2.1 * sense]);
+        let [
+            (before, before_faces, _),
+            (onset, onset_faces, quality),
+            (after, after_faces, _),
+        ] = moves[..]
+        else {
+            unreachable!()
+        };
+        assert_eq!(quality, FaceMoveQuality::SampledCapJoin { stations: 256 });
+        // The onset keeps the separated topology: the closed strip's place
+        // is taken by the shared spring, not by new corner bands.
+        assert_eq!((before_faces, onset_faces, after_faces), (16, 16, 19));
+        // Material grows with the block top and shrinks with the cap.
+        let ordered = if cap {
+            before > onset && onset > after
+        } else {
+            before < onset && onset < after
+        };
+        assert!(ordered, "cap={cap}: {before} {onset} {after}");
+    }
+}
+
+#[test]
+fn equal_radius_contact_onset_moves_again_from_either_face() {
+    use remus_topology::face::FaceSurface;
+
+    // A body left at contact onset carries the concave shoulder and the
+    // convex rim tangent on one spring with one radius. They are still two
+    // blends: neither a blend region nor a translation may run across the
+    // S-bend, and both faces move on from there, apart or into the join.
+    let permission = Some(FaceMoveApproximation { stations: 256 });
+    for cap in [false, true] {
+        let (mut topo, source, top) = shoulder_with(29.0, 35.0, 2.0, 2.0);
+        let (face, onset, level) = if cap {
+            (top_at(&topo, source, 35.0), -2.0, 33.0)
+        } else {
+            (top, 2.0, 31.0)
+        };
+        let solid = move_faces_with_quality(&mut topo, source, &[face], onset, permission)
+            .unwrap()
+            .result
+            .solid;
+        let tori: Vec<_> = solid_faces(&topo, solid)
+            .unwrap()
+            .into_iter()
+            .filter(|&face| {
+                matches!(topo.face(face).unwrap().surface(), FaceSurface::Torus(torus)
+                    if torus.z_axis().z().abs() > 0.99)
+            })
+            .collect();
+        assert_eq!(tori.len(), 2, "one shoulder and one rim");
+        for &band in &tori {
+            let region = remus_operations::resize_blend::blend_region(&topo, solid, band);
+            assert!(
+                !region.as_ref().is_ok_and(|region| region
+                    .faces
+                    .iter()
+                    .any(|&face| face != band && tori.contains(&face))),
+                "cap={cap}: {:?} grew across the S-bend",
+                region.map(|region| region.faces)
+            );
+        }
+        let moved = top_at(&topo, solid, level);
+        let before = remus_io::arena_io::serialize_solid(&topo, solid).unwrap();
+        // Positive steps part a rising block top from the rim and lower
+        // cap from the shoulder into a join; negative ones the converse.
+        for (step, joined) in [(0.5, !cap), (-0.5, cap)] {
+            let result = move_faces_with_quality(&mut topo, solid, &[moved], step, permission)
+                .unwrap_or_else(|error| panic!("cap={cap} from onset by {step}: {error}"))
+                .result
+                .solid;
+            assert!(validate_solid(&topo, result).unwrap().is_valid());
+            top_at(&topo, result, level + step);
+            assert_eq!(
+                solid_faces(&topo, result).unwrap().len(),
+                if joined { 19 } else { 16 },
+                "cap={cap} by {step}"
+            );
+            closed_mesh_volume(&topo, result, 0.05);
+            assert_eq!(
+                remus_io::arena_io::serialize_solid(&topo, solid).unwrap(),
+                before
+            );
+        }
+    }
+}
