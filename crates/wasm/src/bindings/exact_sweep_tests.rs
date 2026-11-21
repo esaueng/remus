@@ -250,8 +250,12 @@ fn sweep_exact_with_options_scales_and_turns_directly_and_in_a_batch() {
 fn sweep_exact_with_options_refuses_unknown_options_and_bends() {
     for (options, phrase) in [
         (
-            serde_json::json!({"twist": 1.0, "orientation": "parallel"}),
+            serde_json::json!({"twist": 1.0, "posture": "parallel"}),
             "unknown option",
+        ),
+        (
+            serde_json::json!({"orientation": "sideways"}),
+            "must be \"normal\" or \"parallel\"",
         ),
         (serde_json::json!({"twist": "a lot"}), "must be a number"),
         (serde_json::json!([1.0]), "must be an object"),
@@ -287,4 +291,38 @@ fn sweep_exact_with_options_refuses_unknown_options_and_bends() {
         "{out:?}"
     );
     assert_eq!(counts(&kernel), before);
+}
+
+/// `"orientation": "parallel"`: the radius-2 disc square to +X, translated
+/// unturned through a 45° corner (a mitred sweep would turn it), is the
+/// disc's area times the 20-unit rise along +X.
+#[test]
+fn sweep_exact_with_options_keeps_the_profile_parallel_through_a_corner() {
+    let mut kernel = RemusKernel::new();
+    let face = profile(&mut kernel);
+    let path = vec![
+        kernel
+            .make_line_edge(0.0, 0.0, 0.0, 10.0, 0.0, 0.0)
+            .unwrap(),
+        kernel
+            .make_line_edge(10.0, 0.0, 0.0, 20.0, 10.0, 0.0)
+            .unwrap(),
+    ];
+    let out: Vec<serde_json::Value> = serde_json::from_str(
+        &kernel.execute_batch(
+            &serde_json::json!([{
+                "op": "sweepExactWithOptions",
+                "args": {"profile": face, "edges": path, "options": {"orientation": "parallel"}}
+            }])
+            .to_string(),
+        ),
+    )
+    .unwrap();
+    let solid = u32::try_from(out[0]["ok"].as_u64().expect("solid handle")).unwrap();
+    let exact = PI * 4.0 * 20.0;
+    let measured = volume(&kernel, solid);
+    assert!(
+        (measured - exact).abs() / exact < 1e-9,
+        "{measured} vs {exact}"
+    );
 }

@@ -80,7 +80,11 @@ fn line(topo: &mut Topology, a: Point3, b: Point3) -> EdgeId {
 }
 
 fn options(twist: f64, end_scale: f64) -> ExactSweepOptions {
-    ExactSweepOptions { twist, end_scale }
+    ExactSweepOptions {
+        twist,
+        end_scale,
+        ..ExactSweepOptions::default()
+    }
 }
 
 fn assert_valid(topo: &Topology, solid: SolidId, label: &str) {
