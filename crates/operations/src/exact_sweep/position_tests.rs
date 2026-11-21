@@ -154,6 +154,37 @@ fn an_arc_crossing_the_profile_sweeps_both_ways_round_it() {
 }
 
 #[test]
+fn an_arc_ending_on_the_profile_plane_anchors_at_its_crossing_by_the_profile() {
+    let mut topo = Topology::new();
+    // The arc starts at (−10, 0, 0), on the profile's plane y = 0 but far
+    // from the profile, and crosses that plane again at (10, 0, 0), where
+    // the profile stands. The end on the plane must not hide the crossing.
+    let profile = disc(&mut topo, p(10.0, 0.0, 0.0), Y);
+    let circle = Circle3D::with_axes(p(0.0, 0.0, 0.0), Z, 10.0, -X, -Y).unwrap();
+    let a = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+    let b = topo.add_vertex(Vertex::new(circle.evaluate(5.0 * FRAC_PI_4), 1e-7));
+    let mut arc = Edge::new(a, b, EdgeCurve::Circle(circle));
+    arc.set_trim(Some((0.0, 5.0 * FRAC_PI_4)));
+    let arc = topo.add_edge(arc);
+    for position in [
+        ExactSweepPosition::Auto,
+        ExactSweepPosition::PathIntersection,
+    ] {
+        let solid = sweep_exact_with_options(&mut topo, profile, &[arc], &at(position)).unwrap();
+        // Pappus over the whole arc, swept both ways from the profile.
+        assert_solid(
+            &topo,
+            solid,
+            PI * 10.0 * (5.0 * FRAC_PI_4),
+            "end and crossing",
+        );
+        // The profile stands where it was drawn, and the far end is reached.
+        assert_inside(&topo, solid, p(10.0, 0.0, 0.0), true, "at the profile");
+        assert_inside(&topo, solid, p(-9.9, -0.5, 0.0), true, "far end");
+    }
+}
+
+#[test]
 fn position_refusals_are_typed_and_leave_the_topology_unchanged() {
     type Build = fn(&mut Topology) -> Result<SolidId, OperationsError>;
     let cases: [(&str, Build, bool, &str); 4] = [

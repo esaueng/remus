@@ -2655,15 +2655,32 @@ fn nearest_on(segment: &Segment, q: Point3) -> Point3 {
 /// its ends.
 fn plane_crossings(segment: &Segment, normal: Vec3, d: f64) -> Vec<Point3> {
     // An end in the plane is a crossing, whatever rounding the formulas
-    // below meet there.
+    // below meet there. It does not hide the segment's other crossings: an
+    // arc that ends on the plane can also cross it inside, and the anchor
+    // is the crossing nearest the profile, whichever that is.
     let linear = Tolerance::new().linear;
-    let ends: Vec<Point3> = [segment.start, segment.end]
+    let near = |a: Point3, b: Point3| (a - b).length() <= 10.0 * linear;
+    let mut out: Vec<Point3> = [segment.start, segment.end]
         .into_iter()
         .filter(|&q| (normal.dot(to_vec(q)) - d).abs() <= 10.0 * linear)
         .collect();
-    if !ends.is_empty() {
-        return ends;
+    // Both ends in the plane: a line or a circle meets a plane at most
+    // twice unless it lies in it, so there is nothing else to find, and the
+    // formulas would only add rounding noise.
+    if out.len() == 2 {
+        return out;
     }
+    for q in interior_plane_crossings(segment, normal, d) {
+        if !out.iter().any(|&e| near(e, q)) {
+            out.push(q);
+        }
+    }
+    out
+}
+
+/// The crossings the motion's own formula finds; an end in the plane may
+/// be among them or missed by rounding, and [`plane_crossings`] adds it.
+fn interior_plane_crossings(segment: &Segment, normal: Vec3, d: f64) -> Vec<Point3> {
     match segment.motion {
         Motion::Translate(dir) => {
             let rise = normal.dot(dir);
