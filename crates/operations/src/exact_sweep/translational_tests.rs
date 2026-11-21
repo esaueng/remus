@@ -380,3 +380,135 @@ fn refusals_are_typed_and_leave_the_topology_unchanged() {
         assert_eq!(topo.num_faces(), 1, "{label}: faces left behind");
     }
 }
+
+/// Review regression: a join within the relative join tolerance but well
+/// off by the absolute one (0.5 back, far from the origin) builds sections
+/// where each step ends, so the shell closes.
+#[test]
+fn sections_follow_each_step_across_a_loose_join() {
+    let mut topo = Topology::new();
+    let at = 1e9;
+    let wire = make_polygon_wire(
+        &mut topo,
+        &[
+            p(at - 1.0, -1.0, 0.0),
+            p(at + 1.0, -1.0, 0.0),
+            p(at + 1.0, 1.0, 0.0),
+            p(at - 1.0, 1.0, 0.0),
+        ],
+        1e-7,
+    )
+    .unwrap();
+    let profile = topo.add_face(Face::new(
+        wire,
+        vec![],
+        FaceSurface::Plane { normal: Z, d: 0.0 },
+    ));
+    let curve = NurbsCurve::new(
+        2,
+        vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+        vec![p(at, 0.0, 0.0), p(at + 1.0, 0.0, 5.0), p(at, 0.0, 10.0)],
+        vec![1.0; 3],
+    )
+    .unwrap();
+    let a = topo.add_vertex(Vertex::new(p(at, 0.0, 0.0), 1e-7));
+    let b = topo.add_vertex(Vertex::new(p(at, 0.0, 10.0), 1e-7));
+    let mut bend = Edge::new(a, b, EdgeCurve::NurbsCurve(curve));
+    bend.set_trim(Some((0.0, 1.0)));
+    let bend = topo.add_edge(bend);
+    let rest = line(&mut topo, p(at, 0.0, 9.5), p(at, 0.0, 20.0));
+    match sweep(&mut topo, profile, &[bend, rest]) {
+        Ok(solid) => {
+            let report = crate::validate::validate_solid(&topo, solid).unwrap();
+            assert!(report.is_valid(), "{report:?}");
+            let measured = crate::measure::solid_volume(&topo, solid, 0.05).unwrap();
+            assert!(rel(measured, 4.0 * 20.5) < 1e-6, "{measured}");
+        }
+        Err(OperationsError::InvalidInput { .. }) => {}
+        Err(other) => panic!("untyped {other:?}"),
+    }
+}
+
+/// Review regression: a profile whose single closed spline edge spends most
+/// of its parameter on two short spans still winds the right way.
+#[test]
+fn a_spline_loop_winds_by_its_whole_shape() {
+    let mut topo = Topology::new();
+    let corners = [
+        p(0.0, 0.0, 0.0),
+        p(0.0, 1.0, 0.0),
+        p(1.0, 0.0, 0.0),
+        p(2.0, 2.0, 0.0),
+        p(-1.0, 2.0, 0.0),
+        p(-1.0, 0.0, 0.0),
+        p(0.0, 0.0, 0.0),
+    ];
+    let curve = NurbsCurve::new(
+        1,
+        vec![0.0, 0.0, 0.25, 0.968_75, 0.972, 0.978, 0.984, 1.0, 1.0],
+        corners.to_vec(),
+        vec![1.0; 7],
+    )
+    .unwrap();
+    let v = topo.add_vertex(Vertex::new(corners[0], 1e-7));
+    let mut edge = Edge::new(v, v, EdgeCurve::NurbsCurve(curve));
+    edge.set_trim(Some((0.0, 1.0)));
+    let edge = topo.add_edge(edge);
+    let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap());
+    let profile = topo.add_face(Face::new(
+        wire,
+        vec![],
+        FaceSurface::Plane { normal: Z, d: 0.0 },
+    ));
+    let path = line(&mut topo, p(0.0, 0.0, 0.0), p(0.0, 0.0, 5.0));
+    let solid = sweep(&mut topo, profile, &[path]).unwrap();
+    let report = crate::validate::validate_solid(&topo, solid).unwrap();
+    assert!(report.is_valid(), "{report:?}");
+    let measured = crate::measure::solid_volume(&topo, solid, 0.05).unwrap();
+    assert!(rel(measured, 4.5 * 5.0) < 1e-9, "{measured}");
+}
+
+/// Review regressions: an unclamped spline path and one the Bézier
+/// decomposition cannot split are refused by type.
+#[test]
+fn uncertifiable_spline_paths_are_refused_by_type() {
+    for (label, degree, knots, heights, trim, phrase) in [
+        (
+            "unclamped",
+            2,
+            vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            vec![0.0, 2.0, 4.0, 6.0],
+            (2.0, 4.0),
+            "unclamped",
+        ),
+        (
+            "near-coincident knots",
+            1,
+            vec![0.0, 0.0, 0.5, 0.5 + f64::EPSILON, 1.0, 1.0],
+            vec![0.0, 1.0, 2.0, 3.0],
+            (0.0, 1.0),
+            "cannot be shown",
+        ),
+    ] {
+        let mut topo = Topology::new();
+        let profile = disc(&mut topo);
+        let curve = NurbsCurve::new(
+            degree,
+            knots,
+            heights.iter().map(|&h| p(h, 0.1 * h * h, 0.0)).collect(),
+            vec![1.0; heights.len()],
+        )
+        .unwrap();
+        let a = topo.add_vertex(Vertex::new(curve.evaluate(trim.0), 1e-7));
+        let b = topo.add_vertex(Vertex::new(curve.evaluate(trim.1), 1e-7));
+        let mut edge = Edge::new(a, b, EdgeCurve::NurbsCurve(curve));
+        edge.set_trim(Some(trim));
+        let edge = topo.add_edge(edge);
+        let error = sweep(&mut topo, profile, &[edge]).expect_err(label);
+        let OperationsError::InvalidInput { reason } = &error else {
+            panic!("{label}: untyped {error:?}");
+        };
+        assert!(reason.contains(phrase), "{label}: {reason}");
+        assert_eq!(topo.num_faces(), 1, "{label}: faces left behind");
+    }
+}

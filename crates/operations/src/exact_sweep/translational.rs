@@ -112,14 +112,30 @@ fn read_step(topo: &Topology, edge_id: EdgeId, index: usize) -> Result<Step, Ope
         )));
     }
     let (_, _, mut nurbs) = exact_piece(edge.curve(), domain, start, end)?;
-    // The rails and sections share the path's vertices exactly.
+    // The rails and sections share the path's vertices exactly: the curve
+    // must start and end on its control polygon's ends (a clamped spline;
+    // an unclamped one's ends are not control points) and on the vertices.
+    let linear = Tolerance::new().linear;
+    let snap = 10.0
+        * linear
+            .max(topo.vertex(edge.start())?.tolerance())
+            .max(topo.vertex(edge.end())?.tolerance());
     let mut points = nurbs.control_points().to_vec();
     let last = points.len() - 1;
-    let scale = to_vec(start).length().max(to_vec(end).length()).max(1.0);
+    let (d0, d1) = nurbs.domain();
+    let unclamped = (nurbs.evaluate(d0) - points[0])
+        .length()
+        .max((nurbs.evaluate(d1) - points[last]).length());
+    if unclamped.is_nan() || unclamped > snap {
+        return Err(invalid(format!(
+            "exact sweep path edge {index} is a spline that does not end on its control \
+             points (an unclamped knot vector); clamp it before sweeping"
+        )));
+    }
     let miss = (points[0] - start)
         .length()
         .max((points[last] - end).length());
-    if miss.is_nan() || miss > 1e-6 * scale {
+    if miss.is_nan() || miss > snap {
         return Err(invalid(format!(
             "exact sweep path edge {index} misses its vertices by {miss}"
         )));
@@ -216,20 +232,24 @@ fn read_steps(topo: &Topology, path: &[EdgeId], linear: f64) -> Result<Vec<Step>
 
 /// The sign with which `step` runs along `normal`, when it provably runs
 /// strictly one way by more than `margin` over every Bézier span.
-fn monotone_sign(step: &Step, normal: Vec3, margin: f64) -> Result<Option<f64>, OperationsError> {
+fn monotone_sign(step: &Step, normal: Vec3, margin: f64) -> Option<f64> {
     match &step.kind {
         StepKind::Line(d) => {
             let rise = d.dot(normal);
-            Ok((rise.abs() > margin).then(|| rise.signum()))
+            (rise.abs() > margin).then(|| rise.signum())
         }
         StepKind::Curve(curve) => {
             if curve.weights().iter().any(|&w| w.is_nan() || w <= 0.0) {
-                return Ok(None);
+                return None;
             }
             let mut sign: Option<f64> = None;
-            for segment in curve_to_bezier_segments(curve)? {
+            // A curve the decomposition cannot split is not certified.
+            let Ok(segments) = curve_to_bezier_segments(curve) else {
+                return None;
+            };
+            for segment in segments {
                 if segment.weights().iter().any(|&w| w.is_nan() || w <= 0.0) {
-                    return Ok(None);
+                    return None;
                 }
                 let heights: Vec<f64> = segment
                     .control_points()
@@ -239,16 +259,53 @@ fn monotone_sign(step: &Step, normal: Vec3, margin: f64) -> Result<Option<f64>, 
                 for pair in heights.windows(2) {
                     let rise = pair[1] - pair[0];
                     if rise.abs() <= margin {
-                        return Ok(None);
+                        return None;
                     }
                     if (*sign.get_or_insert_with(|| rise.signum()) > 0.0) != (rise > 0.0) {
-                        return Ok(None);
+                        return None;
                     }
                 }
             }
-            Ok(sign)
+            sign
         }
     }
+}
+
+/// Boundary samples in traversal order, several in every knot span of every
+/// piece, so a loop's winding is read from its whole shape (uniform samples
+/// in a piece's parameter can all fall on a few spans of a spline).
+fn winding_samples(lp: &Loop) -> Vec<Point3> {
+    const PER_SPAN: usize = 8;
+    let mut out = Vec::new();
+    for piece in &lp.pieces {
+        let (u0, u1) = piece.nurbs.domain();
+        let mut breaks: Vec<f64> = piece
+            .nurbs
+            .knots()
+            .iter()
+            .copied()
+            .filter(|&k| k > u0 && k < u1)
+            .collect();
+        breaks.insert(0, u0);
+        breaks.push(u1);
+        breaks.dedup();
+        let mut params = Vec::with_capacity(breaks.len() * PER_SPAN);
+        for pair in breaks.windows(2) {
+            for j in 0..PER_SPAN {
+                #[allow(clippy::cast_precision_loss)]
+                let f = j as f64 / PER_SPAN as f64;
+                params.push((pair[1] - pair[0]).mul_add(f, pair[0]));
+            }
+        }
+        if !piece.forward {
+            params.reverse();
+            // Traversal starts at the piece's natural end.
+            params.rotate_right(1);
+            params[0] = u1;
+        }
+        out.extend(params.iter().map(|&u| piece.nurbs.evaluate(u)));
+    }
+    out
 }
 
 /// The translational surface of the placed profile curve `q` along `path`
@@ -324,6 +381,7 @@ pub(super) fn sweep_keeping_orientation_impl(
     }
     let n = chain.len();
     let samples: Vec<Vec<Point3>> = loops.iter().map(Loop::samples).collect();
+    let windings: Vec<Vec<Point3>> = loops.iter().map(winding_samples).collect();
     let scale = samples
         .iter()
         .flatten()
@@ -335,7 +393,7 @@ pub(super) fn sweep_keeping_orientation_impl(
     // Certified monotone along the profile's normal, one way throughout.
     let mut sigma = None;
     for (k, step) in chain.iter().enumerate() {
-        let sign = monotone_sign(step, normal, margin)?;
+        let sign = monotone_sign(step, normal, margin);
         let Some(sign) = sign else {
             return Err(invalid(format!(
                 "path segment {k} cannot be shown to run steadily through the profile's plane: \
@@ -353,20 +411,18 @@ pub(super) fn sweep_keeping_orientation_impl(
     let sigma = sigma.unwrap_or(1.0);
 
     // `placements[k]` moves the profile to the start of step k.
-    let origin = chain[0].start;
-    let placements: Vec<Rigid> = (0..=n)
-        .map(|k| {
-            let at = if k < n {
-                chain[k].start
-            } else {
-                chain[n - 1].end
-            };
-            Rigid {
-                translation: at - origin,
-                ..Rigid::IDENTITY
-            }
-        })
-        .collect();
+    // Each section is the last one moved by the step between them, so the
+    // sections are exactly where each step's surfaces and rails end even
+    // where the chain joined two pieces within the join tolerance.
+    let mut placements: Vec<Rigid> = Vec::with_capacity(n + 1);
+    placements.push(Rigid::IDENTITY);
+    for step in &chain {
+        let last = placements[placements.len() - 1];
+        placements.push(Rigid {
+            translation: last.translation + (step.end - step.start),
+            ..Rigid::IDENTITY
+        });
+    }
 
     let mut sections: Vec<Section> = Vec::with_capacity(n + 1);
     for (k, placement) in placements.iter().enumerate() {
@@ -400,7 +456,7 @@ pub(super) fn sweep_keeping_orientation_impl(
     for (k, step) in chain.iter().enumerate() {
         let placement = placements[k];
         for (l, lp) in loops.iter().enumerate() {
-            let ccw = is_ccw(&samples[l], normal);
+            let ccw = is_ccw(&windings[l], normal);
             let mut rails = Vec::with_capacity(lp.points.len());
             for (i, &(p, _)) in lp.points.iter().enumerate() {
                 let (curve, trim) = match &step.kind {
@@ -529,7 +585,7 @@ pub(super) fn sweep_keeping_orientation_impl(
     let mut start_wires = Vec::with_capacity(loops.len());
     let mut end_wires = Vec::with_capacity(loops.len());
     for (l, lp) in loops.iter().enumerate() {
-        let ccw = is_ccw(&samples[l], normal);
+        let ccw = is_ccw(&windings[l], normal);
         start_wires.push(cap_wire(topo, lp, &sections[0].edges[l], ccw, sigma < 0.0)?);
         end_wires.push(cap_wire(topo, lp, &sections[n].edges[l], ccw, sigma > 0.0)?);
     }
