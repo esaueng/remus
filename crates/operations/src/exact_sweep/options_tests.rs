@@ -378,10 +378,28 @@ fn an_off_axis_arc_lands_on_the_far_cap() {
     }
 }
 
+/// Re-check regression: a straight path far from the origin is not taken
+/// for a corner by the rounding of its own direction.
+#[test]
+fn a_straight_path_far_from_the_origin_is_straight() {
+    let mut topo = Topology::new();
+    let s = 2f64.powi(30);
+    let d = Vec3::new(1.0, 1.0, 0.0).normalize().unwrap();
+    let (u, v) = (Vec3::new(-d.y(), d.x(), 0.0), Vec3::new(0.0, 0.0, 1.0));
+    let corners: Vec<Point3> = [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)]
+        .iter()
+        .map(|&(a, b)| p(0.0, 0.0, 0.0) + u * a + v * b)
+        .collect();
+    let profile = polygon_face(&mut topo, &corners);
+    let path = line(&mut topo, p(0.0, 0.0, 0.0), p(s, s, 0.0));
+    let solid = sweep_exact_with_options(&mut topo, profile, &[path], &options(0.0, 2.0));
+    assert!(solid.is_ok(), "{solid:?}");
+}
+
 #[test]
 fn twist_and_scale_refusals_are_typed_and_leave_the_topology_unchanged() {
     type Build = fn(&mut Topology) -> Result<SolidId, OperationsError>;
-    let cases: [(&str, Build, bool, &str); 11] = [
+    let cases: [(&str, Build, bool, &str); 13] = [
         (
             "an arc in the path",
             |topo| {
@@ -557,6 +575,39 @@ fn twist_and_scale_refusals_are_typed_and_leave_the_topology_unchanged() {
             },
             true,
             "turns a corner",
+        ),
+        (
+            "offsets that cancel along a chain of segments",
+            |topo| {
+                let profile = square(topo);
+                let path = [
+                    line(topo, p(0.0, 0.0, 0.0), p(10.0, 0.0, 0.0)),
+                    line(topo, p(10.0, 5e-7, 0.0), p(20.0, 0.0, 0.0)),
+                    line(topo, p(20.0, -5e-7, 0.0), p(30.0, 0.0, 0.0)),
+                ];
+                sweep_exact_with_options(topo, profile, &path, &options(0.0, 2.0))
+            },
+            true,
+            "turns a corner",
+        ),
+        (
+            "a far section too small for its coordinates",
+            |topo| {
+                let (c, h) = (1e12, 1.0 / 32.0);
+                let profile = polygon_face(
+                    topo,
+                    &[
+                        p(0.0, c - h, c - h),
+                        p(0.0, c + h, c - h),
+                        p(0.0, c + h, c + h),
+                        p(0.0, c - h, c + h),
+                    ],
+                );
+                let path = line(topo, p(0.0, 0.0, 0.0), p(10.0, 0.0, 0.0));
+                sweep_exact_with_options(topo, profile, &[path], &options(0.0, 0.001))
+            },
+            false,
+            "too small to hold",
         ),
     ];
     for (label, build, is_unsupported, phrase) in cases {

@@ -1982,16 +1982,24 @@ fn straight_sweep_impl(
     // line by more than the tolerance over a long run: every joint must lie
     // on the line from the start to the end, or the sweep would straighten
     // a bend.
+    // Both ends of every segment are checked, so offsets that cancel along
+    // the chain are still caught; the allowance covers rounding where the
+    // path lies far from the origin.
     let start = chain[0].start;
+    let far = to_vec(start)
+        .length()
+        .max(to_vec(chain[chain.len() - 1].end).length());
+    let allowance = linear.max(64.0 * f64::EPSILON * far);
     for (k, segment) in chain.iter().enumerate() {
-        let off = segment.end - start;
-        let miss = (off - direction * off.dot(direction)).length();
-        if miss > linear {
-            return Err(unsupported(format!(
-                "an exact sweep can {what} the profile only along a straight path; the path \
-                 turns a corner at joint {} ({miss:e} off the line)",
-                k + 1
-            )));
+        for (joint, point) in [(k, segment.start), (k + 1, segment.end)] {
+            let off = point - start;
+            let miss = (off - direction * off.dot(direction)).length();
+            if miss > allowance {
+                return Err(unsupported(format!(
+                    "an exact sweep can {what} the profile only along a straight path; the \
+                     path turns a corner at joint {joint} ({miss:e} off the line)"
+                )));
+            }
         }
     }
     // The straight extrusion splits a closed curve that is not a circle into

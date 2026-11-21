@@ -60,6 +60,11 @@ use crate::OperationsError;
 /// Relative tolerance for treating a circle as concentric with the axis.
 const CONCENTRIC_TOLERANCE: f64 = 1e-9;
 
+/// Largest absolute offset of a kept concentric circle's centre from the
+/// axis at the far end: a tenth of the modelling tolerance, so the circle
+/// kept centred stays on its seam vertex.
+const CONCENTRIC_ABSOLUTE: f64 = 1e-8;
+
 /// The end scales a scaled extrusion builds: past them the far section
 /// shrinks or grows by more than its own digits carry (a scale of `1e-20`
 /// rounds `σ₁ − 1` to `−1` and collapses the cap onto the axis).
@@ -107,8 +112,9 @@ impl Similar {
     /// scale magnifies the centre's offset by `σ₁`.
     fn concentric(&self, circle: &Circle3D) -> bool {
         let scale = circle.radius().max(1.0);
-        self.offset(circle.center()).length() * self.end_scale.max(1.0)
-            <= CONCENTRIC_TOLERANCE * scale
+        let offset = self.offset(circle.center()).length() * self.end_scale.max(1.0);
+        offset <= CONCENTRIC_TOLERANCE * scale
+            && offset <= CONCENTRIC_ABSOLUTE
             && circle.normal().cross(self.axis).length() <= CONCENTRIC_TOLERANCE
     }
 
@@ -258,8 +264,38 @@ pub(crate) fn similar_extrude_impl(
     };
     let deviation_bound =
         (64.0 * f64::EPSILON).mul_add(reach + distance, screw.remainder_bound) + cone_rounding;
+    // Every far-cap edge must keep a length: a far section that shrinks
+    // below the digits its coordinates carry would collapse onto a point.
+    let mut far_edges = Vec::new();
+    for plan in &plans {
+        far_edges.extend(plan.positions.iter().map(|position| {
+            let (a, b) = position.ends;
+            (position.top_edge, (b - a).length() * end_scale)
+        }));
+    }
     for plan in plans {
         apply(topo, &similar, &screw, plan, deviation_bound)?;
+    }
+    let linear = remus_math::tolerance::Tolerance::new().linear;
+    for (edge, expected) in far_edges {
+        let edge = topo.edge(edge)?;
+        let (a, b) = (
+            topo.vertex(edge.start())?.point(),
+            topo.vertex(edge.end())?.point(),
+        );
+        // The far section is the profile scaled by `σ₁`: each chord between
+        // its vertices is `σ₁` times the profile's, to within what the
+        // coordinates carry there, and that must be a small part of it.
+        let far = a.0.iter().chain(&b.0).fold(0.0_f64, |m, c| m.max(c.abs()));
+        let allowance = linear.max(64.0 * f64::EPSILON * far);
+        if allowance > 1e-3 * expected || ((a - b).length() - expected).abs() > allowance {
+            return Err(OperationsError::InvalidInput {
+                reason: "a scaled extrusion's far section is too small to hold at its distance \
+                         from the origin: its edges lose their length to rounding (a larger end \
+                         scale, or a profile nearer the origin)"
+                    .to_owned(),
+            });
+        }
     }
     Ok(TwistedExtrusion {
         solid,
