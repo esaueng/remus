@@ -47,6 +47,22 @@ historical predecessor-line records, retained for provenance. The
 
 ### Fixed
 
+* **operations:** `moveFaces` moves an end or side face of a rounded block
+  whose foot is chamfered. Rounding a block's top and vertical edges and then
+  chamfering its foot turns a cone round the foot of each vertical round. A
+  planar move translates the moved end's blend cluster rigidly, and that
+  cluster stopped at the chamfer, which is tangent to nothing it bevels, so
+  every such move refused with `blend face … reaches non-invariant cone
+  support face …`. The chamfer band at the moved end (its oblique planar
+  strip and the cones it turns round the rounds) now travels with the
+  cluster when everything it meets either moves too or is a face the move
+  slides along. The result is the exact prismatic extension: the same
+  topology, and the volume changes by the distance times the block's
+  rounded cross-section. The band is swept with the moved face, so a move
+  that would carry it through other material (a cavity in the foot) refuses.
+  A plane square to the move, or a band that meets any other surface, is
+  still left in place and refuses as before.
+
 * **operations,wasm:** `section` keeps the closed-form curves of a cross
   section (#1826). Every curved piece of a section was chorded into `Line`
   edges, 64 or more to a circle or ellipse. An 80×40 plate with two r=3 holes cut at mid-thickness
