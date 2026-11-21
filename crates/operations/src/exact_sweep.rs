@@ -1851,6 +1851,23 @@ pub struct ExactSweepOptions {
     pub end_scale: f64,
     /// How the profile is oriented along the path.
     pub orientation: ExactSweepOrientation,
+    /// How a corner of the path is swept (with [`ExactSweepOrientation::FollowPath`]).
+    pub corner: ExactSweepCorner,
+}
+
+/// How an exact sweep that follows its path takes a corner.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum ExactSweepCorner {
+    /// Mitred exactly on the bisector plane (between two straight runs).
+    #[default]
+    Mitre,
+    /// Rounded: the corner is replaced by the circular arc of this radius
+    /// tangent to both runs, so the profile turns about the arc's axis
+    /// instead of folding across a mitre.
+    Round {
+        /// The arc's radius, positive.
+        radius: f64,
+    },
 }
 
 /// How an exact sweep orients the profile along its path.
@@ -1872,6 +1889,7 @@ impl Default for ExactSweepOptions {
             twist: 0.0,
             end_scale: 1.0,
             orientation: ExactSweepOrientation::FollowPath,
+            corner: ExactSweepCorner::Mitre,
         }
     }
 }
@@ -1939,9 +1957,27 @@ pub fn sweep_exact_with_options(
     }
     #[allow(clippy::float_cmp)]
     let plain = options.twist == 0.0 && options.end_scale == 1.0;
+    if let ExactSweepCorner::Round { radius } = options.corner {
+        if !(radius.is_finite() && radius > 0.0) {
+            return Err(invalid(format!(
+                "an exact sweep's round corner needs a finite positive radius, got {radius}"
+            )));
+        }
+        if !plain || options.orientation == ExactSweepOrientation::KeepProfile {
+            return Err(unsupported(
+                "a round corner applies to a sweep that turns with its path, without a twist \
+                 or scale: a sweep that keeps the profile's orientation takes corners as they \
+                 are, and a twist or scale needs a straight path",
+            ));
+        }
+    }
     if plain {
         return match options.orientation {
-            ExactSweepOrientation::FollowPath => sweep_exact(topo, profile, path),
+            ExactSweepOrientation::FollowPath => {
+                remus_topology::transaction::run_transacted(topo, |topo| {
+                    sweep_exact_cornered_impl(topo, profile, path, options.corner)
+                })
+            }
             ExactSweepOrientation::KeepProfile => {
                 remus_topology::transaction::run_transacted(topo, |topo| {
                     translational::sweep_keeping_orientation_impl(topo, profile, path)
@@ -2098,11 +2134,122 @@ fn straight_sweep_impl(
     Ok(built.solid)
 }
 
-#[allow(clippy::too_many_lines)]
 fn sweep_exact_impl(
     topo: &mut Topology,
     profile: FaceId,
     path: &[EdgeId],
+) -> Result<SolidId, OperationsError> {
+    sweep_exact_cornered_impl(topo, profile, path, ExactSweepCorner::Mitre)
+}
+
+/// Replace every corner of `chain` between two straight runs by the arc of
+/// `radius` tangent to both: the runs are cut back by `radius·tan(φ/2)`
+/// for a turn of `φ`, and the arc turns `φ` about `t_in × t_out` through
+/// its centre, which lies along the bisector of the corner's inside.
+fn round_corners(
+    chain: &[Segment],
+    closed: bool,
+    radius: f64,
+) -> Result<Vec<Segment>, OperationsError> {
+    let n = chain.len();
+    let mut runs: Vec<Segment> = chain.to_vec();
+    // The setback each run loses at its start and at its end.
+    let mut cut = vec![(0.0_f64, 0.0_f64); n];
+    let mut arcs: Vec<Option<Segment>> = vec![None; n];
+    let joints = if closed { 0..n } else { 1..n };
+    for i in joints {
+        let before = &chain[(i + n - 1) % n];
+        let after = &chain[i];
+        let (incoming, outgoing) = (before.end_tangent, after.start_tangent);
+        let angle = incoming.dot(outgoing).clamp(-1.0, 1.0).acos();
+        if angle <= G1_ANGLE_TOLERANCE {
+            continue;
+        }
+        let both_straight = matches!(before.motion, Motion::Translate(_))
+            && matches!(after.motion, Motion::Translate(_));
+        if !both_straight {
+            return Err(unsupported(format!(
+                "the sweep path turns a corner of {:.4}° at joint {i}, next to an arc; a round \
+                 corner is built only between two straight runs (join the arc tangentially)",
+                angle.to_degrees()
+            )));
+        }
+        let half = 0.5 * (incoming + outgoing).length();
+        if half < MIN_MITRE_COSINE {
+            return Err(unsupported(format!(
+                "the sweep path turns back on itself at joint {i} ({:.4}°); a corner that sharp \
+                 has no round corner of radius {radius}",
+                angle.to_degrees()
+            )));
+        }
+        let setback = radius * (0.5 * angle).tan();
+        let corner = after.start;
+        let inside = (outgoing - incoming).normalize()?;
+        let origin = corner + inside * (radius / half);
+        let axis = incoming.cross(outgoing).normalize()?;
+        let start = corner - incoming * setback;
+        let end = corner + outgoing * setback;
+        arcs[i] = Some(Segment {
+            start,
+            end,
+            start_tangent: incoming,
+            end_tangent: outgoing,
+            motion: Motion::Rotate {
+                origin,
+                axis,
+                angle,
+            },
+        });
+        cut[(i + n - 1) % n].1 = setback;
+        cut[i].0 = setback;
+    }
+    let mut out = Vec::with_capacity(2 * n);
+    for (k, run) in runs.iter_mut().enumerate() {
+        if let Some(arc) = arcs[k] {
+            out.push(arc);
+        }
+        let (from, to) = cut[k];
+        #[allow(clippy::float_cmp)]
+        if from == 0.0 && to == 0.0 {
+            out.push(*run);
+            continue;
+        }
+        let Motion::Translate(d) = run.motion else {
+            return Err(invalid("a rounded corner's run must be straight"));
+        };
+        let length = d.length();
+        let direction = d.normalize()?;
+        if from + to >= length * (1.0 - RELATIVE_MARGIN) {
+            return Err(invalid(format!(
+                "path segment {k} is too short for its round corners of radius {radius}: they \
+                 need {:.6} of its {length:.6} (shorten the radius or lengthen the run)",
+                from + to
+            )));
+        }
+        let start = run.start + direction * from;
+        let end = run.end - direction * to;
+        out.push(Segment {
+            start,
+            end,
+            start_tangent: direction,
+            end_tangent: direction,
+            motion: Motion::Translate(end - start),
+        });
+    }
+    // A closed chain's closure arc sits before its first run; keep the
+    // chain starting where the open sweep would, at the first run.
+    if closed && arcs[0].is_some() {
+        out.rotate_left(1);
+    }
+    Ok(out)
+}
+
+#[allow(clippy::too_many_lines)]
+fn sweep_exact_cornered_impl(
+    topo: &mut Topology,
+    profile: FaceId,
+    path: &[EdgeId],
+    corner: ExactSweepCorner,
 ) -> Result<SolidId, OperationsError> {
     let linear = Tolerance::new().linear;
     let face = topo.face(profile)?;
@@ -2125,6 +2272,9 @@ fn sweep_exact_impl(
     let plane_distance = |p: Point3| (to_vec(p).dot(normal) - plane_d).abs();
     if !closed && plane_distance(chain[chain.len() - 1].end) < plane_distance(chain[0].start) {
         chain = chain.iter().rev().map(Segment::reversed).collect();
+    }
+    if let ExactSweepCorner::Round { radius } = corner {
+        chain = round_corners(&chain, closed, radius)?;
     }
     let joints = chain_joints(&chain, closed)?;
     let n = chain.len();
@@ -2500,3 +2650,6 @@ mod options_tests;
 
 #[cfg(test)]
 mod translational_tests;
+
+#[cfg(test)]
+mod round_corner_tests;
