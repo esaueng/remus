@@ -72,6 +72,8 @@ mod helical_coil_cap_tests;
 #[cfg(test)]
 mod holed_face_tests;
 #[cfg(test)]
+mod loft_guide_tests;
+#[cfg(test)]
 mod mixed_notch_tests;
 #[cfg(test)]
 mod oblique_circle_loft_tests;
