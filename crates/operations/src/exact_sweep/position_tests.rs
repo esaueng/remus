@@ -156,7 +156,7 @@ fn an_arc_crossing_the_profile_sweeps_both_ways_round_it() {
 #[test]
 fn position_refusals_are_typed_and_leave_the_topology_unchanged() {
     type Build = fn(&mut Topology) -> Result<SolidId, OperationsError>;
-    let cases: [(&str, Build, bool, &str); 3] = [
+    let cases: [(&str, Build, bool, &str); 4] = [
         (
             "a path intersection the path never reaches",
             |topo| {
@@ -204,6 +204,24 @@ fn position_refusals_are_typed_and_leave_the_topology_unchanged() {
             true,
             "closed path",
         ),
+        (
+            "a profile standing a hair past a mitred corner",
+            |topo| {
+                let profile = disc(topo, p(0.0, 5e-7, 0.0), Y);
+                let path = [
+                    line(topo, p(-10.0, 0.0, 0.0), p(0.0, 0.0, 0.0)),
+                    line(topo, p(0.0, 0.0, 0.0), p(0.0, 10.0, 0.0)),
+                ];
+                sweep_exact_with_options(
+                    topo,
+                    profile,
+                    &path,
+                    &at(ExactSweepPosition::PathIntersection),
+                )
+            },
+            true,
+            "stands on the path's corner",
+        ),
     ];
     for (label, build, is_unsupported, phrase) in cases {
         let mut topo = Topology::new();
@@ -216,4 +234,43 @@ fn position_refusals_are_typed_and_leave_the_topology_unchanged() {
         assert!(reason.contains(phrase), "{label}: {reason}");
         assert_eq!(topo.num_faces(), 1, "{label}: faces left behind");
     }
+}
+
+/// Review regression: far from the origin an arc's end in the profile's
+/// plane is still a path intersection.
+#[test]
+fn an_arc_ending_in_the_profile_plane_is_an_intersection() {
+    let mut topo = Topology::new();
+    let centre = p(1_000_000.0, 0.0, 0.0);
+    let circle = Circle3D::with_axes(centre, Z, 10.0, X, Y).unwrap();
+    let end = circle.evaluate(0.3);
+    let a = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+    let b = topo.add_vertex(Vertex::new(end, 1e-7));
+    let mut arc = Edge::new(a, b, EdgeCurve::Circle(circle));
+    arc.set_trim(Some((0.0, 0.3)));
+    let arc = topo.add_edge(arc);
+    // A small disc at the arc's end, square to its tangent there.
+    let tangent = Vec3::new(-(0.3_f64).sin(), 0.3_f64.cos(), 0.0);
+    let profile = {
+        let edge = make_circle_edge(&mut topo, end, tangent, 0.5, 1e-7).unwrap();
+        let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap());
+        topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: tangent,
+                d: crate::dot_normal_point(tangent, end),
+            },
+        ))
+    };
+    let solid = sweep_exact_with_options(
+        &mut topo,
+        profile,
+        &[arc],
+        &at(ExactSweepPosition::PathIntersection),
+    )
+    .unwrap();
+    let measured = crate::measure::solid_volume(&topo, solid, 0.05).unwrap();
+    let exact = PI * 0.25 * 10.0 * 0.3;
+    assert!(rel(measured, exact) < 1e-6, "{measured} vs {exact}");
 }

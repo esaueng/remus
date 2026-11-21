@@ -2550,8 +2550,21 @@ fn profile_centroid(loops: &[Loop], normal: Vec3) -> Result<Point3, OperationsEr
     let origin = loops[0].points[0].0;
     let (mut area, mut moment) = (0.0, Vec3::new(0.0, 0.0, 0.0));
     for lp in loops {
-        let (mut a, mut m) = (0.0, Vec3::new(0.0, 0.0, 0.0));
+        let (mut a_loop, mut m_loop) = (0.0, Vec3::new(0.0, 0.0, 0.0));
         for piece in &lp.pieces {
+            let sign = if piece.forward { 1.0 } else { -1.0 };
+            if matches!(piece.cap, EdgeCurve::Line) {
+                // A straight piece in closed form: the triangle it spans with
+                // the origin, area ½ n·(a × b), centroid (a + b)/3.
+                let (a, b) = (
+                    piece.nurbs.control_points()[0] - origin,
+                    piece.nurbs.control_points()[piece.nurbs.control_points().len() - 1] - origin,
+                );
+                let w = sign * normal.dot(a.cross(b));
+                a_loop += 0.5 * w;
+                m_loop += (a + b) * (w / 6.0);
+                continue;
+            }
             let curve = &piece.nurbs;
             let (u0, u1) = curve.domain();
             let mut breaks: Vec<f64> = curve
@@ -2563,19 +2576,27 @@ fn profile_centroid(loops: &[Loop], normal: Vec3) -> Result<Point3, OperationsEr
             breaks.insert(0, u0);
             breaks.push(u1);
             breaks.dedup();
-            let sign = if piece.forward { 1.0 } else { -1.0 };
+            // Each knot span in parts, so a rational span's uneven speed is
+            // followed closely.
             for pair in breaks.windows(2) {
-                let (mid, half) = (0.5 * (pair[0] + pair[1]), 0.5 * (pair[1] - pair[0]));
-                for point in points {
-                    let u = half.mul_add(point.x, mid);
-                    let x = curve.evaluate(u) - origin;
-                    let dx = curve.derivatives(u, 1)[1];
-                    let w = sign * point.w * half * normal.dot(x.cross(dx));
-                    a += 0.5 * w;
-                    m += x * (w / 3.0);
+                #[allow(clippy::cast_precision_loss)]
+                let step = (pair[1] - pair[0]) / CENTROID_PARTS as f64;
+                for part in 0..CENTROID_PARTS {
+                    #[allow(clippy::cast_precision_loss)]
+                    let lo = step.mul_add(part as f64, pair[0]);
+                    let (mid, half) = (lo + 0.5 * step, 0.5 * step);
+                    for point in points {
+                        let u = half.mul_add(point.x, mid);
+                        let x = curve.evaluate(u) - origin;
+                        let dx = curve.derivatives(u, 1)[1];
+                        let w = sign * point.w * half * normal.dot(x.cross(dx));
+                        a_loop += 0.5 * w;
+                        m_loop += x * (w / 3.0);
+                    }
                 }
             }
         }
+        let (a, m) = (a_loop, m_loop);
         // The outer loop adds its area, a hole takes its own away, whichever
         // way each runs.
         let want = if lp.outer { a.abs() } else { -a.abs() };
@@ -2589,6 +2610,9 @@ fn profile_centroid(loops: &[Loop], normal: Vec3) -> Result<Point3, OperationsEr
     }
     Ok(origin + moment * (1.0 / area))
 }
+
+/// The parts each knot span is cut into for the centroid's quadrature.
+const CENTROID_PARTS: usize = 8;
 
 /// A point on the path chain: on segment `segment`, at `point`.
 #[derive(Debug, Clone, Copy)]
@@ -2630,6 +2654,16 @@ fn nearest_on(segment: &Segment, q: Point3) -> Point3 {
 /// Where `segment` crosses the plane `n·x = d`, strictly inside it or at
 /// its ends.
 fn plane_crossings(segment: &Segment, normal: Vec3, d: f64) -> Vec<Point3> {
+    // An end in the plane is a crossing, whatever rounding the formulas
+    // below meet there.
+    let linear = Tolerance::new().linear;
+    let ends: Vec<Point3> = [segment.start, segment.end]
+        .into_iter()
+        .filter(|&q| (normal.dot(to_vec(q)) - d).abs() <= 10.0 * linear)
+        .collect();
+    if !ends.is_empty() {
+        return ends;
+    }
     match segment.motion {
         Motion::Translate(dir) => {
             let rise = normal.dot(dir);
@@ -2763,6 +2797,19 @@ fn split_at(chain: &[Segment], anchor: Anchor, linear: f64) -> Result<Split, Ope
     }
     let k = anchor.segment;
     let segment = &chain[k];
+    // A profile standing on a corner (or a hair off it) has no one section
+    // there: the mitre would cut it.
+    let joints = chain_joints(chain, false)?;
+    for (j, joint) in joints.iter().enumerate().skip(1) {
+        if matches!(joint, Joint::Mitre { .. })
+            && (anchor.point - chain[j].start).length() <= 1e3 * linear
+        {
+            return Err(unsupported(format!(
+                "the sweep profile stands on the path's corner at joint {j}; a profile \
+                 position must be off a mitred corner (move the profile, or round the corner)"
+            )));
+        }
+    }
     let mut backward = Vec::with_capacity(k + 1);
     if near(anchor.point, segment.end) {
         // At a joint: everything up to it lies behind.
