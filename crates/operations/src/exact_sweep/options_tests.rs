@@ -120,8 +120,8 @@ fn frustum(area: f64, length: f64, end_scale: f64) -> f64 {
 }
 
 fn open_mesh_edges(mesh: &crate::tessellate::TriangleMesh) -> usize {
-    use std::collections::HashMap;
-    let mut uses: HashMap<(u32, u32), i32> = HashMap::new();
+    use std::collections::BTreeMap;
+    let mut uses: BTreeMap<(u32, u32), i32> = BTreeMap::new();
     for t in mesh.indices.chunks(3) {
         for k in 0..3 {
             let (a, b) = (t[k], t[(k + 1) % 3]);
