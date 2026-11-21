@@ -37,9 +37,9 @@
 //!   exact cone with a straight seam: the top vertex is placed unturned on
 //!   the scaled circle, which the motion maps onto itself.
 //!
-//! Refused (typed `InvalidInput`): a profile not perpendicular to the axis, a
-//! non-positive or non-finite end scale, a closed edge off the axis, a
-//! trimmed spline, an ellipse or open conic edge.
+//! Refused (typed `InvalidInput`): a profile not perpendicular to the axis, an
+//! end scale that is not finite or outside `[1e-3, 1e3]`, a closed edge off
+//! the axis, a trimmed spline, an ellipse or open conic edge.
 
 use std::f64::consts::TAU;
 
@@ -59,6 +59,13 @@ use crate::OperationsError;
 
 /// Relative tolerance for treating a circle as concentric with the axis.
 const CONCENTRIC_TOLERANCE: f64 = 1e-9;
+
+/// The end scales a scaled extrusion builds: past them the far section
+/// shrinks or grows by more than its own digits carry (a scale of `1e-20`
+/// rounds `σ₁ − 1` to `−1` and collapses the cap onto the axis).
+pub const MIN_END_SCALE: f64 = 1e-3;
+/// See [`MIN_END_SCALE`].
+pub const MAX_END_SCALE: f64 = 1e3;
 
 /// Rounding allowance of a cone face, in units of `ε` times the distance
 /// from the section to the cone's apex.
@@ -95,9 +102,13 @@ impl Similar {
         self.motion.turn_vector(v, self.motion.height())
     }
 
+    /// Whether `circle` is centred on the axis closely enough that keeping it
+    /// centred there stays within the tolerance at the far end too: the
+    /// scale magnifies the centre's offset by `σ₁`.
     fn concentric(&self, circle: &Circle3D) -> bool {
         let scale = circle.radius().max(1.0);
-        self.offset(circle.center()).length() <= CONCENTRIC_TOLERANCE * scale
+        self.offset(circle.center()).length() * self.end_scale.max(1.0)
+            <= CONCENTRIC_TOLERANCE * scale
             && circle.normal().cross(self.axis).length() <= CONCENTRIC_TOLERANCE
     }
 
@@ -120,15 +131,19 @@ impl Similar {
         )?)
     }
 
-    /// `circle` moved to the far end: same plane orientation turned, radius
-    /// scaled by `σ₁`.
-    fn end_circle(&self, circle: &Circle3D) -> Result<Circle3D, OperationsError> {
+    /// The top cap's `circle`, which the straight extrusion already carried
+    /// the full height along the axis, moved on to its place in the far
+    /// section: its centre's offset from the axis scaled by `σ₁` and turned,
+    /// its axes turned, its radius scaled by `σ₁`.
+    fn end_circle(&self, top: &Circle3D) -> Result<Circle3D, OperationsError> {
+        let offset = self.offset(top.center());
+        let moved = self.turn(offset) * self.end_scale;
         Ok(Circle3D::with_axes(
-            self.end(circle.center()),
-            self.turn(circle.normal()),
-            circle.radius() * self.end_scale,
-            self.turn(circle.u_axis()),
-            self.turn(circle.v_axis()),
+            top.center() + (moved - offset),
+            self.turn(top.normal()),
+            top.radius() * self.end_scale,
+            self.turn(top.u_axis()),
+            self.turn(top.v_axis()),
         )?)
     }
 
@@ -179,10 +194,11 @@ pub(crate) fn similar_extrude_impl(
     tolerance: f64,
     max_spans: usize,
 ) -> Result<TwistedExtrusion, OperationsError> {
-    if !(end_scale.is_finite() && end_scale > 0.0) {
+    if !(end_scale.is_finite() && (MIN_END_SCALE..=MAX_END_SCALE).contains(&end_scale)) {
         return Err(OperationsError::InvalidInput {
             reason: format!(
-                "a scaled extrusion needs a finite positive end scale, got {end_scale}"
+                "a scaled extrusion's end scale must be between {MIN_END_SCALE} and \
+                 {MAX_END_SCALE}, got {end_scale}"
             ),
         });
     }

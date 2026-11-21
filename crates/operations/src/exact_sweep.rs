@@ -1903,6 +1903,16 @@ pub fn sweep_exact_with_options(
             options.end_scale
         )));
     }
+    let (lowest, highest) = (
+        crate::extrude::similar_twist::MIN_END_SCALE,
+        crate::extrude::similar_twist::MAX_END_SCALE,
+    );
+    if !(lowest..=highest).contains(&options.end_scale) {
+        return Err(invalid(format!(
+            "an exact sweep's end scale must be between {lowest} and {highest}, got {}",
+            options.end_scale
+        )));
+    }
     #[allow(clippy::float_cmp)]
     if options.twist == 0.0 && options.end_scale == 1.0 {
         return sweep_exact(topo, profile, path);
@@ -1968,6 +1978,39 @@ fn straight_sweep_impl(
     }
     let length = travel.length();
     let direction = travel.normalize()?;
+    // A turn under the smooth-joint angle can still leave a joint off the
+    // line by more than the tolerance over a long run: every joint must lie
+    // on the line from the start to the end, or the sweep would straighten
+    // a bend.
+    let start = chain[0].start;
+    for (k, segment) in chain.iter().enumerate() {
+        let off = segment.end - start;
+        let miss = (off - direction * off.dot(direction)).length();
+        if miss > linear {
+            return Err(unsupported(format!(
+                "an exact sweep can {what} the profile only along a straight path; the path \
+                 turns a corner at joint {} ({miss:e} off the line)",
+                k + 1
+            )));
+        }
+    }
+    // The straight extrusion splits a closed curve that is not a circle into
+    // chords; the twist and scale would carry those facets, so refuse it.
+    for wire in std::iter::once(topo.face(profile)?.outer_wire())
+        .chain(topo.face(profile)?.inner_wires().iter().copied())
+    {
+        let edges = topo.wire(wire)?.edges();
+        if edges.len() == 1 {
+            let edge = topo.edge(edges[0].edge())?;
+            if !matches!(edge.curve(), EdgeCurve::Circle(_)) {
+                return Err(invalid(format!(
+                    "an exact sweep can {what} the profile only when each closed curve in it is \
+                     a circle or is split into pieces; this one is a closed {}",
+                    edge.curve().type_tag()
+                )));
+            }
+        }
+    }
     if normal.cross(direction).length() > 1e-9 {
         return Err(unsupported(format!(
             "an exact sweep can {what} the profile only when the profile is square to the \
@@ -1982,7 +2025,6 @@ fn straight_sweep_impl(
     }
     // The path's line crosses the profile's plane here: the centre of the
     // twist and of the scale.
-    let start = chain[0].start;
     let along = (plane_d - to_vec(start).dot(normal)) / direction.dot(normal);
     let centre = start + direction * along;
     let rate = options.twist / length;

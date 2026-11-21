@@ -10,7 +10,9 @@ use std::f64::consts::{FRAC_PI_2, PI};
 
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
-use remus_topology::builder::{make_circle_edge, make_line_edge, make_polygon_wire};
+use remus_topology::builder::{
+    make_circle_edge, make_ellipse_edge, make_line_edge, make_polygon_wire,
+};
 use remus_topology::edge::EdgeId;
 use remus_topology::explorer::solid_faces;
 use remus_topology::face::{Face, FaceId, FaceSurface};
@@ -310,10 +312,76 @@ fn the_path_may_be_split_reversed_and_start_off_the_profile() {
     assert_inside(&topo, solid, p(-1.0, 0.0, 0.0), false, "behind the profile");
 }
 
+/// Review regression: an arc off the path's line keeps its far image on the
+/// far cap. A semicircle (r = 2 about (0, 3, 0)) closed by its diameter,
+/// scaled to 1.5 over 10 and turned.
+#[test]
+fn an_off_axis_arc_lands_on_the_far_cap() {
+    for twist in [0.0, 0.7] {
+        let mut topo = Topology::new();
+        let circle = remus_math::curves::Circle3D::with_axes(
+            p(0.0, 3.0, 0.0),
+            X,
+            2.0,
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+        )
+        .unwrap();
+        let a = topo.add_vertex(remus_topology::vertex::Vertex::new(p(0.0, 5.0, 0.0), 1e-7));
+        let b = topo.add_vertex(remus_topology::vertex::Vertex::new(p(0.0, 1.0, 0.0), 1e-7));
+        let mut arc =
+            remus_topology::edge::Edge::new(a, b, remus_topology::edge::EdgeCurve::Circle(circle));
+        arc.set_trim(Some((0.0, PI)));
+        let arc = topo.add_edge(arc);
+        let diameter = topo.add_edge(remus_topology::edge::Edge::new(
+            b,
+            a,
+            remus_topology::edge::EdgeCurve::Line,
+        ));
+        let wire = topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(arc, true),
+                    OrientedEdge::new(diameter, true),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        let profile = plane_face(&mut topo, wire, vec![], X, p(0.0, 0.0, 0.0));
+        let path = line(&mut topo, p(0.0, 0.0, 0.0), p(10.0, 0.0, 0.0));
+        let solid =
+            sweep_exact_with_options(&mut topo, profile, &[path], &options(twist, 1.5)).unwrap();
+        assert_solid(
+            &topo,
+            solid,
+            frustum(PI * 2.0, 10.0, 1.5),
+            if twist == 0.0 { 1e-9 } else { 1e-6 },
+            "semicircle",
+        );
+        // Every edge of the far cap lies in x = 10 and ends on its vertices.
+        for face in solid_faces(&topo, solid).unwrap() {
+            let wire = topo.face(face).unwrap().outer_wire();
+            for oe in topo.wire(wire).unwrap().edges() {
+                let edge = topo.edge(oe.edge()).unwrap();
+                if let remus_topology::edge::EdgeCurve::Circle(c) = edge.curve() {
+                    let end = topo.vertex(edge.end()).unwrap().point();
+                    let (_, t1) = edge.trim().unwrap();
+                    assert!(
+                        (c.evaluate(t1) - end).length() < 1e-9,
+                        "twist {twist}: arc misses its vertex: {:?} vs {end:?}",
+                        c.evaluate(t1)
+                    );
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn twist_and_scale_refusals_are_typed_and_leave_the_topology_unchanged() {
     type Build = fn(&mut Topology) -> Result<SolidId, OperationsError>;
-    let cases: [(&str, Build, bool, &str); 7] = [
+    let cases: [(&str, Build, bool, &str); 11] = [
         (
             "an arc in the path",
             |topo| {
@@ -432,6 +500,63 @@ fn twist_and_scale_refusals_are_typed_and_leave_the_topology_unchanged() {
             },
             false,
             "closed edge off the axis",
+        ),
+        (
+            "a scale too small to carry",
+            |topo| {
+                let profile = square(topo);
+                let path = line(topo, p(0.0, 0.0, 0.0), p(10.0, 0.0, 0.0));
+                sweep_exact_with_options(topo, profile, &[path], &options(0.0, 1e-20))
+            },
+            false,
+            "must be between",
+        ),
+        (
+            "an elliptical bore, which the extrusion would chord",
+            |topo| {
+                let outer = make_polygon_wire(
+                    topo,
+                    &[
+                        p(0.0, -4.0, -4.0),
+                        p(0.0, 4.0, -4.0),
+                        p(0.0, 4.0, 4.0),
+                        p(0.0, -4.0, 4.0),
+                    ],
+                    1e-7,
+                )
+                .unwrap();
+                let edge = make_ellipse_edge(topo, p(0.0, 0.0, 0.0), -X, 2.0, 1.0, 1e-7).unwrap();
+                let hole =
+                    topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap());
+                let profile = plane_face(topo, outer, vec![hole], X, p(0.0, 0.0, 0.0));
+                let path = line(topo, p(0.0, 0.0, 0.0), p(10.0, 0.0, 0.0));
+                sweep_exact_with_options(topo, profile, &[path], &options(0.0, 1.5))
+            },
+            false,
+            "closed ellipse",
+        ),
+        (
+            "a circle a hair off the path, scaled a thousandfold",
+            |topo| {
+                let profile = circle_face(topo, p(0.0, 1e-9, 0.0), 2.0);
+                let path = line(topo, p(0.0, 0.0, 0.0), p(10.0, 0.0, 0.0));
+                sweep_exact_with_options(topo, profile, &[path], &options(0.0, 1000.0))
+            },
+            false,
+            "closed edge off the axis",
+        ),
+        (
+            "a bend under the smooth-joint angle",
+            |topo| {
+                let profile = square(topo);
+                let path = [
+                    line(topo, p(0.0, 0.0, 0.0), p(100.0, 2e-5, 0.0)),
+                    line(topo, p(100.0, 2e-5, 0.0), p(200.0, 0.0, 0.0)),
+                ];
+                sweep_exact_with_options(topo, profile, &path, &options(0.0, 2.0))
+            },
+            true,
+            "turns a corner",
         ),
     ];
     for (label, build, is_unsupported, phrase) in cases {
