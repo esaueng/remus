@@ -436,6 +436,14 @@ historical predecessor-line records, retained for provenance. The
 
 ### Added
 
+* **operations,wasm:** choose where on its path an exact sweep's profile
+  stands (`ExactSweepOptions::position`, `sweepExactWithOptions` option
+  `"position"`: `"auto"`, `"intersection"`, `"closestPoint"` or
+  `"closestEndpoint"`, measured from the profile's area centroid). The
+  profile is never moved; from a point inside the path the sweep runs both
+  ways, built as one exact sweep from the path's start with the profile
+  carried rigidly back to it. A missing intersection, a closed path and an
+  orientation-keeping sweep are refused by type.
 * **operations,wasm:** round the corners of an exact sweep
   (`ExactSweepCorner::Round { radius }`, `sweepExactWithOptions` options
   `"corner": "round"` and `"cornerRadius"`): each corner between two

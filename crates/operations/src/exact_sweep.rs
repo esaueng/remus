@@ -1853,6 +1853,31 @@ pub struct ExactSweepOptions {
     pub orientation: ExactSweepOrientation,
     /// How a corner of the path is swept (with [`ExactSweepOrientation::FollowPath`]).
     pub corner: ExactSweepCorner,
+    /// Where on the path the profile stands (with
+    /// [`ExactSweepOrientation::FollowPath`]); `None` starts from the path end
+    /// nearer the profile's plane, as [`sweep_exact`] does.
+    pub position: Option<ExactSweepPosition>,
+}
+
+/// Where on its path an exact sweep's profile stands.
+///
+/// The profile itself is never moved: the path's motions start from this
+/// anchor and run to both
+/// ends of the path, so an anchor inside the path sweeps both ways from it
+/// (two exact halves, fused). The profile's reference point is its area
+/// centroid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExactSweepPosition {
+    /// Where the path crosses the profile's plane when it does (the crossing
+    /// nearest the centroid), else the path end nearest the centroid.
+    Auto,
+    /// Where the path crosses the profile's plane, nearest the centroid;
+    /// refused when it does not cross it.
+    PathIntersection,
+    /// The path point nearest the profile's centroid.
+    ClosestPoint,
+    /// The path end nearest the profile's centroid.
+    ClosestEndpoint,
 }
 
 /// How an exact sweep that follows its path takes a corner.
@@ -1890,6 +1915,7 @@ impl Default for ExactSweepOptions {
             end_scale: 1.0,
             orientation: ExactSweepOrientation::FollowPath,
             corner: ExactSweepCorner::Mitre,
+            position: None,
         }
     }
 }
@@ -1971,11 +1997,25 @@ pub fn sweep_exact_with_options(
             ));
         }
     }
+    if options.position.is_some()
+        && (!plain || options.orientation == ExactSweepOrientation::KeepProfile)
+    {
+        return Err(unsupported(
+            "a profile position applies to a sweep that turns with its path, without a twist \
+             or scale",
+        ));
+    }
     if plain {
         return match options.orientation {
             ExactSweepOrientation::FollowPath => {
                 remus_topology::transaction::run_transacted(topo, |topo| {
-                    sweep_exact_cornered_impl(topo, profile, path, options.corner)
+                    sweep_exact_positioned_impl(
+                        topo,
+                        profile,
+                        path,
+                        options.corner,
+                        options.position,
+                    )
                 })
             }
             ExactSweepOrientation::KeepProfile => {
@@ -2501,12 +2541,256 @@ fn round_corners(
     Ok(out)
 }
 
-#[allow(clippy::too_many_lines)]
+/// The area centroid of the planar region the profile `loops` bound (holes
+/// subtracted), by Green's theorem: `A = ½∮ n·(x × dx)` and
+/// `∫ x dA = ⅓∮ x n·(x × dx)` about a point in the plane, integrated by
+/// 20-point Gauss–Legendre quadrature on every knot span.
+fn profile_centroid(loops: &[Loop], normal: Vec3) -> Result<Point3, OperationsError> {
+    let points = remus_math::quadrature::gauss_legendre_points(20);
+    let origin = loops[0].points[0].0;
+    let (mut area, mut moment) = (0.0, Vec3::new(0.0, 0.0, 0.0));
+    for lp in loops {
+        let (mut a, mut m) = (0.0, Vec3::new(0.0, 0.0, 0.0));
+        for piece in &lp.pieces {
+            let curve = &piece.nurbs;
+            let (u0, u1) = curve.domain();
+            let mut breaks: Vec<f64> = curve
+                .knots()
+                .iter()
+                .copied()
+                .filter(|&k| k > u0 && k < u1)
+                .collect();
+            breaks.insert(0, u0);
+            breaks.push(u1);
+            breaks.dedup();
+            let sign = if piece.forward { 1.0 } else { -1.0 };
+            for pair in breaks.windows(2) {
+                let (mid, half) = (0.5 * (pair[0] + pair[1]), 0.5 * (pair[1] - pair[0]));
+                for point in points {
+                    let u = half.mul_add(point.x, mid);
+                    let x = curve.evaluate(u) - origin;
+                    let dx = curve.derivatives(u, 1)[1];
+                    let w = sign * point.w * half * normal.dot(x.cross(dx));
+                    a += 0.5 * w;
+                    m += x * (w / 3.0);
+                }
+            }
+        }
+        // The outer loop adds its area, a hole takes its own away, whichever
+        // way each runs.
+        let want = if lp.outer { a.abs() } else { -a.abs() };
+        #[allow(clippy::float_cmp)]
+        let flip = if a == 0.0 { 0.0 } else { want / a };
+        area += a * flip;
+        moment += m * flip;
+    }
+    if !(area.is_finite() && area > 0.0) {
+        return Err(invalid("the sweep profile encloses no area"));
+    }
+    Ok(origin + moment * (1.0 / area))
+}
+
+/// A point on the path chain: on segment `segment`, at `point`.
+#[derive(Debug, Clone, Copy)]
+struct Anchor {
+    segment: usize,
+    point: Point3,
+}
+
+/// The point of `segment` nearest `q`.
+fn nearest_on(segment: &Segment, q: Point3) -> Point3 {
+    match segment.motion {
+        Motion::Translate(d) => {
+            let t = ((q - segment.start).dot(d) / d.dot(d)).clamp(0.0, 1.0);
+            segment.start + d * t
+        }
+        Motion::Rotate {
+            origin,
+            axis,
+            angle,
+        } => {
+            let foot = origin + axis * (segment.start - origin).dot(axis);
+            let r = segment.start - foot;
+            let towards = (q - foot) - axis * (q - foot).dot(axis);
+            if towards.length() > 0.0 {
+                let at = turn_between(r, towards, axis);
+                if at <= angle {
+                    return foot + rotate_vec(r, axis, at);
+                }
+            }
+            if (segment.start - q).length() <= (segment.end - q).length() {
+                segment.start
+            } else {
+                segment.end
+            }
+        }
+    }
+}
+
+/// Where `segment` crosses the plane `n·x = d`, strictly inside it or at
+/// its ends.
+fn plane_crossings(segment: &Segment, normal: Vec3, d: f64) -> Vec<Point3> {
+    match segment.motion {
+        Motion::Translate(dir) => {
+            let rise = normal.dot(dir);
+            if rise.abs() <= f64::EPSILON {
+                return Vec::new();
+            }
+            let t = (d - normal.dot(to_vec(segment.start))) / rise;
+            if (0.0..=1.0).contains(&t) {
+                vec![segment.start + dir * t]
+            } else {
+                Vec::new()
+            }
+        }
+        Motion::Rotate {
+            origin,
+            axis,
+            angle,
+        } => {
+            // n·p(θ) = c + a cos θ + b sin θ for p(θ) = foot + R(θ) r.
+            let foot = origin + axis * (segment.start - origin).dot(axis);
+            let r = segment.start - foot;
+            let (c, a, b) = (
+                normal.dot(to_vec(foot)),
+                normal.dot(r),
+                normal.dot(axis.cross(r)),
+            );
+            let amplitude = a.hypot(b);
+            if amplitude <= f64::EPSILON {
+                return Vec::new();
+            }
+            let k = (d - c) / amplitude;
+            if k.abs() > 1.0 {
+                return Vec::new();
+            }
+            let phase = b.atan2(a);
+            let spread = k.acos();
+            let mut out = Vec::new();
+            for theta in [phase + spread, phase - spread] {
+                let theta = theta.rem_euclid(std::f64::consts::TAU);
+                if theta <= angle {
+                    out.push(foot + rotate_vec(r, axis, theta));
+                }
+            }
+            out
+        }
+    }
+}
+
+fn find_anchor(
+    chain: &[Segment],
+    centre: Point3,
+    normal: Vec3,
+    plane_d: f64,
+    position: ExactSweepPosition,
+    linear: f64,
+) -> Result<Anchor, OperationsError> {
+    let nearest = |candidates: Vec<Anchor>| {
+        candidates.into_iter().min_by(|a, b| {
+            (a.point - centre)
+                .length()
+                .total_cmp(&(b.point - centre).length())
+        })
+    };
+    let last = chain.len() - 1;
+    let ends = vec![
+        Anchor {
+            segment: 0,
+            point: chain[0].start,
+        },
+        Anchor {
+            segment: last,
+            point: chain[last].end,
+        },
+    ];
+    let crossings: Vec<Anchor> = chain
+        .iter()
+        .enumerate()
+        .flat_map(|(k, s)| {
+            plane_crossings(s, normal, plane_d)
+                .into_iter()
+                .map(move |point| Anchor { segment: k, point })
+        })
+        .collect();
+    let found = match position {
+        ExactSweepPosition::ClosestEndpoint => nearest(ends),
+        ExactSweepPosition::ClosestPoint => nearest(
+            chain
+                .iter()
+                .enumerate()
+                .map(|(k, s)| Anchor {
+                    segment: k,
+                    point: nearest_on(s, centre),
+                })
+                .collect(),
+        ),
+        ExactSweepPosition::PathIntersection => {
+            let Some(found) = nearest(crossings) else {
+                return Err(invalid(
+                    "the sweep path does not cross the profile's plane, so it has no path \\
+                     intersection to start from (choose the closest point or endpoint)",
+                ));
+            };
+            Some(found)
+        }
+        ExactSweepPosition::Auto => nearest(crossings).or_else(|| nearest(ends)),
+    };
+    let _ = linear;
+    found.ok_or_else(|| invalid("the sweep path has no point to start from"))
+}
+
+/// The chain as swept from an anchor: from its start (or reversed, from its
+/// end), or both ways from a point inside it.
+enum Split {
+    Start(Vec<Segment>),
+    /// From inside the path: the part behind the anchor, run backward.
+    Both {
+        backward: Vec<Segment>,
+    },
+}
+
+fn split_at(chain: &[Segment], anchor: Anchor, linear: f64) -> Result<Split, OperationsError> {
+    let last = chain.len() - 1;
+    let near = |a: Point3, b: Point3| (a - b).length() <= 10.0 * linear;
+    if near(anchor.point, chain[0].start) {
+        return Ok(Split::Start(chain.to_vec()));
+    }
+    if near(anchor.point, chain[last].end) {
+        return Ok(Split::Start(
+            chain.iter().rev().map(Segment::reversed).collect(),
+        ));
+    }
+    let k = anchor.segment;
+    let segment = &chain[k];
+    let mut backward = Vec::with_capacity(k + 1);
+    if near(anchor.point, segment.end) {
+        // At a joint: everything up to it lies behind.
+        backward.extend(chain[..=k].iter().rev().map(Segment::reversed));
+    } else if near(anchor.point, segment.start) {
+        backward.extend(chain[..k].iter().rev().map(Segment::reversed));
+    } else {
+        backward.push(segment_from(segment, segment.start, anchor.point)?.reversed());
+        backward.extend(chain[..k].iter().rev().map(Segment::reversed));
+    }
+    Ok(Split::Both { backward })
+}
+
 fn sweep_exact_cornered_impl(
     topo: &mut Topology,
     profile: FaceId,
     path: &[EdgeId],
     corner: ExactSweepCorner,
+) -> Result<SolidId, OperationsError> {
+    sweep_exact_positioned_impl(topo, profile, path, corner, None)
+}
+
+fn sweep_exact_positioned_impl(
+    topo: &mut Topology,
+    profile: FaceId,
+    path: &[EdgeId],
+    corner: ExactSweepCorner,
+    position: Option<ExactSweepPosition>,
 ) -> Result<SolidId, OperationsError> {
     let linear = Tolerance::new().linear;
     let face = topo.face(profile)?;
@@ -2525,14 +2809,97 @@ fn sweep_exact_cornered_impl(
     }
 
     let (mut chain, closed) = read_chain(topo, path, linear)?;
-    // Start from the chain end nearer the profile's plane.
-    let plane_distance = |p: Point3| (to_vec(p).dot(normal) - plane_d).abs();
-    if !closed && plane_distance(chain[chain.len() - 1].end) < plane_distance(chain[0].start) {
-        chain = chain.iter().rev().map(Segment::reversed).collect();
+    let Some(position) = position else {
+        // Start from the chain end nearer the profile's plane.
+        let plane_distance = |p: Point3| (to_vec(p).dot(normal) - plane_d).abs();
+        if !closed && plane_distance(chain[chain.len() - 1].end) < plane_distance(chain[0].start) {
+            chain = chain.iter().rev().map(Segment::reversed).collect();
+        }
+        if let ExactSweepCorner::Round { radius } = corner {
+            chain = round_corners(&chain, closed, radius)?;
+        }
+        return sweep_chain(topo, normal, &loops, chain, closed);
+    };
+    if closed {
+        return Err(unsupported(
+            "a profile position applies to an open sweep path; a closed path has no ends to \
+             start from",
+        ));
     }
     if let ExactSweepCorner::Round { radius } = corner {
-        chain = round_corners(&chain, closed, radius)?;
+        chain = round_corners(&chain, false, radius)?;
     }
+    let centre = profile_centroid(&loops, normal)?;
+    let anchor = find_anchor(&chain, centre, normal, plane_d, position, linear)?;
+    match split_at(&chain, anchor, linear)? {
+        Split::Start(chain) => sweep_chain(topo, normal, &loops, chain, false),
+        Split::Both { backward } => {
+            // Carry the profile rigidly back to the path's start along the
+            // part behind the anchor, then sweep the whole path forward: the
+            // forward motions undo the backward ones, so the profile passes
+            // through where it stands, and the body is both halves as one.
+            let back = end_placement(&backward)?;
+            let moved: Vec<Loop> = loops
+                .iter()
+                .map(|lp| moved_loop(lp, &back))
+                .collect::<Result<_, _>>()?;
+            sweep_chain(topo, back.vec(normal), &moved, chain, false)
+        }
+    }
+}
+
+/// The rigid map that carries the profile along all of `chain`, turned at
+/// its mitred corners (as `sweep_chain` places its far section).
+fn end_placement(chain: &[Segment]) -> Result<Rigid, OperationsError> {
+    let joints = chain_joints(chain, false)?;
+    let mut placement = Rigid::IDENTITY;
+    for (k, segment) in chain.iter().enumerate() {
+        if k > 0
+            && let Some(turn) = joints[k].turn()
+        {
+            placement = turn.after(&placement);
+        }
+        placement = segment.motion.rigid().after(&placement);
+    }
+    Ok(placement)
+}
+
+/// `lp` moved by the rigid map `map`, piece for piece.
+fn moved_loop(lp: &Loop, map: &Rigid) -> Result<Loop, OperationsError> {
+    let pieces = lp
+        .pieces
+        .iter()
+        .map(|piece| {
+            Ok(Piece {
+                cap: map.curve(&piece.cap)?,
+                trim: piece.trim,
+                nurbs: map.nurbs(&piece.nurbs)?,
+                forward: piece.forward,
+            })
+        })
+        .collect::<Result<_, OperationsError>>()?;
+    Ok(Loop {
+        pieces,
+        points: lp
+            .points
+            .iter()
+            .map(|&(p, tol)| (map.point(p), tol))
+            .collect(),
+        outer: lp.outer,
+    })
+}
+
+/// Sweep the profile `loops` (in the plane with unit `normal`) along a
+/// prepared `chain`, from its start.
+#[allow(clippy::too_many_lines)]
+fn sweep_chain(
+    topo: &mut Topology,
+    normal: Vec3,
+    loops: &[Loop],
+    chain: Vec<Segment>,
+    closed: bool,
+) -> Result<SolidId, OperationsError> {
+    let linear = Tolerance::new().linear;
     let joints = chain_joints(&chain, closed)?;
     let n = chain.len();
 
@@ -2541,7 +2908,7 @@ fn sweep_exact_cornered_impl(
     // Every placement carries the path's start point to the path point it
     // stands on, so no profile point is farther than this from its own path
     // point anywhere along the sweep.
-    let reach = profile_reach(&loops, chain[0].start);
+    let reach = profile_reach(loops, chain[0].start);
     let scale = all
         .iter()
         .map(|&p| to_vec(p).length())
@@ -2639,7 +3006,7 @@ fn sweep_exact_cornered_impl(
         let (to_offset, to_slope) = affine(end, length);
         if start.is_some() || end.is_some() {
             let shortest = (to_offset - from_offset)
-                - profile_sup(&loops, &placements[k], to_slope - from_slope);
+                - profile_sup(loops, &placements[k], to_slope - from_slope);
             if shortest <= margin {
                 return Err(invalid(format!(
                     "path segment {k} is too short for its mitred corners: the profile would \
@@ -2647,8 +3014,8 @@ fn sweep_exact_cornered_impl(
                 )));
             }
         }
-        let lowest = from_offset - profile_sup(&loops, &placements[k], from_slope);
-        let highest = to_offset - profile_inf(&loops, &placements[k], to_slope);
+        let lowest = from_offset - profile_sup(loops, &placements[k], from_slope);
+        let highest = to_offset - profile_inf(loops, &placements[k], to_slope);
         extents[k] = (lowest.min(0.0), highest.max(length));
     }
     if closed {
@@ -2670,7 +3037,7 @@ fn sweep_exact_cornered_impl(
     check_clearance(
         &chain,
         closed,
-        &loops,
+        loops,
         &placements,
         &extents,
         normal * sigma,
@@ -2684,7 +3051,7 @@ fn sweep_exact_cornered_impl(
     for (k, placement) in placements.iter().enumerate().take(section_count) {
         let mut vertices = Vec::with_capacity(loops.len());
         let mut edges = Vec::with_capacity(loops.len());
-        for lp in &loops {
+        for lp in loops {
             // A mitred joint's section is the rigid one projected onto the
             // corner's plane along the run.
             let projection = if k < n { start_projection(k) } else { None };
@@ -2910,3 +3277,6 @@ mod translational_tests;
 
 #[cfg(test)]
 mod round_corner_tests;
+
+#[cfg(test)]
+mod position_tests;

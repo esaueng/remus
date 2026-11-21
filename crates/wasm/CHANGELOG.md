@@ -140,6 +140,9 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
 
 ### Features
 
+* `sweepExactWithOptions` takes `"position"`: `"auto"`, `"intersection"`,
+  `"closestPoint"` or `"closestEndpoint"`, where on the path the profile
+  stands; from inside the path the sweep runs both ways.
 * `sweepExactWithOptions` takes `"corner"`: `"mitre"` (default) or `"round"`
   with `"cornerRadius"`, the radius of the tangent arc replacing each corner,
   between straight runs or beside an arc in the corner's plane.
