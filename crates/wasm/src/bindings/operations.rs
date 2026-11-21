@@ -286,7 +286,9 @@ pub(super) fn loft_with_options_impl(
 pub(super) fn parse_exact_sweep_options(
     options: &serde_json::Value,
 ) -> Result<remus_operations::exact_sweep::ExactSweepOptions, String> {
-    use remus_operations::exact_sweep::{ExactSweepCorner, ExactSweepOrientation};
+    use remus_operations::exact_sweep::{
+        ExactSweepCorner, ExactSweepOrientation, ExactSweepPosition,
+    };
 
     let object = options
         .as_object()
@@ -313,6 +315,21 @@ pub(super) fn parse_exact_sweep_options(
                 }
             },
             "cornerRadius" => radius = Some(number()?),
+            "position" => {
+                parsed.position = Some(match value.as_str() {
+                    Some("auto") => ExactSweepPosition::Auto,
+                    Some("intersection") => ExactSweepPosition::PathIntersection,
+                    Some("closestPoint") => ExactSweepPosition::ClosestPoint,
+                    Some("closestEndpoint") => ExactSweepPosition::ClosestEndpoint,
+                    _ => {
+                        return Err(format!(
+                            "sweepExactWithOptions: option \"position\" must be \"auto\", \
+                             \"intersection\", \"closestPoint\" or \"closestEndpoint\", got \
+                             {value}"
+                        ));
+                    }
+                });
+            }
             "orientation" => {
                 parsed.orientation = match value.as_str() {
                     Some("normal") => ExactSweepOrientation::FollowPath,
@@ -328,8 +345,8 @@ pub(super) fn parse_exact_sweep_options(
             _ => {
                 return Err(format!(
                     "sweepExactWithOptions: unknown option \"{key}\" (this kernel builds \
-                     \"twist\", \"endScale\", \"orientation\", \"corner\" and \
-                     \"cornerRadius\")"
+                     \"twist\", \"endScale\", \"orientation\", \"corner\", \
+                     \"cornerRadius\" and \"position\")"
                 ));
             }
         }
@@ -1861,7 +1878,11 @@ impl RemusKernel {
     ///   `"parallel"` translates it along the path unturned, exactly along
     ///   any path curve and through corners;
     /// - `corner`: `"mitre"` (default) or `"round"` with `cornerRadius`, the
-    ///   radius of the arc tangent to both runs that replaces each corner.
+    ///   radius of the arc tangent to both runs that replaces each corner;
+    /// - `position`: where on the path the profile stands, `"auto"`,
+    ///   `"intersection"`, `"closestPoint"` or `"closestEndpoint"`; from a
+    ///   point inside the path the sweep runs both ways. Absent starts from
+    ///   the path end nearer the profile's plane.
     ///
     /// Both are linear in the distance travelled, and need a straight path
     /// with the profile square to it. With neither set this is `sweepExact`.

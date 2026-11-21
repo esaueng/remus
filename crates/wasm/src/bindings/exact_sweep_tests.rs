@@ -372,3 +372,37 @@ fn sweep_exact_with_options_rounds_a_corner() {
         );
     }
 }
+
+/// `"position"`: the radius-2 disc at the origin square to +X, on a path
+/// from x = −10 to x = 10, sweeps both ways from where the path crosses it
+/// (`"auto"`), the whole path; an unknown position is refused.
+#[test]
+fn sweep_exact_with_options_sweeps_both_ways_from_the_profile() {
+    let mut kernel = RemusKernel::new();
+    let face = profile(&mut kernel);
+    let path = vec![
+        kernel
+            .make_line_edge(-10.0, 0.0, 0.0, 10.0, 0.0, 0.0)
+            .unwrap(),
+    ];
+    let options =
+        super::operations::parse_exact_sweep_options(&serde_json::json!({"position": "auto"}))
+            .unwrap();
+    let solid = kernel
+        .sweep_exact_with_options_impl(face, &path, &options)
+        .unwrap();
+    let exact = PI * 4.0 * 20.0;
+    let measured = volume(&kernel, solid);
+    assert!(
+        (measured - exact).abs() / exact < 1e-9,
+        "{measured} vs {exact}"
+    );
+    let refused =
+        super::operations::parse_exact_sweep_options(&serde_json::json!({"position": "middle"}));
+    assert!(
+        refused
+            .as_ref()
+            .is_err_and(|e| e.contains("\"closestEndpoint\"")),
+        "{refused:?}"
+    );
+}
