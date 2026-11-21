@@ -2136,16 +2136,66 @@ pub fn loft_with_connections(
             ),
         });
     }
+    if smooth {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: "loft connections apply to a ruled loft: a smooth loft through chosen \
+                     vertices has no exact construction yet"
+                .into(),
+        });
+    }
+    if let Some(bad) = starts
+        .iter()
+        .position(|p| !p.0.iter().all(|c| c.is_finite()))
+    {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: format!("loft connection point {bad} is not finite"),
+        });
+    }
     remus_topology::transaction::run_transacted(topo, |topo| {
         let mut entered = Vec::with_capacity(profiles.len());
         for (k, (&face, &start)) in profiles.iter().zip(starts).enumerate() {
             entered.push(enter_profile_at(topo, face, start, k)?);
         }
-        if smooth {
-            loft_smooth(topo, &entered)
-        } else {
-            loft(topo, &entered)
+        // Every section straight-edged: the polygon loft is exact and keeps
+        // each section's start.
+        let mut all_lines = true;
+        for &face in &entered {
+            let wire = topo.wire(topo.face(face)?.outer_wire())?;
+            for oe in wire.edges() {
+                all_lines &= matches!(topo.edge(oe.edge())?.curve(), EdgeCurve::Line);
+            }
         }
+        if all_lines {
+            return loft(topo, &entered);
+        }
+        // Curved sections must take the curve-preserving loft from the chosen
+        // vertices, or nothing: the polygon fallback would chord their arcs.
+        let refuse = |section: usize, why: &str| crate::OperationsError::InvalidInput {
+            reason: format!(
+                "loft connections on curved sections need matching edges from the connection \
+                 vertices; section {section} {why}"
+            ),
+        };
+        for (k, &face) in entered.iter().enumerate() {
+            let Some(edges) = profile_oriented_edges(topo, face)? else {
+                return Err(refuse(k, "is not a planar profile of three or more edges"));
+            };
+            let first = edges.first().ok_or_else(|| refuse(k, "has no edges"))?;
+            if (first.start - starts[k]).length() > 10.0 * Tolerance::new().linear.max(1e-9) {
+                return Err(refuse(
+                    k,
+                    "starts inside a corner arc split in pieces, which the loft rejoins",
+                ));
+            }
+        }
+        let Some(solid) = try_loft_matching_curved_profiles(topo, &entered)? else {
+            return Err(refuse(
+                0,
+                "and the others do not have the same edges, in the same order, from them",
+            ));
+        };
+        validate_loft_result(topo, solid)?;
+        Ok(solid)
     })
 }
 
@@ -2158,6 +2208,13 @@ fn enter_profile_at(
 ) -> Result<FaceId, crate::OperationsError> {
     let face = topo.face(face_id)?.clone();
     let edges = topo.wire(face.outer_wire())?.edges().to_vec();
+    if edges.len() < 2 {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: format!(
+                "loft section {section} is one closed curve: it has no corner to connect at"
+            ),
+        });
+    }
     let mut best: Option<(usize, f64, f64)> = None;
     for (i, oe) in edges.iter().enumerate() {
         let edge = topo.edge(oe.edge())?;
