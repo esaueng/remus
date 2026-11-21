@@ -12,6 +12,7 @@ use crate::tessellate;
 
 use super::helpers::{collect_solid_vertex_points, compute_angular_range};
 
+mod perforated_plate;
 mod planar_outline;
 
 /// Volume of a solid that contains a bored quadric — a sphere (or torus) face
@@ -5341,7 +5342,9 @@ fn planar_face_area_is_consistent(
     // A small straight-edged outline in a coordinate plane is proven to pass
     // the mesh comparison below without building the mesh (see
     // `planar_outline`); anything it cannot certify is meshed as before.
-    if planar_outline::outline_area_is_certified(topo, face_id, exact.area, budget) {
+    if planar_outline::outline_area_is_certified(topo, face_id, exact.area, budget)
+        || perforated_plate::sampled_area_agrees(topo, face_id, exact.area, probe, budget)
+    {
         return true;
     }
     face_mesh_area_agrees(topo, face_id, exact.area, probe, budget)

@@ -90,6 +90,27 @@ pub struct PlanarTrim {
 }
 
 impl PlanarTrim {
+    /// Owned vector storage of a fully supported trim. A deferred error stays
+    /// on the normal query path, including its original evaluation order.
+    pub(crate) fn cache_heap_bytes(&self) -> Option<usize> {
+        let mut bytes = self.holes.capacity().saturating_mul(size_of::<TrimLoop>());
+        for boundary in std::iter::once(&self.outer).chain(&self.holes) {
+            match boundary {
+                TrimLoop::Circle(_) => {}
+                TrimLoop::Edges(edges)
+                    if !edges
+                        .iter()
+                        .any(|edge| matches!(edge, TrimEdge::Refused(_))) =>
+                {
+                    bytes = bytes
+                        .saturating_add(edges.capacity().saturating_mul(size_of::<TrimEdge>()));
+                }
+                _ => return None,
+            }
+        }
+        Some(bytes)
+    }
+
     /// Read the face's wires.
     ///
     /// # Errors

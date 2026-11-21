@@ -277,3 +277,175 @@ fn shelled_bin_volume_meshes_only_its_holed_rim() {
         "{volume} vs {expected}"
     );
 }
+
+fn plate_cap(topo: &mut Topology, locations: &[(f64, f64, f64)], offset: f64) -> FaceId {
+    use remus_math::curves::Circle3D;
+    use remus_topology::edge::{Edge, EdgeCurve};
+    use remus_topology::vertex::Vertex;
+    use remus_topology::wire::{OrientedEdge, Wire};
+    let face = planar_face(
+        topo,
+        &[(0., 0.), (40., 0.), (40., 30.), (0., 30.)]
+            .map(|(x, y)| Point3::new(x + offset, y + offset, 2.)),
+    );
+    let mut holes = Vec::new();
+    for (i, &(x, y, r)) in locations.iter().enumerate() {
+        let circle = Circle3D::new(
+            Point3::new(x + offset, y + offset, 2.),
+            Vec3::new(0., 0., if i % 2 == 0 { 1. } else { -1. }),
+            r,
+        )
+        .unwrap();
+        let start = [0.0, 0.125, -0.25, 1.5][i % 4];
+        let seam = circle.evaluate(start);
+        let v = topo.add_vertex(Vertex::new(seam, 1e-7));
+        let mut edge = Edge::new(v, v, EdgeCurve::Circle(circle));
+        edge.set_trim(Some((start, start + std::f64::consts::TAU)));
+        let edge = topo.add_edge(edge);
+        let wire =
+            topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, i % 3 != 0)], true).unwrap());
+        holes.push(wire);
+    }
+    topo.set_face_boundary_wires(face, topo.face(face).unwrap().outer_wire(), holes)
+        .unwrap();
+    face
+}
+
+#[test]
+fn perforated_cap_compares_the_chorded_region_to_the_mesh() {
+    let mut topo = Topology::new();
+    for offset in [0., -1000., 9100.] {
+        let face = plate_cap(
+            &mut topo,
+            &[(5., 6., 2.), (20., 15., 3.), (12., 24., 2.5)],
+            offset,
+        );
+        let exact = planar_face_signed_volume(&topo, face).unwrap().unwrap();
+        for deflection in [0.001_f64, 0.1, 1.0] {
+            let probe = deflection.max(exact.arc_length * 1e-3);
+            let budget = 16. * (2. / 3.) * exact.arc_length * probe + 1e-9 * exact.area.max(1.);
+            assert!(perforated_plate::sampled_area_agrees(
+                &topo, face, exact.area, probe, budget
+            ));
+            assert!(face_mesh_area_agrees(
+                &topo, face, exact.area, probe, budget
+            ));
+            assert!(!perforated_plate::sampled_area_agrees(
+                &topo,
+                face,
+                exact.area + 2. * budget,
+                probe,
+                budget
+            ));
+        }
+    }
+    for holes in [
+        [(5., 6., 2.), (9., 6., 2.)],  // tangent
+        [(5., 6., 2.), (5., 6., 1.)],  // nested
+        [(2., 6., 2.), (15., 6., 2.)], // touches the rim
+    ] {
+        let face = plate_cap(&mut topo, &holes, 0.);
+        assert!(!perforated_plate::sampled_area_agrees(
+            &topo, face, 1000., 0.1, 1e5
+        ));
+    }
+}
+
+#[test]
+fn many_separate_circle_rims_match_the_plate_mesh() {
+    let mut topo = Topology::new();
+    for count in [8, 32, 96] {
+        let holes = (0..count)
+            .map(|i| {
+                let x = 2.0 + f64::from(i % 12) * 3.1;
+                let y = 2.0 + f64::from(i / 12) * 3.2;
+                let r = 0.45 + 0.15 * f64::from(i % 5);
+                (x, y, r)
+            })
+            .collect::<Vec<_>>();
+        let face = plate_cap(&mut topo, &holes, -75.5);
+        let exact = planar_face_signed_volume(&topo, face).unwrap().unwrap();
+        for probe in [0.08_f64.max(exact.arc_length * 1e-3), 0.7] {
+            let budget = 16. * (2. / 3.) * exact.arc_length * probe + 1e-9 * exact.area;
+            assert!(perforated_plate::sampled_area_agrees(
+                &topo, face, exact.area, probe, budget
+            ));
+            assert!(face_mesh_area_agrees(
+                &topo, face, exact.area, probe, budget
+            ));
+        }
+    }
+}
+
+#[test]
+fn volume_of_a_drilled_plate_checks_its_caps_without_meshing_them_again() {
+    use crate::boolean::{BooleanOp, boolean};
+    use crate::primitives::{make_box, make_cylinder};
+    use crate::transform::transform_solid;
+
+    let mut topo = Topology::new();
+    let mut plate = make_box(&mut topo, 40., 30., 4.).unwrap();
+    for (i, (x, y)) in [(5., 6.), (9., 10.), (23., 14.), (35., 24.)]
+        .into_iter()
+        .enumerate()
+    {
+        let tool = make_cylinder(&mut topo, 2.5, 8.).unwrap();
+        transform_solid(&mut topo, tool, &Mat4::translation(x, y, -2.)).unwrap();
+        plate = boolean(&mut topo, BooleanOp::Cut, plate, tool).unwrap();
+        let count = i + 1;
+        let caps = remus_topology::explorer::solid_faces(&topo, plate)
+            .unwrap()
+            .into_iter()
+            .filter(|&f| {
+                let face = topo.face(f).unwrap();
+                matches!(face.surface(), FaceSurface::Plane { .. })
+                    && face.inner_wires().len() == count
+            })
+            .count();
+        assert_eq!(caps, 2);
+        PROBE_MESHES.with(|n| n.set(0));
+        let v = solid_volume(&topo, plate, 0.08).unwrap();
+        let meshes = PROBE_MESHES.with(std::cell::Cell::get);
+        if count == 1 {
+            assert!(meshes >= 2, "one hole uses the original cap meshes");
+        } else {
+            assert_eq!(meshes, 0, "{count} disjoint bores");
+        }
+        let expected = 40. * 30. * 4.
+            - f64::from(u32::try_from(count).unwrap()) * std::f64::consts::PI * 2.5 * 2.5 * 4.;
+        assert!(
+            (v - expected).abs() < 1e-8,
+            "after {count} cuts: {v} vs {expected}"
+        );
+    }
+}
+
+#[test]
+fn an_unsupported_wire_or_trim_keeps_the_mesh_probe() {
+    let mut topo = Topology::new();
+    let cap = plate_cap(&mut topo, &[(5., 6., 2.), (20., 15., 3.)], 0.);
+    let check = |t: &Topology| perforated_plate::sampled_area_agrees(t, cap, 1160., 0.1, 1000.);
+    assert!(check(&topo));
+    let outer = topo.face(cap).unwrap().outer_wire();
+    let holes = topo.face(cap).unwrap().inner_wires().to_vec();
+    let triangle = make_polygon_wire(
+        &mut topo,
+        &[
+            Point3::new(0., 0., 2.),
+            Point3::new(40., 0., 2.),
+            Point3::new(0., 30., 2.),
+        ],
+        1e-7,
+    )
+    .unwrap();
+    topo.set_face_boundary_wires(cap, triangle, holes.clone())
+        .unwrap();
+    assert!(!check(&topo));
+    topo.set_face_boundary_wires(cap, outer, holes.clone())
+        .unwrap();
+    let edge = topo.wire(holes[0]).unwrap().edges()[0].edge();
+    for trim in [Some((0., std::f64::consts::PI)), None] {
+        topo.edge_mut(edge).unwrap().set_trim(trim);
+        assert!(!check(&topo));
+    }
+}

@@ -707,7 +707,7 @@ pub(super) fn nurbs_runs_end_to_start(
 }
 
 /// Sample a wire into a list of 3D positions, skipping consecutive duplicates.
-pub(super) fn sample_wire_positions(
+pub fn sample_wire_positions(
     topo: &Topology,
     wire: &remus_topology::wire::Wire,
     tol: f64,
