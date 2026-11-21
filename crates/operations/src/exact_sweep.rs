@@ -2762,7 +2762,7 @@ fn find_anchor(
         ExactSweepPosition::PathIntersection => {
             let Some(found) = nearest(crossings) else {
                 return Err(invalid(
-                    "the sweep path does not cross the profile's plane, so it has no path \\
+                    "the sweep path does not cross the profile's plane, so it has no path \
                      intersection to start from (choose the closest point or endpoint)",
                 ));
             };

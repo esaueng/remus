@@ -232,6 +232,10 @@ fn position_refusals_are_typed_and_leave_the_topology_unchanged() {
             other => panic!("{label}: wrong refusal {other:?}"),
         };
         assert!(reason.contains(phrase), "{label}: {reason}");
+        assert!(
+            !reason.contains('\\'),
+            "{label}: a stray backslash: {reason}"
+        );
         assert_eq!(topo.num_faces(), 1, "{label}: faces left behind");
     }
 }
