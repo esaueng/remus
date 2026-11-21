@@ -909,3 +909,43 @@ fn joined_cap_moves_again_and_climbs_back_out_of_the_shoulder() {
         );
     }
 }
+
+#[test]
+fn block_top_rises_into_an_equal_radius_rim() {
+    // An R2 shoulder and an R2 boss rim on the R6 boss, the block top 6 mm
+    // below the cap: lowering the cap into the shoulder already joined the
+    // blends, but raising the block top the same way was refused at every
+    // rise past 2 mm. The top's bounding box covers the boss corner, so the
+    // swept-region check took the rim torus for an obstacle, although the
+    // whole top lies outside the R8 shoulder circle and the rim inside R6.
+    let (mut topo, solid, top) = shoulder_with(29.0, 35.0, 2.0, 2.0);
+    let source = remus_io::arena_io::serialize_solid(&topo, solid).unwrap();
+    let source_volume = solid_volume(&topo, solid, 0.01).unwrap();
+    let permission = Some(FaceMoveApproximation { stations: 256 });
+    for distance in [3.0, 4.0] {
+        let refusal = move_faces(&mut topo, solid, &[top], distance)
+            .expect_err("an exact-only rise must stop at the fixed rim");
+        assert!(
+            refusal
+                .to_string()
+                .contains("moving blend reaches fixed rim face"),
+            "{distance}: {refusal}"
+        );
+        let moved = move_faces_with_quality(&mut topo, solid, &[top], distance, permission)
+            .unwrap_or_else(|error| panic!("rise by {distance}: {error}"));
+        assert_eq!(
+            moved.quality,
+            FaceMoveQuality::SampledCapJoin { stations: 256 }
+        );
+        let moved = moved.result.solid;
+        assert!(validate_solid(&topo, moved).unwrap().is_valid());
+        top_at(&topo, moved, 29.0 + distance);
+        top_at(&topo, moved, 35.0);
+        assert!(solid_volume(&topo, moved, 0.01).unwrap() > source_volume);
+        closed_mesh_volume(&topo, moved, 0.05);
+        assert_eq!(
+            remus_io::arena_io::serialize_solid(&topo, solid).unwrap(),
+            source
+        );
+    }
+}
