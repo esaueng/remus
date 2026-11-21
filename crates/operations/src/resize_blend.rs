@@ -2959,7 +2959,7 @@ fn execute_translation(
     analysis: &TranslationAnalysis,
     distance: f64,
 ) -> Result<BlendMoveEntities, OperationsError> {
-    analysis.swept.check(distance)?;
+    analysis.swept.check_rigid_translation(topo, distance)?;
     for clearance in &analysis.axial_clearance {
         clearance.check(distance)?;
     }
