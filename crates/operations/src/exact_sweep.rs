@@ -1837,6 +1837,233 @@ pub fn sweep_exact(
     remus_topology::transaction::run_transacted(topo, |topo| sweep_exact_impl(topo, profile, path))
 }
 
+/// Options of [`sweep_exact_with_options`]. The default is the plain
+/// [`sweep_exact`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ExactSweepOptions {
+    /// Total turn of the profile about the path over its length, in
+    /// radians, right-handed about the direction of travel; linear in the
+    /// distance travelled. `0` turns nothing.
+    pub twist: f64,
+    /// Scale of the profile at the far end of the path, about the point
+    /// where the path crosses it; linear in the distance travelled. `1`
+    /// scales nothing.
+    pub end_scale: f64,
+}
+
+impl Default for ExactSweepOptions {
+    fn default() -> Self {
+        Self {
+            twist: 0.0,
+            end_scale: 1.0,
+        }
+    }
+}
+
+/// Most Hermite spans a twisted sweep may fit along its path.
+const MAX_TWIST_SPANS: usize = 4096;
+
+/// [`sweep_exact`] with a twist and a scale along the path.
+///
+/// With the default options this is exactly [`sweep_exact`]. A twist or a
+/// scale is built along a straight path (one line, or collinear lines) with
+/// the profile square to it: the profile is carried along the path while it
+/// scales uniformly about the path's line and turns about it, both linearly
+/// in the distance travelled. Without a twist every face is exact (lines
+/// sweep planes, arcs about the path cones, anything else exact ruled
+/// NURBS); with a twist the side faces and rails are certified NURBS fits of
+/// the screw motion, within a proven bound far below the modelling
+/// tolerance, recorded as the edges' tolerance. Nothing is faceted.
+///
+/// # Errors
+///
+/// As [`sweep_exact`], and [`OperationsError::InvalidInput`] for a
+/// non-finite twist or a non-finite or non-positive end scale, and for a
+/// profile curve the scaled or twisted construction cannot carry (a closed
+/// curve off the path's line, a trimmed spline, an ellipse or open conic).
+/// [`OperationsError::Unsupported`] for a twist or scale along a path that
+/// bends (an arc or a corner) or closes, or with a profile that is not square
+/// to the path: those have no exact construction. Every error leaves the
+/// topology unchanged.
+pub fn sweep_exact_with_options(
+    topo: &mut Topology,
+    profile: FaceId,
+    path: &[EdgeId],
+    options: &ExactSweepOptions,
+) -> Result<SolidId, OperationsError> {
+    if !options.twist.is_finite() {
+        return Err(invalid(format!(
+            "an exact sweep's twist must be finite, got {}",
+            options.twist
+        )));
+    }
+    if !(options.end_scale.is_finite() && options.end_scale > 0.0) {
+        return Err(invalid(format!(
+            "an exact sweep's end scale must be finite and positive, got {}",
+            options.end_scale
+        )));
+    }
+    let (lowest, highest) = (
+        crate::extrude::similar_twist::MIN_END_SCALE,
+        crate::extrude::similar_twist::MAX_END_SCALE,
+    );
+    if !(lowest..=highest).contains(&options.end_scale) {
+        return Err(invalid(format!(
+            "an exact sweep's end scale must be between {lowest} and {highest}, got {}",
+            options.end_scale
+        )));
+    }
+    #[allow(clippy::float_cmp)]
+    if options.twist == 0.0 && options.end_scale == 1.0 {
+        return sweep_exact(topo, profile, path);
+    }
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        straight_sweep_impl(topo, profile, path, options)
+    })
+}
+
+/// A twisted or scaled sweep along a straight path: a similar (or twisted)
+/// extrusion about the path's line.
+fn straight_sweep_impl(
+    topo: &mut Topology,
+    profile: FaceId,
+    path: &[EdgeId],
+    options: &ExactSweepOptions,
+) -> Result<SolidId, OperationsError> {
+    let linear = Tolerance::new().linear;
+    let face = topo.face(profile)?;
+    let FaceSurface::Plane { normal, d: plane_d } = *face.surface() else {
+        return Err(invalid(format!(
+            "an exact sweep needs a planar profile, got a {} face",
+            face.surface().type_tag()
+        )));
+    };
+    let normal = normal.normalize()?;
+    let what = if options.twist == 0.0 {
+        "scale"
+    } else if (options.end_scale - 1.0).abs() == 0.0 {
+        "twist"
+    } else {
+        "twist and scale"
+    };
+    let (mut chain, closed) = read_chain(topo, path, linear)?;
+    if closed {
+        return Err(unsupported(format!(
+            "an exact sweep can {what} the profile only along an open straight path, and \
+             this path closes on itself"
+        )));
+    }
+    let plane_distance = |p: Point3| (to_vec(p).dot(normal) - plane_d).abs();
+    if plane_distance(chain[chain.len() - 1].end) < plane_distance(chain[0].start) {
+        chain = chain.iter().rev().map(Segment::reversed).collect();
+    }
+    let mut travel = Vec3::new(0.0, 0.0, 0.0);
+    for (k, segment) in chain.iter().enumerate() {
+        let Motion::Translate(d) = segment.motion else {
+            return Err(unsupported(format!(
+                "an exact sweep can {what} the profile only along a straight path; path \
+                 segment {k} is an arc, and a profile turning or scaling along an arc has no \
+                 exact surface"
+            )));
+        };
+        travel += d;
+    }
+    for (k, joint) in chain_joints(&chain, false)?.iter().enumerate() {
+        if !matches!(joint, Joint::Smooth) {
+            return Err(unsupported(format!(
+                "an exact sweep can {what} the profile only along a straight path; the path \
+                 turns a corner at joint {k}"
+            )));
+        }
+    }
+    let length = travel.length();
+    let direction = travel.normalize()?;
+    // A turn under the smooth-joint angle can still leave a joint off the
+    // line by more than the tolerance over a long run: every joint must lie
+    // on the line from the start to the end, or the sweep would straighten
+    // a bend.
+    // Both ends of every segment are checked, so offsets that cancel along
+    // the chain are still caught; the allowance covers rounding where the
+    // path lies far from the origin.
+    let start = chain[0].start;
+    let far = to_vec(start)
+        .length()
+        .max(to_vec(chain[chain.len() - 1].end).length());
+    let allowance = linear.max(64.0 * f64::EPSILON * far);
+    for (k, segment) in chain.iter().enumerate() {
+        for (joint, point) in [(k, segment.start), (k + 1, segment.end)] {
+            let off = point - start;
+            let miss = (off - direction * off.dot(direction)).length();
+            if miss > allowance {
+                return Err(unsupported(format!(
+                    "an exact sweep can {what} the profile only along a straight path; the \
+                     path turns a corner at joint {joint} ({miss:e} off the line)"
+                )));
+            }
+        }
+    }
+    // The straight extrusion splits a closed curve that is not a circle into
+    // chords; the twist and scale would carry those facets, so refuse it.
+    for wire in std::iter::once(topo.face(profile)?.outer_wire())
+        .chain(topo.face(profile)?.inner_wires().iter().copied())
+    {
+        let edges = topo.wire(wire)?.edges();
+        if edges.len() == 1 {
+            let edge = topo.edge(edges[0].edge())?;
+            if !matches!(edge.curve(), EdgeCurve::Circle(_)) {
+                return Err(invalid(format!(
+                    "an exact sweep can {what} the profile only when each closed curve in it is \
+                     a circle or is split into pieces; this one is a closed {}",
+                    edge.curve().type_tag()
+                )));
+            }
+        }
+    }
+    if normal.cross(direction).length() > 1e-9 {
+        return Err(unsupported(format!(
+            "an exact sweep can {what} the profile only when the profile is square to the \
+             path; this one is tilted {:.4}° from square",
+            normal
+                .dot(direction)
+                .abs()
+                .clamp(0.0, 1.0)
+                .acos()
+                .to_degrees()
+        )));
+    }
+    // The path's line crosses the profile's plane here: the centre of the
+    // twist and of the scale.
+    let along = (plane_d - to_vec(start).dot(normal)) / direction.dot(normal);
+    let centre = start + direction * along;
+    let rate = options.twist / length;
+    #[allow(clippy::float_cmp)]
+    let built = if options.end_scale == 1.0 {
+        crate::extrude::twist::twisted_extrude_impl(
+            topo,
+            profile,
+            centre,
+            direction,
+            length,
+            rate,
+            linear,
+            MAX_TWIST_SPANS,
+        )?
+    } else {
+        crate::extrude::similar_twist::similar_extrude_impl(
+            topo,
+            profile,
+            centre,
+            direction,
+            length,
+            rate,
+            options.end_scale,
+            linear,
+            MAX_TWIST_SPANS,
+        )?
+    };
+    Ok(built.solid)
+}
+
 #[allow(clippy::too_many_lines)]
 fn sweep_exact_impl(
     topo: &mut Topology,
@@ -2231,3 +2458,6 @@ mod tests;
 
 #[cfg(test)]
 mod clearance_tests;
+
+#[cfg(test)]
+mod options_tests;

@@ -436,6 +436,17 @@ historical predecessor-line records, retained for provenance. The
 
 ### Added
 
+* **operations,wasm:** twist and scale an exact sweep along a straight path
+  (`exact_sweep::sweep_exact_with_options`, `sweepExactWithOptions`). The
+  profile, square to the path, turns about and scales uniformly about the
+  path's line, both linearly in the distance travelled. Without a twist the
+  result is exact planes, cones and ruled NURBS; with one the side faces are
+  certified screw fits (`extrude::similar_twist` pairs each control point
+  with its own offset from the axis, so a scale is an exact similarity). A
+  twist or scale along an arc, a corner or a closed path, or with a tilted
+  profile, is refused as `Unsupported`; unknown options are refused, never
+  ignored. Default options are `sweep_exact` unchanged.
+
 * **operations,wasm:** wrap a planar profile onto a cylinder
   (`wrap::wrap_profile_solid`, `wrapProfileOnCylinder`), preserving arc
   length, as the solid between two radii: the material an emboss adds or an

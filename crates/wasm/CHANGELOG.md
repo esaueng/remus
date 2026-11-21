@@ -140,6 +140,12 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
 
 ### Features
 
+* Add `sweepExactWithOptions(face, edges, options)`: `sweepExact` with a JSON
+  options object, `twist` (radians, total) and `endScale`, both linear along
+  a straight path with the profile square to it; also a batch op of the same
+  name (`options` optional). An unknown key or a non-number is refused, so a
+  kernel never ignores an option it cannot build.
+
 * Add whole-session snapshots: `snapshot()` returns the session as bytes and
   the static `RemusKernel.fromSnapshot(bytes)` restores it into a new kernel
   with identical handles (retired ones stay stale, the next allocation of

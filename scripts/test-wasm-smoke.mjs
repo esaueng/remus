@@ -241,6 +241,29 @@ console.log('ok - RemusIo created; kernel module carries the arena codec only');
   console.log('ok - strict face merge matches the checked solid');
 }
 
+// M04 exact sweep options: a circle along a straight line, scaled and turned,
+// is the exact cone frustum; an unknown option is refused, never ignored.
+{
+  const k = new RemusKernel();
+  try {
+    const face = k.makeFaceFromWire(
+      k.makeWire(Uint32Array.of(k.makeCircleEdge(0, 0, 0, 1, 0, 0, 2)), true),
+    );
+    const path = Uint32Array.of(k.makeLineEdge(0, 0, 0, 10, 0, 0));
+    const solid = k.sweepExactWithOptions(face, path, JSON.stringify({ twist: 0.5, endScale: 1.5 }));
+    const frustum = (Math.PI * 4 * 10 * (1 + 1.5 + 2.25)) / 3;
+    const volume = k.volume(solid, DEFLECTION);
+    assert.ok(Math.abs(volume - frustum) / frustum < 1e-6, `${volume} vs ${frustum}`);
+    assert.throws(
+      () => k.sweepExactWithOptions(face, path, JSON.stringify({ orientation: 'parallel' })),
+      /unknown option/,
+    );
+  } finally {
+    k.free();
+  }
+  console.log('ok - exact sweep options scale and turn the profile');
+}
+
 // A full radius-8 sphere fits inside this radius-10 finite cylinder even
 // though corners of the sphere's enclosing box do not. Protect the emitted
 // artifact's whole-carrier support certificate and the enclosed cavity.
