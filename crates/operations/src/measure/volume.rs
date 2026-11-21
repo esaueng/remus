@@ -1548,6 +1548,9 @@ fn quadric_wall_is_notched_band(topo: &Topology, fid: FaceId) -> bool {
     if !face.inner_wires().is_empty() {
         return false;
     }
+    if axial_rims_have_at_most_two_levels(topo, face.outer_wire(), axis, origin) {
+        return false;
+    }
     let Ok(pts) = crate::polygon::face_polygon(topo, fid) else {
         return false;
     };
@@ -1563,6 +1566,76 @@ fn quadric_wall_is_notched_band(topo: &Topology, fid: FaceId) -> bool {
     let eps = span * 1e-6;
     levels.dedup_by(|a, b| (*a - *b).abs() <= eps);
     levels.len() >= 3
+}
+
+/// A line contributes its oriented start to the polygon; a closed circular rim whose
+/// two basis vectors have zero axial component contributes only its centre's axial level.
+/// All other wires retain the sampled test, including tilted rims and third levels.
+fn axial_rims_have_at_most_two_levels(
+    topo: &Topology,
+    wire: remus_topology::wire::WireId,
+    axis: Vec3,
+    origin: Point3,
+) -> bool {
+    #[expect(
+        clippy::float_cmp,
+        reason = "Only an exactly axial direction proves constant rim levels."
+    )]
+    let Some(k) = axis.0.iter().position(|v| v.abs() == 1.0) else {
+        return false;
+    };
+    // Bound all operands so even the unused transverse coordinates stay finite in
+    // circle evaluation and the subsequent dot product (zero times infinity is NaN).
+    let bounded = |v: f64| v.abs() <= 1e100;
+    if axis.0[(k + 1) % 3] != 0.0
+        || axis.0[(k + 2) % 3] != 0.0
+        || !origin.0.into_iter().all(bounded)
+    {
+        return false;
+    }
+    let Ok(wire) = topo.wire(wire) else {
+        return false;
+    };
+    let mut levels = [None; 2];
+    for oe in wire.edges() {
+        let Ok(edge) = topo.edge(oe.edge()) else {
+            return false;
+        };
+        let point = match edge.curve() {
+            EdgeCurve::Line => {
+                let Ok(vertex) = topo.vertex(oe.oriented_start(edge)) else {
+                    return false;
+                };
+                vertex.point()
+            }
+            EdgeCurve::Circle(c)
+                if edge.is_closed()
+                    && c.u_axis().0[k] == 0.0
+                    && c.v_axis().0[k] == 0.0
+                    && bounded(c.radius())
+                    && c.u_axis().0.into_iter().all(bounded)
+                    && c.v_axis().0.into_iter().all(bounded) =>
+            {
+                c.center()
+            }
+            EdgeCurve::Circle(_)
+            | EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_)
+            | EdgeCurve::NurbsCurve(_) => return false,
+        };
+        if !point.0.into_iter().all(bounded) {
+            return false;
+        }
+        let level = Some(point.0[k]);
+        if !levels.contains(&level) {
+            let Some(slot) = levels.iter_mut().find(|s| s.is_none()) else {
+                return false;
+            };
+            *slot = level;
+        }
+    }
+    true
 }
 
 /// Whether a quadric wall's outer boundary WINDS the surface's periodic angle
@@ -6808,6 +6881,74 @@ mod regression_tests {
     fn opened(mut mesh: tessellate::TriangleMesh) -> tessellate::TriangleMesh {
         mesh.indices.drain(0..3);
         mesh
+    }
+
+    #[test]
+    fn axial_bore_rims_skip_sampling_but_a_tilted_rim_is_notched() {
+        let mut topo = Topology::new();
+        let solid = crate::primitives::make_cylinder(&mut topo, 3.0, 10.0).unwrap();
+        let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
+        let (id, wire, axis, origin) = faces
+            .into_iter()
+            .find_map(|id| {
+                let face = topo.face(id).ok()?;
+                if let FaceSurface::Cylinder(c) = face.surface() {
+                    Some((id, face.outer_wire(), c.axis(), c.origin()))
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        assert!(axial_rims_have_at_most_two_levels(
+            &topo, wire, axis, origin
+        ));
+        let sampled_levels = |topo: &Topology| {
+            let mut levels: Vec<_> = crate::polygon::face_polygon(topo, id)
+                .unwrap()
+                .into_iter()
+                .map(|point| axis.dot(point - origin))
+                .collect();
+            levels.compact_sort_by(f64::total_cmp);
+            levels.dedup();
+            levels.len()
+        };
+        assert_eq!(sampled_levels(&topo), 2);
+        assert!(!quadric_wall_is_notched_band(&topo, id));
+
+        // Tilting either of the closed rims gives the sampled polygon additional levels.
+        let (edge, centre, radius) = topo
+            .wire(wire)
+            .unwrap()
+            .edges()
+            .iter()
+            .find_map(|oe| {
+                if let EdgeCurve::Circle(c) = topo.edge(oe.edge()).ok()?.curve() {
+                    Some((oe.edge(), c.center(), c.radius()))
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+        // Moving just the circular curve off its seam gives three axial levels.
+        let shifted = remus_math::curves::Circle3D::new(centre + axis * 2.0, axis, radius).unwrap();
+        topo.edge_mut(edge)
+            .unwrap()
+            .set_curve(EdgeCurve::Circle(shifted));
+        assert_eq!(sampled_levels(&topo), 3);
+        assert!(!axial_rims_have_at_most_two_levels(
+            &topo, wire, axis, origin
+        ));
+        assert!(quadric_wall_is_notched_band(&topo, id));
+
+        let tilted =
+            remus_math::curves::Circle3D::new(centre, Vec3::new(1.0, 0.0, 1.0), radius).unwrap();
+        topo.edge_mut(edge)
+            .unwrap()
+            .set_curve(EdgeCurve::Circle(tilted));
+        assert!(!axial_rims_have_at_most_two_levels(
+            &topo, wire, axis, origin
+        ));
+        assert!(quadric_wall_is_notched_band(&topo, id));
     }
 
     /// A curved body, so its mesh depends on the deflection, and its clamp.
