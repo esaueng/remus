@@ -281,10 +281,11 @@ fn round_corner_refusals_are_typed_and_leave_the_topology_unchanged() {
         (
             "a corner out of the plane of the arc beside it",
             |topo| {
-                let profile = disc(topo, 1.0);
-                // An arc in the plane x = 10 (about +X), leaving the corner
-                // along +Z; the line arrives along +Y.
-                let circle = Circle3D::with_axes(p(10.0, 0.0, 10.0), X, 10.0, -Z, Y).unwrap();
+                // The line arrives along +Y; the arc leaves along +X but
+                // curves up in the plane y = 0 (about −Y), so the corner's
+                // plane (z = 0) is not the arc's.
+                let profile = disc_at(topo, p(10.0, -20.0, 0.0), Y);
+                let circle = Circle3D::with_axes(p(10.0, 0.0, 10.0), -Y, 10.0, -Z, X).unwrap();
                 let a = topo.add_vertex(Vertex::new(p(10.0, 0.0, 0.0), 1e-7));
                 let b = topo.add_vertex(Vertex::new(circle.evaluate(FRAC_PI_2), 1e-7));
                 let mut arc = Edge::new(a, b, EdgeCurve::Circle(circle));

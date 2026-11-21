@@ -441,8 +441,10 @@ historical predecessor-line records, retained for provenance. The
   `"corner": "round"` and `"cornerRadius"`): each corner between two
   straight runs is replaced by the arc of that radius tangent to both, so the
   profile turns about its axis as exact tori and cylinders instead of
-  folding across a mitre. A radius too long for its run or inside the
-  profile, and a corner next to an arc, are refused by type.
+  folding across a mitre. A corner beside an arc is rounded too when the
+  arc lies in the corner's plane (the fillet centre is where the two sides,
+  offset by the radius, meet). A radius that does not fit or lies inside
+  the profile, and a corner out of the arc's plane, are refused by type.
 * **operations,wasm:** an exact sweep can keep the profile's orientation
   (`ExactSweepOrientation::KeepProfile`, `sweepExactWithOptions` option
   `"orientation": "parallel"`): the profile is translated along the path,

@@ -141,8 +141,8 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
 ### Features
 
 * `sweepExactWithOptions` takes `"corner"`: `"mitre"` (default) or `"round"`
-  with `"cornerRadius"`, the radius of the tangent arc replacing each corner
-  between straight runs.
+  with `"cornerRadius"`, the radius of the tangent arc replacing each corner,
+  between straight runs or beside an arc in the corner's plane.
 * `sweepExactWithOptions` takes `"orientation"`: `"normal"` (default) or
   `"parallel"`, which translates the profile along the path unturned, along
   any path curve and through corners.
