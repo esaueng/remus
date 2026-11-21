@@ -126,9 +126,20 @@ pub fn move_with_cap_reblend(
         false
     };
     let rebuilt = crate::performance::timed("move_faces.cap_join.rebuild", || {
+        // A cap flush with the top its boss stands on loses the boss wall
+        // between them; the outline round runs round the merged top.
+        if let Some(flush) = remus_blend::cap_reblend::rebuild_flush_cap_in_place(
+            topo,
+            copied.solid,
+            cap_image,
+            &rim_images,
+            plan.radius,
+            permission,
+        )? {
+            Ok(flush)
         // Contact onset, reached from either side, shares the shoulder's
         // spring with the rim instead of rolling a collapsed corner band.
-        if let Some(touching) = remus_blend::cap_reblend::rebuild_touching_cap_in_place(
+        } else if let Some(touching) = remus_blend::cap_reblend::rebuild_touching_cap_in_place(
             topo,
             copied.solid,
             cap_image,
@@ -617,10 +628,17 @@ fn joined_plan(
             }
         }
     }
+    // The cap lies wholly in its plane, so a shoulder that stops at or
+    // below that plane reaches it only flush, which the reconstruction
+    // owns; past it, the boss would fold into the block.
+    if selected_level + distance > level(*cap)? + tol.linear {
+        return Err(reconstruction("joined shoulder would pass its cap's plane"));
+    }
     let excluded = moved
         .union(&invariant)
         .copied()
         .chain(rims.iter().copied())
+        .chain(std::iter::once(*cap))
         .collect();
     let selected_faces = faces.iter().copied().collect();
     let swept = crate::push_pull::SweptRegionCheck::prepare(

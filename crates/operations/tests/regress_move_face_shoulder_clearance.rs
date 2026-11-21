@@ -1184,3 +1184,195 @@ fn openzcad_boss_block_joins_from_either_top_and_moves_on() {
         );
     }
 }
+
+/// The flush boss block built from scratch: an R6 boss on the corner of a
+/// 30 x 34 block, both `height` tall, its two seams rounded first and then
+/// every convex top and far vertical edge, all R2. Each fillet's coplanar
+/// leftovers are unified first, as a modeller merges them.
+fn flush_boss_block(topo: &mut Topology, height: f64) -> SolidId {
+    let boss = make_cylinder(topo, 6.0, height).unwrap();
+    let block = make_box(topo, 30.0, 34.0, height).unwrap();
+    let solid = boolean(topo, BooleanOp::Fuse, boss, block).unwrap();
+    remus_operations::heal::unify_faces(topo, solid).unwrap();
+    let ends = |topo: &Topology, edge| {
+        let edge = topo.edge(edge).unwrap();
+        (
+            topo.vertex(edge.start()).unwrap().point(),
+            topo.vertex(edge.end()).unwrap().point(),
+        )
+    };
+    let vertical_at = |topo: &Topology, solid, x: f64, y: f64| {
+        solid_edges(topo, solid)
+            .unwrap()
+            .into_iter()
+            .filter(|&edge| {
+                let (a, b) = ends(topo, edge);
+                (a.z() - b.z()).abs() > 1.0
+                    && [a, b]
+                        .iter()
+                        .all(|p| (p.x() - x).abs() < 1e-6 && (p.y() - y).abs() < 1e-6)
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut seams = vertical_at(topo, solid, 6.0, 0.0);
+    seams.extend(vertical_at(topo, solid, 0.0, 6.0));
+    let solid = fillet_cascade(topo, solid, &seams, 2.0).unwrap().solid;
+    remus_operations::heal::unify_faces(topo, solid).unwrap();
+    let mut convex: Vec<_> = solid_edges(topo, solid)
+        .unwrap()
+        .into_iter()
+        .filter(|&edge| {
+            let (a, b) = ends(topo, edge);
+            (a.z() - height).abs() < 1e-6 && (b.z() - height).abs() < 1e-6
+        })
+        .collect();
+    for (x, y) in [(30.0, 0.0), (30.0, 34.0), (0.0, 34.0)] {
+        convex.extend(vertical_at(topo, solid, x, y));
+    }
+    let rounded = fillet_cascade(topo, solid, &convex, 2.0).unwrap();
+    assert!(rounded.failed.is_empty());
+    rounded.solid
+}
+
+fn assert_same_body(topo: &Topology, actual: SolidId, expected: SolidId, label: &str) {
+    assert!(validate_solid(topo, actual).unwrap().is_valid(), "{label}");
+    let volume = |solid| solid_volume(topo, solid, 0.001).unwrap();
+    let area = |solid| -> f64 {
+        solid_faces(topo, solid)
+            .unwrap()
+            .into_iter()
+            .map(|face| face_area(topo, face, 0.001).unwrap())
+            .sum()
+    };
+    let (v, w) = (volume(actual), volume(expected));
+    let (a, b) = (area(actual), area(expected));
+    assert!((v - w).abs() < 1e-6 * w, "{label}: volume {v} vs {w}");
+    assert!((a - b).abs() < 1e-6 * b, "{label}: area {a} vs {b}");
+    let kinds = |solid| {
+        let mut kinds: Vec<_> = solid_faces(topo, solid)
+            .unwrap()
+            .into_iter()
+            .map(|face| std::mem::discriminant(topo.face(face).unwrap().surface()))
+            .map(|kind| format!("{kind:?}"))
+            .collect();
+        kinds.compact_sort_unstable();
+        kinds
+    };
+    assert_eq!(kinds(actual), kinds(expected), "{label}: face carriers");
+}
+
+#[test]
+fn openzcad_boss_block_moves_flush_from_either_top() {
+    // Raising the block top 6 mm, or lowering the cap 6 mm, brings the two
+    // tops into one plane. The boss wall between them, the joined shoulder
+    // and rim and the approximate seam mitres vanish; what is left is the
+    // part a modeller would round from scratch, exact throughout.
+    let permission = Some(FaceMoveApproximation { stations: 256 });
+    let mut topo = Topology::new();
+    let solid = openzcad_boss_block(&mut topo);
+    let source = remus_io::arena_io::serialize_solid(&topo, solid).unwrap();
+    let expected: [(f64, SolidId); 2] = [
+        (35.0, flush_boss_block(&mut topo, 35.0)),
+        (29.0, flush_boss_block(&mut topo, 29.0)),
+    ];
+    for (height, distance, level) in [(29.0, 6.0, 35.0), (35.0, -6.0, 29.0)] {
+        let face = top_at(&topo, solid, height);
+        let moved = move_faces_with_quality(&mut topo, solid, &[face], distance, permission)
+            .unwrap_or_else(|error| panic!("{height} by {distance}: {error}"));
+        assert_eq!(
+            moved.quality,
+            FaceMoveQuality::SampledCapJoin { stations: 256 }
+        );
+        let moved = moved.result.solid;
+        let reference = expected
+            .iter()
+            .find(|(h, _)| (*h - level).abs() < 1e-9)
+            .unwrap()
+            .1;
+        assert_same_body(&topo, moved, reference, &format!("{height} by {distance}"));
+        // One top remains, and it moves on exactly either way.
+        let top = top_at(&topo, moved, level);
+        for step in [0.5, -0.5] {
+            let again = move_faces_with_quality(&mut topo, moved, &[top], step, permission)
+                .unwrap_or_else(|error| panic!("{height} by {distance} then {step}: {error}"));
+            assert_eq!(again.quality, FaceMoveQuality::Exact);
+            assert!(
+                validate_solid(&topo, again.result.solid)
+                    .unwrap()
+                    .is_valid()
+            );
+        }
+    }
+    assert_eq!(
+        remus_io::arena_io::serialize_solid(&topo, solid).unwrap(),
+        source
+    );
+}
+
+#[test]
+fn openzcad_boss_block_reaches_flush_from_a_joined_top() {
+    // A top already joined to the boss's rounds goes flush on a second drag
+    // from either side, and the result is the same as in one drag.
+    let permission = Some(FaceMoveApproximation { stations: 256 });
+    let mut topo = Topology::new();
+    let expected: [(f64, SolidId); 2] = [
+        (35.0, flush_boss_block(&mut topo, 35.0)),
+        (29.0, flush_boss_block(&mut topo, 29.0)),
+    ];
+    for (height, steps) in [
+        (29.0, [4.0, 2.0]),
+        (29.0, [5.5, 0.5]),
+        (35.0, [-4.0, -2.0]),
+        (35.0, [-5.0, -1.0]),
+    ] {
+        let mut solid = openzcad_boss_block(&mut topo);
+        let mut level = height;
+        for distance in steps {
+            let face = top_at(&topo, solid, level);
+            solid = move_faces_with_quality(&mut topo, solid, &[face], distance, permission)
+                .unwrap_or_else(|error| panic!("{height} by {steps:?}: {error}"))
+                .result
+                .solid;
+            level += distance;
+        }
+        let reference = expected
+            .iter()
+            .find(|(h, _)| (*h - level).abs() < 1e-9)
+            .unwrap()
+            .1;
+        assert_same_body(&topo, solid, reference, &format!("{height} by {steps:?}"));
+    }
+}
+
+#[test]
+fn openzcad_boss_block_still_refuses_past_flush() {
+    // Past flush the boss would step down from the block, a shape the cap
+    // reconstruction does not build. The refusal leaves the source intact.
+    let permission = Some(FaceMoveApproximation { stations: 256 });
+    let mut topo = Topology::new();
+    let solid = openzcad_boss_block(&mut topo);
+    let source = remus_io::arena_io::serialize_solid(&topo, solid).unwrap();
+    for (height, distance) in [(29.0, 6.5), (35.0, -6.5)] {
+        let face = top_at(&topo, solid, height);
+        assert!(
+            move_faces_with_quality(&mut topo, solid, &[face], distance, permission).is_err(),
+            "{height} by {distance}"
+        );
+    }
+    assert_eq!(
+        remus_io::arena_io::serialize_solid(&topo, solid).unwrap(),
+        source
+    );
+    let face = top_at(&topo, solid, 29.0);
+    let joined = move_faces_with_quality(&mut topo, solid, &[face], 4.0, permission)
+        .unwrap()
+        .result
+        .solid;
+    let joined_source = remus_io::arena_io::serialize_solid(&topo, joined).unwrap();
+    let face = top_at(&topo, joined, 33.0);
+    assert!(move_faces_with_quality(&mut topo, joined, &[face], 2.5, permission).is_err());
+    assert_eq!(
+        remus_io::arena_io::serialize_solid(&topo, joined).unwrap(),
+        joined_source
+    );
+}

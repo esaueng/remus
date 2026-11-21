@@ -19,8 +19,11 @@ use remus_topology::{
 /// Two separations qualify: a circular face inside the cylinder with the
 /// candidate wholly outside it ([`disc_clears_coaxial_shell`]), and a face
 /// wholly outside the cylinder with the candidate inside it
-/// ([`face_clears_coaxial_core`]). This is only an exclusion proof;
-/// unqualified pairs retain the box check.
+/// ([`face_clears_coaxial_core`]). The second also holds with the roles
+/// exchanged, for a fixed planar candidate parallel to the move lying
+/// outside a cylinder that holds the moved face: distance from the axis does
+/// not depend on which of the two travels along it. This is only an
+/// exclusion proof; unqualified pairs retain the box check.
 pub(super) fn coaxial_sweep_is_radially_disjoint(
     topo: &Topology,
     moved: FaceId,
@@ -33,9 +36,14 @@ pub(super) fn coaxial_sweep_is_radially_disjoint(
     if normal.cross(direction).length() > Tolerance::new().angular {
         return Ok(false);
     }
+    let candidate_parallel = matches!(
+        topo.face(candidate)?.surface(),
+        FaceSurface::Plane { normal, .. } if normal.cross(direction).length() <= Tolerance::new().angular
+    );
     Ok(
         disc_clears_coaxial_shell(topo, moved, candidate, direction)?
-            || face_clears_coaxial_core(topo, moved, candidate, direction)?,
+            || face_clears_coaxial_core(topo, moved, candidate, direction)?
+            || (candidate_parallel && face_clears_coaxial_core(topo, candidate, moved, direction)?),
     )
 }
 
@@ -491,13 +499,20 @@ mod tests {
         // A hole of the disc's own radius is where the disc meets the face.
         let flush = annulus(&mut topo, 12.5);
         assert!(!coaxial_sweep_is_radially_disjoint(&topo, moved, flush, UP).unwrap());
-        // An off-axis hole proves nothing about the disc's path.
-        let blank = make_cylinder(&mut topo, 20.0, 10.0).unwrap();
-        let tool = make_cylinder(&mut topo, 16.0, 30.0).unwrap();
-        transform_solid(&mut topo, tool, &Mat4::translation(1.0, 0.0, -10.0)).unwrap();
-        let tube = boolean(&mut topo, BooleanOp::Cut, blank, tool).unwrap();
-        let offset = planar_face(&topo, tube, 10.0);
-        assert!(!coaxial_sweep_is_radially_disjoint(&topo, moved, offset, UP).unwrap());
+        // An off-axis hole is bounded by its rim's nearest approach to the
+        // disc's axis: 15 clears the disc, 12 does not.
+        for (shift, clear) in [(1.0, true), (4.0, false)] {
+            let blank = make_cylinder(&mut topo, 24.0, 10.0).unwrap();
+            let tool = make_cylinder(&mut topo, 16.0, 30.0).unwrap();
+            transform_solid(&mut topo, tool, &Mat4::translation(shift, 0.0, -10.0)).unwrap();
+            let tube = boolean(&mut topo, BooleanOp::Cut, blank, tool).unwrap();
+            let offset = planar_face(&topo, tube, 10.0);
+            assert_eq!(
+                coaxial_sweep_is_radially_disjoint(&topo, moved, offset, UP).unwrap(),
+                clear,
+                "hole shifted by {shift}"
+            );
+        }
     }
 
     fn face_on(topo: &Topology, solid: SolidId, kind: fn(&FaceSurface) -> bool) -> FaceId {
@@ -565,6 +580,49 @@ mod tests {
             matches!(surface, FaceSurface::Cylinder(_))
         });
         assert!(!coaxial_sweep_is_radially_disjoint(&topo, ring, shifted_wall, UP).unwrap());
+    }
+
+    #[test]
+    fn swept_core_cannot_reach_a_parallel_face_outside_it() {
+        // A cap descending through a block top that wraps its boss: the
+        // moved face is the core and the fixed block top the outer face.
+        let mut topo = Topology::new();
+        let top = block_top_around_boss(&mut topo);
+        let narrow = make_cylinder(&mut topo, 4.0, 40.0).unwrap();
+        let narrow_cap = planar_face(&topo, narrow, 40.0);
+        assert!(coaxial_sweep_is_radially_disjoint(&topo, narrow_cap, top, UP).unwrap());
+        // A cap as wide as the block top's clearance meets it at the arc.
+        let wide = make_cylinder(&mut topo, 6.0, 40.0).unwrap();
+        let wide_cap = planar_face(&topo, wide, 40.0);
+        assert!(!coaxial_sweep_is_radially_disjoint(&topo, wide_cap, top, UP).unwrap());
+        // A candidate across the move is not a parallel face; its sweep
+        // contact is not decided by the axis distance of its plane.
+        let side = solid_faces(&topo, narrow)
+            .unwrap()
+            .into_iter()
+            .find(|&face| {
+                matches!(
+                    topo.face(face).unwrap().surface(),
+                    FaceSurface::Plane { .. }
+                ) && topo
+                    .face(face)
+                    .unwrap()
+                    .effective_plane_normal()
+                    .is_some_and(|n| n.z() < -0.99)
+            })
+            .expect("bottom cap");
+        let block = make_box(&mut topo, 30.0, 18.0, 10.0).unwrap();
+        let wall = solid_faces(&topo, block)
+            .unwrap()
+            .into_iter()
+            .find(|&face| {
+                topo.face(face)
+                    .unwrap()
+                    .effective_plane_normal()
+                    .is_some_and(|n| n.x() > 0.99)
+            })
+            .expect("x-max wall");
+        assert!(!coaxial_sweep_is_radially_disjoint(&topo, side, wall, UP).unwrap());
     }
 
     #[test]

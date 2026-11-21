@@ -18,6 +18,8 @@ mod unjoin;
 pub use unjoin::restore_unjoined_cap_in_place;
 mod touch;
 pub use touch::{rebuild_touching_cap_in_place, restore_touching_support_limits_in_place};
+mod flush;
+pub use flush::rebuild_flush_cap_in_place;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::{PI, TAU};
