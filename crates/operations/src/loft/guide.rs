@@ -29,7 +29,7 @@
 use remus_math::compact_sort::CompactSort;
 use remus_math::nurbs::NurbsCurve;
 use remus_math::nurbs::basis::{basis_funs, find_span};
-use remus_math::nurbs::knot_ops::curve_knot_refine;
+use remus_math::nurbs::knot_ops::{curve_knot_insert, curve_knot_refine};
 use remus_math::nurbs::projection::project_point_to_curve;
 use remus_math::nurbs::{curve_degree_elevate, curve_to_bezier_segments};
 use remus_math::tolerance::Tolerance;
@@ -80,13 +80,15 @@ fn invalid(reason: impl Into<String>) -> OperationsError {
 ///   order, from the first section to the last, or that runs along a
 ///   section's plane at its corner.
 /// - [`OperationsError::Unsupported`] (`loft_with_guide`) for a section with
-///   a curved edge, sections with different corner counts, or a guide whose
-///   rails double back between the end sections (the walls would fold over
-///   themselves), which have no valid construction here.
+///   a curved edge, sections with different corner counts, a guide that
+///   crosses a section against the direction of the loft, or a guide whose
+///   rails fail to advance steadily from each section's plane to the next
+///   (the walls would fold over themselves), which have no valid
+///   construction here.
 ///
-/// Each section is wound counter-clockwise about the guide's direction at
-/// its corner on its own, so sections drawn with opposite windings still
-/// pair corner for corner.
+/// Each section is wound counter-clockwise about its own plane normal
+/// oriented toward the later sections, so sections drawn with opposite
+/// windings still pair corner for corner.
 /// - [`OperationsError::ExactOnlyUnattainable`] when the built solid fails
 ///   validation (for example a guide that folds a wall through another).
 ///
@@ -140,9 +142,9 @@ pub fn loft_with_guide(
         )));
     }
 
-    orient_rings(&mut rings, &guide, &params)?;
+    let normals = orient_rings(&mut rings, &guide, &params)?;
     let rails = guided_rails(&guide, &rings, &params, smooth)?;
-    require_steady_progress(&rings, &rails)?;
+    require_steady_progress(&rings, &rails, &params, &normals)?;
     remus_topology::transaction::run_validated(
         topo,
         |topo| build_rail_loft(topo, &rings, &rails),
@@ -270,63 +272,165 @@ fn guide_corner(
     })
 }
 
-/// Wind every section counter-clockwise about the guide's direction at its
-/// guide corner, independently, keeping that corner first.
+/// `curve` with every interior parameter of `ts` raised to full
+/// multiplicity, and the index of the control point the curve passes
+/// through at each of `ts` (the curve's own point there).
+fn split_at(curve: &NurbsCurve, ts: &[f64]) -> Result<(NurbsCurve, Vec<usize>), OperationsError> {
+    let p = curve.degree();
+    let mut refined = curve.clone();
+    for &t in ts {
+        if t > 0.0 && t < 1.0 {
+            refined = curve_knot_insert(&refined, t, p)?;
+        }
+    }
+    let knots = refined.knots();
+    let last = refined.control_points().len() - 1;
+    let indices = ts
+        .iter()
+        .map(|&t| {
+            if t <= 0.0 {
+                Ok(0)
+            } else if t >= 1.0 {
+                Ok(last)
+            } else {
+                knots
+                    .iter()
+                    .position(|&k| (k - t).abs() < 1e-15)
+                    .and_then(|i| i.checked_sub(1))
+                    .ok_or_else(|| unsupported("a section parameter did not split the rails"))
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((refined, indices))
+}
+
+/// The guide's one-sided geometric direction at `t`: towards the first
+/// control point after (or, `backward`, before) the curve's point there that
+/// is not coincident with it, so a stationary parameterisation (a repeated
+/// control point) still has its direction of travel.
+fn guide_direction(guide: &NurbsCurve, t: f64, backward: bool) -> Option<Vec3> {
+    let (split, indices) = split_at(guide, &[t]).ok()?;
+    let points = split.control_points();
+    let at = points[indices[0]];
+    let tol = Tolerance::new().linear;
+    let mut others: Box<dyn Iterator<Item = &Point3>> = if backward {
+        Box::new(points[..indices[0]].iter().rev())
+    } else {
+        Box::new(points[indices[0] + 1..].iter())
+    };
+    let next = others.find(|&&q| (q - at).length() > tol)?;
+    let direction = if backward { at - *next } else { *next - at };
+    direction.normalize().ok()
+}
+
+/// The unit normal of section `k`'s plane pointing toward the sections after
+/// it: toward the first later section off that plane, or else away from the
+/// nearest earlier one off it. `None` when the ring is degenerate or every
+/// other section lies in its plane.
+fn oriented_normal(rings: &[Vec<Point3>], k: usize) -> Option<Vec3> {
+    let ring = &rings[k];
+    let normal = newell_normal(ring).normalize().ok()?;
+    let tol = Tolerance::new().linear;
+    let side = |j: usize| (polygon_centroid(&rings[j]) - ring[0]).dot(normal);
+    let later = (k + 1..rings.len())
+        .map(side)
+        .find(|d| d.abs() > tol)
+        .map(f64::signum);
+    let sign = later.or_else(|| {
+        (0..k)
+            .rev()
+            .map(side)
+            .find(|d| d.abs() > tol)
+            .map(|d| -d.signum())
+    })?;
+    Some(normal * sign)
+}
+
+/// Wind each section counter-clockwise about its own plane normal oriented
+/// toward the sections after it (the last: away from those before it), keeping
+/// the guide corner first, so every section's corners follow its guide
+/// corner in the same sense about the direction of travel. The guide must
+/// leave each section toward the next (and reach the last from the previous
+/// side); otherwise the corner correspondence is ambiguous and the loft is
+/// refused. Returns the oriented normals.
 fn orient_rings(
     rings: &mut [Vec<Point3>],
     guide: &NurbsCurve,
     params: &[f64],
-) -> Result<(), OperationsError> {
-    for (k, (ring, &t)) in rings.iter_mut().zip(params).enumerate() {
-        let edge_on = || {
+) -> Result<Vec<Vec3>, OperationsError> {
+    let last = rings.len() - 1;
+    let mut normals = Vec::with_capacity(rings.len());
+    for k in 0..=last {
+        let oriented = oriented_normal(rings, k).ok_or_else(|| {
             invalid(format!(
-                "the loft guide runs along section {k}'s plane at its guide corner"
+                "loft section {k} is degenerate or every other section lies in its plane"
             ))
-        };
-        let normal = newell_normal(ring).normalize().map_err(|_| edge_on())?;
-        let tangent = guide.tangent(t).map_err(|_| edge_on())?;
-        let along = normal.dot(tangent);
+        })?;
+        let tangent = guide_direction(guide, params[k], k == last)
+            .ok_or_else(|| invalid(format!("the loft guide has no direction at section {k}")))?;
+        let along = oriented.dot(tangent);
         if along.abs() < 1e-6 {
-            return Err(edge_on());
+            return Err(invalid(format!(
+                "the loft guide runs along section {k}'s plane at its guide corner"
+            )));
         }
         if along < 0.0 {
+            return Err(unsupported(format!(
+                "the loft guide crosses section {k} against the direction of the loft, so its \
+                 corners have no consistent correspondence"
+            )));
+        }
+        let ring = &mut rings[k];
+        if newell_normal(ring).dot(oriented) < 0.0 {
             ring.reverse();
             // Reversal moved the guide corner from the front to the back.
             ring.rotate_right(1);
         }
+        normals.push(oriented);
     }
-    Ok(())
+    Ok(normals)
 }
 
-/// Refuse a loft whose rails do not advance steadily from the first section
-/// towards the last. Each rail's control polygon must never step back along
-/// the axis between the end sections' centroids; by the variation
-/// diminishing property (weights are positive) the rail then never doubles
-/// back, so no wall folds over a stretch it already covered.
+/// Refuse a loft whose rails do not advance steadily through every section
+/// interval. Over the interval from section `k` to `k + 1`, each rail's
+/// control polygon (split at both sections) must move away from section
+/// `k`'s plane and toward section `k + 1`'s, never falling more than the
+/// linear tolerance behind its best progress so far, and stay between the
+/// two planes. By the variation diminishing property (weights are
+/// positive) the rail then never doubles back, so no wall folds over a
+/// stretch it already covered.
 fn require_steady_progress(
     rings: &[Vec<Point3>],
     rails: &[NurbsCurve],
+    params: &[f64],
+    normals: &[Vec3],
 ) -> Result<(), OperationsError> {
-    let (first, last) = (&rings[0], &rings[rings.len() - 1]);
     let tol = Tolerance::new().linear;
-    let axis = (polygon_centroid(last) - polygon_centroid(first))
-        .normalize()
-        .map_err(|_| {
-            invalid("a guided loft's first and last sections must not share a centroid")
-        })?;
-    for (i, rail) in rails.iter().enumerate() {
-        let heights: Vec<f64> = rail
-            .control_points()
-            .iter()
-            .map(|&q| (q - first[0]).dot(axis))
-            .collect();
-        let rises = heights.windows(2).all(|w| w[1] - w[0] >= -tol);
-        let advances = heights.last().copied().unwrap_or(0.0) - heights[0] > tol;
-        if !(rises && advances) {
-            return Err(unsupported(format!(
-                "the loft along the guide doubles back: rail {i} does not advance steadily \
-                 from the first section towards the last"
-            )));
+    let doubles_back = |i: usize, k: usize| {
+        unsupported(format!(
+            "the loft along the guide doubles back: rail {i} does not advance steadily from \
+             section {k} to section {}",
+            k + 1
+        ))
+    };
+    for k in 0..rings.len() - 1 {
+        // Section k + 1's plane, facing back toward section k.
+        let back = normals[k + 1] * -1.0;
+        for (i, rail) in rails.iter().enumerate() {
+            let (split, at) = split_at(rail, &params[k..=k + 1])?;
+            let polygon = &split.control_points()[at[0]..=at[1]];
+            let mut ahead = f64::NEG_INFINITY;
+            let mut behind = f64::INFINITY;
+            for &q in polygon {
+                let from_k = (q - rings[k][0]).dot(normals[k]);
+                let to_next = (q - rings[k + 1][0]).dot(back);
+                ahead = ahead.max(from_k);
+                behind = behind.min(to_next);
+                if from_k < ahead - tol || to_next > behind + tol || from_k < -tol || to_next < -tol
+                {
+                    return Err(doubles_back(i, k));
+                }
+            }
         }
     }
     Ok(())
@@ -389,18 +493,39 @@ fn guided_rails(
 /// `guide_knots` is given.
 fn offset_knots(params: &[f64], degree: usize, guide_knots: Option<&[f64]>) -> Vec<f64> {
     let n = params.len();
+    let averages: Vec<f64> = (1..n - degree)
+        .map(|j| {
+            #[allow(clippy::cast_precision_loss)]
+            let average = params[j..j + degree].iter().sum::<f64>() / degree as f64;
+            average
+        })
+        .collect();
+    let targets: Vec<Option<f64>> = averages
+        .iter()
+        .map(|&average| {
+            guide_knots
+                .unwrap_or_default()
+                .iter()
+                .copied()
+                .filter(|&k| k > 0.0 && k < 1.0 && (k - average).abs() <= KNOT_SNAP)
+                .min_by(|x, y| (x - average).abs().total_cmp(&(y - average).abs()))
+        })
+        .collect();
     let mut knots = vec![0.0; degree + 1];
-    for j in 1..n - degree {
-        #[allow(clippy::cast_precision_loss)]
-        let average = params[j..j + degree].iter().sum::<f64>() / degree as f64;
-        let snapped = guide_knots
-            .unwrap_or_default()
-            .iter()
-            .copied()
-            .filter(|&k| k > 0.0 && k < 1.0 && (k - average).abs() <= KNOT_SNAP)
-            .min_by(|x, y| (x - average).abs().total_cmp(&(y - average).abs()))
-            .unwrap_or(average);
-        knots.push(snapped);
+    for (j, (&average, &target)) in averages.iter().zip(&targets).enumerate() {
+        // At most one offset knot snaps onto each guide knot: two snapped
+        // together would raise its multiplicity past the averaged vector's.
+        #[allow(clippy::float_cmp)]
+        let shared = target.is_some()
+            && targets
+                .iter()
+                .enumerate()
+                .any(|(other, &t)| other != j && t == target);
+        knots.push(if shared {
+            average
+        } else {
+            target.unwrap_or(average)
+        });
     }
     knots.extend(std::iter::repeat_n(1.0, degree + 1));
     knots

@@ -586,3 +586,165 @@ fn snapping_never_moves_an_offset_beyond_tolerance() {
         "{widths:?} vs {expected}"
     );
 }
+
+fn expect_doubling_back(faces: impl Fn(&mut Topology) -> Vec<FaceId>, guide: &NurbsCurve) {
+    let mut topo = Topology::new();
+    let faces = faces(&mut topo);
+    let error = loft_with_guide(&mut topo, &faces, guide, false).unwrap_err();
+    let OperationsError::Unsupported { reason, .. } = &error else {
+        panic!("untyped {error:?}");
+    };
+    assert!(reason.contains("doubles back"), "{reason}");
+}
+
+/// Re-check regression: the upper square lies on the tilted plane
+/// z = 10 + x + y and the guide reaches its corner from the far side of that
+/// plane (final tangent (5, 0, 4) against the normal (−1, −1, 1)). Flipping
+/// that ring alone swapped the corners beside the guide corner and the rails
+/// crossed at u = 0.5; the inconsistent correspondence is refused.
+#[test]
+fn a_guide_crossing_a_section_backwards_is_refused() {
+    let mut topo = Topology::new();
+    let lower = square(&mut topo, 2.0, 0.0);
+    let corners = [
+        p(-1.0, -1.0, 8.0),
+        p(1.0, -1.0, 10.0),
+        p(1.0, 1.0, 12.0),
+        p(-1.0, 1.0, 10.0),
+    ];
+    let wire = make_polygon_wire(&mut topo, &corners, 1e-7).unwrap();
+    let normal = Vec3::new(-1.0, -1.0, 1.0).normalize().unwrap();
+    let upper = topo.add_face(Face::new(
+        wire,
+        vec![],
+        FaceSurface::Plane {
+            normal,
+            d: normal.dot(Vec3::new(-1.0, -1.0, 8.0)),
+        },
+    ));
+    let guide = bezier(
+        vec![p(-1.0, -1.0, 0.0), p(-6.0, -1.0, 4.0), p(-1.0, -1.0, 8.0)],
+        vec![1.0; 3],
+    );
+    for smooth in [false, true] {
+        let before = topo.num_faces();
+        let error = loft_with_guide(&mut topo, &[lower, upper], &guide, smooth).unwrap_err();
+        let OperationsError::Unsupported { reason, .. } = &error else {
+            panic!("untyped {error:?}");
+        };
+        assert!(reason.contains("against the direction"), "{reason}");
+        assert_eq!(topo.num_faces(), before);
+    }
+}
+
+/// Re-check regression: four back-steps of 7.5e-8 each pass a per-step
+/// tolerance but retrace 3e-7 in total; progress is measured against the
+/// best reached so far.
+#[test]
+fn small_back_steps_that_add_up_are_refused() {
+    let mut points = vec![p(-1.0, -1.0, 0.0), p(-1.0, -1.0, 5.0)];
+    for j in 1..=4 {
+        points.push(p(-1.0, -1.0, 7.5e-8f64.mul_add(-f64::from(j), 5.0)));
+    }
+    points.push(p(-1.0, -1.0, 10.0));
+    let n = points.len();
+    let mut knots = vec![0.0, 0.0];
+    #[allow(clippy::cast_precision_loss)]
+    knots.extend((1..n - 1).map(|j| j as f64 / (n - 1) as f64));
+    knots.extend([1.0, 1.0]);
+    let guide = NurbsCurve::new(1, knots, points, vec![1.0; n]).unwrap();
+    expect_doubling_back(
+        |topo| vec![square(topo, 2.0, 0.0), square(topo, 2.0, 10.0)],
+        &guide,
+    );
+}
+
+/// Re-check regression: a straight frustum from a side-20 square about the
+/// origin to a side-2 square about (5, 0, 1) leans away from the centroid
+/// axis on one rail, yet advances steadily between the two planes. Its
+/// volume is h/3·(A₁ + A₂ + √(A₁A₂)) = (400 + 4 + 40)/3 = 148.
+#[test]
+fn an_oblique_frustum_advances_between_its_section_planes() {
+    let mut topo = Topology::new();
+    let base = polygon(
+        &mut topo,
+        &[
+            p(-10.0, -10.0, 0.0),
+            p(10.0, -10.0, 0.0),
+            p(10.0, 10.0, 0.0),
+            p(-10.0, 10.0, 0.0),
+        ],
+    );
+    let top = polygon(
+        &mut topo,
+        &[
+            p(4.0, -1.0, 1.0),
+            p(6.0, -1.0, 1.0),
+            p(6.0, 1.0, 1.0),
+            p(4.0, 1.0, 1.0),
+        ],
+    );
+    let guide = bezier(vec![p(-10.0, -10.0, 0.0), p(4.0, -1.0, 1.0)], vec![1.0; 2]);
+    let solid = loft_with_guide(&mut topo, &[base, top], &guide, false).unwrap();
+    assert_valid(&topo, solid);
+    assert_guide_on_surface(&topo, solid, &guide);
+    let measured = volume(&topo, solid);
+    assert!((measured - 148.0).abs() < 1e-6, "{measured}");
+    // The doubling-back guide is still refused under the per-interval rule.
+    let back = NurbsCurve::new(
+        1,
+        vec![0.0, 0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0, 1.0],
+        vec![
+            p(-1.0, -1.0, 0.0),
+            p(-1.0, -1.0, 7.0),
+            p(-1.0, -1.0, 3.0),
+            p(-1.0, -1.0, 10.0),
+        ],
+        vec![1.0; 4],
+    )
+    .unwrap();
+    expect_doubling_back(
+        |topo| vec![square(topo, 2.0, 0.0), square(topo, 2.0, 10.0)],
+        &back,
+    );
+}
+
+/// Re-check regression: two interior sections 7.5e-10 either side of the
+/// guide's knot at 0.5 both snapped onto it, doubling the knot and breaking
+/// the ruled loft. At most one snaps; this prism measures 2·2·10 = 40.
+#[test]
+fn two_offsets_never_snap_onto_one_guide_knot() {
+    let mut topo = Topology::new();
+    let guide = NurbsCurve::new(
+        1,
+        vec![0.0, 0.0, 0.5, 1.0, 1.0],
+        vec![p(-1.0, -1.0, 0.0), p(-1.0, -1.0, 5.0), p(-1.0, -1.0, 10.0)],
+        vec![1.0; 3],
+    )
+    .unwrap();
+    let sections: Vec<FaceId> = [0.0, 0.5 - 7.5e-10, 0.5 + 7.5e-10, 1.0]
+        .into_iter()
+        .map(|t| square(&mut topo, 2.0, guide.evaluate(t).z()))
+        .collect();
+    let solid = loft_with_guide(&mut topo, &sections, &guide, false).unwrap();
+    assert_valid(&topo, solid);
+    assert!((volume(&topo, solid) - 40.0).abs() < 1e-6);
+}
+
+/// Re-check regression: controls (−1, −1, 0) twice then (−1, −1, 10) make a
+/// straight guide whose derivative vanishes at its start. Its geometric
+/// direction there is still +z, so the prism builds: volume 40.
+#[test]
+fn a_stationary_guide_start_still_has_a_direction() {
+    let guide = bezier(
+        vec![p(-1.0, -1.0, 0.0), p(-1.0, -1.0, 0.0), p(-1.0, -1.0, 10.0)],
+        vec![1.0; 3],
+    );
+    for smooth in [false, true] {
+        let mut topo = Topology::new();
+        let faces = [square(&mut topo, 2.0, 0.0), square(&mut topo, 2.0, 10.0)];
+        let solid = loft_with_guide(&mut topo, &faces, &guide, smooth).unwrap();
+        assert_valid(&topo, solid);
+        assert!((volume(&topo, solid) - 40.0).abs() < 1e-6);
+    }
+}
