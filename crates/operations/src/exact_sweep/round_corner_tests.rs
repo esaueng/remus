@@ -254,6 +254,59 @@ fn a_round_corner_between_two_arcs_is_exact() {
     assert_solid(&topo, solid, PI * centre_line, "arc then arc");
 }
 
+/// Review regression: a fillet that turns a half circle. A line along +X to
+/// the origin meets a radius-10 arc about (−8, −6) that starts there,
+/// counter-clockwise; the radius-2 fillet about (−8, 2) touches the line at
+/// (−8, 0) and the arc at (−8, 4), half a turn apart.
+#[test]
+fn a_half_turn_fillet_is_built() {
+    let mut topo = Topology::new();
+    let profile = disc_at(&mut topo, p(-20.0, 0.0, 0.0), X);
+    let start = 0.6_f64.atan2(0.8); // the origin's angle about (−8, −6)
+    let end = 120.0_f64.to_radians();
+    let circle = Circle3D::with_axes(p(-8.0, -6.0, 0.0), Z, 10.0, X, Y).unwrap();
+    let a = topo.add_vertex(Vertex::new(p(0.0, 0.0, 0.0), 1e-7));
+    let b = topo.add_vertex(Vertex::new(circle.evaluate(end), 1e-7));
+    let mut arc = Edge::new(a, b, EdgeCurve::Circle(circle));
+    arc.set_trim(Some((start, end)));
+    let arc = topo.add_edge(arc);
+    let path = [line(&mut topo, p(-20.0, 0.0, 0.0), p(0.0, 0.0, 0.0)), arc];
+    let solid = sweep_exact_with_options(&mut topo, profile, &path, &round(2.0)).unwrap();
+    // The line keeps 12, the fillet turns π, the arc keeps from (−8, 4)
+    // (straight up from its centre, π/2) to 120°.
+    let centre_line = 12.0 + 2.0 * PI + 10.0 * (end - FRAC_PI_2);
+    assert_solid(&topo, solid, PI * centre_line, "half-turn fillet");
+}
+
+/// Review regression: a 179.9° turn, far too sharp to mitre, takes a round
+/// corner when its runs are long enough.
+#[test]
+fn a_hairpin_takes_a_round_corner() {
+    let mut topo = Topology::new();
+    let profile = disc_at(&mut topo, p(0.0, 0.0, 0.0), X);
+    let turn = 179.9_f64.to_radians();
+    let corner = p(3000.0, 0.0, 0.0);
+    let back = p(3000.0 + 3000.0 * turn.cos(), 3000.0 * turn.sin(), 0.0);
+    let path = [
+        line(&mut topo, p(0.0, 0.0, 0.0), corner),
+        line(&mut topo, corner, back),
+    ];
+    let options = round(2.0);
+    match sweep_exact_with_options(&mut topo, profile, &path, &options) {
+        Ok(solid) => {
+            let report = crate::validate::validate_solid(&topo, solid).unwrap();
+            assert!(report.is_valid(), "{report:?}");
+        }
+        // A radius-1 disc does not fit inside a radius-2 hairpin's runs, which
+        // pass 4 apart near the bend: the clearance check may refuse it, but
+        // by type, never as a mitre.
+        Err(OperationsError::InvalidInput { reason }) => {
+            assert!(!reason.contains("mitre"), "{reason}");
+        }
+        Err(other) => panic!("{other:?}"),
+    }
+}
+
 #[test]
 fn round_corner_refusals_are_typed_and_leave_the_topology_unchanged() {
     type Build = fn(&mut Topology) -> Result<SolidId, OperationsError>;

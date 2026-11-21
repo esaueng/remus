@@ -2142,6 +2142,18 @@ fn sweep_exact_impl(
     sweep_exact_cornered_impl(topo, profile, path, ExactSweepCorner::Mitre)
 }
 
+/// Below this `cos(φ/2)` a corner turns straight back (within about
+/// 1e-7°) and no round corner can take it; anything less sharp is filleted.
+const ROUND_REVERSAL_COSINE: f64 = 1e-9;
+
+/// The unit direction of travel along `segment` at its point `x`.
+fn tangent_at(segment: &Segment, x: Point3) -> Option<Vec3> {
+    match segment.motion {
+        Motion::Translate(d) => d.normalize().ok(),
+        Motion::Rotate { origin, axis, .. } => axis.cross(x - origin).normalize().ok(),
+    }
+}
+
 /// Where a path segment runs: from `start` to `end`, a line or an arc.
 fn segment_from(
     original: &Segment,
@@ -2266,10 +2278,11 @@ fn offset_meets(a: Offset, b: Offset, radius: f64, axis: Vec3) -> Vec<Vec3> {
         let base = m * radius - c;
         let (bb, tb) = (base.dot(base), along.dot(base));
         let disc = tb.mul_add(tb, -(bb - r * r));
-        if disc < 0.0 {
+        // A tangent meeting rounds either way about zero.
+        if disc < -1e-12 * (bb + r * r) {
             return Vec::new();
         }
-        let root = disc.sqrt();
+        let root = disc.max(0.0).sqrt();
         vec![
             m * radius + along * (-tb - root),
             m * radius + along * (root - tb),
@@ -2361,7 +2374,7 @@ fn round_corners(
         if angle <= G1_ANGLE_TOLERANCE {
             continue;
         }
-        if 0.5 * (incoming + outgoing).length() < MIN_MITRE_COSINE {
+        if 0.5 * (incoming + outgoing).length() < ROUND_REVERSAL_COSINE {
             return Err(unsupported(format!(
                 "the sweep path turns back on itself at joint {i} ({:.4}°); a corner that sharp \
                  has no round corner of radius {radius}",
@@ -2403,8 +2416,17 @@ fn round_corners(
                 && at_out > 0.0
                 && at_out < segment_extent(after);
             // The fillet turns the way the corner does.
-            let turn = (t_in - q).cross(t_out - q).dot(axis);
-            if fits && turn > 0.0 && best.is_none_or(|(d, ..)| q.length() < d) {
+            // The fillet leaves each side the way the side runs: its
+            // tangent where it touches agrees with the side's.
+            let along = |side: &Segment, t: Vec3| {
+                let fillet = axis.cross(t - q).normalize().ok();
+                match (fillet, tangent_at(side, corner + t)) {
+                    (Some(f), Some(s)) => f.dot(s) > 0.0,
+                    _ => false,
+                }
+            };
+            let agrees = along(before, t_in) && along(after, t_out);
+            if fits && agrees && best.is_none_or(|(d, ..)| q.length() < d) {
                 best = Some((q.length(), q, t_in, t_out));
             }
         }
@@ -2416,11 +2438,23 @@ fn round_corners(
         };
         let (from, to) = (corner + t_in, corner + t_out);
         let centre = corner + q;
+        let too_fine = || {
+            invalid(format!(
+                "a round corner of radius {radius} at joint {i} is too small to resolve at its \
+                 distance from the origin (use a larger radius)"
+            ))
+        };
         arcs[i] = Some(Segment {
             start: from,
             end: to,
-            start_tangent: axis.cross(from - centre).normalize()?,
-            end_tangent: axis.cross(to - centre).normalize()?,
+            start_tangent: axis
+                .cross(from - centre)
+                .normalize()
+                .map_err(|_| too_fine())?,
+            end_tangent: axis
+                .cross(to - centre)
+                .normalize()
+                .map_err(|_| too_fine())?,
             motion: Motion::Rotate {
                 origin: centre,
                 axis,
@@ -2452,7 +2486,12 @@ fn round_corners(
                  (shorten the radius or lengthen the segment)"
             )));
         }
-        out.push(segment_from(segment, start, end)?);
+        out.push(segment_from(segment, start, end).map_err(|_| {
+            invalid(format!(
+                "path segment {k} is too short for its round corners of radius {radius} \
+                 (shorten the radius or lengthen the segment)"
+            ))
+        })?);
     }
     // A closed chain's closure arc sits before its first segment; keep the
     // chain starting where the open sweep would, at the first segment.
