@@ -2660,18 +2660,22 @@ fn plane_crossings(segment: &Segment, normal: Vec3, d: f64) -> Vec<Point3> {
     // is the crossing nearest the profile, whichever that is.
     let linear = Tolerance::new().linear;
     let near = |a: Point3, b: Point3| (a - b).length() <= 10.0 * linear;
-    let mut out: Vec<Point3> = [segment.start, segment.end]
+    let ends: Vec<Point3> = [segment.start, segment.end]
         .into_iter()
         .filter(|&q| (normal.dot(to_vec(q)) - d).abs() <= 10.0 * linear)
         .collect();
-    // Both ends in the plane: a line or a circle meets a plane at most
-    // twice unless it lies in it, so there is nothing else to find, and the
-    // formulas would only add rounding noise.
-    if out.len() == 2 {
-        return out;
+    // A straight piece with both ends on the plane lies in it: its rise is
+    // rounding noise, and the formula would place a crossing anywhere.
+    if ends.len() == 2 && matches!(segment.motion, Motion::Translate(_)) {
+        return ends;
     }
+    // Every root the formula finds stays a candidate, even when an end is
+    // on the plane (within tolerance) or two roots lie close together: only
+    // a root that is an end, again, is dropped. The anchor is then the
+    // candidate nearest the profile.
+    let mut out = ends.clone();
     for q in interior_plane_crossings(segment, normal, d) {
-        if !out.iter().any(|&e| near(e, q)) {
+        if !ends.iter().any(|&e| near(e, q)) {
             out.push(q);
         }
     }
