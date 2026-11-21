@@ -41,6 +41,9 @@ pub fn move_with_cap_reblend(
     else {
         return Ok(None);
     };
+    // A cap that brings its rim along descends for the first time; one that
+    // moves its plane alone is already joined to its supports.
+    let rim_translates = plan.entities.faces.len() > 1;
     let translation = BlendTranslation {
         vertices: plan.entities.vertices,
         edges: plan.entities.edges,
@@ -67,7 +70,7 @@ pub fn move_with_cap_reblend(
         .collect::<Result<Vec<_>, _>>()?;
     // A cap descending onto its supports for the first time leaves every
     // support where it was, so there is no moved support to restore.
-    let first_descent = plan.descending && rim_images.len() == 1;
+    let first_descent = plan.descending && rim_translates;
     // The cap and its supports separate when a rising shoulder retreats, or
     // when a descending cap climbs back out of its supports.
     let separating = if plan.descending {
@@ -123,16 +126,9 @@ pub fn move_with_cap_reblend(
         false
     };
     let rebuilt = crate::performance::timed("move_faces.cap_join.rebuild", || {
-        if first_descent {
-            reblend_planar_cap_group(
-                topo,
-                copied.solid,
-                cap_image,
-                &rim_images,
-                plan.radius,
-                permission,
-            )
-        } else if let Some(touching) = remus_blend::cap_reblend::rebuild_touching_cap_in_place(
+        // Contact onset, reached from either side, shares the shoulder's
+        // spring with the rim instead of rolling a collapsed corner band.
+        if let Some(touching) = remus_blend::cap_reblend::rebuild_touching_cap_in_place(
             topo,
             copied.solid,
             cap_image,
@@ -141,6 +137,15 @@ pub fn move_with_cap_reblend(
             permission,
         )? {
             Ok(touching)
+        } else if first_descent {
+            reblend_planar_cap_group(
+                topo,
+                copied.solid,
+                cap_image,
+                &rim_images,
+                plan.radius,
+                permission,
+            )
         } else if separate {
             let extension =
                 extended
@@ -427,6 +432,44 @@ fn joined_plan(
             "selected shoulder has mixed or unsupported section radii",
         ));
     }
+    // The shoulder's own boss axes. A cap group elsewhere on the body, on
+    // another boss, is no partner of this shoulder even when its rim radius
+    // qualifies; without a toroidal seed every cap is considered as before.
+    let tol = Tolerance::new();
+    let seed_axes: Vec<_> = seed_faces
+        .iter()
+        .filter_map(|&face| match topo.face(face).ok()?.surface() {
+            FaceSurface::Torus(torus) if torus.z_axis().cross(direction).length() < 1e-10 => {
+                Some(torus.center())
+            }
+            FaceSurface::Plane { .. }
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_)
+            | FaceSurface::Nurbs(_) => None,
+        })
+        .collect();
+    // A joined shoulder rises toward its cap: the cap lies ahead of it along
+    // the move normal. With equal radii a cap above a rounded block top is
+    // otherwise indistinguishable from a block top below a rounded cap.
+    let level = |face: FaceId| -> Result<f64, OperationsError> {
+        match topo.face(face)?.surface() {
+            FaceSurface::Plane { normal, d } => Ok(*d * normal.dot(direction)),
+            FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_)
+            | FaceSurface::Nurbs(_) => Err(reconstruction("joined shoulder levels require planes")),
+        }
+    };
+    let selected_level = level(*selected)?;
+    let on_seed_axis = |center: remus_math::vec::Point3| {
+        seed_axes.is_empty()
+            || seed_axes
+                .iter()
+                .any(|&axis| (center - axis).cross(direction).length() <= tol.linear)
+    };
     let mut caps = Vec::new();
     for &cap in &source_faces {
         if cap == *selected
@@ -437,6 +480,9 @@ fn joined_plan(
         {
             continue;
         }
+        if level(cap)? <= selected_level + tol.linear {
+            continue;
+        }
         let bands: Vec<_> = neighbours(cap)?.into_iter().collect();
         if !(1..=12).contains(&bands.len()) {
             continue;
@@ -444,7 +490,10 @@ fn joined_plan(
         let Some(radius) = bands
             .iter()
             .find_map(|&face| match topo.face(face).ok()?.surface() {
-                FaceSurface::Torus(torus) if torus.z_axis().cross(direction).length() < 1e-10 => {
+                FaceSurface::Torus(torus)
+                    if torus.z_axis().cross(direction).length() < 1e-10
+                        && on_seed_axis(torus.center()) =>
+                {
                     Some(torus.minor_radius())
                 }
                 FaceSurface::Plane { .. }
@@ -457,7 +506,7 @@ fn joined_plan(
         else {
             continue;
         };
-        if radius >= shoulder_radius
+        if radius > shoulder_radius + 1e-7
             || bands
                 .iter()
                 .any(|&face| section_radius(topo, face).is_none_or(|r| (r - radius).abs() > 1e-7))
@@ -481,6 +530,29 @@ fn joined_plan(
                 }
                 let surface = topo.face(face)?.surface();
                 if surface_translation_invariant(surface, direction) {
+                    continue;
+                }
+                // A sampled corner patch tangent to the shoulder, with no
+                // circular section of its own (an approximate mitre from an
+                // earlier fillet), is carried rigidly as the translation
+                // planner carries its NURBS supports; the boundary checks
+                // below still require everything beyond it to be invariant.
+                if matches!(surface, FaceSurface::Nurbs(_))
+                    && section_radius(topo, face).is_none()
+                    && tangent_across(topo, edge, current, face)?
+                {
+                    moved.insert(face);
+                    continue;
+                }
+                // A ball corner where the block top's edge rounds meet is
+                // the shoulder's own radius, rolled about a point: it moves
+                // with them.
+                if let FaceSurface::Sphere(sphere) = surface
+                    && (sphere.radius() - shoulder_radius).abs() <= 1e-7
+                    && tangent_across(topo, edge, current, face)?
+                {
+                    moved.insert(face);
+                    queue.push_back(face);
                     continue;
                 }
                 if face == *cap
@@ -575,6 +647,44 @@ fn joined_plan(
     })
 }
 
+/// Whether a coaxial toroidal rim already meets a concave shoulder on its
+/// lower spring: the contact onset, where the rim and the shoulder share the
+/// boss circle. That cap is joined to its supports, so it moves its plane
+/// alone like a cap bounded by a complete band group, and the reconstruction
+/// restores or re-trims the shoulder instead of translating the rim off it.
+fn rim_shares_shoulder_spring(
+    topo: &Topology,
+    adjacency: &remus_topology::adjacency::AdjacencyIndex,
+    rim: FaceId,
+    direction: Vec3,
+) -> Result<bool, OperationsError> {
+    let FaceSurface::Torus(rim_torus) = topo.face(rim)?.surface() else {
+        return Ok(false);
+    };
+    let boss = rim_torus.major_radius() + rim_torus.minor_radius();
+    let tol = Tolerance::new();
+    for edge in face_edges(topo, rim)? {
+        let EdgeCurve::Circle(circle) = topo.edge(edge)?.curve() else {
+            continue;
+        };
+        if (circle.radius() - boss).abs() > tol.linear {
+            continue;
+        }
+        for &face in adjacency.faces_for_edge(edge) {
+            if face == rim {
+                continue;
+            }
+            if let FaceSurface::Torus(shoulder) = topo.face(face)?.surface()
+                && shoulder.z_axis().cross(direction).length() <= tol.angular
+                && (shoulder.major_radius() - shoulder.minor_radius() - boss).abs() <= tol.linear
+            {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
 /// A rounded planar cap descending into the fixed blends its rim's carrier
 /// meets: the shoulder and corner patches stay where they are and the cap
 /// plane re-trims them, the converse of a shoulder rising to a fixed rim.
@@ -639,7 +749,15 @@ fn descending_plan(
         }
     }
     let radius = radius.ok_or_else(|| reconstruction("descending cap has no rim"))?;
-    let entities = if let [rim] = rims.as_slice() {
+    let single = if let [rim] = rims.as_slice()
+        && !rim_shares_shoulder_spring(topo, &adjacency, *rim, direction)?
+    {
+        Some(*rim)
+    } else {
+        None
+    };
+    let entities = if let Some(rim) = single {
+        let rim = &rim;
         let analysis = crate::performance::timed("move_faces.cap_join.analysis", || {
             analyze_translation(topo, solid, faces)
         })?;
