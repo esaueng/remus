@@ -672,6 +672,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Prepared-handle source and sharp-parent per-face guard readings, keyed on exact content, order and reference | `measure/guard_readings.rs` |
 | Exact reusable face-area and handle-independent volume measurements | `measure/reuse.rs`, `measure/reuse/tests.rs` |
 | Closed-form certificate that a straight-edged, axis-aligned planar outline passes the volume path's area-consistency probe without meshing | `measure/volume/planar_outline.rs` |
+| Validate sampled area on horizontal rectangular plates with separated circular holes | `measure/volume/perforated_plate.rs` |
 | Certificate-implies-probe oracle, refusal cases and probe-mesh work guard (tests) | `measure/volume/planar_outline_tests.rs` |
 | Hash-map references for the sorted whole-mesh edge censuses (tests) | `measure/volume/edge_census_oracle_tests.rs` |
 | Long open spline arcs retain their real winding, rather than their chord's (tests) | `measure/volume/periodic_winding_tests.rs` |

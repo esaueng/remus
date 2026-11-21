@@ -62,6 +62,7 @@ use remus_topology::Topology;
 use remus_topology::face::FaceId;
 use remus_topology::solid::SolidId;
 
+use super::boundary::FaceCache;
 use super::{ClassifyOptions, ClassifySource, PointClassification};
 use crate::CheckError;
 
@@ -82,6 +83,7 @@ struct CacheEntry {
     faces: Vec<FaceId>,
     bvh: Bvh,
     trims: Vec<Option<super::boundary::FaceTrimData>>,
+    planes: Box<[(usize, FaceCache)]>,
     skeleton: super::graze::BoundarySkeleton,
     retained_bytes: usize,
 }
@@ -113,8 +115,9 @@ pub struct CacheStats {
 /// Persistent whole-topology cache for repeated point classification.
 ///
 /// Owns bounded derived preparation; every query takes `&Topology` and
-/// checks identity before reuse. Misses rebuild exactly what
-/// [`super::PreparedSolid::prepare`] builds, then run the shared
+/// checks identity before reuse. Misses rebuild the [`super::PreparedSolid`]
+/// data and retain exact trims for perforated planes when space allows.
+/// Queries run the shared
 /// `super::classify_point_with_source` vote loop so verdicts match the
 /// one-shot and borrowed-prepared paths bit for bit.
 #[derive(Debug, Clone)]
@@ -259,6 +262,7 @@ impl ClassificationCache {
                     faces: &entry.faces,
                     bvh: &entry.bvh,
                     trims: &entry.trims,
+                    planes: &entry.planes,
                     skeleton: &entry.skeleton,
                 };
                 super::classify_point_with_source(&source, point, options)
@@ -269,6 +273,7 @@ impl ClassificationCache {
                     faces: &entry.faces,
                     bvh: &entry.bvh,
                     trims: &entry.trims,
+                    planes: &entry.planes,
                     skeleton: &entry.skeleton,
                 };
                 super::classify_point_with_source(&source, point, options)
@@ -307,6 +312,7 @@ impl ClassificationCache {
                     faces: &entry.faces,
                     bvh: &entry.bvh,
                     trims: &entry.trims,
+                    planes: &entry.planes,
                     skeleton: &entry.skeleton,
                 };
                 points
@@ -320,6 +326,7 @@ impl ClassificationCache {
                     faces: &entry.faces,
                     bvh: &entry.bvh,
                     trims: &entry.trims,
+                    planes: &entry.planes,
                     skeleton: &entry.skeleton,
                 };
                 points
@@ -358,8 +365,8 @@ impl ClassificationCache {
             return Ok(CacheLookup::Retained(index));
         }
         self.misses = self.misses.saturating_add(1);
-        // Build exactly what `PreparedSolid::prepare` builds, owning every
-        // derived vector. Failures return without storing.
+        // Prepare the same bounds, trim polygons and skeleton as PreparedSolid.
+        // Failures return without changing the cache.
         let faces = remus_topology::explorer::solid_faces(topo, solid)?;
         let mut face_aabbs = Vec::with_capacity(faces.len());
         let mut trims = Vec::with_capacity(faces.len());
@@ -383,7 +390,7 @@ impl ClassificationCache {
             trims.capacity(),
         )
         .saturating_add(skeleton.retained_bytes());
-        let entry = CacheEntry {
+        let mut entry = CacheEntry {
             lineage: identity.lineage,
             generation: identity.generation,
             solid_index: solid.index(),
@@ -391,6 +398,7 @@ impl ClassificationCache {
             faces,
             bvh,
             trims,
+            planes: Box::default(),
             skeleton,
             retained_bytes,
         };
@@ -408,6 +416,24 @@ impl ClassificationCache {
             self.entries.remove(0);
             self.evictions = self.evictions.saturating_add(1);
         }
+        // Optional trims use only the space left after ordinary FIFO admission.
+        let mut spare = self.byte_budget - self.retained_bytes() - retained_bytes;
+        let mut planes = Vec::new();
+        let slot_bytes = size_of::<(usize, FaceCache)>();
+        for (index, &fid) in entry.faces.iter().enumerate() {
+            if spare < slot_bytes {
+                break;
+            }
+            if let Some((cache, owned)) = super::boundary::prepare_perforated_plane(topo, fid) {
+                let bytes = slot_bytes.saturating_add(owned);
+                if bytes <= spare {
+                    planes.push((index, cache));
+                    spare -= bytes;
+                    entry.retained_bytes += bytes;
+                }
+            }
+        }
+        entry.planes = planes.into_boxed_slice();
         self.entries.push(entry);
         self.rebuilds = self.rebuilds.saturating_add(1);
         Ok(CacheLookup::Retained(self.entries.len() - 1))
@@ -438,6 +464,7 @@ struct CachedSource<'a> {
     faces: &'a [FaceId],
     bvh: &'a Bvh,
     trims: &'a [Option<super::boundary::FaceTrimData>],
+    planes: &'a [(usize, FaceCache)],
     skeleton: &'a super::graze::BoundarySkeleton,
 }
 
@@ -480,8 +507,13 @@ impl ClassifySource for CachedSource<'_> {
                 owned_trim = super::boundary::FaceTrimData::build(self.topo, fid)?;
                 Some(&owned_trim)
             };
-            crossings += super::boundary::count_face_ray_crossings_with_trim(
-                self.topo, fid, trim, point, direction,
+            let cache = self
+                .planes
+                .binary_search_by_key(&face_idx, |(index, _)| *index)
+                .ok()
+                .map(|pos| &self.planes[pos].1);
+            crossings += super::boundary::count_face_ray_crossings_cached(
+                self.topo, fid, trim, cache, point, direction,
             )?;
         }
         Ok(crossings)
