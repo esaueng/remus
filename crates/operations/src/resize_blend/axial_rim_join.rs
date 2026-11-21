@@ -442,7 +442,12 @@ fn joined_plan(
             FaceSurface::Torus(torus) if torus.z_axis().cross(direction).length() < 1e-10 => {
                 Some(torus.center())
             }
-            _ => None,
+            FaceSurface::Plane { .. }
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_)
+            | FaceSurface::Nurbs(_) => None,
         })
         .collect();
     // A joined shoulder rises toward its cap: the cap lies ahead of it along
@@ -451,7 +456,11 @@ fn joined_plan(
     let level = |face: FaceId| -> Result<f64, OperationsError> {
         match topo.face(face)?.surface() {
             FaceSurface::Plane { normal, d } => Ok(*d * normal.dot(direction)),
-            _ => Err(reconstruction("joined shoulder levels require planes")),
+            FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_)
+            | FaceSurface::Nurbs(_) => Err(reconstruction("joined shoulder levels require planes")),
         }
     };
     let selected_level = level(*selected)?;
@@ -740,9 +749,12 @@ fn descending_plan(
         }
     }
     let radius = radius.ok_or_else(|| reconstruction("descending cap has no rim"))?;
-    let single = match rims.as_slice() {
-        [rim] if !rim_shares_shoulder_spring(topo, &adjacency, *rim, direction)? => Some(*rim),
-        _ => None,
+    let single = if let [rim] = rims.as_slice()
+        && !rim_shares_shoulder_spring(topo, &adjacency, *rim, direction)?
+    {
+        Some(*rim)
+    } else {
+        None
     };
     let entities = if let Some(rim) = single {
         let rim = &rim;
