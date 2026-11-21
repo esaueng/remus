@@ -637,8 +637,39 @@ fn binomial(n: usize, k: usize) -> f64 {
     value as f64
 }
 
+// In a cubic curve / linear chord product, the binomial products are 1
+// or 3 and the divisors are 1, 4 or 6. Widen the multiplication and the
+// division separately, exactly as in the general interval calculation.
+const fn small_positive_factor(product: f64, divisor: f64) -> Interval {
+    Interval {
+        lo: (product.next_down() / divisor).next_down(),
+        hi: (product.next_up() / divisor).next_up(),
+    }
+}
+
+const CONSTANT_FACTOR: Interval = small_positive_factor(1.0, 1.0);
+
+const CUBIC_CHORD_FACTORS: [[Interval; 2]; 4] = [
+    [CONSTANT_FACTOR, small_positive_factor(1.0, 4.0)],
+    [
+        small_positive_factor(3.0, 4.0),
+        small_positive_factor(3.0, 6.0),
+    ],
+    [
+        small_positive_factor(3.0, 6.0),
+        small_positive_factor(3.0, 4.0),
+    ],
+    [small_positive_factor(1.0, 4.0), CONSTANT_FACTOR],
+];
+
 #[cfg_attr(target_arch = "wasm32", inline(never))]
 fn product_factor(m: usize, i: usize, n: usize, j: usize) -> Result<Interval, ReuseError> {
+    match (m, n) {
+        (0, 0) => return Ok(CONSTANT_FACTOR),
+        (3, 1) => return Ok(CUBIC_CHORD_FACTORS[i][j]),
+        (1, 3) => return Ok(CUBIC_CHORD_FACTORS[j][i]),
+        _ => {}
+    }
     Interval::point(binomial(m, i))
         .mul(Interval::point(binomial(n, j)))?
         .div(Interval::point(binomial(m + n, i + j)))
@@ -1213,6 +1244,24 @@ mod tests {
             weights.to_vec(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn cubic_chord_factors_preserve_both_rounded_endpoints() {
+        for (m, n) in [(0, 0), (1, 3), (3, 1)] {
+            for i in 0..=m {
+                for j in 0..=n {
+                    let expected = Interval::point(binomial(m, i))
+                        .mul(Interval::point(binomial(n, j)))
+                        .unwrap()
+                        .div(Interval::point(binomial(m + n, i + j)))
+                        .unwrap();
+                    let actual = product_factor(m, i, n, j).unwrap();
+                    assert_eq!(actual.lo.to_bits(), expected.lo.to_bits());
+                    assert_eq!(actual.hi.to_bits(), expected.hi.to_bits());
+                }
+            }
+        }
     }
 
     fn assert_contains(interval: Interval, exact: f64) {
