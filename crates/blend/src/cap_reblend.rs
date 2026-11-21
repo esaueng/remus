@@ -1659,6 +1659,7 @@ fn reblend_impl(
             succeeded: vec![],
             failed: vec![],
             is_partial: false,
+            skipped: Vec::new(),
             engine: BlendEngine::Walking,
             face_origins: Some(BlendFaceOrigins {
                 survived: original_faces

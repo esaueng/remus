@@ -391,10 +391,13 @@ pub fn fillet_journaled(
     edges: &[remus_topology::EdgeId],
     radius: f64,
 ) -> Result<JournaledBlend, OperationsError> {
-    let edges = crate::query::normalize_fillet_selection(topo, solid, edges)?;
+    let selection = crate::query::normalize_fillet_selection_with_skips(topo, solid, edges)?;
+    let edges = selection.kept;
     remus_topology::transaction::run_transacted(topo, |topo| {
         let pending = begin_scoped(topo, "fillet", &[solid])?;
-        let (result, map) = crate::blend_ops::fillet_with_evolution(topo, solid, &edges, radius)?;
+        let (mut result, map) =
+            crate::blend_ops::fillet_with_evolution(topo, solid, &edges, radius)?;
+        result.skipped.clone_from(&selection.skipped);
         let op = record_face_evolution(topo, pending, &map, &[result.solid])?;
         Ok(JournaledBlend { result, op, map })
     })

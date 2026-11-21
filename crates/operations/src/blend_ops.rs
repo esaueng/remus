@@ -2,7 +2,7 @@
 
 use remus_blend::chamfer_builder::ChamferBuilder;
 use remus_blend::fillet_builder::FilletBuilder;
-pub use remus_blend::{BlendEngine, BlendError, BlendFaceOrigins, BlendResult};
+pub use remus_blend::{BlendEngine, BlendError, BlendFaceOrigins, BlendResult, BlendSkip};
 use remus_math::compact_sort::CompactSort;
 use remus_math::context::OperationContext;
 use remus_math::det_hash::{DetHashMap, DetHashSet};
@@ -1418,6 +1418,7 @@ fn planar_chamfer_result(
         succeeded: edges.to_vec(),
         failed: Vec::new(),
         is_partial: false,
+        skipped: Vec::new(),
         face_origins: Some(face_origins),
         engine: BlendEngine::PlanarBevel,
     };
@@ -1469,6 +1470,7 @@ fn planar_fillet_result(
         succeeded: edges.to_vec(),
         failed: Vec::new(),
         is_partial: false,
+        skipped: Vec::new(),
         face_origins: Some(face_origins),
         engine: BlendEngine::RollingBall,
     })
@@ -2200,6 +2202,7 @@ fn fillet_by_feature(
         succeeded: edges.to_vec(),
         failed: Vec::new(),
         is_partial: false,
+        skipped: Vec::new(),
         // Each feature was blended on whichever engine fitted it, and a face
         // created by one step can be trimmed by the next. Composing the steps'
         // records is not the same as concatenating them, so this path reports
@@ -2796,6 +2799,7 @@ fn fillet_touching_features_in_steps(
         succeeded: edges.to_vec(),
         failed: Vec::new(),
         is_partial: false,
+        skipped: Vec::new(),
         // A band built by one step is trimmed by the next, so the steps'
         // records do not compose by concatenation; see `fillet_by_feature`.
         face_origins: None,
@@ -3094,10 +3098,25 @@ fn chamfer_v2_selection(
     if !d1.is_finite() || !d2.is_finite() || d1 <= 0.0 || d2 <= 0.0 || edges.is_empty() {
         return chamfer_v2_engines(topo, solid, edges, d1, d2);
     }
-    let normalized = dedup_seed_edges(&crate::query::normalize_chamfer_selection(
-        topo, solid, edges,
-    )?);
-    let edges = normalized.as_slice();
+    // Seams and tangent joins have no dihedral to bevel and are dropped here;
+    // the result names them in `skipped`, so a caller that asked for them
+    // can tell they were not chamfered without the result being partial.
+    let selection = crate::query::normalize_chamfer_selection_with_skips(topo, solid, edges)?;
+    let normalized = dedup_seed_edges(&selection.kept);
+    let mut result = chamfer_v2_normalized(topo, solid, &normalized, d1, d2)?;
+    result.skipped = selection.skipped;
+    Ok(result)
+}
+
+/// [`chamfer_v2_selection`] of an already normalized, deduplicated selection
+/// with valid distances.
+fn chamfer_v2_normalized(
+    topo: &mut Topology,
+    solid: SolidId,
+    edges: &[EdgeId],
+    d1: f64,
+    d2: f64,
+) -> Result<BlendResult, OperationsError> {
     let refusal = match chamfer_v2_engines(topo, solid, edges, d1, d2) {
         Ok(result) => return Ok(result),
         Err(error) => error,
@@ -3253,6 +3272,7 @@ fn chamfer_by_feature(
         succeeded: edges.to_vec(),
         failed: Vec::new(),
         is_partial: false,
+        skipped: Vec::new(),
         face_origins: None,
         engine: BlendEngine::Mixed,
     };
@@ -3893,6 +3913,7 @@ mod tests {
                 succeeded: Vec::new(),
                 failed: Vec::new(),
                 is_partial: false,
+                skipped: Vec::new(),
                 face_origins: None,
                 engine: BlendEngine::RollingBall,
             })
@@ -3931,6 +3952,7 @@ mod tests {
                 succeeded: Vec::new(),
                 failed: Vec::new(),
                 is_partial: false,
+                skipped: Vec::new(),
                 face_origins: None,
                 engine: BlendEngine::RollingBall,
             })

@@ -269,7 +269,38 @@ pub enum BlendEngine {
     Mixed,
 }
 
+/// Why a selected edge was left out of a blend without being blended or
+/// refused.
+///
+/// Such an edge has no dihedral to round or bevel: the faces on its two sides
+/// continue each other smoothly, so there is nothing for a blend to remove.
+/// It is neither a success nor a failure of the blend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlendSkip {
+    /// The seam of a closed face: the one face meets itself across the edge,
+    /// which is a boundary of its parametrisation (a cylinder's or cone's
+    /// generator line, a sphere's meridian), not a sharp edge.
+    Seam,
+    /// Two faces that meet tangentially (G1) or flat, such as the flat seam a
+    /// fuse leaves between coplanar faces.
+    Tangent,
+}
+
+impl BlendSkip {
+    /// Stable lowercase wire spelling (`"seam"` / `"tangent"`).
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Seam => "seam",
+            Self::Tangent => "tangent",
+        }
+    }
+}
+
 /// Result of a blend operation.
+///
+/// Every requested edge is accounted for: it is in `succeeded`, in `failed`
+/// (and the result is partial), or in `skipped`.
 pub struct BlendResult {
     /// The resulting solid.
     pub solid: SolidId,
@@ -279,6 +310,14 @@ pub struct BlendResult {
     pub failed: Vec<(EdgeId, BlendError)>,
     /// Whether this is a partial result (some edges failed).
     pub is_partial: bool,
+    /// Requested edges left out because they have no dihedral to blend, each
+    /// with the reason (see [`BlendSkip`]). Skipping one does not make the
+    /// result partial: the request asked for nothing at that edge that could
+    /// be built. Only an entry point that normalizes its selection fills this
+    /// (the operations crate's `chamfer_v2` and the entry points over it, and
+    /// the normalized fillet entry points); the builders in this crate leave
+    /// it empty.
+    pub skipped: Vec<(EdgeId, BlendSkip)>,
     /// Construction-derived face provenance, when the engine that ran could
     /// report it. `None` means the caller must fall back to matching geometry —
     /// and must say so to its own consumer.

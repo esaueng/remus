@@ -269,6 +269,7 @@ fn apply_tools(
         succeeded: seeds.to_vec(),
         failed: Vec::new(),
         is_partial: false,
+        skipped: Vec::new(),
         face_origins: Some(history),
         engine: BlendEngine::AnalyticCut,
     })
