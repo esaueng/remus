@@ -436,6 +436,14 @@ historical predecessor-line records, retained for provenance. The
 
 ### Added
 
+* **operations,wasm:** an exact sweep can keep the profile's orientation
+  (`ExactSweepOrientation::KeepProfile`, `sweepExactWithOptions` option
+  `"orientation": "parallel"`): the profile is translated along the path,
+  never turned, so every face is the exact translational surface of a
+  profile edge along a path edge. The path may hold any curve the kernel
+  holds exactly, splines included, and corners, which crease the body; it
+  must run steadily away from the profile's plane, certified on its Bézier
+  spans, or the sweep is refused.
 * **operations,wasm:** twist and scale an exact sweep along a straight path
   (`exact_sweep::sweep_exact_with_options`, `sweepExactWithOptions`). The
   profile, square to the path, turns about and scales uniformly about the

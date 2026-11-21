@@ -1849,6 +1849,21 @@ pub struct ExactSweepOptions {
     /// where the path crosses it; linear in the distance travelled. `1`
     /// scales nothing.
     pub end_scale: f64,
+    /// How the profile is oriented along the path.
+    pub orientation: ExactSweepOrientation,
+}
+
+/// How an exact sweep orients the profile along its path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ExactSweepOrientation {
+    /// Turned with the path, normal to it where it starts: the path's rigid
+    /// motions (the rotation-minimizing frame), [`sweep_exact`].
+    #[default]
+    FollowPath,
+    /// Never turned: the profile is translated along the path, parallel to
+    /// itself. Exact along any path curve, corners included (see
+    /// `translational`).
+    KeepProfile,
 }
 
 impl Default for ExactSweepOptions {
@@ -1856,6 +1871,7 @@ impl Default for ExactSweepOptions {
         Self {
             twist: 0.0,
             end_scale: 1.0,
+            orientation: ExactSweepOrientation::FollowPath,
         }
     }
 }
@@ -1863,9 +1879,17 @@ impl Default for ExactSweepOptions {
 /// Most Hermite spans a twisted sweep may fit along its path.
 const MAX_TWIST_SPANS: usize = 4096;
 
-/// [`sweep_exact`] with a twist and a scale along the path.
+/// [`sweep_exact`] with a twist and a scale along the path, and a choice of
+/// orientation.
 ///
-/// With the default options this is exactly [`sweep_exact`]. A twist or a
+/// With the default options this is exactly [`sweep_exact`]. With
+/// [`ExactSweepOrientation::KeepProfile`] (and no twist or scale) the profile
+/// is translated along the path instead, never turned: every face is then
+/// the exact translational surface of a profile edge along a path edge, so
+/// the path may hold any curve (lines, arcs, conics, splines) and corners,
+/// which crease the body. The path must run steadily away from the
+/// profile's plane (certified on its Bézier spans), or the body could meet
+/// itself. A twist or a
 /// scale is built along a straight path (one line, or collinear lines) with
 /// the profile square to it: the profile is carried along the path while it
 /// scales uniformly about the path's line and turns about it, both linearly
@@ -1914,9 +1938,19 @@ pub fn sweep_exact_with_options(
         )));
     }
     #[allow(clippy::float_cmp)]
-    if options.twist == 0.0 && options.end_scale == 1.0 {
-        return sweep_exact(topo, profile, path);
+    let plain = options.twist == 0.0 && options.end_scale == 1.0;
+    if plain {
+        return match options.orientation {
+            ExactSweepOrientation::FollowPath => sweep_exact(topo, profile, path),
+            ExactSweepOrientation::KeepProfile => {
+                remus_topology::transaction::run_transacted(topo, |topo| {
+                    translational::sweep_keeping_orientation_impl(topo, profile, path)
+                })
+            }
+        };
     }
+    // Along the straight path a twist or scale needs, the profile square to
+    // it keeps its orientation either way: both orientations are one sweep.
     remus_topology::transaction::run_transacted(topo, |topo| {
         straight_sweep_impl(topo, profile, path, options)
     })
@@ -2453,6 +2487,8 @@ fn sweep_exact_impl(
     Ok(topo.add_solid(Solid::new(shell, vec![])))
 }
 
+mod translational;
+
 #[cfg(test)]
 mod tests;
 
@@ -2461,3 +2497,6 @@ mod clearance_tests;
 
 #[cfg(test)]
 mod options_tests;
+
+#[cfg(test)]
+mod translational_tests;

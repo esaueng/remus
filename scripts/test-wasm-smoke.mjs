@@ -255,7 +255,7 @@ console.log('ok - RemusIo created; kernel module carries the arena codec only');
     const volume = k.volume(solid, DEFLECTION);
     assert.ok(Math.abs(volume - frustum) / frustum < 1e-6, `${volume} vs ${frustum}`);
     assert.throws(
-      () => k.sweepExactWithOptions(face, path, JSON.stringify({ orientation: 'parallel' })),
+      () => k.sweepExactWithOptions(face, path, JSON.stringify({ posture: 'parallel' })),
       /unknown option/,
     );
   } finally {

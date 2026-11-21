@@ -251,6 +251,7 @@ pub(super) fn parse_exact_sweep_options(
     let object = options
         .as_object()
         .ok_or_else(|| "sweepExactWithOptions: options must be an object".to_owned())?;
+    use remus_operations::exact_sweep::ExactSweepOrientation;
     let mut parsed = remus_operations::exact_sweep::ExactSweepOptions::default();
     for (key, value) in object {
         let number = || {
@@ -261,10 +262,22 @@ pub(super) fn parse_exact_sweep_options(
         match key.as_str() {
             "twist" => parsed.twist = number()?,
             "endScale" => parsed.end_scale = number()?,
+            "orientation" => {
+                parsed.orientation = match value.as_str() {
+                    Some("normal") => ExactSweepOrientation::FollowPath,
+                    Some("parallel") => ExactSweepOrientation::KeepProfile,
+                    _ => {
+                        return Err(format!(
+                            "sweepExactWithOptions: option \"orientation\" must be \"normal\" \
+                             or \"parallel\", got {value}"
+                        ));
+                    }
+                };
+            }
             _ => {
                 return Err(format!(
                     "sweepExactWithOptions: unknown option \"{key}\" (this kernel builds \
-                     \"twist\" and \"endScale\")"
+                     \"twist\", \"endScale\" and \"orientation\")"
                 ));
             }
         }
@@ -1773,7 +1786,10 @@ impl RemusKernel {
     /// - `twist`: total turn of the profile about the path, in radians,
     ///   right-handed about the direction of travel (default `0`);
     /// - `endScale`: scale of the profile at the far end, about the point
-    ///   where the path crosses it (default `1`).
+    ///   where the path crosses it (default `1`);
+    /// - `orientation`: `"normal"` (default) turns the profile with the path,
+    ///   `"parallel"` translates it along the path unturned, exactly along
+    ///   any path curve and through corners.
     ///
     /// Both are linear in the distance travelled, and need a straight path
     /// with the profile square to it. With neither set this is `sweepExact`.
