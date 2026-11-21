@@ -176,6 +176,84 @@ fn every_corner_of_a_closed_square_path_is_rounded_into_a_ring() {
     assert_solid(&topo, solid, PI * centre_line, "ring");
 }
 
+/// A quarter arc of radius 10 about `centre` in `z = 0`, counter-clockwise
+/// about +Z from angle `a` to `a + π/2`.
+fn quarter(topo: &mut Topology, centre: Point3, a: f64) -> EdgeId {
+    let circle = Circle3D::with_axes(centre, Z, 10.0, X, Y).unwrap();
+    let start = topo.add_vertex(Vertex::new(circle.evaluate(a), 1e-7));
+    let end = topo.add_vertex(Vertex::new(circle.evaluate(a + FRAC_PI_2), 1e-7));
+    let mut edge = Edge::new(start, end, EdgeCurve::Circle(circle));
+    edge.set_trim(Some((a, a + FRAC_PI_2)));
+    topo.add_edge(edge)
+}
+
+/// A disc of radius 1 at `at`, square to `normal`.
+fn disc_at(topo: &mut Topology, at: Point3, normal: Vec3) -> FaceId {
+    let edge = make_circle_edge(topo, at, normal, 1.0, 1e-7).unwrap();
+    let wire = topo.add_wire(Wire::new(vec![OrientedEdge::new(edge, true)], true).unwrap());
+    topo.add_face(Face::new(
+        wire,
+        vec![],
+        FaceSurface::Plane {
+            normal,
+            d: crate::dot_normal_point(normal, at),
+        },
+    ))
+}
+
+/// A line arriving along +Y at (10, 0) meets, square, a radius-10 arc about
+/// (10, 10) leaving along +X. Rounded with radius 2: the line offset to x = 2
+/// meets the arc's circle offset outward to 12 at (2, 10 − √140) from the
+/// corner, so the line keeps 20 − (√140 − 10), the fillet turns π/2 − θ and
+/// the arc keeps π/2 − θ, with sin θ = 2/12.
+#[test]
+fn a_round_corner_next_to_an_arc_is_exact() {
+    let mut topo = Topology::new();
+    let profile = disc_at(&mut topo, p(10.0, -20.0, 0.0), Y);
+    let path = [
+        line(&mut topo, p(10.0, -20.0, 0.0), p(10.0, 0.0, 0.0)),
+        quarter(&mut topo, p(10.0, 10.0, 0.0), -FRAC_PI_2),
+    ];
+    let solid = sweep_exact_with_options(&mut topo, profile, &path, &round(2.0)).unwrap();
+    let theta = (2.0_f64 / 12.0).asin();
+    let centre_line =
+        (20.0 - (140.0_f64.sqrt() - 10.0)) + 2.0 * (FRAC_PI_2 - theta) + 10.0 * (FRAC_PI_2 - theta);
+    assert_eq!(census(&topo, solid), (2, 1, 2, 0));
+    assert_solid(&topo, solid, PI * centre_line, "line then arc");
+}
+
+/// Two radius-10 quarter arcs meeting square at (10, 0): one about the
+/// origin arriving along +Y, one about (10, 10) leaving along +X. Their
+/// circles offset outward to 12 meet at the fillet's centre q on the line
+/// x + y = 10; each arc keeps the turn from its start to its foot.
+#[test]
+fn a_round_corner_between_two_arcs_is_exact() {
+    let mut topo = Topology::new();
+    let profile = disc_at(&mut topo, p(0.0, -10.0, 0.0), X);
+    let path = [
+        quarter(&mut topo, p(0.0, 0.0, 0.0), -FRAC_PI_2),
+        quarter(&mut topo, p(10.0, 10.0, 0.0), -FRAC_PI_2),
+    ];
+    let solid = sweep_exact_with_options(&mut topo, profile, &path, &round(2.0)).unwrap();
+    // q = (5, 5) + h (1, −1)/√2 with h = √(144 − 50).
+    let h = (144.0_f64 - 50.0).sqrt();
+    let q = (5.0 + h / 2.0_f64.sqrt(), 5.0 - h / 2.0_f64.sqrt());
+    // Each foot's turn from its arc's start, by symmetry the same.
+    let kept = FRAC_PI_2 + q.1.atan2(q.0);
+    let foot_a = (q.0 * 10.0 / 12.0, q.1 * 10.0 / 12.0);
+    let foot_b = (
+        10.0 + (q.0 - 10.0) * 10.0 / 12.0,
+        10.0 + (q.1 - 10.0) * 10.0 / 12.0,
+    );
+    let (u, v) = (
+        (foot_a.0 - q.0, foot_a.1 - q.1),
+        (foot_b.0 - q.0, foot_b.1 - q.1),
+    );
+    let fillet = (u.0 * v.1 - u.1 * v.0).abs().atan2(u.0 * v.0 + u.1 * v.1);
+    let centre_line = 2.0 * 10.0 * kept + 2.0 * fillet;
+    assert_solid(&topo, solid, PI * centre_line, "arc then arc");
+}
+
 #[test]
 fn round_corner_refusals_are_typed_and_leave_the_topology_unchanged() {
     type Build = fn(&mut Topology) -> Result<SolidId, OperationsError>;
@@ -188,7 +266,7 @@ fn round_corner_refusals_are_typed_and_leave_the_topology_unchanged() {
                 sweep_exact_with_options(topo, profile, &path, &round(25.0))
             },
             false,
-            "too short for its round corners",
+            "no round corner of radius 25 fits",
         ),
         (
             "a radius smaller than the profile",
@@ -201,21 +279,22 @@ fn round_corner_refusals_are_typed_and_leave_the_topology_unchanged() {
             "",
         ),
         (
-            "a corner next to an arc",
+            "a corner out of the plane of the arc beside it",
             |topo| {
                 let profile = disc(topo, 1.0);
-                let circle = Circle3D::with_axes(p(10.0, 10.0, 0.0), Z, 10.0, -Y, X).unwrap();
+                // An arc in the plane x = 10 (about +X), leaving the corner
+                // along +Z; the line arrives along +Y.
+                let circle = Circle3D::with_axes(p(10.0, 0.0, 10.0), X, 10.0, -Z, Y).unwrap();
                 let a = topo.add_vertex(Vertex::new(p(10.0, 0.0, 0.0), 1e-7));
                 let b = topo.add_vertex(Vertex::new(circle.evaluate(FRAC_PI_2), 1e-7));
                 let mut arc = Edge::new(a, b, EdgeCurve::Circle(circle));
                 arc.set_trim(Some((0.0, FRAC_PI_2)));
                 let arc = topo.add_edge(arc);
-                // A line arriving along +Y, square to the arc's start.
                 let path = [line(topo, p(10.0, -20.0, 0.0), p(10.0, 0.0, 0.0)), arc];
                 sweep_exact_with_options(topo, profile, &path, &round(2.0))
             },
             true,
-            "next to an arc",
+            "out of the plane",
         ),
         (
             "a round corner on a sweep that keeps its orientation",

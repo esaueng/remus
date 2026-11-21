@@ -2142,102 +2142,320 @@ fn sweep_exact_impl(
     sweep_exact_cornered_impl(topo, profile, path, ExactSweepCorner::Mitre)
 }
 
-/// Replace every corner of `chain` between two straight runs by the arc of
-/// `radius` tangent to both: the runs are cut back by `radius·tan(φ/2)`
-/// for a turn of `φ`, and the arc turns `φ` about `t_in × t_out` through
-/// its centre, which lies along the bisector of the corner's inside.
+/// Where a path segment runs: from `start` to `end`, a line or an arc.
+fn segment_from(
+    original: &Segment,
+    start: Point3,
+    end: Point3,
+) -> Result<Segment, OperationsError> {
+    Ok(match original.motion {
+        Motion::Translate(_) => {
+            let t = (end - start).normalize()?;
+            Segment {
+                start,
+                end,
+                start_tangent: t,
+                end_tangent: t,
+                motion: Motion::Translate(end - start),
+            }
+        }
+        Motion::Rotate { origin, axis, .. } => Segment {
+            start,
+            end,
+            start_tangent: axis.cross(start - origin).normalize()?,
+            end_tangent: axis.cross(end - origin).normalize()?,
+            motion: Motion::Rotate {
+                origin,
+                axis,
+                angle: turn_between(start - origin, end - origin, axis),
+            },
+        },
+    })
+}
+
+/// The turn about the unit `axis` from `from` to `to`, in `[0, 2π)`.
+fn turn_between(from: Vec3, to: Vec3, axis: Vec3) -> f64 {
+    let angle = from.cross(to).dot(axis).atan2(from.dot(to));
+    if angle < 0.0 {
+        angle + std::f64::consts::TAU
+    } else {
+        angle
+    }
+}
+
+/// How far along `segment` the point `x` on it lies, from its start: a
+/// length along a line, a turn along an arc.
+fn position_along(segment: &Segment, x: Point3) -> f64 {
+    match segment.motion {
+        Motion::Translate(d) => (x - segment.start).dot(d.normalize().unwrap_or(d)),
+        Motion::Rotate { origin, axis, .. } => {
+            let at = turn_between(segment.start - origin, x - origin, axis);
+            // A point a hair before the start reads as a full turn.
+            if at > std::f64::consts::PI + 0.5 * segment_extent(segment) {
+                at - std::f64::consts::TAU
+            } else {
+                at
+            }
+        }
+    }
+}
+
+fn segment_extent(segment: &Segment) -> f64 {
+    match segment.motion {
+        Motion::Translate(d) => d.length(),
+        Motion::Rotate { angle, .. } => angle,
+    }
+}
+
+/// One side of a corner offset by the fillet radius into the turn: a line
+/// `x·m = R` (through the corner, its inner normal `m`), or a circle.
+#[derive(Debug, Clone, Copy)]
+enum Offset {
+    Line {
+        m: Vec3,
+        along: Vec3,
+    },
+    /// The arc's circle about `centre`, its radius `rho` offset to `radius`.
+    Circle {
+        centre: Vec3,
+        radius: f64,
+        rho: f64,
+    },
+}
+
+/// The offset of `segment` at the corner `corner` (positions relative to
+/// it), toward the unit inner normal `inner`, by `radius`.
+fn offset_side(
+    segment: &Segment,
+    corner: Point3,
+    inner: Vec3,
+    tangent: Vec3,
+    radius: f64,
+    joint: usize,
+) -> Result<Offset, OperationsError> {
+    Ok(match segment.motion {
+        Motion::Translate(_) => Offset::Line {
+            m: inner,
+            along: tangent,
+        },
+        Motion::Rotate { origin, .. } => {
+            let centre = origin - corner;
+            let rho = centre.length();
+            let towards = centre.dot(inner) > 0.0;
+            let offset = if towards { rho - radius } else { rho + radius };
+            if offset <= 0.0 {
+                return Err(invalid(format!(
+                    "a round corner of radius {radius} at joint {joint} is larger than the \
+                     arc of radius {rho} it turns inside"
+                )));
+            }
+            Offset::Circle {
+                centre,
+                radius: offset,
+                rho,
+            }
+        }
+    })
+}
+
+/// Candidate fillet centres (relative to the corner) where the two offsets
+/// meet, in the corner's plane with unit normal `axis`.
+fn offset_meets(a: Offset, b: Offset, radius: f64, axis: Vec3) -> Vec<Vec3> {
+    let line_circle = |m: Vec3, along: Vec3, c: Vec3, r: f64| -> Vec<Vec3> {
+        // x = R·m + s·t, |x − c|² = r².
+        let base = m * radius - c;
+        let (bb, tb) = (base.dot(base), along.dot(base));
+        let disc = tb.mul_add(tb, -(bb - r * r));
+        if disc < 0.0 {
+            return Vec::new();
+        }
+        let root = disc.sqrt();
+        vec![
+            m * radius + along * (-tb - root),
+            m * radius + along * (root - tb),
+        ]
+    };
+    match (a, b) {
+        (Offset::Line { m: m1, along: t1 }, Offset::Line { m: m2, .. }) => {
+            // x = R·m1 + s·t1 with x·m2 = R.
+            let denom = t1.dot(m2);
+            if denom.abs() < 1e-15 {
+                return Vec::new();
+            }
+            let s = radius.mul_add(-m1.dot(m2), radius) / denom;
+            vec![m1 * radius + t1 * s]
+        }
+        (
+            Offset::Line { m, along },
+            Offset::Circle {
+                centre, radius: r, ..
+            },
+        )
+        | (
+            Offset::Circle {
+                centre, radius: r, ..
+            },
+            Offset::Line { m, along },
+        ) => line_circle(m, along, centre, r),
+        (
+            Offset::Circle {
+                centre: c1,
+                radius: r1,
+                ..
+            },
+            Offset::Circle {
+                centre: c2,
+                radius: r2,
+                ..
+            },
+        ) => {
+            let d = c2 - c1;
+            let dist = d.length();
+            if dist <= 0.0 || dist > r1 + r2 || dist < (r1 - r2).abs() {
+                return Vec::new();
+            }
+            let along = (dist.mul_add(dist, r1 * r1) - r2 * r2) / (2.0 * dist);
+            let h = along.mul_add(-along, r1 * r1).max(0.0).sqrt();
+            let u = d * (1.0 / dist);
+            let perp = axis.cross(u);
+            let mid = c1 + u * along;
+            vec![mid + perp * h, mid - perp * h]
+        }
+    }
+}
+
+/// Where the fillet centred at `q` touches the side `side` was offset from.
+fn foot(side: Offset, q: Vec3, radius: f64) -> Option<Vec3> {
+    match side {
+        Offset::Line { m, .. } => Some(q - m * radius),
+        Offset::Circle { centre, rho, .. } => {
+            let from = (q - centre).normalize().ok()?;
+            Some(centre + from * rho)
+        }
+    }
+}
+
+/// Replace every corner of `chain` by the circular arc of `radius` tangent
+/// to the curves on both sides: between two straight runs, a straight run
+/// and an arc, or two arcs, as long as both lie in the corner's plane. The
+/// fillet's centre is where the two sides, offset by `radius` into the turn,
+/// meet (two lines, a line and a circle, or two circles); each side is cut
+/// back to where the fillet touches it, so the chain is tangent-continuous
+/// and swept exactly.
+#[allow(clippy::too_many_lines)]
 fn round_corners(
     chain: &[Segment],
     closed: bool,
     radius: f64,
 ) -> Result<Vec<Segment>, OperationsError> {
     let n = chain.len();
-    let mut runs: Vec<Segment> = chain.to_vec();
-    // The setback each run loses at its start and at its end.
-    let mut cut = vec![(0.0_f64, 0.0_f64); n];
+    // Each segment's kept span, as its new start and end points.
+    let mut spans: Vec<(Point3, Point3)> = chain.iter().map(|s| (s.start, s.end)).collect();
     let mut arcs: Vec<Option<Segment>> = vec![None; n];
     let joints = if closed { 0..n } else { 1..n };
     for i in joints {
-        let before = &chain[(i + n - 1) % n];
-        let after = &chain[i];
+        let b = (i + n - 1) % n;
+        let (before, after) = (&chain[b], &chain[i]);
         let (incoming, outgoing) = (before.end_tangent, after.start_tangent);
         let angle = incoming.dot(outgoing).clamp(-1.0, 1.0).acos();
         if angle <= G1_ANGLE_TOLERANCE {
             continue;
         }
-        let both_straight = matches!(before.motion, Motion::Translate(_))
-            && matches!(after.motion, Motion::Translate(_));
-        if !both_straight {
-            return Err(unsupported(format!(
-                "the sweep path turns a corner of {:.4}° at joint {i}, next to an arc; a round \
-                 corner is built only between two straight runs (join the arc tangentially)",
-                angle.to_degrees()
-            )));
-        }
-        let half = 0.5 * (incoming + outgoing).length();
-        if half < MIN_MITRE_COSINE {
+        if 0.5 * (incoming + outgoing).length() < MIN_MITRE_COSINE {
             return Err(unsupported(format!(
                 "the sweep path turns back on itself at joint {i} ({:.4}°); a corner that sharp \
                  has no round corner of radius {radius}",
                 angle.to_degrees()
             )));
         }
-        let setback = radius * (0.5 * angle).tan();
-        let corner = after.start;
-        let inside = (outgoing - incoming).normalize()?;
-        let origin = corner + inside * (radius / half);
         let axis = incoming.cross(outgoing).normalize()?;
-        let start = corner - incoming * setback;
-        let end = corner + outgoing * setback;
+        // An arc beside the corner must lie in the corner's plane.
+        for side in [before, after] {
+            if let Motion::Rotate { axis: arc_axis, .. } = side.motion
+                && arc_axis.cross(axis).length() > G1_ANGLE_TOLERANCE
+            {
+                return Err(unsupported(format!(
+                    "the sweep path turns a corner of {:.4}° at joint {i} out of the plane of \
+                     the arc beside it; a round corner next to an arc is built only in the \
+                     arc's plane",
+                    angle.to_degrees()
+                )));
+            }
+        }
+        let corner = after.start;
+        let inner_in = axis.cross(incoming);
+        let inner_out = axis.cross(outgoing);
+        let side_in = offset_side(before, corner, inner_in, incoming, radius, i)?;
+        let side_out = offset_side(after, corner, inner_out, outgoing, radius, i)?;
+        // The fillet's centre nearest the corner whose touch points lie on
+        // both sides, before and after the corner.
+        let mut best: Option<(f64, Vec3, Vec3, Vec3)> = None;
+        for q in offset_meets(side_in, side_out, radius, axis) {
+            let (Some(t_in), Some(t_out)) = (foot(side_in, q, radius), foot(side_out, q, radius))
+            else {
+                continue;
+            };
+            let at_in = position_along(before, corner + t_in);
+            let at_out = position_along(after, corner + t_out);
+            let kept_in = position_along(before, spans[b].0);
+            let fits = at_in > kept_in
+                && at_in < segment_extent(before)
+                && at_out > 0.0
+                && at_out < segment_extent(after);
+            // The fillet turns the way the corner does.
+            let turn = (t_in - q).cross(t_out - q).dot(axis);
+            if fits && turn > 0.0 && best.is_none_or(|(d, ..)| q.length() < d) {
+                best = Some((q.length(), q, t_in, t_out));
+            }
+        }
+        let Some((_, q, t_in, t_out)) = best else {
+            return Err(invalid(format!(
+                "no round corner of radius {radius} fits at joint {i}: the curves beside it are \
+                 too short or too tightly curved for it (use a smaller radius)"
+            )));
+        };
+        let (from, to) = (corner + t_in, corner + t_out);
+        let centre = corner + q;
         arcs[i] = Some(Segment {
-            start,
-            end,
-            start_tangent: incoming,
-            end_tangent: outgoing,
+            start: from,
+            end: to,
+            start_tangent: axis.cross(from - centre).normalize()?,
+            end_tangent: axis.cross(to - centre).normalize()?,
             motion: Motion::Rotate {
-                origin,
+                origin: centre,
                 axis,
-                angle,
+                angle: turn_between(from - centre, to - centre, axis),
             },
         });
-        cut[(i + n - 1) % n].1 = setback;
-        cut[i].0 = setback;
+        spans[b].1 = from;
+        spans[i].0 = to;
     }
     let mut out = Vec::with_capacity(2 * n);
-    for (k, run) in runs.iter_mut().enumerate() {
+    for (k, segment) in chain.iter().enumerate() {
         if let Some(arc) = arcs[k] {
             out.push(arc);
         }
-        let (from, to) = cut[k];
-        #[allow(clippy::float_cmp)]
-        if from == 0.0 && to == 0.0 {
-            out.push(*run);
+        let (start, end) = spans[k];
+        if start == segment.start && end == segment.end {
+            out.push(*segment);
             continue;
         }
-        let Motion::Translate(d) = run.motion else {
-            return Err(invalid("a rounded corner's run must be straight"));
-        };
-        let length = d.length();
-        let direction = d.normalize()?;
-        if from + to >= length * (1.0 - RELATIVE_MARGIN) {
+        // The kept span must run forward along the segment, with room left.
+        let (lo, hi) = (position_along(segment, start), position_along(segment, end));
+        let extent = segment_extent(segment);
+        if !(lo >= -RELATIVE_MARGIN * extent
+            && hi <= extent * (1.0 + RELATIVE_MARGIN)
+            && hi - lo > RELATIVE_MARGIN * extent.max(1.0))
+        {
             return Err(invalid(format!(
-                "path segment {k} is too short for its round corners of radius {radius}: they \
-                 need {:.6} of its {length:.6} (shorten the radius or lengthen the run)",
-                from + to
+                "path segment {k} is too short for its round corners of radius {radius} \
+                 (shorten the radius or lengthen the segment)"
             )));
         }
-        let start = run.start + direction * from;
-        let end = run.end - direction * to;
-        out.push(Segment {
-            start,
-            end,
-            start_tangent: direction,
-            end_tangent: direction,
-            motion: Motion::Translate(end - start),
-        });
+        out.push(segment_from(segment, start, end)?);
     }
-    // A closed chain's closure arc sits before its first run; keep the
-    // chain starting where the open sweep would, at the first run.
+    // A closed chain's closure arc sits before its first segment; keep the
+    // chain starting where the open sweep would, at the first segment.
     if closed && arcs[0].is_some() {
         out.rotate_left(1);
     }
