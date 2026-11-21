@@ -49,7 +49,11 @@ fn disc_clears_coaxial_shell(
     direction: Vec3,
 ) -> Result<bool, crate::OperationsError> {
     let tol = Tolerance::new();
-    let Some((center, radius)) = circular_wire(topo, topo.face(moved)?.outer_wire(), direction)?
+    let Some(CircularWire {
+        center,
+        max_reach: radius,
+        ..
+    }) = circular_wire(topo, topo.face(moved)?.outer_wire(), direction)?
     else {
         return Ok(false);
     };
@@ -89,10 +93,10 @@ fn disc_clears_coaxial_shell(
             // axis. Faces without such a hole keep the box check.
             let mut lower = 0.0_f64;
             for &inner in topo.face(candidate)?.inner_wires() {
-                if let Some((origin, hole)) = circular_wire(topo, inner, direction)?
-                    && coaxial(origin, direction)
+                if let Some(hole) = circular_wire(topo, inner, direction)?
+                    && coaxial(hole.center, direction)
                 {
-                    lower = lower.max(hole);
+                    lower = lower.max(hole.min_reach);
                 }
             }
             lower
@@ -119,29 +123,50 @@ fn face_clears_coaxial_core(
     direction: Vec3,
 ) -> Result<bool, crate::OperationsError> {
     let tol = Tolerance::new();
-    let parallel = |axis: Vec3| axis.cross(direction).length() <= tol.angular;
-    // An axis through `origin` along the move, and the greatest distance
-    // from it of any point of the candidate. Each bound holds for every trim
-    // of the carrier.
+    let tilt = |axis: Vec3| {
+        let tilt = axis.cross(direction).length();
+        (tilt <= tol.angular).then_some(tilt)
+    };
+    // An axis through `origin` along the move, the greatest distance from
+    // the carrier's own axis of any point of the candidate, and the sine of
+    // the angle between the two axes. Each bound holds for every trim of the
+    // carrier.
     let core = match topo.face(candidate)?.surface() {
-        FaceSurface::Cylinder(cylinder) if parallel(cylinder.axis()) => {
-            Some((cylinder.origin(), cylinder.radius()))
+        FaceSurface::Cylinder(cylinder) => {
+            tilt(cylinder.axis()).map(|tilt| (cylinder.origin(), cylinder.radius(), tilt))
         }
-        FaceSurface::Torus(torus) if parallel(torus.z_axis()) => {
-            Some((torus.center(), torus.major_radius() + torus.minor_radius()))
-        }
-        FaceSurface::Sphere(sphere) => Some((sphere.center(), sphere.radius())),
+        FaceSurface::Torus(torus) => tilt(torus.z_axis()).map(|tilt| {
+            (
+                torus.center(),
+                torus.major_radius() + torus.minor_radius(),
+                tilt,
+            )
+        }),
+        FaceSurface::Sphere(sphere) => Some((sphere.center(), sphere.radius(), 0.0)),
+        // Every point of a circular cap lies within its wire's reach of the
+        // centre in 3D, so no tilt allowance is needed.
         FaceSurface::Plane { .. } => {
             circular_wire(topo, topo.face(candidate)?.outer_wire(), direction)?
+                .map(|wire| (wire.center, wire.max_reach, 0.0))
         }
-        FaceSurface::Cylinder(_)
-        | FaceSurface::Torus(_)
-        | FaceSurface::Cone(_)
-        | FaceSurface::Nurbs(_) => None,
+        FaceSurface::Cone(_) | FaceSurface::Nurbs(_) => None,
     };
-    let Some((origin, upper_radius)) = core else {
+    let Some((origin, reach, tilt)) = core else {
         return Ok(false);
     };
+    // A carrier axis tilted from the move drifts from the parallel axis by
+    // the sine of the tilt times the axial distance, which no point of the
+    // face exceeds its box's farthest corner from `origin`.
+    let bounds = crate::measure::face_bounding_box(topo, candidate)?;
+    let mut far = 0.0_f64;
+    for x in [bounds.min.x(), bounds.max.x()] {
+        for y in [bounds.min.y(), bounds.max.y()] {
+            for z in [bounds.min.z(), bounds.max.z()] {
+                far = far.max((Point3::new(x, y, z) - origin).length());
+            }
+        }
+    }
+    let upper_radius = tilt.mul_add(far, reach);
     Ok(planar_face_axis_clearance(topo, moved, origin, direction)?
         .is_some_and(|lower_radius| lower_radius > upper_radius + tol.linear))
 }
@@ -156,6 +181,12 @@ fn face_clears_coaxial_core(
 /// when the pierce point lies outside it, which is decided exactly on the
 /// lines and arcs. `None` for any other edge curve, an unreadable domain, a
 /// pierce point inside the face, or one too close to the boundary to decide.
+///
+/// The frame is anchored on the axis itself, so the pierce point is the
+/// frame origin and every coordinate is measured from it. An arc whose plane
+/// is tilted from the frame projects to an ellipse within `r · sin(tilt)` of
+/// the circle it is read as, and the result also gives up a relative
+/// rounding allowance on the coordinates' scale.
 fn planar_face_axis_clearance(
     topo: &Topology,
     face: FaceId,
@@ -166,13 +197,16 @@ fn planar_face_axis_clearance(
 
     let tol = Tolerance::new();
     let data = topo.face(face)?;
-    let Some(first) = topo.wire(data.outer_wire())?.edges().first() else {
-        return Ok(None);
-    };
-    let anchor = topo.vertex(topo.edge(first.edge())?.start())?.point();
-    let frame = PlaneFrame::from_normal_and_point(direction, anchor);
+    let frame = PlaneFrame::from_normal_and_point(direction, origin);
     let pierce = frame.project(origin);
+    let unit = direction
+        .normalize()
+        .map_err(|_| crate::OperationsError::InvalidInput {
+            reason: "radial clearance requires a nonzero move direction".into(),
+        })?;
     let mut lower = f64::INFINITY;
+    let mut tilt_allowance = 0.0_f64;
+    let mut scale = 0.0_f64;
     let mut loops = Vec::with_capacity(1 + data.inner_wires().len());
     for wire in std::iter::once(data.outer_wire()).chain(data.inner_wires().iter().copied()) {
         let mut edges = Vec::new();
@@ -199,6 +233,8 @@ fn planar_face_axis_clearance(
             };
             let distance = match projected {
                 PlanarLoopEdge::Segment(a, b) => {
+                    scale = scale.max(a.x().abs()).max(a.y().abs());
+                    scale = scale.max(b.x().abs()).max(b.y().abs());
                     let (along, offset) = (b - a, pierce - a);
                     let span = along.length_squared();
                     let t = if span > 0.0 {
@@ -210,6 +246,16 @@ fn planar_face_axis_clearance(
                 }
                 PlanarLoopEdge::Arc { center, radius, .. }
                 | PlanarLoopEdge::Circle { center, radius, .. } => {
+                    if let remus_topology::edge::EdgeCurve::Circle(circle) = edge.curve() {
+                        let tilt = circle
+                            .normal()
+                            .normalize()
+                            .map_or(1.0, |normal| normal.cross(unit).length());
+                        tilt_allowance = tilt_allowance.max(radius * tilt);
+                    }
+                    scale = scale
+                        .max(center.x().abs() + radius)
+                        .max(center.y().abs() + radius);
                     ((pierce - center).length() - radius).abs()
                 }
             };
@@ -232,18 +278,37 @@ fn planar_face_axis_clearance(
         };
         in_hole |= inside;
     }
+    // Each coordinate and the distance read from it carry a few rounding
+    // steps relative to `scale`; 1e-12 of it is orders of magnitude above
+    // that and still far below the modeling tolerance at part scale.
+    let lower = 1e-12_f64.mul_add(-scale, lower - tilt_allowance);
     Ok((!in_outer || in_hole).then_some(lower))
 }
 
-/// Center and radius of a wire made only of arcs of one circle whose normal
-/// is parallel to `direction`. A closed wire of such arcs runs the full circle.
+/// A wire of arcs of one circle, up to tolerance, about the first arc's
+/// centre.
+struct CircularWire {
+    center: Point3,
+    /// No point of any arc lies closer to `center` than this.
+    min_reach: f64,
+    /// No point of any arc lies farther from `center` than this.
+    max_reach: f64,
+}
+
+/// A wire made only of arcs of one circle whose normal is parallel to
+/// `direction`. A closed wire of such arcs runs the full circle.
+///
+/// Arcs that agree with the first only within tolerance may each reach a
+/// little beyond it, so the reach is bounded over every arc: a point of an
+/// arc lies within its radius of its own centre, which lies within the
+/// centres' offset of the first.
 fn circular_wire(
     topo: &Topology,
     wire: remus_topology::wire::WireId,
     direction: Vec3,
-) -> Result<Option<(Point3, f64)>, crate::OperationsError> {
+) -> Result<Option<CircularWire>, crate::OperationsError> {
     let tol = Tolerance::new();
-    let mut boundary: Option<(Point3, f64)> = None;
+    let mut boundary: Option<CircularWire> = None;
     for oriented in topo.wire(wire)?.edges() {
         let remus_topology::edge::EdgeCurve::Circle(circle) = topo.edge(oriented.edge())?.curve()
         else {
@@ -252,15 +317,20 @@ fn circular_wire(
         if circle.normal().cross(direction).length() > tol.angular {
             return Ok(None);
         }
-        if let Some((center, radius)) = boundary {
-            if (circle.center() - center).length() > tol.linear
-                || (circle.radius() - radius).abs() > tol.linear
-            {
-                return Ok(None);
-            }
-        } else {
-            boundary = Some((circle.center(), circle.radius()));
+        let Some(first) = boundary.as_mut() else {
+            boundary = Some(CircularWire {
+                center: circle.center(),
+                min_reach: circle.radius(),
+                max_reach: circle.radius(),
+            });
+            continue;
+        };
+        let offset = (circle.center() - first.center).length();
+        if offset > tol.linear || (circle.radius() - first.max_reach).abs() > 2.0 * tol.linear {
+            return Ok(None);
         }
+        first.min_reach = first.min_reach.min(circle.radius() - offset);
+        first.max_reach = first.max_reach.max(circle.radius() + offset);
     }
     Ok(boundary)
 }
@@ -337,9 +407,9 @@ fn torus_strip_lower_radius(
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use super::{coaxial_sweep_is_radially_disjoint, planar_face_axis_clearance};
+    use super::{circular_wire, coaxial_sweep_is_radially_disjoint, planar_face_axis_clearance};
     use crate::boolean::{BooleanOp, boolean};
-    use crate::primitives::{make_box, make_cone, make_cylinder};
+    use crate::primitives::{make_box, make_cone, make_cylinder, make_sphere};
     use crate::transform::transform_solid;
     use remus_math::{
         mat::Mat4,
@@ -492,5 +562,73 @@ mod tests {
             matches!(surface, FaceSurface::Cylinder(_))
         });
         assert!(!coaxial_sweep_is_radially_disjoint(&topo, ring, shifted_wall, UP).unwrap());
+    }
+
+    #[test]
+    fn tilted_core_axis_drifts_by_its_axial_reach() {
+        // A unit cylinder 2e9 long whose axis leans 5e-13 rad off the move,
+        // inside the angular tolerance: its far end has drifted 1e-3 off
+        // the parallel axis, so a plate 2e-4 outside its radius is reached.
+        let mut topo = Topology::new();
+        let core = make_cylinder(&mut topo, 1.0, 2.0e9).unwrap();
+        transform_solid(&mut topo, core, &Mat4::rotation_y(5.0e-13)).unwrap();
+        transform_solid(&mut topo, core, &Mat4::translation(0.0, 0.0, 10.0)).unwrap();
+        let wall = face_on(&topo, core, |surface| {
+            matches!(surface, FaceSurface::Cylinder(_))
+        });
+        let plate = make_box(&mut topo, 0.9998, 0.2, 1.0).unwrap();
+        transform_solid(&mut topo, plate, &Mat4::translation(1.0002, -0.1, -1.0)).unwrap();
+        let top = planar_face(&topo, plate, 0.0);
+        assert!(!coaxial_sweep_is_radially_disjoint(&topo, top, wall, UP).unwrap());
+    }
+
+    #[test]
+    fn circular_wire_reaches_as_far_as_its_widest_arc() {
+        use remus_math::curves::Circle3D;
+        use remus_topology::edge::{Edge, EdgeCurve};
+        use remus_topology::vertex::Vertex;
+        use remus_topology::wire::{OrientedEdge, Wire};
+
+        // Two arcs within tolerance of one unit circle: the second's centre
+        // sits 7.5e-8 off and its radius 6.75e-8 over, so it reaches
+        // 1.425e-7 beyond the first arc's radius.
+        let mut topo = Topology::new();
+        let first = Circle3D::new(Point3::new(0.0, 0.0, 0.0), UP, 1.0).unwrap();
+        let second = Circle3D::new(Point3::new(7.5e-8, 0.0, 0.0), UP, 1.0 + 6.75e-8).unwrap();
+        let top = topo.add_vertex(Vertex::new(Point3::new(-0.9, 0.435_889_894, 0.0), 1e-7));
+        let bottom = topo.add_vertex(Vertex::new(Point3::new(-0.9, -0.435_889_894, 0.0), 1e-7));
+        let left = topo.add_edge(Edge::new(top, bottom, EdgeCurve::Circle(first)));
+        let right = topo.add_edge(Edge::new(bottom, top, EdgeCurve::Circle(second)));
+        let wire = topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(left, true),
+                    OrientedEdge::new(right, true),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        let bound = circular_wire(&topo, wire, UP).unwrap().expect("one circle");
+        assert!(bound.max_reach >= 1.0 + 1.42e-7, "{}", bound.max_reach);
+        assert!(bound.min_reach <= 1.0, "{}", bound.min_reach);
+    }
+
+    #[test]
+    fn distant_face_vertices_do_not_round_the_clearance_up() {
+        // A plate from 1.0000025 out to 2^35 beside a sphere of radius
+        // 1.000003 on the axis: the sweep reaches the sphere, whatever
+        // vertex the plate's wire starts at.
+        let mut topo = Topology::new();
+        let near = 1.000_002_5;
+        let plate = make_box(&mut topo, 2.0_f64.powi(35) - near, 2.0, 1.0).unwrap();
+        transform_solid(&mut topo, plate, &Mat4::translation(near, -1.0, -1.0)).unwrap();
+        let top = planar_face(&topo, plate, 0.0);
+        let ball = make_sphere(&mut topo, 1.000_003, 16).unwrap();
+        transform_solid(&mut topo, ball, &Mat4::translation(0.0, 0.0, 5.0)).unwrap();
+        let shell = face_on(&topo, ball, |surface| {
+            matches!(surface, FaceSurface::Sphere(_))
+        });
+        assert!(!coaxial_sweep_is_radially_disjoint(&topo, top, shell, UP).unwrap());
     }
 }
