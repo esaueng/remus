@@ -95,19 +95,14 @@ fn disc_clears_coaxial_shell(
             // |height| / tan(angle), not |height| tan(angle).
             ((middle - cone.apex()).dot(axis).abs() - extent).max(0.0) / cone.half_angle().tan()
         }
-        FaceSurface::Plane { .. } => {
-            // A coaxial circular hole removes the open disc of its radius
-            // from a planar face, so no point of the face lies closer to the
-            // axis. Faces without such a hole keep the box check.
-            let mut lower = 0.0_f64;
-            for &inner in topo.face(candidate)?.inner_wires() {
-                if let Some(hole) = circular_wire(topo, inner, direction)?
-                    && coaxial(hole.center, direction)
-                {
-                    lower = lower.max(hole.min_reach);
-                }
+        // A face parallel to the move whose holes leave the axis clear is
+        // bounded on its boundary: a coaxial hole bounds it by its rim. Any
+        // other planar face keeps the box check.
+        FaceSurface::Plane { normal, .. } => {
+            if normal.cross(direction).length() > tol.angular {
+                return Ok(false);
             }
-            lower
+            planar_face_axis_clearance(topo, candidate, center, direction)?.unwrap_or(0.0)
         }
         FaceSurface::Cylinder(_)
         | FaceSurface::Cone(_)
@@ -281,13 +276,20 @@ fn planar_face_axis_clearance(
     let Some(Some(in_outer)) = decisions.next() else {
         return Ok(None);
     };
-    let mut in_hole = false;
+    // Inside the outer wire, the axis misses the face only inside exactly
+    // one hole. Holes that nest, as an imported face may carry, leave
+    // material around the axis that their nearest rim does not bound.
+    let mut holes = 0_usize;
     for decision in decisions {
         let Some(inside) = decision else {
             return Ok(None);
         };
-        in_hole |= inside;
+        holes += usize::from(inside);
     }
+    if in_outer && holes > 1 {
+        return Ok(None);
+    }
+    let in_hole = holes == 1;
     // Each coordinate and the distance read from it carry a few rounding
     // steps relative to the world `scale`; 1e-12 of it is orders of
     // magnitude above that and still far below the modeling tolerance at
@@ -641,6 +643,38 @@ mod tests {
         transform_solid(&mut topo, plate, &Mat4::translation(1.0002, -0.1, -1.0)).unwrap();
         let top = planar_face(&topo, plate, 0.0);
         assert!(!coaxial_sweep_is_radially_disjoint(&topo, top, wall, UP).unwrap());
+    }
+
+    #[test]
+    fn nested_holes_around_the_axis_prove_nothing() {
+        use remus_math::curves::Circle3D;
+        use remus_topology::edge::{Edge, EdgeCurve};
+        use remus_topology::vertex::Vertex;
+        use remus_topology::wire::{OrientedEdge, Wire};
+
+        // An R20 face with an R10 hole and an R5 wire inside that hole: by
+        // parity the R5 disc is material, and an R2 cap on the axis meets
+        // it, whichever of the two travels.
+        let mut topo = Topology::new();
+        let ring = annulus(&mut topo, 10.0);
+        let centre = Point3::new(0.0, 0.0, 10.0);
+        let seam = topo.add_vertex(Vertex::new(Point3::new(5.0, 0.0, 10.0), 1e-7));
+        let mut island = Edge::new(
+            seam,
+            seam,
+            EdgeCurve::Circle(Circle3D::new(centre, UP, 5.0).unwrap()),
+        );
+        island.set_trim(Some((0.0, std::f64::consts::TAU)));
+        let island = topo.add_edge(island);
+        let island = topo.add_wire(Wire::new(vec![OrientedEdge::new(island, true)], true).unwrap());
+        let face = topo.face(ring).unwrap();
+        let (outer, mut inner) = (face.outer_wire(), face.inner_wires().to_vec());
+        inner.push(island);
+        topo.set_face_boundary_wires(ring, outer, inner).unwrap();
+        let cap = make_cylinder(&mut topo, 2.0, 30.0).unwrap();
+        let cap = planar_face(&topo, cap, 30.0);
+        assert!(!coaxial_sweep_is_radially_disjoint(&topo, cap, ring, UP).unwrap());
+        assert!(!coaxial_sweep_is_radially_disjoint(&topo, ring, cap, UP).unwrap());
     }
 
     #[test]

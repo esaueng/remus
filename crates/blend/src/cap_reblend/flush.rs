@@ -341,7 +341,7 @@ fn rebuild(
 
     // The rim and wall keep the span away from the block. The shoulder's
     // spring on the wall lies on the other span.
-    let inner = shoulder_direction(topo, shoulder, low_center, axis)?;
+    let inner = shoulder_direction(topo, &adjacency, shoulder, block_top, low_center, axis)?;
     let angle = |from: Vec3, to: Vec3| {
         let a = from.cross(to).dot(axis).atan2(from.dot(to));
         if a < 0.0 { a + TAU } else { a }
@@ -612,14 +612,20 @@ fn rebuild(
         .into_iter()
         .chain(rims.iter().copied().filter(|&f| f != rim))
         .collect();
-    let mut faces: Vec<_> = solid_faces(topo, solid)?
-        .into_iter()
+    // Cavities are untouched: the boss and block are on the outer shell.
+    let source = topo.solid(solid)?;
+    let cavities = source.inner_shells().to_vec();
+    let mut faces: Vec<_> = topo
+        .shell(source.outer_shell())?
+        .faces()
+        .iter()
+        .copied()
         .filter(|f| !removed.contains(f))
         .collect();
     let survived: Vec<_> = faces.iter().map(|&f| (f, f)).collect();
     faces.extend(created.iter().map(|(f, _)| *f));
     let shell = topo.add_shell(Shell::new(faces)?);
-    let result = topo.add_solid(Solid::new(shell, vec![]));
+    let result = topo.add_solid(Solid::new(shell, cavities));
     Ok(Some(CapReblendOutcome {
         corner_stations: permission.stations,
         edge_images: vec![],
@@ -639,20 +645,23 @@ fn rebuild(
     }))
 }
 
-/// Unit direction, normal to `axis`, from the boss axis toward the shoulder:
-/// the mean of the shoulder's vertices, which all lie over the block.
+/// Unit direction, normal to `axis`, from the boss axis to the middle of a
+/// contact between the shoulder and the block top, which lies over the
+/// block however the shoulder's boundary is split.
 fn shoulder_direction(
     topo: &Topology,
+    adjacency: &AdjacencyIndex,
     shoulder: FaceId,
+    block_top: FaceId,
     center: Point3,
     axis: Vec3,
 ) -> Result<Vec3, BlendError> {
-    let mut sum = Vec3::new(0.0, 0.0, 0.0);
-    for vertex in face_vertices(topo, shoulder)? {
-        let radial = topo.vertex(vertex)?.point() - center;
-        sum += (radial - axis * radial.dot(axis)).normalize()?;
-    }
-    Ok(sum.normalize()?)
+    let contact = face_edges(topo, shoulder)?
+        .into_iter()
+        .find(|&e| adjacency.faces_for_edge(e).contains(&block_top))
+        .ok_or_else(|| refusal("flush shoulder does not meet the block top"))?;
+    let radial = edge_point(topo, contact, 0.5)? - center;
+    Ok((radial - axis * radial.dot(axis)).normalize()?)
 }
 
 fn holds(set: &[OrientedEdge], oe: OrientedEdge) -> bool {
@@ -736,15 +745,28 @@ fn replace_edges_shared_with(
     Ok(())
 }
 
-/// A closed wire through `edges`, each given with the vertex it leaves in
-/// traversal order, wound counter-clockwise about `outward`.
+/// A point of `edge` at the fraction `at` of its domain.
+fn edge_point(topo: &Topology, edge: EdgeId, at: f64) -> Result<Point3, BlendError> {
+    let data = topo.edge(edge)?;
+    let (a, b) = (
+        topo.vertex(data.start())?.point(),
+        topo.vertex(data.end())?.point(),
+    );
+    let (t0, t1) = data.trim().unwrap_or((0.0, 1.0));
+    Ok(data
+        .curve()
+        .evaluate_with_endpoints(t0 + (t1 - t0) * at, a, b))
+}
+
+/// A closed four-sided wire through `edges`, each given with the vertex it
+/// leaves in traversal order, wound counter-clockwise about `outward`: at
+/// the middle of the first side, the third side lies to the left.
 fn oriented_loop(
     topo: &mut Topology,
-    edges: &[(EdgeId, VertexId)],
+    edges: &[(EdgeId, VertexId); 4],
     outward: impl Fn(Point3) -> Vec3,
 ) -> Result<remus_topology::wire::WireId, BlendError> {
     let mut oriented = Vec::with_capacity(edges.len());
-    let mut samples = Vec::new();
     for &(edge, leaving) in edges {
         let data = topo.edge(edge)?;
         let forward = if data.start() == leaving {
@@ -754,23 +776,6 @@ fn oriented_loop(
         } else {
             return Err(refusal("flush loop edge does not leave its vertex"));
         };
-        let (a, b) = (
-            topo.vertex(data.start())?.point(),
-            topo.vertex(data.end())?.point(),
-        );
-        let (t0, t1) = data.trim().unwrap_or((0.0, 1.0));
-        let mut points: Vec<_> = (0..8)
-            .map(|i| {
-                let t = t0 + (t1 - t0) * f64::from(i) / 8.0;
-                data.curve().evaluate_with_endpoints(t, a, b)
-            })
-            .collect();
-        if !forward {
-            points.push(data.curve().evaluate_with_endpoints(t1, a, b));
-            points.reverse();
-            points.pop();
-        }
-        samples.extend(points);
         oriented.push(OrientedEdge::new(edge, forward));
     }
     for pair in oriented.windows(2) {
@@ -778,18 +783,14 @@ fn oriented_loop(
             return Err(refusal("flush loop is disconnected"));
         }
     }
-    // Newell's normal of the sampled boundary against the surface normal at
-    // the boundary's centroid.
-    let mut newell = Vec3::new(0.0, 0.0, 0.0);
-    let mut centroid = Vec3::new(0.0, 0.0, 0.0);
-    for (i, p) in samples.iter().enumerate() {
-        let q = samples[(i + 1) % samples.len()];
-        newell += (*p - Point3::new(0.0, 0.0, 0.0)).cross(q - Point3::new(0.0, 0.0, 0.0));
-        centroid += *p - Point3::new(0.0, 0.0, 0.0);
+    let (first, forward) = (edges[0].0, oriented[0].is_forward());
+    let at = edge_point(topo, first, 0.5)?;
+    let mut tangent = edge_point(topo, first, 0.51)? - edge_point(topo, first, 0.49)?;
+    if !forward {
+        tangent = -tangent;
     }
-    #[allow(clippy::cast_precision_loss)]
-    let centroid = Point3::new(0.0, 0.0, 0.0) + centroid * (1.0 / samples.len() as f64);
-    let winding = newell.dot(outward(centroid));
+    let across = edge_point(topo, edges[2].0, 0.5)? - at;
+    let winding = outward(at).cross(tangent).dot(across);
     if winding.abs() < 1e-12 {
         return Err(refusal("flush loop winding is degenerate"));
     }
@@ -801,4 +802,86 @@ fn oriented_loop(
             .collect();
     }
     Ok(topo.add_wire(Wire::new(oriented, true)?))
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    /// A rim band of an R6 boss with an R2 round over `span` radians from
+    /// angle `start`, wound as the builder winds it.
+    fn rim_wire(start: f64, span: f64) -> (Topology, remus_topology::wire::WireId, EdgeId) {
+        let mut topo = Topology::new();
+        let axis = Vec3::new(0.0, 0.0, 1.0);
+        let low = Point3::new(0.0, 0.0, 0.0);
+        let high = Point3::new(0.0, 0.0, 2.0);
+        let direction = |angle: f64| Vec3::new(angle.cos(), angle.sin(), 0.0);
+        let (a, b) = (direction(start), direction(start + span));
+        let foot =
+            |topo: &mut Topology, d: Vec3| topo.add_vertex(Vertex::new(low + d * 6.0, LINEAR));
+        let lip =
+            |topo: &mut Topology, d: Vec3| topo.add_vertex(Vertex::new(high + d * 4.0, LINEAR));
+        let (a_foot, b_foot) = (foot(&mut topo, a), foot(&mut topo, b));
+        let (a_lip, b_lip) = (lip(&mut topo, a), lip(&mut topo, b));
+        let arc = |topo: &mut Topology, from, to, center, radius| {
+            add_certified_curve_edge(
+                topo,
+                from,
+                to,
+                EdgeCurve::Circle(Circle3D::new_with_ref(center, axis, radius, a).unwrap()),
+                (0.0, span),
+            )
+            .unwrap()
+        };
+        let rim_low = arc(&mut topo, a_foot, b_foot, low, 6.0);
+        let rim_high = arc(&mut topo, a_lip, b_lip, high, 4.0);
+        let section = |topo: &mut Topology, d: Vec3, from, to| {
+            add_certified_curve_edge(
+                topo,
+                from,
+                to,
+                EdgeCurve::Circle(
+                    Circle3D::new_with_ref(low + d * 4.0, d.cross(axis), 2.0, d).unwrap(),
+                ),
+                (0.0, FRAC_PI_2),
+            )
+            .unwrap()
+        };
+        let a_section = section(&mut topo, a, a_foot, a_lip);
+        let b_section = section(&mut topo, b, b_foot, b_lip);
+        let wire = oriented_loop(
+            &mut topo,
+            &[
+                (rim_low, a_foot),
+                (b_section, b_foot),
+                (rim_high, b_lip),
+                (a_section, a_lip),
+            ],
+            |p| {
+                let radial = p - low;
+                let radial = radial - axis * radial.dot(axis);
+                let centre = low + radial.normalize().unwrap() * 4.0;
+                (p - centre).normalize().unwrap()
+            },
+        )
+        .unwrap();
+        (topo, wire, rim_low)
+    }
+
+    #[test]
+    fn rim_band_winds_counter_clockwise_about_its_outward_normal_at_any_span() {
+        // On the band's outer equator the outward normal is radial and the
+        // band lies above, so the foot arc runs counter-clockwise about the
+        // boss axis whatever the span.
+        for span in [2.0, std::f64::consts::PI, 4.2, 5.3] {
+            for start in [0.0, 1.0, -2.5] {
+                let (topo, wire, rim_low) = rim_wire(start, span);
+                let first = topo.wire(wire).unwrap().edges()[0];
+                assert_eq!(first.edge(), rim_low, "span {span} from {start}");
+                assert!(first.is_forward(), "span {span} from {start}");
+            }
+        }
+    }
 }

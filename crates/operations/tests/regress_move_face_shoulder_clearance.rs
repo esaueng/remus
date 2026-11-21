@@ -1376,3 +1376,34 @@ fn openzcad_boss_block_still_refuses_past_flush() {
         joined_source
     );
 }
+
+#[test]
+fn flush_boss_block_keeps_a_sealed_cavity() {
+    // A void deep in the block is untouched by the boss's tops going flush
+    // and stays the solid's own inner shell.
+    let permission = Some(FaceMoveApproximation { stations: 256 });
+    let mut topo = Topology::new();
+    let solid = openzcad_boss_block(&mut topo);
+    let void = make_box(&mut topo, 4.0, 4.0, 4.0).unwrap();
+    remus_operations::transform::transform_solid(
+        &mut topo,
+        void,
+        &remus_math::mat::Mat4::translation(18.0, 18.0, 4.0),
+    )
+    .unwrap();
+    let hollow = boolean(&mut topo, BooleanOp::Cut, solid, void).unwrap();
+    assert_eq!(topo.solid(hollow).unwrap().inner_shells().len(), 1);
+    let expected = flush_boss_block(&mut topo, 35.0);
+    let face = top_at(&topo, hollow, 29.0);
+    let moved = move_faces_with_quality(&mut topo, hollow, &[face], 6.0, permission)
+        .unwrap()
+        .result
+        .solid;
+    assert!(validate_solid(&topo, moved).unwrap().is_valid());
+    assert_eq!(topo.solid(moved).unwrap().inner_shells().len(), 1);
+    let (v, w) = (
+        solid_volume(&topo, moved, 0.001).unwrap(),
+        solid_volume(&topo, expected, 0.001).unwrap() - 64.0,
+    );
+    assert!((v - w).abs() < 1e-6 * w, "volume {v} vs {w}");
+}
