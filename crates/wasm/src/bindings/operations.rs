@@ -248,12 +248,13 @@ pub(super) fn loft_with_options_impl(
 pub(super) fn parse_exact_sweep_options(
     options: &serde_json::Value,
 ) -> Result<remus_operations::exact_sweep::ExactSweepOptions, String> {
-    use remus_operations::exact_sweep::ExactSweepOrientation;
+    use remus_operations::exact_sweep::{ExactSweepCorner, ExactSweepOrientation};
 
     let object = options
         .as_object()
         .ok_or_else(|| "sweepExactWithOptions: options must be an object".to_owned())?;
     let mut parsed = remus_operations::exact_sweep::ExactSweepOptions::default();
+    let (mut round, mut radius) = (false, None);
     for (key, value) in object {
         let number = || {
             value
@@ -263,6 +264,17 @@ pub(super) fn parse_exact_sweep_options(
         match key.as_str() {
             "twist" => parsed.twist = number()?,
             "endScale" => parsed.end_scale = number()?,
+            "corner" => match value.as_str() {
+                Some("mitre") => parsed.corner = ExactSweepCorner::Mitre,
+                Some("round") => round = true,
+                _ => {
+                    return Err(format!(
+                        "sweepExactWithOptions: option \"corner\" must be \"mitre\" or \
+                         \"round\", got {value}"
+                    ));
+                }
+            },
+            "cornerRadius" => radius = Some(number()?),
             "orientation" => {
                 parsed.orientation = match value.as_str() {
                     Some("normal") => ExactSweepOrientation::FollowPath,
@@ -278,10 +290,25 @@ pub(super) fn parse_exact_sweep_options(
             _ => {
                 return Err(format!(
                     "sweepExactWithOptions: unknown option \"{key}\" (this kernel builds \
-                     \"twist\", \"endScale\" and \"orientation\")"
+                     \"twist\", \"endScale\", \"orientation\", \"corner\" and \
+                     \"cornerRadius\")"
                 ));
             }
         }
+    }
+    match (round, radius) {
+        (true, Some(radius)) => parsed.corner = ExactSweepCorner::Round { radius },
+        (true, None) => {
+            return Err(
+                "sweepExactWithOptions: a \"round\" corner needs \"cornerRadius\"".to_owned(),
+            );
+        }
+        (false, Some(_)) => {
+            return Err(
+                "sweepExactWithOptions: \"cornerRadius\" needs \"corner\": \"round\"".to_owned(),
+            );
+        }
+        (false, None) => {}
     }
     Ok(parsed)
 }
@@ -1790,7 +1817,9 @@ impl RemusKernel {
     ///   where the path crosses it (default `1`);
     /// - `orientation`: `"normal"` (default) turns the profile with the path,
     ///   `"parallel"` translates it along the path unturned, exactly along
-    ///   any path curve and through corners.
+    ///   any path curve and through corners;
+    /// - `corner`: `"mitre"` (default) or `"round"` with `cornerRadius`, the
+    ///   radius of the arc tangent to both runs that replaces each corner.
     ///
     /// Both are linear in the distance travelled, and need a straight path
     /// with the profile square to it. With neither set this is `sweepExact`.

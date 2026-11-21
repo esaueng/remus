@@ -326,3 +326,49 @@ fn sweep_exact_with_options_keeps_the_profile_parallel_through_a_corner() {
         "{measured} vs {exact}"
     );
 }
+
+/// `"corner": "round"` with `cornerRadius`: the radius-2 tube along an L of
+/// two 20-unit runs, its corner replaced by a radius-5 quarter arc, is π r²
+/// times the rounded centre line; a radius alone, or a round corner without
+/// one, is refused before anything is built.
+#[test]
+fn sweep_exact_with_options_rounds_a_corner() {
+    let mut kernel = RemusKernel::new();
+    let face = profile(&mut kernel);
+    let path = vec![
+        kernel
+            .make_line_edge(0.0, 0.0, 0.0, 20.0, 0.0, 0.0)
+            .unwrap(),
+        kernel
+            .make_line_edge(20.0, 0.0, 0.0, 20.0, 20.0, 0.0)
+            .unwrap(),
+    ];
+    let options = super::operations::parse_exact_sweep_options(&serde_json::json!({
+        "corner": "round",
+        "cornerRadius": 5.0,
+    }))
+    .unwrap();
+    let solid = kernel
+        .sweep_exact_with_options_impl(face, &path, &options)
+        .unwrap();
+    let exact = PI * 4.0 * (30.0 + 5.0 * FRAC_PI_2);
+    let measured = volume(&kernel, solid);
+    assert!(
+        (measured - exact).abs() / exact < 1e-9,
+        "{measured} vs {exact}"
+    );
+    for (options, phrase) in [
+        (
+            serde_json::json!({"corner": "round"}),
+            "needs \"cornerRadius\"",
+        ),
+        (serde_json::json!({"cornerRadius": 2.0}), "needs \"corner\""),
+        (serde_json::json!({"corner": "bevel"}), "\"mitre\" or"),
+    ] {
+        let refused = super::operations::parse_exact_sweep_options(&options);
+        assert!(
+            refused.as_ref().is_err_and(|e| e.contains(phrase)),
+            "{options}: {refused:?}"
+        );
+    }
+}
