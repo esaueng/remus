@@ -3111,8 +3111,8 @@ pub fn solid_volume(
     deflection: f64,
 ) -> Result<f64, crate::OperationsError> {
     let _total = crate::performance::span("volume.total");
-    super::volume_memo::memoized(topo, solid, deflection, || {
-        solid_volume_uncached(topo, solid, deflection)
+    super::volume_memo::memoized(topo, solid, deflection, |effective| {
+        solid_volume_uncached(topo, solid, deflection, effective)
     })
 }
 
@@ -3120,6 +3120,7 @@ fn solid_volume_uncached(
     topo: &Topology,
     solid: SolidId,
     deflection: f64,
+    effective: Option<f64>,
 ) -> Result<f64, crate::OperationsError> {
     // Fast path: exact analytic formula for known primitives.
     if let Some(v) = crate::performance::timed("volume.primitive", || {
@@ -3162,7 +3163,8 @@ fn solid_volume_uncached(
     // extent — never coarsening a finer request — so the volume is accurate
     // regardless of the (preview-tuned) deflection the caller passes.
     let requested = deflection;
-    let deflection = volume_tessellation_deflection(topo, solid, deflection);
+    let deflection =
+        effective.unwrap_or_else(|| volume_tessellation_deflection(topo, solid, requested));
     vol_trace(|| format!("deflection requested {requested:e} -> {deflection:e}"));
 
     // Qualified trimmed torus-notch family (exact rolling-ball fillet output
