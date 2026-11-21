@@ -112,3 +112,25 @@ fn guide_option_refusals_are_typed() {
         assert!(error.to_string().contains(phrase), "{label}: {error}");
     }
 }
+
+/// Review regression: an options string serde cannot read (here a guide
+/// coordinate of 1e309) used to become `null` and build the default loft.
+/// It is refused; an empty string still means no options.
+#[test]
+fn malformed_options_are_refused_not_defaulted() {
+    let options = r#"{"guide": {"degree": 1, "knots": [0, 0, 1, 1],
+        "controlPoints": [[-1, -1, 0], [-1, -1, 1e309]]}}"#;
+    let error = super::operations::parse_loft_options(options).unwrap_err();
+    assert!(
+        error.to_string().contains("loftWithOptions: options"),
+        "{error}"
+    );
+    let error = super::operations::parse_loft_options("[1, 2]").unwrap_err();
+    assert!(error.to_string().contains("JSON object"), "{error}");
+    assert!(super::operations::parse_loft_options("").unwrap().is_null());
+    assert!(
+        super::operations::parse_loft_options("{}")
+            .unwrap()
+            .is_object()
+    );
+}

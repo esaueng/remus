@@ -429,3 +429,160 @@ fn guided_loft_refusals_are_typed_and_leave_the_topology_unchanged() {
         assert!(reason.contains(phrase), "{label}: {reason}");
     }
 }
+
+/// Review regression: a guide that climbs to z = 7, drops to z = 3 and
+/// climbs again would cover the z = 3..7 strip three times with every wall.
+/// It is refused by name, never built.
+#[test]
+fn a_guide_that_doubles_back_is_refused() {
+    let guide = NurbsCurve::new(
+        1,
+        vec![0.0, 0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0, 1.0],
+        vec![
+            p(-1.0, -1.0, 0.0),
+            p(-1.0, -1.0, 7.0),
+            p(-1.0, -1.0, 3.0),
+            p(-1.0, -1.0, 10.0),
+        ],
+        vec![1.0; 4],
+    )
+    .unwrap();
+    for smooth in [false, true] {
+        let mut topo = Topology::new();
+        let faces = [square(&mut topo, 2.0, 0.0), square(&mut topo, 2.0, 10.0)];
+        let before = topo.num_faces();
+        let error = loft_with_guide(&mut topo, &faces, &guide, smooth).unwrap_err();
+        let OperationsError::Unsupported { operation, reason } = &error else {
+            panic!("untyped {error:?}");
+        };
+        assert_eq!(*operation, "loft_with_guide");
+        assert!(reason.contains("doubles back"), "{reason}");
+        assert_eq!(topo.num_faces(), before);
+    }
+}
+
+/// Review regression: the upper square drawn clockwise (with its matching
+/// downward normal) is rewound on its own, keeping the guide corner first,
+/// so the loft stays the 2 × 2 × 10 prism instead of collapsing at z = 5.
+#[test]
+fn opposite_section_windings_still_pair_corner_for_corner() {
+    let mut topo = Topology::new();
+    let lower = square(&mut topo, 2.0, 0.0);
+    let wire = make_polygon_wire(
+        &mut topo,
+        &[
+            p(-1.0, -1.0, 10.0),
+            p(-1.0, 1.0, 10.0),
+            p(1.0, 1.0, 10.0),
+            p(1.0, -1.0, 10.0),
+        ],
+        1e-7,
+    )
+    .unwrap();
+    let upper = topo.add_face(Face::new(
+        wire,
+        vec![],
+        FaceSurface::Plane {
+            normal: Vec3::new(0.0, 0.0, -1.0),
+            d: -10.0,
+        },
+    ));
+    let guide = bezier(vec![p(-1.0, -1.0, 0.0), p(-1.0, -1.0, 10.0)], vec![1.0; 2]);
+    for smooth in [false, true] {
+        let solid = loft_with_guide(&mut topo, &[lower, upper], &guide, smooth).unwrap();
+        assert_valid(&topo, solid);
+        let middle = [
+            p(-1.0, -1.0, 5.0),
+            p(1.0, -1.0, 5.0),
+            p(1.0, 1.0, 5.0),
+            p(-1.0, 1.0, 5.0),
+        ];
+        assert_section_interpolated(&topo, solid, 0.5, &middle);
+        assert!((volume(&topo, solid) - 40.0).abs() < 1e-6);
+    }
+}
+
+/// Review regression: weights 1, 1 + 8e-13, 1 on a guide four million units
+/// long are a rational curve, not a polynomial one: making them equal moved
+/// the guide by about 4e-7. The loft's guide edge stays on the given curve.
+#[test]
+fn nearly_equal_weights_keep_the_guide_rational() {
+    let mut topo = Topology::new();
+    let side = |topo: &mut Topology, z: f64| {
+        polygon(
+            topo,
+            &[
+                p(0.0, 0.0, z),
+                p(2000.0, 0.0, z),
+                p(2000.0, 2000.0, z),
+                p(0.0, 2000.0, z),
+            ],
+        )
+    };
+    let faces = [side(&mut topo, 0.0), side(&mut topo, 4e6)];
+    let guide = bezier(
+        vec![p(0.0, 0.0, 0.0), p(2e6, 0.0, 2e6), p(0.0, 0.0, 4e6)],
+        vec![1.0, 1.0 + 8e-13, 1.0],
+    );
+    let solid = loft_with_guide(&mut topo, &faces, &guide, false).unwrap();
+    let deviation = solid_edges(&topo, solid)
+        .unwrap()
+        .into_iter()
+        .filter_map(|e| match topo.edge(e).unwrap().curve() {
+            remus_topology::edge::EdgeCurve::NurbsCurve(c) => Some(c.clone()),
+            _ => None,
+        })
+        .map(|c| {
+            (0..=200)
+                .map(|j| {
+                    let u = f64::from(j) / 200.0;
+                    (c.evaluate(u) - guide.evaluate(u)).length()
+                })
+                .fold(0.0f64, f64::max)
+        })
+        .fold(f64::INFINITY, f64::min);
+    assert!(deviation < 1e-8, "guide edge is {deviation} off the guide");
+}
+
+/// Review regression: the middle section sits at guide parameter
+/// 0.5000000005, half a nanounit past the polyline guide's knot at 0.5.
+/// Snapping the offset's bend onto that knot would make the width at u = 0.5
+/// 20000 instead of the interpolated 10000 + 10000·0.5/0.5000000005, 1e-5
+/// away; the knot is kept instead.
+#[test]
+fn snapping_never_moves_an_offset_beyond_tolerance() {
+    let mut topo = Topology::new();
+    let guide = NurbsCurve::new(
+        1,
+        vec![0.0, 0.0, 0.5, 1.0, 1.0],
+        vec![p(0.0, 0.0, 0.0), p(1.0, 0.0, 5.0), p(0.0, 0.0, 10.0)],
+        vec![1.0; 3],
+    )
+    .unwrap();
+    let t1 = 0.500_000_000_5;
+    let sections: Vec<FaceId> = [(0.0, 10_000.0), (t1, 20_000.0), (1.0, 10_000.0)]
+        .into_iter()
+        .map(|(t, s)| {
+            let c = guide.evaluate(t);
+            polygon(
+                &mut topo,
+                &[
+                    c,
+                    c + Vec3::new(s, 0.0, 0.0),
+                    c + Vec3::new(s, s, 0.0),
+                    c + Vec3::new(0.0, s, 0.0),
+                ],
+            )
+        })
+        .collect();
+    let solid = loft_with_guide(&mut topo, &sections, &guide, false).unwrap();
+    let expected = 10_000.0 + 10_000.0 * 0.5 / t1;
+    let widths: Vec<f64> = walls(&topo, solid)
+        .iter()
+        .map(|w| (w.evaluate(0.5, 1.0) - w.evaluate(0.5, 0.0)).length())
+        .collect();
+    assert!(
+        widths.iter().any(|w| (w - expected).abs() < 1e-7),
+        "{widths:?} vs {expected}"
+    );
+}

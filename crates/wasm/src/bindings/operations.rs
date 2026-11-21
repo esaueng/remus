@@ -306,6 +306,32 @@ pub(super) fn loft_with_options_impl(
     }
 }
 
+/// Parse the `loftWithOptions` options string. An empty string or `null`
+/// means no options; anything else must be a JSON object, so a malformed
+/// string (an out-of-range number, say) is refused instead of silently
+/// building the default loft.
+///
+/// # Errors
+///
+/// Unparsable JSON, or JSON that is not an object.
+pub(super) fn parse_loft_options(options: &str) -> Result<serde_json::Value, WasmError> {
+    let invalid = |reason: String| {
+        WasmError::from(remus_operations::OperationsError::InvalidInput { reason })
+    };
+    if options.trim().is_empty() {
+        return Ok(serde_json::Value::Null);
+    }
+    let value: serde_json::Value = serde_json::from_str(options)
+        .map_err(|error| invalid(format!("loftWithOptions: options: {error}")))?;
+    if value.is_object() || value.is_null() {
+        Ok(value)
+    } else {
+        Err(invalid(format!(
+            "loftWithOptions: options must be a JSON object, got {value}"
+        )))
+    }
+}
+
 /// Parse a `loftWithOptions` guide: `{degree, knots, controlPoints:
 /// [[x, y, z], …], weights?}`, with every weight one when `weights` is absent.
 ///
@@ -655,8 +681,7 @@ impl RemusKernel {
     #[wasm_bindgen(js_name = "loftWithOptions")]
     #[allow(clippy::needless_pass_by_value)]
     pub fn loft_with_options(&mut self, faces: Vec<u32>, options: &str) -> Result<u32, JsError> {
-        let opts: serde_json::Value =
-            serde_json::from_str(options).unwrap_or(serde_json::Value::Null);
+        let opts = parse_loft_options(options)?;
 
         let face_ids: Vec<remus_topology::face::FaceId> = faces
             .iter()

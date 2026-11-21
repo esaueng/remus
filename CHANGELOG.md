@@ -470,8 +470,10 @@ historical predecessor-line records, retained for provenance. The
   offset from it, interpolated between sections linearly (ruled) or smoothly.
   Polynomial and rational guides (arcs) are summed exactly, in homogeneous
   form for rational ones. Curved sections and unequal corner counts are
-  refused as unsupported; a guide that misses a section, meets the sections
-  out of order or is unclamped is refused as invalid.
+  refused as unsupported, as is a guide whose rails double back; a guide
+  that misses a section, meets the sections out of order or is unclamped is
+  refused as invalid. Each section is wound about the guide on its own, so
+  opposite windings still pair corner for corner.
 
 * **operations,wasm:** loft connections (`loft::loft_with_connections`,
   `loftWithOptions` option `"connections"`: one `[x, y, z]` vertex per
