@@ -205,6 +205,44 @@ pub(super) fn loft_with_options_impl(
     mut face_ids: Vec<remus_topology::face::FaceId>,
     options: &serde_json::Value,
 ) -> Result<remus_topology::solid::SolidId, WasmError> {
+    // `connections`: one [x, y, z] vertex per section, where each section's
+    // correspondence starts (M04). Not combined with an apex point.
+    if let Some(connections) = options.get("connections") {
+        let invalid = |reason: String| {
+            WasmError::from(remus_operations::OperationsError::InvalidInput { reason })
+        };
+        if options.get("startPoint").is_some() || options.get("endPoint").is_some() {
+            return Err(invalid(
+                "loft connections cannot be combined with an apex point".to_owned(),
+            ));
+        }
+        let points = connections
+            .as_array()
+            .ok_or_else(|| invalid("loft connections must be an array of points".to_owned()))?
+            .iter()
+            .map(|point| {
+                let xyz: Option<Vec<f64>> = point
+                    .as_array()
+                    .filter(|xyz| xyz.len() == 3)
+                    .map(|xyz| xyz.iter().filter_map(serde_json::Value::as_f64).collect());
+                match xyz {
+                    Some(xyz) if xyz.len() == 3 && xyz.iter().all(|c| c.is_finite()) => {
+                        Ok(Point3::new(xyz[0], xyz[1], xyz[2]))
+                    }
+                    _ => Err(invalid(format!(
+                        "a loft connection must be a finite [x, y, z] point, got {point}"
+                    ))),
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let ruled = options
+            .get("ruled")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true);
+        return Ok(remus_operations::loft::loft_with_connections(
+            topo, &face_ids, &points, !ruled,
+        )?);
+    }
     if let Some(sp) = options.get("startPoint").and_then(|value| value.as_array())
         && sp.len() >= 3
     {
@@ -503,6 +541,10 @@ impl RemusKernel {
     /// - `startPoint: [x, y, z]` — apex point before first profile
     /// - `endPoint: [x, y, z]` — apex point after last profile
     /// - `ruled: bool` — true for ruled (linear) surfaces (default), false for smooth
+    /// - `connections: [[x, y, z], …]` — one vertex per section where its
+    ///   correspondence starts: vertex k of each section connects to vertex k
+    ///   of the next, counted from there. Not combined with an apex point; a
+    ///   point that is not a section vertex is refused.
     #[wasm_bindgen(js_name = "loftWithOptions")]
     #[allow(clippy::needless_pass_by_value)]
     pub fn loft_with_options(&mut self, faces: Vec<u32>, options: &str) -> Result<u32, JsError> {

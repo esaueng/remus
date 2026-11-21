@@ -146,6 +146,10 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
 * `sweepExactWithOptions` takes `"orientation"`: `"normal"` (default) or
   `"parallel"`, which translates the profile along the path unturned, along
   any path curve and through corners.
+
+* `loftWithOptions` takes `"connections"`: one `[x, y, z]` vertex per
+  section, where its correspondence starts.
+
 * Add `sweepExactWithOptions(face, edges, options)`: `sweepExact` with a JSON
   options object, `twist` (radians, total) and `endScale`, both linear along
   a straight path with the profile square to it; also a batch op of the same

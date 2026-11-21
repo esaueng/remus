@@ -453,6 +453,15 @@ historical predecessor-line records, retained for provenance. The
   holds exactly, splines included, and corners, which crease the body; it
   must run steadily away from the profile's plane, certified on its Bézier
   spans, or the sweep is refused.
+
+* **operations,wasm:** loft connections (`loft::loft_with_connections`,
+  `loftWithOptions` option `"connections"`: one `[x, y, z]` vertex per
+  section). Each section's correspondence starts at its chosen vertex: its
+  outer loop is re-entered there, nothing moved, so vertex k of every section
+  connects to vertex k of the next counted from those starts. A point that is
+  not a vertex of its section, a count mismatch, and connections with an
+  apex point are refused by type.
+
 * **operations,wasm:** twist and scale an exact sweep along a straight path
   (`exact_sweep::sweep_exact_with_options`, `sweepExactWithOptions`). The
   profile, square to the path, turns about and scales uniformly about the
