@@ -36,7 +36,23 @@
 
 use remus_math::nurbs::decompose::curve_to_bezier_segments;
 
-use super::*;
+use remus_math::nurbs::curve::NurbsCurve;
+use remus_math::nurbs::surface::NurbsSurface;
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::{Point3, Vec3};
+use remus_topology::Topology;
+use remus_topology::edge::{Edge, EdgeCurve, EdgeId};
+use remus_topology::face::{Face, FaceId, FaceSurface};
+use remus_topology::shell::Shell;
+use remus_topology::solid::{Solid, SolidId};
+use remus_topology::vertex::{Vertex, VertexId};
+use remus_topology::wire::{OrientedEdge, Wire, WireId};
+
+use super::{
+    Loop, Motion, RELATIVE_MARGIN, Rigid, Section, analytic_side, invalid, is_ccw,
+    read_profile_loop, to_vec,
+};
+use crate::OperationsError;
 use crate::helix::in_place::exact_piece;
 
 /// One path piece, oriented along the chain.
@@ -73,7 +89,7 @@ fn read_step(topo: &Topology, edge_id: EdgeId, index: usize) -> Result<Step, Ope
     let edge = topo.edge(edge_id)?;
     let start = topo.vertex(edge.start())?.point();
     let end = topo.vertex(edge.end())?.point();
-    if let EdgeCurve::Line = edge.curve() {
+    if matches!(edge.curve(), EdgeCurve::Line) {
         let d = end - start;
         if d.normalize().is_err() {
             return Err(invalid(format!(
@@ -207,12 +223,12 @@ fn monotone_sign(step: &Step, normal: Vec3, margin: f64) -> Result<Option<f64>, 
             Ok((rise.abs() > margin).then(|| rise.signum()))
         }
         StepKind::Curve(curve) => {
-            if curve.weights().iter().any(|&w| !(w > 0.0)) {
+            if curve.weights().iter().any(|&w| w.is_nan() || w <= 0.0) {
                 return Ok(None);
             }
             let mut sign: Option<f64> = None;
             for segment in curve_to_bezier_segments(curve)? {
-                if segment.weights().iter().any(|&w| !(w > 0.0)) {
+                if segment.weights().iter().any(|&w| w.is_nan() || w <= 0.0) {
                     return Ok(None);
                 }
                 let heights: Vec<f64> = segment
@@ -225,7 +241,7 @@ fn monotone_sign(step: &Step, normal: Vec3, margin: f64) -> Result<Option<f64>, 
                     if rise.abs() <= margin {
                         return Ok(None);
                     }
-                    if *sign.get_or_insert(rise.signum()) != rise.signum() {
+                    if (*sign.get_or_insert_with(|| rise.signum()) > 0.0) != (rise > 0.0) {
                         return Ok(None);
                     }
                 }
@@ -327,7 +343,7 @@ pub(super) fn sweep_keeping_orientation_impl(
                  keep moving away from the profile)"
             )));
         };
-        if *sigma.get_or_insert(sign) != sign {
+        if (*sigma.get_or_insert(sign) > 0.0) != (sign > 0.0) {
             return Err(invalid(format!(
                 "path segment {k} turns back through the profile's plane: a sweep that keeps \
                  the profile's orientation would meet itself"
