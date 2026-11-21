@@ -150,6 +150,11 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
   `"parallel"`, which translates the profile along the path unturned, along
   any path curve and through corners.
 
+* `loftWithOptions` takes `"guide"`: `{degree, knots, controlPoints:
+  [[x, y, z], …], weights?}`, a clamped NURBS curve through one corner of
+  every straight-edged section that the loft follows exactly. Not combined
+  with `"connections"` or an apex point.
+
 * `loftWithOptions` takes `"connections"`: one `[x, y, z]` vertex per
   section, where its correspondence starts.
 

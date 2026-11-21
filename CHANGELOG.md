@@ -462,6 +462,17 @@ historical predecessor-line records, retained for provenance. The
   must run steadily away from the profile's plane, certified on its Bézier
   spans, or the sweep is refused.
 
+* **operations,wasm:** loft along a guide curve (`loft::loft_with_guide`,
+  `loftWithOptions` option `"guide"`: `{degree, knots, controlPoints,
+  weights?}`). The guide passes through one corner of every straight-edged
+  section, which becomes that section's connection start, and the loft
+  follows it exactly: each corner's rail is the guide plus that corner's
+  offset from it, interpolated between sections linearly (ruled) or smoothly.
+  Polynomial and rational guides (arcs) are summed exactly, in homogeneous
+  form for rational ones. Curved sections and unequal corner counts are
+  refused as unsupported; a guide that misses a section, meets the sections
+  out of order or is unclamped is refused as invalid.
+
 * **operations,wasm:** loft connections (`loft::loft_with_connections`,
   `loftWithOptions` option `"connections"`: one `[x, y, z]` vertex per
   section). Each section's correspondence starts at its chosen vertex: its

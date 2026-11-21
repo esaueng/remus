@@ -1944,8 +1944,6 @@ fn loft_smooth_impl(
     topo: &mut Topology,
     profiles: &[FaceId],
 ) -> Result<SolidId, crate::OperationsError> {
-    let tol = Tolerance::new();
-
     if profiles.len() < 2 {
         return Err(crate::OperationsError::InvalidInput {
             reason: "loft requires at least 2 profiles".into(),
@@ -1990,7 +1988,25 @@ fn loft_smooth_impl(
                 .map_err(crate::OperationsError::Math)
         })
         .collect::<Result<Vec<_>, _>>()?;
+    build_rail_loft(topo, &profile_verts, &rails)
+}
 
+/// Close the walls between consecutive junction rails into a solid.
+///
+/// `profile_verts` holds each section's corners, counter-clockwise about the
+/// stacking direction, and `rails[i]` runs from corner `i` of the first
+/// section to corner `i` of the last. Every rail shares one degree, knot
+/// vector and weight vector on `[0, 1]`, so the wall between rails `i` and
+/// `i + 1` is the exact degree-1 blend of the two, straight across `v`. The
+/// ends are capped by the first and last sections' polygons.
+fn build_rail_loft(
+    topo: &mut Topology,
+    profile_verts: &[Vec<Point3>],
+    rails: &[remus_math::nurbs::NurbsCurve],
+) -> Result<SolidId, crate::OperationsError> {
+    let tol = Tolerance::new();
+    let n = rails.len();
+    let num_profiles = profile_verts.len();
     let endpoint_profiles = [&profile_verts[0], &profile_verts[num_profiles - 1]];
     let ring_verts: Vec<Vec<remus_topology::vertex::VertexId>> = endpoint_profiles
         .iter()
@@ -2063,7 +2079,7 @@ fn loft_smooth_impl(
             .map(|(&a, &b)| vec![a, b])
             .collect();
         let surface = NurbsSurface::new(
-            degree_u,
+            left.degree(),
             1,
             left.knots().to_vec(),
             vec![0.0, 0.0, 1.0, 1.0],
@@ -2255,6 +2271,9 @@ fn enter_profile_at(
     entered.set_reversed(face.is_reversed());
     Ok(topo.add_face(entered))
 }
+
+mod guide;
+pub use guide::loft_with_guide;
 
 #[cfg(test)]
 mod tests;

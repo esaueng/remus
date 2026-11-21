@@ -264,6 +264,36 @@ console.log('ok - RemusIo created; kernel module carries the arena codec only');
   console.log('ok - exact sweep options scale and turn the profile');
 }
 
+// M04 loft guide: two equal squares whose corner (-1, -1) follows the parabola
+// x = -1 + 6u(1 - u), z = 10u. Every slice is the square translated, so the
+// exact volume is 2 * 2 * 10 = 40; a guide that misses a section is refused.
+{
+  const k = new RemusKernel();
+  try {
+    const square = (z) => k.makePlanarFaceFromWire(
+      k.makePolygonWire(new Float64Array([-1, -1, z, 1, -1, z, 1, 1, z, -1, 1, z])),
+    );
+    const faces = Uint32Array.of(square(0), square(10));
+    const guide = {
+      degree: 2,
+      knots: [0, 0, 0, 1, 1, 1],
+      controlPoints: [[-1, -1, 0], [2, -1, 5], [-1, -1, 10]],
+    };
+    const solid = k.loftWithOptions(faces, JSON.stringify({ ruled: false, guide }));
+    assert.equal(k.validateSolid(solid), 0);
+    const volume = k.volume(solid, 0.005);
+    assert.ok(Math.abs(volume - 40) / 40 < 1e-3, `${volume} vs 40`);
+    const misses = { ...guide, controlPoints: [[-1, -1, 0], [2, -1, 5], [0, 0, 10]] };
+    assert.throws(
+      () => k.loftWithOptions(faces, JSON.stringify({ guide: misses })),
+      /does not pass through a corner of section 1/,
+    );
+  } finally {
+    k.free();
+  }
+  console.log('ok - a loft follows its guide curve exactly');
+}
+
 // A full radius-8 sphere fits inside this radius-10 finite cylinder even
 // though corners of the sphere's enclosing box do not. Protect the emitted
 // artifact's whole-carrier support certificate and the enclosed cavity.

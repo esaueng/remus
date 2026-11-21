@@ -205,6 +205,34 @@ pub(super) fn loft_with_options_impl(
     mut face_ids: Vec<remus_topology::face::FaceId>,
     options: &serde_json::Value,
 ) -> Result<remus_topology::solid::SolidId, WasmError> {
+    // `guide`: one NURBS curve through a corner of every section, which the
+    // loft follows exactly (M04). The guide fixes each section's connection
+    // corner, so it is not combined with `connections` or an apex point.
+    if let Some(guide) = options.get("guide") {
+        let invalid = |reason: String| {
+            WasmError::from(remus_operations::OperationsError::InvalidInput { reason })
+        };
+        if options.get("connections").is_some() {
+            return Err(invalid(
+                "a loft guide sets each section's connection corner: it cannot be combined \
+                 with loft connections"
+                    .to_owned(),
+            ));
+        }
+        if options.get("startPoint").is_some() || options.get("endPoint").is_some() {
+            return Err(invalid(
+                "a loft guide cannot be combined with an apex point".to_owned(),
+            ));
+        }
+        let curve = parse_loft_guide(guide).map_err(invalid)?;
+        let ruled = options
+            .get("ruled")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true);
+        return Ok(remus_operations::loft::loft_with_guide(
+            topo, &face_ids, &curve, !ruled,
+        )?);
+    }
     // `connections`: one [x, y, z] vertex per section, where each section's
     // correspondence starts (M04). Not combined with an apex point.
     if let Some(connections) = options.get("connections") {
@@ -276,6 +304,60 @@ pub(super) fn loft_with_options_impl(
     } else {
         Ok(remus_operations::loft::loft_smooth(topo, &face_ids)?)
     }
+}
+
+/// Parse a `loftWithOptions` guide: `{degree, knots, controlPoints:
+/// [[x, y, z], …], weights?}`, with every weight one when `weights` is absent.
+///
+/// # Errors
+///
+/// A missing or non-numeric field, or a curve that is not a valid NURBS.
+fn parse_loft_guide(guide: &serde_json::Value) -> Result<remus_math::nurbs::NurbsCurve, String> {
+    let numbers = |key: &str| -> Result<Vec<f64>, String> {
+        guide
+            .get(key)
+            .and_then(serde_json::Value::as_array)
+            .and_then(|values| {
+                values
+                    .iter()
+                    .map(serde_json::Value::as_f64)
+                    .collect::<Option<Vec<_>>>()
+            })
+            .ok_or_else(|| format!("a loft guide's \"{key}\" must be an array of numbers"))
+    };
+    let degree = guide
+        .get("degree")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|degree| usize::try_from(degree).ok())
+        .ok_or_else(|| "a loft guide's \"degree\" must be a positive integer".to_owned())?;
+    let knots = numbers("knots")?;
+    let control_points = guide
+        .get("controlPoints")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "a loft guide's \"controlPoints\" must be an array of points".to_owned())?
+        .iter()
+        .map(|point| {
+            let xyz: Option<Vec<f64>> = point
+                .as_array()
+                .filter(|xyz| xyz.len() == 3)
+                .and_then(|xyz| xyz.iter().map(serde_json::Value::as_f64).collect());
+            match xyz {
+                Some(xyz) if xyz.iter().all(|c| c.is_finite()) => {
+                    Ok(Point3::new(xyz[0], xyz[1], xyz[2]))
+                }
+                _ => Err(format!(
+                    "a loft guide control point must be a finite [x, y, z] point, got {point}"
+                )),
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let weights = if guide.get("weights").is_some() {
+        numbers("weights")?
+    } else {
+        vec![1.0; control_points.len()]
+    };
+    remus_math::nurbs::NurbsCurve::new(degree, knots, control_points, weights)
+        .map_err(|error| format!("the loft guide is not a valid NURBS curve: {error}"))
 }
 
 /// Parse the options object of `sweepExactWithOptions` (direct and batch).
@@ -562,6 +644,14 @@ impl RemusKernel {
     ///   correspondence starts: vertex k of each section connects to vertex k
     ///   of the next, counted from there. Not combined with an apex point; a
     ///   point that is not a section vertex is refused.
+    /// - `guide: {degree, knots, controlPoints: [[x, y, z], …], weights?}` — a
+    ///   clamped NURBS curve (rational allowed) through one corner of every
+    ///   straight-edged section, first to last, that the loft follows
+    ///   exactly; that corner is the section's connection start. `ruled`
+    ///   (default true) varies the sections' offsets from the guide linearly
+    ///   between sections, `false` smoothly. Not combined with `connections`
+    ///   or an apex point; curved sections and unequal corner counts are
+    ///   refused as unsupported.
     #[wasm_bindgen(js_name = "loftWithOptions")]
     #[allow(clippy::needless_pass_by_value)]
     pub fn loft_with_options(&mut self, faces: Vec<u32>, options: &str) -> Result<u32, JsError> {
