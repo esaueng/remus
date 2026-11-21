@@ -622,7 +622,10 @@ fn rebuild(
         .copied()
         .filter(|f| !removed.contains(f))
         .collect();
-    let survived: Vec<_> = faces.iter().map(|&f| (f, f)).collect();
+    let mut survived: Vec<_> = faces.iter().map(|&f| (f, f)).collect();
+    for &cavity in &cavities {
+        survived.extend(topo.shell(cavity)?.faces().iter().map(|&f| (f, f)));
+    }
     faces.extend(created.iter().map(|(f, _)| *f));
     let shell = topo.add_shell(Shell::new(faces)?);
     let result = topo.add_solid(Solid::new(shell, cavities));

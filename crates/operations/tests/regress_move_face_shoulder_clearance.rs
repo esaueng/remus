@@ -1405,3 +1405,88 @@ fn flush_boss_block_keeps_a_sealed_cavity() {
     );
     assert!((v - w).abs() < 1e-6 * w, "volume {v} vs {w}");
 }
+
+/// A hollow copy of the user's body: a sealed 4 mm void deep in the block.
+fn hollow_boss_block(topo: &mut Topology) -> SolidId {
+    let solid = openzcad_boss_block(topo);
+    let void = make_box(topo, 4.0, 4.0, 4.0).unwrap();
+    remus_operations::transform::transform_solid(
+        topo,
+        void,
+        &remus_math::mat::Mat4::translation(18.0, 18.0, 4.0),
+    )
+    .unwrap();
+    boolean(topo, BooleanOp::Cut, solid, void).unwrap()
+}
+
+/// Every face of `result` resolves, and every edge and vertex carries an
+/// event of `op`.
+fn assert_journal_covers(
+    topo: &Topology,
+    result: SolidId,
+    op: remus_topology::journal::OpId,
+    map: &remus_operations::evolution::EvolutionMap,
+    label: &str,
+) {
+    use remus_topology::journal::EntityKey;
+    assert!(map.unresolved.is_empty(), "{label}: {:?}", map.unresolved);
+    let journal = topo.journal();
+    let keys = solid_edges(topo, result)
+        .unwrap()
+        .into_iter()
+        .map(|edge| EntityKey::edge(edge.index()))
+        .chain(
+            remus_topology::explorer::solid_vertices(topo, result)
+                .unwrap()
+                .into_iter()
+                .map(|vertex| EntityKey::vertex(vertex.index())),
+        );
+    for key in keys {
+        let recorded = journal.ordinal_of(key).is_some_and(|ordinal| {
+            journal
+                .events_for(ordinal)
+                .iter()
+                .any(|(event, _)| *event == op)
+        });
+        assert!(recorded, "{label}: {key:?} has no event of the move");
+    }
+}
+
+#[test]
+fn flush_boss_block_records_complete_history() {
+    // A flush rebuild is exact, yet its new boundaries still take the cap
+    // builder's construction ancestry, and the untouched cavity's faces
+    // survive by name.
+    let permission = Some(FaceMoveApproximation { stations: 256 });
+    let mut topo = Topology::new();
+    let solid = hollow_boss_block(&mut topo);
+    let face = top_at(&topo, solid, 29.0);
+    let (journaled, quality) = remus_operations::journal_ops::move_faces_journaled_with_quality(
+        &mut topo,
+        solid,
+        &[face],
+        6.0,
+        permission,
+    )
+    .unwrap();
+    assert_eq!(quality, FaceMoveQuality::Exact);
+    assert_journal_covers(
+        &topo,
+        journaled.solid,
+        journaled.op,
+        &journaled.map,
+        "journaled",
+    );
+    let mut prepared = PreparedFaceMove::prepare(&topo, solid, &[face]).unwrap();
+    let (prepared, quality) = prepared
+        .move_faces_journaled_with_quality(&mut topo, 6.0, permission)
+        .unwrap();
+    assert_eq!(quality, FaceMoveQuality::Exact);
+    assert_journal_covers(
+        &topo,
+        prepared.solid,
+        prepared.op,
+        &prepared.map,
+        "prepared",
+    );
+}

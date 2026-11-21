@@ -188,7 +188,7 @@ impl PreparedFaceMove {
         approximation: Option<crate::face_move_quality::FaceMoveApproximation>,
     ) -> Result<crate::face_move_quality::QualifiedFaceMove, OperationsError> {
         self.require_current(topo)?;
-        let (edit, quality) = self.edit_with_quality(topo, distance, approximation)?;
+        let (edit, quality, _) = self.edit_with_quality(topo, distance, approximation)?;
         Ok(crate::face_move_quality::QualifiedFaceMove {
             result: edit.0,
             quality,
@@ -211,10 +211,10 @@ impl PreparedFaceMove {
         remus_topology::transaction::run_transacted(topo, |topo| {
             let mut pending = topo.journal_begin("move_faces");
             pending.add_scope(self.scope.clone());
-            let (edit, quality) = self.edit_with_quality(topo, distance, approximation)?;
+            let (edit, quality, rebuild) = self.edit_with_quality(topo, distance, approximation)?;
             Ok((
                 crate::journal_ops::record_qualified_face_move(
-                    topo, pending, self.solid, edit, quality,
+                    topo, pending, self.solid, edit, rebuild,
                 )?,
                 quality,
             ))
@@ -230,13 +230,14 @@ impl PreparedFaceMove {
         (
             DirectEditEvolution,
             crate::face_move_quality::FaceMoveQuality,
+            crate::face_move_quality::CapRebuild,
         ),
         OperationsError,
     > {
-        use crate::face_move_quality::FaceMoveQuality;
+        use crate::face_move_quality::{CapRebuild, FaceMoveQuality};
         crate::face_move_quality::check_permission(approximation)?;
         match self.edit(topo, distance) {
-            Ok(edit) => Ok((edit, FaceMoveQuality::Exact)),
+            Ok(edit) => Ok((edit, FaceMoveQuality::Exact, CapRebuild::No)),
             Err(error) => {
                 let Some(permission) = approximation else {
                     return Err(error);
@@ -269,6 +270,7 @@ impl PreparedFaceMove {
                             moved.boundary_pairs,
                         ),
                         quality,
+                        CapRebuild::Yes,
                     ))
                 })
             }

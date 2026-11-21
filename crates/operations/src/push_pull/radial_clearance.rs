@@ -96,13 +96,23 @@ fn disc_clears_coaxial_shell(
             ((middle - cone.apex()).dot(axis).abs() - extent).max(0.0) / cone.half_angle().tan()
         }
         // A face parallel to the move whose holes leave the axis clear is
-        // bounded on its boundary: a coaxial hole bounds it by its rim. Any
-        // other planar face keeps the box check.
+        // bounded on its boundary. A face whose only hole is coaxial and
+        // circular is bounded by that hole's rim however its arcs are
+        // split; with one hole, no material can nest inside it. Any other
+        // planar face keeps the box check.
         FaceSurface::Plane { normal, .. } => {
             if normal.cross(direction).length() > tol.angular {
                 return Ok(false);
             }
-            planar_face_axis_clearance(topo, candidate, center, direction)?.unwrap_or(0.0)
+            let rim = match topo.face(candidate)?.inner_wires() {
+                [hole] => circular_wire(topo, *hole, direction)?
+                    .filter(|hole| coaxial(hole.center, direction))
+                    .map_or(0.0, |hole| hole.min_reach),
+                _ => 0.0,
+            };
+            planar_face_axis_clearance(topo, candidate, center, direction)?
+                .unwrap_or(0.0)
+                .max(rim)
         }
         FaceSurface::Cylinder(_)
         | FaceSurface::Cone(_)
@@ -643,6 +653,46 @@ mod tests {
         transform_solid(&mut topo, plate, &Mat4::translation(1.0002, -0.1, -1.0)).unwrap();
         let top = planar_face(&topo, plate, 0.0);
         assert!(!coaxial_sweep_is_radially_disjoint(&topo, top, wall, UP).unwrap());
+    }
+
+    #[test]
+    fn split_coaxial_hole_still_bounds_a_planar_shoulder() {
+        use remus_math::curves::Circle3D;
+        use remus_topology::edge::{Edge, EdgeCurve};
+        use remus_topology::vertex::Vertex;
+        use remus_topology::wire::{OrientedEdge, Wire};
+
+        // The R16 hole of a bore floor's shoulder, split into two exact
+        // semicircles: the axis lies on their chord, but one coaxial hole
+        // still keeps every point of the face 16 from it.
+        let mut topo = Topology::new();
+        let moved = disc(&mut topo);
+        let ring = annulus(&mut topo, 16.0);
+        let circle = Circle3D::new(Point3::new(0.0, 0.0, 10.0), UP, 16.0).unwrap();
+        let east = topo.add_vertex(Vertex::new(Point3::new(16.0, 0.0, 10.0), 1e-7));
+        let west = topo.add_vertex(Vertex::new(Point3::new(-16.0, 0.0, 10.0), 1e-7));
+        let mut arc = |from, to, span: (f64, f64)| {
+            let mut edge = Edge::new(from, to, EdgeCurve::Circle(circle.clone()));
+            edge.set_trim(Some(span));
+            topo.add_edge(edge)
+        };
+        let north = arc(east, west, (0.0, std::f64::consts::PI));
+        let south = arc(west, east, (std::f64::consts::PI, std::f64::consts::TAU));
+        // A hole winds against the face's outer wire.
+        let hole = topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(south, false),
+                    OrientedEdge::new(north, false),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        let outer = topo.face(ring).unwrap().outer_wire();
+        topo.set_face_boundary_wires(ring, outer, vec![hole])
+            .unwrap();
+        assert!(coaxial_sweep_is_radially_disjoint(&topo, moved, ring, UP).unwrap());
     }
 
     #[test]
