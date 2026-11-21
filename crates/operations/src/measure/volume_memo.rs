@@ -379,18 +379,19 @@ fn memo_enabled() -> bool {
     MEMO.with(|memo| memo.try_borrow().is_ok_and(|memo| memo.enabled()))
 }
 
-/// `compute()` through this thread's memo. The memo is borrowed only around
-/// the lookups and the insert, never across the computation, so a nested
-/// reading cannot meet a held borrow.
+/// Look up or compute a volume in this thread's memo. A miss passes the
+/// exact result of `volume_tessellation_deflection(topo, solid, deflection)`
+/// if lookup needed it. The disabled path leaves it to the computation.
+/// Borrows end before computation so a nested reading can use the memo.
 pub(super) fn memoized(
     topo: &Topology,
     solid: SolidId,
     deflection: f64,
-    compute: impl FnOnce() -> Result<f64, crate::OperationsError>,
+    compute: impl FnOnce(Option<f64>) -> Result<f64, crate::OperationsError>,
 ) -> Result<f64, crate::OperationsError> {
     super::reuse::record_volume_lookup();
     if !memo_enabled() {
-        return compute();
+        return compute(None);
     }
     let identity = (!topo.is_cache_poisoned()).then(|| topo.cache_identity());
     let requested = deflection.to_bits();
@@ -450,7 +451,7 @@ pub(super) fn memoized(
             memo.misses += 1;
         }
     });
-    let volume = compute()?;
+    let volume = compute(Some(f64::from_bits(effective)))?;
     if identity.is_some() || content.is_some() {
         MEMO.with(|memo| {
             if let Ok(mut memo) = memo.try_borrow_mut() {
@@ -945,6 +946,37 @@ mod tests {
             size_of::<usize>() + 3 * size_of::<Vec<f64>>()
         );
         assert_eq!(size_of::<PCurve>(), size_of::<Curve2D>() + 2 * F);
+    }
+
+    #[test]
+    fn miss_shares_the_exact_clamp_and_a_disabled_memo_leaves_it_lazy() {
+        let mut topo = Topology::new();
+        let solid = crate::primitives::make_box(&mut topo, 3.0, 4.0, 5.0).unwrap();
+        let requested = 1.0;
+        let effective =
+            super::super::volume::volume_tessellation_deflection(&topo, solid, requested);
+        assert!(effective < requested);
+        assert_eq!(thread_volume_memo_stats().capacity, 0);
+        memoized(&topo, solid, requested, |clamp| {
+            assert!(clamp.is_none());
+            Ok(60.0)
+        })
+        .unwrap();
+        scoped(|| {
+            memoized(&topo, solid, requested, |clamp| {
+                assert_eq!(clamp.map(f64::to_bits), Some(effective.to_bits()));
+                Ok(60.0)
+            })
+            .unwrap();
+            let mut computed_again = false;
+            let hit = memoized(&topo, solid, effective, |_| {
+                computed_again = true;
+                Ok(60.0)
+            })
+            .unwrap();
+            assert!(!computed_again);
+            assert_eq!(hit.to_bits(), 60.0_f64.to_bits());
+        });
     }
 
     /// The scoped stand-in finds a body rebuilt in other handle slots by its
