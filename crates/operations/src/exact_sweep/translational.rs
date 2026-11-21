@@ -49,8 +49,8 @@ use remus_topology::vertex::{Vertex, VertexId};
 use remus_topology::wire::{OrientedEdge, Wire, WireId};
 
 use super::{
-    Loop, Motion, RELATIVE_MARGIN, Rigid, Section, analytic_side, invalid, is_ccw,
-    read_profile_loop, to_vec,
+    Loop, Motion, RELATIVE_MARGIN, Rigid, Section, analytic_side, invalid, read_profile_loop,
+    to_vec,
 };
 use crate::OperationsError;
 use crate::helix::in_place::exact_piece;
@@ -126,7 +126,13 @@ fn read_step(topo: &Topology, edge_id: EdgeId, index: usize) -> Result<Step, Ope
     let unclamped = (nurbs.evaluate(d0) - points[0])
         .length()
         .max((nurbs.evaluate(d1) - points[last]).length());
-    if unclamped.is_nan() || unclamped > snap {
+    let carried = 64.0
+        * f64::EPSILON
+        * to_vec(points[0])
+            .length()
+            .max(to_vec(points[last]).length())
+            .max(1.0);
+    if unclamped.is_nan() || unclamped > carried {
         return Err(invalid(format!(
             "exact sweep path edge {index} is a spline that does not end on its control \
              points (an unclamped knot vector); clamp it before sweeping"
@@ -271,16 +277,19 @@ fn monotone_sign(step: &Step, normal: Vec3, margin: f64) -> Option<f64> {
     }
 }
 
-/// Boundary samples in traversal order, several in every knot span of every
-/// piece, so a loop's winding is read from its whole shape (uniform samples
-/// in a piece's parameter can all fall on a few spans of a spline).
-fn winding_samples(lp: &Loop) -> Vec<Point3> {
-    const PER_SPAN: usize = 8;
-    let mut out = Vec::new();
+/// Whether `lp` runs counter-clockwise about `normal`: the sign of its
+/// signed area `½∮ (x − x₀) × dx · n`, integrated by 20-point Gauss–Legendre
+/// quadrature on every knot span of every piece. That is exact for
+/// polynomial spans up to degree 20 (the integrand has degree `2p − 1`) and
+/// reads the loop's whole shape, so no sampling can miss a thin lobe.
+fn winds_counter_clockwise(lp: &Loop, normal: Vec3) -> bool {
+    let points = remus_math::quadrature::gauss_legendre_points(20);
+    let origin = lp.points[0].0;
+    let mut area = 0.0;
     for piece in &lp.pieces {
-        let (u0, u1) = piece.nurbs.domain();
-        let mut breaks: Vec<f64> = piece
-            .nurbs
+        let curve = &piece.nurbs;
+        let (u0, u1) = curve.domain();
+        let mut breaks: Vec<f64> = curve
             .knots()
             .iter()
             .copied()
@@ -289,23 +298,23 @@ fn winding_samples(lp: &Loop) -> Vec<Point3> {
         breaks.insert(0, u0);
         breaks.push(u1);
         breaks.dedup();
-        let mut params = Vec::with_capacity(breaks.len() * PER_SPAN);
+        let mut piece_area = 0.0;
         for pair in breaks.windows(2) {
-            for j in 0..PER_SPAN {
-                #[allow(clippy::cast_precision_loss)]
-                let f = j as f64 / PER_SPAN as f64;
-                params.push((pair[1] - pair[0]).mul_add(f, pair[0]));
+            let (mid, half) = (0.5 * (pair[0] + pair[1]), 0.5 * (pair[1] - pair[0]));
+            for point in points {
+                let u = half.mul_add(point.x, mid);
+                let at = curve.evaluate(u) - origin;
+                let velocity = curve.derivatives(u, 1)[1];
+                piece_area += point.w * half * 0.5 * at.cross(velocity).dot(normal);
             }
         }
-        if !piece.forward {
-            params.reverse();
-            // Traversal starts at the piece's natural end.
-            params.rotate_right(1);
-            params[0] = u1;
-        }
-        out.extend(params.iter().map(|&u| piece.nurbs.evaluate(u)));
+        area += if piece.forward {
+            piece_area
+        } else {
+            -piece_area
+        };
     }
-    out
+    area > 0.0
 }
 
 /// The translational surface of the placed profile curve `q` along `path`
@@ -381,7 +390,6 @@ pub(super) fn sweep_keeping_orientation_impl(
     }
     let n = chain.len();
     let samples: Vec<Vec<Point3>> = loops.iter().map(Loop::samples).collect();
-    let windings: Vec<Vec<Point3>> = loops.iter().map(winding_samples).collect();
     let scale = samples
         .iter()
         .flatten()
@@ -456,7 +464,7 @@ pub(super) fn sweep_keeping_orientation_impl(
     for (k, step) in chain.iter().enumerate() {
         let placement = placements[k];
         for (l, lp) in loops.iter().enumerate() {
-            let ccw = is_ccw(&windings[l], normal);
+            let ccw = winds_counter_clockwise(&loops[l], normal);
             let mut rails = Vec::with_capacity(lp.points.len());
             for (i, &(p, _)) in lp.points.iter().enumerate() {
                 let (curve, trim) = match &step.kind {
@@ -585,7 +593,7 @@ pub(super) fn sweep_keeping_orientation_impl(
     let mut start_wires = Vec::with_capacity(loops.len());
     let mut end_wires = Vec::with_capacity(loops.len());
     for (l, lp) in loops.iter().enumerate() {
-        let ccw = is_ccw(&windings[l], normal);
+        let ccw = winds_counter_clockwise(&loops[l], normal);
         start_wires.push(cap_wire(topo, lp, &sections[0].edges[l], ccw, sigma < 0.0)?);
         end_wires.push(cap_wire(topo, lp, &sections[n].edges[l], ccw, sigma > 0.0)?);
     }

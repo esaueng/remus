@@ -417,16 +417,11 @@ fn sections_follow_each_step_across_a_loose_join() {
     bend.set_trim(Some((0.0, 1.0)));
     let bend = topo.add_edge(bend);
     let rest = line(&mut topo, p(at, 0.0, 9.5), p(at, 0.0, 20.0));
-    match sweep(&mut topo, profile, &[bend, rest]) {
-        Ok(solid) => {
-            let report = crate::validate::validate_solid(&topo, solid).unwrap();
-            assert!(report.is_valid(), "{report:?}");
-            let measured = crate::measure::solid_volume(&topo, solid, 0.05).unwrap();
-            assert!(rel(measured, 4.0 * 20.5) < 1e-6, "{measured}");
-        }
-        Err(OperationsError::InvalidInput { .. }) => {}
-        Err(other) => panic!("untyped {other:?}"),
-    }
+    let solid = sweep(&mut topo, profile, &[bend, rest]).unwrap();
+    let report = crate::validate::validate_solid(&topo, solid).unwrap();
+    assert!(report.is_valid(), "{report:?}");
+    let measured = crate::measure::solid_volume(&topo, solid, 0.05).unwrap();
+    assert!(rel(measured, 4.0 * 20.5) < 1e-6, "{measured}");
 }
 
 /// Review regression: a profile whose single closed spline edge spends most
@@ -510,5 +505,60 @@ fn uncertifiable_spline_paths_are_refused_by_type() {
         };
         assert!(reason.contains(phrase), "{label}: {reason}");
         assert_eq!(topo.num_faces(), 1, "{label}: faces left behind");
+    }
+}
+
+/// Re-check regression: a thin profile — a parabola over a polyline 0.001
+/// below it — winds by its true shape, clockwise about +Z, so sweeping it
+/// along −Z (where it reads counter-clockwise) and +Z both close.
+#[test]
+fn a_thin_profile_winds_by_its_area() {
+    for (direction, label) in [(1.0, "up"), (-1.0, "down")] {
+        let mut topo = Topology::new();
+        // The parabola y = 1 − x² from x = −1 to 1, exactly as a quadratic.
+        let curve = NurbsCurve::new(
+            2,
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            vec![p(-1.0, 0.0, 0.0), p(0.0, 2.0, 0.0), p(1.0, 0.0, 0.0)],
+            vec![1.0; 3],
+        )
+        .unwrap();
+        let below: Vec<Point3> = (0..=16)
+            .rev()
+            .map(|k| {
+                let x = -1.0 + 2.0 * f64::from(k) / 16.0;
+                p(x, 1.0 - x * x - 0.001, 0.0)
+            })
+            .collect();
+        let start = topo.add_vertex(Vertex::new(p(-1.0, 0.0, 0.0), 1e-7));
+        let top_end = topo.add_vertex(Vertex::new(p(1.0, 0.0, 0.0), 1e-7));
+        let mut arch = Edge::new(start, top_end, EdgeCurve::NurbsCurve(curve));
+        arch.set_trim(Some((0.0, 1.0)));
+        let mut edges = vec![OrientedEdge::new(topo.add_edge(arch), true)];
+        let mut last = top_end;
+        for &q in &below {
+            let v = topo.add_vertex(Vertex::new(q, 1e-7));
+            edges.push(OrientedEdge::new(
+                topo.add_edge(Edge::new(last, v, EdgeCurve::Line)),
+                true,
+            ));
+            last = v;
+        }
+        edges.push(OrientedEdge::new(
+            topo.add_edge(Edge::new(last, start, EdgeCurve::Line)),
+            true,
+        ));
+        let wire = topo.add_wire(Wire::new(edges, true).unwrap());
+        let profile = topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane { normal: Z, d: 0.0 },
+        ));
+        let path = line(&mut topo, p(0.0, 0.0, 0.0), p(0.0, 0.0, 3.0 * direction));
+        let solid = sweep(&mut topo, profile, &[path]).unwrap();
+        let report = crate::validate::validate_solid(&topo, solid).unwrap();
+        assert!(report.is_valid(), "{label}: {report:?}");
+        let measured = crate::measure::solid_volume(&topo, solid, 0.05).unwrap();
+        assert!(measured > 0.0, "{label}: {measured}");
     }
 }
