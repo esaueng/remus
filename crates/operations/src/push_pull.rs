@@ -57,8 +57,11 @@ pub struct MoveFacesResult {
     pub evolution: EvolutionMap,
 }
 
-/// Move a supported face selection while preserving the solid's adjacency
-/// graph.
+/// Move a supported face selection.
+///
+/// A chamfered end of a recognized cylindrical
+/// through-thread can move axially, repartitioning the screw faces when the
+/// new length requires a different number of half-turn segments.
 ///
 /// A coplanar group of planar faces moves along its common outward normal.
 /// Recognized constant-radius blend regions that meet the selection are
@@ -115,8 +118,13 @@ pub(crate) fn move_faces_with_entity_evolution(
 ) -> Result<DirectEditEvolution, crate::OperationsError> {
     let snapshot = remus_topology::transaction::RollbackSnapshot::capture(topo);
     let outcome = (|| -> Result<DirectEditEvolution, crate::OperationsError> {
-        let boundary_pairs;
         let source_faces = solid_faces(topo, solid)?;
+        if faces.iter().all(|f| source_faces.contains(f))
+            && let Some(edit) = crate::thread::face_move::rebuild(topo, solid, faces, distance)?
+        {
+            return Ok(edit);
+        }
+        let boundary_pairs;
         let result = if let Some((face, new_radius)) =
             cylindrical_bore_move_request(topo, solid, faces, distance)?
         {
@@ -309,6 +317,9 @@ impl PreparedPlanarMove {
         {
             return Ok(None);
         }
+        if crate::thread::face_move::is_mouth(topo, solid, faces) {
+            return Ok(None);
+        }
         let blend = crate::resize_blend::PreparedBlendMove::prepare(topo, solid, faces)?;
         let mut swept = None;
         let mut prismatic = None;
@@ -362,7 +373,7 @@ impl PreparedPlanarMove {
                 }
             } else {
                 if let Some(swept) = &self.swept {
-                    swept.check(distance)?;
+                    swept.check_offset(topo, distance)?;
                 }
                 let moved = crate::performance::timed("move_faces.offset_engine", || {
                     remus_offset::move_faces_with_entity_map(topo, solid, faces, distance)
@@ -676,16 +687,17 @@ fn refuse_swept_face_intersections(
         return Ok(());
     };
     let selected: std::collections::HashSet<_> = selected_faces.iter().copied().collect();
-    refuse_swept_region_intersections(
+    SweptRegionCheck::prepare(
         topo,
         solid,
         &selected,
         &std::collections::HashSet::new(),
         normal,
-        distance,
-    )
+    )?
+    .check_offset(topo, distance)
 }
 
+#[cfg(test)]
 pub(crate) fn refuse_swept_region_intersections(
     topo: &Topology,
     solid: SolidId,
@@ -695,10 +707,10 @@ pub(crate) fn refuse_swept_region_intersections(
     distance: f64,
 ) -> Result<(), crate::OperationsError> {
     SweptRegionCheck::prepare(topo, solid, swept_faces, excluded_candidates, normal)?
-        .check(distance)
+        .check(topo, distance)
 }
 
-/// The distance-independent half of [`refuse_swept_region_intersections`]:
+/// The distance-independent half of the swept-region refusal:
 /// for each swept face, its box and the box of every nonadjacent face that
 /// does not already touch it.
 #[derive(Debug, Clone)]
@@ -706,11 +718,44 @@ pub(crate) struct SweptRegionCheck {
     normal: Vec3,
     /// Swept faces in face order, so a refusal always names the same face.
     swept: Vec<SweptFace>,
+    /// Faces that translate rigidly with the swept ones without being swept
+    /// themselves (blend bands, chamfers and supports a blend translation
+    /// carries), each with its box and whether it is planar. A footprint
+    /// proof on a swept face clears an obstacle only when every companion is
+    /// clear of it too.
+    companions: Vec<(FaceId, Aabb3, bool)>,
 }
 
 /// A swept face, its box, and every candidate face it may reach with that
-/// candidate's box.
-type SweptFace = (FaceId, Aabb3, Vec<(FaceId, Aabb3)>);
+/// candidate's box and whether it lies radially clear of the face's sweep.
+#[derive(Debug, Clone)]
+struct SweptFace {
+    face: FaceId,
+    original: Aabb3,
+    prismatic: bool,
+    candidates: Vec<SweptCandidate>,
+}
+
+/// How far a swept face's source boundary describes it along the move.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Footprint {
+    /// Ordinary offset: the boundary may be re-limited.
+    Offset,
+    /// A cap join: re-trims fixed supports within its coaxial extent.
+    Joined,
+    /// Blend translation: the boundary translates rigidly.
+    Rigid,
+}
+
+#[derive(Debug, Clone)]
+struct SweptCandidate {
+    face: FaceId,
+    bounds: Aabb3,
+    /// [`coaxial_sweep_is_radially_disjoint`] holds for the face's source
+    /// boundary. Like the planar footprint proof it only clears the
+    /// candidate while that boundary translates rigidly.
+    radially_clear: bool,
+}
 
 impl SweptRegionCheck {
     pub(crate) fn prepare(
@@ -738,33 +783,163 @@ impl SweptRegionCheck {
                 if swept_faces.contains(&candidate)
                     || excluded_candidates.contains(&candidate)
                     || adjacent.contains(&candidate)
-                    || coaxial_sweep_is_radially_disjoint(topo, moved_face, candidate, normal)?
                 {
                     continue;
                 }
-                let candidate_box = crate::measure::face_bounding_box(topo, candidate)?;
-                if !original.intersects(candidate_box) {
-                    candidates.push((candidate, candidate_box));
+                let bounds = crate::measure::face_bounding_box(topo, candidate)?;
+                if !original.intersects(bounds) {
+                    candidates.push(SweptCandidate {
+                        face: candidate,
+                        bounds,
+                        radially_clear: coaxial_sweep_is_radially_disjoint(
+                            topo, moved_face, candidate, normal,
+                        )?,
+                    });
                 }
             }
-            swept.push((moved_face, original, candidates));
+            let prismatic = adjacent.iter().filter(|&&f| f != moved_face).all(|&f| {
+                topo.face(f).is_ok_and(|f| match f.surface() {
+                    FaceSurface::Plane { normal: n, .. } => n.dot(normal) == 0.0,
+                    FaceSurface::Cylinder(c) => c.axis().cross(normal).length_squared() == 0.0,
+                    FaceSurface::Cone(_)
+                    | FaceSurface::Sphere(_)
+                    | FaceSurface::Torus(_)
+                    | FaceSurface::Nurbs(_) => false,
+                })
+            });
+            swept.push(SweptFace {
+                face: moved_face,
+                original,
+                prismatic,
+                candidates,
+            });
         }
-        Ok(Self { normal, swept })
+        Ok(Self {
+            normal,
+            swept,
+            companions: Vec::new(),
+        })
     }
 
-    /// Refuses a move by `distance` whose swept region reaches a candidate.
-    pub(crate) fn check(&self, distance: f64) -> Result<(), crate::OperationsError> {
+    /// Records the faces that translate rigidly with the swept ones, for
+    /// [`Self::check_rigid_translation`].
+    pub(crate) fn with_rigid_companions(
+        mut self,
+        topo: &Topology,
+        mut faces: Vec<FaceId>,
+    ) -> Result<Self, crate::OperationsError> {
+        faces.compact_sort_by_key(|face| face.index());
+        faces.dedup();
+        self.companions = faces
+            .into_iter()
+            .map(|face| {
+                Ok((
+                    face,
+                    crate::measure::face_bounding_box(topo, face)?,
+                    matches!(topo.face(face)?.surface(), FaceSurface::Plane { .. }),
+                ))
+            })
+            .collect::<Result<_, crate::OperationsError>>()?;
+        Ok(self)
+    }
+
+    /// Whether every rigid companion provably misses `candidate` over a
+    /// translation by `delta`: its swept box misses the candidate's box, or
+    /// it is planar and its own footprint proof clears the candidate. Curved
+    /// companions have only the box test.
+    fn companions_clear(
+        &self,
+        topo: &Topology,
+        candidate: FaceId,
+        bounds: Aabb3,
+        delta: Vec3,
+    ) -> bool {
+        self.companions.iter().all(|&(face, original, planar)| {
+            let destination = Aabb3 {
+                min: original.min + delta,
+                max: original.max + delta,
+            };
+            !original.union(destination).intersects(bounds)
+                || (planar && radial_clearance::outside_planar_sweep(topo, face, candidate, delta))
+        })
+    }
+
+    /// Refuses a move by `distance` whose swept region reaches a candidate,
+    /// for a move whose selection may re-trim fixed supports but keeps its
+    /// own extent about any coaxial support (a cap joining its shoulder).
+    pub(crate) fn check(
+        &self,
+        topo: &Topology,
+        distance: f64,
+    ) -> Result<(), crate::OperationsError> {
+        self.check_footprints(topo, distance, Footprint::Joined)
+    }
+
+    /// [`Self::check`] for an ordinary offset, which may re-limit a swept
+    /// face's boundary against a slanted neighbour (a ledge's rim running up
+    /// an inward cone). Clearance proofs read the source boundary, so they
+    /// apply only when every neighbour is parallel to the move.
+    pub(crate) fn check_offset(
+        &self,
+        topo: &Topology,
+        distance: f64,
+    ) -> Result<(), crate::OperationsError> {
+        self.check_footprints(topo, distance, Footprint::Offset)
+    }
+
+    // The blend translation path moves the selected trims as rigid geometry.
+    // A re-limited plane can change its footprint against a slanted support.
+    pub(crate) fn check_rigid_translation(
+        &self,
+        topo: &Topology,
+        distance: f64,
+    ) -> Result<(), crate::OperationsError> {
+        self.check_footprints(topo, distance, Footprint::Rigid)
+    }
+
+    fn check_footprints(
+        &self,
+        topo: &Topology,
+        distance: f64,
+        footprint: Footprint,
+    ) -> Result<(), crate::OperationsError> {
         let delta = self.normal * distance;
-        for (moved_face, original, candidates) in &self.swept {
+        for SweptFace {
+            face: moved_face,
+            original,
+            prismatic,
+            candidates,
+        } in &self.swept
+        {
             let destination = Aabb3 {
                 min: original.min + delta,
                 max: original.max + delta,
             };
             let swept = original.union(destination);
-            if let Some((candidate, _)) = candidates
-                .iter()
-                .find(|(_, candidate_box)| swept.intersects(*candidate_box))
-            {
+            let rigid = footprint == Footprint::Rigid || *prismatic;
+            let radial = rigid || footprint == Footprint::Joined;
+            if let Some(SweptCandidate {
+                face: candidate, ..
+            }) = candidates.iter().find(|candidate| {
+                swept.intersects(candidate.bounds)
+                    && !((radial && candidate.radially_clear)
+                        || (rigid
+                            // Every face moving with this one must miss the
+                            // candidate too: a cap's footprint says nothing
+                            // about the chamfer it carries.
+                            && radial_clearance::outside_planar_sweep(
+                                topo,
+                                *moved_face,
+                                candidate.face,
+                                delta,
+                            )
+                            && self.companions_clear(
+                                topo,
+                                candidate.face,
+                                candidate.bounds,
+                                delta,
+                            )))
+            }) {
                 return Err(remus_offset::OffsetError::TopologyChange {
                     face: Some(*moved_face),
                     edge: None,
