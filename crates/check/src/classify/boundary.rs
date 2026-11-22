@@ -2552,6 +2552,28 @@ fn planar_face_has_curved_edge(topo: &Topology, face_id: FaceId) -> Result<bool,
     Ok(false)
 }
 
+/// Prepare the existing exact crossing predicate only for perforated planes.
+/// A declined preparation leaves the original fallible query path in place.
+pub(super) fn prepare_perforated_plane(
+    topo: &Topology,
+    face_id: FaceId,
+) -> Option<(FaceCache, usize)> {
+    let face = topo.face(face_id).ok()?;
+    let FaceSurface::Plane { normal, .. } = face.surface() else {
+        return None;
+    };
+    if face.inner_wires().len() < 2 {
+        return None;
+    }
+    let trim = exact_plane_trim_for(topo, face_id, *normal).ok()??;
+    let bytes = trim.cache_heap_bytes()?;
+    let cache = FaceCache {
+        plane_trim: OnceLock::from(Some(trim)),
+        ..FaceCache::default()
+    };
+    Some((cache, bytes))
+}
+
 /// The exact trim of a planar face with a curved edge, `None` for a
 /// straight-edged face, whose polygon is already exact.
 fn exact_plane_trim_for(

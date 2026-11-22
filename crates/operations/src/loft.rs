@@ -1944,8 +1944,6 @@ fn loft_smooth_impl(
     topo: &mut Topology,
     profiles: &[FaceId],
 ) -> Result<SolidId, crate::OperationsError> {
-    let tol = Tolerance::new();
-
     if profiles.len() < 2 {
         return Err(crate::OperationsError::InvalidInput {
             reason: "loft requires at least 2 profiles".into(),
@@ -1990,7 +1988,25 @@ fn loft_smooth_impl(
                 .map_err(crate::OperationsError::Math)
         })
         .collect::<Result<Vec<_>, _>>()?;
+    build_rail_loft(topo, &profile_verts, &rails)
+}
 
+/// Close the walls between consecutive junction rails into a solid.
+///
+/// `profile_verts` holds each section's corners, counter-clockwise about the
+/// stacking direction, and `rails[i]` runs from corner `i` of the first
+/// section to corner `i` of the last. Every rail shares one degree, knot
+/// vector and weight vector on `[0, 1]`, so the wall between rails `i` and
+/// `i + 1` is the exact degree-1 blend of the two, straight across `v`. The
+/// ends are capped by the first and last sections' polygons.
+fn build_rail_loft(
+    topo: &mut Topology,
+    profile_verts: &[Vec<Point3>],
+    rails: &[remus_math::nurbs::NurbsCurve],
+) -> Result<SolidId, crate::OperationsError> {
+    let tol = Tolerance::new();
+    let n = rails.len();
+    let num_profiles = profile_verts.len();
     let endpoint_profiles = [&profile_verts[0], &profile_verts[num_profiles - 1]];
     let ring_verts: Vec<Vec<remus_topology::vertex::VertexId>> = endpoint_profiles
         .iter()
@@ -2063,7 +2079,7 @@ fn loft_smooth_impl(
             .map(|(&a, &b)| vec![a, b])
             .collect();
         let surface = NurbsSurface::new(
-            degree_u,
+            left.degree(),
             1,
             left.knots().to_vec(),
             vec![0.0, 0.0, 1.0, 1.0],
@@ -2106,8 +2122,164 @@ fn loft_smooth_impl(
     Ok(topo.add_solid(Solid::new(shell_id, vec![])))
 }
 
+/// Loft `profiles` with each section's correspondence starting at a chosen
+/// vertex.
+///
+/// `starts[k]` must be a vertex of section `k`'s outer loop: section `k`
+/// is re-entered from that vertex (its outer loop rotated, nothing moved),
+/// so vertex `starts[k]` connects to vertex `starts[k + 1]` and every edge
+/// after it to the matching edge after the other. `smooth` lofts with
+/// [`loft_smooth`], otherwise [`loft`].
+///
+/// # Errors
+///
+/// [`crate::OperationsError::InvalidInput`] when `starts` does not hold one
+/// point per profile or a point is not within the tolerance of a vertex of
+/// its section's outer loop; otherwise the chosen loft's errors. Every error
+/// leaves the topology unchanged.
+pub fn loft_with_connections(
+    topo: &mut Topology,
+    profiles: &[FaceId],
+    starts: &[Point3],
+    smooth: bool,
+) -> Result<SolidId, crate::OperationsError> {
+    if starts.len() != profiles.len() {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: format!(
+                "loft connections need one point per section: {} sections, {} points",
+                profiles.len(),
+                starts.len()
+            ),
+        });
+    }
+    if smooth {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: "loft connections apply to a ruled loft: a smooth loft through chosen \
+                     vertices has no exact construction yet"
+                .into(),
+        });
+    }
+    if let Some(bad) = starts
+        .iter()
+        .position(|p| !p.0.iter().all(|c| c.is_finite()))
+    {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: format!("loft connection point {bad} is not finite"),
+        });
+    }
+    remus_topology::transaction::run_transacted(topo, |topo| {
+        let mut entered = Vec::with_capacity(profiles.len());
+        for (k, (&face, &start)) in profiles.iter().zip(starts).enumerate() {
+            entered.push(enter_profile_at(topo, face, start, k)?);
+        }
+        // Every section straight-edged: the polygon loft is exact and keeps
+        // each section's start.
+        let mut all_lines = true;
+        for &face in &entered {
+            let wire = topo.wire(topo.face(face)?.outer_wire())?;
+            for oe in wire.edges() {
+                all_lines &= matches!(topo.edge(oe.edge())?.curve(), EdgeCurve::Line);
+            }
+        }
+        if all_lines {
+            return loft(topo, &entered);
+        }
+        // Curved sections must take the curve-preserving loft from the chosen
+        // vertices, or nothing: the polygon fallback would chord their arcs.
+        let refuse = |section: usize, why: &str| crate::OperationsError::InvalidInput {
+            reason: format!(
+                "loft connections on curved sections need matching edges from the connection \
+                 vertices; section {section} {why}"
+            ),
+        };
+        for (k, &face) in entered.iter().enumerate() {
+            let Some(edges) = profile_oriented_edges(topo, face)? else {
+                return Err(refuse(k, "is not a planar profile of three or more edges"));
+            };
+            let first = edges.first().ok_or_else(|| refuse(k, "has no edges"))?;
+            if (first.start - starts[k]).length() > 10.0 * Tolerance::new().linear.max(1e-9) {
+                return Err(refuse(
+                    k,
+                    "starts inside a corner arc split in pieces, which the loft rejoins",
+                ));
+            }
+        }
+        let Some(solid) = try_loft_matching_curved_profiles(topo, &entered)? else {
+            return Err(refuse(
+                0,
+                "and the others do not have the same edges, in the same order, from them",
+            ));
+        };
+        validate_loft_result(topo, solid)?;
+        Ok(solid)
+    })
+}
+
+/// A copy of `face` whose outer loop starts at its vertex at `start`.
+fn enter_profile_at(
+    topo: &mut Topology,
+    face_id: FaceId,
+    start: Point3,
+    section: usize,
+) -> Result<FaceId, crate::OperationsError> {
+    let face = topo.face(face_id)?.clone();
+    let edges = topo.wire(face.outer_wire())?.edges().to_vec();
+    if edges.len() < 2 {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: format!(
+                "loft section {section} is one closed curve: it has no corner to connect at"
+            ),
+        });
+    }
+    let mut best: Option<(usize, f64, f64)> = None;
+    for (i, oe) in edges.iter().enumerate() {
+        let edge = topo.edge(oe.edge())?;
+        let vertex = topo.vertex(if oe.is_forward() {
+            edge.start()
+        } else {
+            edge.end()
+        })?;
+        let distance = (vertex.point() - start).length();
+        let tolerance = 10.0 * vertex.tolerance().max(Tolerance::new().linear);
+        if best.is_none_or(|(_, d, _)| distance < d) {
+            best = Some((i, distance, tolerance));
+        }
+    }
+    let Some((first, distance, tolerance)) = best else {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: format!("loft section {section} has no boundary"),
+        });
+    };
+    if distance > tolerance {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: format!(
+                "loft connection point ({:.6}, {:.6}, {:.6}) is not a vertex of section \
+                 {section}: its nearest vertex is {distance:.6} away",
+                start.x(),
+                start.y(),
+                start.z()
+            ),
+        });
+    }
+    if first == 0 {
+        return Ok(face_id);
+    }
+    let mut rotated = edges[first..].to_vec();
+    rotated.extend_from_slice(&edges[..first]);
+    let wire = topo.add_wire(Wire::new(rotated, true)?);
+    let mut entered = Face::new(wire, face.inner_wires().to_vec(), face.surface().clone());
+    entered.set_reversed(face.is_reversed());
+    Ok(topo.add_face(entered))
+}
+
+mod guide;
+pub use guide::loft_with_guide;
+
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod connection_tests;
 
 #[cfg(test)]
 mod rounded_l_loft_tests {

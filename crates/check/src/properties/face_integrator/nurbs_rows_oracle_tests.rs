@@ -560,3 +560,40 @@ fn nurbs_rows_reuse_windows_and_refuse_foreign_tables() {
     assert!(s.first_order_at(&own_u, 1, &own_v, 0).is_none());
     assert!(s.first_order_at(&own_v, 0, &own_u, 0).is_none());
 }
+
+#[test]
+fn interior_knot_windows_reuse_only_admitted_tables() {
+    let knots: Vec<_> = (1..=70).map(|i| f64::from(i) / 72.0).collect();
+    let s = surface(3, 3, &[0.5], &knots, false);
+    if !s.has_first_order_tables() {
+        return;
+    }
+    let mut rows = NurbsRows::new(&s, gauss_legendre_points(8), 0.25);
+    let mut acc = Accumulator::default();
+    let mut scratch = DerivativeScratch::new();
+    let mut sample = |rows: &mut NurbsRows<'_>, u: f64, index: usize, cells: usize| {
+        rows.u_axis.refill(&[u]);
+        rows.add_window::<true>(
+            &mut acc,
+            (u, 1.0, 1.0),
+            (knots[index - 1], knots[index], cells, Some(index)),
+            Point3::new(0.0, 0.0, 0.0),
+            &mut scratch,
+        );
+    };
+    // Three cells fit at this degree and order (216 words); four need 288.
+    sample(&mut rows, 0.25, 63, 3);
+    assert_eq!(rows.knot_windows[63].as_ref().unwrap().len(), 24);
+    rows.params.clear();
+    sample(&mut rows, 0.75, 63, 3);
+    assert!(
+        rows.params.is_empty(),
+        "a hit must skip building the abscissae"
+    );
+    assert!(rows.windows.is_empty());
+    sample(&mut rows, 0.75, 64, 3);
+    sample(&mut rows, 0.75, 62, 4);
+    assert_eq!(rows.knot_windows.len(), 64);
+    assert!(rows.knot_windows[62].is_none());
+    assert_eq!(rows.windows.len(), 2);
+}

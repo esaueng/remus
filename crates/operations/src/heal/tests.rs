@@ -2078,6 +2078,34 @@ fn unify_on_an_invalid_input_skips_only_the_history_only_input_probe() {
 }
 
 #[test]
+fn strict_candidate_keeps_the_same_accepted_faces_and_checks_only_the_result() {
+    let mut topo = Topology::new();
+    let fused = l_fuse_without_unify(&mut topo);
+    let empty_merge = crate::primitives::make_box(&mut topo, 2.0, 2.0, 2.0).unwrap();
+    let mut faces = remus_topology::explorer::solid_faces(&topo, fused).unwrap();
+    faces.pop();
+    let shell = topo.add_shell(Shell::new(faces).unwrap());
+    let open = topo.add_solid(remus_topology::solid::Solid::new(shell, Vec::new()));
+
+    for solid in [fused, empty_merge, open] {
+        let mut checked = topo.clone();
+        let report = unify_faces_checked(&mut checked, solid).unwrap();
+        let accepted = !report.reverted && report.faces_merged > 0 && report.result_errors == 0;
+        assert_eq!(accepted, solid == fused);
+        let mut candidate = topo.clone();
+        let (removed, probes) =
+            orientation_probes(|| unify_faces_if_strict(&mut candidate, solid).unwrap());
+        assert_eq!(removed, if accepted { report.faces_merged } else { 0 });
+        assert_eq!(probes.0, usize::from(solid != empty_merge));
+        let chosen = if accepted { &checked } else { &topo };
+        assert_eq!(
+            unify_outcome(&candidate, solid).shell_faces,
+            unify_outcome(chosen, solid).shell_faces
+        );
+    }
+}
+
+#[test]
 fn unify_whose_merge_groups_are_all_skipped_validates_no_candidate() {
     // Each wall is one coplanar group of 2 * 101 triangles whose merged
     // boundary has 2 * 101 + 2 edges, over the 200-edge limit, so the plan

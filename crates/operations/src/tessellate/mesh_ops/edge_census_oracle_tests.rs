@@ -160,13 +160,92 @@ fn census_matches_on_solid_meshes() {
         for deflection in [0.2, 0.01] {
             let mesh = crate::tessellate::tessellate_solid(&topo, solid, deflection).unwrap();
             assert_matches(&mesh, &format!("solid {} at {deflection}", solid.index()));
+            if mesh.indices.len() >= 300 {
+                let quality = compact_welded_mesh_quality(&mesh).expect("dense solid mesh");
+                assert_eq!(
+                    welded_counts(quality),
+                    welded_counts(sparse_welded_mesh_quality(&mesh))
+                );
+            }
             // Opened and doubled copies.
             let mut open = mesh.clone();
             open.indices.truncate(open.indices.len() - 6);
             assert_matches(&open, "opened");
+            if open.indices.len() >= 300 {
+                let quality = compact_welded_mesh_quality(&open).expect("dense solid mesh");
+                assert_eq!(
+                    welded_counts(quality),
+                    welded_counts(sparse_welded_mesh_quality(&open))
+                );
+            }
             let mut doubled = mesh.clone();
             doubled.indices.extend_from_slice(&mesh.indices[..9]);
             assert_matches(&doubled, "doubled");
+            if doubled.indices.len() >= 300 {
+                let quality = compact_welded_mesh_quality(&doubled).expect("dense solid mesh");
+                assert_eq!(
+                    welded_counts(quality),
+                    welded_counts(sparse_welded_mesh_quality(&doubled))
+                );
+            }
         }
     }
+}
+
+fn welded_counts(quality: WeldedMeshQuality) -> (usize, usize, usize, i64) {
+    (
+        quality.triangle_count,
+        quality.boundary_edges,
+        quality.non_manifold_edges,
+        quality.euler_characteristic,
+    )
+}
+
+#[test]
+fn dense_welded_quality_matches_coordinate_edge_counts() {
+    for seed in 0..128 {
+        // Reversed, repeated and collapsed sides, unused positions, and a trailing
+        // incomplete triangle. Adjacent indices straddle or share a weld cell.
+        let mut mesh = soup(seed, 400, 96, 123, (seed % 3) as usize);
+        for (index, point) in mesh.positions.iter_mut().enumerate() {
+            let cell = u32::try_from(index / 3).expect("test mesh fits u32");
+            let offset = [-0.49, 0.49, 0.51][index % 3];
+            *point = Point3::new(
+                (f64::from(cell % 5) + offset) * COINCIDENT_DEDUPE_GRID,
+                f64::from(cell / 5) * COINCIDENT_DEDUPE_GRID,
+                f64::from(cell % 2),
+            );
+        }
+        let reference = welded_counts(sparse_welded_mesh_quality(&mesh));
+        assert_eq!(
+            welded_counts(compact_welded_mesh_quality(&mesh).expect("dense indices")),
+            reference
+        );
+        assert_eq!(welded_counts(welded_mesh_quality(&mesh)), reference);
+
+        mesh.indices[17] = u32::MAX;
+        assert!(compact_welded_mesh_quality(&mesh).is_none());
+        assert_eq!(
+            welded_counts(welded_mesh_quality(&mesh)),
+            (0, usize::MAX, usize::MAX, 0)
+        );
+    }
+}
+
+#[test]
+fn duplicate_facets_fall_back_to_sparse_edge_counts() {
+    let mesh = TriangleMesh {
+        positions: vec![
+            Point3::new(0., 0., 0.),
+            Point3::new(1., 0., 0.),
+            Point3::new(0., 1., 0.),
+        ],
+        normals: Vec::new(),
+        indices: [0, 1, 2].repeat(1000),
+    };
+    assert!(compact_welded_mesh_quality(&mesh).is_none());
+    assert_eq!(
+        welded_counts(welded_mesh_quality(&mesh)),
+        (1000, 0, 3, 1000)
+    );
 }

@@ -961,7 +961,7 @@ pub fn move_faces_journaled_with_quality(
 ) -> Result<(JournaledSolidOp, crate::face_move_quality::FaceMoveQuality), OperationsError> {
     remus_topology::transaction::run_transacted(topo, |topo| {
         let pending = begin_scoped(topo, "move_faces", &[solid])?;
-        let (edit, quality) = crate::face_move_quality::edit_with_quality(
+        let (edit, quality, rebuild) = crate::face_move_quality::edit_with_quality(
             topo,
             solid,
             faces,
@@ -969,7 +969,7 @@ pub fn move_faces_journaled_with_quality(
             approximation,
         )?;
         Ok((
-            record_qualified_face_move(topo, pending, solid, edit, quality)?,
+            record_qualified_face_move(topo, pending, solid, edit, rebuild)?,
             quality,
         ))
     })
@@ -1015,9 +1015,11 @@ pub(crate) fn record_qualified_face_move(
     pending: PendingOp,
     source: SolidId,
     (result, pairs): crate::push_pull::DirectEditEvolution,
-    quality: crate::face_move_quality::FaceMoveQuality,
+    rebuild: crate::face_move_quality::CapRebuild,
 ) -> Result<JournaledSolidOp, OperationsError> {
-    if quality == crate::face_move_quality::FaceMoveQuality::Exact {
+    // A cap rebuild's new boundaries take the builder's construction
+    // ancestry, whatever the quality of the carriers it built.
+    if rebuild == crate::face_move_quality::CapRebuild::No {
         return record_face_move(topo, pending, (result, pairs));
     }
     let outputs = crate::face_move_quality::boundary_outputs(topo, source, &result, &pairs)?;

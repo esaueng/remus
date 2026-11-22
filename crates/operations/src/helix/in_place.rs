@@ -431,11 +431,11 @@ fn nurbs_sub_span(curve: &NurbsCurve, lo: f64, hi: f64) -> Result<NurbsCurve, Op
 }
 
 /// Start-cap geometry, its trim, and the exact NURBS of one piece.
-type ExactPiece = (EdgeCurve, Option<(f64, f64)>, NurbsCurve);
+pub type ExactPiece = (EdgeCurve, Option<(f64, f64)>, NurbsCurve);
 
 /// The exact NURBS of `curve` over `[a, b]` (possibly descending), traced
 /// from `curve(a)` to `curve(b)`, plus the start-cap geometry and trim.
-fn exact_piece(
+pub fn exact_piece(
     curve: &EdgeCurve,
     (a, b): (f64, f64),
     start: Point3,

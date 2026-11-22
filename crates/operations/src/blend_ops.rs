@@ -2997,6 +2997,9 @@ pub fn blend_failure_code(error: &OperationsError) -> &'static str {
         OperationsError::Blend(BlendError::CornerFailure { .. }) => "corner-failure",
         OperationsError::Blend(BlendError::EdgesNotBlended { .. }) => "edges-not-blended",
         OperationsError::Blend(BlendError::UnsupportedSurface { .. }) => "unsupported-surface",
+        OperationsError::Blend(BlendError::UnsupportedVariableSupport { .. }) => {
+            "unsupported-variable-support"
+        }
         OperationsError::Blend(BlendError::UnsupportedSeamCrossing { .. }) => {
             "unsupported-seam-crossing"
         }

@@ -17,7 +17,10 @@ pub use restore::{SupportExtension, restore_joined_support_limits_in_place};
 mod unjoin;
 pub use unjoin::restore_unjoined_cap_in_place;
 mod touch;
+mod wedged;
 pub use touch::{rebuild_touching_cap_in_place, restore_touching_support_limits_in_place};
+mod flush;
+pub use flush::rebuild_flush_cap_in_place;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::{PI, TAU};
@@ -52,7 +55,8 @@ pub struct CapReblendApproximation {
 pub struct CapReblendOutcome {
     /// Constructed body and construction-derived face origins.
     pub result: BlendResult,
-    /// Number of stations used per sampled corner.
+    /// Number of stations used per sampled corner; zero when the
+    /// reconstruction sampled none.
     pub corner_stations: usize,
     /// Surviving children of split source edges, recorded by construction.
     pub edge_images: Vec<(EdgeId, EdgeId)>,
@@ -71,6 +75,9 @@ struct Node {
     /// Distance from the node to the axial analytic supports it borders,
     /// when small enough for exact band contacts to share its vertices.
     exact_residual: Option<f64>,
+    /// A contour end inside its support rather than on a boundary edge:
+    /// the canal contact of a wedged ball.
+    interior: bool,
 }
 
 struct Support {
@@ -84,6 +91,17 @@ struct Support {
     exact: Option<ExactContacts>,
     lower_edge: Option<EdgeId>,
     upper_edge: Option<EdgeId>,
+    /// The sampled contacts: every section's ends, short of the wedged
+    /// sections' torus trim and their collapsed cap side.
+    lower_points: Vec<Point3>,
+    upper_points: Vec<Point3>,
+}
+
+/// What a wedged node adds: the torus band's lower end, off the node edge,
+/// and the trim from the node vertex to it along the torus.
+struct WedgeEdges {
+    lower: VertexId,
+    bridge: EdgeId,
 }
 
 /// The two contacts of a band rolled on an axial analytic support: the
@@ -210,6 +228,7 @@ fn roots(
                 top_vertex: None,
                 cross_edge: None,
                 exact_residual: None,
+                interior: false,
             });
         }
     }
@@ -889,6 +908,58 @@ struct CapContour {
     count: usize,
 }
 
+/// The contour's contact on a sampled carrier at section parameter `u`:
+/// the support point, its ball centre in the cap's inward parallel plane,
+/// and the point's parameters.
+fn contour_root(
+    field: &CanalNormal<'_>,
+    u: f64,
+    contour: CapContour,
+) -> Result<(Point3, Point3, (f64, f64)), BlendError> {
+    let CapContour {
+        axis,
+        level,
+        radius,
+        ..
+    } = contour;
+    let surface = field.surface;
+    let value = |v| -> Result<(f64, Point3, Vec3), BlendError> {
+        let point = surface.evaluate(u, v);
+        let normal = field.normal(u, v)?;
+        Ok((height(point - normal * radius, axis) - level, point, normal))
+    };
+    let (mut lo, mut hi) = field.resolved_v();
+    let flo = value(lo)?.0;
+    let fhi = value(hi)?.0;
+    if flo * fhi >= 0.0 {
+        return Err(refusal("cap corner contour leaves its parameter domain"));
+    }
+    for _ in 0..60 {
+        let mid = f64::midpoint(lo, hi);
+        if value(mid)?.0 * flo > 0.0 {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let v = f64::midpoint(lo, hi);
+    let (residual, point, normal) = value(v)?;
+    if residual.abs() <= 1e-7 {
+        Ok((point, point - normal * radius, (u, v)))
+    } else if let Some(station) = field.station_at(lo).or_else(|| field.station_at(hi))
+        && let Some((point, normal)) = crease_contact(field, u, station, contour)?
+    {
+        // The root is a station's crease: the ball touches it there.
+        Ok((
+            point,
+            point - normal * radius,
+            (u, surface.knots_v()[station + 1]),
+        ))
+    } else {
+        Err(refusal("cap corner contour root was unresolved"))
+    }
+}
+
 fn nurbs_sections(
     topo: &Topology,
     face: FaceId,
@@ -898,13 +969,12 @@ fn nurbs_sections(
 ) -> Result<Vec<CircSection>, BlendError> {
     let CapContour {
         axis,
-        level,
         radius,
         count,
+        ..
     } = contour;
     let f = topo.face(face)?;
     let field = CanalNormal::contour_field(f)?;
-    let surface = field.surface;
     let (ua, va) = f
         .surface()
         .project_point(a.point)
@@ -916,7 +986,10 @@ fn nurbs_sections(
     let boundary = |u: f64, v: f64| {
         u.abs() < 1e-6 || (u - 1.0).abs() < 1e-6 || v.abs() < 1e-6 || (v - 1.0).abs() < 1e-6
     };
-    if !boundary(ua, va) || !boundary(ub, vb) || (ua - ub).abs() < 1e-5 {
+    if (!a.interior && !boundary(ua, va))
+        || (!b.interior && !boundary(ub, vb))
+        || (ua - ub).abs() < 1e-5
+    {
         return Err(refusal(
             "cap corner contour does not span qualified parameter boundaries",
         ));
@@ -930,41 +1003,7 @@ fn nurbs_sections(
         } else if i + 1 == count {
             (b.point, b.center, (ub, vb))
         } else {
-            let value = |v| -> Result<(f64, Point3, Vec3), BlendError> {
-                let point = surface.evaluate(u, v);
-                let normal = field.normal(u, v)?;
-                Ok((height(point - normal * radius, axis) - level, point, normal))
-            };
-            let (mut lo, mut hi) = field.resolved_v();
-            let flo = value(lo)?.0;
-            let fhi = value(hi)?.0;
-            if flo * fhi >= 0.0 {
-                return Err(refusal("cap corner contour leaves its parameter domain"));
-            }
-            for _ in 0..60 {
-                let mid = f64::midpoint(lo, hi);
-                if value(mid)?.0 * flo > 0.0 {
-                    lo = mid;
-                } else {
-                    hi = mid;
-                }
-            }
-            let v = f64::midpoint(lo, hi);
-            let (residual, point, normal) = value(v)?;
-            if residual.abs() <= 1e-7 {
-                (point, point - normal * radius, (u, v))
-            } else if let Some(station) = field.station_at(lo).or_else(|| field.station_at(hi))
-                && let Some((point, normal)) = crease_contact(&field, u, station, contour)?
-            {
-                // The root is a station's crease: the ball touches it there.
-                (
-                    point,
-                    point - normal * radius,
-                    (u, surface.knots_v()[station + 1]),
-                )
-            } else {
-                return Err(refusal("cap corner contour root was unresolved"));
-            }
+            contour_root(&field, u, contour)?
         };
         sections.push(CircSection {
             p1: point,
@@ -1323,13 +1362,46 @@ fn reblend_impl(
     if incident.values().any(|nodes| nodes.len() != 2) {
         return Err(refusal("cap supports do not form a simple cycle"));
     }
+    let contour = CapContour {
+        axis,
+        level,
+        radius,
+        count: approximation.stations,
+    };
+    // A node's partner across each of its supports.
+    let partner = |index: usize, face: FaceId| {
+        incident
+            .get(&face)
+            .and_then(|pair| pair.iter().copied().find(|&other| other != index))
+    };
+    let wedges = nodes
+        .iter()
+        .enumerate()
+        .map(|(index, node)| {
+            let canal = node.faces.iter().copied().find(|&face| {
+                topo.face(face)
+                    .is_ok_and(|data| matches!(data.surface(), FaceSurface::Nurbs(_)))
+            });
+            match canal.and_then(|face| partner(index, face)) {
+                Some(other) => wedged::wedged_ball(topo, node, &nodes[other], contour),
+                None => Ok(None),
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    for (node, wedge) in nodes.iter_mut().zip(&wedges) {
+        if let Some(wedge) = wedge {
+            node.parameter = wedge.junction;
+            node.point = wedge.junction_point;
+        }
+    }
+    let mut wedge_edges: Vec<Option<WedgeEdges>> = Vec::with_capacity(nodes.len());
     let mut scope = EditScope::new(topo, original_faces.iter().copied())?;
     let mut replacements = remus_math::det_hash::DetHashMap::default();
     if let [rim] = rims {
         detach_cap_detours(topo, solid, *rim, &nodes, axis, &mut replacements)?;
     }
     let mut split_images = Vec::new();
-    for node in &mut nodes {
+    for (node, wedge) in nodes.iter_mut().zip(&wedges) {
         let face = live(&replacements, node.faces[0]);
         let mut edit = scope.edit(&mut replacements);
         let split = trimmer::split_body_boundary_at_parameter(
@@ -1359,20 +1431,39 @@ fn reblend_impl(
         topo.vertex_mut(vertex)?
             .set_tolerance(split_tolerance.max(tolerance))?;
         node.vertex = Some(vertex);
-        node.top_vertex =
-            Some(topo.add_vertex(Vertex::new(node.center + axis * radius, tolerance)));
-        let pa = node.point;
-        let pb = node.center + axis * radius;
-        let ca = (pa - node.center).normalize()?;
+        let (pa, center) = match wedge {
+            Some(wedge) => (wedge.torus_contact, wedge.centre),
+            None => (node.point, node.center),
+        };
+        node.top_vertex = Some(topo.add_vertex(Vertex::new(center + axis * radius, tolerance)));
+        let lower = match wedge {
+            Some(_) => topo.add_vertex(Vertex::new(pa, tolerance)),
+            None => vertex,
+        };
+        wedge_edges.push(match wedge {
+            Some(wedge) => Some(WedgeEdges {
+                lower,
+                bridge: add_certified_curve_edge(
+                    topo,
+                    vertex,
+                    lower,
+                    EdgeCurve::NurbsCurve(polyline(wedge.torus_trim.clone())?),
+                    (0.0, 1.0),
+                )?,
+            }),
+            None => None,
+        });
+        let pb = center + axis * radius;
+        let ca = (pa - center).normalize()?;
         let cross_axis = ca.cross(axis).normalize()?;
-        let circle = Circle3D::new_with_ref(node.center, cross_axis, radius, ca)?;
+        let circle = Circle3D::new_with_ref(center, cross_axis, radius, ca)?;
         let angle = circle.project(pb).rem_euclid(TAU);
         if angle <= 0.0 || angle >= PI {
             return Err(refusal("cap end section is not a minor circular arc"));
         }
         node.cross_edge = Some(add_certified_curve_edge(
             topo,
-            vertex,
+            lower,
             node.top_vertex
                 .ok_or_else(|| refusal("cap top vertex missing"))?,
             EdgeCurve::Circle(circle),
@@ -1414,15 +1505,97 @@ fn reblend_impl(
                 face.index()
             )));
         };
-        let contour = CapContour {
-            axis,
-            level,
-            radius,
-            count: approximation.stations,
+        // A wedged ball ends the canal band at its canal contact and starts
+        // the torus band at its torus contact.
+        let end = |index: usize| -> Option<&wedged::Wedge> {
+            wedges[index]
+                .as_ref()
+                .filter(|wedge| wedge.canal == face || wedge.torus == face)
         };
+        let synthetic = |index: usize| -> Node {
+            let mut node = nodes[index].clone();
+            if let Some(wedge) = end(index) {
+                node.center = wedge.centre;
+                if wedge.canal == face {
+                    node.point = wedge.canal_trim[0];
+                    node.interior = true;
+                } else {
+                    node.point = wedge.torus_contact;
+                    node.exact_residual = Some(0.0);
+                }
+            }
+            node
+        };
+        let (start, finish) = (synthetic(a), synthetic(b));
         let (sections, surface, exact) = match topo.face(face)?.surface() {
             FaceSurface::Nurbs(_) => {
-                let sections = nurbs_sections(topo, face, &nodes[a], &nodes[b], contour)?;
+                let field = CanalNormal::contour_field(topo.face(face)?)?;
+                // The band with its rolled stations, any loops of its contour
+                // resolved and any wedged ends carried on.
+                let build = |count: usize| -> Result<Vec<CircSection>, BlendError> {
+                    let rolled = CapContour { count, ..contour };
+                    let mut sections = wedged::untangle(
+                        &field,
+                        nurbs_sections(topo, face, &start, &finish, rolled)?,
+                        contour,
+                    )?;
+                    if let Some(wedge) = end(b) {
+                        sections.pop();
+                        sections.extend(wedge.sections(axis, radius)?);
+                    }
+                    if let Some(wedge) = end(a) {
+                        let mut corner = wedge.sections(axis, radius)?;
+                        corner.reverse();
+                        corner.extend(sections.into_iter().skip(1));
+                        sections = corner;
+                    }
+                    Ok(sections)
+                };
+                // Later edits read a band's section count back as their
+                // station budget, so every band keeps exactly the budget:
+                // its rolled stations make room for what replaces them.
+                let budget = approximation.stations;
+                let mut count = budget;
+                let mut sections = build(count)?;
+                // Step by the miss first: a wedge's sections are a fixed
+                // number, so that lands at once.
+                for _ in 0..4 {
+                    if sections.len() == budget {
+                        break;
+                    }
+                    let shift = budget.abs_diff(sections.len());
+                    let next = if sections.len() > budget {
+                        count.checked_sub(shift)
+                    } else {
+                        count.checked_add(shift)
+                    };
+                    let Some(next) = next.filter(|&next| next >= 4) else {
+                        break;
+                    };
+                    count = next;
+                    sections = build(count)?;
+                }
+                // A resolved loop's size moves with the sampling, so the
+                // steps can straddle the budget: try the counts round the
+                // last one, nearest first.
+                let near = count;
+                for offset in 1..=64 {
+                    if sections.len() == budget {
+                        break;
+                    }
+                    for candidate in [near.checked_add(offset), near.checked_sub(offset)] {
+                        let Some(candidate) = candidate.filter(|&candidate| candidate >= 4) else {
+                            continue;
+                        };
+                        sections = build(candidate)?;
+                        if sections.len() == budget {
+                            break;
+                        }
+                    }
+                }
+                if sections.len() != budget {
+                    return Err(refusal("cap corner does not fit its station budget"));
+                }
                 let surface = FaceSurface::Nurbs(
                     crate::walker::approximate_blend_surface_linear_v(&sections)?,
                 );
@@ -1433,15 +1606,27 @@ fn reblend_impl(
             | FaceSurface::Cone(_)
             | FaceSurface::Sphere(_)
             | FaceSurface::Torus(_) => {
+                let mut advance = angular_advance(topo, face, &kept)?;
+                let carrier = topo.face(face)?.surface();
+                let turn = |node: &Node, moved: &Node| -> Result<f64, BlendError> {
+                    let angle = |point: Point3| {
+                        carrier
+                            .project_point(point)
+                            .map(|(u, _)| u)
+                            .ok_or_else(|| refusal("wedged cap contact projection failed"))
+                    };
+                    Ok((angle(moved.point)? - angle(node.point)? + PI).rem_euclid(TAU) - PI)
+                };
+                advance += turn(&nodes[b], &finish)? - turn(&nodes[a], &start)?;
                 let (sections, surface, exact) = analytic_sections(
                     topo,
                     live(&replacements, face),
-                    &nodes[a],
-                    &nodes[b],
-                    angular_advance(topo, face, &kept)?,
+                    &start,
+                    &finish,
+                    advance,
                     contour,
                 )?;
-                let shared = nodes[a].exact_residual.is_some() && nodes[b].exact_residual.is_some();
+                let shared = start.exact_residual.is_some() && finish.exact_residual.is_some();
                 (sections, surface, shared.then_some(exact))
             }
         };
@@ -1451,6 +1636,24 @@ fn reblend_impl(
             a,
             b
         );
+        // The band's own contacts: a canal band carried past a wedged ball
+        // stops its support contact at the junction, its cap contact at the
+        // ball's cap point.
+        let corner = |index: usize| {
+            end(index)
+                .filter(|wedge| wedge.canal == face)
+                .map(|wedge| (wedge.canal_trim.len(), wedge.torus_trim.len() - 1))
+        };
+        let mut lower_points: Vec<Point3> = sections.iter().map(|section| section.p1).collect();
+        let mut upper_points: Vec<Point3> = sections.iter().map(|section| section.p2).collect();
+        if let Some((canal, torus)) = corner(b) {
+            lower_points.truncate(lower_points.len() - torus);
+            upper_points.truncate(upper_points.len() - (canal + torus - 1));
+        }
+        if let Some((canal, torus)) = corner(a) {
+            lower_points.drain(..torus);
+            upper_points.drain(..canal + torus - 1);
+        }
         supports.push(Support {
             face,
             a,
@@ -1460,6 +1663,8 @@ fn reblend_impl(
             exact,
             lower_edge: None,
             upper_edge: None,
+            lower_points,
+            upper_points,
         });
     }
     for support in &mut supports {
@@ -1472,21 +1677,27 @@ fn reblend_impl(
                 exact.span,
             ),
             None => (
-                EdgeCurve::NurbsCurve(polyline(
-                    support.sections.iter().map(|section| section.p1).collect(),
-                )?),
-                EdgeCurve::NurbsCurve(polyline(
-                    support.sections.iter().map(|section| section.p2).collect(),
-                )?),
+                EdgeCurve::NurbsCurve(polyline(support.lower_points.clone())?),
+                EdgeCurve::NurbsCurve(polyline(support.upper_points.clone())?),
                 (0.0, 1.0),
             ),
         };
-        let av = a
-            .vertex
-            .ok_or_else(|| refusal("cap lower vertex missing"))?;
-        let bv = b
-            .vertex
-            .ok_or_else(|| refusal("cap lower vertex missing"))?;
+        // A torus band starts or ends at its wedged ball's torus contact.
+        let support_face = support.face;
+        let bridge = |index: usize| {
+            wedges[index]
+                .as_ref()
+                .filter(|wedge| wedge.torus == support_face)
+                .and(wedge_edges[index].as_ref())
+        };
+        let lower_vertex = |index: usize, node: &Node| {
+            bridge(index)
+                .map(|edges| edges.lower)
+                .or(node.vertex)
+                .ok_or_else(|| refusal("cap lower vertex missing"))
+        };
+        let av = lower_vertex(support.a, a)?;
+        let bv = lower_vertex(support.b, b)?;
         let at = a
             .top_vertex
             .ok_or_else(|| refusal("cap upper vertex missing"))?;
@@ -1508,7 +1719,22 @@ fn reblend_impl(
                 })
                 .ok_or_else(|| refusal("cap cut vertex disappeared"))
         };
-        let (pa, pb) = (position(av)?, position(bv)?);
+        let node_vertex = |node: &Node| {
+            node.vertex
+                .ok_or_else(|| refusal("cap lower vertex missing"))
+        };
+        let (pa, pb) = (position(node_vertex(a)?)?, position(node_vertex(b)?)?);
+        let lower = support
+            .lower_edge
+            .ok_or_else(|| refusal("cap contact edge missing"))?;
+        let mut cut = Vec::new();
+        if let Some(edges) = bridge(support.a) {
+            cut.push(OrientedEdge::new(edges.bridge, true));
+        }
+        cut.push(OrientedEdge::new(lower, true));
+        if let Some(edges) = bridge(support.b) {
+            cut.push(OrientedEdge::new(edges.bridge, false));
+        }
         let consumed = arc_between(&wire, pb, pa);
         let avoid: Vec<_> = consumed.iter().map(OrientedEdge::edge).collect();
         let trimmed = trimmer::cut_face(
@@ -1518,12 +1744,7 @@ fn reblend_impl(
             &[CutPiece {
                 from: pa,
                 to: pb,
-                edges: vec![OrientedEdge::new(
-                    support
-                        .lower_edge
-                        .ok_or_else(|| refusal("cap contact edge missing"))?,
-                    true,
-                )],
+                edges: cut,
             }],
             &avoid,
         )?;
@@ -1594,13 +1815,29 @@ fn reblend_impl(
     for support in &supports {
         let a = &nodes[support.a];
         let b = &nodes[support.b];
-        let mut wire_edges = vec![
-            OrientedEdge::new(
-                support
-                    .lower_edge
-                    .ok_or_else(|| refusal("cap lower edge missing"))?,
-                true,
-            ),
+        // A canal band carried past a wedged ball runs on along the torus
+        // trim to the torus contact.
+        let carried = |index: usize| {
+            wedges[index]
+                .as_ref()
+                .filter(|wedge| wedge.canal == support.face)
+                .and(wedge_edges[index].as_ref())
+                .map(|edges| edges.bridge)
+        };
+        let mut wire_edges = Vec::new();
+        if let Some(bridge) = carried(support.a) {
+            wire_edges.push(OrientedEdge::new(bridge, false));
+        }
+        wire_edges.push(OrientedEdge::new(
+            support
+                .lower_edge
+                .ok_or_else(|| refusal("cap lower edge missing"))?,
+            true,
+        ));
+        if let Some(bridge) = carried(support.b) {
+            wire_edges.push(OrientedEdge::new(bridge, true));
+        }
+        wire_edges.extend([
             OrientedEdge::new(
                 b.cross_edge.ok_or_else(|| refusal("cap end arc missing"))?,
                 true,
@@ -1616,7 +1853,7 @@ fn reblend_impl(
                     .ok_or_else(|| refusal("cap start arc missing"))?,
                 false,
             ),
-        ];
+        ]);
         let mid = &support.sections[support.sections.len() / 2];
         let desired = ((mid.p1 - mid.center).normalize()? + axis).normalize()?;
         let probe = mid.center + desired * radius;
@@ -1789,6 +2026,7 @@ mod tests {
                     top_vertex: None,
                     cross_edge: None,
                     exact_residual: None,
+                    interior: false,
                 }
             };
             let (first, last) = (node(0.0), node(1.0));

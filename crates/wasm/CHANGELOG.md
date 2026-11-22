@@ -5,6 +5,17 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
 
 ## Unreleased
 
+### Added
+
+* `filletVariable` (and `filletVariableDetailed`, which shares its parser)
+  accepts optional interior control radii:
+  `"stations": [{"at": t, "radius": r}]`, `t` strictly inside `(0, 1)` along
+  the edge's own direction and increasing, under a `linear` or `scurve`
+  law. `start`/`end` remain the end radii. An absent, `null` or empty
+  `stations` means none, like the spec's other optional fields. Stations
+  under a `constant` law, any other non-array value, or an entry without a
+  numeric `at`/`radius` throw `invalid input`.
+
 ### Changed
 
 * `chamferV2Detailed` and `chamferDistanceAngleDetailed` (direct, and the
@@ -17,6 +28,11 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
   cylinder's rims and its seam now carries `skippedEdges` naming the seam;
   before, the seam vanished from the result without a trace. The returned
   solid is the same.
+* `filletVariable` refuses a selected edge with a curved spine or a
+  non-planar support with `unsupported-variable-support: …` before building,
+  and two or more selected edges meeting at a corner without qualified
+  setbacks with `unsupported-vertex-blend: …`. Both used to throw
+  `postcondition-failed: fillet postcondition validation failed with …`.
 * `chamferV2`, `chamferDetailed` and the other bindings over `chamfer_v2`:
   a selection that does not build but ends inside a longer tangent chain
   whose chamfer builds is refused with `details.kernelCode =
@@ -149,6 +165,32 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
   error instead of returning a chamfer-shaped solid. `chamfer` is unchanged.
 
 ### Features
+
+* `sweepExactWithOptions` takes `"position"`: `"auto"`, `"intersection"`,
+  `"closestPoint"` or `"closestEndpoint"`, where on the path the profile
+  stands; from inside the path the sweep runs both ways.
+* `sweepExactWithOptions` takes `"corner"`: `"mitre"` (default) or `"round"`
+  with `"cornerRadius"`, the radius of the tangent arc replacing each corner,
+  between straight runs or beside an arc in the corner's plane.
+* `sweepExactWithOptions` takes `"orientation"`: `"normal"` (default) or
+  `"parallel"`, which translates the profile along the path unturned, along
+  any path curve and through corners.
+
+* `loftWithOptions` takes `"guide"`: `{degree, knots, controlPoints:
+  [[x, y, z], …], weights?}`, a clamped NURBS curve through one corner of
+  every straight-edged section that the loft follows exactly. Not combined
+  with `"connections"` or an apex point. An options string that is not
+  valid JSON or not an object is now refused instead of building the default
+  loft; an empty string still means no options.
+
+* `loftWithOptions` takes `"connections"`: one `[x, y, z]` vertex per
+  section, where its correspondence starts.
+
+* Add `sweepExactWithOptions(face, edges, options)`: `sweepExact` with a JSON
+  options object, `twist` (radians, total) and `endScale`, both linear along
+  a straight path with the profile square to it; also a batch op of the same
+  name (`options` optional). An unknown key or a non-number is refused, so a
+  kernel never ignores an option it cannot build.
 
 * Add whole-session snapshots: `snapshot()` returns the session as bytes and
   the static `RemusKernel.fromSnapshot(bytes)` restores it into a new kernel

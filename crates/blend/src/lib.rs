@@ -203,6 +203,18 @@ pub enum BlendError {
         edge: EdgeId,
     },
 
+    /// A variable-radius stripe lies outside the family whose section is
+    /// exact: a straight spine between two planar supports. Elsewhere the
+    /// engine could only interpolate sampled sections, so it refuses before
+    /// building anything rather than return an approximate band.
+    #[error("variable-radius blend on edge {edge:?} is not exact: {reason}")]
+    UnsupportedVariableSupport {
+        /// The selected edge outside the exact family.
+        edge: EdgeId,
+        /// Which part of the family it leaves: the spine or a support.
+        reason: String,
+    },
+
     /// Surface type not supported.
     #[error("unsupported surface on face {face:?}: {surface_tag}")]
     UnsupportedSurface {

@@ -1857,6 +1857,37 @@ pub fn unify_faces_checked(
     })
 }
 
+/// Merge co-surface faces only when the resulting solid passes strict validation.
+///
+/// Returns the number of removed faces. A declined merge leaves the input
+/// solid in place and returns zero. Callers needing the input's strict error
+/// count can use [`unify_faces_checked`].
+///
+/// # Errors
+/// Returns an error if a topology lookup fails.
+pub fn unify_faces_if_strict(
+    topo: &mut Topology,
+    solid: SolidId,
+) -> Result<usize, crate::OperationsError> {
+    // Preserve malformed-input errors before planning. The orientation probe
+    // only adds issues to this report. Its verdict on the input cannot change
+    // whether the strictly validated candidate is accepted.
+    crate::validate::validate_solid_with_options(
+        topo,
+        solid,
+        &crate::validate::ValidationOptions {
+            orientation: crate::validate::OrientationCheck::Skip,
+            ..Default::default()
+        },
+    )?;
+    let plan = plan_unify(topo, solid)?;
+    let (history, verdict) = merge_planned(topo, solid, &plan, true)?;
+    Ok(match verdict {
+        MergedVerdict::Candidate { error_count: 0 } => history.faces_merged,
+        _ => 0,
+    })
+}
+
 /// Construction history for [`unify_faces`].
 pub(crate) struct FaceUnifyHistory {
     pub(crate) faces_merged: usize,

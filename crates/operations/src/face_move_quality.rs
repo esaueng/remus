@@ -44,7 +44,7 @@ pub fn move_faces_with_quality(
     distance: f64,
     approximation: Option<FaceMoveApproximation>,
 ) -> Result<QualifiedFaceMove, OperationsError> {
-    let (result, quality) = edit_with_quality(topo, solid, faces, distance, approximation)?;
+    let (result, quality, _) = edit_with_quality(topo, solid, faces, distance, approximation)?;
     Ok(QualifiedFaceMove {
         result: result.0,
         quality,
@@ -57,10 +57,10 @@ pub(crate) fn edit_with_quality(
     faces: &[FaceId],
     distance: f64,
     approximation: Option<CapReblendApproximation>,
-) -> Result<(DirectEditEvolution, FaceMoveQuality), OperationsError> {
+) -> Result<(DirectEditEvolution, FaceMoveQuality, CapRebuild), OperationsError> {
     check_permission(approximation)?;
     match crate::push_pull::move_faces_with_entity_evolution(topo, solid, faces, distance) {
-        Ok(result) => Ok((result, FaceMoveQuality::Exact)),
+        Ok(result) => Ok((result, FaceMoveQuality::Exact, CapRebuild::No)),
         Err(error) => {
             let Some(permission) = approximation else {
                 return Err(error);
@@ -72,6 +72,14 @@ pub(crate) fn edit_with_quality(
                 else {
                     return Err(error);
                 };
+                let quality = if moved.sampled {
+                    FaceMoveQuality::SampledCapJoin {
+                        stations: permission.stations,
+                    }
+                } else {
+                    FaceMoveQuality::Exact
+                };
+                let moved = moved.entities;
                 Ok((
                     (
                         MoveFacesResult {
@@ -80,13 +88,21 @@ pub(crate) fn edit_with_quality(
                         },
                         moved.boundary_pairs,
                     ),
-                    FaceMoveQuality::SampledCapJoin {
-                        stations: permission.stations,
-                    },
+                    quality,
+                    CapRebuild::Yes,
                 ))
             })
         }
     }
+}
+
+/// Whether a move's result was rebuilt by the cap join. Its new boundaries
+/// then need the cap builder's construction ancestry in the journal, even
+/// when every carrier it built is exact.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CapRebuild {
+    No,
+    Yes,
 }
 
 pub(crate) fn check_permission(

@@ -383,7 +383,7 @@ fn rolling_ball_cylinder(
 /// face half-spaces) and `+1` for a concave edge. The returned contacts are
 /// the orthogonal projections of the centre onto the two planes, so their
 /// distance from the sharp edge is correct for any dihedral angle.
-fn planar_rolling_ball_section(
+pub(super) fn planar_rolling_ball_section(
     point_on_edge: Point3,
     normal1: Vec3,
     normal2: Vec3,

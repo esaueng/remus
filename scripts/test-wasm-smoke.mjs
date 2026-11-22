@@ -218,6 +218,82 @@ assert.equal(typeof kernel.exportStep, 'undefined', 'translators must not ship i
 assert.equal(typeof kernel.serializeSolids, 'function', 'arena codec must ship in the kernel');
 console.log('ok - RemusIo created; kernel module carries the arena codec only');
 
+// Pattern previews need only the chosen solid. Check the shipped JS binding
+// against the full unification report on the same unfused face boundaries.
+{
+  const k = new RemusKernel();
+  try {
+    const a = k.makeBox(10, 10, 10);
+    assert.equal(k.unifyFacesIfStrict(a), 0);
+    const b = k.copyAndTransformSolid(a, new Float64Array([
+      1, 0, 0, 5, 0, 1, 0, 5, 0, 0, 1, 0, 0, 0, 0, 1,
+    ]));
+    const merged = k.fuseAll(Uint32Array.of(a, b));
+    const [checked] = k.deserializeSolids(k.serializeSolids(Uint32Array.of(merged)));
+    const report = JSON.parse(k.unifyFacesChecked(checked));
+    assert.equal(report.resultErrors, 0);
+    assert.ok(report.facesMerged > 0);
+    assert.equal(k.unifyFacesIfStrict(merged), report.facesMerged);
+    assert.deepEqual(k.serializeSolids(Uint32Array.of(merged)), k.serializeSolids(Uint32Array.of(checked)));
+  } finally {
+    k.free();
+  }
+  console.log('ok - strict face merge matches the checked solid');
+}
+
+// M04 exact sweep options: a circle along a straight line, scaled and turned,
+// is the exact cone frustum; an unknown option is refused, never ignored.
+{
+  const k = new RemusKernel();
+  try {
+    const face = k.makeFaceFromWire(
+      k.makeWire(Uint32Array.of(k.makeCircleEdge(0, 0, 0, 1, 0, 0, 2)), true),
+    );
+    const path = Uint32Array.of(k.makeLineEdge(0, 0, 0, 10, 0, 0));
+    const solid = k.sweepExactWithOptions(face, path, JSON.stringify({ twist: 0.5, endScale: 1.5 }));
+    const frustum = (Math.PI * 4 * 10 * (1 + 1.5 + 2.25)) / 3;
+    const volume = k.volume(solid, DEFLECTION);
+    assert.ok(Math.abs(volume - frustum) / frustum < 1e-6, `${volume} vs ${frustum}`);
+    assert.throws(
+      () => k.sweepExactWithOptions(face, path, JSON.stringify({ posture: 'parallel' })),
+      /unknown option/,
+    );
+  } finally {
+    k.free();
+  }
+  console.log('ok - exact sweep options scale and turn the profile');
+}
+
+// M04 loft guide: two equal squares whose corner (-1, -1) follows the parabola
+// x = -1 + 6u(1 - u), z = 10u. Every slice is the square translated, so the
+// exact volume is 2 * 2 * 10 = 40; a guide that misses a section is refused.
+{
+  const k = new RemusKernel();
+  try {
+    const square = (z) => k.makePlanarFaceFromWire(
+      k.makePolygonWire(new Float64Array([-1, -1, z, 1, -1, z, 1, 1, z, -1, 1, z])),
+    );
+    const faces = Uint32Array.of(square(0), square(10));
+    const guide = {
+      degree: 2,
+      knots: [0, 0, 0, 1, 1, 1],
+      controlPoints: [[-1, -1, 0], [2, -1, 5], [-1, -1, 10]],
+    };
+    const solid = k.loftWithOptions(faces, JSON.stringify({ ruled: false, guide }));
+    assert.equal(k.validateSolid(solid), 0);
+    const volume = k.volume(solid, 0.005);
+    assert.ok(Math.abs(volume - 40) / 40 < 1e-3, `${volume} vs 40`);
+    const misses = { ...guide, controlPoints: [[-1, -1, 0], [2, -1, 5], [0, 0, 10]] };
+    assert.throws(
+      () => k.loftWithOptions(faces, JSON.stringify({ guide: misses })),
+      /does not pass through a corner of section 1/,
+    );
+  } finally {
+    k.free();
+  }
+  console.log('ok - a loft follows its guide curve exactly');
+}
+
 // A full radius-8 sphere fits inside this radius-10 finite cylinder even
 // though corners of the sphere's enclosing box do not. Protect the emitted
 // artifact's whole-carrier support certificate and the enclosed cavity.
