@@ -631,25 +631,31 @@ fn reject_inexact_variable_stripes(
         let edge = topo.edge(*edge_id)?;
         let length =
             (topo.vertex(edge.end())?.point() - topo.vertex(edge.start())?.point()).length();
-        // A local probe: the side is a property of the dihedral at the edge,
-        // and a probe as long as the radius can step past a narrow support
-        // (a 1.5-wide groove lip under a 2.0 request) before the overflow
-        // check gets to name that support.
+        // The side comes from the loops, exactly: each face's interior lies
+        // to the left of its loops' effective direction about its outward
+        // normal. The probe classifier only cross-checks it: a feature
+        // thinner than its probe (a lip it steps over) makes the two disagree,
+        // which refuses, but never decides the side. The probe is local, as
+        // a probe as long as the radius can step past a narrow support (a
+        // 1.5-wide groove lip under a 2.0 request) before the overflow check
+        // gets to name that support.
+        let from_loops = loop_convexity(topo, *edge_id, [faces[0], faces[1]], normals, tol)?;
         let probe = (law.bounds().0 * 0.1)
             .min(length * 0.01)
             .max(tol.linear * 10.0);
-        match crate::query::edge_concavity_from_faces(
+        let probed = crate::query::edge_concavity_from_faces(
             topo, solid, *edge_id, faces[0], faces[1], probe,
-        )? {
-            crate::query::EdgeConcavity::Convex => {}
-            crate::query::EdgeConcavity::Concave => {
+        )?;
+        match (from_loops, probed) {
+            (Some(true), crate::query::EdgeConcavity::Convex) => {}
+            (Some(false), crate::query::EdgeConcavity::Concave) => {
                 return refuse(
                     *edge_id,
                     "it is a concave edge; the exact variable section is qualified on convex edges"
                         .into(),
                 );
             }
-            crate::query::EdgeConcavity::Tangent | crate::query::EdgeConcavity::Unknown => {
+            _ => {
                 return refuse(
                     *edge_id,
                     "its supports have no qualified material side".into(),
@@ -662,6 +668,59 @@ fn reject_inexact_variable_stripes(
         sections.insert(edge_id.index(), section);
     }
     Ok(sections)
+}
+
+/// Whether a straight edge between two planar faces is convex, from the
+/// faces' loops: `Some(true)` convex, `Some(false)` concave, `None` when the
+/// two faces disagree or the edge is degenerate.
+///
+/// A face's interior lies to the left of each of its loops' effective
+/// direction about its outward normal (`is_forward` flipped once more for a
+/// reversed face, as shell orientation counts it). That left direction runs
+/// along the face away from the edge; the edge is convex exactly when it
+/// points against the other face's outward normal, and both faces must say
+/// the same.
+fn loop_convexity(
+    topo: &Topology,
+    edge_id: EdgeId,
+    faces: [remus_topology::face::FaceId; 2],
+    outward: [Vec3; 2],
+    tol: Tolerance,
+) -> Result<Option<bool>, crate::OperationsError> {
+    let edge = topo.edge(edge_id)?;
+    let along = topo.vertex(edge.end())?.point() - topo.vertex(edge.start())?.point();
+    let mut verdicts = [None, None];
+    for (slot, &face_id) in faces.iter().enumerate() {
+        let face = topo.face(face_id)?;
+        let mut forward = None;
+        for wire in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            if let Some(oriented) = topo
+                .wire(wire)?
+                .edges()
+                .iter()
+                .find(|oriented| oriented.edge() == edge_id)
+            {
+                forward = Some(oriented.is_forward() != face.is_reversed());
+                break;
+            }
+        }
+        let Some(forward) = forward else {
+            return Ok(None);
+        };
+        let direction = if forward { along } else { -along };
+        let into_face = outward[slot].cross(direction);
+        let other = outward[1 - slot];
+        let side = into_face.dot(other);
+        let scale = into_face.length() * other.length();
+        if scale.is_nan() || scale <= 0.0 || side.abs() <= tol.angular * scale {
+            return Ok(None);
+        }
+        verdicts[slot] = Some(side < 0.0);
+    }
+    Ok(match verdicts {
+        [Some(a), Some(b)] if a == b => Some(a),
+        _ => None,
+    })
 }
 
 /// The exact section of a convex variable stripe between two planes, per
@@ -854,23 +913,42 @@ fn reject_variable_support_cliffs(
                         segments.extend(planar_hull_segments(nurbs.control_points(), plane_normal));
                         continue;
                     }
-                    // A conic arc lies in the lens between each chord and
-                    // the chord's copy through the arc's mid-parameter
-                    // point, where the tangent is parallel to the chord
-                    // (an affine image of the circle's property), so a ray
-                    // meets the lens no later than the arc.
-                    let (d0, d1) =
-                        crate::authoritative_edge_domain(boundary, "variable fillet support")?;
-                    let at = |i: f64| {
-                        let t = (d1 - d0).mul_add(i / f64::from(CURVE_CHORDS), d0);
-                        boundary.curve().evaluate_with_endpoints(t, a, b)
+                    // A circle or ellipse is replaced by the closed polygon
+                    // circumscribed about the whole of it: an affine image
+                    // of a regular polygon about a circle, so it contains the
+                    // curve and every arc of it, and being closed, no ray can
+                    // pass between its pieces. It over-reaches by at most
+                    // 1/cos(π/n) − 1 of the semi-axis.
+                    let (center, a_axis, b_axis) = match boundary.curve() {
+                        EdgeCurve::Circle(circle) => (
+                            circle.center(),
+                            circle.u_axis() * circle.radius(),
+                            circle.v_axis() * circle.radius(),
+                        ),
+                        EdgeCurve::Ellipse(ellipse) => (
+                            ellipse.center(),
+                            ellipse.u_axis() * ellipse.semi_major(),
+                            ellipse.v_axis() * ellipse.semi_minor(),
+                        ),
+                        EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => {
+                            return Err(crate::OperationsError::Blend(
+                                remus_blend::BlendError::UnsupportedVariableSupport {
+                                    edge: *edge_id,
+                                    reason: format!(
+                                        "support face {face_id:?} is bounded by a {} edge, whose clearance this check does not certify",
+                                        edge_curve_tag(boundary.curve())
+                                    ),
+                                },
+                            ));
+                        }
+                        EdgeCurve::Line | EdgeCurve::NurbsCurve(_) => continue,
                     };
-                    for i in 0..CURVE_CHORDS {
-                        let (start, end) = (at(f64::from(i)), at(f64::from(i + 1)));
-                        let shift = at(f64::from(i) + 0.5) - (start + (end - start) * 0.5);
-                        segments.push((start, end));
-                        segments.push((start + shift, end + shift));
-                    }
+                    let reach = 1.0 / (std::f64::consts::PI / f64::from(CURVE_CHORDS)).cos();
+                    let corner = |k: u32| {
+                        let angle = std::f64::consts::TAU * f64::from(k) / f64::from(CURVE_CHORDS);
+                        center + (a_axis * angle.cos() + b_axis * angle.sin()) * reach
+                    };
+                    segments.extend((0..CURVE_CHORDS).map(|k| (corner(k), corner(k + 1))));
                 }
             }
 

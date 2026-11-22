@@ -641,3 +641,88 @@ fn an_s_curve_overrun_between_stations_is_refused() {
         "{requested_radius} against {available_radius}"
     );
 }
+
+/// A narrow S-curve spike beside a bore's nearest point must meet the bore.
+/// A 60 × 60 × 20 block with a radius-10 through bore at (20, 20): the bore's
+/// leftmost point stands 20 off the front-bottom edge at x = 10. A spike to
+/// 21 between x = 10.0002 and 10.0006 runs into the bore wall, which is only
+/// ~19.91 off the edge there. The curved boundary is checked through a
+/// closed polygon circumscribed about the whole circle, so no ray passes
+/// between its pieces (the earlier per-chord lens left gaps there).
+#[test]
+fn an_overrun_into_a_bore_between_its_chords_is_refused() {
+    let mut topo = Topology::new();
+    let block = make_box(&mut topo, 60.0, 60.0, HEIGHT).unwrap();
+    let bore = make_cylinder(&mut topo, 10.0, 40.0).unwrap();
+    transform_solid(&mut topo, bore, &Mat4::translation(20.0, 20.0, -10.0)).unwrap();
+    let input = boolean(&mut topo, BooleanOp::Cut, block, bore).unwrap();
+    let edge = edge_where(&topo, input, |p| p.y().abs() < 1e-9 && p.z().abs() < 1e-9);
+    let (start, _) = ends(&topo, edge);
+    let at = |x: f64| x / 60.0;
+    let forward = [
+        (0.0, 1.0),
+        (at(10.0002), 1.0),
+        (at(10.0004), 21.0),
+        (at(10.0006), 1.0),
+        (1.0, 1.0),
+    ];
+    let stations: Vec<(f64, f64)> = if start.x().abs() < 1e-9 {
+        forward.to_vec()
+    } else {
+        forward.iter().rev().map(|(t, r)| (1.0 - t, *r)).collect()
+    };
+    let law = FilletRadiusLaw::Stations {
+        blend: FilletStationBlend::SCurve,
+        stations,
+    };
+    let (error, code) = refuse(&mut topo, input, &[spec(edge, law)]);
+    assert_eq!(code, "cliff-encountered", "{error}");
+    let OperationsError::Blend(BlendError::CliffEncountered {
+        requested_radius,
+        available_radius,
+        ..
+    }) = error
+    else {
+        panic!("{error:?}");
+    };
+    assert!(requested_radius > 19.9, "{requested_radius}");
+    assert!(available_radius < requested_radius, "{available_radius}");
+}
+
+/// A reentrant edge between two lips thinner than the concavity probe: the
+/// region [−0.05, 60]² less its negative-negative quadrant, extruded 60. A
+/// probe that steps over the 0.05 lips can call the edge convex. The side is
+/// read from the faces' loops, and the probe only cross-checks it, so the
+/// edge is refused, never built with its contacts behind its supports.
+#[test]
+fn a_concave_edge_between_thin_lips_is_not_taken_for_convex() {
+    let mut topo = Topology::new();
+    let wire = remus_topology::builder::make_polygon_wire(
+        &mut topo,
+        &[
+            Point3::new(0.0, -0.05, 0.0),
+            Point3::new(60.0, -0.05, 0.0),
+            Point3::new(60.0, 60.0, 0.0),
+            Point3::new(-0.05, 60.0, 0.0),
+            Point3::new(-0.05, 0.0, 0.0),
+            Point3::new(0.0, 0.0, 0.0),
+        ],
+        1e-7,
+    )
+    .unwrap();
+    let face = remus_topology::builder::make_face_from_wire(&mut topo, wire).unwrap();
+    let input = remus_operations::extrude::extrude(
+        &mut topo,
+        face,
+        remus_math::vec::Vec3::new(0.0, 0.0, 1.0),
+        60.0,
+    )
+    .unwrap();
+    let edge = edge_where(&topo, input, |p| p.x().abs() < 1e-9 && p.y().abs() < 1e-9);
+    let (error, code) = refuse(
+        &mut topo,
+        input,
+        &[spec(edge, FilletRadiusLaw::Constant(1.0))],
+    );
+    assert_eq!(code, "unsupported-variable-support", "{error}");
+}
