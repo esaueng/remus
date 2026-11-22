@@ -651,6 +651,78 @@ mod tests {
         );
     }
 
+    /// Review fixture (Sol, #1905): an annular cap whose opening has radius
+    /// 10 with a 45° inner chamfer down to radius 9, beside a fixed tab held
+    /// by a central post. The cap's own planar sweep clears the tab, but the
+    /// chamfer travels with the cap and its moved cone reaches the tab near
+    /// (9.195, 0.3, 1.6). The move must refuse and leave the input untouched.
+    #[test]
+    fn cap_chamfer_carried_by_a_translation_cannot_sweep_through_a_fixed_tab() {
+        use remus_math::vec::Point3;
+        use remus_topology::builder::{make_planar_face_from_wire, make_polygon_wire};
+        let assert_valid_and_watertight = |topo: &Topology, solid: SolidId| {
+            let report = crate::validate::validate_solid(topo, solid).unwrap();
+            assert!(report.is_valid(), "{:?}", report.issues);
+            let mesh =
+                crate::tessellate::tessellate_solid_with_tolerance(topo, solid, 0.01, 0.2).unwrap();
+            assert!(crate::tessellate::is_watertight(&mesh));
+        };
+        let mut topo = Topology::new();
+        let section = [
+            (0., -5.),
+            (20., -5.),
+            (20., 0.),
+            (10., 0.),
+            (9., -1.),
+            (9., -3.),
+            (4., -3.),
+            (4., 3.),
+            (0., 3.),
+        ]
+        .map(|(r, z)| Point3::new(r, 0., z));
+        let wire = make_polygon_wire(&mut topo, &section, 1e-7).unwrap();
+        let profile = make_planar_face_from_wire(&mut topo, wire).unwrap();
+        let ring = crate::revolve::revolve(
+            &mut topo,
+            profile,
+            Point3::new(0., 0., 0.),
+            UP,
+            std::f64::consts::TAU,
+        )
+        .unwrap();
+        let tab = make_box(&mut topo, 6.0, 0.6, 0.6).unwrap();
+        transform_solid(&mut topo, tab, &Mat4::translation(3.5, -0.3, 1.35)).unwrap();
+        let body = boolean(&mut topo, BooleanOp::Fuse, ring, tab).unwrap();
+        assert_valid_and_watertight(&topo, body);
+        let cap = planar_face(&topo, body, 0.);
+        assert!(
+            solid_faces(&topo, body)
+                .unwrap()
+                .iter()
+                .any(|&f| matches!(topo.face(f).unwrap().surface(), FaceSurface::Cone(_))),
+            "the opening keeps its chamfer"
+        );
+        let before = crate::measure::solid_volume(&topo, body, 0.01).unwrap();
+        let faces_before = solid_faces(&topo, body).unwrap();
+        let err = crate::push_pull::move_faces(&mut topo, body, &[cap], 2.4).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("swept face reaches nonadjacent face"),
+            "{err}"
+        );
+        assert_eq!(solid_faces(&topo, body).unwrap(), faces_before);
+        let after = crate::measure::solid_volume(&topo, body, 0.01).unwrap();
+        assert_eq!(before.to_bits(), after.to_bits());
+        assert_valid_and_watertight(&topo, body);
+        // Moves the tab does not obstruct still succeed: down, and up short
+        // of it (the chamfer's foot reaches z = 1.35 only past +2.35).
+        for distance in [-1.0, 1.0] {
+            let mut scratch = topo.clone();
+            let moved = crate::push_pull::move_faces(&mut scratch, body, &[cap], distance).unwrap();
+            assert_valid_and_watertight(&scratch, moved);
+        }
+    }
+
     #[test]
     fn cone_radius_uses_the_angle_from_the_radial_plane() {
         let mut topo = Topology::new();

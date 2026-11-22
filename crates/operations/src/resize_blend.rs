@@ -2815,6 +2815,13 @@ pub(crate) fn analyze_translation(
         &swept_faces,
         &excluded_candidates,
         direction,
+    )?
+    // The blend faces, chamfers and supports translating with the sweep
+    // reach material its planar footprint proof never looked at (a cap
+    // chamfer running into the opening the cap surrounds).
+    .with_rigid_companions(
+        topo,
+        moved_faces.difference(&swept_faces).copied().collect(),
     )?;
     let entities = translated_entities(topo, solid, &adjacency, moved_faces, direction)?;
     let mesh_clearances = match &entities {
