@@ -794,17 +794,20 @@ pub fn assert_idempotent(what: &str, once: &Census, twice: &Census, v_once: f64,
 /// **An operation given N items processes all N, or fails saying which it did not.**
 ///
 /// Catches #44, where the binding returned a silent subset of the requested
-/// blend — indistinguishable from success at the call site.
+/// blend — indistinguishable from success at the call site. `accounted` is
+/// the items the result reports as done plus those it names as skipped for
+/// having no work in them (a blend's seam or tangent edge, B290): a named
+/// skip is not silent.
 ///
 /// # Panics
 ///
 /// Panics on a silent partial success.
-pub fn assert_complete(what: &str, requested: usize, succeeded: usize, is_partial: bool) {
+pub fn assert_complete(what: &str, requested: usize, accounted: usize, is_partial: bool) {
     assert!(
-        !is_partial && succeeded >= requested,
-        "{what}: asked for {requested} item(s), reported {succeeded} succeeded \
-         (is_partial = {is_partial}) and still returned Ok. A partial result must be \
-         a typed error naming what it skipped, never a success.",
+        !is_partial && accounted >= requested,
+        "{what}: asked for {requested} item(s), accounted for {accounted} as succeeded \
+         or skipped (is_partial = {is_partial}) and still returned Ok. A partial result \
+         must be a typed error naming what it skipped, never a success.",
     );
 }
 

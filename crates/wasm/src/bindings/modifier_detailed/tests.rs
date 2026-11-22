@@ -839,14 +839,15 @@ fn walking_variant_exact_only_refuses_the_saddle_wall_with_rollback() {
     );
 }
 
-/// A constant-law variable fillet runs the variable engine, whose wall is a
-/// NURBS fit even where `filletDetailed` builds an exact cylinder.
+/// A constant-law variable fillet runs the variable engine. Its wall is a
+/// NURBS net, recorded as the exact rolling ball it is
+/// (`ExactForm::VariableRollingBall`).
 fn variable_spec(edge: u32) -> Value {
     json!({"edge": edge, "law": "constant", "start": 1.0, "end": 1.0})
 }
 
 #[test]
-fn variable_fillet_discloses_its_nurbs_wall_and_exact_only_refuses_it() {
+fn variable_fillet_reports_its_exact_wall_and_exact_only_accepts_it() {
     let (mut kernel, solid, edge, _) = box_kernel();
     let solid_id = kernel.resolve_solid(solid).unwrap();
     let input_faces: HashSet<FaceId> =
@@ -854,68 +855,55 @@ fn variable_fillet_discloses_its_nurbs_wall_and_exact_only_refuses_it() {
             .unwrap()
             .into_iter()
             .collect();
-    let before = live_counts(&kernel);
-    let before_volume = volume(&kernel, solid);
 
-    let refused =
+    let exact_only =
         envelope(kernel.fillet_variable_detailed_impl(solid, &[variable_spec(edge)], true));
-    assert_eq!(refused["status"], "error", "{refused}");
-    assert_eq!(refused["code"], "exact_only_unattainable");
-    assert_eq!(refused["category"], "quality_refused");
-    assert_eq!(refused["details"]["operation"], "filletVariable");
+    assert_eq!(exact_only["status"], "ok", "{exact_only}");
+    assert_eq!(exact_only["details"]["quality"], "exact", "{exact_only}");
     assert!(
-        refused["details"].get("engine").is_none(),
-        "no engine tag: {refused}"
+        exact_only["details"]["approximateFaces"]
+            .as_array()
+            .is_none_or(Vec::is_empty),
+        "{exact_only}"
     );
-    assert_eq!(
-        live_counts(&kernel),
-        before,
-        "exact-only refusal must roll back"
-    );
-    assert!((volume(&kernel, solid) - before_volume).abs() < 1e-12);
-
-    let disclosed =
-        envelope(kernel.fillet_variable_detailed_impl(solid, &[variable_spec(edge)], false));
-    assert_eq!(disclosed["status"], "ok", "{disclosed}");
-    assert_eq!(disclosed["details"]["quality"], "approximate");
-    assert!(disclosed["details"].get("engine").is_none());
-    let result = kernel.resolve_solid(handle(&disclosed["value"])).unwrap();
-    let approximate: HashSet<u32> = disclosed["details"]["approximateFaces"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(handle)
-        .collect();
-    let new_nurbs: HashSet<u32> = remus_topology::explorer::solid_faces(kernel.topo(), result)
+    assert!(exact_only["details"].get("engine").is_none());
+    let result = kernel.resolve_solid(handle(&exact_only["value"])).unwrap();
+    let walls: Vec<_> = remus_topology::explorer::solid_faces(kernel.topo(), result)
         .unwrap()
         .into_iter()
-        .filter(|face| {
-            !input_faces.contains(face)
-                && matches!(
-                    kernel.topo().face(*face).unwrap().surface(),
-                    FaceSurface::Nurbs(_)
-                )
+        .filter(|face| !input_faces.contains(face))
+        .filter_map(|face| match kernel.topo().face(face).unwrap().surface() {
+            FaceSurface::Nurbs(surface) => Some(surface.exact_form()),
+            _ => None,
         })
-        .map(face_id_to_u32)
         .collect();
-    assert!(!approximate.is_empty());
-    assert_eq!(approximate, new_nurbs);
-    // The fit stays close to the exact rounded box it approximates.
+    assert_eq!(
+        walls,
+        vec![Some(
+            remus_math::nurbs::surface::ExactForm::VariableRollingBall
+        )]
+    );
+    // The rounded box's closed form: a 10-long edge loses (1 − π/4)·r².
     let exact = (1.0 - std::f64::consts::FRAC_PI_4).mul_add(-10.0, 1000.0);
-    assert!((volume(&kernel, handle(&disclosed["value"])) - exact).abs() < 0.05);
+    assert!((volume(&kernel, handle(&exact_only["value"])) - exact).abs() < 1e-6);
 
-    // Same body behind the batch op, and the same solid as legacy
+    // The same body behind the batch op, and the same solid as legacy
     // `filletVariable` when replayed on identical kernels.
+    let (mut disclosed_kernel, ..) = box_kernel();
+    let disclosed = envelope(disclosed_kernel.fillet_variable_detailed_impl(
+        solid,
+        &[variable_spec(edge)],
+        false,
+    ));
+    assert_eq!(disclosed["details"]["quality"], "exact", "{disclosed}");
     let (mut batch_kernel, ..) = box_kernel();
     let batch = batch_v2(
         &mut batch_kernel,
         &json!([
             {"op": "filletVariableDetailed", "args": {"solid": solid, "specs": [variable_spec(edge)], "exactOnly": true}},
-            {"op": "filletVariableDetailed", "args": {"solid": solid, "specs": [variable_spec(edge)]}},
         ]),
     );
-    assert_eq!(batch[0]["ok"], refused);
-    assert_eq!(batch[1]["ok"], disclosed);
+    assert_eq!(batch[0]["ok"], exact_only);
 
     let (mut fresh, ..) = box_kernel();
     let fresh_result =
@@ -956,6 +944,16 @@ fn variable_fillet_spec_refusals_match_legacy_batch_v2() {
         assert_eq!(direct["status"], "error", "{label}: {direct}");
         if label == "oversized radius" {
             assert_eq!(direct["code"], "cliff-encountered", "{direct}");
+            // The measured limit travels as data beside the sentence.
+            assert_eq!(
+                direct["details"]["kernelCode"], "cliff-encountered",
+                "{direct}"
+            );
+            assert_eq!(direct["details"]["requestedRadius"], 20.0, "{direct}");
+            assert!(
+                (direct["details"]["availableRadius"].as_f64().unwrap() - 10.0).abs() < 1e-9,
+                "{direct}"
+            );
         }
         assert_eq!(counts(&kernel), before, "{label}: mutated");
         let legacy = batch_v2(
@@ -1691,4 +1689,88 @@ fn issue_1746_filleted_boss_resizes_through_its_blend_group() {
         assert_eq!(boundary_edge_count(&mesh), 0, "R{radius}");
         assert_eq!(non_manifold_edge_count(&mesh), 0, "R{radius}");
     }
+}
+
+/// B290: a cylinder's seam has no dihedral, so `chamferV2Detailed` on both
+/// rims and the seam bevels the rims and names the seam in
+/// `details.skippedEdges`; the batch twins report the same envelope, and a
+/// rims-only request carries no `skippedEdges` key.
+#[test]
+fn chamfer_v2_twin_names_the_cylinder_seam_it_skips() {
+    let mut kernel = RemusKernel::new();
+    let solid = kernel.make_cylinder_solid(6.0, 6.0).unwrap();
+    let solid_id = kernel.resolve_solid(solid).unwrap();
+    let edges = remus_topology::explorer::solid_edges(kernel.topo(), solid_id).unwrap();
+    let seam = edges
+        .iter()
+        .copied()
+        .find(|&e| matches!(kernel.topo().edge(e).unwrap().curve(), EdgeCurve::Line))
+        .unwrap();
+    let all: Vec<u32> = edges.iter().copied().map(edge_id_to_u32).collect();
+    let rims: Vec<u32> = edges
+        .iter()
+        .copied()
+        .filter(|&e| e != seam)
+        .map(edge_id_to_u32)
+        .collect();
+
+    let direct = envelope(kernel.chamfer_v2_detailed_impl(solid, &all, 0.05, 0.05, true));
+    assert_eq!(direct["status"], "ok", "{direct}");
+    assert_eq!(direct["details"]["quality"], "exact", "{direct}");
+    assert_eq!(
+        direct["details"]["skippedEdges"],
+        json!([{"edge": edge_id_to_u32(seam), "reason": "seam"}]),
+        "{direct}"
+    );
+    let (r, h, d) = (6.0_f64, 6.0_f64, 0.05_f64);
+    let expected = std::f64::consts::PI * r.mul_add(r * h, -2.0 * d * d * (r - d / 3.0));
+    let got = volume(&kernel, handle(&direct["value"]));
+    assert!(
+        (got - expected).abs() < 1e-9 * expected,
+        "{got} vs {expected}"
+    );
+
+    let ops = json!([
+        {"op": "makeCylinder", "args": {"radius": 6, "height": 6}},
+        {"op": "chamferV2Detailed",
+         "args": {"solid": solid, "edges": all, "d1": 0.05, "d2": 0.05, "exactOnly": true}},
+    ]);
+    assert_eq!(batch_v2(&mut RemusKernel::new(), &ops)[1]["ok"], direct);
+    assert_eq!(batch_legacy(&mut RemusKernel::new(), &ops)[1]["ok"], direct);
+
+    let mut kernel = RemusKernel::new();
+    let solid = kernel.make_cylinder_solid(6.0, 6.0).unwrap();
+    let rims_only = envelope(kernel.chamfer_v2_detailed_impl(solid, &rims, 0.05, 0.05, true));
+    assert_eq!(rims_only["status"], "ok", "{rims_only}");
+    assert!(
+        rims_only["details"].get("skippedEdges").is_none(),
+        "{rims_only}"
+    );
+
+    // The distance-angle twin goes through the same selection: 0.05 at 45°
+    // is the same chamfer, and it names the same seam on every route.
+    let angle = std::f64::consts::FRAC_PI_4;
+    let mut kernel = RemusKernel::new();
+    let solid = kernel.make_cylinder_solid(6.0, 6.0).unwrap();
+    let direct =
+        envelope(kernel.chamfer_distance_angle_detailed_impl(solid, &all, 0.05, angle, true));
+    assert_eq!(direct["status"], "ok", "{direct}");
+    assert_eq!(
+        direct["details"]["skippedEdges"],
+        json!([{"edge": edge_id_to_u32(seam), "reason": "seam"}]),
+        "{direct}"
+    );
+    let got = volume(&kernel, handle(&direct["value"]));
+    assert!(
+        (got - expected).abs() < 1e-9 * expected,
+        "{got} vs {expected}"
+    );
+    let ops = json!([
+        {"op": "makeCylinder", "args": {"radius": 6, "height": 6}},
+        {"op": "chamferDistanceAngleDetailed",
+         "args": {"solid": solid, "edges": all, "distance": 0.05, "angle": angle,
+                  "exactOnly": true}},
+    ]);
+    assert_eq!(batch_v2(&mut RemusKernel::new(), &ops)[1]["ok"], direct);
+    assert_eq!(batch_legacy(&mut RemusKernel::new(), &ops)[1]["ok"], direct);
 }

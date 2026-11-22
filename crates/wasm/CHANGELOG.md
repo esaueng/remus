@@ -7,6 +7,20 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
 
 ### Added
 
+* `filletVariable` (and its detailed and batch forms) accepts
+  `"ballCorners": true` on any spec: every corner where three or more
+  selected edges meet is closed with the exact ball tangent to their planar
+  faces, each edge set back to it. Give no `startSetback`/`endSetback` with
+  it. A non-boolean value throws `invalid input`.
+* A blend refused for overflowing its support face
+  (`details.kernelCode = "cliff-encountered"`) now also carries
+  `details.requestedRadius` and `details.availableRadius`, the radius asked
+  for and the width the face has there, so a caller can offer the limit
+  without reading the message.
+* `filletVariableDetailed` reports the variable band as exact
+  (`quality: "exact"`, no `approximateFaces`) and `exactOnly: true` accepts
+  it; it reported `"approximate"` and refused under `exactOnly` before.
+
 * `filletVariable` (and `filletVariableDetailed`, which shares its parser)
   accepts optional interior control radii:
   `"stations": [{"at": t, "radius": r}]`, `t` strictly inside `(0, 1)` along
@@ -18,12 +32,21 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
 
 ### Changed
 
+* `chamferV2Detailed` and `chamferDistanceAngleDetailed` (direct, and the
+  `executeBatch` / `executeBatchV2` ops of the same names) report the
+  requested edges they left out because they have no dihedral to bevel (a
+  closed face's seam, a tangent or flat join) as `details.skippedEdges:
+  [{ edge, reason }]`, `reason` being `"seam"` or `"tangent"` (B290). The
+  key is absent when nothing was skipped, so results that skipped nothing
+  are unchanged. **Contract change (additive):** a chamfer over a
+  cylinder's rims and its seam now carries `skippedEdges` naming the seam;
+  before, the seam vanished from the result without a trace. The returned
+  solid is the same.
 * `filletVariable` refuses a selected edge with a curved spine or a
   non-planar support with `unsupported-variable-support: …` before building,
   and two or more selected edges meeting at a corner without qualified
   setbacks with `unsupported-vertex-blend: …`. Both used to throw
   `postcondition-failed: fillet postcondition validation failed with …`.
-
 * `chamferV2`, `chamferDetailed` and the other bindings over `chamfer_v2`:
   a selection that does not build but ends inside a longer tangent chain
   whose chamfer builds is refused with `details.kernelCode =

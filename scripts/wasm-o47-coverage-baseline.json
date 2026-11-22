@@ -827,7 +827,7 @@
         "filletVariableDetailed"
       ],
       "witnesses": [
-        "variable_fillet_discloses_its_nurbs_wall_and_exact_only_refuses_it",
+        "variable_fillet_reports_its_exact_wall_and_exact_only_accepts_it",
         "variable_fillet_spec_refusals_match_legacy_batch_v2",
         "poisoned_kernel_refuses_every_twin_as_data"
       ],

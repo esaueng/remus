@@ -21,7 +21,9 @@ use remus_operations::sweep::sweep;
 use remus_operations::transform::transform_solid;
 use remus_topology::edge::EdgeCurve;
 
-use super::operations::{parse_variable_fillet_specs, validate_move_faces_topology_work};
+use super::operations::{
+    parse_variable_fillet_specs, validate_move_faces_topology_work, variable_fillet_corners,
+};
 use crate::error::{StructuredWasmError, WasmError, validate_work_count, validate_work_product};
 use crate::handles::{
     compound_id_to_u32, edge_id_to_u32, face_id_to_u32, shell_id_to_u32, solid_id_to_u32,
@@ -2346,10 +2348,12 @@ impl RemusKernel {
                     .ok_or_else(|| "missing 'specs' array".to_string())?;
                 let edge_specs =
                     parse_variable_fillet_specs(self, specs).map_err(StructuredWasmError::from)?;
-                let result = remus_operations::fillet::fillet_variable_with_setbacks(
+                let corners = variable_fillet_corners(specs).map_err(StructuredWasmError::from)?;
+                let result = remus_operations::fillet::fillet_variable_with_corners(
                     self.topo_mut(),
                     solid_id,
                     &edge_specs,
+                    corners,
                 )
                 .map_err(StructuredWasmError::blend_failure)?;
                 Ok(serde_json::json!(solid_id_to_u32(result)))

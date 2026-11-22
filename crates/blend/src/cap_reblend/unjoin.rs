@@ -230,6 +230,7 @@ fn restore(
             succeeded: vec![],
             failed: vec![],
             is_partial: false,
+            skipped: Vec::new(),
             engine: BlendEngine::Walking,
             face_origins: Some(BlendFaceOrigins {
                 survived: kept.into_iter().zip(current).collect(),

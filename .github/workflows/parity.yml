@@ -87,13 +87,13 @@ jobs:
       - uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+      - uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2.90.4
         if: matrix.os != 'windows-11-arm'
         with:
           tool: wasm-pack@0.15.0
       # These two Windows build helpers are x64-emulated; the compiler, Cargo,
       # Node process and both executed Remus geometry programs must be ARM64.
-      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+      - uses: taiki-e/install-action@4a76afe23f9e08d2d9550fb56e556444e8611d21 # v2.90.4
         if: matrix.os == 'windows-11-arm'
         with:
           tool: wasm-pack@0.15.0,wasm-bindgen@0.2.126

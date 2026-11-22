@@ -597,6 +597,7 @@ pub fn chamfer(
         succeeded: edges.to_vec(),
         failed: Vec::new(),
         is_partial: false,
+        skipped: Vec::new(),
         face_origins: Some(BlendFaceOrigins {
             survived: original_faces
                 .iter()

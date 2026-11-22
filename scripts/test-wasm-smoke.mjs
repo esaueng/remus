@@ -1320,28 +1320,33 @@ for (const operation of ['fillet', 'chamfer']) {
     },
   );
 
-  // The variable engine's constant-law wall is a NURBS fit: disclosed, and
-  // refused under exactOnly with the model untouched.
+  // The variable engine's wall on a box edge is its exact rolling ball (a
+  // straight spine between two planes): reported exact, accepted under
+  // exactOnly, and the same through the batch op.
   {
     const k = new RemusKernel();
     const box = k.makeBox(10, 10, 10);
     const edge = k.getSolidEdges(box)[0];
     const spec = [{ edge, law: 'constant', start: 1, end: 1 }];
     const before = k.volume(box, DEFLECTION);
-    const refused = k.filletVariableDetailed(box, JSON.stringify(spec), true);
-    assert.equal(refused.status, 'error');
-    assert.equal(refused.code, 'exact_only_unattainable');
-    assert.equal(refused.category, 'quality_refused');
+    const exactOnly = k.filletVariableDetailed(box, JSON.stringify(spec), true);
+    assert.equal(exactOnly.status, 'ok', JSON.stringify(exactOnly));
+    assert.equal(exactOnly.details.quality, 'exact');
+    assert.equal(exactOnly.details.engine, undefined);
+    assert.ok(!exactOnly.details.approximateFaces?.length, JSON.stringify(exactOnly.details));
+    const exact = 1000 - (1 - Math.PI / 4) * 10;
+    assert.ok(Math.abs(JSON.parse(k.massProperties(exactOnly.value)).volume - exact) < 1e-6);
     assert.ok(Math.abs(k.volume(box, DEFLECTION) - before) < 1e-9);
     const malformed = k.filletVariableDetailed(box, '{not json', false);
     assert.equal(malformed.status, 'error');
     assert.equal(malformed.code, 'invalid_argument');
     assert.equal(malformed.details.operation, 'filletVariable');
-    const disclosed = k.filletVariableDetailed(box, JSON.stringify(spec));
+
+    const disclosedKernel = new RemusKernel();
+    const disclosedBox = disclosedKernel.makeBox(10, 10, 10);
+    const disclosed = disclosedKernel.filletVariableDetailed(disclosedBox, JSON.stringify(spec));
     assert.equal(disclosed.status, 'ok', JSON.stringify(disclosed));
-    assert.equal(disclosed.details.quality, 'approximate');
-    assert.equal(disclosed.details.engine, undefined);
-    assert.ok(disclosed.details.approximateFaces.length > 0);
+    assert.equal(disclosed.details.quality, 'exact');
 
     const batchKernel = new RemusKernel();
     const batch = JSON.parse(
@@ -1349,13 +1354,11 @@ for (const operation of ['fillet', 'chamfer']) {
         JSON.stringify([
           { op: 'makeBox', args: { width: 10, height: 10, depth: 10 } },
           { op: 'filletVariableDetailed', args: { solid: box, specs: spec, exactOnly: true } },
-          { op: 'filletVariableDetailed', args: { solid: box, specs: spec } },
         ]),
       ),
     );
-    assert.deepEqual(batch[1].ok, refused);
-    assert.deepEqual(batch[2].ok, disclosed);
-    console.log('ok - filletVariableDetailed: disclosed NURBS wall, exact-only refusal, batch parity');
+    assert.deepEqual(batch[1].ok, exactOnly);
+    console.log('ok - filletVariableDetailed: exact rolling-ball wall, exact-only acceptance, batch parity');
   }
 
   // Refusals are data with the kernel code, and leave the model untouched.

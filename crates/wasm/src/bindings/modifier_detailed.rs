@@ -50,11 +50,11 @@ use remus_operations::OperationsError;
 use remus_operations::blend_ops::BlendResult;
 use remus_topology::edge::EdgeId;
 
-use super::operations::parse_variable_fillet_specs;
+use super::operations::{parse_variable_fillet_specs, variable_fillet_corners};
 use crate::error::{
     StructuredWasmError, WasmError, validate_finite, validate_positive, validate_work_count,
 };
-use crate::handles::{face_id_to_u32, solid_id_to_u32};
+use crate::handles::{edge_id_to_u32, face_id_to_u32, solid_id_to_u32};
 use crate::helpers::panic_message;
 use crate::kernel::RemusKernel;
 use crate::types::SolidOperationDetailedResult;
@@ -279,7 +279,10 @@ impl RemusKernel {
     ///
     /// Additive twin of [`chamferV2`](Self::chamfer_v2), unchanged. Quality,
     /// `details.engine` and `exactOnly` follow
-    /// [`filletDetailed`](Self::fillet_detailed).
+    /// [`filletDetailed`](Self::fillet_detailed). A requested edge with no
+    /// dihedral to bevel (a closed face's seam, a tangent join) is left out
+    /// and listed in `details.skippedEdges` as `{ edge, reason }`, `reason`
+    /// being `"seam"` or `"tangent"`; the key is absent when none was.
     #[wasm_bindgen(js_name = "chamferV2Detailed")]
     #[allow(clippy::needless_pass_by_value)]
     pub fn chamfer_v2_detailed(
@@ -300,7 +303,8 @@ impl RemusKernel {
     /// Additive twin of [`chamferDistanceAngle`](Self::chamfer_distance_angle),
     /// unchanged; `angle` is in radians, inside `(0, π/2)`. Quality,
     /// `details.engine` and `exactOnly` follow
-    /// [`filletDetailed`](Self::fillet_detailed).
+    /// [`filletDetailed`](Self::fillet_detailed), and skipped edges
+    /// [`chamferV2Detailed`](Self::chamfer_v2_detailed).
     #[wasm_bindgen(js_name = "chamferDistanceAngleDetailed")]
     #[allow(clippy::needless_pass_by_value)]
     pub fn chamfer_distance_angle_detailed(
@@ -693,11 +697,13 @@ impl RemusKernel {
         self.run_modifier_detailed("filletVariable", "Variable fillet", |kernel| {
             let solid_id = kernel.resolve_solid(solid)?;
             let edge_specs = parse_variable_fillet_specs(kernel, specs)?;
+            let corners = variable_fillet_corners(specs)?;
             let input_faces = face_set(kernel.topo(), solid_id)?;
-            let result = remus_operations::fillet::fillet_variable_with_setbacks(
+            let result = remus_operations::fillet::fillet_variable_with_corners(
                 kernel.topo_mut(),
                 solid_id,
                 &edge_specs,
+                corners,
             )
             .map_err(StructuredWasmError::blend_failure)?;
             blend_outcome(
@@ -839,14 +845,32 @@ impl RemusKernel {
             let input_faces = face_set(kernel.topo(), solid_id)?;
             let result = engine(kernel.topo_mut(), solid_id, &edge_ids)
                 .map_err(StructuredWasmError::blend_failure)?;
-            blend_outcome(
+            let (handle, mut details) = blend_outcome(
                 kernel.topo(),
                 operation,
                 &input_faces,
                 result.solid,
                 Some(result.engine),
                 exact_only,
-            )
+            )?;
+            // Requested edges with no dihedral (a closed face's seam, a
+            // tangent join) are left out of the blend; name them so the
+            // caller can account for every edge it asked for. Absent when
+            // nothing was skipped.
+            if !result.skipped.is_empty() {
+                let skipped = result
+                    .skipped
+                    .iter()
+                    .map(|&(edge, reason)| {
+                        serde_json::json!({
+                            "edge": edge_id_to_u32(edge),
+                            "reason": reason.as_str(),
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                details.insert("skippedEdges".into(), Value::from(skipped));
+            }
+            Ok((handle, details))
         })
     }
 

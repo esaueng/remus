@@ -7,6 +7,22 @@ historical predecessor-line records, retained for provenance. The
 ## Unreleased
 
 ### Variable-radius fillets: station laws and an exactness gate
+* **operations,wasm:** tangent-ball setback corners. `fillet_variable_with_corners`
+  with `VariableCorners::TangentBall` (`"ballCorners": true` on any
+  `filletVariable` spec) closes every undeclared corner of three or more
+  selected stripes with the one ball tangent to their planar supports: each
+  stripe is set back to that ball's station and the corner is its exact
+  spherical cap. The qualification is the declared-setback one: radii that
+  disagree at the corner or a law with a slope there refuse as
+  `unsupported-setback-corner`, and declaring a setback beside tangent-ball
+  corners is `InvalidInput`.
+* **math,operations,wasm:** the variable-radius fillet's band records
+  `ExactForm::VariableRollingBall`. Every band the engine builds is the
+  exact rolling ball (straight convex spine, planar supports, tangent-ball
+  sections, the law as its rows), so `filletVariableDetailed` now reports
+  `quality: "exact"` with no `approximateFaces`, and `exactOnly: true`
+  accepts it. **Contract change:** it reported `"approximate"` and
+  `exactOnly` refused it.
 
 * **blend,operations:** `StandardRadiusLaw::Stations { blend, stations }`
   (`FilletRadiusLaw`, with `FilletStationBlend::{Linear, SCurve}`) runs a
@@ -56,6 +72,21 @@ historical predecessor-line records, retained for provenance. The
   Two stripes continuing one straight line are not refused here.
 
 ### ⚠ BREAKING CHANGES
+
+* **blend,operations,wasm:** a blend result now names the requested edges
+  it left out for having no dihedral (B290). `chamfer_v2` drops a closed
+  face's seam and any tangent or flat join from its selection, as it did
+  before, but it used to drop them silently: an r6 h6 cylinder asked for
+  both rims and its seam came back `Ok` with two edges succeeded, none
+  failed and not partial. `BlendResult` gains `skipped: Vec<(EdgeId,
+  BlendSkip)>` (`BlendSkip::Seam` or `BlendSkip::Tangent`), filled by
+  `chamfer_v2` and every entry point over it and by the normalized fillet
+  entry points (`Model::fillet`, `fillet_journaled`); a skip does not make
+  the result partial. `query::normalize_fillet_selection_with_skips` and
+  `normalize_chamfer_selection_with_skips` return the dropped edges with
+  their reasons. **Migration:** code that builds a `BlendResult` with a
+  struct literal must add `skipped: Vec::new()`. The geometry of every
+  result is unchanged.
 
 * **operations,wasm:** a fillet or chamfer whose result fails its own
   validation postcondition on a valid input now refuses with the new

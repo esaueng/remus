@@ -255,7 +255,7 @@ test('workflow stays isolated, native ARM, pinned, bounded and read-only', () =>
     (s) => s.replace('persist-credentials: false', 'persist-credentials: true'),
     (s) => s.replace(',wasm-bindgen@0.2.126', ''), (s) => s.replace('wasm-bindgen@0.2.126', 'wasm-bindgen@0.2.100'),
     (s) => s.replace('checksum: true', 'checksum: false'), (s) => s.replace('fallback: none', 'fallback: cargo-install'),
-    (s) => s.replace('cfdb7ed4ccc7c7dce37759eae89dc5674b469b39', '0'.repeat(40)),
-    (s) => s.replace('cfdb7ed4ccc7c7dce37759eae89dc5674b469b39', 'c509219cf42fba86913069efd0ade2458c59337b'),
+    (s) => s.replace('4a76afe23f9e08d2d9550fb56e556444e8611d21', '0'.repeat(40)),
+    (s) => s.replace('4a76afe23f9e08d2d9550fb56e556444e8611d21', 'cfdb7ed4ccc7c7dce37759eae89dc5674b469b39'),
   ]) assert.throws(() => validateWorkflowPolicy(mutate(text)));
 });

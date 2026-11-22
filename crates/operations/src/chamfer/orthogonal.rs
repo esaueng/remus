@@ -294,6 +294,7 @@ pub(super) fn build(
         succeeded: seeds.to_vec(),
         failed: vec![],
         is_partial: false,
+        skipped: Vec::new(),
         face_origins: Some(origins),
         engine: BlendEngine::AnalyticCut,
     }))
