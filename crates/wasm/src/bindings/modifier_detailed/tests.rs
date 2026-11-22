@@ -944,6 +944,16 @@ fn variable_fillet_spec_refusals_match_legacy_batch_v2() {
         assert_eq!(direct["status"], "error", "{label}: {direct}");
         if label == "oversized radius" {
             assert_eq!(direct["code"], "cliff-encountered", "{direct}");
+            // The measured limit travels as data beside the sentence.
+            assert_eq!(
+                direct["details"]["kernelCode"], "cliff-encountered",
+                "{direct}"
+            );
+            assert_eq!(direct["details"]["requestedRadius"], 20.0, "{direct}");
+            assert!(
+                (direct["details"]["availableRadius"].as_f64().unwrap() - 10.0).abs() < 1e-9,
+                "{direct}"
+            );
         }
         assert_eq!(counts(&kernel), before, "{label}: mutated");
         let legacy = batch_v2(

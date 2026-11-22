@@ -222,6 +222,18 @@ impl StructuredWasmError {
             } else {
                 None
             };
+        let overflow = if let remus_operations::OperationsError::Blend(
+            remus_operations::blend_ops::BlendError::CliffEncountered {
+                requested_radius,
+                available_radius,
+                ..
+            },
+        ) = &error
+        {
+            Some((*requested_radius, *available_radius))
+        } else {
+            None
+        };
         let boundary_unproved = code == "unsupported-variable-boundary";
         let unsupported = code == "unsupported-face-face-blend" || boundary_unproved;
         let mut structured = if boundary_unproved {
@@ -241,6 +253,16 @@ impl StructuredWasmError {
             structured
                 .details
                 .insert("chainEdges".to_string(), Value::from(chain));
+        }
+        if let Some((requested, available)) = overflow {
+            // An overflow's measured limit, as data: the radius asked for and
+            // the width the support face has where the band would leave it.
+            structured
+                .details
+                .insert("requestedRadius".to_string(), Value::from(requested));
+            structured
+                .details
+                .insert("availableRadius".to_string(), Value::from(available));
         }
         structured
     }
