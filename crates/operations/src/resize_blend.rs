@@ -2808,7 +2808,8 @@ pub(crate) fn analyze_translation(
         |face| invariant_carriers.contains(&face),
         direction,
     )?;
-    let excluded_candidates = moved_faces.union(&invariant_carriers).copied().collect();
+    let excluded_candidates: HashSet<FaceId> =
+        moved_faces.union(&invariant_carriers).copied().collect();
     let swept = crate::push_pull::SweptRegionCheck::prepare(
         topo,
         solid,
@@ -2821,7 +2822,17 @@ pub(crate) fn analyze_translation(
     // chamfer running into the opening the cap surrounds).
     .with_rigid_companions(
         topo,
+        solid,
         moved_faces.difference(&swept_faces).copied().collect(),
+        &excluded_candidates,
+        // A moving blend and a fixed rim on one cylindrical support are
+        // bounded by their exact axial travel limit instead.
+        &|moving, fixed| {
+            axial
+                .limits
+                .iter()
+                .any(|limit| limit.moving() == moving && limit.fixed() == fixed)
+        },
     )?;
     let entities = translated_entities(topo, solid, &adjacency, moved_faces, direction)?;
     let mesh_clearances = match &entities {

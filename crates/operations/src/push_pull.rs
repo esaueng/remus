@@ -9,6 +9,7 @@
 //! seams the boolean leaves behind, and refuse to return a result whose shell
 //! is not closed.
 
+mod companion_sweep;
 mod radial_clearance;
 pub(crate) mod sphere_rim_resize;
 use radial_clearance::coaxial_sweep_is_radially_disjoint;
@@ -722,8 +723,9 @@ pub(crate) struct SweptRegionCheck {
     /// themselves (blend bands, chamfers and supports a blend translation
     /// carries), each with its box and whether it is planar. A footprint
     /// proof on a swept face clears an obstacle only when every companion is
-    /// clear of it too.
-    companions: Vec<(FaceId, Aabb3, bool)>,
+    /// clear of it too, and every companion must clear every face it may
+    /// reach on its own ([`companion_sweep::Companion::blocking`]).
+    companions: Vec<companion_sweep::Companion>,
 }
 
 /// A swept face, its box, and every candidate face it may reach with that
@@ -822,22 +824,43 @@ impl SweptRegionCheck {
     }
 
     /// Records the faces that translate rigidly with the swept ones, for
-    /// [`Self::check_rigid_translation`].
+    /// [`Self::check_rigid_translation`], with every face of `solid` each may
+    /// reach: all but the swept faces, the companions, the `excluded` faces
+    /// (which stretch with the move), its own neighbours, and the fixed faces
+    /// `bounded` pairs with it (a fixed rim on a shared support whose exact
+    /// axial travel limit the caller enforces).
     pub(crate) fn with_rigid_companions(
         mut self,
         topo: &Topology,
+        solid: SolidId,
         mut faces: Vec<FaceId>,
+        excluded: &std::collections::HashSet<FaceId>,
+        bounded: &dyn Fn(FaceId, FaceId) -> bool,
     ) -> Result<Self, crate::OperationsError> {
         faces.compact_sort_by_key(|face| face.index());
         faces.dedup();
+        let source_faces = solid_faces(topo, solid)?;
+        let adjacency = remus_topology::adjacency::AdjacencyIndex::build(topo, solid)?;
+        let moving: std::collections::HashSet<FaceId> = self
+            .swept
+            .iter()
+            .map(|swept| swept.face)
+            .chain(faces.iter().copied())
+            .collect();
+        let normal = self.normal;
         self.companions = faces
             .into_iter()
             .map(|face| {
-                Ok((
+                let neighbours: std::collections::HashSet<FaceId> =
+                    adjacency.neighbors_of_face(face).iter().copied().collect();
+                companion_sweep::Companion::prepare(
+                    topo,
                     face,
-                    crate::measure::face_bounding_box(topo, face)?,
-                    matches!(topo.face(face)?.surface(), FaceSurface::Plane { .. }),
-                ))
+                    &source_faces,
+                    &|candidate| moving.contains(&candidate) || excluded.contains(&candidate),
+                    &|candidate| neighbours.contains(&candidate) || bounded(face, candidate),
+                    normal,
+                )
             })
             .collect::<Result<_, crate::OperationsError>>()?;
         Ok(self)
@@ -854,13 +877,20 @@ impl SweptRegionCheck {
         bounds: Aabb3,
         delta: Vec3,
     ) -> bool {
-        self.companions.iter().all(|&(face, original, planar)| {
+        self.companions.iter().all(|companion| {
+            let original = companion.original();
             let destination = Aabb3 {
                 min: original.min + delta,
                 max: original.max + delta,
             };
             !original.union(destination).intersects(bounds)
-                || (planar && radial_clearance::outside_planar_sweep(topo, face, candidate, delta))
+                || (companion.planar()
+                    && radial_clearance::outside_planar_sweep(
+                        topo,
+                        companion.face(),
+                        candidate,
+                        delta,
+                    ))
         })
     }
 
@@ -949,6 +979,22 @@ impl SweptRegionCheck {
                     ),
                 }
                 .into());
+            }
+        }
+        if footprint == Footprint::Rigid {
+            for companion in &self.companions {
+                if let Some(candidate) = companion.blocking(delta) {
+                    return Err(remus_offset::OffsetError::TopologyChange {
+                        face: Some(companion.face()),
+                        edge: None,
+                        reason: format!(
+                            "swept face reaches nonadjacent face {} before completing the move \
+                             (it moves with the selection)",
+                            candidate.index()
+                        ),
+                    }
+                    .into());
+                }
             }
         }
         Ok(())
