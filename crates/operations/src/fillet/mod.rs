@@ -993,7 +993,11 @@ fn reject_faces_in_corner_ball(
             .ok_or_else(|| crate::OperationsError::InvalidInput {
                 reason: format!("face {face:?} has a NURBS surface with no control points"),
             })?,
-            _ => crate::measure::face_bounding_box(topo, face)?,
+            FaceSurface::Plane { .. }
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_) => crate::measure::face_bounding_box(topo, face)?,
         };
         if bounds.intersects(ball) {
             return Err(crate::OperationsError::Blend(
