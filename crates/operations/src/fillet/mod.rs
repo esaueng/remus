@@ -887,24 +887,22 @@ fn same_support_planes(
         if faces.len() != 2 {
             return None;
         }
-        let plane = |face: &remus_topology::face::FaceId| match face_surfaces.get(&face.index()) {
-            Some(FaceSurface::Plane { normal, d }) => {
-                let length = normal.length();
-                (length > 0.0).then(|| (*normal * (1.0 / length), *d / length))
-            }
-            _ => None,
+        let plane = |face: &remus_topology::face::FaceId| {
+            let Some(FaceSurface::Plane { normal, d }) = face_surfaces.get(&face.index()) else {
+                return None;
+            };
+            let length = normal.length();
+            (length > 0.0).then(|| (*normal * (1.0 / length), *d / length))
         };
         Some([plane(&faces[0])?, plane(&faces[1])?])
     };
     let same = |a: (Vec3, f64), b: (Vec3, f64)| {
         (a.0 - b.0).length() <= tol.angular && (a.1 - b.1).abs() <= tol.linear
     };
-    match (planes(first), planes(second)) {
-        (Some([a0, a1]), Some([b0, b1])) => {
-            (same(a0, b0) && same(a1, b1)) || (same(a0, b1) && same(a1, b0))
-        }
-        _ => false,
-    }
+    let (Some([a0, a1]), Some([b0, b1])) = (planes(first), planes(second)) else {
+        return false;
+    };
+    (same(a0, b0) && same(a1, b1)) || (same(a0, b1) && same(a1, b0))
 }
 
 fn edge_curve_tag(curve: &EdgeCurve) -> &'static str {
