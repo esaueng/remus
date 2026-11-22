@@ -725,6 +725,8 @@ fn a_concave_edge_between_thin_lips_is_not_taken_for_convex() {
         &[spec(edge, FilletRadiusLaw::Constant(1.0))],
     );
     assert_eq!(code, "unsupported-variable-support", "{error}");
+}
+
 /// The three edges meeting at the box's origin corner, each with its law
 /// given as (radius at the corner, radius at the far end).
 fn corner_specs(
@@ -860,4 +862,59 @@ fn tangent_ball_corners_refuse_what_no_single_ball_closes() {
         matches!(error, OperationsError::InvalidInput { .. }),
         "{error:?}"
     );
+}
+
+/// Two collinear stripes whose support turns where they meet: a square
+/// prism on x ∈ [0, 30] fused to one on x ∈ [30, 60] whose front wall leans
+/// back to 60°, so the bottom-front edge runs on in one line from a 90°
+/// dihedral to a 60° one. Their sections at the shared vertex differ, so the
+/// pair is refused, not joined across a gap.
+#[test]
+fn collinear_stripes_whose_support_turns_refuse_by_type() {
+    let mut topo = Topology::new();
+    let prism = |topo: &mut Topology, x: f64, lean: f64| {
+        let wire = remus_topology::builder::make_polygon_wire(
+            topo,
+            &[
+                Point3::new(x, 0.0, 0.0),
+                Point3::new(x, 20.0, 0.0),
+                Point3::new(x, 20.0, 20.0),
+                Point3::new(x, lean, 20.0),
+            ],
+            1e-7,
+        )
+        .unwrap();
+        let face = remus_topology::builder::make_face_from_wire(topo, wire).unwrap();
+        remus_operations::extrude::extrude(
+            topo,
+            face,
+            remus_math::vec::Vec3::new(1.0, 0.0, 0.0),
+            30.0,
+        )
+        .unwrap()
+    };
+    let square = prism(&mut topo, 0.0, 0.0);
+    let leaning = prism(&mut topo, 30.0, 20.0 / 3.0_f64.sqrt());
+    let input = boolean(&mut topo, BooleanOp::Fuse, square, leaning).unwrap();
+    let front: Vec<EdgeId> = solid_edges(&topo, input)
+        .unwrap()
+        .into_iter()
+        .filter(|&id| {
+            let (a, b) = ends(&topo, id);
+            [a, b]
+                .iter()
+                .all(|p| p.y().abs() < 1e-9 && p.z().abs() < 1e-9)
+        })
+        .collect();
+    assert_eq!(
+        front.len(),
+        2,
+        "the front-bottom line stays split at x = 30"
+    );
+    let specs: Vec<_> = front
+        .iter()
+        .map(|&edge| spec(edge, FilletRadiusLaw::Constant(1.0)))
+        .collect();
+    let (error, code) = refuse(&mut topo, input, &specs);
+    assert_eq!(code, "unsupported-vertex-blend", "{error}");
 }

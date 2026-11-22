@@ -822,6 +822,8 @@ fn reject_unset_stripe_corner(
     topo: &Topology,
     vertex_index: usize,
     incident_edges: &[EdgeId],
+    edge_to_faces: &HashMap<usize, Vec<remus_topology::face::FaceId>>,
+    face_surfaces: &HashMap<usize, FaceSurface>,
     tol: Tolerance,
 ) -> Result<(), crate::OperationsError> {
     if incident_edges.len() < 2 {
@@ -844,7 +846,20 @@ fn reject_unset_stripe_corner(
     let collinear = directions
         .iter()
         .all(|direction| direction.cross(directions[0]).length() <= tol.angular);
-    if collinear && incident_edges.len() == 2 {
+    // Two stripes continuing one line meet in one section plane, and their
+    // end sections are the same arc only when their supports are the same
+    // two planes: a support that turns there (a 90° wall going on as a 60°
+    // one) leaves sections that differ, so the pair is refused as well.
+    if collinear
+        && incident_edges.len() == 2
+        && same_support_planes(
+            incident_edges[0],
+            incident_edges[1],
+            edge_to_faces,
+            face_surfaces,
+            tol,
+        )
+    {
         return Ok(());
     }
     let Some(vertex) = vertex else {
@@ -856,6 +871,40 @@ fn reject_unset_stripe_corner(
             stripes: incident_edges.len(),
         },
     ))
+}
+
+/// Whether two stripes run between the same two planes (as oriented planes,
+/// in either order), so their sections at a shared vertex coincide.
+fn same_support_planes(
+    first: EdgeId,
+    second: EdgeId,
+    edge_to_faces: &HashMap<usize, Vec<remus_topology::face::FaceId>>,
+    face_surfaces: &HashMap<usize, FaceSurface>,
+    tol: Tolerance,
+) -> bool {
+    let planes = |edge: EdgeId| -> Option<[(Vec3, f64); 2]> {
+        let faces = edge_to_faces.get(&edge.index())?;
+        if faces.len() != 2 {
+            return None;
+        }
+        let plane = |face: &remus_topology::face::FaceId| match face_surfaces.get(&face.index()) {
+            Some(FaceSurface::Plane { normal, d }) => {
+                let length = normal.length();
+                (length > 0.0).then(|| (*normal * (1.0 / length), *d / length))
+            }
+            _ => None,
+        };
+        Some([plane(&faces[0])?, plane(&faces[1])?])
+    };
+    let same = |a: (Vec3, f64), b: (Vec3, f64)| {
+        (a.0 - b.0).length() <= tol.angular && (a.1 - b.1).abs() <= tol.linear
+    };
+    match (planes(first), planes(second)) {
+        (Some([a0, a1]), Some([b0, b1])) => {
+            (same(a0, b0) && same(a1, b1)) || (same(a0, b1) && same(a1, b0))
+        }
+        _ => false,
+    }
 }
 
 fn edge_curve_tag(curve: &EdgeCurve) -> &'static str {
@@ -1555,7 +1604,14 @@ fn fillet_variable_transacted(
             && declared_count == 0
             && incident_edges.len() >= 3;
         if declared_count == 0 && !ball {
-            reject_unset_stripe_corner(topo, vertex_index, incident_edges, tol)?;
+            reject_unset_stripe_corner(
+                topo,
+                vertex_index,
+                incident_edges,
+                &edge_to_faces,
+                &face_surfaces,
+                tol,
+            )?;
             continue;
         }
         let vertex_id = incident_edges
