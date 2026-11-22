@@ -983,9 +983,15 @@ fn collinear_stripes_whose_support_turns_refuse_by_type() {
 /// The box with a thin rectangular through-hole, x ∈ [29.99, 30.01] and
 /// y ∈ [y0, y0 + 0.05], cut through the bottom and top faces.
 fn box_with_slot(topo: &mut Topology, y0: f64) -> SolidId {
+    box_with_through_slot(topo, (29.99, y0), (0.02, 0.05))
+}
+
+/// The box with a rectangular through-slot of `size` at `corner` (x, y),
+/// cut through the bottom and top faces.
+fn box_with_through_slot(topo: &mut Topology, corner: (f64, f64), size: (f64, f64)) -> SolidId {
     let block = make_box(topo, LENGTH, DEPTH, HEIGHT).unwrap();
-    let slot = make_box(topo, 0.02, 0.05, HEIGHT + 2.0).unwrap();
-    transform_solid(topo, slot, &Mat4::translation(29.99, y0, -1.0)).unwrap();
+    let slot = make_box(topo, size.0, size.1, HEIGHT + 2.0).unwrap();
+    transform_solid(topo, slot, &Mat4::translation(corner.0, corner.1, -1.0)).unwrap();
     boolean(topo, BooleanOp::Cut, block, slot).unwrap()
 }
 
@@ -1131,4 +1137,38 @@ fn declared_setback_cliff_check_is_unchanged() {
     let specs = slot_corner_specs(&topo, input, 2.0);
     let (error, code) = refuse(&mut topo, input, &specs);
     assert_eq!(code, "cliff-encountered", "{error}");
+}
+
+/// Review of #1945: the slot moved into the corner zone, x, y ∈ [1.45, 1.55],
+/// between the vertex and both stripes' 2 mm setback station. The checked
+/// spans start at the station, but the corner's spherical cap still covers
+/// the zone (it passes z ≈ 0.13 over the slot), so the zone is checked
+/// against the corner radius: the cap cannot clear the slot, and the fillet
+/// refuses `cliff-encountered` with the corner radius against the slot's
+/// distance from the spine, the input untouched.
+#[test]
+fn tangent_ball_cliff_check_covers_the_corner_zone() {
+    use remus_operations::fillet::{VariableCorners, fillet_variable_with_corners};
+    let mut topo = Topology::new();
+    let input = box_with_through_slot(&mut topo, (1.45, 1.45), (0.1, 0.1));
+    let faces = solid_faces(&topo, input).unwrap().len();
+    let edges = solid_edges(&topo, input).unwrap().len();
+    let specs = slot_corner_specs(&topo, input, 0.0);
+    let error =
+        fillet_variable_with_corners(&mut topo, input, &specs, VariableCorners::TangentBall)
+            .unwrap_err();
+    assert_eq!(blend_failure_code(&error), "cliff-encountered", "{error}");
+    let OperationsError::Blend(BlendError::CliffEncountered {
+        requested_radius,
+        available_radius,
+        ..
+    }) = error
+    else {
+        panic!("{error:?}");
+    };
+    assert!((requested_radius - 2.0).abs() < 1e-12, "{requested_radius}");
+    assert!((available_radius - 1.45).abs() < 1e-9, "{available_radius}");
+    assert_eq!(solid_faces(&topo, input).unwrap().len(), faces);
+    assert_eq!(solid_edges(&topo, input).unwrap().len(), edges);
+    assert!(validate_solid(&topo, input).unwrap().is_valid());
 }
