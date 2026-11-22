@@ -154,6 +154,37 @@ fn an_arc_crossing_the_profile_sweeps_both_ways_round_it() {
 }
 
 #[test]
+fn an_arc_ending_on_the_profile_plane_anchors_at_its_crossing_by_the_profile() {
+    let mut topo = Topology::new();
+    // The arc starts at (−10, 0, 0), on the profile's plane y = 0 but far
+    // from the profile, and crosses that plane again at (10, 0, 0), where
+    // the profile stands. The end on the plane must not hide the crossing.
+    let profile = disc(&mut topo, p(10.0, 0.0, 0.0), Y);
+    let circle = Circle3D::with_axes(p(0.0, 0.0, 0.0), Z, 10.0, -X, -Y).unwrap();
+    let a = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+    let b = topo.add_vertex(Vertex::new(circle.evaluate(5.0 * FRAC_PI_4), 1e-7));
+    let mut arc = Edge::new(a, b, EdgeCurve::Circle(circle));
+    arc.set_trim(Some((0.0, 5.0 * FRAC_PI_4)));
+    let arc = topo.add_edge(arc);
+    for position in [
+        ExactSweepPosition::Auto,
+        ExactSweepPosition::PathIntersection,
+    ] {
+        let solid = sweep_exact_with_options(&mut topo, profile, &[arc], &at(position)).unwrap();
+        // Pappus over the whole arc, swept both ways from the profile.
+        assert_solid(
+            &topo,
+            solid,
+            PI * 10.0 * (5.0 * FRAC_PI_4),
+            "end and crossing",
+        );
+        // The profile stands where it was drawn, and the far end is reached.
+        assert_inside(&topo, solid, p(10.0, 0.0, 0.0), true, "at the profile");
+        assert_inside(&topo, solid, p(-9.9, -0.5, 0.0), true, "far end");
+    }
+}
+
+#[test]
 fn position_refusals_are_typed_and_leave_the_topology_unchanged() {
     type Build = fn(&mut Topology) -> Result<SolidId, OperationsError>;
     let cases: [(&str, Build, bool, &str); 4] = [
@@ -277,4 +308,60 @@ fn an_arc_ending_in_the_profile_plane_is_an_intersection() {
     let measured = crate::measure::solid_volume(&topo, solid, 0.05).unwrap();
     let exact = PI * 0.25 * 10.0 * 0.3;
     assert!(rel(measured, exact) < 1e-6, "{measured} vs {exact}");
+}
+
+/// An arc of the radius-10 circle about Z through the origin, from angle
+/// `a0` to `a1`, as the sweep's own segment.
+fn xy_arc_segment(a0: f64, a1: f64) -> Segment {
+    let at = |a: f64| p(10.0 * a.cos(), 10.0 * a.sin(), 0.0);
+    let tangent = |a: f64| Vec3::new(-a.sin(), a.cos(), 0.0);
+    Segment {
+        start: at(a0),
+        end: at(a1),
+        start_tangent: tangent(a0),
+        end_tangent: tangent(a1),
+        motion: Motion::Rotate {
+            origin: p(0.0, 0.0, 0.0),
+            axis: Z,
+            angle: a1 - a0,
+        },
+    }
+}
+
+#[test]
+fn an_end_within_tolerance_of_the_plane_does_not_hide_the_crossing_at_the_profile() {
+    // Review regression: the start lies on the plane x = 9.9999995 and the
+    // end about 3e-7 off it, both within tolerance. The arc also crosses
+    // the plane inside, where the profile stands.
+    let plane = 9.999_999_5_f64;
+    let root = (plane / 10.0).acos();
+    let chain = [xy_arc_segment(-root, 0.0004)];
+    let centre = p(plane, 10.0 * root.sin(), 0.0);
+    let linear = Tolerance::new().linear;
+    for position in [
+        ExactSweepPosition::Auto,
+        ExactSweepPosition::PathIntersection,
+    ] {
+        let anchor = find_anchor(&chain, centre, X, plane, position, linear).unwrap();
+        assert!(
+            (anchor.point - centre).length() < 1e-9,
+            "{position:?}: anchored at {:?}, not at the profile {centre:?}",
+            anchor.point
+        );
+    }
+}
+
+#[test]
+fn two_close_crossings_both_stay_candidates() {
+    // Review regression: a near-tangent arc meets the plane twice, about
+    // 7e-7 apart, and neither end is on it. The crossing nearest the
+    // profile (the negative-y one here) must be the anchor.
+    let plane = 9.999_999_999_999_993_f64;
+    let chain = [xy_arc_segment(-0.02, 0.02)];
+    let crossings = plane_crossings(&chain[0], X, plane);
+    assert_eq!(crossings.len(), 2, "{crossings:?}");
+    let centre = p(plane, -100.0, 0.0);
+    let linear = Tolerance::new().linear;
+    let anchor = find_anchor(&chain, centre, X, plane, ExactSweepPosition::Auto, linear).unwrap();
+    assert!(anchor.point.y() < 0.0, "anchored at {:?}", anchor.point);
 }

@@ -5,7 +5,24 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
 
 ## Unreleased
 
+### Added
+
+* `filletVariable` (and `filletVariableDetailed`, which shares its parser)
+  accepts optional interior control radii:
+  `"stations": [{"at": t, "radius": r}]`, `t` strictly inside `(0, 1)` along
+  the edge's own direction and increasing, under a `linear` or `scurve`
+  law. `start`/`end` remain the end radii. An absent, `null` or empty
+  `stations` means none, like the spec's other optional fields. Stations
+  under a `constant` law, any other non-array value, or an entry without a
+  numeric `at`/`radius` throw `invalid input`.
+
 ### Changed
+
+* `filletVariable` refuses a selected edge with a curved spine or a
+  non-planar support with `unsupported-variable-support: …` before building,
+  and two or more selected edges meeting at a corner without qualified
+  setbacks with `unsupported-vertex-blend: …`. Both used to throw
+  `postcondition-failed: fillet postcondition validation failed with …`.
 
 * `chamferV2`, `chamferDetailed` and the other bindings over `chamfer_v2`:
   a selection that does not build but ends inside a longer tangent chain
@@ -149,6 +166,13 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
 * `sweepExactWithOptions` takes `"orientation"`: `"normal"` (default) or
   `"parallel"`, which translates the profile along the path unturned, along
   any path curve and through corners.
+
+* `loftWithOptions` takes `"guide"`: `{degree, knots, controlPoints:
+  [[x, y, z], …], weights?}`, a clamped NURBS curve through one corner of
+  every straight-edged section that the loft follows exactly. Not combined
+  with `"connections"` or an apex point. An options string that is not
+  valid JSON or not an object is now refused instead of building the default
+  loft; an empty string still means no options.
 
 * `loftWithOptions` takes `"connections"`: one `[x, y, z]` vertex per
   section, where its correspondence starts.

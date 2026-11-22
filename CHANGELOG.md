@@ -6,6 +6,55 @@ historical predecessor-line records, retained for provenance. The
 
 ## Unreleased
 
+### Variable-radius fillets: station laws and an exactness gate
+
+* **blend,operations:** `StandardRadiusLaw::Stations { blend, stations }`
+  (`FilletRadiusLaw`, with `FilletStationBlend::{Linear, SCurve}`) runs a
+  radius through interior control stations, linear or S-curve on every
+  piece. `fillet_variable` builds it exactly on a straight spine between
+  planar supports: each row of the band is the law itself in cubic Hermite
+  form, one Bézier piece per segment joined at triple knots, so every
+  section is an exact circular arc of the law's radius. The law's extrema
+  are its station radii, and the support-overflow check now also samples
+  every station, so an overflow peaking between fixed sampling stations is
+  refused as `cliff-encountered`. Malformed station lists are refused as
+  `BlendError::InvalidInput`.
+* **operations:** `fillet_variable` builds the exact rolling-ball section at
+  every convex planar dihedral. It used to place the contacts `r` along each
+  support with apex weight `cos(α/2)`, which is a circle of radius `r` only
+  at 90°: at other angles it returned a valid solid with the wrong band, a
+  constant r = 1 round on a 120° edge removing 13.697 mm³ against the
+  closed form's 3.225. The contacts now lie `r·cot(α/2)` along each support
+  with apex weight `sin(α/2)`, from the constant engine's exact planar
+  section, so at 90° nothing changes.
+* **operations:** the variable fillet's support-overflow check is exact per
+  boundary segment instead of sampled at 33 stations: the worst overrun of
+  each cubic law piece against each segment is found at its interval ends
+  and the roots of its derivative. Curved boundary edges are replaced by
+  regions that contain them (a lens per chord for a conic arc, the control
+  hull for a NURBS curve), so near-limit radii there refuse conservatively.
+* **operations:** a stripe ending on a planar cap that keeps a hole (a boss
+  or bore rim in the cap) now takes the band's exact end arc. The cap's
+  rebuilt outer wire used to mint a chord before the band published the arc,
+  and the band shared the chord: the solid validated but its boundary left
+  the band, and a 1→2 round on the vertical corner edge of a box carrying a
+  boss measured 19.60 mm³ removed against the closed form's 10.01. Any
+  engine that passes boundary curves to the mixed assembler gets the same
+  arcs on rebuilt copied faces.
+* **operations:** `fillet_variable` refuses, before building anything, a
+  selected edge outside the exact family: a curved spine, a support that is
+  not planar, or a concave edge, with the new
+  `BlendError::UnsupportedVariableSupport`
+  (`blend_failure_code`: `unsupported-variable-support`). Those stripes used
+  to be interpolated from sampled sections and then fail late with a
+  free-edge `postcondition-failed`; nothing approximate was returned, but
+  the reason named the symptom instead of the cause.
+* **operations:** two or more selected stripes meeting at a corner without
+  declared, qualified setbacks are refused up front as
+  `BlendError::UnsupportedVertexBlend` (`unsupported-vertex-blend`), naming
+  the vertex and the stripe count, instead of a late `postcondition-failed`.
+  Two stripes continuing one straight line are not refused here.
+
 ### ⚠ BREAKING CHANGES
 
 * **operations,wasm:** a fillet or chamfer whose result fails its own
@@ -46,6 +95,22 @@ historical predecessor-line records, retained for provenance. The
   of the surface, and is not disclosed in `details`.
 
 ### Fixed
+
+* **operations:** `moveFaces` moves an end or side face of a rounded block
+  whose foot is chamfered. Rounding a block's top and vertical edges and then
+  chamfering its foot turns a cone round the foot of each vertical round. A
+  planar move translates the moved end's blend cluster rigidly, and that
+  cluster stopped at the chamfer, which is tangent to nothing it bevels, so
+  every such move refused with `blend face … reaches non-invariant cone
+  support face …`. The chamfer band at the moved end (its oblique planar
+  strip and the cones it turns round the rounds) now travels with the
+  cluster when everything it meets either moves too or is a face the move
+  slides along. The result is the exact prismatic extension: the same
+  topology, and the volume changes by the distance times the block's
+  rounded cross-section. The band is swept with the moved face, so a move
+  that would carry it through other material (a cavity in the foot) refuses.
+  A plane square to the move, or a band that meets any other surface, is
+  still left in place and refuses as before.
 
 * **operations,wasm:** `section` keeps the closed-form curves of a cross
   section (#1826). Every curved piece of a section was chorded into `Line`
@@ -461,6 +526,19 @@ historical predecessor-line records, retained for provenance. The
   holds exactly, splines included, and corners, which crease the body; it
   must run steadily away from the profile's plane, certified on its Bézier
   spans, or the sweep is refused.
+
+* **operations,wasm:** loft along a guide curve (`loft::loft_with_guide`,
+  `loftWithOptions` option `"guide"`: `{degree, knots, controlPoints,
+  weights?}`). The guide passes through one corner of every straight-edged
+  section, which becomes that section's connection start, and the loft
+  follows it exactly: each corner's rail is the guide plus that corner's
+  offset from it, interpolated between sections linearly (ruled) or smoothly.
+  Polynomial and rational guides (arcs) are summed exactly, in homogeneous
+  form for rational ones. Curved sections and unequal corner counts are
+  refused as unsupported, as is a guide whose rails double back; a guide
+  that misses a section, meets the sections out of order or is unclamped is
+  refused as invalid. Each section is wound about the guide on its own, so
+  opposite windings still pair corner for corner.
 
 * **operations,wasm:** loft connections (`loft::loft_with_connections`,
   `loftWithOptions` option `"connections"`: one `[x, y, z]` vertex per
