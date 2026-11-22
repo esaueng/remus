@@ -113,18 +113,15 @@ pub(super) fn edge_v_samples(curve: &EdgeCurve) -> usize {
     }
 }
 
-/// Per-station rolling-ball cross-section directions at an edge sample point.
+/// The dihedral at an edge sample point, from the in-face directions normal
+/// to the edge tangent that point away from the edge toward the other face's
+/// material side.
 ///
-/// `ld1`/`ld2` are unit directions lying in faces 1/2 respectively, normal to
-/// the edge tangent, pointing away from the edge into the channel between the
-/// faces (i.e. toward the other face's material side). The contact points are
-/// `p + ld_k * r`. `bisector` points into the dihedral; `half_angle` is half
-/// the arc sweep. The sign convention matches the validated constant-radius
-/// rolling-ball path: `ld_k` is chosen opposite to the other face's outward
-/// normal so the blend cuts a concave channel inward rather than bulging out.
+/// `bisector` points into the dihedral; `half_angle` is half the interior
+/// angle between the two in-face directions. The variable fillet's section
+/// itself comes from the exact rolling ball (`VariableSection`), not from
+/// these directions.
 pub(super) struct CrossSection {
-    pub(super) ld1: Vec3,
-    pub(super) ld2: Vec3,
     pub(super) bisector: Vec3,
     pub(super) half_angle: f64,
 }
@@ -149,8 +146,6 @@ pub(super) fn cross_section_dirs(
     let half_angle = cos_half.acos() / 2.0;
     let bisector = (ld1 + ld2).normalize().unwrap_or(fallback_d1);
     CrossSection {
-        ld1,
-        ld2,
         bisector,
         half_angle,
     }

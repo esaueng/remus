@@ -62,6 +62,16 @@ about Y, then a draft — failed the base body's closed-form volume before the
 modifier ran: the rotated sphere's two hemispheres swept the same pole after a
 rigid move rebuilt the surface on world axes, so the fused mesh was open and
 read 22 % low while the exact route was right (B41).
+The fillet seed whose box is fused with a tilted torus (B81) is a timeout
+report, not a finding. `solid_volume` measures a body with a holed torus face
+by meshing it whole (about 300,000 triangles here), every oracle and the blend
+volume guard take such a reading, and one iteration ran 62 to 92 s against
+`-timeout=10` until Fuzz Smoke 2026-11-15 reported it. Face count does not
+bound that work, so the target also stops before the first measurement when
+the base body's trimmed sphere and torus faces carry more than 30,000
+triangles at the watertightness deflection (`TRIMMED_CURVED_LIMIT`). The seed
+`fillet-after-torus-fused-with-box-through-the-tube` is the 5 s sibling a
+local session found within two minutes of a cruder whole-mesh limit.
 
 `arena_roundtrip` builds bounded boxes and cylinders (census and closed-form
 volumes known by construction) with duplicate roots, shared-shell aliases,

@@ -169,3 +169,90 @@ fn pristine_cylinder_unaffected() {
         );
     }
 }
+
+#[test]
+fn repeated_bore_probes_match_one_shot_with_and_without_the_full_trim_budget() {
+    use remus_check::classify::cache::ClassificationCache;
+
+    let mut topo = Topology::new();
+    let solid = make_flange_with_bolt_hole(&mut topo);
+    let second = primitives::make_cylinder(&mut topo, 3.5, 18.0).unwrap();
+    transform_solid(&mut topo, second, &Mat4::translation(-34.0, 0.0, -3.0)).unwrap();
+    let solid = boolean(&mut topo, BooleanOp::Cut, solid, second).unwrap();
+    assert!(
+        solid_faces(&topo, solid)
+            .unwrap()
+            .into_iter()
+            .any(|fid| { topo.face(fid).unwrap().inner_wires().len() >= 2 })
+    );
+    let opts = ClassifyOptions::default();
+    let probes = [34.0, -34.0, 37.499, 37.5, 37.501, 40.0, 0.0]
+        .into_iter()
+        .flat_map(|x| [-0.01, 0.0, 6.0, 12.0, 12.01].map(|z| Point3::new(x, 0.0, z)))
+        .collect::<Vec<_>>();
+    let expected: Vec<_> = probes
+        .iter()
+        .map(|&p| classify_point(&topo, solid, p, &opts).unwrap())
+        .collect();
+    let mut full = ClassificationCache::new();
+    assert_eq!(
+        full.classify_points(&topo, solid, &probes, &opts).unwrap(),
+        expected
+    );
+    let bytes = full.retained_bytes();
+    let mut limited = ClassificationCache::with_capacity_and_byte_budget(1, bytes - 1);
+    for cache in [&mut full, &mut limited] {
+        for (&point, &verdict) in probes.iter().zip(&expected) {
+            assert_eq!(
+                cache.classify_point(&topo, solid, point, &opts).unwrap(),
+                verdict
+            );
+        }
+        assert_eq!(cache.stats().rebuilds, 1);
+        assert!(cache.stats().hits > 0);
+    }
+    // The smaller budget retains the ordinary classifier data and omits at
+    // least one exact trim. Making all optional storage mandatory fails here.
+    assert!(limited.retained_bytes() > 0 && limited.retained_bytes() < bytes);
+
+    let mut too_small = ClassificationCache::with_capacity_and_byte_budget(1, 1);
+    assert_eq!(
+        too_small
+            .classify_points(&topo, solid, &probes, &opts)
+            .unwrap(),
+        expected
+    );
+    assert_eq!(too_small.retained_bytes(), 0);
+
+    // Leave one byte too little for every optional trim. The first solid
+    // must survive admission of the perforated solid.
+    let mut other = Topology::new();
+    let cylinder = primitives::make_cylinder(&mut other, 3.0, 2.0).unwrap();
+    let mut single = ClassificationCache::new();
+    let point = Point3::new(0.0, 0.0, 1.0);
+    let inside = single
+        .classify_point(&other, cylinder, point, &opts)
+        .unwrap();
+    let budget = single.retained_bytes() + bytes - 1;
+    let mut shared = ClassificationCache::with_capacity_and_byte_budget(2, budget);
+    assert_eq!(
+        shared
+            .classify_point(&other, cylinder, point, &opts)
+            .unwrap(),
+        inside
+    );
+    assert_eq!(
+        shared
+            .classify_points(&topo, solid, &probes, &opts)
+            .unwrap(),
+        expected
+    );
+    assert_eq!(
+        shared
+            .classify_point(&other, cylinder, point, &opts)
+            .unwrap(),
+        inside
+    );
+    assert_eq!(shared.stats().evictions, 0);
+    assert_eq!(shared.stats().hits, 1);
+}

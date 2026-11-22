@@ -51,6 +51,64 @@ fn optional_fillet_number(spec: &serde_json::Value, field: &str) -> Result<Optio
     }
 }
 
+/// Apply a spec's optional `stations` to a parsed linear or S-curve law.
+///
+/// `stations` lists interior control radii as `[{"at": t, "radius": r}]`,
+/// `t` strictly inside `(0, 1)` of the edge's own direction and increasing.
+/// The law's `start`/`end` stay the radii at the two ends, and the law's
+/// shape runs between every pair of neighbouring stations. Stations under a
+/// constant law are refused: a constant radius has no stations to pass.
+fn with_interior_stations(
+    spec: &serde_json::Value,
+    law: remus_operations::fillet::FilletRadiusLaw,
+) -> Result<remus_operations::fillet::FilletRadiusLaw, WasmError> {
+    use remus_operations::fillet::FilletRadiusLaw;
+    let invalid = |reason: &str| WasmError::InvalidInput {
+        reason: reason.into(),
+    };
+    let entries = match spec.get("stations") {
+        None | Some(serde_json::Value::Null) => return Ok(law),
+        Some(serde_json::Value::Array(entries)) => entries,
+        Some(_) => return Err(invalid("'stations' in fillet spec must be an array")),
+    };
+    if entries.is_empty() {
+        return Ok(law);
+    }
+    let (blend, start, end) = match law {
+        FilletRadiusLaw::Linear { start, end } => (
+            remus_operations::fillet::FilletStationBlend::Linear,
+            start,
+            end,
+        ),
+        FilletRadiusLaw::SCurve { start, end } => (
+            remus_operations::fillet::FilletStationBlend::SCurve,
+            start,
+            end,
+        ),
+        _ => {
+            return Err(invalid(
+                "'stations' in fillet spec need a linear or scurve law",
+            ));
+        }
+    };
+    let mut stations = Vec::with_capacity(entries.len() + 2);
+    stations.push((0.0, start));
+    for entry in entries {
+        let at = optional_fillet_number(entry, "at")?
+            .ok_or_else(|| invalid("each fillet station needs a numeric 'at'"))?;
+        let radius = optional_fillet_number(entry, "radius")?
+            .ok_or_else(|| invalid("each fillet station needs a numeric 'radius'"))?;
+        if at.is_nan() || at <= 0.0 || at >= 1.0 {
+            return Err(invalid(
+                "each fillet station's 'at' must lie strictly between 0 and 1",
+            ));
+        }
+        stations.push((at, radius));
+    }
+    stations.push((1.0, end));
+    Ok(FilletRadiusLaw::Stations { blend, stations })
+}
+
 pub(super) fn parse_variable_fillet_specs(
     kernel: &RemusKernel,
     specs: &[serde_json::Value],
@@ -99,6 +157,7 @@ pub(super) fn parse_variable_fillet_specs(
                 });
             }
         };
+        let law = with_interior_stations(spec, law)?;
         edge_specs.push(remus_operations::fillet::FilletEdgeSetback {
             edge: edge_id,
             law,
@@ -205,6 +264,72 @@ pub(super) fn loft_with_options_impl(
     mut face_ids: Vec<remus_topology::face::FaceId>,
     options: &serde_json::Value,
 ) -> Result<remus_topology::solid::SolidId, WasmError> {
+    // `guide`: one NURBS curve through a corner of every section, which the
+    // loft follows exactly (M04). The guide fixes each section's connection
+    // corner, so it is not combined with `connections` or an apex point.
+    if let Some(guide) = options.get("guide") {
+        let invalid = |reason: String| {
+            WasmError::from(remus_operations::OperationsError::InvalidInput { reason })
+        };
+        if options.get("connections").is_some() {
+            return Err(invalid(
+                "a loft guide sets each section's connection corner: it cannot be combined \
+                 with loft connections"
+                    .to_owned(),
+            ));
+        }
+        if options.get("startPoint").is_some() || options.get("endPoint").is_some() {
+            return Err(invalid(
+                "a loft guide cannot be combined with an apex point".to_owned(),
+            ));
+        }
+        let curve = parse_loft_guide(guide).map_err(invalid)?;
+        let ruled = options
+            .get("ruled")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true);
+        return Ok(remus_operations::loft::loft_with_guide(
+            topo, &face_ids, &curve, !ruled,
+        )?);
+    }
+    // `connections`: one [x, y, z] vertex per section, where each section's
+    // correspondence starts (M04). Not combined with an apex point.
+    if let Some(connections) = options.get("connections") {
+        let invalid = |reason: String| {
+            WasmError::from(remus_operations::OperationsError::InvalidInput { reason })
+        };
+        if options.get("startPoint").is_some() || options.get("endPoint").is_some() {
+            return Err(invalid(
+                "loft connections cannot be combined with an apex point".to_owned(),
+            ));
+        }
+        let points = connections
+            .as_array()
+            .ok_or_else(|| invalid("loft connections must be an array of points".to_owned()))?
+            .iter()
+            .map(|point| {
+                let xyz: Option<Vec<f64>> = point
+                    .as_array()
+                    .filter(|xyz| xyz.len() == 3)
+                    .map(|xyz| xyz.iter().filter_map(serde_json::Value::as_f64).collect());
+                match xyz {
+                    Some(xyz) if xyz.len() == 3 && xyz.iter().all(|c| c.is_finite()) => {
+                        Ok(Point3::new(xyz[0], xyz[1], xyz[2]))
+                    }
+                    _ => Err(invalid(format!(
+                        "a loft connection must be a finite [x, y, z] point, got {point}"
+                    ))),
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let ruled = options
+            .get("ruled")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true);
+        return Ok(remus_operations::loft::loft_with_connections(
+            topo, &face_ids, &points, !ruled,
+        )?);
+    }
     if let Some(sp) = options.get("startPoint").and_then(|value| value.as_array())
         && sp.len() >= 3
     {
@@ -238,6 +363,176 @@ pub(super) fn loft_with_options_impl(
     } else {
         Ok(remus_operations::loft::loft_smooth(topo, &face_ids)?)
     }
+}
+
+/// Parse the `loftWithOptions` options string. An empty string or `null`
+/// means no options; anything else must be a JSON object, so a malformed
+/// string (an out-of-range number, say) is refused instead of silently
+/// building the default loft.
+///
+/// # Errors
+///
+/// Unparsable JSON, or JSON that is not an object.
+pub(super) fn parse_loft_options(options: &str) -> Result<serde_json::Value, WasmError> {
+    let invalid = |reason: String| {
+        WasmError::from(remus_operations::OperationsError::InvalidInput { reason })
+    };
+    if options.trim().is_empty() {
+        return Ok(serde_json::Value::Null);
+    }
+    let value: serde_json::Value = serde_json::from_str(options)
+        .map_err(|error| invalid(format!("loftWithOptions: options: {error}")))?;
+    if value.is_object() || value.is_null() {
+        Ok(value)
+    } else {
+        Err(invalid(format!(
+            "loftWithOptions: options must be a JSON object, got {value}"
+        )))
+    }
+}
+
+/// Parse a `loftWithOptions` guide: `{degree, knots, controlPoints:
+/// [[x, y, z], …], weights?}`, with every weight one when `weights` is absent.
+///
+/// # Errors
+///
+/// A missing or non-numeric field, or a curve that is not a valid NURBS.
+fn parse_loft_guide(guide: &serde_json::Value) -> Result<remus_math::nurbs::NurbsCurve, String> {
+    let numbers = |key: &str| -> Result<Vec<f64>, String> {
+        guide
+            .get(key)
+            .and_then(serde_json::Value::as_array)
+            .and_then(|values| {
+                values
+                    .iter()
+                    .map(serde_json::Value::as_f64)
+                    .collect::<Option<Vec<_>>>()
+            })
+            .ok_or_else(|| format!("a loft guide's \"{key}\" must be an array of numbers"))
+    };
+    let degree = guide
+        .get("degree")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|degree| usize::try_from(degree).ok())
+        .ok_or_else(|| "a loft guide's \"degree\" must be a positive integer".to_owned())?;
+    let knots = numbers("knots")?;
+    let control_points = guide
+        .get("controlPoints")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "a loft guide's \"controlPoints\" must be an array of points".to_owned())?
+        .iter()
+        .map(|point| {
+            let xyz: Option<Vec<f64>> = point
+                .as_array()
+                .filter(|xyz| xyz.len() == 3)
+                .and_then(|xyz| xyz.iter().map(serde_json::Value::as_f64).collect());
+            match xyz {
+                Some(xyz) if xyz.iter().all(|c| c.is_finite()) => {
+                    Ok(Point3::new(xyz[0], xyz[1], xyz[2]))
+                }
+                _ => Err(format!(
+                    "a loft guide control point must be a finite [x, y, z] point, got {point}"
+                )),
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let weights = if guide.get("weights").is_some() {
+        numbers("weights")?
+    } else {
+        vec![1.0; control_points.len()]
+    };
+    remus_math::nurbs::NurbsCurve::new(degree, knots, control_points, weights)
+        .map_err(|error| format!("the loft guide is not a valid NURBS curve: {error}"))
+}
+
+/// Parse the options object of `sweepExactWithOptions` (direct and batch).
+///
+/// # Errors
+///
+/// A non-object, an unknown key, or a value that is not a number.
+pub(super) fn parse_exact_sweep_options(
+    options: &serde_json::Value,
+) -> Result<remus_operations::exact_sweep::ExactSweepOptions, String> {
+    use remus_operations::exact_sweep::{
+        ExactSweepCorner, ExactSweepOrientation, ExactSweepPosition,
+    };
+
+    let object = options
+        .as_object()
+        .ok_or_else(|| "sweepExactWithOptions: options must be an object".to_owned())?;
+    let mut parsed = remus_operations::exact_sweep::ExactSweepOptions::default();
+    let (mut round, mut radius) = (false, None);
+    for (key, value) in object {
+        let number = || {
+            value
+                .as_f64()
+                .ok_or_else(|| format!("sweepExactWithOptions: option \"{key}\" must be a number"))
+        };
+        match key.as_str() {
+            "twist" => parsed.twist = number()?,
+            "endScale" => parsed.end_scale = number()?,
+            "corner" => match value.as_str() {
+                Some("mitre") => parsed.corner = ExactSweepCorner::Mitre,
+                Some("round") => round = true,
+                _ => {
+                    return Err(format!(
+                        "sweepExactWithOptions: option \"corner\" must be \"mitre\" or \
+                         \"round\", got {value}"
+                    ));
+                }
+            },
+            "cornerRadius" => radius = Some(number()?),
+            "position" => {
+                parsed.position = Some(match value.as_str() {
+                    Some("auto") => ExactSweepPosition::Auto,
+                    Some("intersection") => ExactSweepPosition::PathIntersection,
+                    Some("closestPoint") => ExactSweepPosition::ClosestPoint,
+                    Some("closestEndpoint") => ExactSweepPosition::ClosestEndpoint,
+                    _ => {
+                        return Err(format!(
+                            "sweepExactWithOptions: option \"position\" must be \"auto\", \
+                             \"intersection\", \"closestPoint\" or \"closestEndpoint\", got \
+                             {value}"
+                        ));
+                    }
+                });
+            }
+            "orientation" => {
+                parsed.orientation = match value.as_str() {
+                    Some("normal") => ExactSweepOrientation::FollowPath,
+                    Some("parallel") => ExactSweepOrientation::KeepProfile,
+                    _ => {
+                        return Err(format!(
+                            "sweepExactWithOptions: option \"orientation\" must be \"normal\" \
+                             or \"parallel\", got {value}"
+                        ));
+                    }
+                };
+            }
+            _ => {
+                return Err(format!(
+                    "sweepExactWithOptions: unknown option \"{key}\" (this kernel builds \
+                     \"twist\", \"endScale\", \"orientation\", \"corner\", \
+                     \"cornerRadius\" and \"position\")"
+                ));
+            }
+        }
+    }
+    match (round, radius) {
+        (true, Some(radius)) => parsed.corner = ExactSweepCorner::Round { radius },
+        (true, None) => {
+            return Err(
+                "sweepExactWithOptions: a \"round\" corner needs \"cornerRadius\"".to_owned(),
+            );
+        }
+        (false, Some(_)) => {
+            return Err(
+                "sweepExactWithOptions: \"cornerRadius\" needs \"corner\": \"round\"".to_owned(),
+            );
+        }
+        (false, None) => {}
+    }
+    Ok(parsed)
 }
 
 /// Parse the options shared by direct and batch `sweepWithOptions` calls.
@@ -430,11 +725,22 @@ impl RemusKernel {
     /// - `startPoint: [x, y, z]` — apex point before first profile
     /// - `endPoint: [x, y, z]` — apex point after last profile
     /// - `ruled: bool` — true for ruled (linear) surfaces (default), false for smooth
+    /// - `connections: [[x, y, z], …]` — one vertex per section where its
+    ///   correspondence starts: vertex k of each section connects to vertex k
+    ///   of the next, counted from there. Not combined with an apex point; a
+    ///   point that is not a section vertex is refused.
+    /// - `guide: {degree, knots, controlPoints: [[x, y, z], …], weights?}` — a
+    ///   clamped NURBS curve (rational allowed) through one corner of every
+    ///   straight-edged section, first to last, that the loft follows
+    ///   exactly; that corner is the section's connection start. `ruled`
+    ///   (default true) varies the sections' offsets from the guide linearly
+    ///   between sections, `false` smoothly. Not combined with `connections`
+    ///   or an apex point; curved sections and unequal corner counts are
+    ///   refused as unsupported.
     #[wasm_bindgen(js_name = "loftWithOptions")]
     #[allow(clippy::needless_pass_by_value)]
     pub fn loft_with_options(&mut self, faces: Vec<u32>, options: &str) -> Result<u32, JsError> {
-        let opts: serde_json::Value =
-            serde_json::from_str(options).unwrap_or(serde_json::Value::Null);
+        let opts = parse_loft_options(options)?;
 
         let face_ids: Vec<remus_topology::face::FaceId> = faces
             .iter()
@@ -1734,6 +2040,69 @@ impl RemusKernel {
         Ok(solid_id_to_u32(solid_id))
     }
 
+    /// `sweepExact` with options, as a JSON object; every key is optional
+    /// and an unknown key is refused (an older kernel never ignores an
+    /// option it cannot build):
+    ///
+    /// - `twist`: total turn of the profile about the path, in radians,
+    ///   right-handed about the direction of travel (default `0`);
+    /// - `endScale`: scale of the profile at the far end, about the point
+    ///   where the path crosses it (default `1`);
+    /// - `orientation`: `"normal"` (default) turns the profile with the path,
+    ///   `"parallel"` translates it along the path unturned, exactly along
+    ///   any path curve and through corners;
+    /// - `corner`: `"mitre"` (default) or `"round"` with `cornerRadius`, the
+    ///   radius of the arc tangent to both runs that replaces each corner;
+    /// - `position`: where on the path the profile stands, `"auto"`,
+    ///   `"intersection"`, `"closestPoint"` or `"closestEndpoint"`; from a
+    ///   point inside the path the sweep runs both ways. Absent starts from
+    ///   the path end nearer the profile's plane.
+    ///
+    /// Both are linear in the distance travelled, and need a straight path
+    /// with the profile square to it. With neither set this is `sweepExact`.
+    ///
+    /// Returns a solid handle (`u32`).
+    ///
+    /// # Errors
+    ///
+    /// As `sweepExact`; a malformed options object; a non-finite twist or a
+    /// non-positive end scale; a twist or scale along a path that bends or
+    /// closes, or with a profile not square to the path; a profile curve the
+    /// construction cannot carry. The session is left unchanged.
+    #[wasm_bindgen(js_name = "sweepExactWithOptions")]
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn sweep_exact_with_options(
+        &mut self,
+        face: u32,
+        edge_handles: Vec<u32>,
+        options: &str,
+    ) -> Result<u32, JsError> {
+        let options: serde_json::Value = serde_json::from_str(options)
+            .map_err(|error| JsError::new(&format!("sweepExactWithOptions: options: {error}")))?;
+        let options = parse_exact_sweep_options(&options).map_err(|error| JsError::new(&error))?;
+        Ok(self.sweep_exact_with_options_impl(face, &edge_handles, &options)?)
+    }
+
+    pub(crate) fn sweep_exact_with_options_impl(
+        &mut self,
+        face: u32,
+        edge_handles: &[u32],
+        options: &remus_operations::exact_sweep::ExactSweepOptions,
+    ) -> Result<u32, WasmError> {
+        let face_id = self.resolve_face(face)?;
+        let edges = edge_handles
+            .iter()
+            .map(|&h| self.resolve_edge(h))
+            .collect::<Result<Vec<_>, _>>()?;
+        let solid_id = remus_operations::exact_sweep::sweep_exact_with_options(
+            self.topo_mut(),
+            face_id,
+            &edges,
+            options,
+        )?;
+        Ok(solid_id_to_u32(solid_id))
+    }
+
     // ── Cylinder Wrap ─────────────────────────────────────────────
 
     /// Wrap a planar face onto a cylinder, preserving arc length, as the
@@ -2097,7 +2466,16 @@ impl RemusKernel {
 
     /// Apply variable-radius fillets to edges.
     ///
-    /// `json` is a JSON string: `[{"edge": u32, "law": "constant"|"linear"|"scurve", "start": f64, "end": f64, "startSetback": f64, "endSetback": f64}]`
+    /// `json` is a JSON string: `[{"edge": u32, "law": "constant"|"linear"|"scurve", "start": f64, "end": f64, "startSetback": f64, "endSetback": f64, "stations": [{"at": f64, "radius": f64}]}]`
+    ///
+    /// `stations` are optional interior control radii at normalized positions
+    /// strictly inside `(0, 1)` along the edge's own direction, increasing;
+    /// the law (linear or scurve) then runs between every pair of
+    /// neighbouring stations. Variable radii are built exactly only on a
+    /// straight edge between two planar faces; any other selected edge is
+    /// refused with `unsupported-variable-support`, and two or more selected
+    /// edges meeting at a corner without qualified setbacks with
+    /// `unsupported-vertex-blend`.
     ///
     /// Also accepts brepjs-style fields: `startRadius`/`endRadius` as aliases for `start`/`end`.
     /// When `law` is omitted and `startRadius` != `endRadius`, the law auto-detects as `"linear"`.
@@ -3357,6 +3735,77 @@ mod tests {
         );
         assert!(matches!(&parsed[3].law, FilletRadiusLaw::Constant(radius)
             if radius.to_bits() == 4.0_f64.to_bits()));
+    }
+
+    #[test]
+    fn variable_fillet_json_reads_interior_stations_under_linear_and_scurve() {
+        use remus_operations::fillet::{FilletRadiusLaw, FilletStationBlend};
+
+        let mut kernel = RemusKernel::new();
+        let solid = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
+        let edge = kernel.get_solid_edges(solid).unwrap()[0];
+        let specs = [
+            serde_json::json!({ "edge": edge, "law": "linear", "start": 1.0, "end": 2.0,
+                "stations": [{ "at": 0.25, "radius": 3.0 }, { "at": 0.6, "radius": 1.5 }] }),
+            serde_json::json!({ "edge": edge, "law": "scurve", "start": 1.0, "end": 2.0,
+                "stations": [{ "at": 0.5, "radius": 3.0 }] }),
+            serde_json::json!({ "edge": edge, "law": "linear", "start": 1.0, "end": 2.0,
+                "stations": [] }),
+            serde_json::json!({ "edge": edge, "law": "linear", "start": 1.0, "end": 2.0,
+                "stations": null }),
+        ];
+        let parsed = super::parse_variable_fillet_specs(&kernel, &specs).unwrap();
+        assert!(
+            matches!(&parsed[0].law, FilletRadiusLaw::Stations { blend: FilletStationBlend::Linear, stations }
+            if stations == &vec![(0.0, 1.0), (0.25, 3.0), (0.6, 1.5), (1.0, 2.0)])
+        );
+        assert!(
+            matches!(&parsed[1].law, FilletRadiusLaw::Stations { blend: FilletStationBlend::SCurve, stations }
+            if stations == &vec![(0.0, 1.0), (0.5, 3.0), (1.0, 2.0)])
+        );
+        for plain in &parsed[2..] {
+            assert!(matches!(&plain.law, FilletRadiusLaw::Linear { .. }));
+        }
+
+        for (spec, needle) in [
+            (
+                serde_json::json!({ "edge": edge, "law": "constant", "radius": 1.0,
+                "stations": [{ "at": 0.5, "radius": 2.0 }] }),
+                "linear or scurve",
+            ),
+            (
+                serde_json::json!({ "edge": edge, "law": "linear", "start": 1.0, "end": 2.0,
+                "stations": { "at": 0.5 } }),
+                "must be an array",
+            ),
+            (
+                serde_json::json!({ "edge": edge, "law": "linear", "start": 1.0, "end": 2.0,
+                "stations": [{ "radius": 2.0 }] }),
+                "'at'",
+            ),
+            (
+                serde_json::json!({ "edge": edge, "law": "linear", "start": 1.0, "end": 2.0,
+                "stations": [{ "at": 0.5 }] }),
+                "'radius'",
+            ),
+            (
+                serde_json::json!({ "edge": edge, "law": "linear", "start": 1.0, "end": 2.0,
+                "stations": [{ "at": 1.0, "radius": 2.0 }] }),
+                "strictly between",
+            ),
+            (
+                serde_json::json!({ "edge": edge, "law": "linear", "start": 1.0, "end": 2.0,
+                "stations": [{ "at": "half", "radius": 2.0 }] }),
+                "must be a number",
+            ),
+        ] {
+            let error = super::parse_variable_fillet_specs(&kernel, std::slice::from_ref(&spec))
+                .expect_err("malformed stations must be refused");
+            assert!(
+                matches!(&error, crate::error::WasmError::InvalidInput { reason } if reason.contains(needle)),
+                "{spec}: {error}"
+            );
+        }
     }
 
     #[test]

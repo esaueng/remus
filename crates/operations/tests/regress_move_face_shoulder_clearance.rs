@@ -822,16 +822,43 @@ fn cap_descends_into_the_retained_shoulder_with_sampled_permission() {
 
 #[test]
 fn descending_cap_refuses_unbuildable_depths_atomically() {
-    // At z=29 the new contour meets the shoulder's boss arc exactly; within
-    // 10 um of it a corner contour cannot span its patch; from z=24 down the
-    // cap would meet the block top.
+    // At z=29 the rim's spring meets the shoulder's boss arc exactly: that
+    // contact onset shares the spring, as it does when a shoulder rises to
+    // its rim. Within 10 um below it a corner contour cannot span its patch;
+    // from z=24 down the cap would meet the block top.
     let (mut topo, solid, _) = shoulder_with(24.0, 36.0, 1.0, 4.0);
     let cap = top_at(&topo, solid, 36.0);
     let before = remus_io::arena_io::serialize_solid(&topo, solid).unwrap();
     let counts = solid_entity_counts(&topo, solid).unwrap();
-    let entries = topo.journal().entries().len();
     let mut prepared = PreparedFaceMove::prepare(&topo, solid, &[cap]).unwrap();
-    for distance in [-7.0, -7.000_01, -12.0, -12.5, -20.0] {
+    let onset = move_faces_with_quality(&mut topo, solid, &[cap], -7.0, SAMPLED)
+        .unwrap_or_else(|error| panic!("contact onset: {error}"));
+    assert_eq!(
+        onset.quality,
+        FaceMoveQuality::SampledCapJoin { stations: 256 }
+    );
+    assert_closed_solid(&topo, onset.result.solid, 29.0);
+    assert_eq!(
+        remus_io::arena_io::serialize_solid(&topo, solid).unwrap(),
+        before
+    );
+    let source_faces = solid_faces(&topo, solid).unwrap();
+    let (previewed, quality) = prepared
+        .move_faces_journaled_with_quality(&mut topo, -7.0, SAMPLED)
+        .unwrap_or_else(|error| panic!("prepared contact onset: {error}"));
+    assert_eq!(quality, onset.quality);
+    assert_eq!(
+        solid_entity_counts(&topo, previewed.solid).unwrap(),
+        solid_entity_counts(&topo, onset.result.solid).unwrap()
+    );
+    // A journaled move records history against the source; its faces and
+    // counts stay put.
+    assert_eq!(solid_faces(&topo, solid).unwrap(), source_faces);
+    assert_eq!(solid_entity_counts(&topo, solid).unwrap(), counts);
+    let mut prepared = PreparedFaceMove::prepare(&topo, solid, &[cap]).unwrap();
+    let before = remus_io::arena_io::serialize_solid(&topo, solid).unwrap();
+    let entries = topo.journal().entries().len();
+    for distance in [-7.000_01, -12.0, -12.5, -20.0] {
         let direct = move_faces_with_quality(&mut topo, solid, &[cap], distance, SAMPLED)
             .expect_err("an unbuildable depth must refuse");
         let preview = prepared
@@ -907,5 +934,722 @@ fn joined_cap_moves_again_and_climbs_back_out_of_the_shoulder() {
             remus_io::arena_io::serialize_solid(&topo, joined).unwrap(),
             before
         );
+    }
+}
+
+#[test]
+fn block_top_rises_into_an_equal_radius_rim() {
+    // An R2 shoulder and an R2 boss rim on the R6 boss, the block top 6 mm
+    // below the cap: lowering the cap into the shoulder already joined the
+    // blends, but raising the block top the same way was refused at every
+    // rise past 2 mm. The top's bounding box covers the boss corner, so the
+    // swept-region check took the rim torus for an obstacle, although the
+    // whole top lies outside the R8 shoulder circle and the rim inside R6.
+    let (mut topo, solid, top) = shoulder_with(29.0, 35.0, 2.0, 2.0);
+    let source = remus_io::arena_io::serialize_solid(&topo, solid).unwrap();
+    let source_volume = solid_volume(&topo, solid, 0.01).unwrap();
+    let permission = Some(FaceMoveApproximation { stations: 256 });
+    for distance in [3.0, 4.0] {
+        let refusal = move_faces(&mut topo, solid, &[top], distance)
+            .expect_err("an exact-only rise must stop at the fixed rim");
+        assert!(
+            refusal
+                .to_string()
+                .contains("moving blend reaches fixed rim face"),
+            "{distance}: {refusal}"
+        );
+        let moved = move_faces_with_quality(&mut topo, solid, &[top], distance, permission)
+            .unwrap_or_else(|error| panic!("rise by {distance}: {error}"));
+        assert_eq!(
+            moved.quality,
+            FaceMoveQuality::SampledCapJoin { stations: 256 }
+        );
+        let moved = moved.result.solid;
+        assert!(validate_solid(&topo, moved).unwrap().is_valid());
+        top_at(&topo, moved, 29.0 + distance);
+        top_at(&topo, moved, 35.0);
+        assert!(solid_volume(&topo, moved, 0.01).unwrap() > source_volume);
+        closed_mesh_volume(&topo, moved, 0.05);
+        assert_eq!(
+            remus_io::arena_io::serialize_solid(&topo, solid).unwrap(),
+            source
+        );
+    }
+}
+
+/// Volumes of one face of a fresh equal-radius shoulder moved to each of
+/// `distances`, every result a valid closed solid with both tops in place.
+fn equal_radius_moves(cap: bool, distances: [f64; 3]) -> Vec<(f64, usize, FaceMoveQuality)> {
+    let (mut topo, solid, top) = shoulder_with(29.0, 35.0, 2.0, 2.0);
+    let face = if cap { top_at(&topo, solid, 35.0) } else { top };
+    let source = remus_io::arena_io::serialize_solid(&topo, solid).unwrap();
+    let permission = Some(FaceMoveApproximation { stations: 256 });
+    distances
+        .into_iter()
+        .map(|distance| {
+            let moved = move_faces_with_quality(&mut topo, solid, &[face], distance, permission)
+                .unwrap_or_else(|error| panic!("move by {distance}: {error}"));
+            let result = moved.result.solid;
+            assert!(validate_solid(&topo, result).unwrap().is_valid());
+            let (block, boss) = if cap {
+                (29.0, 35.0 + distance)
+            } else {
+                (29.0 + distance, 35.0)
+            };
+            top_at(&topo, result, block);
+            top_at(&topo, result, boss);
+            closed_mesh_volume(&topo, result, 0.05);
+            assert_eq!(
+                remus_io::arena_io::serialize_solid(&topo, solid).unwrap(),
+                source
+            );
+            (
+                solid_volume(&topo, result, 0.01).unwrap(),
+                solid_faces(&topo, result).unwrap().len(),
+                moved.quality,
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn equal_radius_shoulder_and_rim_share_their_spring_at_contact_onset() {
+    // The R2 shoulder's spring on the R6 boss sits at the block top plus 2,
+    // the R2 rim's at the cap less 2. Where they coincide the boss strip
+    // between them closes to a curve: the shoulder hands over to the rim on
+    // the existing spring, a tangent S-bend, from either side. The onset
+    // builder took this incidence only for a shoulder wider than the rim,
+    // so an equal pair fell to the corner-band contour, which refuses a
+    // contour lying along an existing edge.
+    for cap in [false, true] {
+        let sense = if cap { -1.0 } else { 1.0 };
+        let moves = equal_radius_moves(cap, [1.9 * sense, 2.0 * sense, 2.1 * sense]);
+        let [
+            (before, before_faces, _),
+            (onset, onset_faces, quality),
+            (after, after_faces, _),
+        ] = moves[..]
+        else {
+            unreachable!()
+        };
+        assert_eq!(quality, FaceMoveQuality::SampledCapJoin { stations: 256 });
+        // The onset keeps the separated topology: the closed strip's place
+        // is taken by the shared spring, not by new corner bands.
+        assert_eq!((before_faces, onset_faces, after_faces), (16, 16, 19));
+        // Material grows with the block top and shrinks with the cap.
+        let ordered = if cap {
+            before > onset && onset > after
+        } else {
+            before < onset && onset < after
+        };
+        assert!(ordered, "cap={cap}: {before} {onset} {after}");
+    }
+}
+
+#[test]
+fn equal_radius_contact_onset_moves_again_from_either_face() {
+    // A body left at contact onset carries the concave shoulder and the
+    // convex rim tangent on one spring with one radius. Both faces move on
+    // from there, apart or into the join: the shoulder as a joined shoulder
+    // whose cap group may share its radius, the cap as a joined cap moving
+    // its plane alone.
+    let permission = Some(FaceMoveApproximation { stations: 256 });
+    for cap in [false, true] {
+        let (mut topo, source, top) = shoulder_with(29.0, 35.0, 2.0, 2.0);
+        let (face, onset, level) = if cap {
+            (top_at(&topo, source, 35.0), -2.0, 33.0)
+        } else {
+            (top, 2.0, 31.0)
+        };
+        let solid = move_faces_with_quality(&mut topo, source, &[face], onset, permission)
+            .unwrap()
+            .result
+            .solid;
+        let moved = top_at(&topo, solid, level);
+        let before = remus_io::arena_io::serialize_solid(&topo, solid).unwrap();
+        // Positive steps part a rising block top from the rim and lower
+        // cap from the shoulder into a join; negative ones the converse.
+        for (step, joined) in [(0.5, !cap), (-0.5, cap)] {
+            let result = move_faces_with_quality(&mut topo, solid, &[moved], step, permission)
+                .unwrap_or_else(|error| panic!("cap={cap} from onset by {step}: {error}"))
+                .result
+                .solid;
+            assert!(validate_solid(&topo, result).unwrap().is_valid());
+            top_at(&topo, result, level + step);
+            assert_eq!(
+                solid_faces(&topo, result).unwrap().len(),
+                if joined { 19 } else { 16 },
+                "cap={cap} by {step}"
+            );
+            closed_mesh_volume(&topo, result, 0.05);
+            assert_eq!(
+                remus_io::arena_io::serialize_solid(&topo, solid).unwrap(),
+                before
+            );
+        }
+    }
+}
+
+#[test]
+fn joined_shoulder_ignores_an_equal_rim_on_another_boss() {
+    use remus_math::mat::Mat4;
+    use remus_operations::transform::transform_solid;
+
+    // An R2 shoulder joined to its R1.8 rim, beside a second boss whose cap
+    // carries an R2 rim: equal to the shoulder, so it qualifies by radius,
+    // but it rounds another boss. Retreating the joined shoulder must pick
+    // its own cap group, not refuse the two as ambiguous.
+    let (mut topo, source, top) = shoulder_with(19.1, 28.5, 1.8, 2.0);
+    let permission = Some(FaceMoveApproximation { stations: 256 });
+    let post = make_cylinder(&mut topo, 3.0, 40.0).unwrap();
+    let post_cap = top_at(&topo, post, 40.0);
+    let rim_edges = face_edges(&topo, post_cap).unwrap();
+    let post = fillet_cascade(&mut topo, post, &rim_edges, 2.0)
+        .unwrap()
+        .solid;
+    transform_solid(&mut topo, post, &Mat4::translation(22.0, 10.0, 0.0)).unwrap();
+    let body = boolean(&mut topo, BooleanOp::Fuse, source, post).unwrap();
+    let top = {
+        let _ = top;
+        top_at(&topo, body, 19.1)
+    };
+    let joined = move_faces_with_quality(&mut topo, body, &[top], 6.0, permission)
+        .unwrap_or_else(|error| panic!("join: {error}"));
+    assert_eq!(
+        joined.quality,
+        FaceMoveQuality::SampledCapJoin { stations: 256 }
+    );
+    let joined = joined.result.solid;
+    let shoulder = top_at(&topo, joined, 25.1);
+    let retreat = move_faces_with_quality(&mut topo, joined, &[shoulder], -1.0, permission)
+        .unwrap_or_else(|error| panic!("retreat: {error}"))
+        .result
+        .solid;
+    assert!(validate_solid(&topo, retreat).unwrap().is_valid());
+    top_at(&topo, retreat, 24.1);
+    top_at(&topo, retreat, 28.5);
+    top_at(&topo, retreat, 40.0);
+}
+
+/// The OpenZCAD body the user dragged, serialized from the session: a
+/// 30 x 34 x 29 block fused with an R6 x 35 boss at its corner, the seam,
+/// shoulder and block edges rounded R2 in one selection (approximate NURBS
+/// mitres where they meet), the boss rim R2 and the remaining block top
+/// edges R2 with sphere corners.
+fn openzcad_boss_block(topo: &mut Topology) -> SolidId {
+    remus_io::arena_io::deserialize_solids(
+        include_bytes!("data/equal_radius_boss_block.arena.json"),
+        topo,
+    )
+    .unwrap()[0]
+}
+
+#[test]
+fn openzcad_boss_block_joins_from_either_top_and_moves_on() {
+    // Dragging the cap down 4 mm joined the blends; dragging the block top
+    // up 4 mm was refused, and so was any second drag of a joined top. The
+    // block top's own R2 edge rounds and their sphere corners ride with it,
+    // and the seam corners are approximate NURBS mitres.
+    let permission = Some(FaceMoveApproximation { stations: 256 });
+    let mut topo = Topology::new();
+    let solid = openzcad_boss_block(&mut topo);
+    let source = remus_io::arena_io::serialize_solid(&topo, solid).unwrap();
+    for (height, distance) in [(29.0, 2.0), (29.0, 4.0), (35.0, -2.0), (35.0, -4.0)] {
+        let face = top_at(&topo, solid, height);
+        let moved = move_faces_with_quality(&mut topo, solid, &[face], distance, permission)
+            .unwrap_or_else(|error| panic!("{height} by {distance}: {error}"));
+        assert_eq!(
+            moved.quality,
+            FaceMoveQuality::SampledCapJoin { stations: 256 }
+        );
+        let moved = moved.result.solid;
+        assert!(validate_solid(&topo, moved).unwrap().is_valid());
+        let level = height + distance;
+        top_at(&topo, moved, level);
+        top_at(&topo, moved, if height < 30.0 { 35.0 } else { 29.0 });
+        if distance.abs() > 3.0 {
+            let again = top_at(&topo, moved, level);
+            for step in [0.5, -0.5] {
+                let result = move_faces_with_quality(&mut topo, moved, &[again], step, permission)
+                    .unwrap_or_else(|error| panic!("{height} by {distance} then {step}: {error}"))
+                    .result
+                    .solid;
+                assert!(validate_solid(&topo, result).unwrap().is_valid());
+                top_at(&topo, result, level + step);
+            }
+        }
+        assert_eq!(
+            remus_io::arena_io::serialize_solid(&topo, solid).unwrap(),
+            source
+        );
+    }
+}
+
+/// The flush boss block built from scratch: an R6 boss on the corner of a
+/// 30 x 34 block, both `height` tall, its two seams rounded first and then
+/// every convex top and far vertical edge, all R2. Each fillet's coplanar
+/// leftovers are unified first, as a modeller merges them.
+fn flush_boss_block(topo: &mut Topology, height: f64) -> SolidId {
+    let boss = make_cylinder(topo, 6.0, height).unwrap();
+    let block = make_box(topo, 30.0, 34.0, height).unwrap();
+    let solid = boolean(topo, BooleanOp::Fuse, boss, block).unwrap();
+    remus_operations::heal::unify_faces(topo, solid).unwrap();
+    let ends = |topo: &Topology, edge| {
+        let edge = topo.edge(edge).unwrap();
+        (
+            topo.vertex(edge.start()).unwrap().point(),
+            topo.vertex(edge.end()).unwrap().point(),
+        )
+    };
+    let vertical_at = |topo: &Topology, solid, x: f64, y: f64| {
+        solid_edges(topo, solid)
+            .unwrap()
+            .into_iter()
+            .filter(|&edge| {
+                let (a, b) = ends(topo, edge);
+                (a.z() - b.z()).abs() > 1.0
+                    && [a, b]
+                        .iter()
+                        .all(|p| (p.x() - x).abs() < 1e-6 && (p.y() - y).abs() < 1e-6)
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut seams = vertical_at(topo, solid, 6.0, 0.0);
+    seams.extend(vertical_at(topo, solid, 0.0, 6.0));
+    let solid = fillet_cascade(topo, solid, &seams, 2.0).unwrap().solid;
+    remus_operations::heal::unify_faces(topo, solid).unwrap();
+    let mut convex: Vec<_> = solid_edges(topo, solid)
+        .unwrap()
+        .into_iter()
+        .filter(|&edge| {
+            let (a, b) = ends(topo, edge);
+            (a.z() - height).abs() < 1e-6 && (b.z() - height).abs() < 1e-6
+        })
+        .collect();
+    for (x, y) in [(30.0, 0.0), (30.0, 34.0), (0.0, 34.0)] {
+        convex.extend(vertical_at(topo, solid, x, y));
+    }
+    let rounded = fillet_cascade(topo, solid, &convex, 2.0).unwrap();
+    assert!(rounded.failed.is_empty());
+    rounded.solid
+}
+
+fn assert_same_body(topo: &Topology, actual: SolidId, expected: SolidId, label: &str) {
+    assert!(validate_solid(topo, actual).unwrap().is_valid(), "{label}");
+    let volume = |solid| solid_volume(topo, solid, 0.001).unwrap();
+    let area = |solid| -> f64 {
+        solid_faces(topo, solid)
+            .unwrap()
+            .into_iter()
+            .map(|face| face_area(topo, face, 0.001).unwrap())
+            .sum()
+    };
+    let (v, w) = (volume(actual), volume(expected));
+    let (a, b) = (area(actual), area(expected));
+    assert!((v - w).abs() < 1e-6 * w, "{label}: volume {v} vs {w}");
+    assert!((a - b).abs() < 1e-6 * b, "{label}: area {a} vs {b}");
+    let kinds = |solid| {
+        let mut kinds: Vec<_> = solid_faces(topo, solid)
+            .unwrap()
+            .into_iter()
+            .map(|face| std::mem::discriminant(topo.face(face).unwrap().surface()))
+            .map(|kind| format!("{kind:?}"))
+            .collect();
+        kinds.compact_sort_unstable();
+        kinds
+    };
+    assert_eq!(kinds(actual), kinds(expected), "{label}: face carriers");
+}
+
+#[test]
+fn openzcad_boss_block_moves_flush_from_either_top() {
+    // Raising the block top 6 mm, or lowering the cap 6 mm, brings the two
+    // tops into one plane. The boss wall between them, the joined shoulder
+    // and rim and the approximate seam mitres vanish; what is left is the
+    // part a modeller would round from scratch, exact throughout.
+    let permission = Some(FaceMoveApproximation { stations: 256 });
+    let mut topo = Topology::new();
+    let solid = openzcad_boss_block(&mut topo);
+    let source = remus_io::arena_io::serialize_solid(&topo, solid).unwrap();
+    let expected: [(f64, SolidId); 2] = [
+        (35.0, flush_boss_block(&mut topo, 35.0)),
+        (29.0, flush_boss_block(&mut topo, 29.0)),
+    ];
+    for (height, distance, level) in [(29.0, 6.0, 35.0), (35.0, -6.0, 29.0)] {
+        let face = top_at(&topo, solid, height);
+        let moved = move_faces_with_quality(&mut topo, solid, &[face], distance, permission)
+            .unwrap_or_else(|error| panic!("{height} by {distance}: {error}"));
+        // Every carrier is exact, so the move reports no sampled corner.
+        assert_eq!(moved.quality, FaceMoveQuality::Exact);
+        let moved = moved.result.solid;
+        let reference = expected
+            .iter()
+            .find(|(h, _)| (*h - level).abs() < 1e-9)
+            .unwrap()
+            .1;
+        assert_same_body(&topo, moved, reference, &format!("{height} by {distance}"));
+        // One top remains, and it moves on exactly either way.
+        let top = top_at(&topo, moved, level);
+        for step in [0.5, -0.5] {
+            let again = move_faces_with_quality(&mut topo, moved, &[top], step, permission)
+                .unwrap_or_else(|error| panic!("{height} by {distance} then {step}: {error}"));
+            assert_eq!(again.quality, FaceMoveQuality::Exact);
+            assert!(
+                validate_solid(&topo, again.result.solid)
+                    .unwrap()
+                    .is_valid()
+            );
+        }
+    }
+    assert_eq!(
+        remus_io::arena_io::serialize_solid(&topo, solid).unwrap(),
+        source
+    );
+}
+
+#[test]
+fn openzcad_boss_block_reaches_flush_from_a_joined_top() {
+    // A top already joined to the boss's rounds goes flush on a second drag
+    // from either side, and the result is the same as in one drag.
+    let permission = Some(FaceMoveApproximation { stations: 256 });
+    let mut topo = Topology::new();
+    let expected: [(f64, SolidId); 2] = [
+        (35.0, flush_boss_block(&mut topo, 35.0)),
+        (29.0, flush_boss_block(&mut topo, 29.0)),
+    ];
+    for (height, steps) in [
+        (29.0, [4.0, 2.0]),
+        (29.0, [5.5, 0.5]),
+        (35.0, [-4.0, -2.0]),
+        (35.0, [-5.0, -1.0]),
+    ] {
+        let mut solid = openzcad_boss_block(&mut topo);
+        let mut level = height;
+        for distance in steps {
+            let face = top_at(&topo, solid, level);
+            solid = move_faces_with_quality(&mut topo, solid, &[face], distance, permission)
+                .unwrap_or_else(|error| panic!("{height} by {steps:?}: {error}"))
+                .result
+                .solid;
+            level += distance;
+        }
+        let reference = expected
+            .iter()
+            .find(|(h, _)| (*h - level).abs() < 1e-9)
+            .unwrap()
+            .1;
+        assert_same_body(&topo, solid, reference, &format!("{height} by {steps:?}"));
+    }
+}
+
+#[test]
+fn openzcad_boss_block_still_refuses_past_flush() {
+    // Past flush the boss would step down from the block, a shape the cap
+    // reconstruction does not build. The refusal leaves the source intact.
+    let permission = Some(FaceMoveApproximation { stations: 256 });
+    let mut topo = Topology::new();
+    let solid = openzcad_boss_block(&mut topo);
+    let source = remus_io::arena_io::serialize_solid(&topo, solid).unwrap();
+    for (height, distance) in [(29.0, 6.5), (35.0, -6.5)] {
+        let face = top_at(&topo, solid, height);
+        assert!(
+            move_faces_with_quality(&mut topo, solid, &[face], distance, permission).is_err(),
+            "{height} by {distance}"
+        );
+    }
+    assert_eq!(
+        remus_io::arena_io::serialize_solid(&topo, solid).unwrap(),
+        source
+    );
+    let face = top_at(&topo, solid, 29.0);
+    let joined = move_faces_with_quality(&mut topo, solid, &[face], 4.0, permission)
+        .unwrap()
+        .result
+        .solid;
+    let joined_source = remus_io::arena_io::serialize_solid(&topo, joined).unwrap();
+    let face = top_at(&topo, joined, 33.0);
+    assert!(move_faces_with_quality(&mut topo, joined, &[face], 2.5, permission).is_err());
+    assert_eq!(
+        remus_io::arena_io::serialize_solid(&topo, joined).unwrap(),
+        joined_source
+    );
+}
+
+#[test]
+fn flush_boss_block_keeps_a_sealed_cavity() {
+    // A void deep in the block is untouched by the boss's tops going flush
+    // and stays the solid's own inner shell.
+    let permission = Some(FaceMoveApproximation { stations: 256 });
+    let mut topo = Topology::new();
+    let solid = openzcad_boss_block(&mut topo);
+    let void = make_box(&mut topo, 4.0, 4.0, 4.0).unwrap();
+    remus_operations::transform::transform_solid(
+        &mut topo,
+        void,
+        &remus_math::mat::Mat4::translation(18.0, 18.0, 4.0),
+    )
+    .unwrap();
+    let hollow = boolean(&mut topo, BooleanOp::Cut, solid, void).unwrap();
+    assert_eq!(topo.solid(hollow).unwrap().inner_shells().len(), 1);
+    let expected = flush_boss_block(&mut topo, 35.0);
+    let face = top_at(&topo, hollow, 29.0);
+    let moved = move_faces_with_quality(&mut topo, hollow, &[face], 6.0, permission)
+        .unwrap()
+        .result
+        .solid;
+    assert!(validate_solid(&topo, moved).unwrap().is_valid());
+    assert_eq!(topo.solid(moved).unwrap().inner_shells().len(), 1);
+    let (v, w) = (
+        solid_volume(&topo, moved, 0.001).unwrap(),
+        solid_volume(&topo, expected, 0.001).unwrap() - 64.0,
+    );
+    assert!((v - w).abs() < 1e-6 * w, "volume {v} vs {w}");
+}
+
+/// A hollow copy of the user's body: a sealed 4 mm void deep in the block.
+fn hollow_boss_block(topo: &mut Topology) -> SolidId {
+    let solid = openzcad_boss_block(topo);
+    let void = make_box(topo, 4.0, 4.0, 4.0).unwrap();
+    remus_operations::transform::transform_solid(
+        topo,
+        void,
+        &remus_math::mat::Mat4::translation(18.0, 18.0, 4.0),
+    )
+    .unwrap();
+    boolean(topo, BooleanOp::Cut, solid, void).unwrap()
+}
+
+/// Every face of `result` resolves, and every edge and vertex carries an
+/// event of `op`.
+fn assert_journal_covers(
+    topo: &Topology,
+    result: SolidId,
+    op: remus_topology::journal::OpId,
+    map: &remus_operations::evolution::EvolutionMap,
+    label: &str,
+) {
+    use remus_topology::journal::EntityKey;
+    assert!(map.unresolved.is_empty(), "{label}: {:?}", map.unresolved);
+    let journal = topo.journal();
+    let keys = solid_edges(topo, result)
+        .unwrap()
+        .into_iter()
+        .map(|edge| EntityKey::edge(edge.index()))
+        .chain(
+            remus_topology::explorer::solid_vertices(topo, result)
+                .unwrap()
+                .into_iter()
+                .map(|vertex| EntityKey::vertex(vertex.index())),
+        );
+    for key in keys {
+        let recorded = journal.ordinal_of(key).is_some_and(|ordinal| {
+            journal
+                .events_for(ordinal)
+                .iter()
+                .any(|(event, _)| *event == op)
+        });
+        assert!(recorded, "{label}: {key:?} has no event of the move");
+    }
+}
+
+#[test]
+fn flush_boss_block_records_complete_history() {
+    // A flush rebuild is exact, yet its new boundaries still take the cap
+    // builder's construction ancestry, and the untouched cavity's faces
+    // survive by name.
+    let permission = Some(FaceMoveApproximation { stations: 256 });
+    let mut topo = Topology::new();
+    let solid = hollow_boss_block(&mut topo);
+    let face = top_at(&topo, solid, 29.0);
+    let (journaled, quality) = remus_operations::journal_ops::move_faces_journaled_with_quality(
+        &mut topo,
+        solid,
+        &[face],
+        6.0,
+        permission,
+    )
+    .unwrap();
+    assert_eq!(quality, FaceMoveQuality::Exact);
+    assert_journal_covers(
+        &topo,
+        journaled.solid,
+        journaled.op,
+        &journaled.map,
+        "journaled",
+    );
+    let mut prepared = PreparedFaceMove::prepare(&topo, solid, &[face]).unwrap();
+    let (prepared, quality) = prepared
+        .move_faces_journaled_with_quality(&mut topo, 6.0, permission)
+        .unwrap();
+    assert_eq!(quality, FaceMoveQuality::Exact);
+    assert_journal_covers(
+        &topo,
+        prepared.solid,
+        prepared.op,
+        &prepared.map,
+        "prepared",
+    );
+}
+
+/// A joined OpenZCAD boss block with its top raised (`distance > 0`) or its
+/// cap lowered (`distance < 0`) by `distance`, checked closed at the cap
+/// join's closure deflection and at display deflections; the moved body's
+/// volume.
+fn wedged_boss_block(topo: &mut Topology, solid: SolidId, distance: f64) -> (SolidId, f64) {
+    let permission = Some(FaceMoveApproximation { stations: 256 });
+    let height = if distance > 0.0 { 29.0 } else { 35.0 };
+    let face = top_at(topo, solid, height);
+    let moved = move_faces_with_quality(topo, solid, &[face], distance, permission)
+        .unwrap_or_else(|error| panic!("{distance}: {error}"));
+    assert_eq!(
+        moved.quality,
+        FaceMoveQuality::SampledCapJoin { stations: 256 },
+        "{distance}"
+    );
+    let moved = moved.result.solid;
+    assert!(
+        validate_solid(topo, moved).unwrap().is_valid(),
+        "{distance}"
+    );
+    top_at(topo, moved, height + distance);
+    for deflection in [0.0029, 0.01, 0.05] {
+        closed_mesh_volume(topo, moved, deflection);
+    }
+    (moved, solid_volume(topo, moved, 0.01).unwrap())
+}
+
+#[test]
+fn openzcad_boss_block_closes_where_the_cap_ball_wedges() {
+    // From about 4.6 mm into the 6 mm join, the cap's R2 ball rolling on
+    // the seam corner (an R2 canal turning from the seam into the shoulder)
+    // reaches the shoulder before the corner ends: it touches the cap, the
+    // canal and the shoulder at once. The canal band rolled on past it, its
+    // centre contour folding back to the node, and poked up to 0.06 mm
+    // through the shoulder. From 5.4 to 5.8 the fold broke the mesh:
+    // lowered caps refused with boundary and non-manifold edges, raised
+    // block tops published bodies whose display mesh had gaps. Just below
+    // 4.6 the contour loops over itself by a fraction of a micron.
+    let mut topo = Topology::new();
+    let solid = openzcad_boss_block(&mut topo);
+    let source = remus_io::arena_io::serialize_solid(&topo, solid).unwrap();
+    for sense in [1.0, -1.0] {
+        let mut previous = None;
+        for depth in [4.5, 4.55, 4.6, 5.0, 5.4, 5.5, 5.8, 5.95] {
+            let (moved, volume) = wedged_boss_block(&mut topo, solid, depth * sense);
+            assert_eq!(solid_faces(&topo, moved).unwrap().len(), 27, "{depth}");
+            // Material grows with the block top and shrinks with the cap.
+            if let Some(last) = previous {
+                assert!(
+                    (volume - last) * sense > 0.0,
+                    "{depth}: {last} then {volume}"
+                );
+            }
+            previous = Some(volume);
+        }
+    }
+    assert_eq!(
+        remus_io::arena_io::serialize_solid(&topo, solid).unwrap(),
+        source
+    );
+}
+
+#[test]
+fn openzcad_boss_block_moves_on_from_a_wedged_cap_ball() {
+    // From a wedged join the moved face goes on, deeper or back, and lands
+    // on the same body one move to the end depth builds; retreating past
+    // contact onset separates the cap from the shoulder again.
+    let permission = Some(FaceMoveApproximation { stations: 256 });
+    for sense in [1.0, -1.0] {
+        let mut topo = Topology::new();
+        let solid = openzcad_boss_block(&mut topo);
+        let (wedged, _) = wedged_boss_block(&mut topo, solid, 5.5 * sense);
+        let level = if sense > 0.0 { 34.5 } else { 29.5 };
+        let face = top_at(&topo, wedged, level);
+        let before = remus_io::arena_io::serialize_solid(&topo, wedged).unwrap();
+        for (step, faces) in [(0.3, 27), (-0.5, 27), (-3.6, 24)] {
+            let moved =
+                move_faces_with_quality(&mut topo, wedged, &[face], step * sense, permission)
+                    .unwrap_or_else(|error| panic!("5.5 then {step} ({sense}): {error}"))
+                    .result
+                    .solid;
+            assert!(validate_solid(&topo, moved).unwrap().is_valid());
+            assert_eq!(solid_faces(&topo, moved).unwrap().len(), faces);
+            closed_mesh_volume(&topo, moved, 0.0029);
+            let volume = solid_volume(&topo, moved, 0.01).unwrap();
+            let height = if sense > 0.0 { 29.0 } else { 35.0 };
+            let source_face = top_at(&topo, solid, height);
+            let direct = move_faces_with_quality(
+                &mut topo,
+                solid,
+                &[source_face],
+                (5.5 + step) * sense,
+                permission,
+            )
+            .unwrap()
+            .result
+            .solid;
+            let direct = solid_volume(&topo, direct, 0.01).unwrap();
+            assert!(
+                (volume - direct).abs() <= direct * 1e-6,
+                "5.5 then {step} ({sense}): {volume} against one move's {direct}"
+            );
+            assert_eq!(
+                remus_io::arena_io::serialize_solid(&topo, wedged).unwrap(),
+                before
+            );
+        }
+    }
+}
+
+#[test]
+fn wedged_cap_bands_keep_their_station_budget() {
+    // Later blend edits read a joined cap band's section count back as
+    // their station budget and require the cap's bands to agree on it. A
+    // wedged canal band carries extra sections past its wedged ball, so its
+    // rolled stations make room for them.
+    for (stations, distance) in [(256, 5.5), (256, -5.0), (2048, -5.5), (32, 4.6), (16, -5.5)] {
+        let mut topo = Topology::new();
+        let solid = openzcad_boss_block(&mut topo);
+        let height = if distance > 0.0 { 29.0 } else { 35.0 };
+        let face = top_at(&topo, solid, height);
+        let moved = move_faces_with_quality(
+            &mut topo,
+            solid,
+            &[face],
+            distance,
+            Some(FaceMoveApproximation { stations }),
+        )
+        .unwrap_or_else(|error| panic!("{stations} by {distance}: {error}"))
+        .result
+        .solid;
+        closed_mesh_volume(&topo, moved, 0.0029);
+        let cap = top_at(
+            &topo,
+            moved,
+            if distance > 0.0 {
+                35.0
+            } else {
+                35.0 + distance
+            },
+        );
+        let mut bands = 0;
+        for edge in face_edges(&topo, cap).unwrap() {
+            for other in solid_faces(&topo, moved).unwrap() {
+                if other == cap || !face_edges(&topo, other).unwrap().contains(&edge) {
+                    continue;
+                }
+                if let remus_topology::face::FaceSurface::Nurbs(surface) =
+                    topo.face(other).unwrap().surface()
+                {
+                    assert_eq!(
+                        surface.control_points()[0].len(),
+                        stations,
+                        "{stations} by {distance}"
+                    );
+                    bands += 1;
+                }
+            }
+        }
+        assert_eq!(bands, 2, "{stations} by {distance}");
     }
 }

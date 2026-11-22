@@ -42,6 +42,7 @@ pub(crate) mod section_tolerance;
 
 pub use builder::FaceClass;
 pub use builder::builder_solid::cylinder_face_is_bounded;
+pub use builder::classify_2d::{PlanarLoopEdge, point_in_planar_loop};
 pub use builder::pcurve_compute::{
     compute_pcurve_on_surface, compute_pcurve_on_surface_in_domain, wall_chart, wall_chart_uv,
 };

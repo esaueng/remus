@@ -163,10 +163,20 @@ fn ruled_generators_agree_with_independent_tensor_quadrature() {
 
 #[test]
 fn knot_aligned_rows_match_every_original_sample_bit_for_bit() {
-    use super::nurbs_rows_oracle_tests::{contribution_bits, surfaces, trims};
+    use super::nurbs_rows_oracle_tests::{contribution_bits, surface, surfaces, trims};
     let reference = Point3::new(0.13, -0.27, 0.41);
     let mut cases = 0;
-    for (label, surface) in surfaces() {
+    let multi_span = surface(
+        3,
+        3,
+        &[0.45],
+        &[0.1, 0.24, 0.32, 0.51, 0.67, 0.81, 0.93],
+        true,
+    );
+    for (label, surface) in surfaces()
+        .into_iter()
+        .chain([("many distinct v spans", multi_span)])
+    {
         let scale = PatchScale {
             u: knot_axis_patch_scale(surface.knots_u(), surface.domain_u()),
             v: knot_axis_patch_scale(surface.knots_v(), surface.domain_v()),

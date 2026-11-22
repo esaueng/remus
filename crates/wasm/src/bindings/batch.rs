@@ -359,6 +359,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "helicalSweep"
         | "helicalSweepInPlace"
         | "sweepExact"
+        | "sweepExactWithOptions"
         | "wrapProfileOnCylinder"
         | "wrapProfileOnCone"
         | "multiSectionSweep"
@@ -2125,6 +2126,20 @@ impl RemusKernel {
                 let edges: Vec<u32> = get_u32_array(args, "edges")?;
                 let result = self
                     .sweep_exact_impl(profile, &edges)
+                    .map_err(StructuredWasmError::from)?;
+                Ok(serde_json::json!(result))
+            }
+            "sweepExactWithOptions" => {
+                let profile = get_u32(args, "profile")?;
+                let edges: Vec<u32> = get_u32_array(args, "edges")?;
+                let options = match args.get("options") {
+                    None | Some(serde_json::Value::Null) => {
+                        remus_operations::exact_sweep::ExactSweepOptions::default()
+                    }
+                    Some(options) => super::operations::parse_exact_sweep_options(options)?,
+                };
+                let result = self
+                    .sweep_exact_with_options_impl(profile, &edges, &options)
                     .map_err(StructuredWasmError::from)?;
                 Ok(serde_json::json!(result))
             }

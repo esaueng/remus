@@ -128,6 +128,16 @@ impl RemusKernel {
         Ok(removed as u32)
     }
 
+    /// Merge co-surface faces only if the candidate passes strict validation.
+    /// Returns the number of faces removed, or zero for a declined merge.
+    #[wasm_bindgen(js_name = "unifyFacesIfStrict")]
+    pub fn unify_faces_if_strict(&mut self, solid: u32) -> Result<u32, JsError> {
+        let solid_id = self.resolve_solid(solid)?;
+        let removed = remus_operations::heal::unify_faces_if_strict(self.topo_mut(), solid_id)?;
+        #[allow(clippy::cast_possible_truncation)]
+        Ok(removed as u32)
+    }
+
     /// `unifyFaces` that also reports the strict validations it performs.
     ///
     /// Same merge, acceptance rule and tolerances as `unifyFaces`. Returns a

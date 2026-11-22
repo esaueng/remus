@@ -89,7 +89,7 @@ pub(super) fn lift_joined_cap(
     let permission = CapReblendApproximation {
         stations: joined.stations,
     };
-    let Ok(((moved, pairs), _)) = crate::face_move_quality::edit_with_quality(
+    let Ok(((moved, pairs), _, _)) = crate::face_move_quality::edit_with_quality(
         work,
         solid,
         &[joined.cap],
@@ -166,7 +166,7 @@ pub(super) fn lower_joined_cap(
         .ok_or_else(|| super::BlendClusterError::ReblendFailed {
             reason: "the lifted cap has no unique image on the edited body".into(),
         })?;
-    let ((lowered, _), _) = crate::face_move_quality::edit_with_quality(
+    let ((lowered, _), _, _) = crate::face_move_quality::edit_with_quality(
         work,
         solid,
         &[cap],
