@@ -1014,6 +1014,7 @@ fn reject_faces_in_corner_ball(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn reject_variable_support_cliffs(
     topo: &Topology,
     edge_laws: &[(EdgeId, FilletRadiusLaw)],
@@ -1021,6 +1022,7 @@ fn reject_variable_support_cliffs(
     active_intervals: &HashMap<usize, (f64, f64)>,
     edge_to_faces: &HashMap<usize, Vec<remus_topology::face::FaceId>>,
     face_surfaces: &HashMap<usize, FaceSurface>,
+    skip_edges: &HashSet<usize>,
     tol: Tolerance,
 ) -> Result<(), crate::OperationsError> {
     const CURVE_CHORDS: u32 = 32;
@@ -1054,7 +1056,8 @@ fn reject_variable_support_cliffs(
             let mut segments: Vec<(Point3, Point3)> = Vec::new();
             for wire_id in std::iter::once(face.outer_wire()).chain(face.inner_wires().to_vec()) {
                 for oriented in topo.wire(wire_id)?.edges() {
-                    if oriented.edge() == *edge_id {
+                    if oriented.edge() == *edge_id || skip_edges.contains(&oriented.edge().index())
+                    {
                         continue;
                     }
                     let boundary = topo.edge(oriented.edge())?;
@@ -1606,15 +1609,22 @@ fn fillet_variable_transacted(
         tol,
     )?;
 
-    reject_variable_support_cliffs(
-        topo,
-        edge_laws,
-        &sections,
-        &active_intervals,
-        &edge_to_faces,
-        &face_surfaces,
-        tol,
-    )?;
+    // The clearance check reads each law over its active spine interval. A
+    // declared setback fixes that interval already; a tangent-ball corner
+    // crops it below, and the built band runs its law over the cropped span,
+    // so in that mode the check waits for the crop (#1944).
+    if corners == VariableCorners::Declared {
+        reject_variable_support_cliffs(
+            topo,
+            edge_laws,
+            &sections,
+            &active_intervals,
+            &edge_to_faces,
+            &face_surfaces,
+            &HashSet::default(),
+            tol,
+        )?;
+    }
 
     // Build a map from edge index to radius law for per-vertex radius lookup.
     // Each vertex adjacent to a filleted edge uses that edge's actual radius
@@ -1819,6 +1829,9 @@ fn fillet_variable_transacted(
         };
 
         let vertex = topo.vertex(vertex_id)?.point();
+        // Each ball-cropped stripe's corner zone, vertex to station, in the
+        // edge's parameter: the cap covers it, not the stripe.
+        let mut corner_zones: HashMap<usize, (f64, f64)> = HashMap::default();
         for (edge_id, _) in &radii {
             let edge = topo.edge(*edge_id)?;
             let other = if edge.start() == vertex_id {
@@ -1855,8 +1868,10 @@ fn fillet_variable_transacted(
                 })?;
                 if edge.start() == vertex_id {
                     interval.0 = required / length;
+                    corner_zones.insert(edge_id.index(), (0.0, interval.0));
                 } else {
                     interval.1 = 1.0 - required / length;
+                    corner_zones.insert(edge_id.index(), (interval.1, 1.0));
                 }
                 if interval.1 - interval.0 <= tol.linear / length {
                     return Err(crate::OperationsError::InvalidInput {
@@ -1867,6 +1882,33 @@ fn fillet_variable_transacted(
                 }
                 declared_endpoint_setbacks.insert((edge_id.index(), vertex_index), required);
             }
+        }
+        if ball {
+            // The cropped spans start at the ball's station, so the stripe
+            // check below never sees the zone between it and the vertex,
+            // which the corner's cap covers instead (#1945 review). On each
+            // support the cap stays inside the footprint the stripe would
+            // have over that zone at the corner radius (two such rectangles
+            // cover the kite vertex, station, contact, station), so check
+            // the zone at that radius. The corner's own stripes bound it and
+            // are not obstacles. Runs before the corner-ball guard, so an
+            // obstacle on a support is refused with its radius details.
+            let zone_laws: Vec<(EdgeId, FilletRadiusLaw)> = radii
+                .iter()
+                .filter(|(edge_id, _)| corner_zones.contains_key(&edge_id.index()))
+                .map(|(edge_id, _)| (*edge_id, FilletRadiusLaw::Constant(common_radius)))
+                .collect();
+            let stripes: HashSet<usize> = incident_edges.iter().map(|edge| edge.index()).collect();
+            reject_variable_support_cliffs(
+                topo,
+                &zone_laws,
+                &sections,
+                &corner_zones,
+                &edge_to_faces,
+                &face_surfaces,
+                &stripes,
+                tol,
+            )?;
         }
         reject_faces_in_corner_ball(
             topo,
@@ -1881,6 +1923,19 @@ fn fillet_variable_transacted(
         let is_concave = planar_edge_sides.values().all(|side| *side > 0.0);
         qualified_setback_corners
             .insert(vertex_index, (vertex_id, center, common_radius, is_concave));
+    }
+
+    if corners == VariableCorners::TangentBall {
+        reject_variable_support_cliffs(
+            topo,
+            edge_laws,
+            &sections,
+            &active_intervals,
+            &edge_to_faces,
+            &face_surfaces,
+            &HashSet::default(),
+            tol,
+        )?;
     }
 
     // Shared contact map: the SAME inward contact point used both to trim the
