@@ -109,6 +109,31 @@ fn with_interior_stations(
     Ok(FilletRadiusLaw::Stations { blend, stations })
 }
 
+/// The corner mode a `filletVariable` spec list asks for: tangent-ball
+/// corners when any spec says `"ballCorners": true`, declared setbacks
+/// otherwise. A non-boolean `ballCorners` is refused.
+pub(super) fn variable_fillet_corners(
+    specs: &[serde_json::Value],
+) -> Result<remus_operations::fillet::VariableCorners, WasmError> {
+    let mut ball = false;
+    for spec in specs {
+        match spec.get("ballCorners") {
+            None | Some(serde_json::Value::Null) => {}
+            Some(serde_json::Value::Bool(value)) => ball |= *value,
+            Some(_) => {
+                return Err(WasmError::InvalidInput {
+                    reason: "'ballCorners' in fillet spec must be a boolean".into(),
+                });
+            }
+        }
+    }
+    Ok(if ball {
+        remus_operations::fillet::VariableCorners::TangentBall
+    } else {
+        remus_operations::fillet::VariableCorners::Declared
+    })
+}
+
 pub(super) fn parse_variable_fillet_specs(
     kernel: &RemusKernel,
     specs: &[serde_json::Value],
@@ -2475,7 +2500,10 @@ impl RemusKernel {
     /// straight edge between two planar faces; any other selected edge is
     /// refused with `unsupported-variable-support`, and two or more selected
     /// edges meeting at a corner without qualified setbacks with
-    /// `unsupported-vertex-blend`.
+    /// `unsupported-vertex-blend`. `"ballCorners": true` on any spec closes
+    /// every corner of three or more selected edges with the exact ball
+    /// tangent to their supports, setting each stripe back to it; give no
+    /// `startSetback`/`endSetback` with it.
     ///
     /// Also accepts brepjs-style fields: `startRadius`/`endRadius` as aliases for `start`/`end`.
     /// When `law` is omitted and `startRadius` != `endRadius`, the law auto-detects as `"linear"`.
@@ -2498,10 +2526,12 @@ impl RemusKernel {
                 reason: format!("invalid JSON: {e}"),
             })?;
         let edge_specs = parse_variable_fillet_specs(self, &specs)?;
-        let result = remus_operations::fillet::fillet_variable_with_setbacks(
+        let corners = variable_fillet_corners(&specs)?;
+        let result = remus_operations::fillet::fillet_variable_with_corners(
             self.topo_mut(),
             solid_id,
             &edge_specs,
+            corners,
         )
         .map_err(|e| fillet_failure_js_error(&e))?;
         Ok(solid_id_to_u32(result))
@@ -3806,6 +3836,53 @@ mod tests {
                 "{spec}: {error}"
             );
         }
+    }
+
+    #[test]
+    fn variable_fillet_json_reads_ball_corners_as_one_call_wide_flag() {
+        use remus_operations::fillet::VariableCorners;
+        let plain = serde_json::json!({ "edge": 0, "law": "linear" });
+        let ball = serde_json::json!({ "edge": 1, "law": "scurve", "ballCorners": true });
+        let off = serde_json::json!({ "edge": 2, "ballCorners": false });
+        let null = serde_json::json!({ "edge": 2, "ballCorners": null });
+        assert_eq!(
+            super::variable_fillet_corners(&[plain.clone(), off.clone(), null]).unwrap(),
+            VariableCorners::Declared
+        );
+        assert_eq!(
+            super::variable_fillet_corners(&[plain, ball, off]).unwrap(),
+            VariableCorners::TangentBall
+        );
+        let error = super::variable_fillet_corners(&[serde_json::json!({ "ballCorners": "yes" })])
+            .unwrap_err();
+        assert!(
+            matches!(&error, crate::error::WasmError::InvalidInput { reason } if reason.contains("boolean")),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn variable_fillet_closes_a_box_corner_with_its_tangent_ball() {
+        let mut kernel = RemusKernel::new();
+        let solid = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
+        let at_origin: Vec<u32> = kernel
+            .get_solid_edges(solid)
+            .unwrap()
+            .into_iter()
+            .filter(|&edge| {
+                let ends = kernel.get_edge_vertices(edge).unwrap();
+                ends[..3].iter().all(|c| c.abs() < 1e-9) || ends[3..].iter().all(|c| c.abs() < 1e-9)
+            })
+            .collect();
+        assert_eq!(at_origin.len(), 3);
+        let specs: Vec<_> = at_origin
+            .iter()
+            .map(|&edge| serde_json::json!({ "edge": edge, "law": "constant", "start": 1.0, "ballCorners": true }))
+            .collect();
+        let rounded = kernel
+            .fillet_variable(solid, &serde_json::Value::Array(specs).to_string())
+            .unwrap();
+        assert_eq!(kernel.get_solid_faces(rounded).unwrap().len(), 10);
     }
 
     #[test]

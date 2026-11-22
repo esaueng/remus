@@ -496,7 +496,13 @@ pub fn fillet_variable(
     edge_laws: &[(EdgeId, FilletRadiusLaw)],
 ) -> Result<SolidId, crate::OperationsError> {
     crate::blend_ops::preview_checks::transaction(topo, |t| {
-        fillet_variable_transacted(t, solid, edge_laws, &HashMap::default())
+        fillet_variable_transacted(
+            t,
+            solid,
+            edge_laws,
+            &HashMap::default(),
+            VariableCorners::Declared,
+        )
     })
 }
 
@@ -520,6 +526,49 @@ pub fn fillet_variable_with_setbacks(
     solid: SolidId,
     specs: &[FilletEdgeSetback],
 ) -> Result<SolidId, crate::OperationsError> {
+    fillet_variable_with_corners(topo, solid, specs, VariableCorners::Declared)
+}
+
+/// How a variable-radius fillet closes a corner where three or more selected
+/// stripes meet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VariableCorners {
+    /// Only where every incident stripe declares its setback, and each
+    /// declared distance must be the tangent ball's station
+    /// ([`fillet_variable_with_setbacks`]); an undeclared corner is refused.
+    Declared,
+    /// At every undeclared corner of three or more selected stripes on
+    /// planar supports, set each stripe back to the station of the one ball
+    /// tangent to all their supports, and close the corner with that ball's
+    /// exact spherical cap. The qualification is the declared one's: the
+    /// stripes' radii must agree at the corner with zero slope there, or the
+    /// corner is refused by type.
+    TangentBall,
+}
+
+/// [`fillet_variable_with_setbacks`] with an explicit corner mode.
+///
+/// # Errors
+///
+/// As [`fillet_variable_with_setbacks`]; with
+/// [`VariableCorners::TangentBall`], also `InvalidInput` when a spec declares
+/// its own setback (the ball sets them), and `InvalidInput` when the ball's
+/// stations would consume a stripe.
+pub fn fillet_variable_with_corners(
+    topo: &mut Topology,
+    solid: SolidId,
+    specs: &[FilletEdgeSetback],
+    corners: VariableCorners,
+) -> Result<SolidId, crate::OperationsError> {
+    if corners == VariableCorners::TangentBall
+        && specs
+            .iter()
+            .any(|spec| spec.start_setback != 0.0 || spec.end_setback != 0.0)
+    {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: "tangent-ball corners set every setback themselves; declare none".into(),
+        });
+    }
     let mut seen = HashSet::with_capacity_and_hasher(specs.len(), DetState);
     let mut edge_laws = Vec::with_capacity(specs.len());
     let mut setbacks = HashMap::with_capacity_and_hasher(specs.len(), DetState);
@@ -530,7 +579,7 @@ pub fn fillet_variable_with_setbacks(
         }
     }
     crate::blend_ops::preview_checks::transaction(topo, |t| {
-        fillet_variable_transacted(t, solid, &edge_laws, &setbacks)
+        fillet_variable_transacted(t, solid, &edge_laws, &setbacks, corners)
     })
 }
 
@@ -773,6 +822,8 @@ fn reject_unset_stripe_corner(
     topo: &Topology,
     vertex_index: usize,
     incident_edges: &[EdgeId],
+    edge_to_faces: &HashMap<usize, Vec<remus_topology::face::FaceId>>,
+    face_surfaces: &HashMap<usize, FaceSurface>,
     tol: Tolerance,
 ) -> Result<(), crate::OperationsError> {
     if incident_edges.len() < 2 {
@@ -795,7 +846,20 @@ fn reject_unset_stripe_corner(
     let collinear = directions
         .iter()
         .all(|direction| direction.cross(directions[0]).length() <= tol.angular);
-    if collinear && incident_edges.len() == 2 {
+    // Two stripes continuing one line meet in one section plane, and their
+    // end sections are the same arc only when their supports are the same
+    // two planes: a support that turns there (a 90° wall going on as a 60°
+    // one) leaves sections that differ, so the pair is refused as well.
+    if collinear
+        && incident_edges.len() == 2
+        && same_support_planes(
+            incident_edges[0],
+            incident_edges[1],
+            edge_to_faces,
+            face_surfaces,
+            tol,
+        )
+    {
         return Ok(());
     }
     let Some(vertex) = vertex else {
@@ -807,6 +871,38 @@ fn reject_unset_stripe_corner(
             stripes: incident_edges.len(),
         },
     ))
+}
+
+/// Whether two stripes run between the same two planes (as oriented planes,
+/// in either order), so their sections at a shared vertex coincide.
+fn same_support_planes(
+    first: EdgeId,
+    second: EdgeId,
+    edge_to_faces: &HashMap<usize, Vec<remus_topology::face::FaceId>>,
+    face_surfaces: &HashMap<usize, FaceSurface>,
+    tol: Tolerance,
+) -> bool {
+    let planes = |edge: EdgeId| -> Option<[(Vec3, f64); 2]> {
+        let faces = edge_to_faces.get(&edge.index())?;
+        if faces.len() != 2 {
+            return None;
+        }
+        let plane = |face: &remus_topology::face::FaceId| {
+            let Some(FaceSurface::Plane { normal, d }) = face_surfaces.get(&face.index()) else {
+                return None;
+            };
+            let length = normal.length();
+            (length > 0.0).then(|| (*normal * (1.0 / length), *d / length))
+        };
+        Some([plane(&faces[0])?, plane(&faces[1])?])
+    };
+    let same = |a: (Vec3, f64), b: (Vec3, f64)| {
+        (a.0 - b.0).length() <= tol.angular && (a.1 - b.1).abs() <= tol.linear
+    };
+    let (Some([a0, a1]), Some([b0, b1])) = (planes(first), planes(second)) else {
+        return false;
+    };
+    (same(a0, b0) && same(a1, b1)) || (same(a0, b1) && same(a1, b0))
 }
 
 fn edge_curve_tag(curve: &EdgeCurve) -> &'static str {
@@ -857,6 +953,67 @@ fn face_surface_tag(surface: &FaceSurface) -> &'static str {
 /// [`remus_blend::BlendError::CliffEncountered`] naming the edge, the
 /// support face, and the worst station's requested radius and available
 /// width.
+/// Refuses a setback corner that another face reaches into: the corner's
+/// cap is assembled against its stripes' support faces only, so any other
+/// face inside the corner ball (a bore near the corner) would cross the cap
+/// unsplit. Conservative: any face whose enclosing box meets the ball's
+/// refuses the corner, NURBS faces by their carrier's whole control hull.
+#[allow(clippy::too_many_arguments)]
+fn reject_faces_in_corner_ball(
+    topo: &Topology,
+    solid: SolidId,
+    vertex: remus_topology::vertex::VertexId,
+    stripes: &[EdgeId],
+    edge_to_faces: &HashMap<usize, Vec<remus_topology::face::FaceId>>,
+    center: Point3,
+    radius: f64,
+    tol: Tolerance,
+) -> Result<(), crate::OperationsError> {
+    let supports: HashSet<usize> = stripes
+        .iter()
+        .filter_map(|edge| edge_to_faces.get(&edge.index()))
+        .flatten()
+        .map(|face| face.index())
+        .collect();
+    let reach = Vec3::new(radius, radius, radius);
+    let ball = remus_math::aabb::Aabb3::from_points([center - reach, center + reach])
+        .expanded(-tol.linear);
+    for face in remus_topology::explorer::solid_faces(topo, solid)? {
+        if supports.contains(&face.index()) {
+            continue;
+        }
+        // A NURBS face is bounded by its whole carrier's control hull, which
+        // encloses it whatever its trim (positive weights); the trimmed
+        // patch box is recovered from sampled trims and can miss a lobe
+        // (review). Analytic faces' boxes are exact.
+        let bounds = match topo.face(face)?.surface() {
+            FaceSurface::Nurbs(nurbs) => remus_math::aabb::Aabb3::try_from_points(
+                nurbs.control_points().iter().flatten().copied(),
+            )
+            .ok_or_else(|| crate::OperationsError::InvalidInput {
+                reason: format!("face {face:?} has a NURBS surface with no control points"),
+            })?,
+            FaceSurface::Plane { .. }
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_) => crate::measure::face_bounding_box(topo, face)?,
+        };
+        if bounds.intersects(ball) {
+            return Err(crate::OperationsError::Blend(
+                remus_blend::BlendError::UnsupportedSetbackCorner {
+                    vertex,
+                    stripes: stripes.len(),
+                    reason: format!(
+                        "face {face:?} reaches into the corner's tangent ball, so the cap would cross it"
+                    ),
+                },
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn reject_variable_support_cliffs(
     topo: &Topology,
     edge_laws: &[(EdgeId, FilletRadiusLaw)],
@@ -1268,6 +1425,7 @@ fn fillet_variable_transacted(
     solid: SolidId,
     edge_laws: &[(EdgeId, FilletRadiusLaw)],
     requested_setbacks: &HashMap<usize, (f64, f64)>,
+    corners: VariableCorners,
 ) -> Result<SolidId, crate::OperationsError> {
     let tol = Tolerance::new();
 
@@ -1499,8 +1657,20 @@ fn fillet_variable_transacted(
                 declared_endpoint_setbacks.contains_key(&(edge_id.index(), vertex_index))
             })
             .count();
-        if declared_count == 0 {
-            reject_unset_stripe_corner(topo, vertex_index, incident_edges, tol)?;
+        // A tangent-ball corner sets every incident stripe back itself, to the
+        // ball's station, and is then qualified as a declared one is.
+        let ball = corners == VariableCorners::TangentBall
+            && declared_count == 0
+            && incident_edges.len() >= 3;
+        if declared_count == 0 && !ball {
+            reject_unset_stripe_corner(
+                topo,
+                vertex_index,
+                incident_edges,
+                &edge_to_faces,
+                &face_surfaces,
+                tol,
+            )?;
             continue;
         }
         let vertex_id = incident_edges
@@ -1514,7 +1684,7 @@ fn fillet_variable_transacted(
             .ok_or_else(|| crate::OperationsError::InvalidInput {
                 reason: format!("setback endpoint {vertex_index} is not on its selected edges"),
             })?;
-        if incident_edges.len() < 3 || declared_count != incident_edges.len() {
+        if !ball && (incident_edges.len() < 3 || declared_count != incident_edges.len()) {
             return Err(crate::OperationsError::Blend(
                 remus_blend::BlendError::UnsupportedSetbackCorner {
                     vertex: vertex_id,
@@ -1538,8 +1708,12 @@ fn fillet_variable_transacted(
             let law = edge_law_map[&edge_id.index()];
             let radius = law.evaluate(law_t);
             radii.push((*edge_id, radius));
-            let slope_tol = tol.linear.max(radius.abs() * 1.0e-10);
-            if law.derivative(law_t).abs() > slope_tol {
+            // Exactly zero, not small: the law is mapped onto the cropped
+            // stripe, so any slope at the station grows as the stripe
+            // shortens and opens a tangent break against the cap. The
+            // S-curve and constant laws (and S-curve stations) give an
+            // exact 0.0 at their ends; a ramp never does.
+            if law.derivative(law_t).abs() > 0.0 {
                 return Err(crate::OperationsError::Blend(
                     remus_blend::BlendError::UnsupportedSetbackCorner {
                         vertex: vertex_id,
@@ -1607,7 +1781,10 @@ fn fillet_variable_transacted(
         }
 
         let common_radius = radii[0].1;
-        let radius_tol = tol.linear.max(common_radius.abs() * 1.0e-8);
+        // Absolute: each stripe's corner contacts are set from the common
+        // radius, so a difference becomes a law error of the same size along
+        // the stripe, and only one within the linear tolerance stays exact.
+        let radius_tol = tol.linear;
         if radii
             .iter()
             .any(|(_, radius)| (*radius - common_radius).abs() > radius_tol)
@@ -1651,7 +1828,11 @@ fn fillet_variable_transacted(
             };
             let away = (other - vertex).normalize()?;
             let required = (center - vertex).dot(away);
-            let declared = declared_endpoint_setbacks[&(edge_id.index(), vertex_index)];
+            let declared = if ball {
+                required
+            } else {
+                declared_endpoint_setbacks[&(edge_id.index(), vertex_index)]
+            };
             let setback_tol = tol.linear.max(required.abs() * 1.0e-8);
             if required <= tol.linear || (declared - required).abs() > setback_tol {
                 return Err(crate::OperationsError::Blend(
@@ -1663,7 +1844,40 @@ fn fillet_variable_transacted(
                     },
                 ));
             }
+            if ball {
+                // Crop the stripe at the ball's station, as a declared
+                // setback would have been cropped.
+                let length = (other - vertex).length();
+                let interval = active_intervals.get_mut(&edge_id.index()).ok_or_else(|| {
+                    crate::OperationsError::InvalidInput {
+                        reason: format!("corner stripe {edge_id:?} has no active interval"),
+                    }
+                })?;
+                if edge.start() == vertex_id {
+                    interval.0 = required / length;
+                } else {
+                    interval.1 = 1.0 - required / length;
+                }
+                if interval.1 - interval.0 <= tol.linear / length {
+                    return Err(crate::OperationsError::InvalidInput {
+                        reason: format!(
+                            "tangent-ball corners consume the full length of edge {edge_id:?}"
+                        ),
+                    });
+                }
+                declared_endpoint_setbacks.insert((edge_id.index(), vertex_index), required);
+            }
         }
+        reject_faces_in_corner_ball(
+            topo,
+            solid,
+            vertex_id,
+            incident_edges,
+            &edge_to_faces,
+            center,
+            common_radius,
+            tol,
+        )?;
         let is_concave = planar_edge_sides.values().all(|side| *side > 0.0);
         qualified_setback_corners
             .insert(vertex_index, (vertex_id, center, common_radius, is_concave));
@@ -2119,7 +2333,11 @@ fn fillet_variable_transacted(
             control_points,
             vec![vec![1.0; n_cp_v], mid_weights, vec![1.0; n_cp_v]],
         )
-        .map_err(crate::OperationsError::Math)?;
+        .map_err(crate::OperationsError::Math)?
+        // Exact by construction: `reject_inexact_variable_stripes` admits
+        // only straight convex spines between planes, whose sections are the
+        // tangent ball's arcs (`VariableSection`) and whose rows are the law.
+        .with_exact_form(remus_math::nurbs::surface::ExactForm::VariableRollingBall);
 
         let c1s = grid[0][0];
         let c2s = grid[0][2];

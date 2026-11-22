@@ -7,6 +7,20 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
 
 ### Added
 
+* `filletVariable` (and its detailed and batch forms) accepts
+  `"ballCorners": true` on any spec: every corner where three or more
+  selected edges meet is closed with the exact ball tangent to their planar
+  faces, each edge set back to it. Give no `startSetback`/`endSetback` with
+  it. A non-boolean value throws `invalid input`.
+* A blend refused for overflowing its support face
+  (`details.kernelCode = "cliff-encountered"`) now also carries
+  `details.requestedRadius` and `details.availableRadius`, the radius asked
+  for and the width the face has there, so a caller can offer the limit
+  without reading the message.
+* `filletVariableDetailed` reports the variable band as exact
+  (`quality: "exact"`, no `approximateFaces`) and `exactOnly: true` accepts
+  it; it reported `"approximate"` and refused under `exactOnly` before.
+
 * `filletVariable` (and `filletVariableDetailed`, which shares its parser)
   accepts optional interior control radii:
   `"stations": [{"at": t, "radius": r}]`, `t` strictly inside `(0, 1)` along

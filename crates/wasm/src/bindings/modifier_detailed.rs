@@ -50,7 +50,7 @@ use remus_operations::OperationsError;
 use remus_operations::blend_ops::BlendResult;
 use remus_topology::edge::EdgeId;
 
-use super::operations::parse_variable_fillet_specs;
+use super::operations::{parse_variable_fillet_specs, variable_fillet_corners};
 use crate::error::{
     StructuredWasmError, WasmError, validate_finite, validate_positive, validate_work_count,
 };
@@ -697,11 +697,13 @@ impl RemusKernel {
         self.run_modifier_detailed("filletVariable", "Variable fillet", |kernel| {
             let solid_id = kernel.resolve_solid(solid)?;
             let edge_specs = parse_variable_fillet_specs(kernel, specs)?;
+            let corners = variable_fillet_corners(specs)?;
             let input_faces = face_set(kernel.topo(), solid_id)?;
-            let result = remus_operations::fillet::fillet_variable_with_setbacks(
+            let result = remus_operations::fillet::fillet_variable_with_corners(
                 kernel.topo_mut(),
                 solid_id,
                 &edge_specs,
+                corners,
             )
             .map_err(StructuredWasmError::blend_failure)?;
             blend_outcome(
