@@ -346,6 +346,10 @@ struct CopyMaps<'a> {
     /// copied faces yields ONE new edge (that is what makes the copied bore
     /// wall and the copied cap hole meet at a shared rim).
     edge_copies: &'a mut HashMap<EdgeId, EdgeId>,
+    /// Exact curves published for boundaries a rebuilt outer wire runs
+    /// along (a blend stripe's end sections), so it takes the arc rather
+    /// than a chord across it.
+    boundary_curves: &'a [BoundaryCurveOverride],
     resolution: f64,
     tol: Tolerance,
 }
@@ -486,10 +490,21 @@ fn build_polygon_wire(
             continue;
         }
         let key = if vi <= vj { (vi, vj) } else { (vj, vi) };
-        let edge_id = *maps
-            .edge_map
-            .entry(key)
-            .or_insert_with(|| topo.add_edge(Edge::new(vert_ids[i], vert_ids[j], EdgeCurve::Line)));
+        let edge_id = if let Some(&existing) = maps.edge_map.get(&key) {
+            existing
+        } else {
+            let edge = override_edge(
+                topo,
+                maps.boundary_curves,
+                (positions[i], vert_ids[i]),
+                (positions[j], vert_ids[j]),
+                maps.tol,
+            )?
+            .unwrap_or_else(|| Edge::new(vert_ids[i], vert_ids[j], EdgeCurve::Line));
+            let minted = topo.add_edge(edge);
+            maps.edge_map.insert(key, minted);
+            minted
+        };
         let is_forward = topo.edge(edge_id)?.start() == vert_ids[i];
         if oriented
             .iter()
@@ -636,6 +651,71 @@ pub(crate) struct BoundaryCurveOverride {
     pub(crate) end: Point3,
     pub(crate) curve: EdgeCurve,
     pub(crate) trim: (f64, f64),
+}
+
+/// The edge a [`BoundaryCurveOverride`] publishes between two assembly
+/// vertices, or `None` when no override joins their positions (the caller
+/// then mints a straight edge).
+///
+/// # Errors
+///
+/// `Unsupported` when the matching override does not realize its stored
+/// endpoints and trim.
+fn override_edge(
+    topo: &Topology,
+    boundary_curves: &[BoundaryCurveOverride],
+    (point_i, vertex_i): (Point3, VertexId),
+    (point_j, vertex_j): (Point3, VertexId),
+    tol: Tolerance,
+) -> Result<Option<Edge>, crate::OperationsError> {
+    let Some(candidate) = boundary_curves.iter().find(|candidate| {
+        ((candidate.start - point_i).length() <= tol.linear
+            && (candidate.end - point_j).length() <= tol.linear)
+            || ((candidate.start - point_j).length() <= tol.linear
+                && (candidate.end - point_i).length() <= tol.linear)
+    }) else {
+        return Ok(None);
+    };
+    let forward = (candidate.start - point_i).length() <= tol.linear;
+    let (start, end) = if forward {
+        (vertex_i, vertex_j)
+    } else {
+        (vertex_j, vertex_i)
+    };
+    let (t0, t1) = candidate.trim;
+    let a = topo.vertex(start)?.point();
+    let b = topo.vertex(end)?.point();
+    let valid = t0.is_finite()
+        && t1.is_finite()
+        && t0.partial_cmp(&t1) != Some(std::cmp::Ordering::Equal)
+        && match &candidate.curve {
+            EdgeCurve::NurbsCurve(curve) => {
+                let (lower, upper) = curve.domain();
+                t0 >= lower && t0 <= upper && t1 >= lower && t1 <= upper
+            }
+            EdgeCurve::Line
+            | EdgeCurve::Circle(_)
+            | EdgeCurve::Ellipse(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => true,
+        }
+        && [(t0, a), (t1, b)].into_iter().all(|(t, point)| {
+            let error = (candidate.curve.evaluate_with_endpoints(t, a, b) - point).length();
+            error.is_finite() && error <= tol.linear
+        });
+    if !valid {
+        return Err(crate::OperationsError::Unsupported {
+            operation: "assemble_solid_mixed",
+            reason: "boundary override does not realize its stored endpoints and trim".into(),
+        });
+    }
+    Ok(Some(edge_with_trim(
+        start,
+        end,
+        candidate.curve.clone(),
+        None,
+        Some(candidate.trim),
+    )))
 }
 
 /// Assemble a solid from a set of face specifications with mixed surface types.
@@ -851,6 +931,7 @@ fn assemble_solid_mixed_traced(
                     vertex_map: &mut vertex_map,
                     edge_map: &mut edge_map,
                     edge_copies: &mut edge_copies,
+                    boundary_curves,
                     resolution,
                     tol,
                 };
@@ -863,6 +944,7 @@ fn assemble_solid_mixed_traced(
                     vertex_map: &mut vertex_map,
                     edge_map: &mut edge_map,
                     edge_copies: &mut edge_copies,
+                    boundary_curves,
                     resolution,
                     tol,
                 };
@@ -1280,59 +1362,14 @@ fn assemble_solid_mixed_traced(
                     let edge_id = if let Some(&existing) = edge_map.get(&(key_min, key_max)) {
                         existing
                     } else {
-                        let candidate = boundary_curves.iter().find(|candidate| {
-                            ((candidate.start - verts[i]).length() <= tol.linear
-                                && (candidate.end - verts[j]).length() <= tol.linear)
-                                || ((candidate.start - verts[j]).length() <= tol.linear
-                                    && (candidate.end - verts[i]).length() <= tol.linear)
-                        });
-                        let edge = if let Some(candidate) = candidate {
-                            let forward = (candidate.start - verts[i]).length() <= tol.linear;
-                            let (start, end) = if forward {
-                                (vert_ids[i], vert_ids[j])
-                            } else {
-                                (vert_ids[j], vert_ids[i])
-                            };
-                            let (t0, t1) = candidate.trim;
-                            let a = topo.vertex(start)?.point();
-                            let b = topo.vertex(end)?.point();
-                            let valid = t0.is_finite()
-                                && t1.is_finite()
-                                && t0.partial_cmp(&t1) != Some(std::cmp::Ordering::Equal)
-                                && match &candidate.curve {
-                                    EdgeCurve::NurbsCurve(curve) => {
-                                        let (lower, upper) = curve.domain();
-                                        t0 >= lower && t0 <= upper && t1 >= lower && t1 <= upper
-                                    }
-                                    EdgeCurve::Line
-                                    | EdgeCurve::Circle(_)
-                                    | EdgeCurve::Ellipse(_)
-                                    | EdgeCurve::Hyperbola(_)
-                                    | EdgeCurve::Parabola(_) => true,
-                                }
-                                && [(t0, a), (t1, b)].into_iter().all(|(t, point)| {
-                                    let error = (candidate.curve.evaluate_with_endpoints(t, a, b)
-                                        - point)
-                                        .length();
-                                    error.is_finite() && error <= tol.linear
-                                });
-                            if !valid {
-                                return Err(crate::OperationsError::Unsupported {
-                                    operation: "assemble_solid_mixed",
-                                    reason: "boundary override does not realize its stored endpoints and trim"
-                                        .into(),
-                                });
-                            }
-                            edge_with_trim(
-                                start,
-                                end,
-                                candidate.curve.clone(),
-                                None,
-                                Some(candidate.trim),
-                            )
-                        } else {
-                            Edge::new(vert_ids[i], vert_ids[j], EdgeCurve::Line)
-                        };
+                        let edge = override_edge(
+                            topo,
+                            boundary_curves,
+                            (verts[i], vert_ids[i]),
+                            (verts[j], vert_ids[j]),
+                            tol,
+                        )?
+                        .unwrap_or_else(|| Edge::new(vert_ids[i], vert_ids[j], EdgeCurve::Line));
                         let minted = topo.add_edge(edge);
                         edge_map.insert((key_min, key_max), minted);
                         minted

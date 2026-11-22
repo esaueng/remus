@@ -51,6 +51,64 @@ fn optional_fillet_number(spec: &serde_json::Value, field: &str) -> Result<Optio
     }
 }
 
+/// Apply a spec's optional `stations` to a parsed linear or S-curve law.
+///
+/// `stations` lists interior control radii as `[{"at": t, "radius": r}]`,
+/// `t` strictly inside `(0, 1)` of the edge's own direction and increasing.
+/// The law's `start`/`end` stay the radii at the two ends, and the law's
+/// shape runs between every pair of neighbouring stations. Stations under a
+/// constant law are refused: a constant radius has no stations to pass.
+fn with_interior_stations(
+    spec: &serde_json::Value,
+    law: remus_operations::fillet::FilletRadiusLaw,
+) -> Result<remus_operations::fillet::FilletRadiusLaw, WasmError> {
+    use remus_operations::fillet::FilletRadiusLaw;
+    let invalid = |reason: &str| WasmError::InvalidInput {
+        reason: reason.into(),
+    };
+    let entries = match spec.get("stations") {
+        None | Some(serde_json::Value::Null) => return Ok(law),
+        Some(serde_json::Value::Array(entries)) => entries,
+        Some(_) => return Err(invalid("'stations' in fillet spec must be an array")),
+    };
+    if entries.is_empty() {
+        return Ok(law);
+    }
+    let (blend, start, end) = match law {
+        FilletRadiusLaw::Linear { start, end } => (
+            remus_operations::fillet::FilletStationBlend::Linear,
+            start,
+            end,
+        ),
+        FilletRadiusLaw::SCurve { start, end } => (
+            remus_operations::fillet::FilletStationBlend::SCurve,
+            start,
+            end,
+        ),
+        _ => {
+            return Err(invalid(
+                "'stations' in fillet spec need a linear or scurve law",
+            ));
+        }
+    };
+    let mut stations = Vec::with_capacity(entries.len() + 2);
+    stations.push((0.0, start));
+    for entry in entries {
+        let at = optional_fillet_number(entry, "at")?
+            .ok_or_else(|| invalid("each fillet station needs a numeric 'at'"))?;
+        let radius = optional_fillet_number(entry, "radius")?
+            .ok_or_else(|| invalid("each fillet station needs a numeric 'radius'"))?;
+        if at.is_nan() || at <= 0.0 || at >= 1.0 {
+            return Err(invalid(
+                "each fillet station's 'at' must lie strictly between 0 and 1",
+            ));
+        }
+        stations.push((at, radius));
+    }
+    stations.push((1.0, end));
+    Ok(FilletRadiusLaw::Stations { blend, stations })
+}
+
 pub(super) fn parse_variable_fillet_specs(
     kernel: &RemusKernel,
     specs: &[serde_json::Value],
@@ -99,6 +157,7 @@ pub(super) fn parse_variable_fillet_specs(
                 });
             }
         };
+        let law = with_interior_stations(spec, law)?;
         edge_specs.push(remus_operations::fillet::FilletEdgeSetback {
             edge: edge_id,
             law,
@@ -2407,7 +2466,16 @@ impl RemusKernel {
 
     /// Apply variable-radius fillets to edges.
     ///
-    /// `json` is a JSON string: `[{"edge": u32, "law": "constant"|"linear"|"scurve", "start": f64, "end": f64, "startSetback": f64, "endSetback": f64}]`
+    /// `json` is a JSON string: `[{"edge": u32, "law": "constant"|"linear"|"scurve", "start": f64, "end": f64, "startSetback": f64, "endSetback": f64, "stations": [{"at": f64, "radius": f64}]}]`
+    ///
+    /// `stations` are optional interior control radii at normalized positions
+    /// strictly inside `(0, 1)` along the edge's own direction, increasing;
+    /// the law (linear or scurve) then runs between every pair of
+    /// neighbouring stations. Variable radii are built exactly only on a
+    /// straight edge between two planar faces; any other selected edge is
+    /// refused with `unsupported-variable-support`, and two or more selected
+    /// edges meeting at a corner without qualified setbacks with
+    /// `unsupported-vertex-blend`.
     ///
     /// Also accepts brepjs-style fields: `startRadius`/`endRadius` as aliases for `start`/`end`.
     /// When `law` is omitted and `startRadius` != `endRadius`, the law auto-detects as `"linear"`.
@@ -3667,6 +3735,77 @@ mod tests {
         );
         assert!(matches!(&parsed[3].law, FilletRadiusLaw::Constant(radius)
             if radius.to_bits() == 4.0_f64.to_bits()));
+    }
+
+    #[test]
+    fn variable_fillet_json_reads_interior_stations_under_linear_and_scurve() {
+        use remus_operations::fillet::{FilletRadiusLaw, FilletStationBlend};
+
+        let mut kernel = RemusKernel::new();
+        let solid = kernel.make_box_solid(10.0, 10.0, 10.0).unwrap();
+        let edge = kernel.get_solid_edges(solid).unwrap()[0];
+        let specs = [
+            serde_json::json!({ "edge": edge, "law": "linear", "start": 1.0, "end": 2.0,
+                "stations": [{ "at": 0.25, "radius": 3.0 }, { "at": 0.6, "radius": 1.5 }] }),
+            serde_json::json!({ "edge": edge, "law": "scurve", "start": 1.0, "end": 2.0,
+                "stations": [{ "at": 0.5, "radius": 3.0 }] }),
+            serde_json::json!({ "edge": edge, "law": "linear", "start": 1.0, "end": 2.0,
+                "stations": [] }),
+            serde_json::json!({ "edge": edge, "law": "linear", "start": 1.0, "end": 2.0,
+                "stations": null }),
+        ];
+        let parsed = super::parse_variable_fillet_specs(&kernel, &specs).unwrap();
+        assert!(
+            matches!(&parsed[0].law, FilletRadiusLaw::Stations { blend: FilletStationBlend::Linear, stations }
+            if stations == &vec![(0.0, 1.0), (0.25, 3.0), (0.6, 1.5), (1.0, 2.0)])
+        );
+        assert!(
+            matches!(&parsed[1].law, FilletRadiusLaw::Stations { blend: FilletStationBlend::SCurve, stations }
+            if stations == &vec![(0.0, 1.0), (0.5, 3.0), (1.0, 2.0)])
+        );
+        for plain in &parsed[2..] {
+            assert!(matches!(&plain.law, FilletRadiusLaw::Linear { .. }));
+        }
+
+        for (spec, needle) in [
+            (
+                serde_json::json!({ "edge": edge, "law": "constant", "radius": 1.0,
+                "stations": [{ "at": 0.5, "radius": 2.0 }] }),
+                "linear or scurve",
+            ),
+            (
+                serde_json::json!({ "edge": edge, "law": "linear", "start": 1.0, "end": 2.0,
+                "stations": { "at": 0.5 } }),
+                "must be an array",
+            ),
+            (
+                serde_json::json!({ "edge": edge, "law": "linear", "start": 1.0, "end": 2.0,
+                "stations": [{ "radius": 2.0 }] }),
+                "'at'",
+            ),
+            (
+                serde_json::json!({ "edge": edge, "law": "linear", "start": 1.0, "end": 2.0,
+                "stations": [{ "at": 0.5 }] }),
+                "'radius'",
+            ),
+            (
+                serde_json::json!({ "edge": edge, "law": "linear", "start": 1.0, "end": 2.0,
+                "stations": [{ "at": 1.0, "radius": 2.0 }] }),
+                "strictly between",
+            ),
+            (
+                serde_json::json!({ "edge": edge, "law": "linear", "start": 1.0, "end": 2.0,
+                "stations": [{ "at": "half", "radius": 2.0 }] }),
+                "must be a number",
+            ),
+        ] {
+            let error = super::parse_variable_fillet_specs(&kernel, std::slice::from_ref(&spec))
+                .expect_err("malformed stations must be refused");
+            assert!(
+                matches!(&error, crate::error::WasmError::InvalidInput { reason } if reason.contains(needle)),
+                "{spec}: {error}"
+            );
+        }
     }
 
     #[test]

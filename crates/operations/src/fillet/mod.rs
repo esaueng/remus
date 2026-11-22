@@ -41,6 +41,7 @@ mod vertex_snap;
 
 pub(crate) use crate::tessellate::surface_normal::face_surface_normal_at;
 pub use remus_blend::radius_law::StandardRadiusLaw as FilletRadiusLaw;
+pub use remus_blend::radius_law::StationBlend as FilletStationBlend;
 #[allow(deprecated)]
 pub use rolling_ball::fillet_rolling_ball;
 pub(crate) use rolling_ball::fillet_rolling_ball_with_origins;
@@ -533,6 +534,303 @@ pub fn fillet_variable_with_setbacks(
     })
 }
 
+/// Refuse a selected edge of `solid` whose spine is not straight, before any
+/// spine-parameter bookkeeping (a closed rim would otherwise read as a
+/// collapsed edge). Edges of other solids are left to the engine's
+/// `EdgesNotBlended` refusal.
+///
+/// # Errors
+///
+/// [`remus_blend::BlendError::UnsupportedVariableSupport`] naming the edge
+/// and its curve.
+fn reject_curved_variable_spines(
+    topo: &Topology,
+    solid: SolidId,
+    edge_laws: &[(EdgeId, FilletRadiusLaw)],
+) -> Result<(), crate::OperationsError> {
+    let own: HashSet<EdgeId> = remus_topology::explorer::solid_edges(topo, solid)?
+        .into_iter()
+        .collect();
+    for (edge_id, _) in edge_laws {
+        let curve = topo.edge(*edge_id)?.curve();
+        if own.contains(edge_id) && !matches!(curve, EdgeCurve::Line) {
+            return Err(crate::OperationsError::Blend(
+                remus_blend::BlendError::UnsupportedVariableSupport {
+                    edge: *edge_id,
+                    reason: format!(
+                        "its spine is a {}; an exact variable section needs a straight spine",
+                        edge_curve_tag(curve)
+                    ),
+                },
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Refuse every selected stripe outside the family whose section this engine
+/// builds exactly: a straight spine (checked first by
+/// [`reject_curved_variable_spines`]) between two planar supports.
+///
+/// There each section is a rational circular arc in a fixed plane frame (see
+/// [`VariableSection`]) and each row is the radius law itself, so the band is
+/// exact. Concave edges are refused here as well: their section is not yet
+/// qualified. A curved spine or
+/// a curved support would need sampled sections interpolated into a NURBS
+/// band — an approximation that can still assemble and validate — so it is
+/// refused by type before any topology is allocated.
+///
+/// # Errors
+///
+/// [`remus_blend::BlendError::UnsupportedVariableSupport`] naming the first
+/// stripe outside the family and what takes it out.
+fn reject_inexact_variable_stripes(
+    topo: &Topology,
+    solid: SolidId,
+    edge_laws: &[(EdgeId, FilletRadiusLaw)],
+    edge_to_faces: &HashMap<usize, Vec<remus_topology::face::FaceId>>,
+    face_surfaces: &HashMap<usize, FaceSurface>,
+    tol: Tolerance,
+) -> Result<HashMap<usize, VariableSection>, crate::OperationsError> {
+    let refuse = |edge: EdgeId, reason: String| {
+        Err(crate::OperationsError::Blend(
+            remus_blend::BlendError::UnsupportedVariableSupport { edge, reason },
+        ))
+    };
+    let mut sections = HashMap::with_capacity_and_hasher(edge_laws.len(), DetState);
+    for (edge_id, law) in edge_laws {
+        let faces = edge_to_faces
+            .get(&edge_id.index())
+            .map_or(&[][..], Vec::as_slice);
+        if faces.is_empty() {
+            // Not an edge of this solid: the engine names it in its
+            // `EdgesNotBlended` refusal.
+            continue;
+        }
+        if faces.len() != 2 || faces[0] == faces[1] {
+            return refuse(
+                *edge_id,
+                "it does not separate two distinct support faces".into(),
+            );
+        }
+        let mut normals = [Vec3::new(0.0, 0.0, 0.0); 2];
+        for (slot, face) in faces.iter().enumerate() {
+            match face_surfaces.get(&face.index()) {
+                Some(FaceSurface::Plane { normal, .. }) => normals[slot] = *normal,
+                other => {
+                    return refuse(
+                        *edge_id,
+                        format!(
+                            "support face {face:?} is {}; an exact variable section needs planar supports",
+                            other.map_or("missing", face_surface_tag)
+                        ),
+                    );
+                }
+            }
+        }
+        let edge = topo.edge(*edge_id)?;
+        let length =
+            (topo.vertex(edge.end())?.point() - topo.vertex(edge.start())?.point()).length();
+        // The side comes from the loops, exactly: each face's interior lies
+        // to the left of its loops' effective direction about its outward
+        // normal. The probe classifier only cross-checks it: a feature
+        // thinner than its probe (a lip it steps over) makes the two disagree,
+        // which refuses, but never decides the side. The probe is local, as
+        // a probe as long as the radius can step past a narrow support (a
+        // 1.5-wide groove lip under a 2.0 request) before the overflow check
+        // gets to name that support.
+        let from_loops = loop_convexity(topo, *edge_id, [faces[0], faces[1]], normals, tol)?;
+        let probe = (law.bounds().0 * 0.1)
+            .min(length * 0.01)
+            .max(tol.linear * 10.0);
+        let probed = crate::query::edge_concavity_from_faces(
+            topo, solid, *edge_id, faces[0], faces[1], probe,
+        )?;
+        match (from_loops, probed) {
+            (Some(true), crate::query::EdgeConcavity::Convex) => {}
+            (Some(false), crate::query::EdgeConcavity::Concave) => {
+                return refuse(
+                    *edge_id,
+                    "it is a concave edge; the exact variable section is qualified on convex edges"
+                        .into(),
+                );
+            }
+            _ => {
+                return refuse(
+                    *edge_id,
+                    "its supports have no qualified material side".into(),
+                );
+            }
+        }
+        let Some(section) = VariableSection::convex(normals[0], normals[1], tol) else {
+            return refuse(*edge_id, "its supports are parallel".into());
+        };
+        sections.insert(edge_id.index(), section);
+    }
+    Ok(sections)
+}
+
+/// Whether a straight edge between two planar faces is convex, from the
+/// faces' loops: `Some(true)` convex, `Some(false)` concave, `None` when the
+/// two faces disagree or the edge is degenerate.
+///
+/// A face's interior lies to the left of each of its loops' effective
+/// direction about its outward normal (`is_forward` flipped once more for a
+/// reversed face, as shell orientation counts it). That left direction runs
+/// along the face away from the edge; the edge is convex exactly when it
+/// points against the other face's outward normal, and both faces must say
+/// the same.
+fn loop_convexity(
+    topo: &Topology,
+    edge_id: EdgeId,
+    faces: [remus_topology::face::FaceId; 2],
+    outward: [Vec3; 2],
+    tol: Tolerance,
+) -> Result<Option<bool>, crate::OperationsError> {
+    let edge = topo.edge(edge_id)?;
+    let along = topo.vertex(edge.end())?.point() - topo.vertex(edge.start())?.point();
+    let mut verdicts = [None, None];
+    for (slot, &face_id) in faces.iter().enumerate() {
+        let face = topo.face(face_id)?;
+        let mut forward = None;
+        for wire in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            if let Some(oriented) = topo
+                .wire(wire)?
+                .edges()
+                .iter()
+                .find(|oriented| oriented.edge() == edge_id)
+            {
+                forward = Some(oriented.is_forward() != face.is_reversed());
+                break;
+            }
+        }
+        let Some(forward) = forward else {
+            return Ok(None);
+        };
+        let direction = if forward { along } else { -along };
+        let into_face = outward[slot].cross(direction);
+        let other = outward[1 - slot];
+        let side = into_face.dot(other);
+        let scale = into_face.length() * other.length();
+        if scale.is_nan() || scale <= 0.0 || side.abs() <= tol.angular * scale {
+            return Ok(None);
+        }
+        verdicts[slot] = Some(side < 0.0);
+    }
+    Ok(match verdicts {
+        [Some(a), Some(b)] if a == b => Some(a),
+        _ => None,
+    })
+}
+
+/// The exact section of a convex variable stripe between two planes, per
+/// unit radius.
+///
+/// On a straight edge between planes the tangent ball of radius `r` touches
+/// the supports at `p + contact·r`: its centre lies on the dihedral's
+/// bisector `r / sin(α/2)` from the edge, `α` the interior angle, and its
+/// contacts are the centre's projections onto the planes, `r·cot(α/2)` along
+/// each. The section through those contacts with the edge point as apex is a
+/// rational quadratic circle of radius `r` with apex weight `sin(α/2)`. The
+/// unit offsets come from the constant engine's exact rolling-ball section.
+#[derive(Debug, Clone, Copy)]
+struct VariableSection {
+    /// Contact offset on the first support per unit radius.
+    contact1: Vec3,
+    /// Contact offset on the second support per unit radius.
+    contact2: Vec3,
+    /// Apex weight of the circular section, `sin(α/2)`.
+    weight: f64,
+}
+
+impl VariableSection {
+    fn convex(normal1: Vec3, normal2: Vec3, tol: Tolerance) -> Option<Self> {
+        let origin = Point3::new(0.0, 0.0, 0.0);
+        let (center, contact1, contact2) =
+            rolling_ball::planar_rolling_ball_section(origin, normal1, normal2, -1.0, 1.0, tol)?;
+        let apex_distance = (center - origin).length();
+        (apex_distance.is_finite() && apex_distance > 1.0).then(|| Self {
+            contact1: contact1 - origin,
+            contact2: contact2 - origin,
+            weight: 1.0 / apex_distance,
+        })
+    }
+}
+
+/// Refuse a corner where two or more selected stripes meet without declared
+/// setbacks, unless they all continue one straight line.
+///
+/// Each stripe ends in the plane normal to its own spine, so two stripes
+/// meeting at an angle leave a wedge between their end sections that no
+/// patch of this engine fills; the assembled shell would only fail its
+/// postcondition later. Saying so up front names the vertex instead. A
+/// qualified 3+-way corner declares its setbacks and is checked by the caller.
+///
+/// # Errors
+///
+/// [`remus_blend::BlendError::UnsupportedVertexBlend`] for the vertex.
+fn reject_unset_stripe_corner(
+    topo: &Topology,
+    vertex_index: usize,
+    incident_edges: &[EdgeId],
+    tol: Tolerance,
+) -> Result<(), crate::OperationsError> {
+    if incident_edges.len() < 2 {
+        return Ok(());
+    }
+    let mut vertex = None;
+    let mut directions = Vec::with_capacity(incident_edges.len());
+    for edge_id in incident_edges {
+        let edge = topo.edge(*edge_id)?;
+        let (here, other) = if edge.start().index() == vertex_index {
+            (edge.start(), edge.end())
+        } else {
+            (edge.end(), edge.start())
+        };
+        vertex = Some(here);
+        let from = topo.vertex(here)?.point();
+        let to = topo.vertex(other)?.point();
+        directions.push((to - from).normalize()?);
+    }
+    let collinear = directions
+        .iter()
+        .all(|direction| direction.cross(directions[0]).length() <= tol.angular);
+    if collinear && incident_edges.len() == 2 {
+        return Ok(());
+    }
+    let Some(vertex) = vertex else {
+        return Ok(());
+    };
+    Err(crate::OperationsError::Blend(
+        remus_blend::BlendError::UnsupportedVertexBlend {
+            vertex,
+            stripes: incident_edges.len(),
+        },
+    ))
+}
+
+fn edge_curve_tag(curve: &EdgeCurve) -> &'static str {
+    match curve {
+        EdgeCurve::Line => "line",
+        EdgeCurve::Circle(_) => "circle",
+        EdgeCurve::Ellipse(_) => "ellipse",
+        EdgeCurve::Hyperbola(_) => "hyperbola",
+        EdgeCurve::Parabola(_) => "parabola",
+        EdgeCurve::NurbsCurve(_) => "NURBS curve",
+    }
+}
+
+fn face_surface_tag(surface: &FaceSurface) -> &'static str {
+    match surface {
+        FaceSurface::Plane { .. } => "a plane",
+        FaceSurface::Cylinder(_) => "a cylinder",
+        FaceSurface::Cone(_) => "a cone",
+        FaceSurface::Sphere(_) => "a sphere",
+        FaceSurface::Torus(_) => "a torus",
+        FaceSurface::Nurbs(_) => "a NURBS surface",
+    }
+}
+
 /// Refuse a variable-radius stripe whose contact would land on or past the far
 /// boundary of one of its planar support faces (B63).
 ///
@@ -544,17 +842,15 @@ pub fn fillet_variable_with_setbacks(
 /// refuse the same request with [`remus_blend::BlendError::CliffEncountered`],
 /// and so does this one now, reporting the width the face actually has.
 ///
-/// At each of a fixed set of stations along the active stripe interval, a ray
-/// cast within the support plane from the spine along the contact direction
-/// finds the nearest crossing with the rest of the face boundary (outer and
-/// inner loops, the stripe's own edge excluded). Boundary segments parallel
-/// to the ray are skipped: the ray runs along them rather than out through
-/// them, and the next loop edge is met at their far end. The stations are
-/// sampled. For a constant or linear law on a straight spine over a convex
-/// face that is exact — the face's width is concave along the spine, so the
-/// radius overruns it first at an endpoint station — and a sampled bound
-/// otherwise; curved loop edges are polylines of 32 chords. Curved supports
-/// are not checked here.
+/// The check is exact for polygonal boundaries: in the support plane the
+/// band's footprint lies under the contact curve `q = K·r(τ)`, a ray from the
+/// spine meets each boundary segment at a height linear in τ, and the law is
+/// a cubic on each piece, so the worst overrun is found at the interval ends
+/// and the roots of a quadratic. Curved boundary edges are replaced by
+/// regions that contain them (a lens per chord for a conic arc, the control
+/// hull for a NURBS curve), so the check stays conservative there. Segments
+/// parallel to the ray are skipped: the ray runs along them rather than out
+/// through them, and the next loop edge is met at their far end.
 ///
 /// # Errors
 ///
@@ -564,12 +860,12 @@ pub fn fillet_variable_with_setbacks(
 fn reject_variable_support_cliffs(
     topo: &Topology,
     edge_laws: &[(EdgeId, FilletRadiusLaw)],
+    sections: &HashMap<usize, VariableSection>,
     active_intervals: &HashMap<usize, (f64, f64)>,
     edge_to_faces: &HashMap<usize, Vec<remus_topology::face::FaceId>>,
     face_surfaces: &HashMap<usize, FaceSurface>,
     tol: Tolerance,
 ) -> Result<(), crate::OperationsError> {
-    const STATIONS: u32 = 33;
     const CURVE_CHORDS: u32 = 32;
 
     for (edge_id, law) in edge_laws {
@@ -579,19 +875,12 @@ fn reject_variable_support_cliffs(
         if faces.len() != 2 {
             continue;
         }
-        let (Some(surf1), Some(surf2)) = (
-            face_surfaces.get(&faces[0].index()),
-            face_surfaces.get(&faces[1].index()),
-        ) else {
-            continue;
-        };
         let edge = topo.edge(*edge_id)?;
         let p_start = topo.vertex(edge.start())?.point();
         let p_end = topo.vertex(edge.end())?.point();
         let Some(&(t_start, t_end)) = active_intervals.get(&edge_id.index()) else {
             continue;
         };
-        let curve = edge.curve().clone();
 
         for (side, &face_id) in faces.iter().enumerate() {
             let Some(FaceSurface::Plane { normal, .. }) = face_surfaces.get(&face_id.index())
@@ -618,42 +907,125 @@ fn reject_variable_support_cliffs(
                         segments.push((a, b));
                         continue;
                     }
-                    let (d0, d1) =
-                        crate::authoritative_edge_domain(boundary, "variable fillet support")?;
-                    let points: Vec<Point3> = (0..=CURVE_CHORDS)
-                        .map(|i| {
-                            let t = (d1 - d0).mul_add(f64::from(i) / f64::from(CURVE_CHORDS), d0);
-                            boundary.curve().evaluate_with_endpoints(t, a, b)
-                        })
-                        .collect();
-                    segments.extend(points.windows(2).map(|pair| (pair[0], pair[1])));
+                    if let EdgeCurve::NurbsCurve(nurbs) = boundary.curve() {
+                        // The curve lies in its control points' convex hull,
+                        // so a ray meets the hull no later than the curve.
+                        segments.extend(planar_hull_segments(nurbs.control_points(), plane_normal));
+                        continue;
+                    }
+                    // A circle or ellipse is replaced by the closed polygon
+                    // circumscribed about the whole of it: an affine image
+                    // of a regular polygon about a circle, so it contains the
+                    // curve and every arc of it, and being closed, no ray can
+                    // pass between its pieces. It over-reaches by at most
+                    // 1/cos(π/n) − 1 of the semi-axis.
+                    let (center, a_axis, b_axis) = match boundary.curve() {
+                        EdgeCurve::Circle(circle) => (
+                            circle.center(),
+                            circle.u_axis() * circle.radius(),
+                            circle.v_axis() * circle.radius(),
+                        ),
+                        EdgeCurve::Ellipse(ellipse) => (
+                            ellipse.center(),
+                            ellipse.u_axis() * ellipse.semi_major(),
+                            ellipse.v_axis() * ellipse.semi_minor(),
+                        ),
+                        EdgeCurve::Hyperbola(_) | EdgeCurve::Parabola(_) => {
+                            return Err(crate::OperationsError::Blend(
+                                remus_blend::BlendError::UnsupportedVariableSupport {
+                                    edge: *edge_id,
+                                    reason: format!(
+                                        "support face {face_id:?} is bounded by a {} edge, whose clearance this check does not certify",
+                                        edge_curve_tag(boundary.curve())
+                                    ),
+                                },
+                            ));
+                        }
+                        EdgeCurve::Line | EdgeCurve::NurbsCurve(_) => continue,
+                    };
+                    let reach = 1.0 / (std::f64::consts::PI / f64::from(CURVE_CHORDS)).cos();
+                    let corner = |k: u32| {
+                        let angle = std::f64::consts::TAU * f64::from(k) / f64::from(CURVE_CHORDS);
+                        center + (a_axis * angle.cos() + b_axis * angle.sin()) * reach
+                    };
+                    segments.extend((0..CURVE_CHORDS).map(|k| (corner(k), corner(k + 1))));
                 }
             }
 
-            // Worst station: (requested radius, available width).
+            // The band's footprint on this support is the region between
+            // the spine and the contact curve `q = K·r(τ)`, in plane
+            // coordinates `s` along the spine and `q` along the contact
+            // direction. A ray from the spine along `q` meets each boundary
+            // segment at a height linear in τ, and the law is a cubic on
+            // each piece, so the worst overrun against each segment is the
+            // maximum of a cubic: found exactly at the interval ends and the
+            // roots of its derivative, not by sampling stations.
+            let Some(section) = sections.get(&edge_id.index()) else {
+                continue;
+            };
+            let offset = if side == 0 {
+                section.contact1
+            } else {
+                section.contact2
+            };
+            let reach = offset.length();
+            let Ok(across) = offset.normalize() else {
+                continue;
+            };
+            let Ok(along) = (p_end - p_start).normalize() else {
+                continue;
+            };
+            let length = (p_end - p_start).length();
+            let (s0, s1) = (length * t_start, length * t_end);
+            let pieces = law.segments();
             let mut worst: Option<(f64, f64)> = None;
-            for station in 0..STATIONS {
-                let fraction = f64::from(station) / f64::from(STATIONS - 1);
-                let geometry_t = (t_end - t_start).mul_add(fraction, t_start);
-                let radius = law.evaluate(fraction);
-                let p = geometry::sample_edge_point(&curve, p_start, p_end, geometry_t);
-                let Ok(tangent) =
-                    geometry::sample_edge_tangent(&curve, p_start, p_end, geometry_t).normalize()
-                else {
+            for &(sa, sb) in &segments {
+                let (a_s, a_q) = ((sa - p_start).dot(along), (sa - p_start).dot(across));
+                let (b_s, b_q) = ((sb - p_start).dot(along), (sb - p_start).dot(across));
+                let ds = b_s - a_s;
+                if ds.abs() <= 1.0e-12 * (sb - sa).length() {
                     continue;
-                };
-                let (Some(n1), Some(n2)) = (
-                    face_surface_normal_at(surf1, p),
-                    face_surface_normal_at(surf2, p),
-                ) else {
+                }
+                let slope = (b_q - a_q) / ds;
+                // Height of the hit above the spine at law fraction τ.
+                let hit_at = |tau: f64| slope.mul_add((s1 - s0).mul_add(tau, s0) - a_s, a_q);
+                let to_tau = |s_value: f64| (s_value - s0) / (s1 - s0);
+                let mut lo = to_tau(a_s.min(b_s)).max(0.0);
+                let mut hi = to_tau(a_s.max(b_s)).min(1.0);
+                // Hits at the spine itself (within 10 tol) do not bound it.
+                let (q_lo, q_hi) = (hit_at(lo), hit_at(hi));
+                let floor = 10.0 * tol.linear;
+                if q_lo <= floor && q_hi <= floor {
                     continue;
-                };
-                let cs = geometry::cross_section_dirs(tangent, n1, n2, tangent, tangent);
-                let direction = if side == 0 { cs.ld1 } else { cs.ld2 };
-                let width = support_ray_exit(p, direction, plane_normal, &segments, tol);
-                if radius >= width - tol.linear && worst.is_none_or(|(r, w)| radius * w > r * width)
-                {
-                    worst = Some((radius, width));
+                }
+                if q_lo <= floor || q_hi <= floor {
+                    let crossing = lo + (hi - lo) * (floor - q_lo) / (q_hi - q_lo);
+                    if q_lo <= floor {
+                        lo = crossing;
+                    } else {
+                        hi = crossing;
+                    }
+                }
+                if hi.is_nan() || lo.is_nan() || hi < lo {
+                    continue;
+                }
+                let hit_slope = (hit_at(1.0) - hit_at(0.0)) / reach;
+                for piece in &pieces {
+                    let (u_lo, u_hi) = (lo.max(piece.t0), hi.min(piece.t1));
+                    if u_hi < u_lo {
+                        continue;
+                    }
+                    let mut candidates = vec![u_lo, u_hi];
+                    candidates.extend(piece.overrun_extrema(hit_slope, u_lo, u_hi));
+                    for tau in candidates {
+                        let radius = law.evaluate(tau);
+                        let available = hit_at(tau) / reach;
+                        if reach.mul_add(radius, -hit_at(tau)) >= -tol.linear
+                            && worst.is_none_or(|(r, w)| radius * w > r * available)
+                        {
+                            worst = Some((radius, available));
+                        }
+                    }
                 }
             }
             if let Some((requested_radius, available_radius)) = worst {
@@ -671,38 +1043,53 @@ fn reject_variable_support_cliffs(
     Ok(())
 }
 
-/// Distance from `origin` along the in-plane unit `direction` to the first
-/// crossing with any of `segments`, ignoring the origin itself and segments
-/// parallel to the ray. `f64::INFINITY` when the ray leaves every segment
-/// behind.
-fn support_ray_exit(
-    origin: Point3,
-    direction: Vec3,
-    plane_normal: Vec3,
-    segments: &[(Point3, Point3)],
-    tol: Tolerance,
-) -> f64 {
-    // `across` is the in-plane normal to the ray: a segment crosses the ray
-    // where its signed `across` offset changes sign.
-    let across = plane_normal.cross(direction);
-    let mut exit = f64::INFINITY;
-    for &(a, b) in segments {
-        let span = b - a;
-        let denominator = span.dot(across);
-        if denominator.abs() <= 1.0e-12 * span.length() {
-            continue;
+/// The edges of the convex hull of `points` projected into the plane with
+/// unit normal `normal`, lifted back onto the points themselves.
+fn planar_hull_segments(points: &[Point3], normal: Vec3) -> Vec<(Point3, Point3)> {
+    let Some(&origin) = points.first() else {
+        return Vec::new();
+    };
+    let helper = if normal.x().abs() < 0.9 {
+        Vec3::new(1.0, 0.0, 0.0)
+    } else {
+        Vec3::new(0.0, 1.0, 0.0)
+    };
+    let (Ok(x_axis), Ok(n)) = (normal.cross(helper).normalize(), normal.normalize()) else {
+        return Vec::new();
+    };
+    let y_axis = n.cross(x_axis);
+    let mut planar: Vec<(f64, f64, Point3)> = points
+        .iter()
+        .map(|p| ((*p - origin).dot(x_axis), (*p - origin).dot(y_axis), *p))
+        .collect();
+    planar.compact_sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    let cross = |o: &(f64, f64, Point3), a: &(f64, f64, Point3), b: &(f64, f64, Point3)| {
+        (a.0 - o.0).mul_add(b.1 - o.1, -(a.1 - o.1) * (b.0 - o.0))
+    };
+    let mut hull: Vec<(f64, f64, Point3)> = Vec::with_capacity(planar.len() * 2);
+    for pass in 0..2 {
+        let start = hull.len();
+        let ordered: Box<dyn Iterator<Item = &(f64, f64, Point3)>> = if pass == 0 {
+            Box::new(planar.iter())
+        } else {
+            Box::new(planar.iter().rev())
+        };
+        for point in ordered {
+            while hull.len() >= start + 2
+                && cross(&hull[hull.len() - 2], &hull[hull.len() - 1], point) <= 0.0
+            {
+                hull.pop();
+            }
+            hull.push(*point);
         }
-        let u = (origin - a).dot(across) / denominator;
-        if !(-1.0e-9..=1.0 + 1.0e-9).contains(&u) {
-            continue;
-        }
-        let hit = a + span * u;
-        let distance = (hit - origin).dot(direction);
-        if distance > 10.0 * tol.linear {
-            exit = exit.min(distance);
-        }
+        hull.pop();
     }
-    exit
+    if hull.len() < 2 {
+        return planar.windows(2).map(|w| (w[0].2, w[1].2)).collect();
+    }
+    (0..hull.len())
+        .map(|i| (hull[i].2, hull[(i + 1) % hull.len()].2))
+        .collect()
 }
 
 /// Extract the complete native boundary of a clamped variable-fillet stripe.
@@ -904,6 +1291,7 @@ fn fillet_variable_transacted(
     for (_, law) in edge_laws {
         law.validated_bounds(tol.linear)?;
     }
+    reject_curved_variable_spines(topo, solid, edge_laws)?;
 
     // Convert physical endpoint setbacks into the original edge parameter
     // domain. The first qualified cell is deliberately exact: straight
@@ -1051,9 +1439,19 @@ fn fillet_variable_transacted(
         );
     }
 
+    let sections = reject_inexact_variable_stripes(
+        topo,
+        solid,
+        edge_laws,
+        &edge_to_faces,
+        &face_surfaces,
+        tol,
+    )?;
+
     reject_variable_support_cliffs(
         topo,
         edge_laws,
+        &sections,
         &active_intervals,
         &edge_to_faces,
         &face_surfaces,
@@ -1102,6 +1500,7 @@ fn fillet_variable_transacted(
             })
             .count();
         if declared_count == 0 {
+            reject_unset_stripe_corner(topo, vertex_index, incident_edges, tol)?;
             continue;
         }
         let vertex_id = incident_edges
@@ -1312,16 +1711,6 @@ fn fillet_variable_transacted(
             {
                 let r = law.evaluate(law_t);
                 let p = geometry::sample_edge_point(&edge_curve, p_start, p_end, geometry_t);
-                let tan = geometry::sample_edge_tangent(&edge_curve, p_start, p_end, geometry_t);
-                let Ok(local_dir) = tan.normalize() else {
-                    continue;
-                };
-                let (Some(n1), Some(n2)) = (
-                    face_surface_normal_at(surf1, p),
-                    face_surface_normal_at(surf2, p),
-                ) else {
-                    continue;
-                };
                 if let Some(&(_, center, _, _)) = qualified_setback_corners.get(&vid.index()) {
                     let project_to_plane = |surface: &FaceSurface| -> Option<Point3> {
                         let FaceSurface::Plane { normal, d } = surface else {
@@ -1341,9 +1730,17 @@ fn fillet_variable_transacted(
                         continue;
                     }
                 }
-                let cs = geometry::cross_section_dirs(local_dir, n1, n2, local_dir, local_dir);
-                map.insert((vid.index(), edge_id.index(), f1.index()), p + cs.ld1 * r);
-                map.insert((vid.index(), edge_id.index(), f2.index()), p + cs.ld2 * r);
+                let Some(section) = sections.get(&edge_id.index()) else {
+                    continue;
+                };
+                map.insert(
+                    (vid.index(), edge_id.index(), f1.index()),
+                    p + section.contact1 * r,
+                );
+                map.insert(
+                    (vid.index(), edge_id.index(), f2.index()),
+                    p + section.contact2 * r,
+                );
             }
         }
         map
@@ -1594,12 +1991,14 @@ fn fillet_variable_transacted(
 
         // Reference cross-section at t=0 for fallback directions.
         let cs_ref = geometry::cross_section_dirs(edge_dir, n1_start, n2_start, edge_dir, edge_dir);
-        let d1_ref = cs_ref.ld1;
-        let d2_ref = cs_ref.ld2;
-
         if cs_ref.half_angle.abs() < tol.angular {
             continue;
         }
+        // Every stripe here passed `reject_inexact_variable_stripes`, which
+        // recorded its exact section.
+        let Some(section) = sections.get(&edge_id.index()).copied() else {
+            continue;
+        };
 
         // Use more samples for curved faces or curved edges.
         let both_planar = matches!(surf1, FaceSurface::Plane { .. })
@@ -1620,20 +2019,11 @@ fn fillet_variable_transacted(
             let geometry_t = (t_end - t_start).mul_add(fraction, t_start);
             let r = law.evaluate(fraction);
             let p = geometry::sample_edge_point(&edge_curve, p_start, p_end, geometry_t);
-            let tan = geometry::sample_edge_tangent(&edge_curve, p_start, p_end, geometry_t);
-            let local_dir = tan.normalize().unwrap_or(edge_dir);
-
-            let ln1 = face_surface_normal_at(surf1, p).unwrap_or(n1_start);
-            let ln2 = face_surface_normal_at(surf2, p).unwrap_or(n2_start);
-
-            let cs = geometry::cross_section_dirs(local_dir, ln1, ln2, d1_ref, d2_ref);
-
-            // cos(φ/2) is the rational-quadratic arc weight; clamp to a positive
-            // floor so nearly-coplanar faces (φ/2 → π/2) don't yield a zero
-            // weight (degenerate control point).
-            let w = cs.half_angle.cos().max(0.01);
-            let contact1 = p + cs.ld1 * r;
-            let contact2 = p + cs.ld2 * r;
+            // The exact tangent-ball section (see `VariableSection`): its
+            // contacts scale with r, its apex weight is sin(α/2).
+            let w = section.weight;
+            let contact1 = p + section.contact1 * r;
+            let contact2 = p + section.contact2 * r;
             // The middle control point is the apex of the tangent cone — the
             // intersection of the two contact tangents. For a rolling ball on
             // surfaces meeting at the edge this is the edge point itself, so the
@@ -1672,64 +2062,53 @@ fn fillet_variable_transacted(
         let row_contact1: Vec<Point3> = (0..n_v).map(|i| grid[i][0]).collect();
         let row_mid: Vec<Point3> = (0..n_v).map(|i| grid[i][1]).collect();
         let row_contact2: Vec<Point3> = (0..n_v).map(|i| grid[i][2]).collect();
-        let (degree_v, knots_v, control_points, mid_weights) =
-            if both_planar && matches!(edge_curve, EdgeCurve::Line) {
-                let active_vector = (p_end - p_start) * (t_end - t_start);
-                let start_slope = law.derivative(0.0);
-                let end_slope = law.derivative(1.0);
-                let controls = |start: Point3, end: Point3, direction: Vec3| {
-                    vec![
-                        start,
-                        start + (active_vector + direction * start_slope) * (1.0 / 3.0),
-                        end - (active_vector + direction * end_slope) * (1.0 / 3.0),
-                        end,
-                    ]
-                };
-                (
-                    3,
-                    vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
-                    vec![
-                        controls(row_contact1[0], row_contact1[n_v - 1], d1_ref),
-                        controls(row_mid[0], row_mid[n_v - 1], Vec3::new(0.0, 0.0, 0.0)),
-                        controls(row_contact2[0], row_contact2[n_v - 1], d2_ref),
-                    ],
-                    vec![sample_weights[0]; 4],
-                )
-            } else {
-                let degree = (n_v - 1).min(3);
-                let crv0 = remus_math::nurbs::fitting::interpolate(&row_contact1, degree)
-                    .map_err(crate::OperationsError::Math)?;
-                let crv1 = remus_math::nurbs::fitting::interpolate(&row_mid, degree)
-                    .map_err(crate::OperationsError::Math)?;
-                let crv2 = remus_math::nurbs::fitting::interpolate(&row_contact2, degree)
-                    .map_err(crate::OperationsError::Math)?;
-                let n_cp = crv0.control_points().len();
-                #[allow(clippy::cast_precision_loss)]
-                let weights = if n_cp == sample_weights.len() {
-                    sample_weights.clone()
+        // Every stripe reaching here has a straight spine between planar
+        // supports (`reject_inexact_variable_stripes`), so each row is the
+        // law itself in cubic Hermite form, one Bézier piece per law segment
+        // joined at triple knots: the contact rows are `p(t) + d·r(t)` with a
+        // fixed direction `d`, a cubic on every piece. This preserves the
+        // zero endpoint derivative of an S-curve law, which is what makes a
+        // setback sphere seam truly G1.
+        let active_vector = (p_end - p_start) * (t_end - t_start);
+        let pieces = law.segments();
+        let position = |fraction: f64| {
+            p_start + (p_end - p_start) * (t_end - t_start).mul_add(fraction, t_start)
+        };
+        let row = |first: Point3, last: Point3, direction: Vec3| {
+            let mut controls = Vec::with_capacity(3 * pieces.len() + 1);
+            for (index, piece) in pieces.iter().enumerate() {
+                let span = piece.t1 - piece.t0;
+                let start = if index == 0 {
+                    first
                 } else {
-                    (0..n_cp)
-                        .map(|i| {
-                            let t = i as f64 / (n_cp - 1).max(1) as f64;
-                            let idx_f = t * (sample_weights.len() - 1).max(1) as f64;
-                            let lo = (idx_f.floor() as usize).min(sample_weights.len() - 1);
-                            let hi = (lo + 1).min(sample_weights.len() - 1);
-                            let frac = idx_f - lo as f64;
-                            sample_weights[lo] * (1.0 - frac) + sample_weights[hi] * frac
-                        })
-                        .collect()
+                    position(piece.t0) + direction * piece.r0
                 };
-                (
-                    crv0.degree(),
-                    crv0.knots().to_vec(),
-                    vec![
-                        crv0.control_points().to_vec(),
-                        crv1.control_points().to_vec(),
-                        crv2.control_points().to_vec(),
-                    ],
-                    weights,
-                )
-            };
+                let end = if index + 1 == pieces.len() {
+                    last
+                } else {
+                    position(piece.t1) + direction * piece.r1
+                };
+                if index == 0 {
+                    controls.push(start);
+                }
+                controls.push(start + (active_vector + direction * piece.slope0) * (span / 3.0));
+                controls.push(end - (active_vector + direction * piece.slope1) * (span / 3.0));
+                controls.push(end);
+            }
+            controls
+        };
+        let mut knots_v = vec![0.0; 4];
+        for piece in &pieces[..pieces.len() - 1] {
+            knots_v.extend([piece.t1; 3]);
+        }
+        knots_v.extend([1.0; 4]);
+        let control_points = vec![
+            row(row_contact1[0], row_contact1[n_v - 1], section.contact1),
+            row(row_mid[0], row_mid[n_v - 1], Vec3::new(0.0, 0.0, 0.0)),
+            row(row_contact2[0], row_contact2[n_v - 1], section.contact2),
+        ];
+        let degree_v = 3;
+        let mid_weights = vec![sample_weights[0]; control_points[0].len()];
         let n_cp_v = control_points[0].len();
 
         let surface = remus_math::nurbs::surface::NurbsSurface::new(

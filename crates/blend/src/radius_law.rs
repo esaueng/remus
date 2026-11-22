@@ -3,6 +3,86 @@
 use crate::BlendError;
 use remus_topology::edge::EdgeId;
 
+/// How a [`StandardRadiusLaw::Stations`] law runs between two neighbouring
+/// stations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StationBlend {
+    /// Straight interpolation: the radius is continuous at every station and
+    /// its slope may change there.
+    Linear,
+    /// The `3s² - 2s³` ramp on each segment: zero slope at every station, so
+    /// the radius is continuously differentiable along the whole edge.
+    SCurve,
+}
+
+/// One cubic piece of a standard law over `[t0, t1]` of the normalized
+/// domain, with the radius and its slope `dr/dt` at both ends.
+///
+/// Every standard law is a cubic polynomial on each piece, so these four
+/// numbers are the law there exactly (cubic Hermite form), not a fit.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RadiusLawSegment {
+    /// Normalized start parameter.
+    pub t0: f64,
+    /// Normalized end parameter.
+    pub t1: f64,
+    /// Radius at `t0`.
+    pub r0: f64,
+    /// Radius at `t1`.
+    pub r1: f64,
+    /// `dr/dt` at `t0`, taken from inside the piece.
+    pub slope0: f64,
+    /// `dr/dt` at `t1`, taken from inside the piece.
+    pub slope1: f64,
+}
+
+impl RadiusLawSegment {
+    /// The parameters in `[lo, hi]` (within this piece) where the law's
+    /// slope `dr/dt` equals `target`: the interior extrema of `r(t) − target·t`
+    /// on the piece, from the closed-form roots of its quadratic derivative.
+    #[must_use]
+    pub fn overrun_extrema(&self, target: f64, lo: f64, hi: f64) -> Vec<f64> {
+        let span = self.t1 - self.t0;
+        if span.is_nan() || span <= 0.0 {
+            return Vec::new();
+        }
+        // r(u) = a0 + a1·u + a2·u² + a3·u³ for u = (t − t0) / span.
+        let a1 = span * self.slope0;
+        let a2 = 3.0 * (self.r1 - self.r0) - span * (2.0 * self.slope0 + self.slope1);
+        let a3 = 2.0 * (self.r0 - self.r1) + span * (self.slope0 + self.slope1);
+        // dr/du = span·target  ⇔  3a3·u² + 2a2·u + (a1 − span·target) = 0.
+        let (qa, qb, qc) = (3.0 * a3, 2.0 * a2, a1 - span * target);
+        let scale = qa.abs().max(qb.abs()).max(qc.abs());
+        let mut roots = Vec::with_capacity(2);
+        if scale == 0.0 || !scale.is_finite() {
+            return roots;
+        }
+        if qa.abs() <= 1.0e-14 * scale {
+            if qb.abs() > 1.0e-14 * scale {
+                roots.push(-qc / qb);
+            }
+        } else {
+            let discriminant = qb.mul_add(qb, -4.0 * qa * qc);
+            if discriminant >= 0.0 {
+                // Numerically stable pair.
+                let q = -0.5 * (qb + discriminant.sqrt().copysign(qb));
+                roots.push(q / qa);
+                if q != 0.0 {
+                    roots.push(qc / q);
+                }
+            }
+        }
+        roots
+            .into_iter()
+            .map(|u| span.mul_add(u, self.t0))
+            .filter(|t| t.is_finite() && *t >= lo && *t <= hi)
+            .collect()
+    }
+}
+
+/// Smallest normalized spacing allowed between neighbouring stations.
+pub const MIN_STATION_SPACING: f64 = 1.0e-6;
+
 /// Cloneable standard radius laws shared by public modeling APIs.
 #[derive(Debug, Clone)]
 pub enum StandardRadiusLaw {
@@ -22,9 +102,81 @@ pub enum StandardRadiusLaw {
         /// Radius at the end of the edge.
         end: f64,
     },
+    /// Piecewise law through radius stations `(t, r)`.
+    ///
+    /// The first station is at `t = 0` and the last at `t = 1`; parameters
+    /// increase strictly, at least [`MIN_STATION_SPACING`] apart. Each
+    /// segment is monotone between its two station radii under `blend`, so
+    /// the law's extrema are station radii. Malformed stations are refused by
+    /// [`Self::validated_bounds`].
+    Stations {
+        /// The segment shape between neighbouring stations.
+        blend: StationBlend,
+        /// `(normalized parameter, radius)` pairs, endpoints included.
+        stations: Vec<(f64, f64)>,
+    },
 }
 
 impl StandardRadiusLaw {
+    /// The exact cubic pieces of this law, in order, covering `[0, 1]`.
+    ///
+    /// A malformed station list (fewer than two stations) yields no pieces;
+    /// [`Self::validated_bounds`] refuses it first on every public path.
+    #[must_use]
+    pub fn segments(&self) -> Vec<RadiusLawSegment> {
+        let piece = |t0: f64, t1: f64, r0: f64, r1: f64, blend: StationBlend| {
+            let slope = match blend {
+                StationBlend::Linear => (r1 - r0) / (t1 - t0),
+                StationBlend::SCurve => 0.0,
+            };
+            RadiusLawSegment {
+                t0,
+                t1,
+                r0,
+                r1,
+                slope0: slope,
+                slope1: slope,
+            }
+        };
+        match self {
+            Self::Constant(radius) => vec![piece(0.0, 1.0, *radius, *radius, StationBlend::Linear)],
+            Self::Linear { start, end } => {
+                vec![piece(0.0, 1.0, *start, *end, StationBlend::Linear)]
+            }
+            Self::SCurve { start, end } => {
+                vec![piece(0.0, 1.0, *start, *end, StationBlend::SCurve)]
+            }
+            Self::Stations { blend, stations } => stations
+                .windows(2)
+                .map(|pair| piece(pair[0].0, pair[1].0, pair[0].1, pair[1].1, *blend))
+                .collect(),
+        }
+    }
+
+    /// Interior station parameters, strictly inside `(0, 1)`.
+    #[must_use]
+    pub fn breakpoints(&self) -> Vec<f64> {
+        match self {
+            Self::Stations { stations, .. } if stations.len() > 2 => stations
+                [1..stations.len() - 1]
+                .iter()
+                .map(|(t, _)| *t)
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The piece containing `t`; at a station the later piece wins, except
+    /// at `t = 1`.
+    fn segment_at(&self, t: f64) -> Option<RadiusLawSegment> {
+        let segments = self.segments();
+        segments
+            .iter()
+            .copied()
+            .find(|segment| t < segment.t1)
+            .or_else(|| segments.last().copied())
+    }
+
     /// Evaluate the radius at normalized parameter `t`, clamped to `[0, 1]`.
     #[must_use]
     pub fn evaluate(&self, t: f64) -> f64 {
@@ -36,10 +188,24 @@ impl StandardRadiusLaw {
                 let smooth = t * t * (-2.0f64).mul_add(t, 3.0);
                 (end - start).mul_add(smooth, *start)
             }
+            Self::Stations { blend, .. } => {
+                let Some(segment) = self.segment_at(t) else {
+                    return f64::NAN;
+                };
+                let s = ((t - segment.t0) / (segment.t1 - segment.t0)).clamp(0.0, 1.0);
+                let shape = match blend {
+                    StationBlend::Linear => s,
+                    StationBlend::SCurve => s * s * (-2.0f64).mul_add(s, 3.0),
+                };
+                (segment.r1 - segment.r0).mul_add(shape, segment.r0)
+            }
         }
     }
 
     /// Derivative with respect to the normalized law parameter.
+    ///
+    /// At an interior station of a linear [`Self::Stations`] law the slope
+    /// is taken from the later piece.
     #[must_use]
     pub fn derivative(&self, t: f64) -> f64 {
         let t = t.clamp(0.0, 1.0);
@@ -47,18 +213,41 @@ impl StandardRadiusLaw {
             Self::Constant(_) => 0.0,
             Self::Linear { start, end } => end - start,
             Self::SCurve { start, end } => (end - start) * 6.0 * t * (1.0 - t),
+            Self::Stations { blend, .. } => {
+                let Some(segment) = self.segment_at(t) else {
+                    return f64::NAN;
+                };
+                let span = segment.t1 - segment.t0;
+                match blend {
+                    StationBlend::Linear => (segment.r1 - segment.r0) / span,
+                    StationBlend::SCurve => {
+                        let s = ((t - segment.t0) / span).clamp(0.0, 1.0);
+                        (segment.r1 - segment.r0) * 6.0 * s * (1.0 - s) / span
+                    }
+                }
+            }
         }
     }
 
     /// Exact minimum and maximum over the normalized law domain `[0, 1]`.
     ///
-    /// All standard laws are monotone between their endpoint values, so no
-    /// sampling is involved in this bound.
+    /// Every standard law, and every piece of a station law, is monotone
+    /// between its endpoint values, so no sampling is involved in this bound.
     #[must_use]
     pub fn bounds(&self) -> (f64, f64) {
         let (start, end) = match self {
             Self::Constant(radius) => (*radius, *radius),
             Self::Linear { start, end } | Self::SCurve { start, end } => (*start, *end),
+            Self::Stations { stations, .. } => {
+                if stations.is_empty() || stations.iter().any(|(_, r)| !r.is_finite()) {
+                    return (f64::NAN, f64::NAN);
+                }
+                return stations
+                    .iter()
+                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), (_, r)| {
+                        (lo.min(*r), hi.max(*r))
+                    });
+            }
         };
         if !start.is_finite() || !end.is_finite() {
             return (f64::NAN, f64::NAN);
@@ -78,6 +267,9 @@ impl StandardRadiusLaw {
     /// Returns [`BlendError::InvalidInput`] when either endpoint is non-finite,
     /// unsafe for squared geometry, or the law reaches `minimum_radius`.
     pub fn validated_bounds(&self, minimum_radius: f64) -> Result<(f64, f64), BlendError> {
+        if let Self::Stations { stations, .. } = self {
+            validate_stations(stations)?;
+        }
         let (minimum, maximum) = self.bounds();
         if !minimum_radius.is_finite() || minimum_radius < 0.0 {
             return Err(BlendError::InvalidInput {
@@ -138,12 +330,46 @@ impl StandardRadiusLaw {
     }
 }
 
+/// Structural check of a [`StandardRadiusLaw::Stations`] list.
+fn validate_stations(stations: &[(f64, f64)]) -> Result<(), BlendError> {
+    let invalid = |reason: String| Err(BlendError::InvalidInput { reason });
+    if stations.len() < 2 {
+        return invalid("a station radius law needs at least its two end stations".into());
+    }
+    if stations.iter().any(|(t, _)| !t.is_finite()) {
+        return invalid("radius-law station parameters must be finite".into());
+    }
+    // The ends are exact by construction (`0.0` and `1.0` as written by the
+    // caller), so they are compared exactly: a station "near" an end is a
+    // malformed list, not a rounded one.
+    let first = stations[0].0.to_bits();
+    let last = stations[stations.len() - 1].0.to_bits();
+    if (first != 0.0_f64.to_bits() && first != (-0.0_f64).to_bits()) || last != 1.0_f64.to_bits() {
+        return invalid("a station radius law must start at t = 0 and end at t = 1".into());
+    }
+    if let Some(pair) = stations
+        .windows(2)
+        .find(|pair| pair[1].0 - pair[0].0 < MIN_STATION_SPACING)
+    {
+        return invalid(format!(
+            "radius-law stations must increase by at least {MIN_STATION_SPACING}: {} then {}",
+            pair[0].0, pair[1].0
+        ));
+    }
+    Ok(())
+}
+
 impl From<StandardRadiusLaw> for RadiusLaw {
     fn from(law: StandardRadiusLaw) -> Self {
         match law {
             StandardRadiusLaw::Constant(radius) => Self::Constant(radius),
             StandardRadiusLaw::Linear { start, end } => Self::Linear { start, end },
             StandardRadiusLaw::SCurve { start, end } => Self::SCurve { start, end },
+            // An opaque callback for the walking engines, which qualify a
+            // custom law only station by station.
+            law @ StandardRadiusLaw::Stations { .. } => {
+                Self::Custom(Box::new(move |t| law.evaluate(t)))
+            }
         }
     }
 }
@@ -426,6 +652,98 @@ mod tests {
                     max_radius: 2.0,
                 }) if failed_edge == edge
             ));
+        }
+    }
+
+    #[test]
+    fn station_laws_pass_their_stations_and_stay_inside_them() {
+        for blend in [StationBlend::Linear, StationBlend::SCurve] {
+            let law = StandardRadiusLaw::Stations {
+                blend,
+                stations: vec![(0.0, 1.0), (0.25, 3.0), (0.6, 1.5), (1.0, 2.0)],
+            };
+            for (t, r) in [(0.0, 1.0), (0.25, 3.0), (0.6, 1.5), (1.0, 2.0)] {
+                assert!((law.evaluate(t) - r).abs() < 1e-15, "{blend:?} at {t}");
+            }
+            assert_eq!(law.bounds(), (1.0, 3.0));
+            assert_eq!(law.validated_bounds(1e-7).unwrap(), (1.0, 3.0));
+            assert_eq!(law.breakpoints(), vec![0.25, 0.6]);
+            let segments = law.segments();
+            assert_eq!(segments.len(), 3);
+            for i in 0..=1000 {
+                let t = f64::from(i) / 1000.0;
+                let r = law.evaluate(t);
+                assert!((1.0..=3.0).contains(&r), "{blend:?} {t} {r}");
+            }
+            // Each piece's Hermite data reproduces the law inside it.
+            for piece in &segments {
+                let h = 1e-7;
+                let inside0 = law.derivative(piece.t0 + h);
+                let inside1 = law.derivative(piece.t1 - h);
+                assert!((inside0 - piece.slope0).abs() < 1e-4, "{piece:?}");
+                assert!((inside1 - piece.slope1).abs() < 1e-4, "{piece:?}");
+            }
+        }
+        let smooth = StandardRadiusLaw::Stations {
+            blend: StationBlend::SCurve,
+            stations: vec![(0.0, 1.0), (0.5, 3.0), (1.0, 2.0)],
+        };
+        assert!(smooth.derivative(0.0).abs() < f64::EPSILON);
+        assert!(smooth.derivative(0.5).abs() < f64::EPSILON);
+        assert!(smooth.derivative(1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn standard_laws_are_one_exact_piece() {
+        let linear = StandardRadiusLaw::Linear {
+            start: 1.0,
+            end: 3.0,
+        };
+        assert_eq!(
+            linear.segments(),
+            vec![RadiusLawSegment {
+                t0: 0.0,
+                t1: 1.0,
+                r0: 1.0,
+                r1: 3.0,
+                slope0: 2.0,
+                slope1: 2.0,
+            }]
+        );
+        assert!(linear.breakpoints().is_empty());
+        let scurve = StandardRadiusLaw::SCurve {
+            start: 1.0,
+            end: 3.0,
+        };
+        assert!(scurve.segments()[0].slope0.abs() < f64::EPSILON);
+        assert!(scurve.segments()[0].slope1.abs() < f64::EPSILON);
+        assert!(StandardRadiusLaw::Constant(2.0).segments()[0].slope0.abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn malformed_station_lists_are_refused() {
+        for stations in [
+            vec![],
+            vec![(0.0, 1.0)],
+            vec![(0.0, 1.0), (0.9, 1.0)],
+            vec![(0.1, 1.0), (1.0, 1.0)],
+            vec![(0.0, 1.0), (0.5, 1.0), (0.5, 1.0), (1.0, 1.0)],
+            vec![(0.0, 1.0), (0.5, 1.0), (0.5 + 1e-9, 1.0), (1.0, 1.0)],
+            vec![(0.0, 1.0), (f64::NAN, 1.0), (1.0, 1.0)],
+            vec![(0.0, 1.0), (0.5, f64::INFINITY), (1.0, 1.0)],
+            vec![(0.0, 1.0), (0.5, 0.0), (1.0, 1.0)],
+        ] {
+            let law = StandardRadiusLaw::Stations {
+                blend: StationBlend::Linear,
+                stations: stations.clone(),
+            };
+            assert!(
+                matches!(
+                    law.validated_bounds(1e-7),
+                    Err(BlendError::InvalidInput { .. })
+                ),
+                "{stations:?}"
+            );
         }
     }
 }
