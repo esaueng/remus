@@ -118,9 +118,9 @@ export function runVariableFilletBoundariesPackaged({ RemusKernel }) {
         const detailed = route.endsWith('Detailed');
         if (detailed) {
           assert.equal(output.status, 'ok', label);
-          // Existing disclosure remains in force; repairing the boundary
-          // does not silently promote the variable engine to exact-only.
-          assert.equal(output.details.quality, 'approximate', label);
+          // A box edge is the exact family (a straight spine between two
+          // planes): its wall is the rational rolling ball, reported exact.
+          assert.equal(output.details.quality, 'exact', label);
         }
         const result = detailed ? output.value : output;
         assert.deepEqual(kernel.serializeSolids(Uint32Array.of(solid)), before, `${label}: original operand`);
@@ -159,10 +159,11 @@ export function runVariableFilletBoundariesPackaged({ RemusKernel }) {
         }
         if (detailed) {
           const current = kernel.serializeSolids(Uint32Array.of(solid));
-          const refused = invoke(kernel, route, solid, specs, true);
-          assert.equal(refused.status, 'error', label);
-          assert.equal(refused.code, 'exact_only_unattainable', label);
-          assert.deepEqual(kernel.serializeSolids(Uint32Array.of(solid)), current, `${label}: exact-only rollback`);
+          const accepted = invoke(kernel, route, solid, specs, true);
+          assert.equal(accepted.status, 'ok', label);
+          assert.equal(accepted.details.quality, 'exact', label);
+          close(JSON.parse(kernel.massProperties(accepted.value)).volume, expected, 1e-6 * expected, `${label}: exact-only volume`);
+          assert.deepEqual(kernel.serializeSolids(Uint32Array.of(solid)), current, `${label}: exact-only operand`);
         }
         cells++;
       } finally { kernel.free(); }
