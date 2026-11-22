@@ -296,6 +296,7 @@ impl<'a> ChamferBuilder<'a> {
                 succeeded: Vec::new(),
                 failed,
                 is_partial,
+                skipped: Vec::new(),
                 engine: crate::BlendEngine::Walking,
                 // Nothing was chamfered, so the input solid is the result and
                 // every face is itself.
@@ -539,6 +540,7 @@ impl<'a> ChamferBuilder<'a> {
             succeeded,
             failed,
             is_partial,
+            skipped: Vec::new(),
             face_origins: Some(face_origins),
             engine: crate::BlendEngine::Walking,
         })

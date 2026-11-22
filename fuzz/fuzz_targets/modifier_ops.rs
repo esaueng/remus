@@ -245,7 +245,7 @@ fn apply(
             inv::assert_complete(
                 "fillet",
                 sel.len(),
-                result.succeeded.len(),
+                result.succeeded.len() + result.skipped.len(),
                 result.is_partial,
             );
             // I8b — the radius is an option, and an option must be honoured.
@@ -291,7 +291,7 @@ fn apply(
             inv::assert_complete(
                 "chamfer",
                 sel.len(),
-                result.succeeded.len(),
+                result.succeeded.len() + result.skipped.len(),
                 result.is_partial,
             );
             finish(topo, "chamfer", result.solid, before, v_before, Growth::Any);

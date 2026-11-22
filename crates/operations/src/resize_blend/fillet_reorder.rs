@@ -210,6 +210,7 @@ where
         succeeded: edges.to_vec(),
         failed: Vec::new(),
         is_partial: false,
+        skipped: Vec::new(),
         face_origins: None,
         engine: engine.unwrap_or(BlendEngine::RollingBall),
     }))

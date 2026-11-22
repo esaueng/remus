@@ -421,6 +421,7 @@ pub fn blend_all(
         succeeded: requested.to_vec(),
         failed: Vec::new(),
         is_partial: false,
+        skipped: Vec::new(),
         face_origins: origins,
         engine: crate::BlendEngine::Walking,
     }))
@@ -1069,6 +1070,7 @@ fn blend_one(
         succeeded: spine_edges.to_vec(),
         failed: Vec::new(),
         is_partial: false,
+        skipped: Vec::new(),
         face_origins: Some(BlendFaceOrigins {
             survived: original_faces
                 .iter()
