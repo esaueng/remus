@@ -930,7 +930,7 @@ fn reject_variable_support_cliffs(
                         hi = crossing;
                     }
                 }
-                if !(hi >= lo) {
+                if hi.is_nan() || lo.is_nan() || hi < lo {
                     continue;
                 }
                 let hit_slope = (hit_at(1.0) - hit_at(0.0)) / reach;
@@ -986,7 +986,7 @@ fn planar_hull_segments(points: &[Point3], normal: Vec3) -> Vec<(Point3, Point3)
         .iter()
         .map(|p| ((*p - origin).dot(x_axis), (*p - origin).dot(y_axis), *p))
         .collect();
-    planar.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    planar.compact_sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
     let cross = |o: &(f64, f64, Point3), a: &(f64, f64, Point3), b: &(f64, f64, Point3)| {
         (a.0 - o.0).mul_add(b.1 - o.1, -(a.1 - o.1) * (b.0 - o.0))
     };

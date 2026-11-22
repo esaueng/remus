@@ -383,7 +383,7 @@ fn stripes_meeting_at_an_unset_corner_refuse_by_type_before_building() {
         &mut topo,
         input,
         &[
-            spec(x, linear.clone()),
+            spec(x, linear),
             spec(
                 far,
                 FilletRadiusLaw::Linear {

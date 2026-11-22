@@ -98,7 +98,7 @@ fn with_interior_stations(
             .ok_or_else(|| invalid("each fillet station needs a numeric 'at'"))?;
         let radius = optional_fillet_number(entry, "radius")?
             .ok_or_else(|| invalid("each fillet station needs a numeric 'radius'"))?;
-        if !(at > 0.0 && at < 1.0) {
+        if at.is_nan() || at <= 0.0 || at >= 1.0 {
             return Err(invalid(
                 "each fillet station's 'at' must lie strictly between 0 and 1",
             ));

@@ -43,7 +43,7 @@ impl RadiusLawSegment {
     #[must_use]
     pub fn overrun_extrema(&self, target: f64, lo: f64, hi: f64) -> Vec<f64> {
         let span = self.t1 - self.t0;
-        if !(span > 0.0) {
+        if span.is_nan() || span <= 0.0 {
             return Vec::new();
         }
         // r(u) = a0 + a1·u + a2·u² + a3·u³ for u = (t − t0) / span.
@@ -339,7 +339,12 @@ fn validate_stations(stations: &[(f64, f64)]) -> Result<(), BlendError> {
     if stations.iter().any(|(t, _)| !t.is_finite()) {
         return invalid("radius-law station parameters must be finite".into());
     }
-    if stations[0].0 != 0.0 || stations[stations.len() - 1].0 != 1.0 {
+    // The ends are exact by construction (`0.0` and `1.0` as written by the
+    // caller), so they are compared exactly: a station "near" an end is a
+    // malformed list, not a rounded one.
+    let first = stations[0].0.to_bits();
+    let last = stations[stations.len() - 1].0.to_bits();
+    if (first != 0.0_f64.to_bits() && first != (-0.0_f64).to_bits()) || last != 1.0_f64.to_bits() {
         return invalid("a station radius law must start at t = 0 and end at t = 1".into());
     }
     if let Some(pair) = stations
@@ -710,9 +715,9 @@ mod tests {
             start: 1.0,
             end: 3.0,
         };
-        assert_eq!(scurve.segments()[0].slope0, 0.0);
-        assert_eq!(scurve.segments()[0].slope1, 0.0);
-        assert_eq!(StandardRadiusLaw::Constant(2.0).segments()[0].slope0, 0.0);
+        assert!(scurve.segments()[0].slope0.abs() < f64::EPSILON);
+        assert!(scurve.segments()[0].slope1.abs() < f64::EPSILON);
+        assert!(StandardRadiusLaw::Constant(2.0).segments()[0].slope0.abs() < f64::EPSILON);
     }
 
     #[test]
