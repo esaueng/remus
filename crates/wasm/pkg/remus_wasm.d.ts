@@ -1387,7 +1387,8 @@ export class RemusKernel {
      * Additive twin of [`chamferDistanceAngle`](Self::chamfer_distance_angle),
      * unchanged; `angle` is in radians, inside `(0, π/2)`. Quality,
      * `details.engine` and `exactOnly` follow
-     * [`filletDetailed`](Self::fillet_detailed).
+     * [`filletDetailed`](Self::fillet_detailed), and skipped edges
+     * [`chamferV2Detailed`](Self::chamfer_v2_detailed).
      */
     chamferDistanceAngleDetailed(solid: number, edge_handles: Uint32Array, distance: number, angle: number, exact_only?: boolean | null): SolidOperationDetailedResult;
     /**
@@ -1427,7 +1428,10 @@ export class RemusKernel {
      *
      * Additive twin of [`chamferV2`](Self::chamfer_v2), unchanged. Quality,
      * `details.engine` and `exactOnly` follow
-     * [`filletDetailed`](Self::fillet_detailed).
+     * [`filletDetailed`](Self::fillet_detailed). A requested edge with no
+     * dihedral to bevel (a closed face's seam, a tangent join) is left out
+     * and listed in `details.skippedEdges` as `{ edge, reason }`, `reason`
+     * being `"seam"` or `"tangent"`; the key is absent when none was.
      */
     chamferV2Detailed(solid: number, edge_handles: Uint32Array, d1: number, d2: number, exact_only?: boolean | null): SolidOperationDetailedResult;
     /**
@@ -2265,7 +2269,10 @@ export class RemusKernel {
      * straight edge between two planar faces; any other selected edge is
      * refused with `unsupported-variable-support`, and two or more selected
      * edges meeting at a corner without qualified setbacks with
-     * `unsupported-vertex-blend`.
+     * `unsupported-vertex-blend`. `"ballCorners": true` on any spec closes
+     * every corner of three or more selected edges with the exact ball
+     * tangent to their supports, setting each stripe back to it; give no
+     * `startSetback`/`endSetback` with it.
      *
      * Also accepts brepjs-style fields: `startRadius`/`endRadius` as aliases for `start`/`end`.
      * When `law` is omitted and `startRadius` != `endRadius`, the law auto-detects as `"linear"`.
