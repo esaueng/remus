@@ -953,6 +953,67 @@ fn face_surface_tag(surface: &FaceSurface) -> &'static str {
 /// [`remus_blend::BlendError::CliffEncountered`] naming the edge, the
 /// support face, and the worst station's requested radius and available
 /// width.
+/// Refuses a setback corner that another face reaches into: the corner's
+/// cap is assembled against its stripes' support faces only, so any other
+/// face inside the corner ball (a bore near the corner) would cross the cap
+/// unsplit. Conservative: any face whose enclosing box meets the ball's
+/// refuses the corner, NURBS faces by their carrier's whole control hull.
+#[allow(clippy::too_many_arguments)]
+fn reject_faces_in_corner_ball(
+    topo: &Topology,
+    solid: SolidId,
+    vertex: remus_topology::vertex::VertexId,
+    stripes: &[EdgeId],
+    edge_to_faces: &HashMap<usize, Vec<remus_topology::face::FaceId>>,
+    center: Point3,
+    radius: f64,
+    tol: Tolerance,
+) -> Result<(), crate::OperationsError> {
+    let supports: HashSet<usize> = stripes
+        .iter()
+        .filter_map(|edge| edge_to_faces.get(&edge.index()))
+        .flatten()
+        .map(|face| face.index())
+        .collect();
+    let reach = Vec3::new(radius, radius, radius);
+    let ball = remus_math::aabb::Aabb3::from_points([center - reach, center + reach])
+        .expanded(-tol.linear);
+    for face in remus_topology::explorer::solid_faces(topo, solid)? {
+        if supports.contains(&face.index()) {
+            continue;
+        }
+        // A NURBS face is bounded by its whole carrier's control hull, which
+        // encloses it whatever its trim (positive weights); the trimmed
+        // patch box is recovered from sampled trims and can miss a lobe
+        // (review). Analytic faces' boxes are exact.
+        let bounds = match topo.face(face)?.surface() {
+            FaceSurface::Nurbs(nurbs) => remus_math::aabb::Aabb3::try_from_points(
+                nurbs.control_points().iter().flatten().copied(),
+            )
+            .ok_or_else(|| crate::OperationsError::InvalidInput {
+                reason: format!("face {face:?} has a NURBS surface with no control points"),
+            })?,
+            FaceSurface::Plane { .. }
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Cone(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_) => crate::measure::face_bounding_box(topo, face)?,
+        };
+        if bounds.intersects(ball) {
+            return Err(crate::OperationsError::Blend(
+                remus_blend::BlendError::UnsupportedSetbackCorner {
+                    vertex,
+                    stripes: stripes.len(),
+                    reason: format!(
+                        "face {face:?} reaches into the corner's tangent ball, so the cap would cross it"
+                    ),
+                },
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn reject_variable_support_cliffs(
     topo: &Topology,
     edge_laws: &[(EdgeId, FilletRadiusLaw)],
@@ -1653,8 +1714,12 @@ fn fillet_variable_transacted(
             let law = edge_law_map[&edge_id.index()];
             let radius = law.evaluate(law_t);
             radii.push((*edge_id, radius));
-            let slope_tol = tol.linear.max(radius.abs() * 1.0e-10);
-            if law.derivative(law_t).abs() > slope_tol {
+            // Exactly zero, not small: the law is mapped onto the cropped
+            // stripe, so any slope at the station grows as the stripe
+            // shortens and opens a tangent break against the cap. The
+            // S-curve and constant laws (and S-curve stations) give an
+            // exact 0.0 at their ends; a ramp never does.
+            if law.derivative(law_t).abs() > 0.0 {
                 return Err(crate::OperationsError::Blend(
                     remus_blend::BlendError::UnsupportedSetbackCorner {
                         vertex: vertex_id,
@@ -1722,7 +1787,10 @@ fn fillet_variable_transacted(
         }
 
         let common_radius = radii[0].1;
-        let radius_tol = tol.linear.max(common_radius.abs() * 1.0e-8);
+        // Absolute: each stripe's corner contacts are set from the common
+        // radius, so a difference becomes a law error of the same size along
+        // the stripe, and only one within the linear tolerance stays exact.
+        let radius_tol = tol.linear;
         if radii
             .iter()
             .any(|(_, radius)| (*radius - common_radius).abs() > radius_tol)
@@ -1806,6 +1874,16 @@ fn fillet_variable_transacted(
                 declared_endpoint_setbacks.insert((edge_id.index(), vertex_index), required);
             }
         }
+        reject_faces_in_corner_ball(
+            topo,
+            solid,
+            vertex_id,
+            incident_edges,
+            &edge_to_faces,
+            center,
+            common_radius,
+            tol,
+        )?;
         let is_concave = planar_edge_sides.values().all(|side| *side > 0.0);
         qualified_setback_corners
             .insert(vertex_index, (vertex_id, center, common_radius, is_concave));

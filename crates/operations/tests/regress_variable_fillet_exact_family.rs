@@ -833,10 +833,15 @@ fn tangent_ball_corners_refuse_what_no_single_ball_closes() {
         error
     };
 
-    // Unequal radii at the corner, or a slope there: typed corner refusals.
+    // Unequal radii at the corner, or a slope there: typed corner refusals,
+    // however small (review): radii a hair apart would snap one stripe's law
+    // past the linear tolerance, and a hairline slope is a tangent break
+    // that grows as the stripe is cropped.
     for laws in [
         [(s, 2.0, 2.0), (s, 2.5, 2.0), (s, 2.0, 2.0)],
         [(l, 2.0, 1.0), (s, 2.0, 2.0), (s, 2.0, 2.0)],
+        [(s, 2.0, 2.0), (s, 2.0, 2.0), (s, 2.000_01, 2.000_01)],
+        [(l, 2.0, 2.000_000_05), (s, 2.0, 2.0), (s, 2.0, 2.0)],
     ] {
         let specs = corner_specs(&topo, input, laws);
         let error = run(&mut topo, &specs, VariableCorners::TangentBall);
@@ -862,6 +867,62 @@ fn tangent_ball_corners_refuse_what_no_single_ball_closes() {
         matches!(error, OperationsError::InvalidInput { .. }),
         "{error:?}"
     );
+}
+
+/// Radii that agree only relatively at a large corner (review): on a box a
+/// thousand times larger, 2000 against 2000.00001 differs by 1e-5, inside a
+/// relative 1e-8 but past the linear tolerance. Snapping the odd stripe's
+/// corner to 2000 would turn its constant law into an S-curve off its own
+/// radius by that much, so the corner is refused.
+#[test]
+fn radii_a_hair_apart_at_a_large_corner_refuse() {
+    use remus_operations::fillet::{VariableCorners, fillet_variable_with_corners};
+    let s = FilletStationBlend::SCurve;
+    let mut topo = Topology::new();
+    let input = make_box(&mut topo, 60_000.0, 40_000.0, 20_000.0).unwrap();
+    let specs = corner_specs(
+        &topo,
+        input,
+        [
+            (s, 2000.0, 2000.0),
+            (s, 2000.0, 2000.0),
+            (s, 2_000.000_01, 2_000.000_01),
+        ],
+    );
+    let error =
+        fillet_variable_with_corners(&mut topo, input, &specs, VariableCorners::TangentBall)
+            .unwrap_err();
+    assert_eq!(
+        blend_failure_code(&error),
+        "unsupported-setback-corner",
+        "{error}"
+    );
+}
+
+/// A face inside the corner ball, clear of the supports and the stripes: a
+/// thin blind bore down from the top at (0.7, 0.7), stopping 0.5 above the
+/// floor, crosses the corner's spherical cap at z ≈ 1.21. The cap is built
+/// against the supports only, so the corner is refused by type, the input
+/// untouched (review).
+#[test]
+fn a_face_inside_the_corner_ball_refuses_the_corner() {
+    use remus_operations::fillet::{VariableCorners, fillet_variable_with_corners};
+    let mut topo = Topology::new();
+    let block = make_box(&mut topo, LENGTH, DEPTH, HEIGHT).unwrap();
+    let bore = make_cylinder(&mut topo, 0.025, HEIGHT).unwrap();
+    transform_solid(&mut topo, bore, &Mat4::translation(0.7, 0.7, 0.5)).unwrap();
+    let input = boolean(&mut topo, BooleanOp::Cut, block, bore).unwrap();
+    let specs = corner_specs(&topo, input, [(FilletStationBlend::SCurve, 2.0, 2.0); 3]);
+    let faces = solid_faces(&topo, input).unwrap().len();
+    let error =
+        fillet_variable_with_corners(&mut topo, input, &specs, VariableCorners::TangentBall)
+            .unwrap_err();
+    assert_eq!(
+        blend_failure_code(&error),
+        "unsupported-setback-corner",
+        "{error}"
+    );
+    assert_eq!(solid_faces(&topo, input).unwrap().len(), faces);
 }
 
 /// Two collinear stripes whose support turns where they meet: a square
