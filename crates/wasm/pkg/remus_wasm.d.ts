@@ -2256,7 +2256,16 @@ export class RemusKernel {
     /**
      * Apply variable-radius fillets to edges.
      *
-     * `json` is a JSON string: `[{"edge": u32, "law": "constant"|"linear"|"scurve", "start": f64, "end": f64, "startSetback": f64, "endSetback": f64}]`
+     * `json` is a JSON string: `[{"edge": u32, "law": "constant"|"linear"|"scurve", "start": f64, "end": f64, "startSetback": f64, "endSetback": f64, "stations": [{"at": f64, "radius": f64}]}]`
+     *
+     * `stations` are optional interior control radii at normalized positions
+     * strictly inside `(0, 1)` along the edge's own direction, increasing;
+     * the law (linear or scurve) then runs between every pair of
+     * neighbouring stations. Variable radii are built exactly only on a
+     * straight edge between two planar faces; any other selected edge is
+     * refused with `unsupported-variable-support`, and two or more selected
+     * edges meeting at a corner without qualified setbacks with
+     * `unsupported-vertex-blend`.
      *
      * Also accepts brepjs-style fields: `startRadius`/`endRadius` as aliases for `start`/`end`.
      * When `law` is omitted and `startRadius` != `endRadius`, the law auto-detects as `"linear"`.
