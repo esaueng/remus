@@ -17,9 +17,9 @@ Models: 167 passed / 1000 total (16.70%).
 
 ## Failure taxonomy
 
-- `invalid_input`: 770
+- `invalid_input`: 769
 - `invalid_topology`: 8
-- `resource_limit`: 9
+- `resource_limit`: 10
 - `tolerance_violation`: 1
 - `unsupported`: 45
 
@@ -27,9 +27,9 @@ Models: 167 passed / 1000 total (16.70%).
 
 - `boolean` / `operation_invalid_input`: 17
 - `boolean` / `operation_invalid_topology`: 8
-- `read` / `import_limit_exceeded`: 9
+- `read` / `import_limit_exceeded`: 10
 - `read` / `step_contains_no_solids`: 10
-- `read` / `step_parse_error`: 743
+- `read` / `step_parse_error`: 742
 - `read` / `unsupported_step_entity`: 45
 - `tessellate` / `tessellation_not_watertight`: 1
 
@@ -37,9 +37,8 @@ Models: 167 passed / 1000 total (16.70%).
 
 Triage hints only; these do not establish whether an input is valid.
 
-- `resource_limit`: 9
+- `resource_limit`: 10
 - `endpoint_authority`: 39
-- `face_boundary`: 1
 - `unsupported_entity`: 45
 - `no_solids`: 10
 - `unknown`: 703

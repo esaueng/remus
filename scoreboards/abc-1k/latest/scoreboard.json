@@ -26,9 +26,9 @@
     }
   },
   "failure_categories": {
-    "invalid_input": 770,
+    "invalid_input": 769,
     "invalid_topology": 8,
-    "resource_limit": 9,
+    "resource_limit": 10,
     "tolerance_violation": 1,
     "unsupported": 45
   },
@@ -39,9 +39,9 @@
         "operation_invalid_topology": 8
       },
       "read": {
-        "import_limit_exceeded": 9,
+        "import_limit_exceeded": 10,
         "step_contains_no_solids": 10,
-        "step_parse_error": 743,
+        "step_parse_error": 742,
         "unsupported_step_entity": 45
       },
       "tessellate": {
@@ -49,9 +49,8 @@
       }
     },
     "import_families": {
-      "resource_limit": 9,
+      "resource_limit": 10,
       "endpoint_authority": 39,
-      "face_boundary": 1,
       "unsupported_entity": 45,
       "no_solids": 10,
       "unknown": 703
