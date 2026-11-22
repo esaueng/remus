@@ -657,6 +657,9 @@ use crate::limits::{ImportLimits, ensure_input_size, ensure_limit};
 
 const MAX_UNTRIMMED_NURBS_RECOVERY_CONTROL_POINTS: usize = 4_096;
 const MAX_UNTRIMMED_NURBS_RECOVERY_DEGREE: usize = 32;
+/// Vertex lifts tried per periodic axis when a closed NURBS pcurve is
+/// re-seated at its edge's vertex (see `vertex_lifts_in_bounds`).
+const MAX_CLOSED_PCURVE_VERTEX_LIFTS: usize = 64;
 const MAX_UNTRIMMED_NURBS_RECOVERY_SPANS: usize = 4_096;
 const MAX_UNTRIMMED_NURBS_RECOVERY_SAMPLES: usize = 65_536;
 const MAX_UNTRIMMED_NURBS_RECOVERY_WORK: usize = 50_000_000;
@@ -6400,7 +6403,7 @@ impl<'a> StepBuilder<'a> {
                 0,
             )?;
         }
-        let (curve, parameter_scale, parameter_shift) =
+        let (mut curve, parameter_scale, parameter_shift) =
             transform_curve2d(raw_curve, transform, pcurve_ref)?;
         let declared_range = raw_range.map(|(start, end)| {
             (
@@ -6450,6 +6453,22 @@ impl<'a> StepBuilder<'a> {
             principal_trace.as_deref(),
             leaving,
         );
+        // How a closed edge's use winds round the surface's periodic axes,
+        // which its pcurve's trace must repeat.
+        let periodic = periodic_axes(surface);
+        let loop_winding = if edge.start() != edge.end() {
+            None
+        } else if !periodic.0 && !periodic.1 {
+            Some(Vec2::new(0.0, 0.0))
+        } else {
+            closed_edge_use_winding(
+                edge,
+                (start_point, start_point),
+                coedge.is_forward(),
+                periodic,
+                |point| Self::surface_uv(surface, point).ok(),
+            )
+        };
         let range = match declared_range {
             Some(range) => match select_full_turn_cylinder_pcurve_range(
                 surface,
@@ -6466,24 +6485,23 @@ impl<'a> StepBuilder<'a> {
                     &curve,
                     range,
                     (expected_start, expected_end),
-                    periodic_axes(surface),
+                    periodic,
+                    loop_winding,
                     pcurve_ref,
                 )?,
             },
             None => derive_pcurve_range(
-                &curve,
+                &mut curve,
                 edge,
                 coedge.is_forward(),
                 expected_start,
                 expected_end,
+                leaving,
+                periodic,
+                loop_winding,
                 pcurve_ref,
-                |nurbs| {
-                    self.reserve_geometry(
-                        nurbs.control_points().len(),
-                        std::mem::size_of::<Point3>(),
-                        nurbs.knots().len(),
-                        0,
-                    )
+                |points, knots| {
+                    self.reserve_geometry(points, std::mem::size_of::<Point3>(), knots, 0)
                 },
             )?,
         };
@@ -9981,6 +9999,7 @@ fn select_pcurve_range(
     range: (f64, f64),
     (expected_start, expected_end): (Point2, Point2),
     periodic: (bool, bool),
+    loop_winding: Option<Vec2>,
     pcurve_ref: u64,
 ) -> Result<(f64, f64), IoError> {
     let tolerance = pcurve_uv_tolerance(&[expected_start, expected_end]);
@@ -9990,13 +10009,21 @@ fn select_pcurve_range(
     // Whole periods between an end and its lifted vertex. Both ends must sit
     // the same number of periods away, so the declared trace sweeps the same
     // turns as the edge rather than adding revolutions it never traverses.
+    // A closed edge whose ends lift to one point is the exception: its trace
+    // must wind exactly as the edge's use does (`loop_winding`, in turns), so
+    // a loop once round a cylinder (a closed ellipse runs u from 0 to 2π)
+    // ends one period from its start, and a loop round the other axis of a
+    // torus is refused.
+    let winding = loop_winding
+        .filter(|_| (expected_start - expected_end).length() <= tolerance)
+        .unwrap_or(Vec2::new(0.0, 0.0));
     let turns = |parameter: f64, expected: Point2| {
         (curve.evaluate(parameter) - expected) * (1.0 / std::f64::consts::TAU)
     };
     let same_turns = |a: (f64, Point2), b: (f64, Point2)| {
         let (ta, tb) = (turns(a.0, a.1), turns(b.0, b.1));
-        (ta.x().round() - tb.x().round()).abs() < 0.5
-            && (ta.y().round() - tb.y().round()).abs() < 0.5
+        (tb.x().round() - ta.x().round() - winding.x()).abs() < 0.5
+            && (tb.y().round() - ta.y().round() - winding.y()).abs() < 0.5
     };
     let matches = |start: f64, end: f64| {
         hits(start, expected_start)
@@ -10028,15 +10055,34 @@ fn select_pcurve_range(
     })
 }
 
+/// The trim range of an untrimmed pcurve, from the use's oriented vertices.
+///
+/// A closed edge on a NURBS pcurve that closes on its surface (in UV, or
+/// modulo a period of `periodic`, as a loop round a cylinder does) is the
+/// whole loop, but both its ends project onto one parameter. Its range is
+/// the whole domain, run the way the use leaves its start (`leaving`); when
+/// the curve's seam is not at the vertex (OCCT writes periodic B-splines
+/// whose domain starts half a turn from it), `curve` is first replaced by
+/// the same curve re-seated at the vertex (see [`reseat_closed_nurbs2d`]).
+/// The loop must wind round the surface as the edge's use does
+/// (`loop_winding`, in turns; `None` admits only a loop closed in UV).
+/// `reserve` charges constructed geometry (control points, knots) against
+/// the import budget. The result is never empty.
+#[allow(clippy::too_many_arguments)]
 fn derive_pcurve_range(
-    curve: &Curve2D,
+    curve: &mut Curve2D,
     edge: &Edge,
     forward: bool,
     expected_start: Point2,
     expected_end: Point2,
+    leaving: Option<Vec2>,
+    periodic: (bool, bool),
+    loop_winding: Option<Vec2>,
     pcurve_ref: u64,
-    mut reserve_projection: impl FnMut(&NurbsCurve2D) -> Result<(), IoError>,
+    mut reserve: impl FnMut(usize, usize) -> Result<(), IoError>,
 ) -> Result<(f64, f64), IoError> {
+    let mut reserve_projection =
+        |nurbs: &NurbsCurve2D| reserve(nurbs.control_points().len(), nurbs.knots().len());
     let edge_increases = if matches!(edge.curve(), EdgeCurve::Line) {
         true
     } else {
@@ -10063,7 +10109,8 @@ fn derive_pcurve_range(
         }
         (start, end)
     };
-    let range = match curve {
+    let mut reseated = None;
+    let range = match &*curve {
         Curve2D::Line(line) => (line.project(expected_start), line.project(expected_end)),
         Curve2D::Circle(circle) => {
             periodic_range(circle.project(expected_start), circle.project(expected_end))
@@ -10074,14 +10121,64 @@ fn derive_pcurve_range(
         ),
         Curve2D::Nurbs(nurbs) => {
             let domain = nurbs.domain();
-            if (expected_start - expected_end).length() <= tolerance
+            let closed_use = (expected_start - expected_end).length() <= tolerance;
+            if closed_use
                 && (nurbs.evaluate(domain.0) - expected_start).length() <= tolerance
                 && (nurbs.evaluate(domain.1) - expected_end).length() <= tolerance
             {
-                if use_increases {
+                // Already seated at the vertex: the curve's own tangent
+                // still decides which way the use runs it.
+                if closed_nurbs_use_increases(nurbs, leaving).unwrap_or(use_increases) {
                     domain
                 } else {
                     (domain.1, domain.0)
+                }
+            } else if closed_use
+                && edge.start() == edge.end()
+                && let Some(shift) = closed_nurbs_shift(nurbs, periodic, tolerance)
+            {
+                // A closed edge on a pcurve that closes on the surface: the
+                // use is the whole loop, from the vertex round to it.
+                let first = nurbs.evaluate(domain.0);
+                let seam =
+                    if periodic_difference(first, expected_start, periodic).length() <= tolerance {
+                        domain.0
+                    } else {
+                        // Every lift of the vertex the curve can reach: its
+                        // control points bound it.
+                        let mut found = Err(IoError::ParseError {
+                            reason: format!("PCURVE #{pcurve_ref} misses its closed edge's vertex"),
+                        });
+                        for candidate in
+                            vertex_lifts_in_bounds(nurbs, expected_start, periodic, tolerance)?
+                        {
+                            reserve_projection(nurbs)?;
+                            found = project_nurbs2d(nurbs, candidate, tolerance, pcurve_ref);
+                            if found.is_ok() {
+                                break;
+                            }
+                        }
+                        found?
+                    };
+                // The lifted copy, three refined copies and the result, each
+                // at most `3p` poles and knots larger than the curve.
+                let grown = 3 * nurbs.degree();
+                reserve_projection(nurbs)?;
+                for _ in 0..4 {
+                    reserve(
+                        nurbs.control_points().len().saturating_add(grown),
+                        nurbs.knots().len().saturating_add(grown),
+                    )?;
+                }
+                let rotated = reseat_closed_nurbs2d(nurbs, seam, shift, pcurve_ref)?;
+                let (start, end) = rotated.domain();
+                let increases =
+                    closed_nurbs_use_increases(&rotated, leaving).unwrap_or(use_increases);
+                reseated = Some(rotated);
+                if increases {
+                    (start, end)
+                } else {
+                    (end, start)
                 }
             } else {
                 reserve_projection(nurbs)?;
@@ -10094,13 +10191,290 @@ fn derive_pcurve_range(
             }
         }
     };
-    select_pcurve_range(
-        curve,
-        range,
-        (expected_start, expected_end),
-        (false, false),
-        pcurve_ref,
+    let range = if let Some(rotated) = reseated {
+        *curve = Curve2D::Nurbs(rotated);
+        // The loop's ends differ by its whole-period shift, so each is held
+        // to the vertex modulo the period rather than to one lift.
+        let hits = |parameter: f64| {
+            periodic_difference(curve.evaluate(parameter), expected_start, periodic).length()
+                <= tolerance
+        };
+        if !(hits(range.0) && hits(range.1)) {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "PCURVE #{pcurve_ref} closed range ({}, {}) does not start and end on its vertex",
+                    range.0, range.1
+                ),
+            });
+        }
+        // The loop winds round the surface as the edge's use does, or it
+        // traces some other loop through the same vertex.
+        let turns =
+            (curve.evaluate(range.1) - curve.evaluate(range.0)) * (1.0 / std::f64::consts::TAU);
+        let winding = loop_winding.unwrap_or(Vec2::new(0.0, 0.0));
+        if (turns.x() - winding.x()).abs() > 0.25 || (turns.y() - winding.y()).abs() > 0.25 {
+            return Err(IoError::ParseError {
+                reason: format!(
+                    "PCURVE #{pcurve_ref} winds ({}, {}) turns round its surface, its closed edge ({}, {})",
+                    turns.x(),
+                    turns.y(),
+                    winding.x(),
+                    winding.y()
+                ),
+            });
+        }
+        range
+    } else {
+        select_pcurve_range(
+            curve,
+            range,
+            (expected_start, expected_end),
+            (false, false),
+            None,
+            pcurve_ref,
+        )?
+    };
+    // Both ends on one parameter is no trim at all; the writer refuses it,
+    // so refuse it here, where the file is still the cause.
+    let span = (range.1 - range.0).abs();
+    if !(span.is_finite() && span > 0.0) {
+        return Err(IoError::ParseError {
+            reason: format!(
+                "PCURVE #{pcurve_ref} derives an empty parameter range ({}, {})",
+                range.0, range.1
+            ),
+        });
+    }
+    Ok(range)
+}
+
+/// The lifts of `vertex` by whole periods along `periodic` axes that lie in
+/// the control-point bounds of `curve` (which contain the curve), padded by
+/// `tolerance`: the only places the curve can pass the vertex. Rational
+/// weights can leave the bounds far wider than the curve, so up to
+/// [`MAX_CLOSED_PCURVE_VERTEX_LIFTS`] lifts per axis are tried (each
+/// projection is charged to the import budget); wider bounds are refused as
+/// a limit rather than read as a miss.
+fn vertex_lifts_in_bounds(
+    curve: &NurbsCurve2D,
+    vertex: Point2,
+    periodic: (bool, bool),
+    tolerance: f64,
+) -> Result<Vec<Point2>, IoError> {
+    let points = curve.control_points();
+    let lifts =
+        |value: f64, coordinate: fn(&Point2) -> f64, periodic: bool| -> Result<Vec<f64>, IoError> {
+            if !periodic {
+                return Ok(vec![value]);
+            }
+            let (low, high) = points.iter().map(coordinate).fold(
+                (f64::INFINITY, f64::NEG_INFINITY),
+                |(low, high), coordinate| (low.min(coordinate), high.max(coordinate)),
+            );
+            let first = ((low - tolerance - value) / std::f64::consts::TAU).ceil();
+            let last = ((high + tolerance - value) / std::f64::consts::TAU).floor();
+            let limit = MAX_CLOSED_PCURVE_VERTEX_LIFTS;
+            let fits = first.is_finite()
+                && last.is_finite()
+                && last - first < f64::from(u32::try_from(limit).unwrap_or(u32::MAX));
+            if !fits {
+                return Err(IoError::LimitExceeded {
+                    resource: "vertex lifts per closed NURBS pcurve axis",
+                    limit,
+                    actual: limit.saturating_add(1),
+                });
+            }
+            Ok((0..limit)
+                .map(|k| first + f64::from(u32::try_from(k).unwrap_or(u32::MAX)))
+                .take_while(|&turns| turns <= last)
+                .map(|turns| turns.mul_add(std::f64::consts::TAU, value))
+                .collect())
+        };
+    let us = lifts(vertex.x(), |point| point.x(), periodic.0)?;
+    let vs = lifts(vertex.y(), |point| point.y(), periodic.1)?;
+    Ok(us
+        .iter()
+        .flat_map(|&u| vs.iter().map(move |&v| Point2::new(u, v)))
+        .collect())
+}
+
+/// Whether a use of a closed pcurve that starts and ends at its domain ends
+/// runs with increasing parameter: the curve leaves its start along
+/// `tangent(start)` that way and along `−tangent(end)` the other way, and
+/// the use leaves along `leaving`. `None` when `leaving` is unknown or the
+/// two directions do not separate.
+fn closed_nurbs_use_increases(curve: &NurbsCurve2D, leaving: Option<Vec2>) -> Option<bool> {
+    let leaving = leaving?;
+    let (start, end) = curve.domain();
+    let cosine = |direction: Vec2| {
+        let scale = direction.length() * leaving.length();
+        (scale.is_finite() && scale > 0.0).then(|| direction.dot(leaving) / scale)
+    };
+    let ahead = cosine(curve.tangent(start))?;
+    let back = cosine(curve.tangent(end) * -1.0)?;
+    // Unit cosines: 1e-6 is far above rounding and far below any real
+    // separation between the two ways round a loop.
+    if (ahead - back).abs() <= 1e-6 {
+        return None;
+    }
+    Some(ahead > back)
+}
+
+/// The whole-period offset `curve(b) − curve(a)` of a NURBS pcurve that is
+/// closed on its surface: zero for a curve closed in UV, a multiple of 2π
+/// along a periodic axis for one that closes only modulo the period (a
+/// loop round a cylinder). `None` when the ends do not meet.
+fn closed_nurbs_shift(
+    curve: &NurbsCurve2D,
+    periodic: (bool, bool),
+    tolerance: f64,
+) -> Option<Vec2> {
+    let (a, b) = curve.domain();
+    let offset = curve.evaluate(b) - curve.evaluate(a);
+    let turns = |delta: f64, periodic: bool| {
+        if periodic {
+            (delta / std::f64::consts::TAU).round() * std::f64::consts::TAU
+        } else {
+            0.0
+        }
+    };
+    let shift = Vec2::new(turns(offset.x(), periodic.0), turns(offset.y(), periodic.1));
+    let residual = (offset - shift).length();
+    (residual.is_finite() && residual <= tolerance).then_some(shift)
+}
+
+/// The closed NURBS pcurve `curve` re-seated so its domain starts and ends
+/// at `seam`: the arc `[seam, b]` followed by `[a, seam]` moved one domain
+/// length on and by the curve's closing `shift` (zero, or a whole period
+/// for a loop round a periodic surface), so the new domain is
+/// `[seam, seam + (b − a)]` and the new curve ends `shift` from its start.
+///
+/// The geometry is unchanged. Boehm insertion (Piegl & Tiller A5.1) raises
+/// both domain ends and `seam` to multiplicity `p`, where the curve passes
+/// through a control point; the two arcs are then joined at the old domain
+/// ends, which meet once the second arc is translated by `shift` (a NURBS
+/// translates with its control points). The second arc's weights are
+/// scaled so the shared control point carries one weight, which leaves a
+/// rational arc's geometry as it was.
+fn reseat_closed_nurbs2d(
+    curve: &NurbsCurve2D,
+    seam: f64,
+    shift: Vec2,
+    pcurve_ref: u64,
+) -> Result<NurbsCurve2D, IoError> {
+    /// `curve_knot_insert`'s own knot-equality epsilon, so multiplicities
+    /// are counted the way insertion counted them.
+    const KNOT_EPS: f64 = 1e-15;
+    let invalid = |reason: String| IoError::ParseError {
+        reason: format!("PCURVE #{pcurve_ref} cannot move its closed NURBS seam: {reason}"),
+    };
+    let p = curve.degree();
+    let (a, b) = curve.domain();
+    if !(seam - a >= KNOT_EPS && b - seam >= KNOT_EPS) {
+        // Insertion cannot tell `seam` from a domain end: it already is one.
+        return Ok(curve.clone());
+    }
+    // The untrimmed-recovery caps bound the insertion work, `O(n + p²)` per
+    // knot.
+    ensure_limit(
+        "degree per closed NURBS pcurve re-seat",
+        p,
+        MAX_UNTRIMMED_NURBS_RECOVERY_DEGREE,
+    )?;
+    ensure_limit(
+        "control points per closed NURBS pcurve re-seat",
+        curve.control_points().len(),
+        MAX_UNTRIMMED_NURBS_RECOVERY_CONTROL_POINTS,
+    )?;
+    let lifted = remus_math::nurbs::NurbsCurve::new(
+        p,
+        curve.knots().to_vec(),
+        curve
+            .control_points()
+            .iter()
+            .map(|point| Point3::new(point.x(), point.y(), 0.0))
+            .collect(),
+        curve.weights().to_vec(),
     )
+    .map_err(|error| invalid(error.to_string()))?;
+    let mut refined = lifted;
+    for knot in [a, b, seam] {
+        refined = remus_math::nurbs::curve_knot_insert(&refined, knot, p)
+            .map_err(|error| invalid(error.to_string()))?;
+    }
+    let knots = refined.knots();
+    let points = refined.control_points();
+    let weights = refined.weights();
+    let at = |value: f64| move |&knot: &f64| (knot - value).abs() < KNOT_EPS;
+    let (Some(last_a), Some(first_b), Some(first_s), Some(last_s)) = (
+        knots.iter().rposition(at(a)),
+        knots.iter().position(at(b)),
+        knots.iter().position(at(seam)),
+        knots.iter().rposition(at(seam)),
+    ) else {
+        return Err(invalid("knot insertion lost a domain knot".into()));
+    };
+    // Multiplicity exactly `p` at the seam (a C⁰ point, not a break), and
+    // the indices in domain order with room for the control points below.
+    if last_s + 1 - first_s != p || last_a < p || !(last_a < first_s && last_s < first_b) {
+        return Err(invalid(format!(
+            "parameter {seam} is not a single interior point of the domain ({a}, {b})"
+        )));
+    }
+    // The curve passes through control point `last_a − p` at `a`,
+    // `first_s − 1` at the seam and `first_b − 1` at `b`.
+    let (at_a, at_seam, at_b) = (last_a - p, first_s - 1, first_b - 1);
+    if at_b >= points.len() || at_b >= weights.len() {
+        return Err(invalid("domain end has no control point".into()));
+    }
+    let gap = (Point2::new(points[at_b].x(), points[at_b].y())
+        - (Point2::new(points[at_a].x(), points[at_a].y()) + shift))
+        .length();
+    let tolerance = pcurve_uv_tolerance(&[curve.evaluate(a), curve.evaluate(b)]);
+    if !(gap.is_finite() && gap <= tolerance && weights[at_a] > 0.0) {
+        return Err(invalid(format!("its domain ends are {gap} apart")));
+    }
+    let period = b - a;
+    // Moving the arc one domain length on may round a knot by an ulp, which
+    // is harmless, but must not collapse one onto `b`, the new end or a
+    // neighbour: that would drop an arc.
+    let moved = &knots[last_a + 1..first_s];
+    let end = seam + period;
+    let keeps_spans = moved.windows(2).all(|pair| {
+        let distinct = pair[1] > pair[0];
+        distinct == (pair[1] + period > pair[0] + period)
+    });
+    let inside = moved
+        .iter()
+        .all(|&knot| knot + period > b && knot + period < end);
+    if !(keeps_spans && inside && end > b) {
+        return Err(invalid(format!(
+            "its knots near {b} collapse when moved by the domain length {period}"
+        )));
+    }
+    let scale = weights[at_b] / weights[at_a];
+    let mut new_knots = vec![seam; p + 1];
+    new_knots.extend_from_slice(&knots[last_s + 1..first_b]);
+    new_knots.extend(std::iter::repeat_n(b, p));
+    new_knots.extend(knots[last_a + 1..first_s].iter().map(|knot| knot + period));
+    new_knots.extend(std::iter::repeat_n(seam + period, p + 1));
+    let mut new_points: Vec<Point2> = points[at_seam..=at_b]
+        .iter()
+        .map(|point| Point2::new(point.x(), point.y()))
+        .collect();
+    new_points.extend(
+        points[at_a + 1..=at_seam]
+            .iter()
+            .map(|point| Point2::new(point.x(), point.y()) + shift),
+    );
+    let mut new_weights = weights[at_seam..=at_b].to_vec();
+    new_weights.extend(
+        weights[at_a + 1..=at_seam]
+            .iter()
+            .map(|weight| weight * scale),
+    );
+    NurbsCurve2D::new(p, new_knots, new_points, new_weights)
+        .map_err(|error| invalid(error.to_string()))
 }
 
 fn project_nurbs2d(
@@ -10164,6 +10538,58 @@ fn project_ellipse2d(ellipse: &Ellipse2D, point: Point2) -> f64 {
 /// domain, when a sample does not project, or past the sample budget.
 fn open_edge_use_trace(
     edge: &Edge,
+    ends: (Point3, Point3),
+    forward: bool,
+    periodic: (bool, bool),
+    project: impl Fn(Point3) -> Option<Point2>,
+) -> Option<Vec<Point2>> {
+    if edge.start() == edge.end() {
+        return None;
+    }
+    let mut trace = edge_use_trace(edge, ends, forward, periodic, project)?;
+    trace.pop();
+    trace.remove(0);
+    Some(trace)
+}
+
+/// Whole turns a closed edge's use winds round each periodic axis of its
+/// surface: the unwrapped principal-UV trace of the edge (see
+/// [`edge_use_trace`]) from the vertex back to it, in turns. `(0, 0)` for a
+/// loop that closes in UV, `(±1, 0)` for one once round a cylinder's axis.
+/// `None` for an open edge, when the trace is unavailable, or when it does
+/// not close to whole turns.
+fn closed_edge_use_winding(
+    edge: &Edge,
+    ends: (Point3, Point3),
+    forward: bool,
+    periodic: (bool, bool),
+    project: impl Fn(Point3) -> Option<Point2>,
+) -> Option<Vec2> {
+    if edge.start() != edge.end() {
+        return None;
+    }
+    let trace = edge_use_trace(edge, ends, forward, periodic, project)?;
+    let total = trace.windows(2).fold(Vec2::new(0.0, 0.0), |total, pair| {
+        total + periodic_difference(pair[1], pair[0], periodic)
+    }) * (1.0 / std::f64::consts::TAU);
+    let whole = |turns: f64, periodic: bool| {
+        if !periodic {
+            return Some(0.0);
+        }
+        let rounded = turns.round();
+        ((turns - rounded).abs() < 0.25).then_some(rounded)
+    };
+    Some(Vec2::new(
+        whole(total.x(), periodic.0)?,
+        whole(total.y(), periodic.1)?,
+    ))
+}
+
+/// Principal UVs of samples of an edge, both ends included, ordered along
+/// the use: the bounded trace behind [`open_edge_use_trace`] and
+/// [`closed_edge_use_winding`].
+fn edge_use_trace(
+    edge: &Edge,
     (start, end): (Point3, Point3),
     forward: bool,
     periodic: (bool, bool),
@@ -10172,9 +10598,6 @@ fn open_edge_use_trace(
     const SEGMENTS: u32 = 16;
     const MAX_DEPTH: u32 = 12;
     const MAX_SAMPLES: usize = 4096;
-    if edge.start() == edge.end() {
-        return None;
-    }
     let (t0, t1) = if matches!(edge.curve(), EdgeCurve::Line) {
         (0.0, 1.0)
     } else {
@@ -10236,18 +10659,38 @@ fn open_edge_use_trace(
             }
         }
     }
-    trace.pop();
-    trace.remove(0);
     if !forward {
         trace.reverse();
     }
     Some(trace)
 }
 
+/// The point of `surface` at `(u, v)` in the chart its pcurves are read in:
+/// the canonical STEP plane frame for a plane (which stores no frame; the
+/// same frame `surface_uv` projects into), the surface's own
+/// parameterization otherwise.
+fn chart_point(surface: &FaceSurface, u: f64, v: f64) -> Option<Point3> {
+    match surface {
+        FaceSurface::Plane { normal, d } => {
+            let origin = super::plane_chart_origin(*normal, *d)?;
+            let frame =
+                Frame3::from_normal_and_ref(origin, *normal, step_plane_ref_direction(*normal))
+                    .ok()?;
+            Some(frame.origin + frame.x * u + frame.y * v)
+        }
+        FaceSurface::Nurbs(_)
+        | FaceSurface::Cylinder(_)
+        | FaceSurface::Cone(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => surface.evaluate(u, v),
+    }
+}
+
 /// The UV direction in which a use leaves its start: the edge's analytic
 /// tangent there, resolved against the surface's partial derivatives at the
-/// start's principal UV. `None` where the surface chart degenerates (a pole
-/// or apex) or the edge has no strict domain.
+/// start's principal UV (in the canonical frame on a plane). `None` where
+/// the surface chart degenerates (a pole or apex) or the edge has no strict
+/// domain.
 fn use_start_uv_direction(
     surface: &FaceSurface,
     edge: &Edge,
@@ -10266,7 +10709,7 @@ fn use_start_uv_direction(
     };
     let travel =
         edge.curve().tangent_with_endpoints(t, start, end) * if forward { sense } else { -sense };
-    let point = |u: f64, v: f64| surface.evaluate(u, v);
+    let point = |u: f64, v: f64| chart_point(surface, u, v);
     let su = (point(at.x() + H, at.y())? - point(at.x() - H, at.y())?) * (0.5 / H);
     let sv = (point(at.x(), at.y() + H)? - point(at.x(), at.y() - H)?) * (0.5 / H);
     // Least squares `travel ≈ a·su + b·sv` on the tangent plane.
@@ -13448,6 +13891,329 @@ mod tests {
         );
     }
 
+    /// OCCT's periodic rational quadratic circle of radius 1.64 (knot
+    /// multiplicities `(1,2,2,2,2,1)`), starting at (−1.64, 0) and passing
+    /// (1.64, 0) at parameter π, as written for the #1832 sweep caps.
+    fn occt_periodic_circle() -> NurbsCurve2D {
+        let third = std::f64::consts::TAU / 3.0;
+        NurbsCurve2D::new(
+            2,
+            vec![
+                -third,
+                0.0,
+                0.0,
+                third,
+                third,
+                2.0 * third,
+                2.0 * third,
+                3.0 * third,
+                3.0 * third,
+                4.0 * third,
+            ],
+            vec![
+                Point2::new(-1.64, 2.220_446_049_25e-16),
+                Point2::new(-1.64, 2.840_563_324_413),
+                Point2::new(0.82, 1.420_281_662_206),
+                Point2::new(3.28, 6.237_287_550_454e-16),
+                Point2::new(0.82, -1.420_281_662_206),
+                Point2::new(-1.64, -2.840_563_324_413),
+                Point2::new(-1.64, 2.220_446_049_25e-16),
+            ],
+            vec![1.0, 0.5, 1.0, 0.5, 1.0, 0.5, 1.0],
+        )
+        .unwrap()
+    }
+
+    /// Re-seating a closed NURBS at an interior parameter keeps every point:
+    /// the new curve at `seam + s` is the old one at `seam + s` taken modulo
+    /// the domain, for a periodic rational circle and a clamped cubic, at a
+    /// fresh parameter and at an existing knot.
+    #[test]
+    fn reseating_a_closed_nurbs_pcurve_keeps_its_geometry() {
+        let cubic = NurbsCurve2D::new(
+            3,
+            vec![0.0, 0.0, 0.0, 0.0, 0.25, 0.5, 0.75, 1.0, 1.0, 1.0, 1.0],
+            vec![
+                Point2::new(0.0, 0.0),
+                Point2::new(2.0, -1.0),
+                Point2::new(4.0, 1.0),
+                Point2::new(3.0, 4.0),
+                Point2::new(0.5, 5.0),
+                Point2::new(-2.0, 2.0),
+                Point2::new(0.0, 0.0),
+            ],
+            vec![1.0, 2.0, 0.5, 1.0, 1.5, 1.0, 1.0],
+        )
+        .unwrap();
+        for (curve, seam) in [
+            (occt_periodic_circle(), std::f64::consts::PI),
+            (occt_periodic_circle(), 1.0),
+            (cubic.clone(), 0.37),
+            (cubic, 0.5),
+        ] {
+            let (a, b) = curve.domain();
+            let reseated = reseat_closed_nurbs2d(&curve, seam, Vec2::new(0.0, 0.0), 7).unwrap();
+            let (c, d) = reseated.domain();
+            assert!(
+                (c - seam).abs() < 1e-15 && (d - (seam + b - a)).abs() < 1e-12,
+                "({c}, {d})"
+            );
+            for k in 0..=64 {
+                let s = (b - a) * f64::from(k) / 64.0;
+                let old = seam + s;
+                let old = if old > b { old - (b - a) } else { old };
+                let gap = (reseated.evaluate(seam + s) - curve.evaluate(old)).length();
+                assert!(gap < 1e-12, "seam {seam}, s {s}: {gap}");
+            }
+        }
+    }
+
+    /// A loop round a periodic surface closes only modulo the period: its
+    /// end is one period along from its start. Re-seated, the arc moved to
+    /// the end is translated by that period, so the curve keeps every point
+    /// and still ends one period from its start.
+    #[test]
+    fn reseating_a_loop_round_a_periodic_surface_carries_its_period() {
+        use std::f64::consts::TAU;
+        let curve = NurbsCurve2D::new(
+            3,
+            vec![0.0, 0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0, 1.0],
+            vec![
+                Point2::new(0.0, 0.0),
+                Point2::new(1.0, 1.0),
+                Point2::new(2.0, -1.0),
+                Point2::new(4.0, 1.0),
+                Point2::new(TAU, 0.0),
+            ],
+            vec![1.0, 1.0, 2.0, 1.0, 1.0],
+        )
+        .unwrap();
+        let shift = closed_nurbs_shift(&curve, (true, false), 1e-7).unwrap();
+        assert_eq!(shift, Vec2::new(TAU, 0.0));
+        assert!(closed_nurbs_shift(&curve, (false, false), 1e-7).is_none());
+        let seam = 0.3;
+        let reseated = reseat_closed_nurbs2d(&curve, seam, shift, 7).unwrap();
+        for k in 0..=64 {
+            let s = f64::from(k) / 64.0;
+            let expected = if seam + s <= 1.0 {
+                curve.evaluate(seam + s)
+            } else {
+                curve.evaluate(seam + s - 1.0) + shift
+            };
+            let gap = (reseated.evaluate(seam + s) - expected).length();
+            assert!(gap < 1e-12, "s {s}: {gap}");
+        }
+    }
+
+    /// A closed edge on a closed NURBS pcurve whose seam is elsewhere takes
+    /// the whole loop from its vertex, run the way the use leaves the
+    /// vertex: the curve's own tangent decides, `forward` only when the
+    /// leaving direction is unknown (#1832). Before, both ends projected to
+    /// π and the range was the empty `(π, π)`.
+    #[test]
+    fn closed_edge_on_a_closed_nurbs_pcurve_takes_the_whole_loop() {
+        use std::f64::consts::PI;
+        let mut topo = Topology::new();
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.64).unwrap();
+        let vertex = topo.add_vertex(Vertex::new(circle.evaluate(0.0), Tolerance::new().linear));
+        let mut edge = Edge::new(vertex, vertex, EdgeCurve::Circle(circle));
+        edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+        let at = Point2::new(1.64, 0.0);
+        // The pcurve runs −y through (1.64, 0); a use leaving +y runs it
+        // backwards even though `forward` says otherwise.
+        for (forward, leaving, expected) in [
+            (true, Some(Vec2::new(0.0, 1.0)), (3.0 * PI, PI)),
+            (true, Some(Vec2::new(0.0, -1.0)), (PI, 3.0 * PI)),
+            (false, Some(Vec2::new(0.0, -1.0)), (PI, 3.0 * PI)),
+            (true, None, (PI, 3.0 * PI)),
+            (false, None, (3.0 * PI, PI)),
+        ] {
+            let mut curve = Curve2D::Nurbs(occt_periodic_circle());
+            let range = derive_pcurve_range(
+                &mut curve,
+                &edge,
+                forward,
+                at,
+                at,
+                leaving,
+                (false, false),
+                Some(Vec2::new(0.0, 0.0)),
+                7,
+                |_, _| Ok(()),
+            )
+            .unwrap();
+            assert!(
+                (range.0 - expected.0).abs() < 1e-9 && (range.1 - expected.1).abs() < 1e-9,
+                "forward {forward}, leaving {leaving:?}: {range:?}"
+            );
+            let Curve2D::Nurbs(reseated) = &curve else {
+                panic!("the pcurve stays a NURBS");
+            };
+            assert_eq!(
+                reseated.domain().0.to_bits(),
+                range.0.min(range.1).to_bits()
+            );
+            for t in [range.0, range.1] {
+                assert!((curve.evaluate(t) - at).length() < 1e-12);
+            }
+        }
+    }
+
+    /// A closed pcurve already seated at its vertex is also run the way the
+    /// use leaves the vertex, not by coedge sense: the OCCT circle leaves
+    /// (−1.64, 0) towards +y, so a use leaving −y runs it backwards.
+    #[test]
+    fn closed_nurbs_pcurve_seated_at_its_vertex_follows_the_use_direction() {
+        use std::f64::consts::TAU;
+        let mut topo = Topology::new();
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.64).unwrap();
+        let vertex = topo.add_vertex(Vertex::new(circle.evaluate(0.0), Tolerance::new().linear));
+        let mut edge = Edge::new(vertex, vertex, EdgeCurve::Circle(circle));
+        edge.set_trim(Some((0.0, TAU)));
+        let at = occt_periodic_circle().evaluate(0.0);
+        for (leaving, expected) in [
+            (Some(Vec2::new(0.0, -1.0)), (TAU, 0.0)),
+            (Some(Vec2::new(0.0, 1.0)), (0.0, TAU)),
+            (None, (0.0, TAU)),
+        ] {
+            let mut curve = Curve2D::Nurbs(occt_periodic_circle());
+            let range = derive_pcurve_range(
+                &mut curve,
+                &edge,
+                true,
+                at,
+                at,
+                leaving,
+                (false, false),
+                Some(Vec2::new(0.0, 0.0)),
+                7,
+                |_, _| Ok(()),
+            )
+            .unwrap();
+            assert!(
+                (range.0 - expected.0).abs() < 1e-9 && (range.1 - expected.1).abs() < 1e-9,
+                "leaving {leaving:?}: {range:?}"
+            );
+        }
+    }
+
+    /// Moving an arc one domain length on must not round its knots: near
+    /// 2^50 a break at B − 1.875 moved by 2 would land on B and drop the
+    /// first quarter arc, so the re-seat is refused instead.
+    #[test]
+    fn reseating_refuses_knots_that_would_round_together() {
+        let big = 2.0_f64.powi(50);
+        let w = std::f64::consts::FRAC_1_SQRT_2;
+        let breaks = [big - 2.0, big - 1.875, big - 1.0, big - 0.5, big];
+        let knots = vec![
+            breaks[0], breaks[0], breaks[0], breaks[1], breaks[1], breaks[2], breaks[2], breaks[3],
+            breaks[3], breaks[4], breaks[4], breaks[4],
+        ];
+        let curve = NurbsCurve2D::new(
+            2,
+            knots,
+            vec![
+                Point2::new(1.0, 0.0),
+                Point2::new(1.0, 1.0),
+                Point2::new(0.0, 1.0),
+                Point2::new(-1.0, 1.0),
+                Point2::new(-1.0, 0.0),
+                Point2::new(-1.0, -1.0),
+                Point2::new(0.0, -1.0),
+                Point2::new(1.0, -1.0),
+                Point2::new(1.0, 0.0),
+            ],
+            vec![1.0, w, 1.0, w, 1.0, w, 1.0, w, 1.0],
+        )
+        .unwrap();
+        let error = reseat_closed_nurbs2d(&curve, breaks[2], Vec2::new(0.0, 0.0), 7).unwrap_err();
+        assert!(error.to_string().contains("collapse"), "{error}");
+    }
+
+    /// Rational weights can leave a pcurve's control points far outside the
+    /// curve: a cylinder rim u = 0 → 2π whose inner poles sit at u = 100 and
+    /// 2π − 100 with weights 1e-4 still finds its vertex at u = π, among the
+    /// ~32 lifts its bounds admit.
+    #[test]
+    fn closed_nurbs_pcurve_with_wide_control_bounds_finds_its_vertex() {
+        use std::f64::consts::{PI, TAU};
+        let curve = NurbsCurve2D::new(
+            3,
+            vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+            vec![
+                Point2::new(0.0, 0.0),
+                Point2::new(100.0, 0.0),
+                Point2::new(TAU - 100.0, 0.0),
+                Point2::new(TAU, 0.0),
+            ],
+            vec![1.0, 1e-4, 1e-4, 1.0],
+        )
+        .unwrap();
+        assert!((curve.evaluate(0.5) - Point2::new(PI, 0.0)).length() < 1e-12);
+        let mut topo = Topology::new();
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+        let vertex = topo.add_vertex(Vertex::new(circle.evaluate(0.0), Tolerance::new().linear));
+        let mut edge = Edge::new(vertex, vertex, EdgeCurve::Circle(circle));
+        edge.set_trim(Some((0.0, TAU)));
+        let at = Point2::new(PI, 0.0);
+        let mut pcurve = Curve2D::Nurbs(curve);
+        let range = derive_pcurve_range(
+            &mut pcurve,
+            &edge,
+            true,
+            at,
+            at,
+            None,
+            (true, false),
+            Some(Vec2::new(1.0, 0.0)),
+            7,
+            |_, _| Ok(()),
+        )
+        .unwrap();
+        assert!(
+            (range.0 - 0.5).abs() < 1e-9 && (range.1 - 1.5).abs() < 1e-9,
+            "{range:?}"
+        );
+        assert!((pcurve.evaluate(range.1) - Point2::new(PI + TAU, 0.0)).length() < 1e-9);
+    }
+
+    /// A closed edge whose pcurve is not closed only touches its vertex
+    /// once: both ends project to one parameter, and that empty range is
+    /// refused at read time instead of reaching the writer.
+    #[test]
+    fn closed_edge_on_an_open_nurbs_pcurve_refuses_the_empty_range() {
+        let mut topo = Topology::new();
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+        let vertex = topo.add_vertex(Vertex::new(circle.evaluate(0.0), Tolerance::new().linear));
+        let mut edge = Edge::new(vertex, vertex, EdgeCurve::Circle(circle));
+        edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+        let mut curve = Curve2D::Nurbs(
+            NurbsCurve2D::from_line(Point2::new(-1.0, 0.0), Point2::new(1.0, 0.0)).unwrap(),
+        );
+        let at = Point2::new(0.0, 0.0);
+        let error = derive_pcurve_range(
+            &mut curve,
+            &edge,
+            true,
+            at,
+            at,
+            None,
+            (false, false),
+            Some(Vec2::new(0.0, 0.0)),
+            7,
+            |_, _| Ok(()),
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("empty parameter range"),
+            "{error}"
+        );
+    }
+
     /// A declared range is the pcurve's own trace: its ends may sit a whole
     /// period away from the lifted vertices and still be accepted, but only
     /// by the same whole period at both ends, so the trace adds no turns.
@@ -13457,27 +14223,194 @@ mod tests {
         let curve = Curve2D::Line(Line2D::new(Point2::new(TAU, 0.0), Vec2::new(1.0, 0.0)).unwrap());
         let expected = (Point2::new(0.0, 0.0), Point2::new(FRAC_PI_2, 0.0));
         assert_eq!(
-            select_pcurve_range(&curve, (0.0, FRAC_PI_2), expected, (true, false), 7).unwrap(),
+            select_pcurve_range(&curve, (0.0, FRAC_PI_2), expected, (true, false), None, 7)
+                .unwrap(),
             (0.0, FRAC_PI_2)
         );
         assert!(
-            select_pcurve_range(&curve, (0.0, FRAC_PI_2), expected, (false, false), 7).is_err()
+            select_pcurve_range(&curve, (0.0, FRAC_PI_2), expected, (false, false), None, 7)
+                .is_err()
         );
-        assert!(select_pcurve_range(&curve, (0.0, 1.0), expected, (true, false), 7).is_err());
+        assert!(select_pcurve_range(&curve, (0.0, 1.0), expected, (true, false), None, 7).is_err());
         // A quarter-turn edge declared with an extra revolution, either way.
         assert!(
-            select_pcurve_range(&curve, (0.0, TAU + FRAC_PI_2), expected, (true, false), 7)
-                .is_err()
+            select_pcurve_range(
+                &curve,
+                (0.0, TAU + FRAC_PI_2),
+                expected,
+                (true, false),
+                None,
+                7
+            )
+            .is_err()
         );
         assert!(
-            select_pcurve_range(&curve, (TAU + FRAC_PI_2, 0.0), expected, (true, false), 7)
-                .is_err()
+            select_pcurve_range(
+                &curve,
+                (TAU + FRAC_PI_2, 0.0),
+                expected,
+                (true, false),
+                None,
+                7
+            )
+            .is_err()
         );
         // The same trace declared end first is still accepted, reoriented.
         assert_eq!(
-            select_pcurve_range(&curve, (FRAC_PI_2, 0.0), expected, (true, false), 7).unwrap(),
+            select_pcurve_range(&curve, (FRAC_PI_2, 0.0), expected, (true, false), None, 7)
+                .unwrap(),
             (0.0, FRAC_PI_2)
         );
+        // A closed edge whose ends lift to one point may be a loop round the
+        // periodic axis, its ends a period apart, exactly as its use winds:
+        // once forward here, so not backwards, not twice, not round the
+        // other axis (a torus meridian), and not for an open edge.
+        let vertex = (Point2::new(0.0, 0.0), Point2::new(0.0, 0.0));
+        let once = Some(Vec2::new(1.0, 0.0));
+        let torus = (true, true);
+        assert_eq!(
+            select_pcurve_range(&curve, (-TAU, 0.0), vertex, (true, false), once, 7).unwrap(),
+            (-TAU, 0.0)
+        );
+        assert_eq!(
+            select_pcurve_range(&curve, (0.0, -TAU), vertex, (true, false), once, 7).unwrap(),
+            (-TAU, 0.0)
+        );
+        let back = Some(Vec2::new(-1.0, 0.0));
+        assert_eq!(
+            select_pcurve_range(&curve, (-TAU, 0.0), vertex, (true, false), back, 7).unwrap(),
+            (0.0, -TAU)
+        );
+        assert!(select_pcurve_range(&curve, (-TAU, 0.0), vertex, (true, false), None, 7).is_err());
+        assert!(select_pcurve_range(&curve, (-TAU, TAU), vertex, (true, false), once, 7).is_err());
+        let meridian = Some(Vec2::new(0.0, 1.0));
+        assert!(select_pcurve_range(&curve, (-TAU, 0.0), vertex, torus, meridian, 7).is_err());
+    }
+
+    /// A closed loop on a cylinder that does not go round the axis, a UV
+    /// circle centred (2, 0) of radius 2 starting at (0, 0), passes its
+    /// vertex (4, 0) at a lift other than the one nearest its start
+    /// (4 − 2π): every lift inside the curve's bounds is tried. The same
+    /// loop claimed to wind round the axis is refused.
+    #[test]
+    fn closed_nurbs_pcurve_finds_its_vertex_on_any_lift_it_reaches() {
+        use std::f64::consts::PI;
+        let on_axis = |x: f64| Point2::new(x, 0.0);
+        // Rational quadratic full circle, four quarter arcs, from (0, 0).
+        let w = std::f64::consts::FRAC_1_SQRT_2;
+        let loop_curve = || {
+            NurbsCurve2D::new(
+                2,
+                vec![0.0, 0.0, 0.0, 1.0, 1.0, 2.0, 2.0, 3.0, 3.0, 4.0, 4.0, 4.0],
+                vec![
+                    on_axis(0.0),
+                    Point2::new(0.0, 2.0),
+                    Point2::new(2.0, 2.0),
+                    Point2::new(4.0, 2.0),
+                    on_axis(4.0),
+                    Point2::new(4.0, -2.0),
+                    Point2::new(2.0, -2.0),
+                    Point2::new(0.0, -2.0),
+                    on_axis(0.0),
+                ],
+                vec![1.0, w, 1.0, w, 1.0, w, 1.0, w, 1.0],
+            )
+            .unwrap()
+        };
+        let mut topo = Topology::new();
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 1.0).unwrap();
+        let vertex = topo.add_vertex(Vertex::new(circle.evaluate(0.0), Tolerance::new().linear));
+        let mut edge = Edge::new(vertex, vertex, EdgeCurve::Circle(circle));
+        edge.set_trim(Some((0.0, std::f64::consts::TAU)));
+        let nearest = Point2::new(4.0 - 2.0 * PI, 0.0);
+        let derive = |curve: &mut Curve2D, winding: Vec2| {
+            derive_pcurve_range(
+                curve,
+                &edge,
+                true,
+                nearest,
+                nearest,
+                None,
+                (true, false),
+                Some(winding),
+                7,
+                |_, _| Ok(()),
+            )
+        };
+        let mut pcurve = Curve2D::Nurbs(loop_curve());
+        let range = derive(&mut pcurve, Vec2::new(0.0, 0.0)).unwrap();
+        assert!(
+            (range.0 - 2.0).abs() < 1e-12 && (range.1 - 6.0).abs() < 1e-12,
+            "{range:?}"
+        );
+        for t in [range.0, range.1] {
+            assert!((pcurve.evaluate(t) - on_axis(4.0)).length() < 1e-12);
+        }
+        let mut pcurve = Curve2D::Nurbs(loop_curve());
+        assert!(derive(&mut pcurve, Vec2::new(1.0, 0.0)).is_err());
+    }
+
+    /// A translated knot vector does not hide an interior seam: with knots
+    /// near 10^15 (spacing well above their ulp) the vertex at the domain's
+    /// exact midpoint is re-seated, not mistaken for a domain end.
+    #[test]
+    fn reseating_works_on_a_translated_knot_vector() {
+        let offset = 1.0e15;
+        let w = std::f64::consts::FRAC_1_SQRT_2;
+        let knots = [0.0, 0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 1.5, 1.5, 2.0, 2.0, 2.0]
+            .iter()
+            .map(|knot| knot + offset)
+            .collect();
+        let curve = NurbsCurve2D::new(
+            2,
+            knots,
+            vec![
+                Point2::new(1.0, 0.0),
+                Point2::new(1.0, 1.0),
+                Point2::new(0.0, 1.0),
+                Point2::new(-1.0, 1.0),
+                Point2::new(-1.0, 0.0),
+                Point2::new(-1.0, -1.0),
+                Point2::new(0.0, -1.0),
+                Point2::new(1.0, -1.0),
+                Point2::new(1.0, 0.0),
+            ],
+            vec![1.0, w, 1.0, w, 1.0, w, 1.0, w, 1.0],
+        )
+        .unwrap();
+        let seam = offset + 1.0;
+        let reseated = reseat_closed_nurbs2d(&curve, seam, Vec2::new(0.0, 0.0), 7).unwrap();
+        assert_eq!(reseated.domain().0.to_bits(), seam.to_bits());
+        assert!((reseated.evaluate(seam) - Point2::new(-1.0, 0.0)).length() < 1e-12);
+        for k in 0..=16 {
+            let s = f64::from(k) * 0.125;
+            let old = if seam + s <= offset + 2.0 {
+                seam + s
+            } else {
+                seam + s - 2.0
+            };
+            assert!((reseated.evaluate(seam + s) - curve.evaluate(old)).length() < 1e-12);
+        }
+    }
+
+    /// Re-seating is bounded like untrimmed NURBS recovery: a degree past
+    /// its cap is refused before any knot is inserted.
+    #[test]
+    fn reseating_refuses_a_degree_past_the_recovery_cap() {
+        let p = MAX_UNTRIMMED_NURBS_RECOVERY_DEGREE + 1;
+        let mut knots = vec![0.0; p + 1];
+        knots.extend(std::iter::repeat_n(1.0, p + 1));
+        let points = (0..=p)
+            .map(|i| {
+                let angle = std::f64::consts::TAU * f64::from(u32::try_from(i).unwrap())
+                    / f64::from(u32::try_from(p).unwrap());
+                Point2::new(angle.cos(), angle.sin())
+            })
+            .collect::<Vec<_>>();
+        let curve = NurbsCurve2D::new(p, knots, points, vec![1.0; p + 1]).unwrap();
+        let error = reseat_closed_nurbs2d(&curve, 0.5, Vec2::new(0.0, 0.0), 7).unwrap_err();
+        assert!(matches!(error, IoError::LimitExceeded { .. }), "{error}");
     }
 
     #[test]
