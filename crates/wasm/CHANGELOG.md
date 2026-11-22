@@ -5,7 +5,23 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
 
 ## Unreleased
 
+### Added
+
+* `filletVariable` (and `filletVariableDetailed`, which shares its parser)
+  accepts optional interior control radii:
+  `"stations": [{"at": t, "radius": r}]`, `t` strictly inside `(0, 1)` along
+  the edge's own direction and increasing, under a `linear` or `scurve`
+  law. `start`/`end` remain the end radii. Stations under a `constant` law,
+  a non-array value, or an entry without a numeric `at`/`radius` throw
+  `invalid input`.
+
 ### Changed
+
+* `filletVariable` refuses a selected edge with a curved spine or a
+  non-planar support with `unsupported-variable-support: …` before building,
+  and two or more selected edges meeting at a corner without qualified
+  setbacks with `unsupported-vertex-blend: …`. Both used to throw
+  `postcondition-failed: fillet postcondition validation failed with …`.
 
 * `chamferV2`, `chamferDetailed` and the other bindings over `chamfer_v2`:
   a selection that does not build but ends inside a longer tangent chain

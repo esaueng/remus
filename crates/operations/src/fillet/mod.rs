@@ -41,6 +41,7 @@ mod vertex_snap;
 
 pub(crate) use crate::tessellate::surface_normal::face_surface_normal_at;
 pub use remus_blend::radius_law::StandardRadiusLaw as FilletRadiusLaw;
+pub use remus_blend::radius_law::StationBlend as FilletStationBlend;
 #[allow(deprecated)]
 pub use rolling_ball::fillet_rolling_ball;
 pub(crate) use rolling_ball::fillet_rolling_ball_with_origins;
@@ -533,6 +534,174 @@ pub fn fillet_variable_with_setbacks(
     })
 }
 
+/// Refuse a selected edge of `solid` whose spine is not straight, before any
+/// spine-parameter bookkeeping (a closed rim would otherwise read as a
+/// collapsed edge). Edges of other solids are left to the engine's
+/// `EdgesNotBlended` refusal.
+///
+/// # Errors
+///
+/// [`remus_blend::BlendError::UnsupportedVariableSupport`] naming the edge
+/// and its curve.
+fn reject_curved_variable_spines(
+    topo: &Topology,
+    solid: SolidId,
+    edge_laws: &[(EdgeId, FilletRadiusLaw)],
+) -> Result<(), crate::OperationsError> {
+    let own: HashSet<EdgeId> = remus_topology::explorer::solid_edges(topo, solid)?
+        .into_iter()
+        .collect();
+    for (edge_id, _) in edge_laws {
+        let curve = topo.edge(*edge_id)?.curve();
+        if own.contains(edge_id) && !matches!(curve, EdgeCurve::Line) {
+            return Err(crate::OperationsError::Blend(
+                remus_blend::BlendError::UnsupportedVariableSupport {
+                    edge: *edge_id,
+                    reason: format!(
+                        "its spine is a {}; an exact variable section needs a straight spine",
+                        edge_curve_tag(curve)
+                    ),
+                },
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Refuse every selected stripe outside the family whose section this engine
+/// builds exactly: a straight spine (checked first by
+/// [`reject_curved_variable_spines`]) between two planar supports.
+///
+/// There each section is a rational circular arc in a fixed plane frame and
+/// each row is the radius law itself, so the band is exact. A curved spine or
+/// a curved support would need sampled sections interpolated into a NURBS
+/// band — an approximation that can still assemble and validate — so it is
+/// refused by type before any topology is allocated.
+///
+/// # Errors
+///
+/// [`remus_blend::BlendError::UnsupportedVariableSupport`] naming the first
+/// stripe outside the family and what takes it out.
+fn reject_inexact_variable_stripes(
+    topo: &Topology,
+    edge_laws: &[(EdgeId, FilletRadiusLaw)],
+    edge_to_faces: &HashMap<usize, Vec<remus_topology::face::FaceId>>,
+    face_surfaces: &HashMap<usize, FaceSurface>,
+) -> Result<(), crate::OperationsError> {
+    let refuse = |edge: EdgeId, reason: String| {
+        Err(crate::OperationsError::Blend(
+            remus_blend::BlendError::UnsupportedVariableSupport { edge, reason },
+        ))
+    };
+    for (edge_id, _) in edge_laws {
+        let faces = edge_to_faces
+            .get(&edge_id.index())
+            .map_or(&[][..], Vec::as_slice);
+        if faces.is_empty() {
+            // Not an edge of this solid: the engine names it in its
+            // `EdgesNotBlended` refusal.
+            continue;
+        }
+        if faces.len() != 2 || faces[0] == faces[1] {
+            return refuse(
+                *edge_id,
+                "it does not separate two distinct support faces".into(),
+            );
+        }
+        for face in faces {
+            match face_surfaces.get(&face.index()) {
+                Some(FaceSurface::Plane { .. }) => {}
+                other => {
+                    return refuse(
+                        *edge_id,
+                        format!(
+                            "support face {face:?} is {}; an exact variable section needs planar supports",
+                            other.map_or("missing", face_surface_tag)
+                        ),
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Refuse a corner where two or more selected stripes meet without declared
+/// setbacks, unless they all continue one straight line.
+///
+/// Each stripe ends in the plane normal to its own spine, so two stripes
+/// meeting at an angle leave a wedge between their end sections that no
+/// patch of this engine fills; the assembled shell would only fail its
+/// postcondition later. Saying so up front names the vertex instead. A
+/// qualified 3+-way corner declares its setbacks and is checked by the caller.
+///
+/// # Errors
+///
+/// [`remus_blend::BlendError::UnsupportedVertexBlend`] for the vertex.
+fn reject_unset_stripe_corner(
+    topo: &Topology,
+    vertex_index: usize,
+    incident_edges: &[EdgeId],
+    tol: Tolerance,
+) -> Result<(), crate::OperationsError> {
+    if incident_edges.len() < 2 {
+        return Ok(());
+    }
+    let mut vertex = None;
+    let mut directions = Vec::with_capacity(incident_edges.len());
+    for edge_id in incident_edges {
+        let edge = topo.edge(*edge_id)?;
+        let (here, other) = if edge.start().index() == vertex_index {
+            (edge.start(), edge.end())
+        } else {
+            (edge.end(), edge.start())
+        };
+        vertex = Some(here);
+        let from = topo.vertex(here)?.point();
+        let to = topo.vertex(other)?.point();
+        directions.push((to - from).normalize()?);
+    }
+    let collinear = directions
+        .iter()
+        .all(|direction| direction.cross(directions[0]).length() <= tol.angular);
+    if collinear && incident_edges.len() == 2 {
+        return Ok(());
+    }
+    let Some(vertex) = vertex else {
+        return Ok(());
+    };
+    Err(crate::OperationsError::Blend(
+        remus_blend::BlendError::UnsupportedVertexBlend {
+            vertex,
+            stripes: incident_edges.len(),
+        },
+    ))
+}
+
+fn edge_curve_tag(curve: &EdgeCurve) -> &'static str {
+    match curve {
+        EdgeCurve::Line => "line",
+        EdgeCurve::Circle(_) => "circle",
+        EdgeCurve::Ellipse(_) => "ellipse",
+        EdgeCurve::NurbsCurve(_) => "NURBS curve",
+        #[allow(unreachable_patterns)]
+        _ => "curve",
+    }
+}
+
+fn face_surface_tag(surface: &FaceSurface) -> &'static str {
+    match surface {
+        FaceSurface::Plane { .. } => "a plane",
+        FaceSurface::Cylinder(_) => "a cylinder",
+        FaceSurface::Cone(_) => "a cone",
+        FaceSurface::Sphere(_) => "a sphere",
+        FaceSurface::Torus(_) => "a torus",
+        FaceSurface::Nurbs(_) => "a NURBS surface",
+        #[allow(unreachable_patterns)]
+        _ => "a curved surface",
+    }
+}
+
 /// Refuse a variable-radius stripe whose contact would land on or past the far
 /// boundary of one of its planar support faces (B63).
 ///
@@ -630,10 +799,14 @@ fn reject_variable_support_cliffs(
                 }
             }
 
-            // Worst station: (requested radius, available width).
+            // Worst station: (requested radius, available width). A station
+            // law's breakpoints join the fixed stations: on a convex face the
+            // overrun of a piecewise-linear law peaks at one of them.
             let mut worst: Option<(f64, f64)> = None;
-            for station in 0..STATIONS {
-                let fraction = f64::from(station) / f64::from(STATIONS - 1);
+            let fractions = (0..STATIONS)
+                .map(|station| f64::from(station) / f64::from(STATIONS - 1))
+                .chain(law.breakpoints());
+            for fraction in fractions {
                 let geometry_t = (t_end - t_start).mul_add(fraction, t_start);
                 let radius = law.evaluate(fraction);
                 let p = geometry::sample_edge_point(&curve, p_start, p_end, geometry_t);
@@ -904,6 +1077,7 @@ fn fillet_variable_transacted(
     for (_, law) in edge_laws {
         law.validated_bounds(tol.linear)?;
     }
+    reject_curved_variable_spines(topo, solid, edge_laws)?;
 
     // Convert physical endpoint setbacks into the original edge parameter
     // domain. The first qualified cell is deliberately exact: straight
@@ -1051,6 +1225,8 @@ fn fillet_variable_transacted(
         );
     }
 
+    reject_inexact_variable_stripes(topo, edge_laws, &edge_to_faces, &face_surfaces)?;
+
     reject_variable_support_cliffs(
         topo,
         edge_laws,
@@ -1102,6 +1278,7 @@ fn fillet_variable_transacted(
             })
             .count();
         if declared_count == 0 {
+            reject_unset_stripe_corner(topo, vertex_index, incident_edges, tol)?;
             continue;
         }
         let vertex_id = incident_edges
@@ -1672,64 +1849,53 @@ fn fillet_variable_transacted(
         let row_contact1: Vec<Point3> = (0..n_v).map(|i| grid[i][0]).collect();
         let row_mid: Vec<Point3> = (0..n_v).map(|i| grid[i][1]).collect();
         let row_contact2: Vec<Point3> = (0..n_v).map(|i| grid[i][2]).collect();
-        let (degree_v, knots_v, control_points, mid_weights) =
-            if both_planar && matches!(edge_curve, EdgeCurve::Line) {
-                let active_vector = (p_end - p_start) * (t_end - t_start);
-                let start_slope = law.derivative(0.0);
-                let end_slope = law.derivative(1.0);
-                let controls = |start: Point3, end: Point3, direction: Vec3| {
-                    vec![
-                        start,
-                        start + (active_vector + direction * start_slope) * (1.0 / 3.0),
-                        end - (active_vector + direction * end_slope) * (1.0 / 3.0),
-                        end,
-                    ]
-                };
-                (
-                    3,
-                    vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
-                    vec![
-                        controls(row_contact1[0], row_contact1[n_v - 1], d1_ref),
-                        controls(row_mid[0], row_mid[n_v - 1], Vec3::new(0.0, 0.0, 0.0)),
-                        controls(row_contact2[0], row_contact2[n_v - 1], d2_ref),
-                    ],
-                    vec![sample_weights[0]; 4],
-                )
-            } else {
-                let degree = (n_v - 1).min(3);
-                let crv0 = remus_math::nurbs::fitting::interpolate(&row_contact1, degree)
-                    .map_err(crate::OperationsError::Math)?;
-                let crv1 = remus_math::nurbs::fitting::interpolate(&row_mid, degree)
-                    .map_err(crate::OperationsError::Math)?;
-                let crv2 = remus_math::nurbs::fitting::interpolate(&row_contact2, degree)
-                    .map_err(crate::OperationsError::Math)?;
-                let n_cp = crv0.control_points().len();
-                #[allow(clippy::cast_precision_loss)]
-                let weights = if n_cp == sample_weights.len() {
-                    sample_weights.clone()
+        // Every stripe reaching here has a straight spine between planar
+        // supports (`reject_inexact_variable_stripes`), so each row is the
+        // law itself in cubic Hermite form, one Bézier piece per law segment
+        // joined at triple knots: the contact rows are `p(t) + d·r(t)` with a
+        // fixed direction `d`, a cubic on every piece. This preserves the
+        // zero endpoint derivative of an S-curve law, which is what makes a
+        // setback sphere seam truly G1.
+        let active_vector = (p_end - p_start) * (t_end - t_start);
+        let pieces = law.segments();
+        let position = |fraction: f64| {
+            p_start + (p_end - p_start) * (t_end - t_start).mul_add(fraction, t_start)
+        };
+        let row = |first: Point3, last: Point3, direction: Vec3| {
+            let mut controls = Vec::with_capacity(3 * pieces.len() + 1);
+            for (index, piece) in pieces.iter().enumerate() {
+                let span = piece.t1 - piece.t0;
+                let start = if index == 0 {
+                    first
                 } else {
-                    (0..n_cp)
-                        .map(|i| {
-                            let t = i as f64 / (n_cp - 1).max(1) as f64;
-                            let idx_f = t * (sample_weights.len() - 1).max(1) as f64;
-                            let lo = (idx_f.floor() as usize).min(sample_weights.len() - 1);
-                            let hi = (lo + 1).min(sample_weights.len() - 1);
-                            let frac = idx_f - lo as f64;
-                            sample_weights[lo] * (1.0 - frac) + sample_weights[hi] * frac
-                        })
-                        .collect()
+                    position(piece.t0) + direction * piece.r0
                 };
-                (
-                    crv0.degree(),
-                    crv0.knots().to_vec(),
-                    vec![
-                        crv0.control_points().to_vec(),
-                        crv1.control_points().to_vec(),
-                        crv2.control_points().to_vec(),
-                    ],
-                    weights,
-                )
-            };
+                let end = if index + 1 == pieces.len() {
+                    last
+                } else {
+                    position(piece.t1) + direction * piece.r1
+                };
+                if index == 0 {
+                    controls.push(start);
+                }
+                controls.push(start + (active_vector + direction * piece.slope0) * (span / 3.0));
+                controls.push(end - (active_vector + direction * piece.slope1) * (span / 3.0));
+                controls.push(end);
+            }
+            controls
+        };
+        let mut knots_v = vec![0.0; 4];
+        for piece in &pieces[..pieces.len() - 1] {
+            knots_v.extend([piece.t1; 3]);
+        }
+        knots_v.extend([1.0; 4]);
+        let control_points = vec![
+            row(row_contact1[0], row_contact1[n_v - 1], d1_ref),
+            row(row_mid[0], row_mid[n_v - 1], Vec3::new(0.0, 0.0, 0.0)),
+            row(row_contact2[0], row_contact2[n_v - 1], d2_ref),
+        ];
+        let degree_v = 3;
+        let mid_weights = vec![sample_weights[0]; control_points[0].len()];
         let n_cp_v = control_points[0].len();
 
         let surface = remus_math::nurbs::surface::NurbsSurface::new(

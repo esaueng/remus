@@ -6,6 +6,32 @@ historical predecessor-line records, retained for provenance. The
 
 ## Unreleased
 
+### Variable-radius fillets: station laws and an exactness gate
+
+* **blend,operations:** `StandardRadiusLaw::Stations { blend, stations }`
+  (`FilletRadiusLaw`, with `FilletStationBlend::{Linear, SCurve}`) runs a
+  radius through interior control stations, linear or S-curve on every
+  piece. `fillet_variable` builds it exactly on a straight spine between
+  planar supports: each row of the band is the law itself in cubic Hermite
+  form, one Bézier piece per segment joined at triple knots, so every
+  section is an exact circular arc of the law's radius. The law's extrema
+  are its station radii, and the support-overflow check now also samples
+  every station, so an overflow peaking between fixed sampling stations is
+  refused as `cliff-encountered`. Malformed station lists are refused as
+  `BlendError::InvalidInput`.
+* **operations:** `fillet_variable` refuses, before building anything, a
+  selected edge outside the exact family: a curved spine, or a support that
+  is not planar, with the new `BlendError::UnsupportedVariableSupport`
+  (`blend_failure_code`: `unsupported-variable-support`). Those stripes used
+  to be interpolated from sampled sections and then fail late with a
+  free-edge `postcondition-failed`; nothing approximate was returned, but
+  the reason named the symptom instead of the cause.
+* **operations:** two or more selected stripes meeting at a corner without
+  declared, qualified setbacks are refused up front as
+  `BlendError::UnsupportedVertexBlend` (`unsupported-vertex-blend`), naming
+  the vertex and the stripe count, instead of a late `postcondition-failed`.
+  Two stripes continuing one straight line are not refused here.
+
 ### ⚠ BREAKING CHANGES
 
 * **operations,wasm:** a fillet or chamfer whose result fails its own
