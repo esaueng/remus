@@ -357,21 +357,30 @@ fn restore(
         edge_images.push((*ruling, line));
         restored.push(seam);
     }
+    // Each support's old cap boundary: one edge, or, past a wedged cap
+    // ball, the wedge's trim and the band contact after it. Either way one
+    // run of its wire, which the spring replaces.
     let mut spring_contacts = BTreeSet::new();
     for support in [boss, shoulder] {
-        let contacts: Vec<_> = face_edges(topo, support)?
-            .into_iter()
-            .filter(|&edge| {
-                adjacency
-                    .faces_for_edge(edge)
-                    .iter()
-                    .any(|f| rims.contains(f))
-            })
-            .collect();
-        let [contact] = contacts.as_slice() else {
-            return Err(refusal("restored support has no unique old cap boundary"));
+        let wire = topo
+            .wire(topo.face(support)?.outer_wire())?
+            .edges()
+            .to_vec();
+        let touches = |oe: &OrientedEdge| {
+            adjacency
+                .faces_for_edge(oe.edge())
+                .iter()
+                .any(|f| rims.contains(f))
         };
-        spring_contacts.insert(*contact);
+        let starts = (0..wire.len())
+            .filter(|&index| {
+                touches(&wire[index]) && !touches(&wire[(index + wire.len() - 1) % wire.len()])
+            })
+            .count();
+        if starts != 1 || wire.iter().all(touches) {
+            return Err(refusal("restored support has no unique old cap boundary"));
+        }
+        spring_contacts.extend(wire.iter().filter(|oe| touches(oe)).map(OrientedEdge::edge));
     }
     for face in corners.iter().map(|c| c.face).chain(restored) {
         let data = topo.face(face)?;
@@ -380,13 +389,18 @@ fn restore(
         }
         let old = topo.wire(data.outer_wire())?.edges().to_vec();
         let mut edges = Vec::new();
-        for oe in old {
+        for (index, &oe) in old.iter().enumerate() {
             if removed.contains(&oe.edge()) {
                 continue;
             }
+            let previous = old[(index + old.len() - 1) % old.len()].edge();
             if let Some(&edge) = replacements.get(&oe.edge()) {
                 edges.push(OrientedEdge::new(edge, oe.is_forward()));
             } else if spring_contacts.contains(&oe.edge()) {
+                // The spring stands for the whole run, from its first edge.
+                if spring_contacts.contains(&previous) {
+                    continue;
+                }
                 let from = oe.oriented_start(topo.edge(oe.edge())?);
                 let from = vertex_images
                     .get(&from)

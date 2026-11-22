@@ -391,6 +391,7 @@ Quick reference — find the right file for any task:
 | Restore retained sampled shoulder limits before reversing a joined-cap edit on an owned disposable candidate, including a walked corner (a smaller convex band run up the shoulder) and the seam round it stands on, whose ruling runs back to the spring | `cap_reblend/restore.rs` |
 | Restore the full analytic rounded cap after a recovered shoulder separates from its rim (the periodic seam on an existing back-side foot vertex, else where the wall's own `u = 0` ruling first meets its boundary below the rim) | `cap_reblend/unjoin.rs` |
 | Share the analytic shoulder spring with its fixed rim at zero-width contact onset | `cap_reblend/touch.rs` |
+| Stop a joined cap's ball where it wedges between a sampled seam canal and the shoulder torus (or loops back across its own canal contour), carrying the canal band on through same-radius sections pinched to that ball's cap point | `cap_reblend/wedged.rs` |
 | Rolling sections for a boss seam crossing an equal-radius convex round | `equal_radius_boss_corner.rs` |
 | Shared builder utilities | `builder_utils.rs` |
 | G1-continuous fillet edge-chain expansion | `g1_chain.rs` |
