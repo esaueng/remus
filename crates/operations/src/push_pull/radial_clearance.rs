@@ -19,8 +19,11 @@ use remus_topology::{
 /// Two separations qualify: a circular face inside the cylinder with the
 /// candidate wholly outside it ([`disc_clears_coaxial_shell`]), and a face
 /// wholly outside the cylinder with the candidate inside it
-/// ([`face_clears_coaxial_core`]). This is only an exclusion proof;
-/// unqualified pairs retain the box check.
+/// ([`face_clears_coaxial_core`]). The second also holds with the roles
+/// exchanged, for a fixed planar candidate parallel to the move lying
+/// outside a cylinder that holds the moved face: distance from the axis does
+/// not depend on which of the two travels along it. This is only an
+/// exclusion proof; unqualified pairs retain the box check.
 pub(super) fn coaxial_sweep_is_radially_disjoint(
     topo: &Topology,
     moved: FaceId,
@@ -33,9 +36,14 @@ pub(super) fn coaxial_sweep_is_radially_disjoint(
     if normal.cross(direction).length() > Tolerance::new().angular {
         return Ok(false);
     }
+    let candidate_parallel = matches!(
+        topo.face(candidate)?.surface(),
+        FaceSurface::Plane { normal, .. } if normal.cross(direction).length() <= Tolerance::new().angular
+    );
     Ok(
         disc_clears_coaxial_shell(topo, moved, candidate, direction)?
-            || face_clears_coaxial_core(topo, moved, candidate, direction)?,
+            || face_clears_coaxial_core(topo, moved, candidate, direction)?
+            || (candidate_parallel && face_clears_coaxial_core(topo, candidate, moved, direction)?),
     )
 }
 
@@ -87,19 +95,24 @@ fn disc_clears_coaxial_shell(
             // |height| / tan(angle), not |height| tan(angle).
             ((middle - cone.apex()).dot(axis).abs() - extent).max(0.0) / cone.half_angle().tan()
         }
-        FaceSurface::Plane { .. } => {
-            // A coaxial circular hole removes the open disc of its radius
-            // from a planar face, so no point of the face lies closer to the
-            // axis. Faces without such a hole keep the box check.
-            let mut lower = 0.0_f64;
-            for &inner in topo.face(candidate)?.inner_wires() {
-                if let Some(hole) = circular_wire(topo, inner, direction)?
-                    && coaxial(hole.center, direction)
-                {
-                    lower = lower.max(hole.min_reach);
-                }
+        // A face parallel to the move whose holes leave the axis clear is
+        // bounded on its boundary. A face whose only hole is coaxial and
+        // circular is bounded by that hole's rim however its arcs are
+        // split; with one hole, no material can nest inside it. Any other
+        // planar face keeps the box check.
+        FaceSurface::Plane { normal, .. } => {
+            if normal.cross(direction).length() > tol.angular {
+                return Ok(false);
             }
-            lower
+            let rim = match topo.face(candidate)?.inner_wires() {
+                [hole] => circular_wire(topo, *hole, direction)?
+                    .filter(|hole| coaxial(hole.center, direction))
+                    .map_or(0.0, |hole| hole.min_reach),
+                _ => 0.0,
+            };
+            planar_face_axis_clearance(topo, candidate, center, direction)?
+                .unwrap_or(0.0)
+                .max(rim)
         }
         FaceSurface::Cylinder(_)
         | FaceSurface::Cone(_)
@@ -273,13 +286,20 @@ fn planar_face_axis_clearance(
     let Some(Some(in_outer)) = decisions.next() else {
         return Ok(None);
     };
-    let mut in_hole = false;
+    // Inside the outer wire, the axis misses the face only inside exactly
+    // one hole. Holes that nest, as an imported face may carry, leave
+    // material around the axis that their nearest rim does not bound.
+    let mut holes = 0_usize;
     for decision in decisions {
         let Some(inside) = decision else {
             return Ok(None);
         };
-        in_hole |= inside;
+        holes += usize::from(inside);
     }
+    if in_outer && holes > 1 {
+        return Ok(None);
+    }
+    let in_hole = holes == 1;
     // Each coordinate and the distance read from it carry a few rounding
     // steps relative to the world `scale`; 1e-12 of it is orders of
     // magnitude above that and still far below the modeling tolerance at
@@ -491,13 +511,20 @@ mod tests {
         // A hole of the disc's own radius is where the disc meets the face.
         let flush = annulus(&mut topo, 12.5);
         assert!(!coaxial_sweep_is_radially_disjoint(&topo, moved, flush, UP).unwrap());
-        // An off-axis hole proves nothing about the disc's path.
-        let blank = make_cylinder(&mut topo, 20.0, 10.0).unwrap();
-        let tool = make_cylinder(&mut topo, 16.0, 30.0).unwrap();
-        transform_solid(&mut topo, tool, &Mat4::translation(1.0, 0.0, -10.0)).unwrap();
-        let tube = boolean(&mut topo, BooleanOp::Cut, blank, tool).unwrap();
-        let offset = planar_face(&topo, tube, 10.0);
-        assert!(!coaxial_sweep_is_radially_disjoint(&topo, moved, offset, UP).unwrap());
+        // An off-axis hole is bounded by its rim's nearest approach to the
+        // disc's axis: 15 clears the disc, 12 does not.
+        for (shift, clear) in [(1.0, true), (4.0, false)] {
+            let blank = make_cylinder(&mut topo, 24.0, 10.0).unwrap();
+            let tool = make_cylinder(&mut topo, 16.0, 30.0).unwrap();
+            transform_solid(&mut topo, tool, &Mat4::translation(shift, 0.0, -10.0)).unwrap();
+            let tube = boolean(&mut topo, BooleanOp::Cut, blank, tool).unwrap();
+            let offset = planar_face(&topo, tube, 10.0);
+            assert_eq!(
+                coaxial_sweep_is_radially_disjoint(&topo, moved, offset, UP).unwrap(),
+                clear,
+                "hole shifted by {shift}"
+            );
+        }
     }
 
     fn face_on(topo: &Topology, solid: SolidId, kind: fn(&FaceSurface) -> bool) -> FaceId {
@@ -568,6 +595,49 @@ mod tests {
     }
 
     #[test]
+    fn swept_core_cannot_reach_a_parallel_face_outside_it() {
+        // A cap descending through a block top that wraps its boss: the
+        // moved face is the core and the fixed block top the outer face.
+        let mut topo = Topology::new();
+        let top = block_top_around_boss(&mut topo);
+        let narrow = make_cylinder(&mut topo, 4.0, 40.0).unwrap();
+        let narrow_cap = planar_face(&topo, narrow, 40.0);
+        assert!(coaxial_sweep_is_radially_disjoint(&topo, narrow_cap, top, UP).unwrap());
+        // A cap as wide as the block top's clearance meets it at the arc.
+        let wide = make_cylinder(&mut topo, 6.0, 40.0).unwrap();
+        let wide_cap = planar_face(&topo, wide, 40.0);
+        assert!(!coaxial_sweep_is_radially_disjoint(&topo, wide_cap, top, UP).unwrap());
+        // A candidate across the move is not a parallel face; its sweep
+        // contact is not decided by the axis distance of its plane.
+        let side = solid_faces(&topo, narrow)
+            .unwrap()
+            .into_iter()
+            .find(|&face| {
+                matches!(
+                    topo.face(face).unwrap().surface(),
+                    FaceSurface::Plane { .. }
+                ) && topo
+                    .face(face)
+                    .unwrap()
+                    .effective_plane_normal()
+                    .is_some_and(|n| n.z() < -0.99)
+            })
+            .expect("bottom cap");
+        let block = make_box(&mut topo, 30.0, 18.0, 10.0).unwrap();
+        let wall = solid_faces(&topo, block)
+            .unwrap()
+            .into_iter()
+            .find(|&face| {
+                topo.face(face)
+                    .unwrap()
+                    .effective_plane_normal()
+                    .is_some_and(|n| n.x() > 0.99)
+            })
+            .expect("x-max wall");
+        assert!(!coaxial_sweep_is_radially_disjoint(&topo, side, wall, UP).unwrap());
+    }
+
+    #[test]
     fn tilted_core_axis_drifts_by_its_axial_reach() {
         // A unit cylinder 2e9 long whose axis leans 5e-13 rad off the move,
         // inside the angular tolerance: its far end has drifted 1e-3 off
@@ -583,6 +653,78 @@ mod tests {
         transform_solid(&mut topo, plate, &Mat4::translation(1.0002, -0.1, -1.0)).unwrap();
         let top = planar_face(&topo, plate, 0.0);
         assert!(!coaxial_sweep_is_radially_disjoint(&topo, top, wall, UP).unwrap());
+    }
+
+    #[test]
+    fn split_coaxial_hole_still_bounds_a_planar_shoulder() {
+        use remus_math::curves::Circle3D;
+        use remus_topology::edge::{Edge, EdgeCurve};
+        use remus_topology::vertex::Vertex;
+        use remus_topology::wire::{OrientedEdge, Wire};
+
+        // The R16 hole of a bore floor's shoulder, split into two exact
+        // semicircles: the axis lies on their chord, but one coaxial hole
+        // still keeps every point of the face 16 from it.
+        let mut topo = Topology::new();
+        let moved = disc(&mut topo);
+        let ring = annulus(&mut topo, 16.0);
+        let circle = Circle3D::new(Point3::new(0.0, 0.0, 10.0), UP, 16.0).unwrap();
+        let east = topo.add_vertex(Vertex::new(Point3::new(16.0, 0.0, 10.0), 1e-7));
+        let west = topo.add_vertex(Vertex::new(Point3::new(-16.0, 0.0, 10.0), 1e-7));
+        let mut arc = |from, to, span: (f64, f64)| {
+            let mut edge = Edge::new(from, to, EdgeCurve::Circle(circle.clone()));
+            edge.set_trim(Some(span));
+            topo.add_edge(edge)
+        };
+        let north = arc(east, west, (0.0, std::f64::consts::PI));
+        let south = arc(west, east, (std::f64::consts::PI, std::f64::consts::TAU));
+        // A hole winds against the face's outer wire.
+        let hole = topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(south, false),
+                    OrientedEdge::new(north, false),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        let outer = topo.face(ring).unwrap().outer_wire();
+        topo.set_face_boundary_wires(ring, outer, vec![hole])
+            .unwrap();
+        assert!(coaxial_sweep_is_radially_disjoint(&topo, moved, ring, UP).unwrap());
+    }
+
+    #[test]
+    fn nested_holes_around_the_axis_prove_nothing() {
+        use remus_math::curves::Circle3D;
+        use remus_topology::edge::{Edge, EdgeCurve};
+        use remus_topology::vertex::Vertex;
+        use remus_topology::wire::{OrientedEdge, Wire};
+
+        // An R20 face with an R10 hole and an R5 wire inside that hole: by
+        // parity the R5 disc is material, and an R2 cap on the axis meets
+        // it, whichever of the two travels.
+        let mut topo = Topology::new();
+        let ring = annulus(&mut topo, 10.0);
+        let centre = Point3::new(0.0, 0.0, 10.0);
+        let seam = topo.add_vertex(Vertex::new(Point3::new(5.0, 0.0, 10.0), 1e-7));
+        let mut island = Edge::new(
+            seam,
+            seam,
+            EdgeCurve::Circle(Circle3D::new(centre, UP, 5.0).unwrap()),
+        );
+        island.set_trim(Some((0.0, std::f64::consts::TAU)));
+        let island = topo.add_edge(island);
+        let island = topo.add_wire(Wire::new(vec![OrientedEdge::new(island, true)], true).unwrap());
+        let face = topo.face(ring).unwrap();
+        let (outer, mut inner) = (face.outer_wire(), face.inner_wires().to_vec());
+        inner.push(island);
+        topo.set_face_boundary_wires(ring, outer, inner).unwrap();
+        let cap = make_cylinder(&mut topo, 2.0, 30.0).unwrap();
+        let cap = planar_face(&topo, cap, 30.0);
+        assert!(!coaxial_sweep_is_radially_disjoint(&topo, cap, ring, UP).unwrap());
+        assert!(!coaxial_sweep_is_radially_disjoint(&topo, ring, cap, UP).unwrap());
     }
 
     #[test]

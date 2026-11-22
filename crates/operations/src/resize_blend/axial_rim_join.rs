@@ -28,7 +28,7 @@ pub fn move_with_cap_reblend(
     faces: &[FaceId],
     distance: f64,
     permission: CapReblendApproximation,
-) -> Result<Option<BlendMoveEntities>, OperationsError> {
+) -> Result<Option<CapJoinMove>, OperationsError> {
     check_translation_distance(distance)?;
     let _total = crate::performance::span("move_faces.cap_join");
     let Ok(plan) = original_plan(topo, solid, faces, distance)
@@ -126,9 +126,20 @@ pub fn move_with_cap_reblend(
         false
     };
     let rebuilt = crate::performance::timed("move_faces.cap_join.rebuild", || {
+        // A cap flush with the top its boss stands on loses the boss wall
+        // between them; the outline round runs round the merged top.
+        if let Some(flush) = remus_blend::cap_reblend::rebuild_flush_cap_in_place(
+            topo,
+            copied.solid,
+            cap_image,
+            &rim_images,
+            plan.radius,
+            permission,
+        )? {
+            Ok(flush)
         // Contact onset, reached from either side, shares the shoulder's
         // spring with the rim instead of rolling a collapsed corner band.
-        if let Some(touching) = remus_blend::cap_reblend::rebuild_touching_cap_in_place(
+        } else if let Some(touching) = remus_blend::cap_reblend::rebuild_touching_cap_in_place(
             topo,
             copied.solid,
             cap_image,
@@ -173,6 +184,7 @@ pub fn move_with_cap_reblend(
             )
         }
     })?;
+    let sampled = rebuilt.corner_stations > 0;
     let result = rebuilt.result.solid;
     crate::performance::timed("move_faces.cap_join.validate", || {
         validate_exact_result(topo, result, "cap contour reconstruction")
@@ -255,11 +267,21 @@ pub fn move_with_cap_reblend(
             .map(|(source, target)| (EntityKey::vertex(source), EntityKey::vertex(target.index()))),
     );
     log::debug!(target: "remus_approx", "move_faces: sampled cap reconstruction uses {} stations per corner", permission.stations);
-    Ok(Some(BlendMoveEntities {
-        solid: result,
-        evolution,
-        boundary_pairs,
+    Ok(Some(CapJoinMove {
+        entities: BlendMoveEntities {
+            solid: result,
+            evolution,
+            boundary_pairs,
+        },
+        sampled,
     }))
+}
+
+/// A cap join's result and whether it sampled any corner. A flush cap is
+/// rebuilt from exact carriers only.
+pub struct CapJoinMove {
+    pub entities: BlendMoveEntities,
+    pub sampled: bool,
 }
 
 struct CapJoinPlan {
@@ -617,10 +639,17 @@ fn joined_plan(
             }
         }
     }
+    // The cap lies wholly in its plane, so a shoulder that stops at or
+    // below that plane reaches it only flush, which the reconstruction
+    // owns; past it, the boss would fold into the block.
+    if selected_level + distance > level(*cap)? + tol.linear {
+        return Err(reconstruction("joined shoulder would pass its cap's plane"));
+    }
     let excluded = moved
         .union(&invariant)
         .copied()
         .chain(rims.iter().copied())
+        .chain(std::iter::once(*cap))
         .collect();
     let selected_faces = faces.iter().copied().collect();
     let swept = crate::push_pull::SweptRegionCheck::prepare(

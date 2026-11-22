@@ -19,6 +19,8 @@ pub use unjoin::restore_unjoined_cap_in_place;
 mod touch;
 mod wedged;
 pub use touch::{rebuild_touching_cap_in_place, restore_touching_support_limits_in_place};
+mod flush;
+pub use flush::rebuild_flush_cap_in_place;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::{PI, TAU};
@@ -53,7 +55,8 @@ pub struct CapReblendApproximation {
 pub struct CapReblendOutcome {
     /// Constructed body and construction-derived face origins.
     pub result: BlendResult,
-    /// Number of stations used per sampled corner.
+    /// Number of stations used per sampled corner; zero when the
+    /// reconstruction sampled none.
     pub corner_stations: usize,
     /// Surviving children of split source edges, recorded by construction.
     pub edge_images: Vec<(EdgeId, EdgeId)>,
