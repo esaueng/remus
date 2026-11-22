@@ -33,10 +33,16 @@ use super::{CanalNormal, CapContour, Node, edge_domain, edge_point, height, refu
 use crate::BlendError;
 use crate::section::CircSection;
 
-/// Contact samples on each side of the junction between the wedged
-/// ball's two contacts.
-const CANAL_TRIM_SAMPLES: usize = 48;
-const TORUS_TRIM_SAMPLES: usize = 16;
+/// Trim samples across a canal for a contour of `count` stations: an
+/// eighth of them, which the band's own rolled stations make room for.
+fn canal_samples(count: usize) -> usize {
+    (count / 8).max(4)
+}
+
+/// Trim samples across the torus, between the junction and the contact.
+fn torus_samples(count: usize) -> usize {
+    (count / 16).max(2)
+}
 /// Pieces each crossing segment is resampled into per refinement.
 const PIECES: usize = 16;
 
@@ -312,9 +318,10 @@ pub(super) fn wedged_ball(
         return Err(refusal("wedged cap node is not on a canal section"));
     }
     let junction_v = junction_v.round();
-    let mut canal_trim = Vec::with_capacity(CANAL_TRIM_SAMPLES + 1);
-    for i in 0..=CANAL_TRIM_SAMPLES {
-        let fraction = i as f64 / CANAL_TRIM_SAMPLES as f64;
+    let samples = canal_samples(contour.count);
+    let mut canal_trim = Vec::with_capacity(samples + 1);
+    for i in 0..=samples {
+        let fraction = i as f64 / samples as f64;
         let v = contact_v_canal + (junction_v - contact_v_canal) * fraction;
         canal_trim.push(section_nearest(surface, v, centre)?.0);
     }
@@ -330,9 +337,10 @@ pub(super) fn wedged_ball(
     // The torus trim: each meridian's point nearest the centre.
     let junction_u = torus.project_point(junction_point).0;
     let sweep = wrap(angle - junction_u);
-    let mut torus_trim = Vec::with_capacity(TORUS_TRIM_SAMPLES + 1);
-    for i in 0..=TORUS_TRIM_SAMPLES {
-        let u = junction_u + sweep * (i as f64 / TORUS_TRIM_SAMPLES as f64);
+    let samples = torus_samples(contour.count);
+    let mut torus_trim = Vec::with_capacity(samples + 1);
+    for i in 0..=samples {
+        let u = junction_u + sweep * (i as f64 / samples as f64);
         let direction = torus.x_axis() * u.cos() + torus.y_axis() * u.sin();
         let spine = torus.center() + direction * torus.major_radius();
         let towards = centre - spine;
@@ -393,9 +401,10 @@ pub(super) fn untangle(
     // Each pass removes the first loop; a contour has at most a few.
     for _ in 0..8 {
         let centres: Vec<Vec3> = samples.iter().map(|section| flat(section.center)).collect();
-        let crossing = first_crossing(&centres, axis).filter(|&(first, second, _, _)| {
-            // A loop never spans an earlier bridge: its ball is the
-            // contour's only point between the two samples it joins.
+        // A loop never spans an earlier bridge: that bridge's ball is the
+        // contour's only point between the two samples it joins, and the
+        // chord standing in for it is no part of the contour.
+        let crossing = first_crossing(&centres, axis, |first, second| {
             !bridges
                 .iter()
                 .any(|&(at, _)| first <= at && at < second + 1)
@@ -464,9 +473,10 @@ pub(super) fn untangle(
         let ball = ball + (twin - ball) * 0.5;
         let top = ball + axis * contour.radius;
         let surface = field.surface;
-        let mut trim = Vec::with_capacity(CANAL_TRIM_SAMPLES + 1);
-        for i in 0..=CANAL_TRIM_SAMPLES {
-            let fraction = i as f64 / CANAL_TRIM_SAMPLES as f64;
+        let pieces = canal_samples(contour.count);
+        let mut trim = Vec::with_capacity(pieces + 1);
+        for i in 0..=pieces {
+            let fraction = i as f64 / pieces as f64;
             let v = v1 + (v2 - v1) * fraction;
             trim.push(section_nearest(surface, v, ball)?.0);
         }
@@ -496,7 +506,8 @@ pub(super) fn untangle(
         return Ok(samples);
     }
     bridges.compact_sort_by_key(|&(at, _)| at);
-    let mut out = Vec::with_capacity(samples.len() + bridges.len() * (CANAL_TRIM_SAMPLES + 1));
+    let mut out =
+        Vec::with_capacity(samples.len() + bridges.iter().map(|(_, b)| b.len()).sum::<usize>());
     let mut pending = bridges.into_iter().peekable();
     for (index, section) in samples.into_iter().enumerate() {
         out.push(section);
@@ -508,8 +519,13 @@ pub(super) fn untangle(
 }
 
 /// The first pair of non-adjacent segments of a planar polyline that
-/// cross, with the crossing's fraction along each.
-fn first_crossing(points: &[Vec3], normal: Vec3) -> Option<(usize, usize, f64, f64)> {
+/// cross and that `allowed` accepts, with the crossing's fraction along
+/// each.
+fn first_crossing(
+    points: &[Vec3],
+    normal: Vec3,
+    allowed: impl Fn(usize, usize) -> bool,
+) -> Option<(usize, usize, f64, f64)> {
     let n = points.len();
     for second in 2..n.saturating_sub(1) {
         let (c, d) = (points[second], points[second + 1]);
@@ -522,7 +538,7 @@ fn first_crossing(points: &[Vec3], normal: Vec3) -> Option<(usize, usize, f64, f
             }
             let s = (c - a).cross(q).dot(normal) / denominator;
             let t = (c - a).cross(r).dot(normal) / denominator;
-            if (0.0..1.0).contains(&s) && (0.0..1.0).contains(&t) {
+            if (0.0..1.0).contains(&s) && (0.0..1.0).contains(&t) && allowed(first, second) {
                 return Some((first, second, s, t));
             }
         }
@@ -573,11 +589,35 @@ mod tests {
             (1.5, -1.0),
             (3.0, -1.0),
         ]);
-        let (first, second, s, t) = first_crossing(&looped, z).unwrap();
+        let (first, second, s, t) = first_crossing(&looped, z, |_, _| true).unwrap();
         assert_eq!((first, second), (1, 4));
         assert!((s - 0.5).abs() < 1e-12 && (t - 0.5).abs() < 1e-12);
         // A path that only turns never crosses itself.
         let turning = path(&[(0.0, 0.0), (1.0, 0.0), (2.0, 0.5), (2.5, 1.5), (2.5, 3.0)]);
-        assert!(first_crossing(&turning, z).is_none());
+        assert!(first_crossing(&turning, z, |_, _| true).is_none());
+        // The reviewed case: after the first loop (segments 0 and 3) is
+        // resolved, the chord standing in for it crosses segment 2. That
+        // crossing is skipped and the genuine one, 2 and 5, still found.
+        let resolved = path(&[
+            (0.0, 0.0),
+            (1.0, -2.0),
+            (0.1, -0.5),
+            (0.75, -0.5),
+            (0.75, -0.1),
+            (0.5, -0.1),
+            (0.5, -0.75),
+        ]);
+        assert!(
+            first_crossing(&resolved, z, |_, _| true).is_some_and(|(first, second, _, _)| (
+                first, second
+            ) == (
+                0, 2
+            ))
+        );
+        let found = first_crossing(&resolved, z, |first, _| first > 0);
+        assert_eq!(
+            found.map(|(first, second, _, _)| (first, second)),
+            Some((2, 5))
+        );
     }
 }

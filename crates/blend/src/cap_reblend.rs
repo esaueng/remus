@@ -1526,20 +1526,49 @@ fn reblend_impl(
         let (start, finish) = (synthetic(a), synthetic(b));
         let (sections, surface, exact) = match topo.face(face)?.surface() {
             FaceSurface::Nurbs(_) => {
-                let mut sections = wedged::untangle(
-                    &CanalNormal::contour_field(topo.face(face)?)?,
-                    nurbs_sections(topo, face, &start, &finish, contour)?,
-                    contour,
-                )?;
-                if let Some(wedge) = end(b) {
-                    sections.pop();
-                    sections.extend(wedge.sections(axis, radius)?);
+                let field = CanalNormal::contour_field(topo.face(face)?)?;
+                // The band with its rolled stations, any loops of its contour
+                // resolved and any wedged ends carried on.
+                let build = |count: usize| -> Result<Vec<CircSection>, BlendError> {
+                    let rolled = CapContour { count, ..contour };
+                    let mut sections = wedged::untangle(
+                        &field,
+                        nurbs_sections(topo, face, &start, &finish, rolled)?,
+                        contour,
+                    )?;
+                    if let Some(wedge) = end(b) {
+                        sections.pop();
+                        sections.extend(wedge.sections(axis, radius)?);
+                    }
+                    if let Some(wedge) = end(a) {
+                        let mut corner = wedge.sections(axis, radius)?;
+                        corner.reverse();
+                        corner.extend(sections.into_iter().skip(1));
+                        sections = corner;
+                    }
+                    Ok(sections)
+                };
+                // Later edits read a band's section count back as their
+                // station budget, so every band keeps exactly the budget:
+                // its rolled stations make room for what replaces them.
+                let budget = approximation.stations;
+                let mut count = budget;
+                let mut sections = build(count)?;
+                for _ in 0..4 {
+                    if sections.len() == budget {
+                        break;
+                    }
+                    let shift = budget.abs_diff(sections.len());
+                    count = if sections.len() > budget {
+                        count.checked_sub(shift).filter(|&count| count >= 4)
+                    } else {
+                        count.checked_add(shift)
+                    }
+                    .ok_or_else(|| refusal("cap corner has no room in its station budget"))?;
+                    sections = build(count)?;
                 }
-                if let Some(wedge) = end(a) {
-                    let mut corner = wedge.sections(axis, radius)?;
-                    corner.reverse();
-                    corner.extend(sections.into_iter().skip(1));
-                    sections = corner;
+                if sections.len() != budget {
+                    return Err(refusal("cap corner does not fit its station budget"));
                 }
                 let surface = FaceSurface::Nurbs(
                     crate::walker::approximate_blend_surface_linear_v(&sections)?,

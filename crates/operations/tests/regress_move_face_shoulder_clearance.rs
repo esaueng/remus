@@ -1294,3 +1294,56 @@ fn openzcad_boss_block_moves_on_from_a_wedged_cap_ball() {
         }
     }
 }
+
+#[test]
+fn wedged_cap_bands_keep_their_station_budget() {
+    // Later blend edits read a joined cap band's section count back as
+    // their station budget and require the cap's bands to agree on it. A
+    // wedged canal band carries extra sections past its wedged ball, so its
+    // rolled stations make room for them.
+    for (stations, distance) in [(256, 5.5), (256, -5.0), (2048, -5.5)] {
+        let mut topo = Topology::new();
+        let solid = openzcad_boss_block(&mut topo);
+        let height = if distance > 0.0 { 29.0 } else { 35.0 };
+        let face = top_at(&topo, solid, height);
+        let moved = move_faces_with_quality(
+            &mut topo,
+            solid,
+            &[face],
+            distance,
+            Some(FaceMoveApproximation { stations }),
+        )
+        .unwrap_or_else(|error| panic!("{stations} by {distance}: {error}"))
+        .result
+        .solid;
+        closed_mesh_volume(&topo, moved, 0.0029);
+        let cap = top_at(
+            &topo,
+            moved,
+            if distance > 0.0 {
+                35.0
+            } else {
+                35.0 + distance
+            },
+        );
+        let mut bands = 0;
+        for edge in face_edges(&topo, cap).unwrap() {
+            for other in solid_faces(&topo, moved).unwrap() {
+                if other == cap || !face_edges(&topo, other).unwrap().contains(&edge) {
+                    continue;
+                }
+                if let remus_topology::face::FaceSurface::Nurbs(surface) =
+                    topo.face(other).unwrap().surface()
+                {
+                    assert_eq!(
+                        surface.control_points()[0].len(),
+                        stations,
+                        "{stations} by {distance}"
+                    );
+                    bands += 1;
+                }
+            }
+        }
+        assert_eq!(bands, 2, "{stations} by {distance}");
+    }
+}
