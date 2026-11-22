@@ -755,9 +755,9 @@ fn edge_curve_tag(curve: &EdgeCurve) -> &'static str {
         EdgeCurve::Line => "line",
         EdgeCurve::Circle(_) => "circle",
         EdgeCurve::Ellipse(_) => "ellipse",
+        EdgeCurve::Hyperbola(_) => "hyperbola",
+        EdgeCurve::Parabola(_) => "parabola",
         EdgeCurve::NurbsCurve(_) => "NURBS curve",
-        #[allow(unreachable_patterns)]
-        _ => "curve",
     }
 }
 
@@ -769,8 +769,6 @@ fn face_surface_tag(surface: &FaceSurface) -> &'static str {
         FaceSurface::Sphere(_) => "a sphere",
         FaceSurface::Torus(_) => "a torus",
         FaceSurface::Nurbs(_) => "a NURBS surface",
-        #[allow(unreachable_patterns)]
-        _ => "a curved surface",
     }
 }
 
