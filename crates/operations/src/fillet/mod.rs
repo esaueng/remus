@@ -956,8 +956,8 @@ fn face_surface_tag(surface: &FaceSurface) -> &'static str {
 /// Refuses a setback corner that another face reaches into: the corner's
 /// cap is assembled against its stripes' support faces only, so any other
 /// face inside the corner ball (a bore near the corner) would cross the cap
-/// unsplit. Conservative: any face whose bounding box meets the ball's
-/// refuses the corner.
+/// unsplit. Conservative: any face whose enclosing box meets the ball's
+/// refuses the corner, NURBS faces by their carrier's whole control hull.
 #[allow(clippy::too_many_arguments)]
 fn reject_faces_in_corner_ball(
     topo: &Topology,
@@ -982,7 +982,20 @@ fn reject_faces_in_corner_ball(
         if supports.contains(&face.index()) {
             continue;
         }
-        if crate::measure::face_bounding_box(topo, face)?.intersects(ball) {
+        // A NURBS face is bounded by its whole carrier's control hull, which
+        // encloses it whatever its trim (positive weights); the trimmed
+        // patch box is recovered from sampled trims and can miss a lobe
+        // (review). Analytic faces' boxes are exact.
+        let bounds = match topo.face(face)?.surface() {
+            FaceSurface::Nurbs(nurbs) => remus_math::aabb::Aabb3::try_from_points(
+                nurbs.control_points().iter().flatten().copied(),
+            )
+            .ok_or_else(|| crate::OperationsError::InvalidInput {
+                reason: format!("face {face:?} has a NURBS surface with no control points"),
+            })?,
+            _ => crate::measure::face_bounding_box(topo, face)?,
+        };
+        if bounds.intersects(ball) {
             return Err(crate::OperationsError::Blend(
                 remus_blend::BlendError::UnsupportedSetbackCorner {
                     vertex,
