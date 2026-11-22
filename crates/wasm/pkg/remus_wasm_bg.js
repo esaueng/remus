@@ -1142,7 +1142,8 @@ export class RemusKernel {
      * Additive twin of [`chamferDistanceAngle`](Self::chamfer_distance_angle),
      * unchanged; `angle` is in radians, inside `(0, π/2)`. Quality,
      * `details.engine` and `exactOnly` follow
-     * [`filletDetailed`](Self::fillet_detailed).
+     * [`filletDetailed`](Self::fillet_detailed), and skipped edges
+     * [`chamferV2Detailed`](Self::chamfer_v2_detailed).
      * @param {number} solid
      * @param {Uint32Array} edge_handles
      * @param {number} distance
@@ -1246,7 +1247,10 @@ export class RemusKernel {
      *
      * Additive twin of [`chamferV2`](Self::chamfer_v2), unchanged. Quality,
      * `details.engine` and `exactOnly` follow
-     * [`filletDetailed`](Self::fillet_detailed).
+     * [`filletDetailed`](Self::fillet_detailed). A requested edge with no
+     * dihedral to bevel (a closed face's seam, a tangent join) is left out
+     * and listed in `details.skippedEdges` as `{ edge, reason }`, `reason`
+     * being `"seam"` or `"tangent"`; the key is absent when none was.
      * @param {number} solid
      * @param {Uint32Array} edge_handles
      * @param {number} d1
