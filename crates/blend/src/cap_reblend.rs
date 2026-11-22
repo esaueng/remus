@@ -1554,18 +1554,41 @@ fn reblend_impl(
                 let budget = approximation.stations;
                 let mut count = budget;
                 let mut sections = build(count)?;
+                // Step by the miss first: a wedge's sections are a fixed
+                // number, so that lands at once.
                 for _ in 0..4 {
                     if sections.len() == budget {
                         break;
                     }
                     let shift = budget.abs_diff(sections.len());
-                    count = if sections.len() > budget {
-                        count.checked_sub(shift).filter(|&count| count >= 4)
+                    let next = if sections.len() > budget {
+                        count.checked_sub(shift)
                     } else {
                         count.checked_add(shift)
-                    }
-                    .ok_or_else(|| refusal("cap corner has no room in its station budget"))?;
+                    };
+                    let Some(next) = next.filter(|&next| next >= 4) else {
+                        break;
+                    };
+                    count = next;
                     sections = build(count)?;
+                }
+                // A resolved loop's size moves with the sampling, so the
+                // steps can straddle the budget: try the counts round the
+                // last one, nearest first.
+                let near = count;
+                for offset in 1..=64 {
+                    if sections.len() == budget {
+                        break;
+                    }
+                    for candidate in [near.checked_add(offset), near.checked_sub(offset)] {
+                        let Some(candidate) = candidate.filter(|&candidate| candidate >= 4) else {
+                            continue;
+                        };
+                        sections = build(candidate)?;
+                        if sections.len() == budget {
+                            break;
+                        }
+                    }
                 }
                 if sections.len() != budget {
                     return Err(refusal("cap corner does not fit its station budget"));

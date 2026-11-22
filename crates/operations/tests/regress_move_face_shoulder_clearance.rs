@@ -1301,7 +1301,7 @@ fn wedged_cap_bands_keep_their_station_budget() {
     // their station budget and require the cap's bands to agree on it. A
     // wedged canal band carries extra sections past its wedged ball, so its
     // rolled stations make room for them.
-    for (stations, distance) in [(256, 5.5), (256, -5.0), (2048, -5.5)] {
+    for (stations, distance) in [(256, 5.5), (256, -5.0), (2048, -5.5), (32, 4.6), (16, -5.5)] {
         let mut topo = Topology::new();
         let solid = openzcad_boss_block(&mut topo);
         let height = if distance > 0.0 { 29.0 } else { 35.0 };
