@@ -19,9 +19,32 @@ historical predecessor-line records, retained for provenance. The
   every station, so an overflow peaking between fixed sampling stations is
   refused as `cliff-encountered`. Malformed station lists are refused as
   `BlendError::InvalidInput`.
+* **operations:** `fillet_variable` builds the exact rolling-ball section at
+  every convex planar dihedral. It used to place the contacts `r` along each
+  support with apex weight `cos(α/2)`, which is a circle of radius `r` only
+  at 90°: at other angles it returned a valid solid with the wrong band, a
+  constant r = 1 round on a 120° edge removing 13.697 mm³ against the
+  closed form's 3.225. The contacts now lie `r·cot(α/2)` along each support
+  with apex weight `sin(α/2)`, from the constant engine's exact planar
+  section, so at 90° nothing changes.
+* **operations:** the variable fillet's support-overflow check is exact per
+  boundary segment instead of sampled at 33 stations: the worst overrun of
+  each cubic law piece against each segment is found at its interval ends
+  and the roots of its derivative. Curved boundary edges are replaced by
+  regions that contain them (a lens per chord for a conic arc, the control
+  hull for a NURBS curve), so near-limit radii there refuse conservatively.
+* **operations:** a stripe ending on a planar cap that keeps a hole (a boss
+  or bore rim in the cap) now takes the band's exact end arc. The cap's
+  rebuilt outer wire used to mint a chord before the band published the arc,
+  and the band shared the chord: the solid validated but its boundary left
+  the band, and a 1→2 round on the vertical corner edge of a box carrying a
+  boss measured 19.60 mm³ removed against the closed form's 10.01. Any
+  engine that passes boundary curves to the mixed assembler gets the same
+  arcs on rebuilt copied faces.
 * **operations:** `fillet_variable` refuses, before building anything, a
-  selected edge outside the exact family: a curved spine, or a support that
-  is not planar, with the new `BlendError::UnsupportedVariableSupport`
+  selected edge outside the exact family: a curved spine, a support that is
+  not planar, or a concave edge, with the new
+  `BlendError::UnsupportedVariableSupport`
   (`blend_failure_code`: `unsupported-variable-support`). Those stripes used
   to be interpolated from sampled sections and then fail late with a
   free-edge `postcondition-failed`; nothing approximate was returned, but

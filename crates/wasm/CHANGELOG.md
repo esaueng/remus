@@ -11,9 +11,10 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
   accepts optional interior control radii:
   `"stations": [{"at": t, "radius": r}]`, `t` strictly inside `(0, 1)` along
   the edge's own direction and increasing, under a `linear` or `scurve`
-  law. `start`/`end` remain the end radii. Stations under a `constant` law,
-  a non-array value, or an entry without a numeric `at`/`radius` throw
-  `invalid input`.
+  law. `start`/`end` remain the end radii. An absent, `null` or empty
+  `stations` means none, like the spec's other optional fields. Stations
+  under a `constant` law, any other non-array value, or an entry without a
+  numeric `at`/`radius` throw `invalid input`.
 
 ### Changed
 

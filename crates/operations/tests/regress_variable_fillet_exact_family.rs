@@ -396,3 +396,248 @@ fn stripes_meeting_at_an_unset_corner_refuse_by_type_before_building() {
     .unwrap();
     assert!(validate_solid(&topo, built).unwrap().is_valid());
 }
+
+/// A round whose stripe ends on a cap carrying a circular rim: the vertical
+/// corner edge of a 60 × 60 × 20 box with a boss fused on its top, or a
+/// blind bore cut into it.
+///
+/// The cap is trimmed but keeps its hole, so it is copied with a rebuilt
+/// outer wire. That wire used to mint a straight chord across the stripe's
+/// end section before the band published its arc, and the band then shared
+/// the chord: the solid validated, but its top boundary left the band
+/// surface and the body measured 19.60 mm³ removed against the closed
+/// form's 10.01. The rebuilt wire now takes the band's exact arc.
+#[test]
+fn a_stripe_ending_on_a_holed_cap_keeps_its_end_arc() {
+    for op in [BooleanOp::Fuse, BooleanOp::Cut] {
+        for law in [
+            FilletRadiusLaw::Linear {
+                start: 1.0,
+                end: 2.0,
+            },
+            FilletRadiusLaw::SCurve {
+                start: 2.0,
+                end: 1.0,
+            },
+            stations(FilletStationBlend::Linear),
+        ] {
+            let label = format!("{op:?} {law:?}");
+            let mut topo = Topology::new();
+            let slab = make_box(&mut topo, 60.0, 60.0, HEIGHT).unwrap();
+            let cylinder = make_cylinder(&mut topo, 8.0, 20.0).unwrap();
+            transform_solid(&mut topo, cylinder, &Mat4::translation(30.0, 30.0, 10.0)).unwrap();
+            let input = boolean(&mut topo, op, slab, cylinder).unwrap();
+            let before = mass_properties(&topo, input).unwrap().mass;
+            let edge = edge_where(&topo, input, |p| p.x().abs() < 1e-9 && p.y().abs() < 1e-9);
+            let result =
+                fillet_variable_with_setbacks(&mut topo, input, &[spec(edge, law.clone())])
+                    .unwrap_or_else(|e| panic!("{label}: {e}"));
+            assert!(validate_solid(&topo, result).unwrap().is_valid(), "{label}");
+
+            let band = solid_faces(&topo, result)
+                .unwrap()
+                .into_iter()
+                .find(|&f| matches!(topo.face(f).unwrap().surface(), FaceSurface::Nurbs(_)))
+                .unwrap();
+            let face = topo.face(band).unwrap();
+            for oriented in topo.wire(face.outer_wire()).unwrap().edges() {
+                assert!(
+                    !matches!(topo.edge(oriented.edge()).unwrap().curve(), EdgeCurve::Line),
+                    "{label}: a band boundary is a chord"
+                );
+            }
+
+            let removed = (1.0 - FRAC_PI_4) * HEIGHT * mean_square_radius(&law);
+            let measured = mass_properties(&topo, result).unwrap().mass;
+            assert!(
+                (before - measured - removed).abs() < 1e-6 * before,
+                "{label}: removed {} against the closed form {removed}",
+                before - measured
+            );
+        }
+    }
+}
+
+/// A 60-long prism whose trapezoidal section `(0,0) (40,0) (40−t,20) (t,20)`
+/// in yz puts 60° between its floor and slanted walls and 120° between its
+/// top and the same walls.
+fn trapezoid_prism(topo: &mut Topology) -> SolidId {
+    let t = HEIGHT / 3.0_f64.sqrt();
+    let wire = remus_topology::builder::make_polygon_wire(
+        topo,
+        &[
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(0.0, 40.0, 0.0),
+            Point3::new(0.0, 40.0 - t, HEIGHT),
+            Point3::new(0.0, t, HEIGHT),
+        ],
+        1e-7,
+    )
+    .unwrap();
+    let face = remus_topology::builder::make_face_from_wire(topo, wire).unwrap();
+    remus_operations::extrude::extrude(
+        topo,
+        face,
+        remus_math::vec::Vec3::new(1.0, 0.0, 0.0),
+        LENGTH,
+    )
+    .unwrap()
+}
+
+/// A round on a convex straight edge between planes at an interior angle
+/// other than 90° is the exact rolling ball: every band point lies `r(x)`
+/// from the centre `r(x)/sin(α/2)` along the bisector, and the body loses
+/// `(cot(α/2) − (π − α)/2)·∫r²` along the edge. On the 2026.1.157 pin the
+/// band put its contacts `r` along each face with apex weight `cos(α/2)` —
+/// right only at 90° — and a constant r = 1 round on the 120° edge removed
+/// 13.697 mm³ against the closed form's 3.225, reported as a success.
+#[test]
+fn an_oblique_dihedral_builds_the_exact_rolling_ball_section() {
+    use std::f64::consts::PI;
+    let t = HEIGHT / 3.0_f64.sqrt();
+    let wall = remus_math::vec::Vec3::new(0.0, -HEIGHT, t)
+        .normalize()
+        .unwrap();
+    // (edge on, its two outward support normals, interior angle)
+    let cases = [
+        (
+            Point3::new(0.0, 0.0, 0.0),
+            remus_math::vec::Vec3::new(0.0, 0.0, -1.0),
+            wall,
+            PI / 3.0,
+        ),
+        (
+            Point3::new(0.0, t, HEIGHT),
+            remus_math::vec::Vec3::new(0.0, 0.0, 1.0),
+            wall,
+            2.0 * PI / 3.0,
+        ),
+    ];
+    for (at, n1, n2, interior) in cases {
+        for law in [
+            FilletRadiusLaw::Constant(1.0),
+            FilletRadiusLaw::Linear {
+                start: 1.0,
+                end: 2.0,
+            },
+            stations(FilletStationBlend::SCurve),
+        ] {
+            let label = format!("{:.0}° {law:?}", interior.to_degrees());
+            let mut topo = Topology::new();
+            let input = trapezoid_prism(&mut topo);
+            let before = mass_properties(&topo, input).unwrap().mass;
+            let edge = edge_where(&topo, input, |p| {
+                (p.y() - at.y()).abs() < 1e-9 && (p.z() - at.z()).abs() < 1e-9
+            });
+            let (start, end) = ends(&topo, edge);
+            let result =
+                fillet_variable_with_setbacks(&mut topo, input, &[spec(edge, law.clone())])
+                    .unwrap_or_else(|e| panic!("{label}: {e}"));
+            assert!(validate_solid(&topo, result).unwrap().is_valid(), "{label}");
+
+            let band = solid_faces(&topo, result)
+                .unwrap()
+                .into_iter()
+                .find_map(|face| match topo.face(face).unwrap().surface() {
+                    FaceSurface::Nurbs(surface) => Some(surface.clone()),
+                    _ => None,
+                })
+                .unwrap();
+            let direction = (end - start) * (1.0 / LENGTH);
+            let mut worst = 0.0_f64;
+            for i in 0..=40 {
+                for j in 0..=120 {
+                    let p = band.evaluate(f64::from(i) / 40.0, f64::from(j) / 120.0);
+                    let s = (p - start).dot(direction) / LENGTH;
+                    let r = law.evaluate(s);
+                    let on_edge = start + direction * (LENGTH * s);
+                    let center = on_edge - (n1 + n2) * (r / (1.0 + n1.dot(n2)));
+                    worst = worst.max(((p - center).length() - r).abs());
+                }
+            }
+            assert!(worst < 1e-9, "{label}: worst off-ball distance {worst:e}");
+
+            let coefficient = 1.0 / (interior / 2.0).tan() - (PI - interior) / 2.0;
+            let removed = coefficient * LENGTH * mean_square_radius(&law);
+            let measured = before - mass_properties(&topo, result).unwrap().mass;
+            assert!(
+                (measured - removed).abs() < 1e-6 * before,
+                "{label}: removed {measured} against the closed form {removed}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_concave_edge_refuses_by_type_before_building() {
+    let mut topo = Topology::new();
+    let base = make_box(&mut topo, LENGTH, DEPTH, 10.0).unwrap();
+    let upright = make_box(&mut topo, LENGTH, 10.0, 30.0).unwrap();
+    let input = boolean(&mut topo, BooleanOp::Fuse, base, upright).unwrap();
+    let edge = edge_where(&topo, input, |p| {
+        (p.y() - 10.0).abs() < 1e-9 && (p.z() - 10.0).abs() < 1e-9
+    });
+    let (error, code) = refuse(
+        &mut topo,
+        input,
+        &[spec(edge, FilletRadiusLaw::Constant(2.0))],
+    );
+    assert_inexact(&error, code, "concave");
+}
+
+/// An S-curve can overrun a support whose width shrinks along the edge while
+/// every sampled station fits: the floor of `(0,0) (60,0) (60,1.05)
+/// (0,101.05)` narrows as `101.05 − 100τ`, and stations `(0, 2) (0.99, 2)
+/// (1, 1)` fit at every fixed station and breakpoint, yet at τ = 0.9925 the
+/// radius is 1.84375 against a width of 1.8. The overflow check is exact per
+/// boundary segment now, and refuses.
+#[test]
+fn an_s_curve_overrun_between_stations_is_refused() {
+    let mut topo = Topology::new();
+    let wire = remus_topology::builder::make_polygon_wire(
+        &mut topo,
+        &[
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(LENGTH, 0.0, 0.0),
+            Point3::new(LENGTH, 1.05, 0.0),
+            Point3::new(0.0, 101.05, 0.0),
+        ],
+        1e-7,
+    )
+    .unwrap();
+    let face = remus_topology::builder::make_face_from_wire(&mut topo, wire).unwrap();
+    let input = remus_operations::extrude::extrude(
+        &mut topo,
+        face,
+        remus_math::vec::Vec3::new(0.0, 0.0, 1.0),
+        HEIGHT,
+    )
+    .unwrap();
+    let edge = edge_where(&topo, input, |p| p.y().abs() < 1e-9 && p.z().abs() < 1e-9);
+    let (start, _) = ends(&topo, edge);
+    // Stations in the edge's own direction.
+    let forward = [(0.0, 2.0), (0.99, 2.0), (1.0, 1.0)];
+    let stations: Vec<(f64, f64)> = if start.x().abs() < 1e-9 {
+        forward.to_vec()
+    } else {
+        forward.iter().rev().map(|(t, r)| (1.0 - t, *r)).collect()
+    };
+    let law = FilletRadiusLaw::Stations {
+        blend: FilletStationBlend::SCurve,
+        stations,
+    };
+    let (error, code) = refuse(&mut topo, input, &[spec(edge, law)]);
+    assert_eq!(code, "cliff-encountered", "{error}");
+    let OperationsError::Blend(BlendError::CliffEncountered {
+        requested_radius,
+        available_radius,
+        ..
+    }) = error
+    else {
+        panic!("{error:?}");
+    };
+    assert!(
+        requested_radius > available_radius && requested_radius < 2.0 && available_radius > 1.05,
+        "{requested_radius} against {available_radius}"
+    );
+}

@@ -36,6 +36,50 @@ pub struct RadiusLawSegment {
     pub slope1: f64,
 }
 
+impl RadiusLawSegment {
+    /// The parameters in `[lo, hi]` (within this piece) where the law's
+    /// slope `dr/dt` equals `target`: the interior extrema of `r(t) − target·t`
+    /// on the piece, from the closed-form roots of its quadratic derivative.
+    #[must_use]
+    pub fn overrun_extrema(&self, target: f64, lo: f64, hi: f64) -> Vec<f64> {
+        let span = self.t1 - self.t0;
+        if !(span > 0.0) {
+            return Vec::new();
+        }
+        // r(u) = a0 + a1·u + a2·u² + a3·u³ for u = (t − t0) / span.
+        let a1 = span * self.slope0;
+        let a2 = 3.0 * (self.r1 - self.r0) - span * (2.0 * self.slope0 + self.slope1);
+        let a3 = 2.0 * (self.r0 - self.r1) + span * (self.slope0 + self.slope1);
+        // dr/du = span·target  ⇔  3a3·u² + 2a2·u + (a1 − span·target) = 0.
+        let (qa, qb, qc) = (3.0 * a3, 2.0 * a2, a1 - span * target);
+        let scale = qa.abs().max(qb.abs()).max(qc.abs());
+        let mut roots = Vec::with_capacity(2);
+        if scale == 0.0 || !scale.is_finite() {
+            return roots;
+        }
+        if qa.abs() <= 1.0e-14 * scale {
+            if qb.abs() > 1.0e-14 * scale {
+                roots.push(-qc / qb);
+            }
+        } else {
+            let discriminant = qb.mul_add(qb, -4.0 * qa * qc);
+            if discriminant >= 0.0 {
+                // Numerically stable pair.
+                let q = -0.5 * (qb + discriminant.sqrt().copysign(qb));
+                roots.push(q / qa);
+                if q != 0.0 {
+                    roots.push(qc / q);
+                }
+            }
+        }
+        roots
+            .into_iter()
+            .map(|u| span.mul_add(u, self.t0))
+            .filter(|t| t.is_finite() && *t >= lo && *t <= hi)
+            .collect()
+    }
+}
+
 /// Smallest normalized spacing allowed between neighbouring stations.
 pub const MIN_STATION_SPACING: f64 = 1.0e-6;
 
