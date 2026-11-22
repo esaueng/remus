@@ -1545,15 +1545,21 @@ fn fillet_variable_transacted(
         tol,
     )?;
 
-    reject_variable_support_cliffs(
-        topo,
-        edge_laws,
-        &sections,
-        &active_intervals,
-        &edge_to_faces,
-        &face_surfaces,
-        tol,
-    )?;
+    // The clearance check reads each law over its active spine interval. A
+    // declared setback fixes that interval already; a tangent-ball corner
+    // crops it below, and the built band runs its law over the cropped span,
+    // so in that mode the check waits for the crop (#1944).
+    if corners == VariableCorners::Declared {
+        reject_variable_support_cliffs(
+            topo,
+            edge_laws,
+            &sections,
+            &active_intervals,
+            &edge_to_faces,
+            &face_surfaces,
+            tol,
+        )?;
+    }
 
     // Build a map from edge index to radius law for per-vertex radius lookup.
     // Each vertex adjacent to a filleted edge uses that edge's actual radius
@@ -1803,6 +1809,18 @@ fn fillet_variable_transacted(
         let is_concave = planar_edge_sides.values().all(|side| *side > 0.0);
         qualified_setback_corners
             .insert(vertex_index, (vertex_id, center, common_radius, is_concave));
+    }
+
+    if corners == VariableCorners::TangentBall {
+        reject_variable_support_cliffs(
+            topo,
+            edge_laws,
+            &sections,
+            &active_intervals,
+            &edge_to_faces,
+            &face_surfaces,
+            tol,
+        )?;
     }
 
     // Shared contact map: the SAME inward contact point used both to trim the
