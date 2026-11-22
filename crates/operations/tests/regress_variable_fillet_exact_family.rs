@@ -725,4 +725,139 @@ fn a_concave_edge_between_thin_lips_is_not_taken_for_convex() {
         &[spec(edge, FilletRadiusLaw::Constant(1.0))],
     );
     assert_eq!(code, "unsupported-variable-support", "{error}");
+/// The three edges meeting at the box's origin corner, each with its law
+/// given as (radius at the corner, radius at the far end).
+fn corner_specs(
+    topo: &Topology,
+    input: SolidId,
+    laws: [(FilletStationBlend, f64, f64); 3],
+) -> Vec<FilletEdgeSetback> {
+    (0..3)
+        .map(|axis| {
+            let edge = edge_where(topo, input, |p| {
+                (0..3).all(|other| other == axis || [p.x(), p.y(), p.z()][other].abs() < 1e-9)
+            });
+            let (start, _) = ends(topo, edge);
+            let (blend, at_corner, far) = laws[axis];
+            let (a, b) = if start.x().abs() + start.y().abs() + start.z().abs() < 1e-9 {
+                (at_corner, far)
+            } else {
+                (far, at_corner)
+            };
+            let law = match blend {
+                FilletStationBlend::SCurve => FilletRadiusLaw::SCurve { start: a, end: b },
+                FilletStationBlend::Linear => FilletRadiusLaw::Linear { start: a, end: b },
+            };
+            spec(edge, law)
+        })
+        .collect()
+}
+
+/// M03 setback corners: where three rounded box edges meet, the engine sets
+/// each stripe back to the one ball tangent to the three faces and closes
+/// the corner with that ball's spherical cap, exactly. The stripes' radii
+/// must agree at the corner with zero slope there (an S-curve or constant
+/// law), and the body loses the stripes' sections over their cropped spans
+/// plus the corner cube less the ball's octant: `r³(1 − π/6)`.
+#[test]
+fn tangent_ball_corners_close_three_variable_stripes_exactly() {
+    use remus_operations::fillet::{VariableCorners, fillet_variable_with_corners};
+    use std::f64::consts::PI;
+    let s = FilletStationBlend::SCurve;
+    for laws in [
+        [(s, 2.0, 2.0), (s, 2.0, 2.0), (s, 2.0, 2.0)],
+        [(s, 2.0, 1.0), (s, 2.0, 3.0), (s, 2.0, 1.5)],
+    ] {
+        let label = format!("{laws:?}");
+        let mut topo = Topology::new();
+        let input = make_box(&mut topo, LENGTH, DEPTH, HEIGHT).unwrap();
+        let specs = corner_specs(&topo, input, laws);
+        let result =
+            fillet_variable_with_corners(&mut topo, input, &specs, VariableCorners::TangentBall)
+                .unwrap_or_else(|e| panic!("{label}: {e}"));
+        assert!(validate_solid(&topo, result).unwrap().is_valid(), "{label}");
+        let faces = solid_faces(&topo, result).unwrap();
+        assert_eq!(faces.len(), 6 + 3 + 1, "{label}");
+        let caps: Vec<_> = faces
+            .iter()
+            .filter_map(|&f| match topo.face(f).unwrap().surface() {
+                FaceSurface::Sphere(sphere) => Some((sphere.center(), sphere.radius())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(caps.len(), 1, "{label}");
+        let (center, radius) = caps[0];
+        assert!((radius - 2.0).abs() < 1e-12, "{label}: {radius}");
+        assert!(
+            (center - Point3::new(2.0, 2.0, 2.0)).length() < 1e-12,
+            "{label}"
+        );
+
+        // Each stripe runs over its edge less the 2 mm setback, with its law
+        // stretched over that span.
+        let lengths = [LENGTH, DEPTH, HEIGHT];
+        let stripes: f64 = laws
+            .iter()
+            .zip(lengths)
+            .map(|(&(_, corner, far), length)| {
+                let law = FilletRadiusLaw::SCurve {
+                    start: corner,
+                    end: far,
+                };
+                (1.0 - FRAC_PI_4) * (length - 2.0) * mean_square_radius(&law)
+            })
+            .sum();
+        let removed = stripes + 8.0 * (1.0 - PI / 6.0);
+        let measured = mass_properties(&topo, result).unwrap().mass;
+        let expected = LENGTH * DEPTH * HEIGHT - removed;
+        assert!(
+            (measured - expected).abs() < 1e-6 * expected,
+            "{label}: {measured} against the closed form {expected}"
+        );
+    }
+}
+
+#[test]
+fn tangent_ball_corners_refuse_what_no_single_ball_closes() {
+    use remus_operations::fillet::{VariableCorners, fillet_variable_with_corners};
+    let s = FilletStationBlend::SCurve;
+    let l = FilletStationBlend::Linear;
+    let mut topo = Topology::new();
+    let input = make_box(&mut topo, LENGTH, DEPTH, HEIGHT).unwrap();
+    let run = |topo: &mut Topology, specs: &[FilletEdgeSetback], corners| {
+        let faces = solid_faces(topo, input).unwrap().len();
+        let error = fillet_variable_with_corners(topo, input, specs, corners).unwrap_err();
+        assert_eq!(solid_faces(topo, input).unwrap().len(), faces);
+        error
+    };
+
+    // Unequal radii at the corner, or a slope there: typed corner refusals.
+    for laws in [
+        [(s, 2.0, 2.0), (s, 2.5, 2.0), (s, 2.0, 2.0)],
+        [(l, 2.0, 1.0), (s, 2.0, 2.0), (s, 2.0, 2.0)],
+    ] {
+        let specs = corner_specs(&topo, input, laws);
+        let error = run(&mut topo, &specs, VariableCorners::TangentBall);
+        assert_eq!(
+            blend_failure_code(&error),
+            "unsupported-setback-corner",
+            "{error}"
+        );
+    }
+    // Without tangent-ball corners the undeclared corner stays refused.
+    let specs = corner_specs(&topo, input, [(s, 2.0, 2.0); 3]);
+    let error = run(&mut topo, &specs, VariableCorners::Declared);
+    assert_eq!(
+        blend_failure_code(&error),
+        "unsupported-vertex-blend",
+        "{error}"
+    );
+    // A declared setback beside tangent-ball corners is a contradiction.
+    let mut declared = specs;
+    declared[0].start_setback = 2.0;
+    let error = run(&mut topo, &declared, VariableCorners::TangentBall);
+    assert!(
+        matches!(error, OperationsError::InvalidInput { .. }),
+        "{error:?}"
+    );
 }

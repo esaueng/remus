@@ -496,7 +496,13 @@ pub fn fillet_variable(
     edge_laws: &[(EdgeId, FilletRadiusLaw)],
 ) -> Result<SolidId, crate::OperationsError> {
     crate::blend_ops::preview_checks::transaction(topo, |t| {
-        fillet_variable_transacted(t, solid, edge_laws, &HashMap::default())
+        fillet_variable_transacted(
+            t,
+            solid,
+            edge_laws,
+            &HashMap::default(),
+            VariableCorners::Declared,
+        )
     })
 }
 
@@ -520,6 +526,49 @@ pub fn fillet_variable_with_setbacks(
     solid: SolidId,
     specs: &[FilletEdgeSetback],
 ) -> Result<SolidId, crate::OperationsError> {
+    fillet_variable_with_corners(topo, solid, specs, VariableCorners::Declared)
+}
+
+/// How a variable-radius fillet closes a corner where three or more selected
+/// stripes meet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VariableCorners {
+    /// Only where every incident stripe declares its setback, and each
+    /// declared distance must be the tangent ball's station
+    /// ([`fillet_variable_with_setbacks`]); an undeclared corner is refused.
+    Declared,
+    /// At every undeclared corner of three or more selected stripes on
+    /// planar supports, set each stripe back to the station of the one ball
+    /// tangent to all their supports, and close the corner with that ball's
+    /// exact spherical cap. The qualification is the declared one's: the
+    /// stripes' radii must agree at the corner with zero slope there, or the
+    /// corner is refused by type.
+    TangentBall,
+}
+
+/// [`fillet_variable_with_setbacks`] with an explicit corner mode.
+///
+/// # Errors
+///
+/// As [`fillet_variable_with_setbacks`]; with
+/// [`VariableCorners::TangentBall`], also `InvalidInput` when a spec declares
+/// its own setback (the ball sets them), and `InvalidInput` when the ball's
+/// stations would consume a stripe.
+pub fn fillet_variable_with_corners(
+    topo: &mut Topology,
+    solid: SolidId,
+    specs: &[FilletEdgeSetback],
+    corners: VariableCorners,
+) -> Result<SolidId, crate::OperationsError> {
+    if corners == VariableCorners::TangentBall
+        && specs
+            .iter()
+            .any(|spec| spec.start_setback != 0.0 || spec.end_setback != 0.0)
+    {
+        return Err(crate::OperationsError::InvalidInput {
+            reason: "tangent-ball corners set every setback themselves; declare none".into(),
+        });
+    }
     let mut seen = HashSet::with_capacity_and_hasher(specs.len(), DetState);
     let mut edge_laws = Vec::with_capacity(specs.len());
     let mut setbacks = HashMap::with_capacity_and_hasher(specs.len(), DetState);
@@ -530,7 +579,7 @@ pub fn fillet_variable_with_setbacks(
         }
     }
     crate::blend_ops::preview_checks::transaction(topo, |t| {
-        fillet_variable_transacted(t, solid, &edge_laws, &setbacks)
+        fillet_variable_transacted(t, solid, &edge_laws, &setbacks, corners)
     })
 }
 
@@ -1268,6 +1317,7 @@ fn fillet_variable_transacted(
     solid: SolidId,
     edge_laws: &[(EdgeId, FilletRadiusLaw)],
     requested_setbacks: &HashMap<usize, (f64, f64)>,
+    corners: VariableCorners,
 ) -> Result<SolidId, crate::OperationsError> {
     let tol = Tolerance::new();
 
@@ -1499,7 +1549,12 @@ fn fillet_variable_transacted(
                 declared_endpoint_setbacks.contains_key(&(edge_id.index(), vertex_index))
             })
             .count();
-        if declared_count == 0 {
+        // A tangent-ball corner sets every incident stripe back itself, to the
+        // ball's station, and is then qualified as a declared one is.
+        let ball = corners == VariableCorners::TangentBall
+            && declared_count == 0
+            && incident_edges.len() >= 3;
+        if declared_count == 0 && !ball {
             reject_unset_stripe_corner(topo, vertex_index, incident_edges, tol)?;
             continue;
         }
@@ -1514,7 +1569,7 @@ fn fillet_variable_transacted(
             .ok_or_else(|| crate::OperationsError::InvalidInput {
                 reason: format!("setback endpoint {vertex_index} is not on its selected edges"),
             })?;
-        if incident_edges.len() < 3 || declared_count != incident_edges.len() {
+        if !ball && (incident_edges.len() < 3 || declared_count != incident_edges.len()) {
             return Err(crate::OperationsError::Blend(
                 remus_blend::BlendError::UnsupportedSetbackCorner {
                     vertex: vertex_id,
@@ -1651,7 +1706,11 @@ fn fillet_variable_transacted(
             };
             let away = (other - vertex).normalize()?;
             let required = (center - vertex).dot(away);
-            let declared = declared_endpoint_setbacks[&(edge_id.index(), vertex_index)];
+            let declared = if ball {
+                required
+            } else {
+                declared_endpoint_setbacks[&(edge_id.index(), vertex_index)]
+            };
             let setback_tol = tol.linear.max(required.abs() * 1.0e-8);
             if required <= tol.linear || (declared - required).abs() > setback_tol {
                 return Err(crate::OperationsError::Blend(
@@ -1662,6 +1721,29 @@ fn fillet_variable_transacted(
                         required,
                     },
                 ));
+            }
+            if ball {
+                // Crop the stripe at the ball's station, as a declared
+                // setback would have been cropped.
+                let length = (other - vertex).length();
+                let interval = active_intervals.get_mut(&edge_id.index()).ok_or_else(|| {
+                    crate::OperationsError::InvalidInput {
+                        reason: format!("corner stripe {edge_id:?} has no active interval"),
+                    }
+                })?;
+                if edge.start() == vertex_id {
+                    interval.0 = required / length;
+                } else {
+                    interval.1 = 1.0 - required / length;
+                }
+                if interval.1 - interval.0 <= tol.linear / length {
+                    return Err(crate::OperationsError::InvalidInput {
+                        reason: format!(
+                            "tangent-ball corners consume the full length of edge {edge_id:?}"
+                        ),
+                    });
+                }
+                declared_endpoint_setbacks.insert((edge_id.index(), vertex_index), required);
             }
         }
         let is_concave = planar_edge_sides.values().all(|side| *side > 0.0);
@@ -2119,7 +2201,11 @@ fn fillet_variable_transacted(
             control_points,
             vec![vec![1.0; n_cp_v], mid_weights, vec![1.0; n_cp_v]],
         )
-        .map_err(crate::OperationsError::Math)?;
+        .map_err(crate::OperationsError::Math)?
+        // Exact by construction: `reject_inexact_variable_stripes` admits
+        // only straight convex spines between planes, whose sections are the
+        // tangent ball's arcs (`VariableSection`) and whose rows are the law.
+        .with_exact_form(remus_math::nurbs::surface::ExactForm::VariableRollingBall);
 
         let c1s = grid[0][0];
         let c2s = grid[0][2];

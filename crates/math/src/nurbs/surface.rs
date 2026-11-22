@@ -71,6 +71,13 @@ pub enum ExactForm {
     /// other direction is linear with equal weights, so the surface between
     /// the rows is the ruled surface those lines sweep.
     EllipticCone,
+    /// A variable-radius rolling-ball blend between two planes along a
+    /// straight spine: every section across the spine is the rational
+    /// circular arc of the ball of radius `r(t)` tangent to both planes, and
+    /// every row along the spine is the radius law itself in cubic Hermite
+    /// form (one Bézier piece per law segment), so the net is the envelope
+    /// of that family of circles exactly.
+    VariableRollingBall,
 }
 
 /// Lazily built [`SurfaceSeedGrid`]s and periodicity flags of one surface.
