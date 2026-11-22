@@ -57,6 +57,21 @@ historical predecessor-line records, retained for provenance. The
 
 ### ⚠ BREAKING CHANGES
 
+* **blend,operations,wasm:** a blend result now names the requested edges
+  it left out for having no dihedral (B290). `chamfer_v2` drops a closed
+  face's seam and any tangent or flat join from its selection, as it did
+  before, but it used to drop them silently: an r6 h6 cylinder asked for
+  both rims and its seam came back `Ok` with two edges succeeded, none
+  failed and not partial. `BlendResult` gains `skipped: Vec<(EdgeId,
+  BlendSkip)>` (`BlendSkip::Seam` or `BlendSkip::Tangent`), filled by
+  `chamfer_v2` and every entry point over it and by the normalized fillet
+  entry points (`Model::fillet`, `fillet_journaled`); a skip does not make
+  the result partial. `query::normalize_fillet_selection_with_skips` and
+  `normalize_chamfer_selection_with_skips` return the dropped edges with
+  their reasons. **Migration:** code that builds a `BlendResult` with a
+  struct literal must add `skipped: Vec::new()`. The geometry of every
+  result is unchanged.
+
 * **operations,wasm:** a fillet or chamfer whose result fails its own
   validation postcondition on a valid input now refuses with the new
   `OperationsError::PostconditionFailed { operation, error_count, summary }`

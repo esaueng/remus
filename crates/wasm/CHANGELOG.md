@@ -18,12 +18,21 @@ retained as historical records. See [Remus versioning](../../docs/VERSIONING.md)
 
 ### Changed
 
+* `chamferV2Detailed` and `chamferDistanceAngleDetailed` (direct, and the
+  `executeBatch` / `executeBatchV2` ops of the same names) report the
+  requested edges they left out because they have no dihedral to bevel (a
+  closed face's seam, a tangent or flat join) as `details.skippedEdges:
+  [{ edge, reason }]`, `reason` being `"seam"` or `"tangent"` (B290). The
+  key is absent when nothing was skipped, so results that skipped nothing
+  are unchanged. **Contract change (additive):** a chamfer over a
+  cylinder's rims and its seam now carries `skippedEdges` naming the seam;
+  before, the seam vanished from the result without a trace. The returned
+  solid is the same.
 * `filletVariable` refuses a selected edge with a curved spine or a
   non-planar support with `unsupported-variable-support: …` before building,
   and two or more selected edges meeting at a corner without qualified
   setbacks with `unsupported-vertex-blend: …`. Both used to throw
   `postcondition-failed: fillet postcondition validation failed with …`.
-
 * `chamferV2`, `chamferDetailed` and the other bindings over `chamfer_v2`:
   a selection that does not build but ends inside a longer tangent chain
   whose chamfer builds is refused with `details.kernelCode =
