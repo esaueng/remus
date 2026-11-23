@@ -193,7 +193,7 @@ impl Chord {
         }
         let normal = (self.p1 - self.p0).cross(point - self.p0);
         let length = normal.length();
-        if side == 0.0 || !(length > 0.0) {
+        if side == 0.0 || length.is_nan() || length <= 0.0 {
             // On the chart chord, or collinear in space: a degenerate triangle.
             return true;
         }
@@ -346,7 +346,7 @@ mod tests {
         let surface = cone(a);
         let (chart, space) = band(&surface, 2.0, 2.5, n);
         let forward = guard(&surface, &chart, &space);
-        let (mut back_chart, mut back_space) = (chart.clone(), space);
+        let (mut back_chart, mut back_space) = (chart, space);
         back_chart.reverse();
         back_space.reverse();
         let backward = guard(&surface, &back_chart, &back_space);
