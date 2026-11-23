@@ -275,6 +275,26 @@ impl MultiChecks {
             let relimited = !boxes_match(rebuilt, translated, tolerance);
             swept.push((region.source.union(translated).union(rebuilt), relimited));
         }
+        let rebuilt_face = |region: &MovedRegion| moved.face_map.get(&region.face.index()).copied();
+        for region in &self.regions {
+            let Some(rebuilt) = rebuilt_face(region) else {
+                continue;
+            };
+            for &(fixed, _) in &self.fixed {
+                if !region.touching.contains(&fixed)
+                    && planar_faces_meet(topo, rebuilt, fixed, tolerance)?
+                {
+                    return Err(region_refusal(
+                        region.face,
+                        format!(
+                            "this face ends on nonadjacent fixed face {}: the two would share \
+                             a face patch",
+                            fixed.index()
+                        ),
+                    ));
+                }
+            }
+        }
         for (region, &(bounds, relimited)) in self.regions.iter().zip(&swept) {
             if !relimited {
                 continue;
@@ -294,8 +314,12 @@ impl MultiChecks {
         }
         for (first, (region, &(bounds, _))) in self.regions.iter().zip(&swept).enumerate() {
             for (other, &(other_bounds, _)) in self.regions.iter().zip(&swept).skip(first + 1) {
+                let meet = match (rebuilt_face(region), rebuilt_face(other)) {
+                    (Some(a), Some(b)) => planar_faces_meet(topo, a, b, tolerance)?,
+                    _ => false,
+                };
                 if !region.touching.contains(&other.face)
-                    && overlaps(bounds, other_bounds, tolerance)
+                    && (meet || overlaps(bounds, other_bounds, tolerance))
                 {
                     return Err(region_refusal(
                         region.face,
@@ -319,6 +343,54 @@ fn region_refusal(face: FaceId, reason: String) -> OperationsError {
         reason,
     }
     .into()
+}
+
+/// Whether planar faces `first` and `second` lie on one plane facing each
+/// other (opposite normals, plane offset within `tolerance`) with boxes
+/// that touch or come within `tolerance`. Two cavity shells sharing such a
+/// patch still pass strict validation, so a move must not end there; the
+/// box overlap test alone lets touching boxes pass, as faces that only
+/// meet along a box side (stepped tops and a slot floor) must.
+fn planar_faces_meet(
+    topo: &Topology,
+    first: FaceId,
+    second: FaceId,
+    tolerance: f64,
+) -> Result<bool, OperationsError> {
+    let (Some(first_normal), Some(second_normal)) = (
+        topo.face(first)?.effective_plane_normal(),
+        topo.face(second)?.effective_plane_normal(),
+    ) else {
+        return Ok(false);
+    };
+    if first_normal.dot(second_normal) > -(1.0 - 1e-9) {
+        return Ok(false);
+    }
+    let point_on = |face: FaceId| -> Result<Option<remus_math::vec::Point3>, OperationsError> {
+        Ok(match face_vertices(topo, face)?.first() {
+            Some(&vertex) => Some(topo.vertex(vertex)?.point()),
+            None => None,
+        })
+    };
+    let (Some(first_point), Some(second_point)) = (point_on(first)?, point_on(second)?) else {
+        return Ok(false);
+    };
+    if (second_point - first_point).dot(first_normal).abs() > tolerance {
+        return Ok(false);
+    }
+    let first_box = crate::measure::face_bounding_box(topo, first)?;
+    let second_box = crate::measure::face_bounding_box(topo, second)?;
+    let spans = |b: Aabb3| {
+        [
+            (b.min.x(), b.max.x()),
+            (b.min.y(), b.max.y()),
+            (b.min.z(), b.max.z()),
+        ]
+    };
+    Ok(spans(first_box)
+        .into_iter()
+        .zip(spans(second_box))
+        .all(|((a_min, a_max), (b_min, b_max))| a_max.min(b_max) - a_min.max(b_min) >= -tolerance))
 }
 
 /// Whether two boxes agree within `tolerance` on every bound.

@@ -603,6 +603,19 @@ fn a_corner_two_moved_walls_build_into_another_cavity_refuses() {
         PreparedFaceMove::prepare_multi(&topo, source, &walls, &[]).expect("prepare");
     assert!(prepared.move_faces(&mut topo, -3.0).is_err());
 
+    // Re-check reproducer: −2 and −3 bring the `x = 6` wall to `x = 8`, onto
+    // the second cavity's wall over a 1 × 5 mm patch. Two cavity shells
+    // sharing a face patch still validate, so contact must refuse too, and
+    // so must a 5e-8 mm penetration inside the linear tolerance.
+    assert_region_refusal(&mut topo, source, &walls, &[-2.0, -3.0], source_volume);
+    assert_region_refusal(
+        &mut topo,
+        source,
+        &walls,
+        &[-2.000_000_05, -3.0],
+        source_volume,
+    );
+
     // Clear by 1 mm: the first cavity grows to [2,7]² × 5.
     let moved = move_faces_multi(&mut topo, source, &walls, &[-1.0]).expect("clear corner move");
     assert_verified(&topo, moved);
@@ -625,6 +638,8 @@ fn walls_advancing_into_one_gap_from_both_sides_refuse() {
     let (source, walls) = facing_cavities(&mut topo);
     assert_region_refusal(&mut topo, source, &walls, &[-1.5], source_volume);
     assert_region_refusal(&mut topo, source, &walls, &[-1.5, -1.0], source_volume);
+    // Meeting in the middle of the gap: the two walls touch at `x = 7`.
+    assert_region_refusal(&mut topo, source, &walls, &[-1.0], source_volume);
 
     let moved = move_faces_multi(&mut topo, source, &walls, &[-0.5]).expect("clear gap move");
     assert_verified(&topo, moved);
