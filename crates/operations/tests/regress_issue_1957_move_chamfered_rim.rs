@@ -20,9 +20,11 @@
 
 use std::f64::consts::PI;
 
+use remus_math::mat::Mat4;
 use remus_math::vec::{Point3, Vec3};
 use remus_operations::OperationsError;
 use remus_operations::blend_ops::{chamfer_v2, fillet_cascade, planar_chamfer_with_origins};
+use remus_operations::boolean::{BooleanOp, boolean};
 use remus_operations::extrude::extrude;
 use remus_operations::journal_ops::{chamfer_journaled, move_faces_journaled, solid_entity_keys};
 use remus_operations::measure::{face_area, solid_bounding_box, solid_volume};
@@ -30,6 +32,7 @@ use remus_operations::prepared_move::PreparedFaceMove;
 use remus_operations::primitives::make_box;
 use remus_operations::push_pull::move_faces;
 use remus_operations::tessellate::{is_watertight, tessellate_solid_with_tolerance};
+use remus_operations::transform::transform_solid;
 use remus_operations::validate::validate_solid;
 use remus_topology::Topology;
 use remus_topology::edge::EdgeId;
@@ -576,4 +579,59 @@ fn journal_history_decides_an_equal_setback_section() {
     }
     topo.journal_record_evolution(pending, draft).unwrap();
     assert_relimited(&mut topo, solid, 2.0, &before, &after, "recorded taper");
+}
+
+/// The carried chamfer sweeps material the cap's own sweep does not: a
+/// cavity just behind the band, beyond the cap's footprint, must stop the
+/// move rather than be cut open by the translated chamfer plane.
+#[test]
+fn a_carried_chamfer_refuses_to_sweep_through_a_cavity() {
+    let mut topo = Topology::new();
+    let sharp = make_box(&mut topo, X, Y, Z).unwrap();
+    let front = edges_where(&topo, sharp, front_bottom);
+    let solid = chamfer(&mut topo, sharp, &front, CHAMFER);
+    let cavity = make_box(&mut topo, 2.0, 0.1, 0.1).unwrap();
+    transform_solid(&mut topo, cavity, &Mat4::translation(10.0, 0.1, 2.16)).unwrap();
+    let solid = boolean(&mut topo, BooleanOp::Cut, solid, cavity).unwrap();
+    let face = bottom(&topo, solid);
+    let counts = solid_entity_counts(&topo, solid).unwrap();
+    let error = move_faces(&mut topo, solid, &[face], -2.0)
+        .expect_err("the chamfer would sweep through the cavity");
+    assert!(
+        error
+            .to_string()
+            .contains("swept face reaches nonadjacent face"),
+        "unexpected refusal: {error}"
+    );
+    assert_eq!(solid_entity_counts(&topo, solid).unwrap(), counts);
+}
+
+/// A body far from the origin reads the same setbacks: the chamfer is
+/// carried exactly as at the origin.
+#[test]
+fn a_translated_body_carries_its_chamfer_the_same() {
+    for offset in [1e3, 4e6] {
+        let mut topo = Topology::new();
+        for (label, solid, section) in issue_bodies(&mut topo) {
+            transform_solid(
+                &mut topo,
+                solid,
+                &Mat4::translation(offset, -offset, offset),
+            )
+            .unwrap();
+            for distance in [2.0, -2.0] {
+                let face = bottom(&topo, solid);
+                let volume = solid_volume(&topo, solid, DEFLECTION).unwrap();
+                let moved = move_faces(&mut topo, solid, &[face], distance)
+                    .unwrap_or_else(|error| panic!("{label} at {offset}: {error}"));
+                let change = solid_volume(&topo, moved, DEFLECTION).unwrap() - volume;
+                let expected = distance * section;
+                assert!(
+                    (change - expected).abs() <= 1e-3 * expected.abs(),
+                    "{label} at {offset}, move {distance}: volume changed by {change}, carried \
+                     is {expected}"
+                );
+            }
+        }
+    }
 }

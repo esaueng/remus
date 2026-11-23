@@ -2312,9 +2312,12 @@ fn translation_invariant_blend_region(
     // move slides along travel with it.
     let mut moving: Vec<FaceId> = selected.union(&region).copied().collect();
     moving.compact_sort_unstable_by_key(|face| face.index());
-    let riding_chamfers =
+    let mut riding_chamfers =
         riding_chamfer::riding_chamfer_faces(topo, &adjacency, &moving, direction)?;
     region.extend(riding_chamfers.iter().copied());
+    // A rim chamfer leads the move like the cap does, so the move sweeps it
+    // too: it reaches material the cap's own sweep never covers.
+    riding_chamfers.extend(rim.carried.iter().copied());
 
     let mut translated_nurbs_supports = HashSet::new();
     // Face order, not set order, so a refusal always names the same face.

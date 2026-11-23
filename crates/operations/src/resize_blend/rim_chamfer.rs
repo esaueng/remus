@@ -79,8 +79,13 @@ use std::collections::{BTreeMap, VecDeque};
 /// large is a body region, not a detail.
 const MAX_BAND_FACES: usize = 64;
 
-/// Relative tolerance on setbacks and depths, scaled by the coordinates.
-const SETBACK_TOLERANCE: f64 = 1e-7;
+/// Absolute floor of the tolerance on setbacks and depths.
+const SETBACK_TOLERANCE: f64 = 1e-9;
+
+/// Rounding allowance per unit of coordinate magnitude: setbacks are
+/// differences of coordinates, so far from the origin they carry rounding
+/// of the coordinates' size, never more.
+const ROUNDING_PER_UNIT: f64 = 1024.0 * f64::EPSILON;
 
 /// How many journal links a face's origin may be followed through.
 const MAX_LINEAGE_STEPS: usize = 4096;
@@ -111,8 +116,15 @@ fn scale_of(point: Point3) -> f64 {
         .max(1.0)
 }
 
+/// The tolerance on setbacks and depths read near `point`: a fixed floor,
+/// widened only by the rounding of coordinates far from the origin, so a
+/// translated body reads the same setbacks.
+fn tolerance_at(point: Point3) -> f64 {
+    SETBACK_TOLERANCE.max(ROUNDING_PER_UNIT * scale_of(point))
+}
+
 fn close(a: f64, b: f64, point: Point3) -> bool {
-    (a - b).abs() <= SETBACK_TOLERANCE * scale_of(point)
+    (a - b).abs() <= tolerance_at(point)
 }
 
 fn dot(point: Point3, normal: Vec3) -> f64 {
@@ -370,7 +382,7 @@ fn chamfer_setbacks(
                     1.0
                 };
                 let apex_off = (cone.apex() - cylinder.origin()).cross(cylinder.axis());
-                if apex_off.length() > SETBACK_TOLERANCE * scale_of(cone.apex()) {
+                if apex_off.length() > tolerance_at(cone.apex()) {
                     continue;
                 }
                 cylinder_wall_setbacks(
@@ -423,7 +435,7 @@ fn plane_wall_setbacks(
         for point in edge_ends(topo, edge)? {
             // Inside the wall's material, at one setback.
             let setback = -(point - anchor).dot(outward);
-            if setback <= SETBACK_TOLERANCE * scale_of(point)
+            if setback <= tolerance_at(point)
                 || d_cap.is_some_and(|before| !close(before, setback, point))
             {
                 return Ok(None);
@@ -438,7 +450,7 @@ fn plane_wall_setbacks(
         }
         for point in edge_ends(topo, edge)? {
             let depth = cap.level - dot(point, cap.normal);
-            if depth <= SETBACK_TOLERANCE * scale_of(point)
+            if depth <= tolerance_at(point)
                 || d_wall.is_some_and(|before| !close(before, depth, point))
             {
                 return Ok(None);
@@ -465,7 +477,7 @@ fn cylinder_wall_setbacks(
 ) -> Result<Option<(f64, f64)>, OperationsError> {
     let coaxial = |center: Point3, normal: Vec3| {
         normal.cross(axis).length() <= Tolerance::new().angular
-            && (center - origin).cross(axis).length() <= SETBACK_TOLERANCE * scale_of(center)
+            && (center - origin).cross(axis).length() <= tolerance_at(center)
     };
     let mut d_cap: Option<f64> = None;
     for &edge in cap_edges {
@@ -475,7 +487,7 @@ fn cylinder_wall_setbacks(
         let center = circle.center();
         let setback = outward * (radius - circle.radius());
         if !coaxial(center, circle.normal())
-            || setback <= SETBACK_TOLERANCE * scale_of(center)
+            || setback <= tolerance_at(center)
             || d_cap.is_some_and(|before| !close(before, setback, center))
         {
             return Ok(None);
@@ -491,7 +503,7 @@ fn cylinder_wall_setbacks(
         let depth = cap.level - dot(center, cap.normal);
         if !coaxial(center, circle.normal())
             || !close(circle.radius(), radius, center)
-            || depth <= SETBACK_TOLERANCE * scale_of(center)
+            || depth <= tolerance_at(center)
             || d_wall.is_some_and(|before| !close(before, depth, center))
         {
             return Ok(None);
