@@ -63,6 +63,7 @@ use remus_topology::face::FaceId;
 use remus_topology::solid::SolidId;
 
 use super::boundary::FaceCache;
+use super::prepared::TrimWindow;
 use super::{ClassifyOptions, ClassifySource, PointClassification};
 use crate::CheckError;
 
@@ -80,10 +81,14 @@ struct CacheEntry {
     generation: u64,
     solid_index: usize,
     max_recovery: usize,
-    faces: Vec<FaceId>,
+    // Fixed after preparation. The two capacity words saved here pay for
+    // the window slice, including on solids with no NURBS faces.
+    faces: Box<[FaceId]>,
     bvh: Bvh,
-    trims: Vec<Option<super::boundary::FaceTrimData>>,
+    trims: Box<[Option<super::boundary::FaceTrimData>]>,
     planes: Box<[(usize, FaceCache)]>,
+    /// NURBS trim windows in face traversal order, admitted within the byte budget.
+    nurbs_windows: Box<[(usize, TrimWindow)]>,
     skeleton: super::graze::BoundarySkeleton,
     retained_bytes: usize,
 }
@@ -254,31 +259,13 @@ impl ClassificationCache {
             self.misses = self.misses.saturating_add(1);
             return super::classify_point(topo, solid, point, options);
         }
-        match self.entry_index_or_rebuild(topo, solid, options)? {
-            CacheLookup::Retained(index) => {
-                let entry = &self.entries[index];
-                let source = CachedSource {
-                    topo,
-                    faces: &entry.faces,
-                    bvh: &entry.bvh,
-                    trims: &entry.trims,
-                    planes: &entry.planes,
-                    skeleton: &entry.skeleton,
-                };
-                super::classify_point_with_source(&source, point, options)
-            }
-            CacheLookup::Uncached(entry) => {
-                let source = CachedSource {
-                    topo,
-                    faces: &entry.faces,
-                    bvh: &entry.bvh,
-                    trims: &entry.trims,
-                    planes: &entry.planes,
-                    skeleton: &entry.skeleton,
-                };
-                super::classify_point_with_source(&source, point, options)
-            }
-        }
+        let lookup = self.entry_index_or_rebuild(topo, solid, options)?;
+        let entry = match &lookup {
+            CacheLookup::Retained(index) => &self.entries[*index],
+            CacheLookup::Uncached(entry) => entry,
+        };
+        let source = CachedSource { topo, entry };
+        super::classify_point_with_source(&source, point, options)
     }
 
     /// Classify many points, amortizing one lookup over the batch.
@@ -304,37 +291,16 @@ impl ClassificationCache {
             let prepared = super::PreparedSolid::prepare(topo, solid)?;
             return prepared.classify_points(points, options);
         }
-        match self.entry_index_or_rebuild(topo, solid, options)? {
-            CacheLookup::Retained(index) => {
-                let entry = &self.entries[index];
-                let source = CachedSource {
-                    topo,
-                    faces: &entry.faces,
-                    bvh: &entry.bvh,
-                    trims: &entry.trims,
-                    planes: &entry.planes,
-                    skeleton: &entry.skeleton,
-                };
-                points
-                    .iter()
-                    .map(|&point| super::classify_point_with_source(&source, point, options))
-                    .collect()
-            }
-            CacheLookup::Uncached(entry) => {
-                let source = CachedSource {
-                    topo,
-                    faces: &entry.faces,
-                    bvh: &entry.bvh,
-                    trims: &entry.trims,
-                    planes: &entry.planes,
-                    skeleton: &entry.skeleton,
-                };
-                points
-                    .iter()
-                    .map(|&point| super::classify_point_with_source(&source, point, options))
-                    .collect()
-            }
-        }
+        let lookup = self.entry_index_or_rebuild(topo, solid, options)?;
+        let entry = match &lookup {
+            CacheLookup::Retained(index) => &self.entries[*index],
+            CacheLookup::Uncached(entry) => entry,
+        };
+        let source = CachedSource { topo, entry };
+        points
+            .iter()
+            .map(|&point| super::classify_point_with_source(&source, point, options))
+            .collect()
     }
 
     /// Finds a live entry or rebuilds it, returning its index.
@@ -382,23 +348,19 @@ impl ClassificationCache {
         crate::perf::bump_classify_bvh_build();
         let skeleton = super::graze::BoundarySkeleton::build(topo, &faces)?;
 
-        let retained_bytes = estimate_retained_bytes(
-            &face_aabbs,
-            &bvh,
-            &trims,
-            faces.capacity(),
-            trims.capacity(),
-        )
-        .saturating_add(skeleton.retained_bytes());
+        let retained_bytes =
+            estimate_retained_bytes(&face_aabbs, &bvh, &trims, faces.len(), trims.len())
+                .saturating_add(skeleton.retained_bytes());
         let mut entry = CacheEntry {
             lineage: identity.lineage,
             generation: identity.generation,
             solid_index: solid.index(),
             max_recovery: options.max_recovery_attempts,
-            faces,
+            faces: faces.into_boxed_slice(),
             bvh,
-            trims,
+            trims: trims.into_boxed_slice(),
             planes: Box::default(),
+            nurbs_windows: Box::default(),
             skeleton,
             retained_bytes,
         };
@@ -410,10 +372,25 @@ impl ClassificationCache {
         self.drop_stale_for_lineage(identity.lineage, identity.generation);
         // FIFO: evict the oldest insertion until both bounds are satisfied.
         // Deterministic; no hash-order dependence.
-        while self.entries.len() >= self.capacity
-            || self.retained_bytes().saturating_add(retained_bytes) > self.byte_budget
-        {
+        if self.entries.len() >= self.capacity {
             self.entries.remove(0);
+            self.evictions = self.evictions.saturating_add(1);
+        }
+        // Give back optional windows before they can evict a preparation that
+        // would otherwise fit. A released entry still has its original trims.
+        let available = self.byte_budget - retained_bytes;
+        let mut used = self.retained_bytes();
+        for cached in &mut self.entries {
+            if used <= available {
+                break;
+            }
+            let released = size_of_val(&*cached.nurbs_windows);
+            cached.nurbs_windows = Box::default();
+            cached.retained_bytes -= released;
+            used -= released;
+        }
+        while used > available {
+            used -= self.entries.remove(0).retained_bytes;
             self.evictions = self.evictions.saturating_add(1);
         }
         // Optional trims use only the space left after ordinary FIFO admission.
@@ -434,6 +411,28 @@ impl ClassificationCache {
             }
         }
         entry.planes = planes.into_boxed_slice();
+
+        // The same projected trim test as PreparedSolid can rule out a NURBS
+        // face before its point-to-surface projection. Keep only windows that
+        // fit after the existing planar accelerators have been admitted.
+        let mut windows = Vec::new();
+        let window_bytes = size_of::<(usize, TrimWindow)>();
+        for (index, (&fid, trim)) in entry.faces.iter().zip(&entry.trims).enumerate() {
+            if spare < window_bytes {
+                break;
+            }
+            if let Ok(face) = topo.face(fid)
+                && matches!(face.surface(), remus_topology::face::FaceSurface::Nurbs(_))
+                && let Some(window) = trim
+                    .as_ref()
+                    .and_then(|t| TrimWindow::of(face.surface(), t))
+            {
+                windows.push((index, window));
+                spare -= window_bytes;
+                entry.retained_bytes += window_bytes;
+            }
+        }
+        entry.nurbs_windows = windows.into_boxed_slice();
         self.entries.push(entry);
         self.rebuilds = self.rebuilds.saturating_add(1);
         Ok(CacheLookup::Retained(self.entries.len() - 1))
@@ -461,16 +460,18 @@ impl ClassificationCache {
 /// Borrowed view over one owned preparation plus live carriers.
 struct CachedSource<'a> {
     topo: &'a Topology,
-    faces: &'a [FaceId],
-    bvh: &'a Bvh,
-    trims: &'a [Option<super::boundary::FaceTrimData>],
-    planes: &'a [(usize, FaceCache)],
-    skeleton: &'a super::graze::BoundarySkeleton,
+    entry: &'a CacheEntry,
 }
 
 impl ClassifySource for CachedSource<'_> {
     fn check_boundary(&self, point: Point3, tolerance: f64) -> Result<bool, CheckError> {
-        for (fid, trim) in self.faces.iter().zip(self.trims.iter()) {
+        let mut windows = self.entry.nurbs_windows.iter().peekable();
+        for (index, (fid, trim)) in self.entry.faces.iter().zip(&self.entry.trims).enumerate() {
+            if let Some((_, window)) = windows.next_if(|(i, _)| *i == index)
+                && window.excludes(point)
+            {
+                continue;
+            }
             if super::face_surface_distance(self.topo, *fid, point, tolerance)? < tolerance {
                 if let Some(inside) = super::boundary::qualified_sphere_trim_contains(
                     self.topo, *fid, None, point, tolerance,
@@ -496,22 +497,23 @@ impl ClassifySource for CachedSource<'_> {
     }
 
     fn count_crossings(&self, point: Point3, direction: Vec3) -> Result<u32, CheckError> {
-        let candidates = self.bvh.query_ray(point, direction);
+        let candidates = self.entry.bvh.query_ray(point, direction);
         let mut crossings = 0u32;
         for face_idx in candidates {
-            let fid = self.faces[face_idx];
+            let fid = self.entry.faces[face_idx];
             let owned_trim;
-            let trim = if let Some(cached) = &self.trims[face_idx] {
+            let trim = if let Some(cached) = &self.entry.trims[face_idx] {
                 Some(cached)
             } else {
                 owned_trim = super::boundary::FaceTrimData::build(self.topo, fid)?;
                 Some(&owned_trim)
             };
             let cache = self
+                .entry
                 .planes
                 .binary_search_by_key(&face_idx, |(index, _)| *index)
                 .ok()
-                .map(|pos| &self.planes[pos].1);
+                .map(|pos| &self.entry.planes[pos].1);
             crossings += super::boundary::count_face_ray_crossings_cached(
                 self.topo, fid, trim, cache, point, direction,
             )?;
@@ -520,7 +522,7 @@ impl ClassifySource for CachedSource<'_> {
     }
 
     fn ray_grazes_boundary(&self, point: Point3, direction: Vec3) -> Result<bool, CheckError> {
-        self.skeleton.grazed_by(self.topo, point, direction)
+        self.entry.skeleton.grazed_by(self.topo, point, direction)
     }
 }
 
@@ -626,6 +628,98 @@ mod tests {
                 .unwrap()
                 .set_point(Point3::new(p.x() + dx, p.y(), p.z()));
         }
+    }
+
+    #[test]
+    fn cached_nurbs_trim_window_preserves_boundary_verdicts_with_or_without_spare_bytes() {
+        use remus_math::nurbs::NurbsSurface;
+        use remus_topology::face::FaceSurface;
+
+        let mut topo = Topology::new();
+        let solid = make_unit_cube_manifold(&mut topo);
+        let planar = make_unit_cube_manifold(&mut topo);
+        let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
+        let top = faces
+            .iter()
+            .position(|&fid| {
+                topo.face(fid)
+                    .unwrap()
+                    .effective_plane_normal()
+                    .unwrap()
+                    .z()
+                    > 0.9
+            })
+            .unwrap();
+        // The support extends well past the square trim. A point on the
+        // extended plane must still be rejected outside the top wire.
+        let knots = vec![0.0, 0.0, 1.0, 1.0];
+        let surface = NurbsSurface::new(
+            1,
+            1,
+            knots.clone(),
+            knots,
+            vec![
+                vec![Point3::new(-1.0, -1.0, 1.0), Point3::new(-1.0, 2.0, 1.0)],
+                vec![Point3::new(2.0, -1.0, 1.0), Point3::new(2.0, 2.0, 1.0)],
+            ],
+            vec![vec![1.0; 2]; 2],
+        )
+        .unwrap();
+        topo.face_mut(faces[top])
+            .unwrap()
+            .set_surface(FaceSurface::Nurbs(surface));
+        let options = ClassifyOptions::default();
+        let mut points = cube_corpus(8);
+        points.extend([
+            Point3::new(0.5, 1.0, 1.0),
+            Point3::new(0.5, 1.25, 1.0),
+            Point3::new(0.5, 0.9, 1.0),
+        ]);
+        let expected = oneshot(&topo, solid, &points, &options);
+        assert_eq!(expected[expected.len() - 2], PointClassification::Outside);
+        assert_eq!(expected.last(), Some(&PointClassification::OnBoundary));
+
+        let mut cache = ClassificationCache::new();
+        assert_eq!(
+            cache
+                .classify_points(&topo, solid, &points, &options)
+                .unwrap(),
+            expected
+        );
+        let windows = &cache.entries[0].nurbs_windows;
+        assert_eq!(windows.len(), 1);
+        let (index, window) = windows[0];
+        assert_eq!(index, top);
+        assert!(window.excludes(Point3::new(0.5, 1.25, 1.0)));
+        assert!(!window.excludes(Point3::new(0.5, 1.0, 1.0)));
+
+        let base_bytes = cache.retained_bytes() - size_of::<(usize, TrimWindow)>();
+        let mut tight = ClassificationCache::with_capacity_and_byte_budget(1, base_bytes);
+        assert_eq!(
+            tight
+                .classify_points(&topo, solid, &points, &options)
+                .unwrap(),
+            expected
+        );
+        assert!(tight.entries[0].nurbs_windows.is_empty());
+        assert_eq!(tight.retained_bytes(), base_bytes);
+
+        let probe = points[0];
+        let mut plain = ClassificationCache::new();
+        plain
+            .classify_point(&topo, planar, probe, &options)
+            .unwrap();
+        let budget = base_bytes + plain.retained_bytes();
+        let mut two = ClassificationCache::with_capacity_and_byte_budget(2, budget);
+        two.classify_point(&topo, solid, probe, &options).unwrap();
+        assert_eq!(two.entries[0].nurbs_windows.len(), 1);
+        two.classify_point(&topo, planar, probe, &options).unwrap();
+        assert!(two.entries[0].nurbs_windows.is_empty());
+        assert_eq!(two.retained_bytes(), budget);
+        for id in [solid, planar] {
+            two.classify_point(&topo, id, probe, &options).unwrap();
+        }
+        assert_eq!((two.stats().evictions, two.stats().hits), (0, 2));
     }
 
     #[test]

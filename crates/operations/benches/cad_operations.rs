@@ -18,7 +18,7 @@
 use std::hint::black_box;
 use std::time::Duration;
 
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
 
 use remus_check::properties::face_integrator::{integrate_face, integrate_face_area};
 use remus_math::mat::Mat4;
@@ -47,6 +47,49 @@ fn fast_config() -> Criterion {
         .sample_size(20)
         .warm_up_time(Duration::from_millis(500))
         .measurement_time(Duration::from_secs(2))
+}
+
+/// Extrude-to-surface locates the sketch with the bounds of a temporary unit
+/// extrusion, then retires it. Keep the source profile and a separate body
+/// live, and start every iteration with fresh topology.
+fn bench_probe_extrusion(c: &mut Criterion) {
+    use remus_operations::extrude::extrude;
+    use remus_topology::builder::{make_face_from_wire, make_regular_polygon_wire};
+
+    let mut group = c.benchmark_group("temporary extrusion");
+    let up = Vec3::new(0.0, 0.0, 1.0);
+    for sides in [4, 256] {
+        let fixture = || {
+            let mut topo = Topology::new();
+            primitives::make_box(&mut topo, 10.0, 20.0, 30.0).unwrap();
+            let wire = make_regular_polygon_wire(&mut topo, 10.0, sides, 1e-7).unwrap();
+            let face = make_face_from_wire(&mut topo, wire).unwrap();
+            (topo, face)
+        };
+        group.bench_function(BenchmarkId::new("delete", sides), |b| {
+            b.iter_batched_ref(
+                || {
+                    let (mut topo, face) = fixture();
+                    let probe = extrude(&mut topo, face, up, 1.0).unwrap();
+                    (topo, probe)
+                },
+                |(topo, probe)| topo.delete_solid(*probe).unwrap(),
+                BatchSize::PerIteration,
+            );
+        });
+        group.bench_function(BenchmarkId::new("extrude-bounds-delete", sides), |b| {
+            b.iter_batched_ref(
+                fixture,
+                |(topo, face)| {
+                    let probe = extrude(topo, *face, up, 1.0).unwrap();
+                    black_box(measure::solid_bounding_box(topo, probe).unwrap());
+                    topo.delete_solid(probe).unwrap();
+                },
+                BatchSize::PerIteration,
+            );
+        });
+    }
+    group.finish();
 }
 
 // ---------------------------------------------------------------------------
@@ -730,6 +773,7 @@ criterion_group! {
     targets =
         bench_translate_fused_x1000,
         bench_intersect_box_sphere_single,
+        bench_probe_extrusion,
 }
 
 criterion_group! {

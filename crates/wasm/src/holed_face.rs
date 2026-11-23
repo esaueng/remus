@@ -50,10 +50,12 @@
 //! builds correct side faces for either, so requiring CW here would reject
 //! input the kernel already handles.
 
-use remus_check::util::{point_in_polygon_3d, wire_polygon_curve_sampled};
+use remus_check::util::wire_polygon_curve_sampled;
 use remus_geometry::extrema::{
     point_to_cone, point_to_cylinder, point_to_sphere, point_to_surface, point_to_torus,
 };
+use remus_math::aabb::Aabb2;
+use remus_math::predicates::point_in_polygon;
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point2, Point3, Vec3};
 use remus_topology::Topology;
@@ -158,18 +160,8 @@ fn planar_normal(surface: &FaceSurface) -> Option<Vec3> {
     }
 }
 
-/// True when every point of `inner` lies inside the polygon `outer`.
-///
-/// Returns the index of the first escaping point instead of a bare bool so
-/// the error can name it.
-fn first_point_outside(inner: &[Point3], outer: &[Point3], normal: Vec3) -> Option<usize> {
-    inner
-        .iter()
-        .position(|p| !point_in_polygon_3d(p, outer, &normal))
-}
-
 /// Drop a planar 3D polygon into 2D along the axis the plane normal is
-/// most aligned with — the same projection [`point_in_polygon_3d`] uses,
+/// most aligned with — the same projection [`remus_check::util::point_in_polygon_3d`] uses,
 /// so the two agree about which polygon a point is in.
 fn project_to_2d(points: &[Point3], normal: Vec3) -> Vec<Point2> {
     let (ax, ay, az) = (normal.x().abs(), normal.y().abs(), normal.z().abs());
@@ -182,13 +174,37 @@ fn project_to_2d(points: &[Point3], normal: Vec3) -> Vec<Point2> {
     }
 }
 
-/// True when two planar loops share any area.
-///
-/// Vertex containment alone is not enough: two rectangles crossing in a
-/// plus sign have no vertex of either inside the other, so the edge-crossing
-/// half of [`polygons_overlap_2d`] is what catches them.
-fn loops_overlap(a: &[Point3], b: &[Point3], normal: Vec3) -> bool {
-    polygons_overlap_2d(&project_to_2d(a, normal), &project_to_2d(b, normal))
+/// A hole's sampled outline in the plane used by all containment checks.
+struct ProjectedHole {
+    points: Vec<Point2>,
+    bounds: Option<Aabb2>,
+}
+
+impl ProjectedHole {
+    fn new(points: &[Point3], normal: Vec3, tolerance: f64) -> Self {
+        let points = project_to_2d(points, normal);
+        // Expand both boxes. Even a pair only a touch tolerance apart must
+        // reach the distance test. Non-finite outlines keep the full test.
+        let bounds = if points
+            .iter()
+            .all(|p| p.x().is_finite() && p.y().is_finite())
+        {
+            Aabb2::try_from_points(points.iter().copied()).map(|b| b.expanded(tolerance))
+        } else {
+            None
+        };
+        Self { points, bounds }
+    }
+
+    fn conflicts_with(&self, other: &Self, tolerance: f64) -> bool {
+        if let (Some(a), Some(b)) = (self.bounds, other.bounds)
+            && !a.intersects(b)
+        {
+            return false;
+        }
+        polygons_overlap_2d(&self.points, &other.points)
+            || loops_touch(&self.points, &other.points, tolerance)
+    }
 }
 
 /// Iterate the closed polygon `poly` as `(start, end)` segment pairs.
@@ -206,10 +222,9 @@ fn point_segment_distance_2d(p: Point2, a: Point2, b: Point2) -> f64 {
     (p - (a + ab * t)).length()
 }
 
-fn loops_touch(a: &[Point3], b: &[Point3], normal: Vec3, tolerance: f64) -> bool {
-    let (a2, b2) = (project_to_2d(a, normal), project_to_2d(b, normal));
-    segments(&a2).any(|(a0, a1)| {
-        segments(&b2).any(|(b0, b1)| {
+fn loops_touch(a: &[Point2], b: &[Point2], tolerance: f64) -> bool {
+    segments(a).any(|(a0, a1)| {
+        segments(b).any(|(b0, b1)| {
             point_segment_distance_2d(a0, b0, b1) <= tolerance
                 || point_segment_distance_2d(a1, b0, b1) <= tolerance
                 || point_segment_distance_2d(b0, a0, a1) <= tolerance
@@ -220,15 +235,13 @@ fn loops_touch(a: &[Point3], b: &[Point3], normal: Vec3, tolerance: f64) -> bool
 
 /// True when any segment of `a` properly crosses any segment of `b`.
 ///
-/// The companion to [`first_point_outside`]. Containment cannot be decided by
+/// Containment cannot be decided by
 /// sampling points alone on a *concave* boundary: a bar laid across the notch
 /// of a 'U' has every corner inside the two arms while its middle is outside
 /// the face. A loop wholly inside another cannot cross it, so "some point
 /// inside and no crossing" is what containment actually means here.
-fn loops_cross(a: &[Point3], b: &[Point3], normal: Vec3) -> bool {
-    let (a2, b2) = (project_to_2d(a, normal), project_to_2d(b, normal));
-    segments(&a2)
-        .any(|(a1, a2)| segments(&b2).any(|(b1, b2)| segments_intersect_2d(a1, a2, b1, b2)))
+fn loops_cross(a: &[Point2], b: &[Point2]) -> bool {
+    segments(a).any(|(a1, a2)| segments(b).any(|(b1, b2)| segments_intersect_2d(a1, a2, b1, b2)))
 }
 
 /// Index of the first segment of `poly` that properly crosses a later,
@@ -240,8 +253,7 @@ fn loops_cross(a: &[Point3], b: &[Point3], normal: Vec3) -> bool {
 /// solid. [`segments_intersect_2d`] tests for a *proper* crossing, so
 /// segments that merely share an endpoint (every adjacent pair) do not
 /// register; adjacent pairs are skipped anyway to make that explicit.
-fn first_self_crossing(poly: &[Point3], normal: Vec3) -> Option<(usize, usize)> {
-    let p = project_to_2d(poly, normal);
+fn first_self_crossing(p: &[Point2]) -> Option<(usize, usize)> {
     let n = p.len();
     for i in 0..n {
         let (a1, a2) = (p[i], p[(i + 1) % n]);
@@ -360,7 +372,12 @@ pub fn validate_hole_wires(
     };
 
     // ── Self-intersection ─────────────────────────────────────────
-    if let Some((i, j)) = first_self_crossing(&outer_poly, normal) {
+    let outer = project_to_2d(&outer_poly, normal);
+    let holes: Vec<_> = new_polys
+        .iter()
+        .map(|p| ProjectedHole::new(p, normal, surf_tol))
+        .collect();
+    if let Some((i, j)) = first_self_crossing(&outer) {
         return Err(WasmError::InvalidInput {
             reason: format!(
                 "the outer wire (wire {}) crosses itself: outline segments {i} and {j} \
@@ -369,8 +386,8 @@ pub fn validate_hole_wires(
             ),
         });
     }
-    for (i, poly) in new_polys.iter().enumerate() {
-        if let Some((a, b)) = first_self_crossing(poly, normal) {
+    for (i, hole) in holes.iter().enumerate() {
+        if let Some((a, b)) = first_self_crossing(&hole.points) {
             return Err(WasmError::InvalidInput {
                 reason: format!(
                     "hole wire {} (wire {}) crosses itself: outline segments {a} and {b} \
@@ -383,8 +400,8 @@ pub fn validate_hole_wires(
     }
 
     // ── Containment in the outer wire ─────────────────────────────
-    for (i, poly) in new_polys.iter().enumerate() {
-        if loops_touch(poly, &outer_poly, normal, surf_tol) {
+    for (i, hole) in holes.iter().enumerate() {
+        if loops_touch(&hole.points, &outer, surf_tol) {
             return Err(WasmError::InvalidInput {
                 reason: format!(
                     "hole wire {} (wire {}) touches the face's outer boundary",
@@ -393,8 +410,12 @@ pub fn validate_hole_wires(
                 ),
             });
         }
-        if let Some(k) = first_point_outside(poly, &outer_poly, normal) {
-            let p = poly[k];
+        if let Some(k) = hole
+            .points
+            .iter()
+            .position(|p| !point_in_polygon(*p, &outer))
+        {
+            let p = new_polys[i][k];
             return Err(WasmError::InvalidInput {
                 reason: format!(
                     "hole wire {} (wire {}) is not contained in the face's outer wire: \
@@ -409,7 +430,7 @@ pub fn validate_hole_wires(
         }
         // Every sampled point being inside is not containment on a concave
         // outer contour — the hole may leave and re-enter between samples.
-        if loops_cross(poly, &outer_poly, normal) {
+        if loops_cross(&hole.points, &outer) {
             return Err(WasmError::InvalidInput {
                 reason: format!(
                     "hole wire {} (wire {}) is not contained in the face's outer wire: \
@@ -427,26 +448,24 @@ pub fn validate_hole_wires(
     // one loop landing inside the other, so one symmetric test covers them.
     let existing_polys = existing_inner
         .iter()
-        .map(|&w| wire_outline(topo, w))
+        .map(|&w| wire_outline(topo, w).map(|p| ProjectedHole::new(&p, normal, surf_tol)))
         .collect::<Result<Vec<_>, _>>()?;
 
-    for (i, poly) in new_polys.iter().enumerate() {
+    for (i, hole) in holes.iter().enumerate() {
+        // Conflicts are symmetric. A conflict with an earlier new wire
+        // would already have returned that earlier wire's diagnostic.
         let others = existing_polys
             .iter()
-            .zip(existing_inner.iter())
-            .map(|(p, w)| (p, *w, true))
+            .zip(existing_inner)
+            .map(|(p, &w)| (p, w, true))
             .chain(
-                new_polys
+                holes[i + 1..]
                     .iter()
-                    .zip(new_holes.iter())
-                    .enumerate()
-                    .filter(|&(j, _)| j != i)
-                    .map(|(_, (p, w))| (p, *w, false)),
+                    .zip(&new_holes[i + 1..])
+                    .map(|(p, &w)| (p, w, false)),
             );
-        for (other_poly, other_wire, other_is_existing) in others {
-            if loops_overlap(poly, other_poly, normal)
-                || loops_touch(poly, other_poly, normal, surf_tol)
-            {
+        for (other, other_wire, other_is_existing) in others {
+            if hole.conflicts_with(other, surf_tol) {
                 let which = if other_is_existing {
                     "an existing inner wire"
                 } else {
@@ -506,6 +525,42 @@ mod tests {
     use remus_topology::wire::WireId;
 
     const TOL: f64 = 1e-7;
+
+    #[test]
+    fn hole_pair_filter_matches_the_sampled_polygons_at_contact_and_across_a_grid() {
+        use super::{ProjectedHole, loops_touch, polygons_overlap_2d};
+
+        // Project onto YZ at a translated origin. Include a nested loop,
+        // coincident edges, gaps on both sides of the touch tolerance, and
+        // separated rows and columns of the same profile.
+        let square = |y: f64, z: f64, side: f64| {
+            let points = [(y, z), (y + side, z), (y + side, z + side), (y, z + side)]
+                .map(|(a, b)| Point3::new(20.0, a, b));
+            ProjectedHole::new(&points, Vec3::new(1.0, 0.0, 0.0), TOL)
+        };
+        let base = square(0.0, 0.0, 1.0);
+        for (other, expected) in [
+            (square(0.25, 0.25, 0.25), true),
+            (square(1.0, 0.0, 1.0), true),
+            (square(1.0 + 0.5 * TOL, 0.0, 1.0), true),
+            (square(1.0 + 1.5 * TOL, 0.0, 1.0), false),
+        ] {
+            assert_eq!(base.conflicts_with(&other, TOL), expected);
+            assert_eq!(other.conflicts_with(&base, TOL), expected);
+        }
+        for row in -5..=5 {
+            for col in -5..=5 {
+                let other = square(f64::from(row) * 3.0, f64::from(col) * 2.0, 1.0);
+                let narrow = polygons_overlap_2d(&base.points, &other.points)
+                    || loops_touch(&base.points, &other.points, TOL);
+                assert_eq!(base.conflicts_with(&other, TOL), narrow);
+                assert_eq!(
+                    base.bounds.unwrap().intersects(other.bounds.unwrap()),
+                    row == 0 && col == 0
+                );
+            }
+        }
+    }
 
     /// Build a closed line-edge wire through `pts`.
     ///
