@@ -45,4 +45,5 @@ both orientations, and widths 1e-1 to 1e-5 over half-angles 0.05 to 1.4 at
 deflections 0.005 and 0.05. Every one has zero inverted triangles against the
 carrier's closed-form normal, a manifold face mesh with one boundary cycle,
 and an area within the lantern bound. Before the fix, widths 1e-3 and narrower
-inverted 4 of 22 triangles at deflection 0.005 at every half-angle swept.
+inverted 4 of 22 triangles at deflection 0.005 at half-angles 0.05, 0.15 and
+0.4 (the half-angles whose pre-fix counts were read).
