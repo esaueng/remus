@@ -1,6 +1,8 @@
 # Remus corpus gauntlet
 
-The gauntlet runs each STEP model in its own bounded subprocess and records
+The gauntlet requires Rust 1.93 for its 7z archive reader.
+
+It runs each STEP model in its own bounded subprocess and records
 five stages: import, validation, centered probe cut, tessellation, and STEP
 round-trip. It reports stable failure-taxonomy codes and keeps exact versus
 approximate boolean outcomes separate.

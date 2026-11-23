@@ -31,7 +31,8 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
 cargo test -p remus-operations --features perf-counters scaling_ -- --nocapture
 cargo test --release -p remus-operations --test perf_64cut_determinism -- --nocapture
-cargo +1.88.0 check --workspace --all-features
+cargo +1.88.0 check --locked --workspace --exclude remus-gauntlet --all-features
+cargo +1.93.0 check --locked -p remus-gauntlet --all-features
 cargo check -p remus-wasm --target wasm32-unknown-unknown
 cargo check -p remus-wasm --target wasm32-unknown-unknown --no-default-features
 cargo test --manifest-path xtask/Cargo.toml

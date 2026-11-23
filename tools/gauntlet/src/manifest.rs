@@ -21,7 +21,7 @@ pub const SAMPLE_ALGORITHM: &str = "sha256-rank-v1";
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_mins(30);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// A corpus manifest whose model bytes remain on their upstream hosts.
