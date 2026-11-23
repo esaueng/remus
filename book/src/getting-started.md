@@ -23,7 +23,8 @@ cargo test --workspace
 cargo build -p remus-wasm --target wasm32-unknown-unknown
 ```
 
-The MSRV is Rust 1.88. Day-to-day development uses the toolchain pinned in
+The kernel and WASM crates support Rust 1.88. The native corpus gauntlet and
+full-workspace builds require Rust 1.93. Development uses the toolchain pinned in
 `rust-toolchain.toml`, which rustup picks up automatically along with the
 `wasm32-unknown-unknown` target.
 

@@ -23,7 +23,7 @@ Outside the fan-in: the `wasm-size` comment job and `public-commit-metadata` in 
 | `clippy` | Clippy | yes (heavy) | `cargo clippy --all-targets --all-features -- -D warnings`; links the examples; `cargo check --manifest-path fuzz/Cargo.toml --bins` |
 | `complexity-guards` | Complexity Guards | yes (heavy) | `perf-counters` `scaling_` tests in remus-operations |
 | `approx-census` | Approximation Census | yes (heavy) | `scripts/check-approx-census.py` |
-| `msrv` | MSRV (1.88) | yes (`full` tier) | `cargo +1.88.0 check --workspace --all-features` |
+| `msrv` | MSRV (1.88.0 and 1.93.0) | yes (`full` tier) | `cargo +1.88.0 check --locked --workspace --exclude remus-gauntlet --all-features` and `cargo +1.93.0 check --locked -p remus-gauntlet --all-features` |
 | `wasm-no-io` | WASM without optional I/O | yes (heavy) | clippy and tests for `remus-wasm --no-default-features` |
 | `wasm` | WASM Build & Validate | yes (`wasm` tier) | `cargo xtask wasm-build --defer-package-tests`, package contents |
 | `wasm-runtime` | WASM runtime (smoke, tarball-consumer; three parts each) | yes (`wasm` tier) | the package suites against the built archive |
@@ -144,7 +144,7 @@ Triage order when an advisory lands on your PR:
 
 ### MSRV job
 
-Workspace `Cargo.toml` declares `rust-version = "1.88"`; the CI job `MSRV (1.88)` runs `cargo check --workspace --all-features` on toolchain 1.88.0. Because resolution is fresh, a dependency releasing a version that needs newer Rust breaks this job on unrelated PRs. The errors are confusing: syntax, edition, or feature errors deep inside the dependency, never the word MSRV. Fix: constrain that dependency in `Cargo.toml` to the last version that builds on 1.88. Do not bump `rust-version` casually; it is a public contract, and raising it is its own PR with its own justification.
+The workspace declares Rust 1.88. The native `remus-gauntlet` package declares Rust 1.93 for its patched 7z reader. CI checks every workspace member at its declared minimum using the committed lockfile and all features. When a dependency update fails an MSRV check, use a patched version compatible with the affected package’s minimum compiler. Changing that minimum is a compatibility decision.
 
 ### wasm-bindgen pin
 
@@ -188,7 +188,7 @@ Bumping wasm-bindgen is its own change with its own PR. Never bump it as a drive
 | No refresh PR opened after a kernel merge | The push missed the path filter, its head commit message carries a skip marker or `skip-checks` trailer (see the row above), a newer push cancelled the run, the rebuilt package matched `main` (the run logs a notice), or `REMUS_BOT_*` is missing (the run fails at "Require publish credentials") | Read the latest "Refresh Apache Staging Package" run |
 | A refresh PR fails the version guard in the queue | An older refresh PR is still open after a newer one merged, and reuses its version | The publisher closes superseded refresh PRs itself (esaueng/remus#1204); one still open predates that, or its source is not an ancestor of the newer build. Close it by hand |
 | `deny` or `audit` fails on a PR that never touched deps | A newly published advisory against a version pinned in the committed `Cargo.lock` (both jobs fetch the advisory DB live) | Follow the triage order in "CI failures you did not cause"; never blanket-ignore |
-| MSRV job fails with syntax or feature errors inside a dependency | The committed `Cargo.lock` now pins a dep version requiring Rust newer than 1.88 — usually after a dependabot lock bump | Constrain that dep in `Cargo.toml` (or downgrade it in the lock); do not bump `rust-version` |
+| MSRV job fails with syntax or feature errors inside a dependency | A dependency in the committed `Cargo.lock` requires a newer compiler than the affected package declares | Constrain that dep in `Cargo.toml` (or downgrade it in the lock); do not bump `rust-version` |
 | `cargo xtask wasm-build` bails with a wasm-bindgen-cli version mismatch | Local CLI differs from the pin; the crate pin and `xtask/src/wasm.rs` constant must match | Install the pinned CLI version; bump the pin only as its own PR |
 | You pushed straight to `main` and it succeeded | Admin pushes bypass protection (`enforce_admins` is false) | Do not rely on the server. Branch and open a PR; if you already pushed, say so immediately |
 

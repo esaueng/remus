@@ -38,7 +38,7 @@ use serde::{Deserialize, Serialize};
 pub const SCHEMA_VERSION: u32 = 1;
 
 /// Default wall-clock budget for one isolated model.
-pub const DEFAULT_MODEL_TIMEOUT: Duration = Duration::from_secs(60);
+pub const DEFAULT_MODEL_TIMEOUT: Duration = Duration::from_mins(1);
 
 /// Default tessellation and round-trip comparison deflection.
 pub const DEFAULT_DEFLECTION: f64 = 0.05;

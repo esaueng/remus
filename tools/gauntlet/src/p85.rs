@@ -2556,7 +2556,7 @@ mod tests {
             1024,
             ImportLimits::default(),
             PipelineConfig::default().deflection,
-            Duration::from_secs(60),
+            Duration::from_mins(1),
         );
         let json = serde_json::to_vec(&bundle).unwrap();
         let decoded: P85ReplayBundle = serde_json::from_slice(&json).unwrap();
