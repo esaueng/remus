@@ -1,7 +1,7 @@
 ---
 row: B283
 ---
-Done (2026-11-23). Cause: the periodic chart splitter splits the tool's torus along its seam
+Done (2026-11-23, [#1974](https://github.com/esaueng/remus/pull/1974)). Cause: the periodic chart splitter splits the tool's torus along its seam
 circle, leaving a two-edge lens bounded by the seam circle and the
 torus × torus section spline. Shell assembly's `merge_duplicate_edges`
 guarded wire-collapsing line × conic and line × NURBS pairs but not
