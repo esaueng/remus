@@ -2633,19 +2633,17 @@ fn a_flush_start_collar_meshes_closed_at_display_deflections() {
     );
 }
 
-/// Ready repro, not fixed here: the cone faces of the two bodies above (the
-/// B276 chamfer cone, the tapered B277 thread's cones) mesh closed but keep a
-/// few inverted slivers: 1 at deflection 0.005 and 44 at the scale-derived
+/// B289: the cone faces of the two bodies above (the B276 chamfer cone, the
+/// tapered B277 thread's cones) meshed closed but kept a few inverted
+/// slivers: 1 at deflection 0.005 and 4 to 44 at the scale-derived
 /// deflection on the chamfer, 3 at 0.3, 0.1 and 0.05 on the taper. Each
-/// joins two
-/// consecutive boundary samples of a cone face to an interior grid point
-/// (`tessellate_nonplanar_cdt`'s base grid) that lies a few 1e-8 inside
-/// their chord in the chart: inside in the chart, but the cone's curvature
-/// puts it beyond the 3D chord, so the triangle turns over. The base grid
-/// keeps points as close as `1e-10` of the chart's size to a boundary chord;
-/// the dense trim rows already keep a clearance of 0.4 of a column.
+/// joined two consecutive boundary samples of a cone face to an interior
+/// grid point (`tessellate_nonplanar_cdt`'s base grid) a few 1e-8 inside
+/// their chord in the chart: inside in the chart, but the cone's `(u, v)`
+/// chart is no development, so the chord's image runs beside the 3D chord
+/// and the point lay past it, turning the triangle over. The CDT now leaves
+/// such candidates out (`tessellate::nonplanar::chord_fold`).
 #[test]
-#[ignore = "open: thread cone faces mesh with inverted slivers next to their boundary (non-planar CDT base-grid clearance)"]
 fn thread_cone_faces_mesh_without_inverted_slivers() {
     let mut unsound = Vec::new();
     {

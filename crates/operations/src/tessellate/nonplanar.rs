@@ -4061,9 +4061,48 @@ pub(super) fn tessellate_nonplanar_cdt(
             .chain(hole_boundaries_3d.iter().flatten())
             .map(|&(point, _, _, _)| point_merge_key(point, MERGE_GRID))
             .collect();
+        // B289: on a cone the `(u, v)` chart is no development, so a chart
+        // chord's image runs beside its 3D chord, and a candidate a hair
+        // inside the chart chord can lie past the 3D one: the triangle the
+        // CDT builds from them turns over. Leave such candidates out (see
+        // `chord_fold`); the other carriers keep their grid unchanged.
+        let fold_guard = match face_data.surface() {
+            FaceSurface::Cone(_) => {
+                let outer_space: Vec<Point3> = boundary_3d.iter().map(|s| s.0).collect();
+                let hole_charts: Vec<Vec<Point2>> = hole_uvs
+                    .iter()
+                    .map(|hole| hole.iter().map(|&(u, v)| to_cdt(u, v)).collect())
+                    .collect();
+                let hole_spaces: Vec<Vec<Point3>> = hole_boundaries_3d
+                    .iter()
+                    .map(|hole| hole.iter().map(|s| s.0).collect())
+                    .collect();
+                Some(chord_fold::ChordFoldGuard::new(
+                    std::iter::once((boundary_pts.as_slice(), outer_space.as_slice())).chain(
+                        hole_charts
+                            .iter()
+                            .zip(&hole_spaces)
+                            .map(|(chart, space)| (chart.as_slice(), space.as_slice())),
+                    ),
+                    |point| interior_point_3d(point).0,
+                ))
+            }
+            // B24: exhaustive over `FaceSurface`.
+            FaceSurface::Plane { .. }
+            | FaceSurface::Nurbs(_)
+            | FaceSurface::Cylinder(_)
+            | FaceSurface::Sphere(_)
+            | FaceSurface::Torus(_) => None,
+        };
         let mut kept_samples = Vec::with_capacity(interior_pts.len());
         interior_pts.retain(|&point| {
             let sample = interior_point_3d(point);
+            if fold_guard
+                .as_ref()
+                .is_some_and(|guard| guard.folds(point, sample.0))
+            {
+                return false;
+            }
             let kept = taken.insert(point_merge_key(sample.0, MERGE_GRID));
             if kept {
                 kept_samples.push(sample);
@@ -5793,6 +5832,7 @@ fn sphere_native_arcs_in_hemisphere(
     Ok(true)
 }
 
+mod chord_fold;
 mod collapsed_boundary;
 mod sheared_chart;
 mod touching_cycles;
