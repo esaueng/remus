@@ -907,10 +907,11 @@ fn carrier_angles(
                 if hull_distances(&across).0 <= tol.linear {
                     return Ok(None);
                 }
-                arcs.extend(across.iter().map(|&(x, y)| {
-                    let a = y.atan2(x);
-                    (a, a)
-                }));
+                let angles: Vec<f64> = across.iter().map(|&(x, y)| y.atan2(x)).collect();
+                let Some(arc) = covering_arc(&angles) else {
+                    return Ok(None);
+                };
+                arcs.push(arc);
             }
             EdgeCurve::NurbsCurve(_)
             | EdgeCurve::Ellipse(_)
@@ -1040,7 +1041,7 @@ fn sphere_patch_ball(
     if !(0.0..1.0).contains(&cosine) {
         return Ok(whole);
     }
-    if !lies_on_the_cap_side(topo, face, center - m * radius, radius, cosine)? {
+    if !lies_on_the_cap_side(topo, face, center - m * radius)? {
         return Ok(whole);
     }
     let sine = cosine.mul_add(-cosine, 1.0).max(0.0).sqrt();
@@ -1050,34 +1051,17 @@ fn sphere_patch_ball(
     ))
 }
 
-/// Whether a sphere face whose boundary lies in the cap `u · m ≥ cosine`
-/// (`cosine` in `[0, 1)`) is the side of its boundary inside that cap,
-/// not the side holding the rest of the sphere.
-///
-/// The exact trim reader decides it by putting the cap's antipode outside
-/// the face. When it cannot (it needs a planar neighbour to read the
-/// winding), a face with one loop is decided by its area: the side holding
-/// the cap's complement has at least the complement's area, `2πρ²(1 +
-/// cosine)`, at least half the sphere, and a measured area below half of
-/// that cannot be it; the factor of two is far beyond any quadrature error.
+/// Whether a sphere face whose boundary lies in a cap is the side of its
+/// boundary inside that cap, not the side holding the rest of the sphere:
+/// decided exactly by the trim reader putting the cap's `antipode` outside
+/// the face. Undecided faces (the reader needs a planar neighbour to read
+/// the loop's winding) are not on the cap side.
 fn lies_on_the_cap_side(
     topo: &Topology,
     face: FaceId,
     antipode: Point3,
-    radius: f64,
-    cosine: f64,
 ) -> Result<bool, crate::OperationsError> {
-    if let Some(inside) = remus_check::classify::sphere_arc_trim_contains(topo, face, antipode)? {
-        return Ok(!inside);
-    }
-    if !topo.face(face)?.inner_wires().is_empty() {
-        return Ok(false);
-    }
-    let complement = TAU * radius * radius * (1.0 + cosine);
-    let Ok(area) = crate::measure::face_area(topo, face, radius * 1e-3) else {
-        return Ok(false);
-    };
-    Ok(area.is_finite() && area >= 0.0 && area < 0.5 * complement)
+    Ok(remus_check::classify::sphere_arc_trim_contains(topo, face, antipode)? == Some(false))
 }
 
 /// The radii of a cone of the given `tan` (of its angle from the radial
@@ -1231,9 +1215,15 @@ fn torus_minor_angles(
     Ok(circular_union(&arcs).map(|(a, b)| (a - ANGLE_SLACK, b + ANGLE_SLACK)))
 }
 
-/// The smallest arc covering every arc of `arcs`, when their union is one
-/// arc short of a turn (the complement of its largest gap); `None` when
-/// they cover the circle or there are none.
+/// The one arc that `arcs` cover together, when their union is a single arc
+/// short of a turn (merged on the circle, across the seam too). `None` when
+/// they leave more than one piece (which side of a gap a face takes is not
+/// decided by its boundary alone), cover the circle, or are none.
+///
+/// A face that does not wrap its carrier is bounded in angle by its outer
+/// loop, whose angles lifted continuously form one interval; when every
+/// boundary edge's angles merge into one arc short of a turn, that arc holds
+/// the projection of that interval, and so the face.
 fn circular_union(arcs: &[(f64, f64)]) -> Option<(f64, f64)> {
     let mut pieces: Vec<(f64, f64)> = arcs
         .iter()
@@ -1242,12 +1232,10 @@ fn circular_union(arcs: &[(f64, f64)]) -> Option<(f64, f64)> {
             (start, start + (b - a))
         })
         .collect();
-    if pieces.is_empty() || pieces.iter().any(|&(a, b)| b - a >= TAU) {
+    if pieces.is_empty() || pieces.iter().any(|&(a, b)| !(b - a < TAU)) {
         return None;
     }
     pieces.compact_sort_by(|x, y| x.0.total_cmp(&y.0));
-    // Merge on the unrolled line, then find the largest uncovered gap
-    // around the circle.
     let mut merged: Vec<(f64, f64)> = Vec::new();
     for (a, b) in pieces {
         match merged.last_mut() {
@@ -1255,34 +1243,43 @@ fn circular_union(arcs: &[(f64, f64)]) -> Option<(f64, f64)> {
             _ => merged.push((a, b)),
         }
     }
-    let count = merged.len();
-    let mut best: Option<(f64, usize)> = None;
-    for i in 0..count {
-        let next = if i + 1 < count {
-            merged[i + 1].0
+    // A last piece reaching past a turn joins the first across the seam.
+    while merged.len() > 1 {
+        let first = merged[0];
+        let last = merged.len() - 1;
+        if merged[last].1 >= first.0 + TAU {
+            merged[last].1 = merged[last].1.max(first.1 + TAU);
+            merged.remove(0);
         } else {
-            merged[0].0 + TAU
-        };
-        let gap = next - merged[i].1;
-        if best.is_none_or(|(g, _)| gap > g) {
-            best = Some((gap, i));
+            break;
         }
     }
-    let (gap, i) = best?;
-    if gap <= 0.0 {
+    match merged.as_slice() {
+        [(a, b)] if b - a < TAU => Some((*a, *b)),
+        _ => None,
+    }
+}
+
+/// The smallest arc holding every angle of `angles`, all of which lie within
+/// less than a half turn of each other (the complement of the largest gap
+/// between them). `None` when there are none or they spread wider.
+fn covering_arc(angles: &[f64]) -> Option<(f64, f64)> {
+    let mut sorted: Vec<f64> = angles.iter().map(|a| a.rem_euclid(TAU)).collect();
+    if sorted.is_empty() || sorted.iter().any(|a| !a.is_finite()) {
         return None;
     }
-    // The covering arc runs from the piece after the gap round to piece `i`.
-    let start = if i + 1 < count {
-        merged[i + 1].0
-    } else {
-        merged[0].0
-    };
-    let mut end = merged[i].1;
-    if end < start {
-        end += TAU * ((start - end) / TAU).ceil();
+    sorted.compact_sort_by(f64::total_cmp);
+    let count = sorted.len();
+    let (mut gap, mut after) = (sorted[0] + TAU - sorted[count - 1], 0);
+    for i in 1..count {
+        let candidate = sorted[i] - sorted[i - 1];
+        if candidate > gap {
+            (gap, after) = (candidate, i);
+        }
     }
-    Some((start, end))
+    let start = sorted[after];
+    let span = TAU - gap;
+    (span < PI).then_some((start, start + span))
 }
 
 /// `range` intersected with `other`, when that is readable and not empty.
@@ -1577,14 +1574,25 @@ mod tests {
     }
 
     #[test]
-    fn circular_union_spans_the_largest_gap() {
+    fn circular_union_takes_one_piece_only() {
         let (a, b) =
             circular_union(&[(0.0, 0.0), (0.0, FRAC_PI_2), (FRAC_PI_2, FRAC_PI_2)]).unwrap();
         assert!(a.abs() < 1e-15 && (b - FRAC_PI_2).abs() < 1e-15);
         // An arc across the wrap.
         let (a, b) = circular_union(&[(-0.5, 0.5)]).unwrap();
         assert!((b - a - 1.0).abs() < 1e-12);
-        assert!(a.rem_euclid(TAU) > PI);
+        // Pieces meeting across the seam join.
+        let (a, b) = circular_union(&[(-FRAC_PI_2, 0.0), (0.0, PI), (-0.2, 0.0)]).unwrap();
+        assert!((b - a - 1.5 * PI).abs() < 1e-12);
+        // Two rims alone do not say which band lies between them.
+        assert!(circular_union(&[(-0.5, -0.5), (0.5, 0.5)]).is_none());
         assert!(circular_union(&[(0.0, TAU)]).is_none());
+    }
+
+    #[test]
+    fn covering_arc_spans_close_angles_only() {
+        let (a, b) = super::covering_arc(&[3.0, -3.0, PI]).unwrap();
+        assert!((b - a - (TAU - 6.0)).abs() < 1e-12);
+        assert!(super::covering_arc(&[0.0, 2.0, 4.0]).is_none());
     }
 }

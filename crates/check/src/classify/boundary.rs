@@ -2993,10 +2993,11 @@ fn count_quadric_crossings(
 
 /// Whether `point`, on the sphere carrying `face_id`, lies in the face.
 ///
-/// Decided exactly by the face's circle-arc trim ([`sphere_arcs`]): every
-/// edge a circle on the sphere, every crossing closed-form. `Ok(None)` when
-/// the face is not such a sphere face or no walk decides the point; never a
-/// sampled answer.
+/// Decided exactly by the face's circle-arc trim: every edge a circle on the
+/// sphere, every crossing closed-form, the trim's winding read off a planar
+/// face sharing an edge. `Ok(None)` when
+/// the face is not such a sphere face, no winding is readable or no walk
+/// decides the point; never a sampled answer.
 ///
 /// # Errors
 ///
