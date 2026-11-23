@@ -2991,6 +2991,28 @@ fn count_quadric_crossings(
     count(&transversal)
 }
 
+/// Whether `point`, on the sphere carrying `face_id`, lies in the face.
+///
+/// Decided exactly by the face's circle-arc trim ([`sphere_arcs`]): every
+/// edge a circle on the sphere, every crossing closed-form. `Ok(None)` when
+/// the face is not such a sphere face or no walk decides the point; never a
+/// sampled answer.
+///
+/// # Errors
+///
+/// Returns an error if a boundary entity or curve domain is invalid.
+pub fn sphere_arc_trim_contains(
+    topo: &Topology,
+    face_id: FaceId,
+    point: Point3,
+) -> Result<Option<bool>, CheckError> {
+    let FaceSurface::Sphere(sphere) = topo.face(face_id)?.surface() else {
+        return Ok(None);
+    };
+    Ok(sphere_arcs::SphereArcTrim::build(topo, face_id, sphere)?
+        .and_then(|trim| trim.contains(point)))
+}
+
 /// Test whether a point on a face's support surface lies within its trims.
 ///
 /// The caller must first project onto the support surface. Uses the same

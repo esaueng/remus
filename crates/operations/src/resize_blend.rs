@@ -2825,14 +2825,6 @@ pub(crate) fn analyze_translation(
         solid,
         moved_faces.difference(&swept_faces).copied().collect(),
         &excluded_candidates,
-        // A moving blend and a fixed rim on one cylindrical support are
-        // bounded by their exact axial travel limit instead.
-        &|moving, fixed| {
-            axial
-                .limits
-                .iter()
-                .any(|limit| limit.moving() == moving && limit.fixed() == fixed)
-        },
     )?;
     let entities = translated_entities(topo, solid, &adjacency, moved_faces, direction)?;
     let mesh_clearances = match &entities {
@@ -2997,10 +2989,12 @@ fn execute_translation(
     analysis: &TranslationAnalysis,
     distance: f64,
 ) -> Result<BlendMoveEntities, OperationsError> {
-    analysis.swept.check_rigid_translation(topo, distance)?;
+    // The exact axial limits first: where a moving blend reaches a fixed rim
+    // on their shared support, that is the refusal to report.
     for clearance in &analysis.axial_clearance {
         clearance.check(distance)?;
     }
+    analysis.swept.check_rigid_translation(topo, distance)?;
     let entities = analysis
         .entities
         .as_ref()

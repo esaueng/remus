@@ -826,16 +826,13 @@ impl SweptRegionCheck {
     /// Records the faces that translate rigidly with the swept ones, for
     /// [`Self::check_rigid_translation`], with every face of `solid` each may
     /// reach: all but the swept faces, the companions, the `excluded` faces
-    /// (which stretch with the move), its own neighbours, and the fixed faces
-    /// `bounded` pairs with it (a fixed rim on a shared support whose exact
-    /// axial travel limit the caller enforces).
+    /// (which stretch with the move) and its own neighbours.
     pub(crate) fn with_rigid_companions(
         mut self,
         topo: &Topology,
         solid: SolidId,
         mut faces: Vec<FaceId>,
         excluded: &std::collections::HashSet<FaceId>,
-        bounded: &dyn Fn(FaceId, FaceId) -> bool,
     ) -> Result<Self, crate::OperationsError> {
         faces.compact_sort_by_key(|face| face.index());
         faces.dedup();
@@ -858,7 +855,7 @@ impl SweptRegionCheck {
                     face,
                     &source_faces,
                     &|candidate| moving.contains(&candidate) || excluded.contains(&candidate),
-                    &|candidate| neighbours.contains(&candidate) || bounded(face, candidate),
+                    &|candidate| neighbours.contains(&candidate),
                     normal,
                 )
             })

@@ -767,7 +767,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Journal ingestion for modeling operations | `journal_ops.rs` |
 | Direct push/pull face editing | `push_pull.rs` |
 | Conservative radial separation proofs for periodic face sweeps | `push_pull/radial_clearance.rs` |
-| Clearance of faces carried rigidly by a swept selection (a cap's chamfer): companions on a surface of revolution about the move checked against every face they may reach, by box or by swept radii over the candidate's heights | `push_pull/companion_sweep.rs` |
+| Clearance of faces carried rigidly by a swept selection (a cap's chamfer): cone, cylinder and torus companions about the move checked against every face they may reach, by certified boxes or by (radius, height) profiles bisected over the candidate's heights; cones and cylinders across the axis read over their own angles, sphere patches inside a ball about their cap | `push_pull/companion_sweep.rs` |
 | A cap's 45° chamfer carried into a coaxial collar or a tab below the cap's swept box refuses; clear controls return the oracle fuse (tests, #1949) | `tests/regress_issue_1949_carried_chamfer_clearance.rs` |
 | Coaxial resize of a full-turn cylindrical wall whose rims meet a sphere off-axis (re-intersected rims, sliding rim vertices) | `push_pull/sphere_rim_resize.rs` |
 | Face moves with explicit permission and quality disclosure for sampled cap reconstruction | `face_move_quality.rs` |
