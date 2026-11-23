@@ -26,6 +26,7 @@ pub mod linked_sketch;
 pub mod maximum_distance;
 pub mod measure;
 pub mod modifier_detailed;
+pub mod move_faces_multi;
 pub mod naming;
 pub mod nurbs;
 pub mod nurbs_reuse;

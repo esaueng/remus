@@ -50,6 +50,7 @@ use remus_operations::OperationsError;
 use remus_operations::blend_ops::BlendResult;
 use remus_topology::edge::EdgeId;
 
+use super::move_faces_multi::MoveInput;
 use super::operations::{parse_variable_fillet_specs, variable_fillet_corners};
 use crate::error::{
     StructuredWasmError, WasmError, validate_finite, validate_positive, validate_work_count,
@@ -153,6 +154,27 @@ impl RemusKernel {
     ) -> Result<tsify::Ts<SolidOperationDetailedResult>, JsError> {
         Ok(self
             .move_faces_detailed_impl(solid, &faces, distance)
+            .into_ts()?)
+    }
+
+    /// Move several planar faces together, each along its own outward
+    /// normal, and return an exact result or a typed refusal.
+    ///
+    /// Additive twin of [`moveFacesMulti`](Self::move_faces_multi_binding).
+    /// `details` carries `quality: "exact"`, the `distances` and the total
+    /// `faceEvolution`. A refusal (`topology_change` naming the face that
+    /// collapses or folds) returns no solid and leaves the topology as it
+    /// was.
+    #[wasm_bindgen(js_name = "moveFacesMultiDetailed")]
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn move_faces_multi_detailed(
+        &mut self,
+        solid: u32,
+        faces: Vec<u32>,
+        distances: Vec<f64>,
+    ) -> Result<tsify::Ts<SolidOperationDetailedResult>, JsError> {
+        Ok(self
+            .move_faces_multi_detailed_impl(solid, &faces, &distances)
             .into_ts()?)
     }
 
@@ -417,6 +439,33 @@ impl RemusKernel {
 
 /// Natively-testable bodies shared by the direct twins and the batch ops.
 impl RemusKernel {
+    pub(crate) fn move_faces_multi_detailed_impl(
+        &mut self,
+        solid: u32,
+        faces: &[u32],
+        distances: &[f64],
+    ) -> SolidOperationDetailedResult {
+        self.run_modifier_detailed("moveFacesMulti", "Move faces", |kernel| {
+            let (solid_id, face_ids) = kernel.resolve_multi_move(solid, faces, distances)?;
+            let input = MoveInput::capture(kernel.topo(), solid_id)?;
+            let result = remus_operations::multi_move::move_faces_multi_with_evolution(
+                kernel.topo_mut(),
+                solid_id,
+                &face_ids,
+                distances,
+            )
+            .map_err(|error| input.refusal(error))?;
+            let mut details = Map::new();
+            details.insert("quality".into(), Value::from("exact"));
+            details.insert("distances".into(), Value::from(distances.to_vec()));
+            details.insert(
+                "faceEvolution".into(),
+                face_move_evolution_json(&result.evolution),
+            );
+            Ok((solid_id_to_u32(result.solid), details))
+        })
+    }
+
     pub(crate) fn move_faces_detailed_impl(
         &mut self,
         solid: u32,
@@ -447,13 +496,15 @@ impl RemusKernel {
                 solid_id,
                 &face_ids,
             )?;
+            let input = MoveInput::capture(kernel.topo(), solid_id)?;
             let result = remus_operations::face_move_quality::move_faces_with_quality(
                 kernel.topo_mut(),
                 solid_id,
                 &face_ids,
                 distance,
                 permission,
-            )?;
+            )
+            .map_err(|error| input.refusal(error))?;
             let mut details = face_move_quality_json(result.quality)
                 .as_object()
                 .cloned()
