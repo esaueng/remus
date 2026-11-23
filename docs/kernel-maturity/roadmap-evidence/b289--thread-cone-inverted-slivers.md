@@ -28,3 +28,21 @@ Guard oracles (`chord_fold::tests`): against the closed-form chart normal
 chords per rim, every turned-over candidate is rejected and every one clear of
 the lens by twice the sagitta is kept; the verdict does not depend on wire
 direction; degenerate and non-finite chords are left out.
+
+**Review fix (2026-11-23):** a fixed band of a quarter of a chord's chart
+length could be scaled out of range. The CDT chart scales `v` by `du / dv`, so
+on a narrow band (half-angle 0.15, longitude `0..0.5`, slant `1..1.0001`,
+deflection 0.005) a candidate twice a far-rim chord's chart length from it
+still lay inside the chord's lens, was never tested, and 4 of 22 triangles
+turned over on either nappe and either orientation. Each chord's band is now
+the larger of that quarter and four times its chart lens: the chord's image's
+largest distance from its 3D chord (read at its quarter points) divided by the
+chart's stretch across the chord (`|J n̂|`). The band measures the folding zone
+in the CDT's own coordinates, so no chart scaling can put it out of reach. Only
+interior points are still dropped. Regressions
+(`tessellate::tests::cone_chord_fold`): the reviewed band on both nappes and
+both orientations, and widths 1e-1 to 1e-5 over half-angles 0.05 to 1.4 at
+deflections 0.005 and 0.05. Every one has zero inverted triangles against the
+carrier's closed-form normal, a manifold face mesh with one boundary cycle,
+and an area within the lantern bound. Before the fix, widths 1e-3 and narrower
+inverted 4 of 22 triangles at deflection 0.005 at every half-angle swept.

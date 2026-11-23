@@ -12,7 +12,11 @@
 //!
 //! [`ChordFoldGuard`] reads each boundary chord once, with a reference
 //! normal: the chart's orientation at the chord's middle (the surface's
-//! chart Jacobian applied to the chord's direction and its left normal). An
+//! chart Jacobian applied to the chord's direction and its left normal), and
+//! a band beside it as wide in the chart as the chord's image can bulge off
+//! its 3D chord, measured on the surface and divided by the chart's stretch
+//! across the chord, so a chart scaled unevenly (as the CDT scales a narrow
+//! band's `v`) cannot put a folding candidate out of the band's reach. An
 //! interior candidate in
 //! the band beside a chord folds when the 3D triangle it makes with that chord
 //! is not within 60 degrees of the reference (negated for a candidate on the
@@ -23,11 +27,21 @@
 
 use remus_math::vec::{Point2, Point3, Vec3};
 
-/// How far beside a chord, as a fraction of the chord's chart length, a
-/// candidate is tested against it. The lens a chart chord's image leaves
-/// beside its 3D chord is far thinner than this (second order in the chord's
-/// length); the band only bounds the work.
+/// How far beside a chord, at least, as a fraction of the chord's chart
+/// length, a candidate is tested against it. On a chart whose axes are
+/// scaled alike the lens a chart chord's image leaves beside its 3D chord is
+/// far thinner than this (second order in the chord's length).
 const BAND: f64 = 0.25;
+
+/// How far beside a chord, in multiples of the chart distance across which
+/// the chord's image bulges off its 3D chord, a candidate is tested against
+/// it. A candidate folds only inside that lens (past the 3D chord), or
+/// within `1 + 1/√3` of it (its triangle steeper than 60 degrees); the
+/// margin covers the curvature of the chart across the chord. This reach
+/// is what a chart stretched across the chord (a narrow band whose `v` the
+/// CDT scales by `du / dv`) cannot scale out of range: B289's review band
+/// put a folding candidate twice the chord's own chart length from it.
+const LENS_REACH: f64 = 4.0;
 
 /// A candidate folds when the cosine between its triangle's 3D normal and the
 /// chord's reference normal is at most this: the triangle is turned over, or
@@ -44,6 +58,9 @@ struct Chord {
     /// Chart vector from `start` to the chord's other end.
     edge: (f64, f64),
     length_squared: f64,
+    /// Largest `|edge × rel|` of a candidate tested: the band's half-width
+    /// times the chord's chart length.
+    side_limit: f64,
     p0: Point3,
     p1: Point3,
     /// Unit 3D chart orientation normal at the chord's middle, for a
@@ -63,7 +80,7 @@ pub(super) struct ChordFoldGuard {
 impl ChordFoldGuard {
     /// Read the closed `wires` (chart points and the 3D samples they chart,
     /// index for index). `surface_point` evaluates the surface at a chart
-    /// point; it is called four times per chord. A chord whose reference cannot be
+    /// point; it is called seven times per chord. A chord whose reference cannot be
     /// read (degenerate, non-finite) is left out: it constrains nothing.
     pub(super) fn new<'a>(
         wires: impl IntoIterator<Item = (&'a [Point2], &'a [Point3])>,
@@ -160,7 +177,28 @@ impl Chord {
             return None;
         }
         let reference = reference * (1.0 / norm);
-        let pad = BAND * length;
+        // The chord's bulge: how far its chart segment's image strays from
+        // the 3D chord, read at its quarter points (against the matching
+        // points of the 3D chord, which can only overstate it), and the
+        // chart distance across the chord that moves a point that far:
+        // `|J n̂|`, the chart's stretch across the chord, from `across`.
+        let bulge = [0.25, 0.5, 0.75]
+            .into_iter()
+            .map(|t: f64| {
+                let chart = Point2::new(t.mul_add(edge.0, a.x()), t.mul_add(edge.1, a.y()));
+                let chord = p0 + (p1 - p0) * t;
+                (surface_point(chart) - chord).length()
+            })
+            .fold(0.0, f64::max);
+        let stretch = across.length() / (2.0 * step * length);
+        let reach = LENS_REACH * bulge / stretch;
+        let pad = if reach.is_finite() {
+            (BAND * length).max(reach)
+        } else {
+            // A chart that does not stretch across the chord at all has no
+            // orientation either (`reference` is degenerate): unreachable.
+            return None;
+        };
         let lower = [a.x().min(b.x()) - pad, a.y().min(b.y()) - pad];
         let upper = [a.x().max(b.x()) + pad, a.y().max(b.y()) + pad];
         lower
@@ -171,6 +209,7 @@ impl Chord {
                 start: a,
                 edge,
                 length_squared,
+                side_limit: pad * length,
                 p0,
                 p1,
                 reference,
@@ -188,7 +227,7 @@ impl Chord {
             return false;
         }
         let side = self.edge.0.mul_add(rel.1, -(self.edge.1 * rel.0));
-        if side.abs() > BAND * self.length_squared {
+        if side.abs() > self.side_limit {
             return false;
         }
         let normal = (self.p1 - self.p0).cross(point - self.p0);
