@@ -527,18 +527,42 @@ fn f6_after_f1_removed() -> f64 {
     spandrel(r) * (74.0 - 2.0 * big_r + sides + 2.0 * FRAC_PI_2 * (big_r - centroid))
 }
 
+/// B267: the bands around the F1 arcs used to be lofted NURBS walls; they
+/// are exact tori rolling the r 1 ball about each F1 corner axis.
 #[test]
-#[ignore = "open: F6 across the F1 tangent seams builds, but its bands around the F1 arcs are lofted NURBS, not exact tori"]
 fn sequence_f6_after_f1_f2_f5() {
     let mut m = Model::new();
     let body = f1_f2_f5(&mut m);
-    fillet(
+    let tori = |m: &Model, s: SolidId| {
+        solid_faces(m.topology(), s)
+            .unwrap()
+            .into_iter()
+            .filter_map(|f| match m.topology().face(f).unwrap().surface() {
+                FaceSurface::Torus(t) => Some((t.major_radius(), t.minor_radius())),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let before = tori(&m, body);
+    let filleted = fillet(
         &mut m,
         body,
         Pass::F6,
         3,
         f6_after_f1_removed(),
         CURVED_VOLUME_TOL,
+    );
+    let after = tori(&m, filleted);
+    let (r, big_r) = (Pass::F6.radius(), Pass::F1.radius());
+    let banded = |set: &[(f64, f64)]| {
+        set.iter()
+            .filter(|(major, minor)| (major - (big_r - r)).abs() < 1e-9 && (minor - r).abs() < 1e-9)
+            .count()
+    };
+    assert_eq!(
+        banded(&after) - banded(&before),
+        2,
+        "one exact torus band per F1 arc: {after:?}"
     );
 }
 

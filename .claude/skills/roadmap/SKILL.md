@@ -158,15 +158,15 @@ attributes in 31 files, all in `algo`, `operations`, `io`, `heal`, `math`,
 hand) splits by the ignore reason as written. Listed, not re-run.
 Since the 2026-11-14 count the witnesses of B264, B265, B266, B269, B270,
 B274, B275 and B276 to B278 run un-ignored; two new ready repros have owner
-rows B288 and B289.
-**22 open engine witnesses**, each with an owner row:
+rows B288 and B289. Since then B267's two witnesses (the G1 chain round the
+corner arcs and bracket F6) run un-ignored.
+**20 open engine witnesses**, each with an owner row:
 - four B26 property ready-repros in `operations/tests/prop_boolean_invariants.rs`:
   finding 13 sphere–torus ×3 (B38) and finding 20 sphere–cone (B33);
 - `qualify_boolean_anisotropic.rs` (P-Class 2.6);
 - `regress_opseq_sphere_box_cut.rs` ×2 (F13 equator coedge sense, P-Class 8.1);
 - `regress_opseq_sphere_torus_orientation.rs` seed 1146 at 1e-3 (B38);
-- `regress_g1_chain_corner_wall_dig.rs` and `remus/tests/bracket_campaign.rs`
-  F6 (B267); `bracket_campaign.rs` every-edge r2 (B268);
+- `remus/tests/bracket_campaign.rs` every-edge r2 (B268);
 - `regress_shelled_wall_rim_notch.rs` seam beside the sections' vertex (`solid_volume` route) and
   `algo/src/builder/face_splitter/left_out_tests.rs` long-edge slack (B265
   residuals, named in its evidence);
