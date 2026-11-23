@@ -15,14 +15,13 @@
 //!
 //! A selection that is one coplanar group moved by one distance (or a
 //! single face) is the ordinary face move: it runs
-//! [`crate::push_pull::move_faces_with_entity_evolution`] unchanged, blend
+//! `push_pull::move_faces_with_entity_evolution` unchanged, blend
 //! handling included, so its results are byte-identical to `move_faces`.
 //!
 //! Distances: either one signed distance for every face, or one per face in
 //! selection order. Positive moves a face outward (adds material).
 
-use std::collections::HashSet;
-
+use remus_math::det_hash::DetHashSet;
 use remus_topology::Topology;
 use remus_topology::explorer::solid_faces;
 use remus_topology::face::FaceId;
@@ -146,7 +145,7 @@ impl MultiChecks {
         faces: &[FaceId],
     ) -> Result<Option<Self>, OperationsError> {
         let source_faces = solid_faces(topo, solid)?;
-        let selected: HashSet<FaceId> = faces.iter().copied().collect();
+        let selected: DetHashSet<FaceId> = faces.iter().copied().collect();
         if selected.len() != faces.len() || !faces.iter().all(|face| source_faces.contains(face)) {
             return Ok(None);
         }
@@ -162,8 +161,10 @@ impl MultiChecks {
             swept.push(SweptRegionCheck::prepare(
                 topo,
                 solid,
-                &HashSet::from([face]),
-                &others,
+                // `SweptRegionCheck` takes std sets (`push_pull.rs` is on the
+                // det-hash grandfather list) and only looks faces up in them.
+                &std::iter::once(face).collect(),
+                &others.iter().copied().collect(),
                 normal,
             )?);
         }

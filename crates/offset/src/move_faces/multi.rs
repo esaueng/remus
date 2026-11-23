@@ -21,9 +21,10 @@
 //! coplanar move itself, so its results stay bit-identical to
 //! [`super::move_faces_with_entity_map`].
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::BTreeMap;
 
 use remus_math::compact_sort::CompactSort;
+use remus_math::det_hash::{DetHashMap, DetHashSet};
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
 use remus_topology::edge::{EdgeCurve, EdgeId};
@@ -201,8 +202,8 @@ fn move_faces_multi_impl(
     // Selection checks run before the coplanar shortcut so that the
     // shortcut never changes which refusal a bad selection gets.
     let source_faces = solid_faces(topo, solid)?;
-    let source_face_set: HashSet<_> = source_faces.iter().map(|face| face.index()).collect();
-    let mut selected = HashSet::with_capacity(faces.len());
+    let source_face_set: DetHashSet<_> = source_faces.iter().map(|face| face.index()).collect();
+    let mut selected = DetHashSet::default();
     for &face in faces {
         if !source_face_set.contains(&face.index()) {
             return Err(OffsetError::FaceNotInSolid { face, solid });
@@ -220,8 +221,8 @@ fn move_faces_multi_impl(
         return move_faces_impl(topo, solid, faces, distance);
     }
 
-    let mut signed = HashMap::with_capacity(faces.len());
-    let mut shifts = HashMap::with_capacity(faces.len());
+    let mut signed = DetHashMap::default();
+    let mut shifts = DetHashMap::default();
     let mut leading = 0.0_f64;
     for (index, &face) in faces.iter().enumerate() {
         let distance = distance_of(index);
@@ -236,9 +237,12 @@ fn move_faces_multi_impl(
         topo,
         solid,
         &source_faces,
-        &selected,
-        &signed,
-        &MoveShifts::per_face(shifts),
+        // The rebuild shared with the coplanar move takes std sets and maps
+        // (`move_faces.rs` is on the det-hash grandfather list); it only
+        // looks entries up, so the hasher does not reach the result.
+        &selected.iter().copied().collect(),
+        &signed.into_iter().collect(),
+        &MoveShifts::per_face(shifts.into_iter().collect()),
         leading,
     )
 }
@@ -359,7 +363,7 @@ pub(super) fn named_face(
 pub(super) fn validate_edge_directions<V: std::ops::Deref<Target = [FaceId]>>(
     topo: &Topology,
     source_edge_faces: &BTreeMap<usize, V>,
-    selected: &HashSet<usize>,
+    is_selected: impl Fn(usize) -> bool,
     maps: &BoundaryMaps,
 ) -> Result<(), OffsetError> {
     for (&index, faces) in source_edge_faces {
@@ -379,7 +383,7 @@ pub(super) fn validate_edge_directions<V: std::ops::Deref<Target = [FaceId]>>(
         if before.dot(after) <= 0.0 {
             let face = faces
                 .iter()
-                .find(|face| selected.contains(&face.index()))
+                .find(|face| is_selected(face.index()))
                 .or_else(|| faces.first())
                 .copied();
             return Err(OffsetError::TopologyChange {

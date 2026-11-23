@@ -420,7 +420,12 @@ fn rebuild_planar_moves(
     )?;
     validate_rebuilt_wires(topo, &source_wire_shapes, &data)?;
     if shifts.is_per_face() {
-        multi::validate_edge_directions(topo, &source_edge_faces, selected, &boundary_maps)?;
+        multi::validate_edge_directions(
+            topo,
+            &source_edge_faces,
+            |face| selected.contains(&face),
+            &boundary_maps,
+        )?;
     }
 
     let result = crate::assemble::assemble_solid_with_face_map(topo, &data)?;
