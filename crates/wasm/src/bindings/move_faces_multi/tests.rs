@@ -253,3 +253,89 @@ fn a_prepared_multi_drag_matches_the_unprepared_call() {
         "weights must be one per face"
     );
 }
+
+/// The `topology_change` refusal reaches JS typed: all four walls of the
+/// 20 × 10 pocket moved inward 6 mm fold the y walls past each other. The
+/// detailed twin, the v2 batch (plain and detailed op) and the journaled
+/// call all carry `kernelCode`/code `topology_change`, category
+/// `unsupported`, and the named face and edge as handles of the input.
+#[test]
+fn a_topology_change_refusal_carries_its_face_and_edge() {
+    let mut kernel = RemusKernel::new();
+    let (source, walls) = pocket(&mut kernel);
+    let source_id = kernel.resolve_solid(source).unwrap();
+    let edges: Vec<u32> = remus_topology::explorer::solid_edges(kernel.topo(), source_id)
+        .unwrap()
+        .into_iter()
+        .map(crate::handles::edge_id_to_u32)
+        .collect();
+    let before = kernel.serialize_solids(&[source]).unwrap();
+    let check = |details: &serde_json::Value, context: &str| {
+        let face = u32::try_from(details["face"].as_u64().expect(context)).unwrap();
+        assert!(walls.contains(&face), "{context}: {details}");
+        let edge = u32::try_from(details["edge"].as_u64().expect(context)).unwrap();
+        assert!(edges.contains(&edge), "{context}: {details}");
+    };
+
+    let value = serde_json::to_value(kernel.move_faces_multi_detailed_impl(source, &walls, &[6.0]))
+        .unwrap();
+    assert_eq!(value["status"], "error", "{value}");
+    assert_eq!(value["code"], "topology_change", "{value}");
+    assert_eq!(value["category"], "unsupported", "{value}");
+    check(&value["details"], "detailed");
+    assert_eq!(kernel.serialize_solids(&[source]).unwrap(), before);
+
+    let journaled = kernel
+        .move_faces_multi_journaled_json(source, &walls, &[6.0])
+        .unwrap_err();
+    assert_eq!(journaled.kernel_code(), Some("topology_change"));
+    let (_, _, details) = journaled.into_direct_parts();
+    check(&serde_json::Value::Object(details), "journaled");
+
+    let results: Vec<serde_json::Value> = serde_json::from_str(
+        &kernel.execute_batch_v2(
+            &serde_json::json!([
+                {"op": "moveFacesMulti", "args": {"solid": source, "faces": walls, "distances": [6.0]}},
+            ])
+            .to_string(),
+        ),
+    )
+    .unwrap();
+    let error = &results[0]["error"];
+    assert_eq!(
+        error["details"]["kernelCode"], "topology_change",
+        "{results:?}"
+    );
+    assert_eq!(error["category"], "unsupported", "{results:?}");
+    check(&error["details"], "batch v2");
+
+    let results: Vec<serde_json::Value> = serde_json::from_str(
+        &kernel.execute_batch_v2(
+            &serde_json::json!([
+                {"op": "moveFacesMultiDetailed", "args": {"solid": source, "faces": walls, "distances": [6.0]}},
+            ])
+            .to_string(),
+        ),
+    )
+    .unwrap();
+    let detailed = &results[0]["ok"];
+    assert_eq!(detailed["code"], "topology_change", "{results:?}");
+    check(&detailed["details"], "batch v2 detailed");
+    assert_eq!(kernel.serialize_solids(&[source]).unwrap(), before);
+}
+
+/// The single-group `moveFacesDetailed` projects the same refusal: one
+/// pocket wall pushed past the opposite wall names that wall.
+#[test]
+fn move_faces_detailed_refuses_a_topology_change_typed() {
+    let mut kernel = RemusKernel::new();
+    let (source, walls) = pocket(&mut kernel);
+    let before = kernel.serialize_solids(&[source]).unwrap();
+    let value =
+        serde_json::to_value(kernel.move_faces_detailed_impl(source, &walls[..1], 25.0)).unwrap();
+    assert_eq!(value["status"], "error", "{value}");
+    assert_eq!(value["code"], "topology_change", "{value}");
+    assert_eq!(value["category"], "unsupported", "{value}");
+    assert_eq!(value["details"]["face"], walls[0], "{value}");
+    assert_eq!(kernel.serialize_solids(&[source]).unwrap(), before);
+}

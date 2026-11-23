@@ -819,6 +819,21 @@ impl From<remus_operations::OperationsError> for StructuredWasmError {
                 }
                 structured
             }
+            // A topology-preserving direct edit that would change the source
+            // adjacency (a face collapses, folds, splits or reaches material
+            // it must not): a capability boundary, category `unsupported`,
+            // with a stable native code. Like `unsupported_move_face` the
+            // entity handles are left to the bindings, which can check them
+            // against the live input (`topology_change_refusal`).
+            remus_operations::OperationsError::Offset(
+                remus_offset::OffsetError::TopologyChange { .. },
+            ) => {
+                let mut structured = Self::unsupported(message);
+                structured
+                    .details
+                    .insert("kernelCode".to_string(), Value::from("topology_change"));
+                structured
+            }
             remus_operations::OperationsError::Unsupported {
                 operation: "sweep" | "sweep_guided" | "profile sweep" | "extrude",
                 ..

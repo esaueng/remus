@@ -50,6 +50,7 @@ use remus_operations::OperationsError;
 use remus_operations::blend_ops::BlendResult;
 use remus_topology::edge::EdgeId;
 
+use super::move_faces_multi::MoveInput;
 use super::operations::{parse_variable_fillet_specs, variable_fillet_corners};
 use crate::error::{
     StructuredWasmError, WasmError, validate_finite, validate_positive, validate_work_count,
@@ -446,12 +447,14 @@ impl RemusKernel {
     ) -> SolidOperationDetailedResult {
         self.run_modifier_detailed("moveFacesMulti", "Move faces", |kernel| {
             let (solid_id, face_ids) = kernel.resolve_multi_move(solid, faces, distances)?;
+            let input = MoveInput::capture(kernel.topo(), solid_id)?;
             let result = remus_operations::multi_move::move_faces_multi_with_evolution(
                 kernel.topo_mut(),
                 solid_id,
                 &face_ids,
                 distances,
-            )?;
+            )
+            .map_err(|error| input.refusal(error))?;
             let mut details = Map::new();
             details.insert("quality".into(), Value::from("exact"));
             details.insert("distances".into(), Value::from(distances.to_vec()));
@@ -493,13 +496,15 @@ impl RemusKernel {
                 solid_id,
                 &face_ids,
             )?;
+            let input = MoveInput::capture(kernel.topo(), solid_id)?;
             let result = remus_operations::face_move_quality::move_faces_with_quality(
                 kernel.topo_mut(),
                 solid_id,
                 &face_ids,
                 distance,
                 permission,
-            )?;
+            )
+            .map_err(|error| input.refusal(error))?;
             let mut details = face_move_quality_json(result.quality)
                 .as_object()
                 .cloned()

@@ -1789,9 +1789,7 @@ impl RemusKernel {
                 let solid = get_u32(args, "solid")?;
                 let faces = get_u32_array(args, "faces")?;
                 let distances = get_f64_array(args, "distances")?;
-                let result = self
-                    .move_faces_multi_impl(solid, &faces, &distances)
-                    .map_err(StructuredWasmError::from)?;
+                let result = self.move_faces_multi_structured(solid, &faces, &distances)?;
                 Ok(serde_json::json!(result))
             }
             "moveFacesMultiJournaled" => {

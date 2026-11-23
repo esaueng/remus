@@ -11,7 +11,12 @@
 //! vertex map. Each face's swept region is refused when it reaches a
 //! nonadjacent face that stays fixed, as for one coplanar group; a distance
 //! at which selected faces reach or pass each other is refused by the
-//! engine naming the face that folds. The result passes strict validation.
+//! engine naming the face that folds. The moved region is then checked as a
+//! whole on the result: a face whose
+//! footprint the other moves re-limited (the corner two moved walls build)
+//! must clear every fixed face it does not touch, and nonadjacent moved
+//! faces must clear each other (two walls advancing into one gap). The
+//! result passes strict validation.
 //!
 //! A selection that is one coplanar group moved by one distance (or a
 //! single face) is the ordinary face move: it runs
@@ -21,9 +26,12 @@
 //! Distances: either one signed distance for every face, or one per face in
 //! selection order. Positive moves a face outward (adds material).
 
+use remus_math::aabb::Aabb3;
 use remus_math::det_hash::DetHashSet;
+use remus_math::tolerance::Tolerance;
+use remus_math::vec::Vec3;
 use remus_topology::Topology;
-use remus_topology::explorer::solid_faces;
+use remus_topology::explorer::{face_vertices, solid_faces};
 use remus_topology::face::FaceId;
 use remus_topology::solid::SolidId;
 
@@ -133,6 +141,21 @@ pub(crate) struct MultiChecks {
     source_faces: Vec<FaceId>,
     /// One per selected face, in selection order.
     swept: Vec<SweptRegionCheck>,
+    /// One per selected face, in selection order.
+    regions: Vec<MovedRegion>,
+    /// Every unselected source face with its box, in face order.
+    fixed: Vec<(FaceId, Aabb3)>,
+}
+
+/// A selected face's source extent, for the whole-region clearance check.
+#[derive(Debug, Clone)]
+struct MovedRegion {
+    face: FaceId,
+    normal: Vec3,
+    source: Aabb3,
+    /// Source faces sharing a vertex with this one, itself included: the
+    /// rebuild judges where these meet it.
+    touching: DetHashSet<FaceId>,
 }
 
 impl MultiChecks {
@@ -150,10 +173,40 @@ impl MultiChecks {
             return Ok(None);
         }
         let mut swept = Vec::with_capacity(faces.len());
+        let mut regions = Vec::with_capacity(faces.len());
+        let face_vertex_sets = source_faces
+            .iter()
+            .map(|&face| {
+                Ok((
+                    face,
+                    face_vertices(topo, face)?
+                        .into_iter()
+                        .collect::<DetHashSet<_>>(),
+                ))
+            })
+            .collect::<Result<Vec<_>, OperationsError>>()?;
         for &face in faces {
             let Some(normal) = topo.face(face)?.effective_plane_normal() else {
                 return Ok(None);
             };
+            let own = face_vertex_sets
+                .iter()
+                .find(|(candidate, _)| *candidate == face)
+                .map(|(_, vertices)| vertices);
+            let touching = face_vertex_sets
+                .iter()
+                .filter(|(candidate, vertices)| {
+                    *candidate == face
+                        || own.is_some_and(|own| vertices.iter().any(|v| own.contains(v)))
+                })
+                .map(|(candidate, _)| *candidate)
+                .collect();
+            regions.push(MovedRegion {
+                face,
+                normal,
+                source: crate::measure::face_bounding_box(topo, face)?,
+                touching,
+            });
             // Other selected faces move too: the engine judges where they
             // meet, so they are no obstacles here.
             let mut others = selected.clone();
@@ -168,11 +221,133 @@ impl MultiChecks {
                 normal,
             )?);
         }
+        let fixed = source_faces
+            .iter()
+            .filter(|face| !selected.contains(face))
+            .map(|&face| Ok((face, crate::measure::face_bounding_box(topo, face)?)))
+            .collect::<Result<_, OperationsError>>()?;
         Ok(Some(Self {
             source_faces,
             swept,
+            regions,
+            fixed,
         }))
     }
+
+    /// Refuses a result whose moved region, taken as a whole, reaches
+    /// material it must not: the swept regions of the source checks follow
+    /// each face's source footprint, so they miss the corner two moved
+    /// walls build together and two selected faces advancing toward each
+    /// other.
+    ///
+    /// Face `i` sweeps from its source to its rebuilt face. Its vertices are
+    /// intersections of planes that each move linearly with the move, so
+    /// they move linearly too and the swept region lies in the box of the
+    /// source and rebuilt faces. A face whose rebuilt box is not its
+    /// translated source box was re-limited by the moves around it: that
+    /// box must clear every fixed face it shares no vertex with. And the
+    /// boxes of two moved faces sharing no vertex must not overlap. Overlap
+    /// means positive extent on every axis, beyond the linear tolerance
+    /// (a flat box counts where it lies strictly inside the other's span),
+    /// so faces that only touch pass.
+    ///
+    /// The test is conservative: a refusal names a moved face whose
+    /// clearance is not certified, never a body known to be wrong.
+    fn check_moved_regions(
+        &self,
+        topo: &Topology,
+        moved: &remus_offset::MoveFacesEntityResult,
+        distances: &[f64],
+    ) -> Result<(), OperationsError> {
+        let tolerance = Tolerance::new().linear;
+        let mut swept = Vec::with_capacity(self.regions.len());
+        for (index, region) in self.regions.iter().enumerate() {
+            let distance = distances.get(index).copied().unwrap_or(distances[0]);
+            let delta = region.normal * distance;
+            let translated = Aabb3 {
+                min: region.source.min + delta,
+                max: region.source.max + delta,
+            };
+            let rebuilt = match moved.face_map.get(&region.face.index()) {
+                Some(&face) => crate::measure::face_bounding_box(topo, face)?,
+                None => translated,
+            };
+            let relimited = !boxes_match(rebuilt, translated, tolerance);
+            swept.push((region.source.union(translated).union(rebuilt), relimited));
+        }
+        for (region, &(bounds, relimited)) in self.regions.iter().zip(&swept) {
+            if !relimited {
+                continue;
+            }
+            if let Some(&(fixed, _)) = self.fixed.iter().find(|(fixed, fixed_bounds)| {
+                !region.touching.contains(fixed) && overlaps(bounds, *fixed_bounds, tolerance)
+            }) {
+                return Err(region_refusal(
+                    region.face,
+                    format!(
+                        "the region the moves sweep at this face reaches nonadjacent fixed face \
+                         {}: its clearance is not certified",
+                        fixed.index()
+                    ),
+                ));
+            }
+        }
+        for (first, (region, &(bounds, _))) in self.regions.iter().zip(&swept).enumerate() {
+            for (other, &(other_bounds, _)) in self.regions.iter().zip(&swept).skip(first + 1) {
+                if !region.touching.contains(&other.face)
+                    && overlaps(bounds, other_bounds, tolerance)
+                {
+                    return Err(region_refusal(
+                        region.face,
+                        format!(
+                            "the regions swept by this face and moved face {} overlap: their \
+                             clearance is not certified",
+                            other.face.index()
+                        ),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn region_refusal(face: FaceId, reason: String) -> OperationsError {
+    remus_offset::OffsetError::TopologyChange {
+        face: Some(face),
+        edge: None,
+        reason,
+    }
+    .into()
+}
+
+/// Whether two boxes agree within `tolerance` on every bound.
+fn boxes_match(first: Aabb3, second: Aabb3, tolerance: f64) -> bool {
+    (first.min - second.min).length() <= tolerance && (first.max - second.max).length() <= tolerance
+}
+
+/// Whether two boxes share an open region: on every axis their spans
+/// overlap by more than `tolerance`, or one span is flat (within
+/// `tolerance`) and lies strictly inside the other.
+fn overlaps(first: Aabb3, second: Aabb3, tolerance: f64) -> bool {
+    let spans = |b: Aabb3| {
+        [
+            (b.min.x(), b.max.x()),
+            (b.min.y(), b.max.y()),
+            (b.min.z(), b.max.z()),
+        ]
+    };
+    spans(first)
+        .into_iter()
+        .zip(spans(second))
+        .all(|((a_min, a_max), (b_min, b_max))| {
+            let inside = |(min, max): (f64, f64), (outer_min, outer_max): (f64, f64)| {
+                max - min <= tolerance && min > outer_min + tolerance && max < outer_max - tolerance
+            };
+            a_max.min(b_max) - a_min.max(b_min) > tolerance
+                || inside((a_min, a_max), (b_min, b_max))
+                || inside((b_min, b_max), (a_min, a_max))
+        })
 }
 
 /// The multi-face solve, its swept-region refusals and postconditions.
@@ -196,6 +371,9 @@ fn multi_edit(
         let moved = crate::performance::timed("move_faces.multi_engine", || {
             remus_offset::move_faces_multi_with_entity_map(topo, solid, faces, distances)
         })?;
+        if let Some(checks) = checks {
+            checks.check_moved_regions(topo, &moved, distances)?;
+        }
         let boundary_pairs = boundary_entity_pairs(&moved);
         let source_faces = match checks {
             Some(checks) => checks.source_faces.clone(),

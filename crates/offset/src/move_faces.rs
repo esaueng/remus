@@ -1363,8 +1363,15 @@ fn rebuild_vertex_point<const REPLACEMENT: bool, V: std::ops::Deref<Target = [Fa
     };
 
     if !point_on_curves(topo, point, &curves, data.options.tolerance.linear) {
+        // Name a moved face at the vertex (the supports that no longer
+        // meet in one point include it), in incident-edge order.
+        let vertex_faces: Vec<FaceId> = incident_edges
+            .iter()
+            .filter_map(|edge| source_edge_faces.get(&edge.index()))
+            .flat_map(|faces| faces.iter().copied())
+            .collect();
         return Err(OffsetError::TopologyChange {
-            face: None,
+            face: multi::named_face(&vertex_faces, data, true),
             edge: incident_edges.first().copied(),
             reason: format!(
                 "moved source vertex {} does not lie on every rebuilt incident edge",

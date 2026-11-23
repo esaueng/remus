@@ -520,3 +520,118 @@ fn a_prepared_multi_move_refuses_a_stale_source() {
     let moved = prepared.move_faces(&mut topo, 1.0).expect("current again");
     assert_eq!(fingerprint(&topo, moved.solid), unprepared);
 }
+
+/// A 20 mm cube with two enclosed cavities, `a` and `b`.
+fn cube_with_cavities(topo: &mut Topology, a: [[f64; 3]; 2], b: [[f64; 3]; 2]) -> SolidId {
+    let cube = placed_box(topo, [0.0, 0.0, 0.0], [20.0, 20.0, 20.0]);
+    let first = placed_box(topo, a[0], a[1]);
+    let cut = boolean(topo, BooleanOp::Cut, cube, first).expect("first cavity");
+    let second = placed_box(topo, b[0], b[1]);
+    boolean(topo, BooleanOp::Cut, cut, second).expect("second cavity")
+}
+
+/// Cavities `[2,6]×[2,6]×[2,7]` and `[8,12]×[8,12]×[2,7]`; the first
+/// cavity's `x = 6` and `y = 6` walls (outward normals −x and −y).
+fn diagonal_cavities(topo: &mut Topology) -> (SolidId, Vec<FaceId>) {
+    let solid = cube_with_cavities(
+        topo,
+        [[2.0, 2.0, 2.0], [6.0, 6.0, 7.0]],
+        [[8.0, 8.0, 2.0], [12.0, 12.0, 7.0]],
+    );
+    let walls = vec![
+        face_near(topo, solid, -x(), Point3::new(6.0, 4.0, 4.5)),
+        face_near(topo, solid, -y(), Point3::new(4.0, 6.0, 4.5)),
+    ];
+    (solid, walls)
+}
+
+/// Cavities `[2,6]×[2,6]×[2,7]` and `[8,12]×[2,6]×[2,7]` a 2 mm gap apart;
+/// the first cavity's `x = 6` wall (normal −x) and the second's `x = 8`
+/// wall (normal +x), facing each other across the gap.
+fn facing_cavities(topo: &mut Topology) -> (SolidId, Vec<FaceId>) {
+    let solid = cube_with_cavities(
+        topo,
+        [[2.0, 2.0, 2.0], [6.0, 6.0, 7.0]],
+        [[8.0, 2.0, 2.0], [12.0, 6.0, 7.0]],
+    );
+    let walls = vec![
+        face_near(topo, solid, -x(), Point3::new(6.0, 4.0, 4.5)),
+        face_near(topo, solid, x(), Point3::new(8.0, 4.0, 4.5)),
+    ];
+    (solid, walls)
+}
+
+fn assert_region_refusal(
+    topo: &mut Topology,
+    source: SolidId,
+    faces: &[FaceId],
+    distances: &[f64],
+    source_volume: f64,
+) {
+    let before = fingerprint(topo, source);
+    let error = move_faces_multi(topo, source, faces, distances)
+        .expect_err("the moved region reaches the other cavity");
+    let OperationsError::Offset(OffsetError::TopologyChange {
+        face: Some(face), ..
+    }) = &error
+    else {
+        panic!("expected a TopologyChange naming a face, got {error}");
+    };
+    assert!(faces.contains(face), "{error}");
+    assert_eq!(
+        fingerprint(topo, source),
+        before,
+        "refusal edited the source"
+    );
+    assert!((volume(topo, source) - source_volume).abs() <= 1e-6 * source_volume);
+}
+
+/// Review reproducer: the corner the two moved walls build reaches the
+/// second cavity (1 × 1 × 5 = 5 mm³ of overlap) although neither wall's
+/// own sweep does. It used to succeed with two overlapping cavity shells
+/// and 7,675 mm³; it must refuse. A move that stays clear builds.
+#[test]
+fn a_corner_two_moved_walls_build_into_another_cavity_refuses() {
+    let source_volume = 8000.0 - 80.0 - 80.0;
+    let mut topo = Topology::new();
+    let (source, walls) = diagonal_cavities(&mut topo);
+    assert!((volume(&topo, source) - source_volume).abs() <= 1e-6 * source_volume);
+    assert_region_refusal(&mut topo, source, &walls, &[-3.0], source_volume);
+
+    // Prepared drags refuse the same move.
+    let mut prepared =
+        PreparedFaceMove::prepare_multi(&topo, source, &walls, &[]).expect("prepare");
+    assert!(prepared.move_faces(&mut topo, -3.0).is_err());
+
+    // Clear by 1 mm: the first cavity grows to [2,7]² × 5.
+    let moved = move_faces_multi(&mut topo, source, &walls, &[-1.0]).expect("clear corner move");
+    assert_verified(&topo, moved);
+    let expected = 8000.0 - 5.0 * 5.0 * 5.0 - 80.0;
+    let actual = volume(&topo, moved);
+    assert!(
+        (actual - expected).abs() <= 1e-6 * expected,
+        "{actual} != {expected}"
+    );
+}
+
+/// Review reproducer: two selected walls of separate cavities each advance
+/// 1.5 mm into the 2 mm gap between them, so the cavities overlap by
+/// 1 × 4 × 5 mm³ although neither wall reaches the other's source. It must
+/// refuse; 0.5 mm each builds (both cavities 4.5 × 4 × 5).
+#[test]
+fn walls_advancing_into_one_gap_from_both_sides_refuse() {
+    let source_volume = 8000.0 - 80.0 - 80.0;
+    let mut topo = Topology::new();
+    let (source, walls) = facing_cavities(&mut topo);
+    assert_region_refusal(&mut topo, source, &walls, &[-1.5], source_volume);
+    assert_region_refusal(&mut topo, source, &walls, &[-1.5, -1.0], source_volume);
+
+    let moved = move_faces_multi(&mut topo, source, &walls, &[-0.5]).expect("clear gap move");
+    assert_verified(&topo, moved);
+    let expected = 2.0f64.mul_add(-90.0, 8000.0);
+    let actual = volume(&topo, moved);
+    assert!(
+        (actual - expected).abs() <= 1e-6 * expected,
+        "{actual} != {expected}"
+    );
+}

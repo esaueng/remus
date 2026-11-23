@@ -13,12 +13,16 @@
 //! `moveFacesPreparedJournaled` then move face `i` by `weights[i] ×
 //! distance`; release it with `releasePreparedMove`.
 
+use remus_operations::OperationsError;
+use remus_topology::Topology;
+use remus_topology::edge::EdgeId;
+use remus_topology::explorer::{solid_edges, solid_faces};
 use remus_topology::face::FaceId;
 use remus_topology::solid::SolidId;
 use wasm_bindgen::prelude::*;
 
 use crate::error::{StructuredWasmError, WasmError, validate_finite, validate_work_count};
-use crate::handles::solid_id_to_u32;
+use crate::handles::{edge_id_to_u32, face_id_to_u32, solid_id_to_u32};
 use crate::kernel::RemusKernel;
 
 #[wasm_bindgen]
@@ -132,6 +136,28 @@ impl RemusKernel {
         Ok(solid_id_to_u32(result))
     }
 
+    /// [`Self::move_faces_multi_impl`] with its refusal projected as
+    /// structured data (the batch op).
+    pub(crate) fn move_faces_multi_structured(
+        &mut self,
+        solid: u32,
+        faces: &[u32],
+        distances: &[f64],
+    ) -> Result<u32, StructuredWasmError> {
+        let (solid_id, face_ids) = self
+            .resolve_multi_move(solid, faces, distances)
+            .map_err(StructuredWasmError::from)?;
+        let input = MoveInput::capture(self.topo(), solid_id).map_err(StructuredWasmError::from)?;
+        let result = remus_operations::multi_move::move_faces_multi(
+            self.topo_mut(),
+            solid_id,
+            &face_ids,
+            distances,
+        )
+        .map_err(|error| input.refusal(error))?;
+        Ok(solid_id_to_u32(result))
+    }
+
     pub(crate) fn move_faces_multi_journaled_json(
         &mut self,
         solid: u32,
@@ -141,13 +167,14 @@ impl RemusKernel {
         let (solid_id, face_ids) = self
             .resolve_multi_move(solid, faces, distances)
             .map_err(StructuredWasmError::from)?;
+        let input = MoveInput::capture(self.topo(), solid_id).map_err(StructuredWasmError::from)?;
         let result = remus_operations::multi_move::move_faces_multi_journaled(
             self.topo_mut(),
             solid_id,
             &face_ids,
             distances,
         )
-        .map_err(StructuredWasmError::from)?;
+        .map_err(|error| input.refusal(error))?;
         Ok(serde_json::json!({
             "solid": solid_id_to_u32(result.solid),
             "op": u32::try_from(result.op.value()).unwrap_or(u32::MAX),
@@ -166,6 +193,55 @@ impl RemusKernel {
                 topo, solid_id, &face_ids, weights,
             )
         })
+    }
+}
+
+/// The input solid's faces and edges, read before a face move so that a
+/// refusal can name them: a move restores its source on failure, so these
+/// handles stay live.
+pub struct MoveInput {
+    faces: Vec<FaceId>,
+    edges: Vec<EdgeId>,
+}
+
+impl MoveInput {
+    /// Reads `solid`'s faces and edges.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `solid` is not a live solid of `topo`.
+    pub fn capture(topo: &Topology, solid: SolidId) -> Result<Self, WasmError> {
+        Ok(Self {
+            faces: solid_faces(topo, solid)?,
+            edges: solid_edges(topo, solid)?,
+        })
+    }
+
+    /// Projects a face-move failure. A `topology_change` refusal carries the
+    /// `face` and `edge` it names as handles, each only when it belongs to
+    /// the input solid.
+    pub fn refusal(&self, error: OperationsError) -> StructuredWasmError {
+        let named = match &error {
+            OperationsError::Offset(remus_offset::OffsetError::TopologyChange {
+                face,
+                edge,
+                ..
+            }) => Some((
+                face.filter(|face| self.faces.contains(face)),
+                edge.filter(|edge| self.edges.contains(edge)),
+            )),
+            _ => None,
+        };
+        let mut structured = StructuredWasmError::from(error);
+        if let Some((face, edge)) = named {
+            if let Some(face) = face {
+                structured = structured.with_detail("face", face_id_to_u32(face));
+            }
+            if let Some(edge) = edge {
+                structured = structured.with_detail("edge", edge_id_to_u32(edge));
+            }
+        }
+        structured
     }
 }
 

@@ -204,3 +204,53 @@ fn opposite_normal_walls_of_a_rib_both_thicken() {
         "{error}"
     );
 }
+
+/// A square pyramid (10 × 10 base, 9 high): moving the base out 0.25 and one
+/// side out 0.5 leaves the four side planes without a common apex, and the
+/// refusal names a moved face at that vertex as well as the edge.
+#[test]
+fn a_split_apex_refusal_names_a_moved_face() {
+    let mut topo = Topology::new();
+    let source = remus_operations::primitives::make_convex_hull(
+        &mut topo,
+        &[
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(10.0, 0.0, 0.0),
+            Point3::new(10.0, 10.0, 0.0),
+            Point3::new(0.0, 10.0, 0.0),
+            Point3::new(5.0, 5.0, 9.0),
+        ],
+    )
+    .unwrap();
+    let base = faces_on(
+        &topo,
+        source,
+        Vec3::new(0.0, 0.0, -1.0),
+        Point3::new(0.0, 0.0, 0.0),
+    );
+    assert!(!base.is_empty());
+    let side_normal = Vec3::new(9.0, 0.0, 5.0).normalize().unwrap();
+    let side = faces_on(&topo, source, side_normal, Point3::new(10.0, 0.0, 0.0));
+    assert_eq!(side.len(), 1, "one +x side face");
+    let mut faces = base.clone();
+    faces.push(side[0]);
+    let mut distances = vec![0.25; base.len()];
+    distances.push(0.5);
+    let before = source_content(&topo, source);
+    let error = move_faces_multi_with_entity_map(&mut topo, source, &faces, &distances)
+        .expect_err("the side planes no longer share an apex");
+    let OffsetError::TopologyChange {
+        face: Some(face),
+        edge: Some(_),
+        ..
+    } = &error
+    else {
+        panic!("{error}");
+    };
+    assert!(faces.contains(face), "names a moved face: {error}");
+    assert_eq!(
+        source_content(&topo, source),
+        before,
+        "refusal edited the source"
+    );
+}
