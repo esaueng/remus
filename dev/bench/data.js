@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795359509530,
+  "lastUpdate": 1795459663596,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -147089,6 +147089,304 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 86040,
             "range": "± 439",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Peter",
+            "username": "petertoday",
+            "email": "171875562+petertoday@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "1907718ef333120a733fa9ba20444d32ea179214",
+          "message": "fix(move-faces): refuse a carried chamfer sweeping into a fixed face (#1956)\n\nCloses #1949.\n\n## Problem\n\nA blend translation checked obstacles only against the selection and\nriding chamfers. When a planar cap moves, its 45° inner chamfer moves\nwith it, and the cap's own proofs could clear an obstacle the chamfer\nruns into:\n\n- a coaxial collar, cleared from the cap by the coaxial exemption;\n- a tab below the cap's swept box.\n\nBoth moves returned a self-overlapping body. The validator passed it and\nthe mesh was watertight.\n\n## Fix\n\n`push_pull/companion_sweep.rs` checks each carried face on a **cone or\ncylinder whose axis is parallel to the move** against every face that\nneither moves nor shares an edge with it. A pair is cleared only when:\n\n- the certified boxes miss over the whole travel; or\n- in (radius, height) about the companion's axis, the radii the\ncompanion sweeps through miss the candidate's radii at every height. The\ncandidate's heights are bisected until every slab separates or a work\nlimit is spent. A pair left undecided refuses the move.\n\nEach candidate face is read as a profile. None of these reads has to\ndecide which side of its boundary the face lies on:\n\n| Candidate | Profile |\n|---|---|\n| Cone | generator, exact `\\|h\\| / tan`, including across the apex |\n| Cylinder, plane | band of radii; plane radii come from the boundary,\nsince distance from a line is convex |\n| Torus | its whole tube, over the heights of its certified box |\n| Sphere | its whole ball, over the heights of its certified box |\n| Cone or cylinder across the axis | its axis segment plus a box of the\nangles it covers, from lines, arcs about its axis and positive-weight\nsplines; exact nearest and farthest distances of that convex hull |\n\nBounds are conservative throughout:\n\n- **Boxes:** certified face bounds (`face_bound`), or the carrier over\nits boundary heights for cones and cylinders. Never the sampled\n`face_bounding_box`.\n- **Tilted carriers:** a carrier parallel only within tolerance is\ncharged its offset and tilt across the whole face.\n\nThe exact axial limit on a shared cylindrical support now runs before\nthe swept check, so a moving blend reaching a fixed rim still reports\nthat refusal.\n\n### Narrowed design (this head)\n\nEarlier heads also checked torus companions and bounded torus bands and\nsphere patches by their own minor angles or their cap. That requires\nknowing which side of its boundary the face lies on:\n\n- two rims do not say whether a torus band is the short band or the long\none;\n- the sphere trim reader cannot read a loop's winding where no planar\nneighbour exists.\n\nEvery shortcut that answered this was shown unsound in review. The\ndesign note in the comments has the details. This head drops those\nreads:\n\n- torus and sphere **companions** are not checked, as on `main`;\n- torus and sphere **candidates** are bounded by their whole carrier.\n\nThe `remus-check` sphere-trim export is removed.\n\n**Known gap, kept as before:** a carried torus band, sphere patch,\nplane, NURBS face or cone/cylinder across the move gets no new check.\n#1949's case is a carried cone, which is covered.\n\n## Verification\n\nAll local, on `56aec2fc` (rebased onto `main` at `825a6934`). CI passed\nin full on `f9f7ef67`.\n\n- `tests/regress_issue_1949_carried_chamfer_clearance.rs` (5):\n  - both cases and the #1905 tab refuse with the swept-region error;\n- the clear controls return the oracle fuse: volume within 2e-3, probe\nInside, valid, watertight.\n- `regress_move_face_shoulder_clearance`: 25 of 25 pass. That includes\nthe four moves the previous head refused wrongly.\n- `move_faces_chamfered_hole`: 6 of 6 pass.\n- Hammer holder translation oracle\n(`hammer_arm_planar_travel_matches_whole_body_guard`): passes.\n- `companion_sweep` unit tests (9): pass, including the far-origin\nrounding regression and the torus overhanging the chamfer (refused at\n0.35, clear at 0.1).\n- `cargo test -p remus-operations --release` before the rebase: all 377\nresult groups pass.\n- `cargo clippy -p remus-operations -p remus-check --all-targets -D\nwarnings`, `check-boundaries`, `check-det-hash` and `check-doc-paths`:\nclean.\n\n## Review\n\nReviewer: gpt-6.2-sol (medium effort, default tier).\n\n- **Round 1:** three blocking false clearances, all fixed in `27cb673d`:\n  1. the axial-pair exclusion skipped the fixed face;\n  2. sampled boxes understated radial reach;\n  3. a tilted carrier was charged its offset at the origin.\n- **Re-check** (authorized as an exception): four blocking false\nclearances, fixed in `8062ec88`:\n  1. short versus long torus band;\n  2. the sphere area fallback;\n  3. the angle union across the seam;\n  4. NURBS edges read as separate angles.\n\n  Findings 1 and 2 are now removed by the narrowing rather than patched.\n- **Narrowing re-check** (`f9f7ef67`; a further scoped pass the owner\nauthorized): one blocking false clearance, fixed in `56aec2fc`.\n- The finding: a small certified box far from the companion's frame\norigin (an origin `2^40` away) rounded to a single height in that frame.\n`box_heights` then narrowed a candidate cone to its apex, and a cylinder\nsweeping through its radius-16 ring was cleared.\n- The fix: box heights are widened by a rounding allowance relative to\nevery coordinate read.\n  - Regression test: `box_heights_survive_a_far_frame_origin`.\n  - Nothing was declined.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-11-23T13:17:32Z",
+          "url": "https://github.com/esaueng/remus/commit/1907718ef333120a733fa9ba20444d32ea179214"
+        },
+        "date": 1795459659537,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 1200455,
+            "range": "± 6023",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 1286738,
+            "range": "± 7661",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 27181,
+            "range": "± 132",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 9033203,
+            "range": "± 15054",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 9033843,
+            "range": "± 77581",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 8898557,
+            "range": "± 89513",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 28364,
+            "range": "± 119",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 8158040,
+            "range": "± 37880",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 47570179,
+            "range": "± 600912",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 40,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 117,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 80,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 237,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 195,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 902,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 157,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 392,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 233,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 598,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 914,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 3550,
+            "range": "± 47",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 37,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 86,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 86,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "surface_projection/cached_grid/3",
+            "value": 24399,
+            "range": "± 200",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "surface_projection/cached_grid/9",
+            "value": 147155,
+            "range": "± 715",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/bilinear_hit",
+            "value": 3841,
+            "range": "± 45",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_secant",
+            "value": 14327,
+            "range": "± 184",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_miss",
+            "value": 47703,
+            "range": "± 99",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/quadratic_hit",
+            "value": 5120,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 488553,
+            "range": "± 3112",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 2447601,
+            "range": "± 22467",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 140699,
+            "range": "± 628",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 271200,
+            "range": "± 1446",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/plane_torus_grid",
+            "value": 363825,
+            "range": "± 1884",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 62408,
+            "range": "± 1759",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/narrow_bump_flank",
+            "value": 33865,
+            "range": "± 319",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_hit",
+            "value": 21469,
+            "range": "± 182",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_miss",
+            "value": 117400,
+            "range": "± 266",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_grid_build",
+            "value": 151288,
+            "range": "± 9817",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 653326,
+            "range": "± 39647",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 7867386,
+            "range": "± 110519",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 928068,
+            "range": "± 5747",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 1202024,
+            "range": "± 6268",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 86083,
+            "range": "± 501",
             "unit": "ns/iter"
           }
         ]
