@@ -2300,7 +2300,15 @@ fn translation_invariant_blend_region(
             face.index()
         )));
     }
-    region.extend(rim.carried.iter().copied());
+    // Bands the walk above already carries (a hole mouth's axial chamfer)
+    // keep their rigid-companion check; the others lead the move.
+    let leading_rim: Vec<FaceId> = rim
+        .carried
+        .iter()
+        .copied()
+        .filter(|face| !region.contains(face))
+        .collect();
+    region.extend(leading_rim.iter().copied());
 
     if region.is_empty() {
         return Err(reconstruction(
@@ -2317,7 +2325,7 @@ fn translation_invariant_blend_region(
     region.extend(riding_chamfers.iter().copied());
     // A rim chamfer leads the move like the cap does, so the move sweeps it
     // too: it reaches material the cap's own sweep never covers.
-    riding_chamfers.extend(rim.carried.iter().copied());
+    riding_chamfers.extend(leading_rim);
 
     let mut translated_nurbs_supports = HashSet::new();
     // Face order, not set order, so a refusal always names the same face.
