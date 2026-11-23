@@ -13,7 +13,7 @@ use remus_topology::solid::SolidId;
 /// - Vertex normals (`vn x y z`)
 /// - Triangle and polygon faces (`f v1 v2 v3 ...` or `f v1//n1 v2//n2 ...`)
 ///
-/// Polygons with more than 3 vertices are triangulated using fan triangulation.
+/// Polygons with more than 3 vertices are triangulated in the polygon plane.
 ///
 /// # Errors
 ///
@@ -36,6 +36,8 @@ pub fn read_obj_with_limits(
     let mut normals: Vec<Vec3> = Vec::new();
     let mut corners: Vec<(u32, Option<u32>)> = Vec::new();
 
+    let mut polygons = Vec::new();
+    let mut triangle_count = 0_usize;
     for line in input.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -66,33 +68,18 @@ pub fn read_obj_with_limits(
                 )?;
             }
             Some("f") => {
-                // Fan-triangulate as the corners are split off (v0-v1-v2,
-                // v0-v2-v3, ...), budgeting each triangle before it is stored:
-                // a single N-gon yields N-2 triangles, and nothing of a hostile
-                // face line is parsed or held past the budget.
-                // The budget is checked before each third-or-later token is
-                // even parsed, so a malformed token past the budget cannot
-                // turn the refusal into a parse error that copies the line.
-                let mut tokens = parts;
-                let mut triangles = 0_usize;
-                let corner = |token: Option<&str>| token.map(|t| parse_face_corner(t, line));
-                if let (Some(v0), Some(mut previous)) = (
-                    corner(tokens.next()).transpose()?,
-                    corner(tokens.next()).transpose()?,
-                ) {
-                    for token in tokens {
-                        ensure_limit(
-                            "OBJ triangles",
-                            corners.len() / 3 + 1,
-                            limits.max_model_entities,
-                        )?;
-                        let corner = parse_face_corner(token, line)?;
-                        corners.extend([v0, previous, corner]);
-                        previous = corner;
-                        triangles += 1;
+                let start = corners.len();
+                for token in parts {
+                    if corners.len() - start >= 2 {
+                        triangle_count = triangle_count.saturating_add(1);
+                        ensure_limit("OBJ triangles", triangle_count, limits.max_model_entities)?;
                     }
+                    corners.push(parse_face_corner(token, line)?);
                 }
-                if triangles == 0 {
+                if corners.len() - start > 3 {
+                    polygons.push(start..corners.len());
+                }
+                if corners.len() - start < 3 {
                     return Err(crate::IoError::ParseError {
                         reason: format!("face with fewer than 3 vertices: {line}"),
                     });
@@ -106,6 +93,7 @@ pub fn read_obj_with_limits(
 
     // OBJ indexes positions and normals independently. Reuse a vertex only
     // when both corner identities agree; split shared positions at normal seams.
+    let corners = crate::polygon_faces::triangulate(corners, &polygons, &positions, |(v, _)| v)?;
     let source_count = positions.len();
     let mut assigned = vec![false; source_count];
     let mut normal_supplied = vec![false; source_count];

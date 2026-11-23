@@ -2568,11 +2568,28 @@ fn sequential_fillets_on_a_hollow_body_carry_the_cavity() {
 
         let inner = topo.solid(result).unwrap().inner_shells().to_vec();
         assert_eq!(inner.len(), 1, "{what}: one cavity shell");
-        assert_eq!(
-            topo.shell(inner[0]).unwrap().faces(),
-            cavity_faces.as_slice(),
-            "{what}: the cavity is carried through untouched"
-        );
+        let copied_faces = topo.shell(inner[0]).unwrap().faces();
+        assert_eq!(copied_faces.len(), cavity_faces.len());
+        for (&source, &copy) in cavity_faces.iter().zip(copied_faces) {
+            assert!(
+                !cavity_faces.contains(&copy),
+                "{what}: independent cavity face"
+            );
+            let plane = |id| match topo.face(id).unwrap().surface() {
+                remus_topology::face::FaceSurface::Plane { normal, d } => (*normal, d.to_bits()),
+                _ => panic!("{what}: expected a cavity plane"),
+            };
+            assert_eq!(plane(source), plane(copy));
+            assert_eq!(
+                topo.face(source).unwrap().is_reversed(),
+                topo.face(copy).unwrap().is_reversed()
+            );
+            assert_eq!(
+                crate::boolean::face_polygon(&topo, source).unwrap(),
+                crate::boolean::face_polygon(&topo, copy).unwrap(),
+                "{what}: cavity boundary and traversal must be unchanged"
+            );
+        }
         let (f, e, v) = remus_topology::explorer::solid_entity_counts(&solid_topo, plain).unwrap();
         assert_eq!(
             remus_topology::explorer::solid_entity_counts(&topo, result).unwrap(),

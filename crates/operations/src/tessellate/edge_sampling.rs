@@ -527,6 +527,77 @@ pub(super) fn sample_edge_with_params(
     let n = edge_sample_count(edge, deflection, angular_tol, circle_floor)?;
     enforce_edge_sample_limit(n)?;
 
+    let points = sample_edge_at_count(topo, edge, n)?;
+
+    // Authoritative parameters parallel to the polyline, derived from the
+    // same spans the points above were sampled over. Endpoint positions are
+    // overwritten with exact vertices by the sampler; their parameters stay pinned to
+    // the domain ends.
+    let mut params: Vec<Option<f64>> = match edge.curve() {
+        EdgeCurve::Line => {
+            let sp = topo.vertex(edge.start())?.point();
+            let ep = topo.vertex(edge.end())?.point();
+            let length = (ep - sp).length();
+            vec![Some(0.0), Some(length)]
+        }
+        EdgeCurve::Circle(_) => {
+            let (t_start, t_end) = circle_param_range(edge)?;
+            uniform_edge_params(t_start, t_end, points.len())
+        }
+        EdgeCurve::Ellipse(_) => {
+            let (t_start, t_end) = edge_param_span(topo, edge)?;
+            uniform_edge_params(t_start, t_end, points.len())
+        }
+        EdgeCurve::Hyperbola(_) => {
+            let (t0, t1) = crate::authoritative_edge_domain(edge, "hyperbola sampling")?;
+            uniform_edge_params(t0, t1, points.len())
+        }
+        EdgeCurve::Parabola(_) => {
+            let (t0, t1) = crate::authoritative_edge_domain(edge, "parabola sampling")?;
+            uniform_edge_params(t0, t1, points.len())
+        }
+        EdgeCurve::NurbsCurve(nurbs) => {
+            let (t0, t1) = crate::authoritative_edge_domain(edge, "NURBS sampling")?;
+            let (u0, u1) = nurbs.domain();
+            let is_subspan = (t0 - u0).abs() > 1e-12 || (t1 - u1).abs() > 1e-12;
+            if !is_subspan && edge.is_closed() {
+                let sp = topo.vertex(edge.start())?.point();
+                let width = u1 - u0;
+                let t_v =
+                    closed_start_param(nurbs, AnchoredNurbsCurve::new(nurbs).as_ref(), sp, t0);
+                (0..points.len())
+                    .map(|i| {
+                        #[allow(clippy::cast_precision_loss)]
+                        let offset = width * (i as f64) / ((points.len() - 1).max(1) as f64);
+                        Some(u0 + (t_v - u0 + offset).rem_euclid(width.max(1e-300)))
+                    })
+                    .collect()
+            } else {
+                let mut ps = uniform_edge_params(t0, t1, points.len());
+                if !is_subspan && nurbs_runs_end_to_start(topo, edge, nurbs).unwrap_or(false) {
+                    ps.reverse();
+                }
+                ps
+            }
+        }
+    };
+
+    debug_assert_eq!(points.len(), params.len());
+    params.truncate(points.len());
+    while params.len() < points.len() {
+        params.push(None);
+    }
+
+    Ok((points, params))
+}
+
+/// Sample the authoritative span in edge traversal order, including both vertices.
+pub(super) fn sample_edge_at_count(
+    topo: &Topology,
+    edge: &remus_topology::edge::Edge,
+    n: usize,
+) -> Result<Vec<Point3>, crate::OperationsError> {
+    use remus_topology::edge::EdgeCurve;
     let mut points = match edge.curve() {
         EdgeCurve::Line => {
             vec![
@@ -613,59 +684,6 @@ pub(super) fn sample_edge_with_params(
         }
     };
 
-    // Authoritative parameters parallel to the polyline, derived from the
-    // same spans the points above were sampled over. Endpoint positions are
-    // overwritten with exact vertices below; their parameters stay pinned to
-    // the domain ends.
-    let mut params: Vec<Option<f64>> = match edge.curve() {
-        EdgeCurve::Line => {
-            let sp = topo.vertex(edge.start())?.point();
-            let ep = topo.vertex(edge.end())?.point();
-            let length = (ep - sp).length();
-            vec![Some(0.0), Some(length)]
-        }
-        EdgeCurve::Circle(_) => {
-            let (t_start, t_end) = circle_param_range(edge)?;
-            uniform_edge_params(t_start, t_end, points.len())
-        }
-        EdgeCurve::Ellipse(_) => {
-            let (t_start, t_end) = edge_param_span(topo, edge)?;
-            uniform_edge_params(t_start, t_end, points.len())
-        }
-        EdgeCurve::Hyperbola(_) => {
-            let (t0, t1) = crate::authoritative_edge_domain(edge, "hyperbola sampling")?;
-            uniform_edge_params(t0, t1, points.len())
-        }
-        EdgeCurve::Parabola(_) => {
-            let (t0, t1) = crate::authoritative_edge_domain(edge, "parabola sampling")?;
-            uniform_edge_params(t0, t1, points.len())
-        }
-        EdgeCurve::NurbsCurve(nurbs) => {
-            let (t0, t1) = crate::authoritative_edge_domain(edge, "NURBS sampling")?;
-            let (u0, u1) = nurbs.domain();
-            let is_subspan = (t0 - u0).abs() > 1e-12 || (t1 - u1).abs() > 1e-12;
-            if !is_subspan && edge.is_closed() {
-                let sp = topo.vertex(edge.start())?.point();
-                let width = u1 - u0;
-                let t_v =
-                    closed_start_param(nurbs, AnchoredNurbsCurve::new(nurbs).as_ref(), sp, t0);
-                (0..points.len())
-                    .map(|i| {
-                        #[allow(clippy::cast_precision_loss)]
-                        let offset = width * (i as f64) / ((points.len() - 1).max(1) as f64);
-                        Some(u0 + (t_v - u0 + offset).rem_euclid(width.max(1e-300)))
-                    })
-                    .collect()
-            } else {
-                let mut ps = uniform_edge_params(t0, t1, points.len());
-                if !is_subspan && nurbs_runs_end_to_start(topo, edge, nurbs).unwrap_or(false) {
-                    ps.reverse();
-                }
-                ps
-            }
-        }
-    };
-
     if !matches!(edge.curve(), EdgeCurve::Line) {
         if let Some(first) = points.first_mut() {
             *first = topo.vertex(edge.start())?.point();
@@ -674,13 +692,7 @@ pub(super) fn sample_edge_with_params(
             *last = topo.vertex(edge.end())?.point();
         }
     }
-    debug_assert_eq!(points.len(), params.len());
-    params.truncate(points.len());
-    while params.len() < points.len() {
-        params.push(None);
-    }
-
-    Ok((points, params))
+    Ok(points)
 }
 
 /// Whether an open NURBS edge's stored curve runs from the edge's END vertex

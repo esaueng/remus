@@ -4,6 +4,7 @@
 //! Supports multiple meshes/primitives, dynamic accessor indices, and both
 //! uint16 (5123) and uint32 (5125) index component types.
 
+use super::scene::{Node, Scene, mesh_instances};
 use crate::limits::{ImportLimits, ensure_input_size, ensure_limit};
 use remus_math::vec::{Point3, Vec3};
 use remus_operations::tessellate::TriangleMesh;
@@ -12,8 +13,8 @@ use remus_topology::solid::SolidId;
 
 /// Read a GLB (glTF binary) file and return a triangle mesh.
 ///
-/// Extracts vertex positions, normals, and triangle indices from all
-/// mesh primitives in the file, combining them into a single mesh. Missing
+/// Combines the selected scene’s placed mesh instances into one triangle mesh.
+/// A scene-less mesh library contributes each definition at identity. Missing
 /// normals are represented by zero vectors, preserving primitive alignment
 /// without supplying an invented direction to solid import.
 ///
@@ -111,7 +112,7 @@ pub fn read_glb_with_limits(
         serde_json::from_str(json_str).map_err(|error| crate::IoError::ParseError {
             reason: format!("invalid GLB JSON: {error}"),
         })?;
-    let accessors = document.accessors;
+    let accessors = &document.accessors;
     let declared_accessor_entities = accessors
         .iter()
         .try_fold(0usize, |total, accessor| total.checked_add(accessor.count))
@@ -125,29 +126,27 @@ pub fn read_glb_with_limits(
         declared_accessor_entities,
         limits.max_model_entities,
     )?;
-    let buffer_views = document.buffer_views;
-    let primitives: Vec<_> = document
-        .meshes
-        .into_iter()
-        .flat_map(|mesh| mesh.primitives)
-        .collect();
-
-    if primitives.is_empty() {
-        return Err(crate::IoError::ParseError {
-            reason: "GLB has no mesh primitives".into(),
-        });
-    }
-
-    // Shared accessors are materialized once per primitive reference. Charge
-    // that expanded work before any decoder allocates its output, including
-    // normal accessors whose counts may later fail validation.
-    ensure_limit(
-        "GLB primitives",
-        primitives.len(),
-        limits.max_model_entities,
+    let buffer_views = &document.buffer_views;
+    let instances = mesh_instances(
+        &document.nodes,
+        &document.scenes,
+        document.scene,
+        document.meshes.len(),
+        limits,
     )?;
+    let primitives = || {
+        instances.iter().flat_map(|(mesh, placement)| {
+            document.meshes[*mesh]
+                .primitives
+                .iter()
+                .map(move |prim| (prim, placement))
+        })
+    };
+    let mut primitive_count = 0usize;
     let mut decoded_entities = 0usize;
-    for prim in &primitives {
+    for (prim, _) in primitives() {
+        primitive_count = primitive_count.saturating_add(1);
+        ensure_limit("GLB primitives", primitive_count, limits.max_model_entities)?;
         if prim.mode != 4 {
             return Err(crate::IoError::ParseError {
                 reason: "unsupported GLB primitive mode (expected TRIANGLES=4)".into(),
@@ -199,11 +198,17 @@ pub fn read_glb_with_limits(
         }
     }
 
+    if primitive_count == 0 {
+        return Err(crate::IoError::ParseError {
+            reason: "GLB has no mesh primitives".into(),
+        });
+    }
     let mut positions = Vec::new();
     let mut normals = Vec::new();
     let mut indices = Vec::new();
 
-    for prim in &primitives {
+    for (prim, placement) in primitives() {
+        let index_start = indices.len();
         let vertex_offset = positions.len();
 
         if let Some(pos_idx) = prim.attributes.position_accessor {
@@ -218,7 +223,11 @@ pub fn read_glb_with_limits(
                 }
             })?;
             for [x, y, z] in decode_accessor_vertices(accessor, view, bin, "POSITION")? {
-                positions.push(Point3::new(f64::from(x), f64::from(y), f64::from(z)));
+                positions.push(placement.point(Point3::new(
+                    f64::from(x),
+                    f64::from(y),
+                    f64::from(z),
+                ))?);
             }
         }
 
@@ -246,7 +255,11 @@ pub fn read_glb_with_limits(
                 }
             })?;
             for [x, y, z] in decode_accessor_vertices(accessor, view, bin, "NORMAL")? {
-                normals.push(Vec3::new(f64::from(x), f64::from(y), f64::from(z)));
+                normals.push(placement.normal(Vec3::new(
+                    f64::from(x),
+                    f64::from(y),
+                    f64::from(z),
+                ))?);
             }
         } else {
             // Zero means no supplied normal. Keep primitive alignment without
@@ -351,6 +364,17 @@ pub fn read_glb_with_limits(
                 );
             }
         }
+        let triangles = &mut indices[index_start..];
+        if !triangles.len().is_multiple_of(3) {
+            return Err(crate::IoError::ParseError {
+                reason: "GLB triangle index count is not a multiple of three".into(),
+            });
+        }
+        if placement.mirrored {
+            for tri in triangles.chunks_exact_mut(3) {
+                tri.swap(1, 2);
+            }
+        }
     }
 
     if positions.is_empty() {
@@ -389,6 +413,11 @@ fn safe_slice(data: &[u8], offset: usize, length: usize) -> Result<&[u8], crate:
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GltfDocument {
+    #[serde(default)]
+    scenes: Vec<Scene>,
+    scene: Option<usize>,
+    #[serde(default)]
+    nodes: Vec<Node>,
     #[serde(default)]
     accessors: Vec<AccessorInfo>,
     #[serde(default)]
@@ -1232,6 +1261,63 @@ mod tests {
             serde_json::from_slice(&glb[20..json_end]).unwrap(),
             glb[json_end + 8..].to_vec(),
         )
+    }
+
+    #[test]
+    fn selected_scene_instances_compose_transforms_and_ignore_unused_meshes() {
+        let (mut doc, bin) = fixture_parts(&shared_accessor_glb(&[1, 1], 3, 5125));
+        doc["scene"] = serde_json::json!(1);
+        doc["scenes"] = serde_json::json!([{"nodes":[3]},{"nodes":[0]}]);
+        doc["nodes"] = serde_json::json!([
+            {"translation":[10,0,0],"children":[1,2]}, {"mesh":0},
+            {"mesh":0,"matrix":[-2,0,0,0, 0,0,1,0, 0,1,0,0, 10,0,0,1]}, {"mesh":1}
+        ]);
+        let glb = build_glb_bytes(&doc.to_string(), &bin);
+        let mesh = read_glb(&glb).unwrap();
+        assert_eq!(
+            mesh.positions,
+            vec![
+                Point3::new(10., 0., 0.),
+                Point3::new(11., 0., 0.),
+                Point3::new(10., 1., 0.),
+                Point3::new(20., 0., 0.),
+                Point3::new(18., 0., 0.),
+                Point3::new(20., 0., 1.)
+            ]
+        );
+        assert_eq!(mesh.normals[3], Vec3::new(0., 1., 0.));
+        assert_eq!(mesh.indices, vec![0, 1, 2, 3, 4, 5]);
+        doc["nodes"][2] = serde_json::json!({"mesh":0,"scale":[-1,1,1]});
+        let mirrored = read_glb(&build_glb_bytes(&doc.to_string(), &bin)).unwrap();
+        assert_eq!(mirrored.indices, vec![0, 1, 2, 3, 5, 4]);
+        let limits = ImportLimits {
+            max_model_entities: 17,
+            ..Default::default()
+        };
+        assert!(matches!(
+            read_glb_with_limits(&glb, limits),
+            Err(crate::IoError::LimitExceeded { .. })
+        ));
+        doc["nodes"][1]["children"] = serde_json::json!([0]);
+        assert!(read_glb(&build_glb_bytes(&doc.to_string(), &bin)).is_err());
+    }
+
+    #[test]
+    fn fully_collapsed_node_preserves_the_visible_sibling() {
+        let (mut doc, bin) = fixture_parts(&shared_accessor_glb(&[1], 0, 5125));
+        doc["scenes"] = serde_json::json!([{"nodes":[0,1]}]);
+        doc["nodes"] = serde_json::json!([{"scale":[0,0,0],"children":[2]},{"mesh":0},{"mesh":0}]);
+        let mesh = read_glb(&build_glb_bytes(&doc.to_string(), &bin)).unwrap();
+        assert_eq!(mesh.indices, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn scene_less_mesh_library_imports_each_definition_once() {
+        let (mut doc, bin) = fixture_parts(&shared_accessor_glb(&[1], 0, 5125));
+        doc["nodes"] = serde_json::json!([{"mesh":0,"translation":[10,0,0]},{"mesh":0}]);
+        let mesh = read_glb(&build_glb_bytes(&doc.to_string(), &bin)).unwrap();
+        assert_eq!(mesh.positions.len(), 3);
+        assert_eq!(mesh.positions[0], Point3::new(0., 0., 0.));
     }
 
     #[test]

@@ -53,6 +53,30 @@ use remus_topology::face::FaceId;
 
 // Re-export all public items.
 pub use edge_sampling::edge_param_span;
+pub use planar::{MAX_EAR_CLIP_POINT_TESTS, triangulate_polygon};
+
+/// Fixed-count samples in edge traversal order. Lines have two points. Closed
+/// circles and ellipses omit the duplicate seam sample for polyline clients.
+///
+/// # Errors
+/// Returns an error for an invalid edge, missing trim or excessive sample count.
+pub fn sample_edge_fixed(
+    topo: &Topology,
+    edge: remus_topology::EdgeId,
+    count: usize,
+) -> Result<Vec<Point3>, crate::OperationsError> {
+    use remus_topology::edge::EdgeCurve;
+    let edge = topo.edge(edge)?;
+    let omit_seam =
+        edge.is_closed() && matches!(edge.curve(), EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_));
+    let n = count.max(2).saturating_add(usize::from(omit_seam));
+    edge_sampling::enforce_edge_sample_limit(n)?;
+    let mut points = edge_sampling::sample_edge_at_count(topo, edge, n)?;
+    if omit_seam {
+        points.pop();
+    }
+    Ok(points)
+}
 pub use face::{tessellate_with_uvs, tessellate_with_uvs_a};
 pub use face_cache::{
     DEFAULT_FACE_MESH_CACHE_BYTES, DEFAULT_FACE_MESH_CACHE_ENTRIES, FaceMeshCacheStats,

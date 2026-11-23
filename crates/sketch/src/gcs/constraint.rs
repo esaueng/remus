@@ -51,7 +51,7 @@ pub enum Constraint {
     /// Two lines must be perpendicular. Produces 1 residual: `dot(d1, d2)`.
     Perpendicular(LineId, LineId),
 
-    /// Two lines must be parallel. Produces 1 residual: `cross(d1, d2)`.
+    /// Two lines must be parallel. Produces one angular residual modulo π.
     Parallel(LineId, LineId),
 
     /// Point must lie on a circle. Produces 1 residual: `dist(pt, center) - radius`.
@@ -478,8 +478,16 @@ pub fn eval_residuals(c: &Constraint, snap: &EntitySnapshot, out: &mut Vec<f64>)
             let (x1b, y1b) = snap.point(l1p2);
             let (x2a, y2a) = snap.point(l2p1);
             let (x2b, y2b) = snap.point(l2p2);
-            let cross = (x1b - x1a) * (y2b - y2a) - (y1b - y1a) * (x2b - x2a);
-            out.push(cross);
+            let (dx, dy) = (x1b - x1a, y1b - y1a);
+            let (ex, ey) = (x2b - x2a, y2b - y2a);
+            if (dx == 0.0 && dy == 0.0) || (ex == 0.0 && ey == 0.0) {
+                // A collapsed segment has no direction and cannot satisfy parallelism.
+                out.push(std::f64::consts::FRAC_PI_2);
+            } else {
+                let angle = ey.atan2(ex) - dy.atan2(dx);
+                let (s, c) = angle.sin_cos();
+                out.push(if c < 0.0 { (-s).atan2(-c) } else { s.atan2(c) });
+            }
         }
         Constraint::PointOnCircle(pt, circ) => {
             let (px, py) = snap.point(*pt);
@@ -963,27 +971,22 @@ pub fn eval_jacobian<S: JacobianSink>(
             jw.add(row_offset, ParamRef::PointY(l2p2), d1y);
         }
         Constraint::Parallel(l1, l2) => {
-            // r = cross(d1, d2) = d1x*d2y - d1y*d2x
-            let (l1p1, l1p2) = snap.line(*l1);
-            let (l2p1, l2p2) = snap.line(*l2);
-            let (x1a, y1a) = snap.point(l1p1);
-            let (x1b, y1b) = snap.point(l1p2);
-            let (x2a, y2a) = snap.point(l2p1);
-            let (x2b, y2b) = snap.point(l2p2);
-            let d1x = x1b - x1a;
-            let d1y = y1b - y1a;
-            let d2x = x2b - x2a;
-            let d2y = y2b - y2a;
-
-            // ∂r/∂d1x = d2y, ∂r/∂d1y = -d2x, ∂r/∂d2x = -d1y, ∂r/∂d2y = d1x
-            jw.set(row_offset, ParamRef::PointX(l1p1), -d2y);
-            jw.set(row_offset, ParamRef::PointX(l1p2), d2y);
-            jw.set(row_offset, ParamRef::PointY(l1p1), d2x);
-            jw.set(row_offset, ParamRef::PointY(l1p2), -d2x);
-            jw.add(row_offset, ParamRef::PointX(l2p1), d1y);
-            jw.add(row_offset, ParamRef::PointX(l2p2), -d1y);
-            jw.add(row_offset, ParamRef::PointY(l2p1), -d1x);
-            jw.add(row_offset, ParamRef::PointY(l2p2), d1x);
+            let (a, b) = snap.line(*l1);
+            let (c, d) = snap.line(*l2);
+            // d atan2(y,x) = (-y dx + x dy) / length².
+            let gradient = |a, b| {
+                let (ax, ay) = snap.point(a);
+                let (bx, by) = snap.point(b);
+                let (dx, dy) = (bx - ax, by - ay);
+                let length = dx.hypot(dy);
+                (length > 0.0).then(|| (-(dy / length) / length, (dx / length) / length))
+            };
+            if let (Some((gx, gy)), Some((hx, hy))) = (gradient(a, b), gradient(c, d)) {
+                for (point, x, y) in [(a, gx, gy), (b, -gx, -gy), (c, -hx, -hy), (d, hx, hy)] {
+                    jw.add(row_offset, ParamRef::PointX(point), x);
+                    jw.add(row_offset, ParamRef::PointY(point), y);
+                }
+            }
         }
         Constraint::PointOnCircle(pt, circ) => {
             // r = dist(pt, center) - radius

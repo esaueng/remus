@@ -25,6 +25,8 @@ pub mod naming_io;
 pub mod obj;
 #[cfg(feature = "formats")]
 pub mod ply;
+#[cfg(feature = "formats")]
+mod polygon_faces;
 pub mod snapshot;
 #[cfg(feature = "formats")]
 pub mod step;

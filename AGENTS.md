@@ -834,9 +834,10 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | IGES read/write | `iges/reader.rs`, `iges/writer.rs` |
 | STL read/write/import | `stl/reader.rs`, `stl/writer.rs`, `stl/import.rs` |
 | 3MF read/write | `threemf/reader.rs`, `threemf/writer.rs` |
+| Deferred OBJ and PLY polygon triangulation with a shared import work budget | `polygon_faces.rs` |
 | OBJ read/write | `obj/reader.rs`, `obj/writer.rs` |
 | PLY read/write | `ply/reader.rs`, `ply/writer.rs` |
-| glTF read/write | `gltf/reader.rs`, `gltf/writer.rs` |
+| glTF read/write and static mesh placement in the selected scene | `gltf/reader.rs`, `gltf/writer.rs`, `gltf/scene.rs` |
 | Exact arena (sub-topology) serialization | `arena_io.rs` |
 | Hand-written arena document JSON codec (`serde_json`-exact reads and writes) | `arena_io/codec.rs` |
 | Differential oracle: the derived `serde_json` arena codec kept verbatim (tests) | `arena_io/codec_oracle_tests.rs` |

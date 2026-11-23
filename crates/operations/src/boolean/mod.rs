@@ -3234,7 +3234,12 @@ fn build_box_sphere_octant(
     use remus_topology::wire::{OrientedEdge, Wire};
 
     // Cutting plane normals + their box-plane-d values.
-    let cut_planes: Vec<(Vec3, f64)> = cuts.iter().map(|&i| faces[i]).collect();
+    let mut cut_planes: Vec<(Vec3, f64)> = cuts.iter().map(|&i| faces[i]).collect();
+    // Order the axes so that the inward directions form a right-handed frame.
+    // The three cyclic rim arcs then have the same traversal in every octant.
+    if cut_planes[0].0.cross(cut_planes[1].0).dot(cut_planes[2].0) > 0.0 {
+        cut_planes.swap(1, 2);
+    }
     // The 3 outward normals must be mutually orthogonal (axis-aligned box).
     let n0 = cut_planes[0].0;
     let n1 = cut_planes[1].0;
@@ -3270,6 +3275,11 @@ fn build_box_sphere_octant(
         }
     }
     let o = Point3::new(o[0], o[1], o[2]);
+    if (o - sphere_center).length() >= r - tol.linear {
+        // An exterior corner can have two positive roots on each incident
+        // edge. The four-vertex construction requires one outgoing crossing.
+        return Ok(None);
+    }
 
     // In-box direction perpendicular to each cutting plane = -n_i.
     let in_dirs: Vec<Vec3> = cut_planes
@@ -3388,9 +3398,9 @@ fn build_box_sphere_octant(
     // box edges O-Y and O-Z + arc Y→Z.
     let qd0_wire = Wire::new(
         vec![
-            OrientedEdge::new(e_oy, true),   // O → Y
-            OrientedEdge::new(arc_yz, true), // Y → Z (arc)
-            OrientedEdge::new(e_oz, false),  // Z → O (reversed)
+            OrientedEdge::new(e_oz, true),
+            OrientedEdge::new(arc_yz, false),
+            OrientedEdge::new(e_oy, false),
         ],
         true,
     )
@@ -3407,9 +3417,9 @@ fn build_box_sphere_octant(
 
     let qd1_wire = Wire::new(
         vec![
-            OrientedEdge::new(e_oz, true),   // O → Z
-            OrientedEdge::new(arc_zx, true), // Z → X (arc)
-            OrientedEdge::new(e_ox, false),  // X → O (reversed)
+            OrientedEdge::new(e_ox, true),
+            OrientedEdge::new(arc_zx, false),
+            OrientedEdge::new(e_oz, false),
         ],
         true,
     )
@@ -3426,9 +3436,9 @@ fn build_box_sphere_octant(
 
     let qd2_wire = Wire::new(
         vec![
-            OrientedEdge::new(e_ox, true),   // O → X
-            OrientedEdge::new(arc_xy, true), // X → Y (arc)
-            OrientedEdge::new(e_oy, false),  // Y → O (reversed)
+            OrientedEdge::new(e_oy, true),
+            OrientedEdge::new(arc_xy, false),
+            OrientedEdge::new(e_ox, false),
         ],
         true,
     )
@@ -3447,13 +3457,12 @@ fn build_box_sphere_octant(
     // Wind so the sphere's outward normal matches the resulting volume
     // (outside the octant). With arcs going X→Y→Z→X around the patch,
     // the right-hand rule gives an outward normal pointing AWAY from O.
-    // Each arc is traversed forward by its quarter-disc, so the patch must
-    // traverse all three reversed for consistent edge senses: X → Z → Y → X.
+    // Each quarter-disc traverses its boundary arc backward.
     let sph_wire = Wire::new(
         vec![
-            OrientedEdge::new(arc_zx, false), // X → Z
-            OrientedEdge::new(arc_yz, false), // Z → Y
-            OrientedEdge::new(arc_xy, false), // Y → X
+            OrientedEdge::new(arc_xy, true),
+            OrientedEdge::new(arc_yz, true),
+            OrientedEdge::new(arc_zx, true),
         ],
         true,
     )

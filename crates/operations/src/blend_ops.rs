@@ -2241,7 +2241,49 @@ pub fn fillet_v2(
     edges: &[EdgeId],
     radius: f64,
 ) -> Result<BlendResult, OperationsError> {
-    crate::measure::volume_memo::scoped(|| fillet_v2_attempts(topo, solid, edges, radius))
+    crate::measure::volume_memo::scoped(|| {
+        independent_hollow_fillet(topo, solid, |t| fillet_v2_attempts(t, solid, edges, radius))
+    })
+}
+
+// Walking blends retain untouched faces and cavity shells. Capture the finished
+// body, rewind the speculative build (including any source edits), then mint its
+// independent topology. Source IDs in the construction record stay meaningful.
+fn independent_hollow_fillet(
+    topo: &mut Topology,
+    solid: SolidId,
+    build: impl FnOnce(&mut Topology) -> Result<BlendResult, OperationsError>,
+) -> Result<BlendResult, OperationsError> {
+    if topo.solid(solid)?.inner_shells().is_empty() {
+        return build(topo);
+    }
+    let mark = remus_topology::transaction::RollbackSnapshot::capture(topo);
+    let capture = build(topo).and_then(|result| {
+        let plan = crate::copy::build_copy_plan(topo, result.solid)?;
+        Ok((result, plan))
+    });
+    mark.restore(topo);
+    let (mut result, plan) = capture?;
+    transactional(topo, |t| {
+        let output = crate::copy::restore_planned_body(t, plan)?;
+        if let Some(origins) = &mut result.face_origins {
+            // Missing targets were discarded by assembly and must remain
+            // unresolved, just as they were in the original construction record.
+            for dst in origins
+                .survived
+                .iter_mut()
+                .map(|(_, dst)| dst)
+                .chain(origins.created.iter_mut().map(|(dst, _)| dst))
+                .chain(origins.created_unattributed.iter_mut())
+            {
+                if let Some(new) = output.face_map.get(&dst.index()) {
+                    *dst = *new;
+                }
+            }
+        }
+        result.solid = output.solid;
+        Ok(result)
+    })
 }
 
 fn fillet_v2_attempts(
@@ -2396,15 +2438,17 @@ pub fn fillet_cascade(
     // attempt rebuilt under the material guard measures an identical result.
     crate::classify::mesh_memo::scoped(|| {
         crate::measure::volume_memo::scoped(|| {
-            let refusal = match fillet_cascade_attempts(topo, solid, edges, radius) {
-                Ok(result) => return Ok(result),
-                Err(error) => error,
-            };
-            // Preserve every existing engine/reorder/cavity success. This bounded
-            // cavity-free analytic family is attempted only after their final
-            // refusal, outside the outer-shell proxy used by cavity carrying.
-            crate::fillet::arc_torus::inner_tangent_tab_fillet(topo, solid, edges, radius)
-                .or(Err(refusal))
+            independent_hollow_fillet(topo, solid, |topo| {
+                let refusal = match fillet_cascade_attempts(topo, solid, edges, radius) {
+                    Ok(result) => return Ok(result),
+                    Err(error) => error,
+                };
+                // Preserve every existing engine/reorder/cavity success. This bounded
+                // cavity-free analytic family is attempted only after their final
+                // refusal, outside the outer-shell proxy used by cavity carrying.
+                crate::fillet::arc_torus::inner_tangent_tab_fillet(topo, solid, edges, radius)
+                    .or(Err(refusal))
+            })
         })
     })
 }
@@ -2471,28 +2515,30 @@ pub fn fillet_cascade_radii(
     }
     crate::classify::mesh_memo::scoped(|| {
         crate::measure::volume_memo::scoped(|| {
-            attempt_with_lazy_material_guard(topo, solid, &edges, largest, |t| {
-                transactional(t, |t| {
-                    let mut builder = FilletBuilder::new(t, solid);
-                    for (set, radius) in sets {
-                        if !set.is_empty() {
-                            builder.add_edges(set, *radius);
+            independent_hollow_fillet(topo, solid, |topo| {
+                attempt_with_lazy_material_guard(topo, solid, &edges, largest, |t| {
+                    transactional(t, |t| {
+                        let mut builder = FilletBuilder::new(t, solid);
+                        for (set, radius) in sets {
+                            if !set.is_empty() {
+                                builder.add_edges(set, *radius);
+                            }
                         }
-                    }
-                    let result = builder.build()?;
-                    validate_complete_blend(
-                        t,
-                        "fillet",
-                        solid,
-                        &result,
-                        &edges,
-                        BlendSize::VariableFillet {
-                            min_radius: smallest,
-                            max_radius: largest,
-                        },
-                    )?;
-                    reject_open_shell(t, result.solid)?;
-                    Ok(result)
+                        let result = builder.build()?;
+                        validate_complete_blend(
+                            t,
+                            "fillet",
+                            solid,
+                            &result,
+                            &edges,
+                            BlendSize::VariableFillet {
+                                min_radius: smallest,
+                                max_radius: largest,
+                            },
+                        )?;
+                        reject_open_shell(t, result.solid)?;
+                        Ok(result)
+                    })
                 })
             })
         })
@@ -2930,7 +2976,7 @@ fn fillet_cascade_engines(
     radius: f64,
 ) -> Result<BlendResult, OperationsError> {
     let walking_refusal = match transactional(topo, |t| {
-        let result = fillet_v2(t, solid, edges, radius)?;
+        let result = fillet_v2_attempts(t, solid, edges, radius)?;
         reject_open_shell(t, result.solid)?;
         Ok(result)
     }) {

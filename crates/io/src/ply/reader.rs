@@ -17,7 +17,7 @@ use remus_topology::solid::SolidId;
 ///
 /// Supports ASCII and binary little-endian formats. Reads vertex positions
 /// (`x`, `y`, `z`), optional normals (`nx`, `ny`, `nz`), and polygon faces
-/// (`vertex_indices` or `vertex_index`, fan-triangulated). Other properties
+/// (`vertex_indices` or `vertex_index`, triangulated in the polygon plane). Other properties
 /// and elements are skipped by their declared types.
 ///
 /// # Errors
@@ -569,7 +569,7 @@ fn read_body(
     let mut positions = Vec::new();
     let mut normals = Vec::new();
     let mut indices = Vec::new();
-    let mut face = Vec::new();
+    let mut polygons = Vec::new();
     let mut triangle_count = 0_usize;
 
     for element in &header.elements {
@@ -620,19 +620,21 @@ fn read_body(
                         }
                         triangle_count = triangle_count.saturating_add(n.saturating_sub(2));
                         ensure_limit("PLY triangles", triangle_count, limits.max_model_entities)?;
-                        face.clear();
+                        let start = indices.len();
                         for _ in 0..n {
                             let value = values
                                 .scalar(item)
                                 .map_err(|reason| context(instance, reason))?;
                             let vertex = u32::try_from(value as i64).ok();
-                            face.push(vertex.ok_or_else(|| {
+                            indices.push(vertex.ok_or_else(|| {
                                 context(instance, format!("invalid vertex index {value}"))
                             })?);
                         }
-                        // Fan triangulation for polygons: v0-v1-v2, v0-v2-v3, ...
-                        for pair in face.windows(2).skip(1) {
-                            indices.extend([face[0], pair[0], pair[1]]);
+                        if n > 3 {
+                            polygons.push(start..indices.len());
+                        }
+                        if n < 3 {
+                            indices.truncate(start);
                         }
                     }
                     PropertyKind::List { count, item } => {
@@ -668,6 +670,7 @@ fn read_body(
             ),
         });
     }
+    let indices = crate::polygon_faces::triangulate(indices, &polygons, &positions, |v| v)?;
     if normals.is_empty() {
         normals = compute_normals(&positions, &indices);
     }

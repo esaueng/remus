@@ -11823,3 +11823,127 @@ fn two_face_gate_refuses_a_flat_nurbs_double_sheet() {
         "the flat double sheet must fail the face-count floor: {error}"
     );
 }
+
+#[test]
+fn sphere_box_octant_arcs_stay_inside_each_reflection() {
+    use remus_check::validate::{ValidateOptions, validate_solid};
+    use remus_math::mat::Mat4;
+    for bits in 0..8 {
+        let low = [1, 2, 4].map(|bit| if bits & bit == 0 { 0. } else { -4. });
+        for reversed in [false, true] {
+            let mut topo = Topology::new();
+            let b = crate::primitives::make_box(&mut topo, 4., 4., 4.).unwrap();
+            crate::transform::transform_solid(
+                &mut topo,
+                b,
+                &Mat4::translation(low[0], low[1], low[2]),
+            )
+            .unwrap();
+            let s = crate::primitives::make_sphere(&mut topo, 2., 16).unwrap();
+            let (a, b) = if reversed { (s, b) } else { (b, s) };
+            let r = boolean_with_policy(
+                &mut topo,
+                BooleanOp::Intersect,
+                a,
+                b,
+                remus_math::context::FallbackPolicy::ExactOnly,
+                &mut false,
+            )
+            .unwrap();
+            let mut arcs = 0;
+            for edge in remus_topology::explorer::solid_edges(&topo, r).unwrap() {
+                if matches!(topo.edge(edge).unwrap().curve(), EdgeCurve::Circle(_)) {
+                    let (lo, hi) = crate::query::trimmed_edge_domain(&topo, edge).unwrap();
+                    assert!((hi - lo - std::f64::consts::FRAC_PI_2).abs() < 1e-10);
+                    for p in
+                        crate::tessellate::sample_edge_polyline(&topo, edge, 0.02, 0.2).unwrap()
+                    {
+                        assert!(
+                            p.0.iter()
+                                .zip(low)
+                                .all(|(x, l)| *x >= l - 1e-10 && *x <= l + 4. + 1e-10)
+                        );
+                    }
+                    arcs += 1;
+                }
+            }
+            assert_eq!(arcs, 3);
+            let report = validate_solid(&topo, r, &ValidateOptions::default()).unwrap();
+            assert!(
+                report
+                    .issues
+                    .iter()
+                    .all(|i| i.check != remus_check::validate::CheckId::FaceOrientationConsistency),
+                "{report:?}"
+            );
+            assert!(
+                (crate::measure::solid_volume(&topo, r, 0.01).unwrap()
+                    - 4. * std::f64::consts::PI / 3.)
+                    .abs()
+                    < 0.02
+            );
+        }
+    }
+}
+
+#[test]
+fn sphere_box_exterior_corner_is_excluded() {
+    use remus_check::classify::{ClassifyOptions, PointClassification, classify_point};
+    use remus_math::context::FallbackPolicy;
+    let mut topo = Topology::new();
+    let b = crate::primitives::make_box(&mut topo, 3., 3., 3.).unwrap();
+    let s = crate::primitives::make_sphere(&mut topo, 1., 16).unwrap();
+    let center = Point3::new(0.62, 0.62, 0.62);
+    crate::transform::transform_solid(
+        &mut topo,
+        s,
+        &remus_math::mat::Mat4::translation(0.62, 0.62, 0.62),
+    )
+    .unwrap();
+    let result = boolean_with_policy(
+        &mut topo,
+        BooleanOp::Intersect,
+        b,
+        s,
+        remus_math::context::FallbackPolicy::ExactOnly,
+        &mut false,
+    );
+    let r = match result {
+        Err(crate::OperationsError::ExactOnlyUnattainable) => {
+            let mut approximate = false;
+            let fallback = boolean_with_policy(
+                &mut topo,
+                BooleanOp::Intersect,
+                b,
+                s,
+                FallbackPolicy::AllowApproximate { budget: 0.01 },
+                &mut approximate,
+            )
+            .unwrap();
+            assert!(approximate);
+            fallback
+        }
+        exact => exact.unwrap(),
+    };
+    for id in remus_topology::explorer::solid_vertices(&topo, r).unwrap() {
+        let p = topo.vertex(id).unwrap().point();
+        assert!(
+            (p - center).length() <= 1. + 1e-7 && p.0.iter().all(|x| *x >= -1e-7),
+            "{p:?}"
+        );
+    }
+    assert_eq!(
+        classify_point(
+            &topo,
+            r,
+            Point3::new(0., 0., 0.),
+            &ClassifyOptions::default()
+        )
+        .unwrap(),
+        PointClassification::Outside
+    );
+    assert_eq!(
+        classify_point(&topo, r, center, &ClassifyOptions::default()).unwrap(),
+        PointClassification::Inside
+    );
+}
