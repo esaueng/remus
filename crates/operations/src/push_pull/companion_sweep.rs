@@ -421,7 +421,9 @@ impl Sweep {
 
     /// Own `heights` narrowed to those a point in the certified box can
     /// have: a point at own height `t` lies at height `shift + t` here
-    /// within `slack`.
+    /// within `slack`. The box's heights are widened by a rounding
+    /// allowance relative to every coordinate read, so a small box far from
+    /// this frame's origin never rounds to a single height.
     fn box_heights(
         &self,
         heights: (f64, f64),
@@ -433,7 +435,14 @@ impl Sweep {
             heights,
             bounds.map(|bounds| {
                 let (low, high) = height_range(bounds, self.origin, self.axis);
-                (low - shift - slack, high - shift + slack)
+                let rounding = 1e-12_f64.mul_add(
+                    magnitude(self.origin) + box_magnitude(bounds) + shift.abs(),
+                    Tolerance::new().linear,
+                );
+                (
+                    low - shift - slack - rounding,
+                    high - shift + slack + rounding,
+                )
             }),
         )
     }
@@ -1325,9 +1334,12 @@ fn box_magnitude(bounds: Aabb3) -> f64 {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-    use super::{Companion, arc_radii, circular_union, cone_radii, cosine_range};
+    use super::{
+        Companion, Profile, Shape, Sweep, arc_radii, circular_union, cone_radii, cosine_range,
+    };
     use crate::primitives::{make_cone, make_cylinder, make_torus};
     use crate::transform::transform_solid;
+    use remus_math::aabb::Aabb3;
     use remus_math::{
         mat::Mat4,
         surfaces::CylindricalSurface,
@@ -1434,6 +1446,36 @@ mod tests {
             .unwrap()
             .set_surface(FaceSurface::Cylinder(tilted));
         assert!(blocked(&topo, moving, &[wall], 0.4));
+    }
+
+    /// A cone near the world origin read about an axis whose origin lies
+    /// `2^40` away: its box's heights round together in that frame, and must
+    /// still hold the cone's own heights (review of #1956).
+    #[test]
+    fn box_heights_survive_a_far_frame_origin() {
+        let far = 2.0_f64.powi(40);
+        let sweep = Sweep {
+            origin: Point3::new(0.0, 0.0, far),
+            axis: UP,
+            profile: Profile {
+                shift: 0.0,
+                height_slack: 0.0,
+                radial_slack: 0.0,
+                heights: (-2.0, -1.0),
+                shape: Shape::Band { lo: 16.0, hi: 16.0 },
+                scale: far,
+            },
+            bounds: None,
+            scale: far,
+        };
+        let top = 2.0_f64.powi(-15);
+        let tol = 1e-7;
+        let bounds = Aabb3 {
+            min: Point3::new(-32.0 - tol, -32.0 - tol, -tol),
+            max: Point3::new(32.0 + tol, 32.0 + tol, top + tol),
+        };
+        let (low, high) = sweep.box_heights((0.0, top), Some(bounds), -far, 0.0);
+        assert!(low <= 0.0 && high >= top, "narrowed to {low}..{high}");
     }
 
     #[test]
