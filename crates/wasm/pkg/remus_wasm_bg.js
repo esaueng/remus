@@ -8291,9 +8291,6 @@ export class RemusKernel {
      *
      * Returns flattened `[x, y, z, ...]` samples walking exactly the edge's
      * own parameter span — the same sampler the solid wireframe uses.
-     * Unlike [`tessellateEdge`](Self::tessellate_edge), a circle, ellipse,
-     * or closed-NURBS edge yields its actual arc (vertex-anchored), never a
-     * full-period trace of the parent curve.
      *
      * # Errors
      *
