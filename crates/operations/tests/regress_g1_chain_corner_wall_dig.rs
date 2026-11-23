@@ -150,8 +150,13 @@ fn g1_chain_around_corner_fillets_stays_in_its_band() {
     for i in 0..=296 {
         for j in 0..=240 {
             let (x, y) = (f64::from(i) * 0.25 + 0.01, f64::from(j) * 0.25 + 0.013);
+            // Up to z = 2.86, then two layers just under the band's lower
+            // contact circle at z = 3, where a shallow gouge would hide.
             for k in 0..12 {
                 points.push(Point3::new(x, y, f64::from(k) * 0.25 + 0.11));
+            }
+            for z in [2.95, 2.995] {
+                points.push(Point3::new(x, y, z));
             }
             if depth_in_from_filleted_outline(x, y) > BAND_R + 0.05 {
                 points.push(Point3::new(x, y, 3.5));

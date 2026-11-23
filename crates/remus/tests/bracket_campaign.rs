@@ -538,7 +538,7 @@ fn sequence_f6_after_f1_f2_f5() {
             .unwrap()
             .into_iter()
             .filter_map(|f| match m.topology().face(f).unwrap().surface() {
-                FaceSurface::Torus(t) => Some((t.major_radius(), t.minor_radius())),
+                FaceSurface::Torus(t) => Some((t.center(), t.major_radius(), t.minor_radius())),
                 _ => None,
             })
             .collect::<Vec<_>>()
@@ -554,16 +554,26 @@ fn sequence_f6_after_f1_f2_f5() {
     );
     let after = tori(&m, filleted);
     let (r, big_r) = (Pass::F6.radius(), Pass::F1.radius());
-    let banded = |set: &[(f64, f64)]| {
-        set.iter()
-            .filter(|(major, minor)| (major - (big_r - r)).abs() < 1e-9 && (minor - r).abs() < 1e-9)
-            .count()
-    };
-    assert_eq!(
-        banded(&after) - banded(&before),
-        2,
-        "one exact torus band per F1 arc: {after:?}"
-    );
+    // One band per F1 arc, each centred on its own corner axis one F6 radius
+    // below the top: counting matches across the body would accept two faces
+    // at one corner and none at the other.
+    for x in [big_r, 74.0 - big_r] {
+        let centre = Point3::new(x, 60.0 - big_r, PLATE_T - r);
+        let banded = |set: &[(Point3, f64, f64)]| {
+            set.iter()
+                .filter(|(c, major, minor)| {
+                    (*c - centre).length() < 1e-9
+                        && (major - (big_r - r)).abs() < 1e-9
+                        && (minor - r).abs() < 1e-9
+                })
+                .count()
+        };
+        assert_eq!(
+            (banded(&before), banded(&after)),
+            (0, 1),
+            "one exact torus band about the F1 axis at {centre:?}: {after:?}"
+        );
+    }
 }
 
 /// The rolling-ball rebuild re-emits every face, the F5 corner balls and
