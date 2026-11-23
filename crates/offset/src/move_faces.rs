@@ -1,7 +1,13 @@
 //! Topology-preserving planar face moves.
 
+mod multi;
 mod partial_cylinder;
 mod quarter_cylinder;
+
+pub use multi::{
+    MAX_MULTI_MOVE_FACES, coplanar_group_distance, move_faces_multi,
+    move_faces_multi_with_entity_map, move_faces_multi_with_face_map,
+};
 
 use remus_math::compact_sort::CompactSort;
 use std::collections::{HashMap, HashSet};
@@ -216,13 +222,16 @@ fn replace_surface_impl(
     crate::inter3d::intersect_faces_3d(topo, solid, &mut data)?;
     data.offset_faces = all_surfaces;
     crate::inter2d::intersect_pcurves_2d(topo, solid, &mut data)?;
-    restore_exact_plane_cylinder_edges::<true>(topo, Vec3::new(0.0, 0.0, 0.0), 0.0, &mut data)?;
+    restore_exact_plane_cylinder_edges::<true>(
+        topo,
+        &MoveShifts::uniform(Vec3::new(0.0, 0.0, 0.0)),
+        &mut data,
+    )?;
     validate_rebuilt_edges::<true, _>(topo, &source_edge_faces, &selected, &data)?;
     let boundary_maps = build_topology_preserving_wires::<true, _>(
         topo,
         solid,
-        Vec3::new(0.0, 0.0, 0.0),
-        0.0,
+        &MoveShifts::uniform(Vec3::new(0.0, 0.0, 0.0)),
         &source_edge_faces,
         &mut data,
     )?;
@@ -299,6 +308,82 @@ fn move_faces_impl(
         }
     }
 
+    let distances: HashMap<usize, f64> = selected.iter().map(|&face| (face, distance)).collect();
+    rebuild_planar_moves(
+        topo,
+        solid,
+        &source_faces,
+        &selected,
+        &distances,
+        &MoveShifts::uniform(reference_normal * distance),
+        distance,
+    )
+}
+
+/// How far each selected face's support moves: one translation shared by
+/// the whole selection (a coplanar group), or one per selected face (each
+/// along its own outward normal).
+struct MoveShifts {
+    uniform: Option<Vec3>,
+    faces: HashMap<usize, Vec3>,
+}
+
+impl MoveShifts {
+    fn uniform(shift: Vec3) -> Self {
+        Self {
+            uniform: Some(shift),
+            faces: HashMap::new(),
+        }
+    }
+
+    const fn per_face(faces: HashMap<usize, Vec3>) -> Self {
+        Self {
+            uniform: None,
+            faces,
+        }
+    }
+
+    /// The translation of `face`'s support (zero for a fixed face of a
+    /// per-face move).
+    fn face(&self, face: FaceId) -> Vec3 {
+        self.uniform.unwrap_or_else(|| {
+            self.faces
+                .get(&face.index())
+                .copied()
+                .unwrap_or(Vec3::new(0.0, 0.0, 0.0))
+        })
+    }
+
+    /// The translation of whichever of two support faces moves.
+    fn pair(&self, first: FaceId, second: FaceId) -> Vec3 {
+        self.uniform.unwrap_or_else(|| {
+            self.faces
+                .get(&first.index())
+                .or_else(|| self.faces.get(&second.index()))
+                .copied()
+                .unwrap_or(Vec3::new(0.0, 0.0, 0.0))
+        })
+    }
+
+    const fn is_per_face(&self) -> bool {
+        self.uniform.is_none()
+    }
+}
+
+/// Offset every selected planar support by its own signed distance, keep
+/// every other support fixed, and rebuild each source edge and vertex once
+/// from its final supports.
+#[allow(clippy::too_many_arguments)]
+fn rebuild_planar_moves(
+    topo: &mut Topology,
+    solid: SolidId,
+    source_faces: &[FaceId],
+    selected: &HashSet<usize>,
+    distances: &HashMap<usize, f64>,
+    shifts: &MoveShifts,
+    data_distance: f64,
+) -> Result<MoveFacesEntityResult, OffsetError> {
+    let options = OffsetOptions::default();
     let source_counts = solid_entity_counts(topo, solid)?;
     let source_shell_sizes = shell_face_counts(topo, solid)?;
     let source_wire_shapes = source_faces
@@ -306,35 +391,37 @@ fn move_faces_impl(
         .map(|&face| Ok((face, wire_shape(topo, face)?)))
         .collect::<Result<HashMap<_, _>, OffsetError>>()?;
     let source_edge_faces = edge_to_face_map(topo, solid)?;
-    validate_source_edges(topo, &source_edge_faces, &selected)?;
+    validate_source_edges(topo, &source_edge_faces, selected)?;
 
     validate_conical_cap_displacement(
         topo,
         &source_edge_faces,
-        &selected,
-        reference_normal * distance,
+        selected,
+        shifts,
         options.tolerance,
     )?;
-    let mut data = OffsetData::new(distance, options, Vec::new());
-    populate_surfaces(topo, solid, &selected, distance, &mut data)?;
+    let mut data = OffsetData::new(data_distance, options, Vec::new());
+    populate_surfaces(topo, solid, distances, &mut data)?;
     let all_surfaces = data.offset_faces.clone();
-    let relevant_faces = move_neighborhood(&source_edge_faces, &selected);
+    let relevant_faces = move_neighborhood(&source_edge_faces, selected);
     data.offset_faces
         .retain(|face, _| relevant_faces.contains(&face.index()));
     crate::inter3d::intersect_faces_3d(topo, solid, &mut data)?;
     data.offset_faces = all_surfaces;
     crate::inter2d::intersect_pcurves_2d(topo, solid, &mut data)?;
-    restore_exact_plane_cylinder_edges::<false>(topo, reference_normal, distance, &mut data)?;
-    validate_rebuilt_edges::<false, _>(topo, &source_edge_faces, &selected, &data)?;
+    restore_exact_plane_cylinder_edges::<false>(topo, shifts, &mut data)?;
+    validate_rebuilt_edges::<false, _>(topo, &source_edge_faces, selected, &data)?;
     let boundary_maps = build_topology_preserving_wires::<false, _>(
         topo,
         solid,
-        reference_normal,
-        distance,
+        shifts,
         &source_edge_faces,
         &mut data,
     )?;
     validate_rebuilt_wires(topo, &source_wire_shapes, &data)?;
+    if shifts.is_per_face() {
+        multi::validate_edge_directions(topo, &source_edge_faces, selected, &boundary_maps)?;
+    }
 
     let result = crate::assemble::assemble_solid_with_face_map(topo, &data)?;
     super::validate_offset_result(topo, result.solid)?;
@@ -367,8 +454,7 @@ fn move_neighborhood<V: std::ops::Deref<Target = [FaceId]>>(
 
 fn restore_exact_plane_cylinder_edges<const REPLACEMENT: bool>(
     topo: &mut Topology,
-    move_normal: Vec3,
-    distance: f64,
+    shifts: &MoveShifts,
     data: &mut OffsetData,
 ) -> Result<(), OffsetError> {
     for index in 0..data.intersections.len() {
@@ -435,7 +521,7 @@ fn restore_exact_plane_cylinder_edges<const REPLACEMENT: bool>(
             let shift = if REPLACEMENT {
                 Vec3::new(0.0, 0.0, 0.0)
             } else {
-                move_normal * distance
+                shifts.pair(intersection.face_a, intersection.face_b)
             };
             let range = source
                 .strict_domain()
@@ -469,7 +555,7 @@ fn restore_exact_plane_cylinder_edges<const REPLACEMENT: bool>(
         let shift = if REPLACEMENT {
             Vec3::new(0.0, 0.0, 0.0)
         } else if face_a.distance != 0.0 || face_b.distance != 0.0 {
-            move_normal * distance
+            shifts.pair(intersection.face_a, intersection.face_b)
         } else {
             Vec3::new(0.0, 0.0, 0.0)
         };
@@ -879,8 +965,7 @@ fn build_topology_preserving_wires<
 >(
     topo: &mut Topology,
     solid: SolidId,
-    move_normal: Vec3,
-    distance: f64,
+    shifts: &MoveShifts,
     source_edge_faces: &std::collections::BTreeMap<usize, V>,
     data: &mut OffsetData,
 ) -> Result<BoundaryMaps, OffsetError> {
@@ -943,8 +1028,17 @@ fn build_topology_preserving_wires<
                     source_edge_faces,
                     data,
                 )?
+            } else if let Some(shift) = shifts.uniform {
+                source.point() + shift
             } else {
-                source.point() + move_normal * distance
+                multi::predict_vertex(
+                    source.point(),
+                    incident_edges
+                        .get(&source_vertex.index())
+                        .map_or(&[][..], Vec::as_slice),
+                    source_edge_faces,
+                    data,
+                )
             };
             rebuild_vertex_point::<REPLACEMENT, _>(
                 topo,
@@ -978,7 +1072,7 @@ fn build_topology_preserving_wires<
             return Err(OffsetError::TopologyChange {
                 face: source_edge_faces
                     .get(&source_edge.index())
-                    .and_then(|faces| faces.first().copied()),
+                    .and_then(|faces| multi::named_face(faces, data, shifts.is_per_face())),
                 edge: Some(source_edge),
                 reason: "move collapsed a non-degenerate source edge".into(),
             });
@@ -1776,8 +1870,7 @@ fn populate_replacement_surfaces(
 fn populate_surfaces(
     topo: &Topology,
     solid: SolidId,
-    selected: &HashSet<usize>,
-    distance: f64,
+    distances: &HashMap<usize, f64>,
     data: &mut OffsetData,
 ) -> Result<(), OffsetError> {
     let solid_data = topo.solid(solid)?;
@@ -1789,7 +1882,7 @@ fn populate_surfaces(
         for face_id in faces {
             let face = topo.face(face_id)?;
             let mut surface = face.surface().clone();
-            let face_distance = if selected.contains(&face_id.index()) {
+            let face_distance = if let Some(&distance) = distances.get(&face_id.index()) {
                 let FaceSurface::Plane { d, .. } = &mut surface else {
                     return Err(OffsetError::UnsupportedMoveFace {
                         face: face_id,
@@ -1895,7 +1988,7 @@ fn validate_conical_cap_displacement<V: std::ops::Deref<Target = [FaceId]>>(
     topo: &Topology,
     edge_faces: &std::collections::BTreeMap<usize, V>,
     selected: &HashSet<usize>,
-    delta: Vec3,
+    shifts: &MoveShifts,
     tolerance: Tolerance,
 ) -> Result<(), OffsetError> {
     for (&index, faces) in edge_faces {
@@ -1919,7 +2012,7 @@ fn validate_conical_cap_displacement<V: std::ops::Deref<Target = [FaceId]>>(
             continue;
         };
         let before = (circle.center() - cone.apex()).dot(cone.axis());
-        let after = before + delta.dot(cone.axis());
+        let after = before + shifts.face(face).dot(cone.axis());
         if before * after <= 0.0 || after.abs() * cone.half_angle().tan() <= tolerance.linear {
             return Err(OffsetError::TopologyChange {
                 face: Some(face),

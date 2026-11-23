@@ -548,6 +548,7 @@ Quick reference — find the right file for any task:
 | Cavity (inner shell) extent checks | `cavity.rs` |
 | Shell-interference certificates (slab collapse, cavity clearance, cavity inside the outer shell) | `interference.rs` |
 | Topology-preserving planar face moves | `move_faces.rs` |
+| Multi-face planar moves (B287): every selected plane offset by its own distance along its own outward normal, edges and vertices rebuilt once from their final supports; inverted or collapsed edges refuse naming the moved face; a coplanar group runs the coplanar move bit for bit | `move_faces/multi.rs` |
 | Quarter-cylinder replacement clearance | `move_faces/quarter_cylinder.rs` |
 | Clearance for coaxially resizing a general partial-turn boss wall | `move_faces/partial_cylinder.rs` |
 
@@ -766,6 +767,8 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Shared loft/sweep/pipe/revolve end caps | `cap.rs` |
 | Journal ingestion for modeling operations | `journal_ops.rs` |
 | Direct push/pull face editing | `push_pull.rs` |
+| Multi-face moves (B287): stepped tops, pocket and boss walls moved together along their own normals, swept-region refusals per face, journaled and prepared (weights) variants | `multi_move.rs` |
+| Multi-face move acceptance against chained single moves: stepped tops, pocket walls in and out, boss walls, per-face distances, collapse refusals naming the face, prepared parity and staleness (tests) | `tests/move_faces_multi.rs` |
 | Conservative radial separation proofs for periodic face sweeps | `push_pull/radial_clearance.rs` |
 | Coaxial resize of a full-turn cylindrical wall whose rims meet a sphere off-axis (re-intersected rims, sliding rim vertices) | `push_pull/sphere_rim_resize.rs` |
 | Face moves with explicit permission and quality disclosure for sampled cap reconstruction | `face_move_quality.rs` |
@@ -911,6 +914,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Whole-session snapshots (`snapshot`, `fromSnapshot`, `snapshotDigest`, `snapshotBuildId`): the topology verbatim plus the session handle counters, `snapshot:<code>` refusals | `bindings/snapshot.rs` |
 | Snapshot contracts: handle and counter parity, stale-handle refusals, journaled edits byte-identical after a restore (primitives and the Gentle-Gecko STEP), refusals of transient, poisoned, truncated, corrupt, foreign-format and foreign-build input (tests) | `bindings/snapshot_tests.rs` |
 | Prepared face moves for interactive drags (`prepareMoveFaces`, `moveFacesPrepared`, `moveFacesPreparedJournaled`, `releasePreparedMove`) | `bindings/prepared_move.rs` |
+| Multi-face moves (`moveFacesMulti`, `moveFacesMultiJournaled`, `moveFacesMultiDetailed`, `prepareMoveFacesMulti`), direct and batch, with their contract tests | `bindings/move_faces_multi.rs`, `bindings/move_faces_multi/tests.rs` |
 | Prepared blend-group edits for live drags (`prepareResizeBlend`, `prepareResizeCylindricalFace`, `previewPreparedGroupEdit`, `commitPreparedGroupEdit`, `commitPreparedGroupEditJournaled`, `releasePreparedGroupEdit`) | `bindings/prepared_group_edit.rs` |
 | Prepared Gecko boss and band drags through checkpoint restores against the unprepared and journaled calls, typed refusals and the live-handle cap (tests) | `bindings/prepared_group_edit/tests.rs` |
 | Imported Gecko A2/A6/A7 journaled direct edits, inferred handle continuity and preview cancellation (tests) | `bindings/gecko_edit_tests.rs` |

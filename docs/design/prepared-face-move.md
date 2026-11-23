@@ -86,3 +86,17 @@ Per frame: `restore(checkpoint)`, then
 On a stale refusal (the source was edited), prepare again. On drag end or
 cancel: `releasePreparedMove(handle)`. Distances stay source-relative, as
 the [face-drag preview contract](face-drag-preview-contract.md) requires.
+
+## Multi-face moves (B287)
+
+`prepareMoveFacesMulti(solid, faces[, weights]) -> handle` prepares a
+[multi-face move](../../crates/operations/src/multi_move.rs) in the same
+table: `moveFacesPrepared(handle, distance)` and
+`moveFacesPreparedJournaled(handle, distance)` move face `i` by
+`weights[i] × distance` (weights default to one) and return exactly what
+`moveFacesMulti` / `moveFacesMultiJournaled` return for those distances,
+under the same staleness contract; `releasePreparedMove` releases it.
+Native: `PreparedFaceMove::prepare_multi`. A multi-face move is exact-only:
+the quality-aware prepared call never falls back to a sampled cap join. A
+selection that is one coplanar group with equal weights uses the coplanar
+move's preparation.

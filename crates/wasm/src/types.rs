@@ -175,7 +175,9 @@ pub enum SolidOperationDetailedResult {
         /// and what was approximated. The construction twins are exact-only
         /// by construction, so they always report `"exact"`. The face-move
         /// twin (`moveFacesDetailed`) is also exact-only and includes the
-        /// signed source-relative `distance`.
+        /// signed source-relative `distance`; the multi-face twin
+        /// (`moveFacesMultiDetailed`) includes its `distances` and the
+        /// total `faceEvolution`.
         #[tsify(type = "Record<string, unknown>")]
         details: Map<String, Value>,
         /// Handle of the committed solid.

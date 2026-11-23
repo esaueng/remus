@@ -34,6 +34,16 @@
 //! source, even though it advances the topology's cache generation.
 //! Selections the preparation does not cover (a bore move, an empty or
 //! invalid selection) run the unprepared move on every call.
+//!
+//! # Multi-face moves
+//!
+//! [`PreparedFaceMove::prepare_multi`] prepares a
+//! [multi-face move](crate::multi_move) with one weight per face: a call by
+//! `distance` moves face `i` by `weights[i] × distance` and returns what
+//! [`crate::multi_move::move_faces_multi_with_evolution`] and
+//! [`crate::multi_move::move_faces_multi_journaled`] return for those
+//! distances, under the same staleness contract. Such a move is exact-only:
+//! the quality-aware calls never fall back to a sampled cap join.
 
 use remus_topology::Topology;
 use remus_topology::face::FaceId;
@@ -57,6 +67,8 @@ pub struct PreparedFaceMove {
     scope: Vec<EntityKey>,
     /// `None` runs the unprepared move on every call.
     planar: Option<PreparedPlanarMove>,
+    /// A multi-face move's preparation; `planar` is then `None`.
+    multi: Option<crate::multi_move::PreparedMultiMove>,
 }
 
 impl std::fmt::Debug for PreparedFaceMove {
@@ -65,6 +77,7 @@ impl std::fmt::Debug for PreparedFaceMove {
             .field("solid", &self.solid)
             .field("faces", &self.faces)
             .field("prepared", &self.planar.is_some())
+            .field("multi", &self.multi.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -92,7 +105,47 @@ impl PreparedFaceMove {
             source,
             scope: crate::journal_ops::solid_entity_keys(topo, solid)?,
             planar: PreparedPlanarMove::prepare(topo, solid, faces)?,
+            multi: None,
         })
+    }
+
+    /// Prepares [multi-face moves](crate::multi_move) of `faces` of `solid`:
+    /// a call by `distance` moves face `i` by `weights[i] × distance`.
+    /// Empty `weights` means one for every face. Reads the topology only.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `solid` or one of its entities is missing, the
+    /// weights are not finite or not one per face, or the selection is
+    /// empty or larger than [`remus_offset::MAX_MULTI_MOVE_FACES`].
+    pub fn prepare_multi(
+        topo: &Topology,
+        solid: SolidId,
+        faces: &[FaceId],
+        weights: &[f64],
+    ) -> Result<Self, OperationsError> {
+        let _span = crate::performance::span("move_faces.prepare");
+        topo.solid(solid)?;
+        let source = solid_move_key(topo, solid).ok_or_else(|| OperationsError::InvalidInput {
+            reason: format!("solid {} has missing entities", solid.index()),
+        })?;
+        Ok(Self {
+            solid,
+            faces: faces.to_vec(),
+            source,
+            scope: crate::journal_ops::solid_entity_keys(topo, solid)?,
+            planar: None,
+            multi: Some(crate::multi_move::PreparedMultiMove::prepare(
+                topo, solid, faces, weights,
+            )?),
+        })
+    }
+
+    /// Whether this is a multi-face preparation
+    /// ([`Self::prepare_multi`]).
+    #[must_use]
+    pub const fn is_multi(&self) -> bool {
+        self.multi.is_some()
     }
 
     /// The prepared source solid.
@@ -147,7 +200,7 @@ impl PreparedFaceMove {
     ) -> Result<JournaledSolidOp, OperationsError> {
         let _total = crate::performance::span("move_faces.journaled");
         self.require_current(topo)?;
-        if self.planar.is_none() {
+        if self.planar.is_none() && self.multi.is_none() {
             return crate::journal_ops::move_faces_journaled(
                 topo,
                 self.solid,
@@ -236,6 +289,10 @@ impl PreparedFaceMove {
     > {
         use crate::face_move_quality::{CapRebuild, FaceMoveQuality};
         crate::face_move_quality::check_permission(approximation)?;
+        if self.multi.is_some() {
+            let edit = self.edit(topo, distance)?;
+            return Ok((edit, FaceMoveQuality::Exact, CapRebuild::No));
+        }
         match self.edit(topo, distance) {
             Ok(edit) => Ok((edit, FaceMoveQuality::Exact, CapRebuild::No)),
             Err(error) => {
@@ -282,6 +339,9 @@ impl PreparedFaceMove {
         topo: &mut Topology,
         distance: f64,
     ) -> Result<DirectEditEvolution, OperationsError> {
+        if let Some(multi) = &mut self.multi {
+            return multi.move_faces(topo, self.solid, &self.faces, distance);
+        }
         match &mut self.planar {
             Some(planar) => planar.move_faces(topo, self.solid, &self.faces, distance),
             None => crate::push_pull::move_faces_with_entity_evolution(
