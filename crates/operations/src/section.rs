@@ -1283,15 +1283,18 @@ fn loop_wire(
         *vertices[i % n]
             .get_or_insert_with(|| topo.add_vertex(Vertex::new(points[i % n], tol.linear)))
     };
+    // One edge run per maximal block of equal traces, read from `first`
+    // round the chain. Each block is non-empty, so the walk always ends.
+    let rotated: Vec<Trace> = traces[first..]
+        .iter()
+        .chain(&traces[..first])
+        .copied()
+        .collect();
     let mut oriented_edges = Vec::new();
-    let mut done = 0;
-    while done < n {
-        let begin = first + done;
-        let trace = traces[begin % n];
-        let length = (1..n - done)
-            .find(|&m| traces[(begin + m) % n] != trace)
-            .unwrap_or(n - done);
-        done += length;
+    let mut cursor = first;
+    for chunk in rotated.chunk_by(|a, b| a == b) {
+        let (begin, length, trace) = (cursor, chunk.len(), chunk[0]);
+        cursor += length;
 
         if let Trace::Conic(k) = trace {
             let run: Vec<Point3> = (begin..=begin + length).map(point).collect();
@@ -2326,6 +2329,78 @@ mod tests {
             first
         );
         assert_ne!(conic_trace(&mut carriers, circle(3.0 + 1e-6), tol), first);
+        assert_eq!(carriers.len(), 2);
+    }
+
+    /// `Conic::same_curve` matches identical and reversed carriers (including
+    /// ellipses with flipped major-axis sign) and rejects single-parameter
+    /// deviations on centre, semi-axes, plane normal, major-axis direction,
+    /// and conic kind.
+    #[test]
+    fn conic_same_curve_distinguishes_circles_and_ellipses() {
+        let tol = Tolerance::new();
+        let center = Point3::new(1.0, 2.0, 3.0);
+        let z = Vec3::new(0.0, 0.0, 1.0);
+        let x = Vec3::new(1.0, 0.0, 0.0);
+        let shift_in = Vec3::new(0.5 * tol.linear, 0.0, 0.0);
+        let shift_out = Vec3::new(2.0 * tol.linear, 0.0, 0.0);
+        let tilt = 10.0 * tol.angular;
+
+        let make_circle =
+            |c: Point3, n: Vec3, r: f64| Conic::Circle(Circle3D::new(c, n, r).unwrap());
+        let base_circle = make_circle(center, z, 3.0);
+        assert!(base_circle.same_curve(&base_circle, tol));
+        assert!(base_circle.same_curve(&base_circle.reversed(), tol));
+        assert!(base_circle.same_curve(&make_circle(center + shift_in, z, 3.0), tol));
+        assert!(!base_circle.same_curve(&make_circle(center + shift_out, z, 3.0), tol));
+        assert!(!base_circle.same_curve(&make_circle(center, z, 3.0 + 2.0 * tol.linear), tol));
+        assert!(!base_circle.same_curve(
+            &make_circle(center, Vec3::new(0.0, tilt.sin(), tilt.cos()), 3.0),
+            tol,
+        ));
+
+        let make_ellipse = |c: Point3, n: Vec3, a: f64, b: f64, u: Vec3| {
+            Conic::Ellipse(Ellipse3D::new_with_ref(c, n, a, b, u).unwrap())
+        };
+        let base_ellipse = make_ellipse(center, z, 5.0, 3.0, x);
+        assert!(base_ellipse.same_curve(&base_ellipse, tol));
+        assert!(base_ellipse.same_curve(&base_ellipse.reversed(), tol));
+        assert!(base_ellipse.same_curve(&make_ellipse(center, z, 5.0, 3.0, -x), tol));
+        assert!(base_ellipse.same_curve(&make_ellipse(center + shift_in, z, 5.0, 3.0, x), tol));
+        assert!(!base_ellipse.same_curve(&make_ellipse(center + shift_out, z, 5.0, 3.0, x), tol));
+        assert!(!base_ellipse.same_curve(
+            &make_ellipse(center, z, 5.0 + 2.0 * tol.linear, 3.0, x),
+            tol,
+        ));
+        assert!(!base_ellipse.same_curve(
+            &make_ellipse(center, z, 5.0, 3.0 + 2.0 * tol.linear, x),
+            tol,
+        ));
+        // Tilt normal around u_axis so u_axis stays parallel while normal differs.
+        assert!(!base_ellipse.same_curve(
+            &make_ellipse(center, Vec3::new(0.0, tilt.sin(), tilt.cos()), 5.0, 3.0, x),
+            tol,
+        ));
+        // Rotate u_axis in-plane so normal stays identical while u_axis differs.
+        assert!(!base_ellipse.same_curve(
+            &make_ellipse(center, z, 5.0, 3.0, Vec3::new(tilt.cos(), tilt.sin(), 0.0)),
+            tol,
+        ));
+
+        assert!(!base_circle.same_curve(&base_ellipse, tol));
+        assert!(!base_ellipse.same_curve(&base_circle, tol));
+
+        let mut carriers = Vec::new();
+        let e0 = conic_trace(&mut carriers, base_ellipse.clone(), tol);
+        assert_eq!(conic_trace(&mut carriers, base_ellipse.reversed(), tol), e0);
+        assert_ne!(
+            conic_trace(
+                &mut carriers,
+                make_ellipse(center + shift_out, z, 5.0, 3.0, x),
+                tol
+            ),
+            e0,
+        );
         assert_eq!(carriers.len(), 2);
     }
 

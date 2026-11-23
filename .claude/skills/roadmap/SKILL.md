@@ -152,14 +152,15 @@ that does not exist yet; without it, stop.
 
 ## Open items with a repro
 
-The `#[ignore]` inventory (recounted 2026-11-20 on `abf4359f`: 53 actual
-attributes in 31 files, all in `algo`, `operations`, `io`, `heal`, `math`,
-`wasm` and `remus`; the doc-comment mentions of `#[ignore]` filtered out by
+The `#[ignore]` inventory (recounted 2026-11-23 on `bccdad52`: 53 actual
+attributes in 31 files, 51 in 30 once B267's two witnesses run, all in `algo`, `operations`, `io`, `heal`, `math`,
+`wasm` and `remus`; the 25 doc-comment mentions of `#[ignore]` filtered out by
 hand) splits by the ignore reason as written. Listed, not re-run.
-Since the 2026-11-14 count the witnesses of B264, B265, B266, B269, B270,
-B274, B275 and B276 to B278 run un-ignored; two new ready repros have owner
-rows B288 and B289. Since then B267's two witnesses (the G1 chain round the
-corner arcs and bracket F6) run un-ignored.
+Unchanged since the 2026-11-20 count at `abf4359f` (since 2026-11-14 the
+witnesses of B264, B265, B266, B269, B270, B274, B275 and B276 to B278 run
+un-ignored; two ready repros have owner rows B288 and B289), except that
+B267's two witnesses (the G1 chain round the corner arcs and bracket F6) now
+run un-ignored.
 **20 open engine witnesses**, each with an owner row:
 - four B26 property ready-repros in `operations/tests/prop_boolean_invariants.rs`:
   finding 13 sphere–torus ×3 (B38) and finding 20 sphere–cone (B33);
