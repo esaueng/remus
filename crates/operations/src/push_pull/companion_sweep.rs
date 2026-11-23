@@ -6,32 +6,34 @@
 //! from the chamfer running down into the opening, and an obstacle wholly
 //! outside the cap's swept box can still lie in the chamfer's (#1949).
 //!
-//! A companion on a cone, cylinder or torus about an axis parallel to the
-//! move is therefore checked against every face that neither moves nor
-//! shares an edge with it. A pair is cleared when their certified boxes miss
-//! over the whole travel, or when, about the companion's axis, the radii the
+//! A companion on a cone or cylinder about an axis parallel to the move is
+//! therefore checked against every face that neither moves nor shares an
+//! edge with it. A pair is cleared when their certified boxes miss over the
+//! whole travel, or when, about the companion's axis, the radii the
 //! companion sweeps through miss the candidate's radii at every height of
 //! the candidate. Both faces are read as profiles in the (radius, height)
 //! half-plane: a cone's generator, a cylinder's or a plane's band of radii,
-//! a torus's (or a fixed sphere's) arc of minor angles. The candidate's
-//! heights are bisected until each slab separates or a work limit is spent;
-//! any pair left undecided refuses the move. A fixed rim the companion meets
-//! on a shared cylindrical support separates this way too, away from the
-//! contact the axial travel limit bounds.
+//! a torus's whole tube or a sphere's whole ball over the heights of its
+//! certified box. The candidate's heights are bisected until each slab
+//! separates or a work limit is spent; any pair left undecided refuses the
+//! move. A fixed rim the companion meets on a shared cylindrical support
+//! separates this way too, away from the contact the axial travel limit
+//! bounds.
 //!
-//! Every bound read here is conservative: boxes come from the certified face
+//! Every bound read here is conservative and needs no decision of which
+//! side of its boundary a face lies on: boxes come from the certified face
 //! bounds ([`remus_check::distance::face_bounds::face_bound`]) or, for
 //! cones and cylinders, from their carriers over the heights of their
 //! boundary edges; a carrier whose axis is parallel to the companion's only
 //! within tolerance has its offset and tilt charged over its whole extent.
 //!
-//! Other companions (a torus band about an axis across the move, sphere
-//! patches, planar and freeform faces) keep only the swept faces' companion
-//! test: a candidate a swept face may reach must also be cleared from every
-//! companion ([`super::SweptRegionCheck`]). Their exact swept regions are
-//! not read here; a box test on them, or a sphere patch read as its whole
-//! ball, refuses valid moves (the hammer holder's arm and corner), so they
-//! stay a known gap.
+//! Other companions (torus bands, sphere patches, planar and freeform
+//! faces, and cones and cylinders across the move) keep only the swept
+//! faces' companion test: a candidate a swept face may reach must also be
+//! cleared from every companion ([`super::SweptRegionCheck`]). Bounding a
+//! torus band or sphere patch needs the side of its boundary it lies on,
+//! which its rims alone do not say (a band between two rims may be the
+//! short one or the long one), so they stay a known gap.
 
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
@@ -249,17 +251,15 @@ impl Sweep {
             return Ok(None);
         };
         let parallel = |axis: Vec3| axis.cross(direction).length() <= tol.angular;
-        // The companion is read in its own carrier's frame. A sphere patch
-        // read about the move's axis is bounded only by its whole ball,
-        // which refuses valid moves of a corner patch (the hammer holder),
-        // so it stays with the companions this check leaves alone.
+        // The companion is read in its own carrier's frame. Only cones and
+        // cylinders are: a torus band or sphere patch is bounded only once
+        // it is known which side of its boundary it lies on, which its rims
+        // alone do not say, so those stay with the companions this check
+        // leaves alone.
         let (origin, axis) = match topo.face(face)?.surface() {
             FaceSurface::Cone(cone) if parallel(cone.axis()) => (cone.apex(), cone.axis()),
             FaceSurface::Cylinder(cylinder) if parallel(cylinder.axis()) => {
                 (cylinder.origin(), cylinder.axis())
-            }
-            FaceSurface::Torus(torus) if parallel(torus.z_axis()) => {
-                (torus.center(), torus.z_axis())
             }
             FaceSurface::Plane { .. }
             | FaceSurface::Sphere(_)
@@ -305,17 +305,20 @@ impl Sweep {
         let surface = topo.face(candidate)?.surface();
         // A sphere whose centre lies `d` from this axis cuts each height in a
         // circle of radius `s` about a point `d` from the axis, whose radii
-        // run `d ± s`: the full tube of a torus of major radius `d`.
+        // run `d ± s`: the full tube of a torus of major radius `d`. The face
+        // is read as its whole sphere (which side of its boundary a patch
+        // lies on is not decided here), over the heights of its box.
         if let FaceSurface::Sphere(sphere) = surface {
-            let (center, radius) = sphere_patch_ball(topo, candidate, sphere)?;
+            let center = sphere.center();
             return Ok(
-                arc_profile(self.radius_of(center), radius, (-PI, PI)).and_then(
+                arc_profile(self.radius_of(center), sphere.radius(), (-PI, PI)).and_then(
                     |(heights, shape)| {
+                        let shift = (center - self.origin).dot(self.axis);
                         finite_profile(Profile {
-                            shift: (center - self.origin).dot(self.axis),
+                            shift,
                             height_slack: 0.0,
                             radial_slack: 0.0,
-                            heights,
+                            heights: self.box_heights(heights, bounds, shift, 0.0),
                             shape,
                             scale: magnitude(center),
                         })
@@ -349,10 +352,13 @@ impl Sweep {
                 // `shift + t cos` here within `ρ sin`, and its distance from
                 // this axis differs from `ρ` by at most the axes' distance at
                 // that height (`offset + |t| sin`) plus `ρ sin`.
+                let shift = (origin - self.origin).dot(self.axis);
+                let height_slack = reach.mul_add(1.0 - cosine, radius * sine);
                 return Ok(finite_profile(Profile {
-                    shift: (origin - self.origin).dot(self.axis),
-                    height_slack: reach.mul_add(1.0 - cosine, radius * sine),
+                    shift,
+                    height_slack,
                     radial_slack: sine.mul_add(reach + radius, self.radius_of(origin)),
+                    heights: self.box_heights(own.heights, bounds, shift, height_slack),
                     scale: magnitude(origin),
                     ..own
                 }));
@@ -411,6 +417,25 @@ impl Sweep {
             },
             scale: 0.0,
         }))
+    }
+
+    /// Own `heights` narrowed to those a point in the certified box can
+    /// have: a point at own height `t` lies at height `shift + t` here
+    /// within `slack`.
+    fn box_heights(
+        &self,
+        heights: (f64, f64),
+        bounds: Option<Aabb3>,
+        shift: f64,
+        slack: f64,
+    ) -> (f64, f64) {
+        narrowed(
+            heights,
+            bounds.map(|bounds| {
+                let (low, high) = height_range(bounds, self.origin, self.axis);
+                (low - shift - slack, high - shift + slack)
+            }),
+        )
     }
 
     /// Distance from a line is convex, so a box's largest is at a corner.
@@ -612,10 +637,11 @@ fn own_profile(
                 _ => None,
             }
         }
+        // Two rims do not say whether a torus band is the short one between
+        // them or the long one, so the face is read as its whole tube (the
+        // caller narrows it to its certified box).
         FaceSurface::Torus(torus) => {
-            let phi = torus_minor_angles(topo, face, origin, axis, torus.major_radius())?
-                .unwrap_or((-PI, PI));
-            arc_profile(torus.major_radius(), torus.minor_radius(), phi)
+            arc_profile(torus.major_radius(), torus.minor_radius(), (-PI, PI))
                 .and_then(|(h, s)| profile(h, s))
         }
         FaceSurface::Plane { .. } | FaceSurface::Sphere(_) | FaceSurface::Nurbs(_) => None,
@@ -987,83 +1013,6 @@ fn hull_distances(points: &[(f64, f64)]) -> (f64, f64) {
     (if inside { 0.0 } else { near }, far)
 }
 
-/// A ball holding a sphere face: the whole sphere, or, for a patch whose
-/// edges are all circles on the sphere, a smaller ball about its cap.
-///
-/// Take `m`, the mean direction of the boundary from the centre, and
-/// `cos α`, the least of `u · m` over the boundary, read exactly on each
-/// arc. The boundary splits the sphere into the side inside the cap
-/// `u · m ≥ cos α` and the side holding the rest
-/// ([`lies_on_the_cap_side`] decides which is the face). Inside the cap,
-/// every point `C + ρu` lies within `ρ sin α` of `C + ρ cos α m`.
-fn sphere_patch_ball(
-    topo: &Topology,
-    face: FaceId,
-    sphere: &remus_math::surfaces::SphericalSurface,
-) -> Result<(Point3, f64), crate::OperationsError> {
-    let (center, radius) = (sphere.center(), sphere.radius());
-    let whole = (center, radius);
-    let mut sum = Vec3::new(0.0, 0.0, 0.0);
-    let mut arcs = Vec::new();
-    for id in remus_topology::explorer::face_edges(topo, face)? {
-        let edge = topo.edge(id)?;
-        let EdgeCurve::Circle(circle) = edge.curve() else {
-            return Ok(whole);
-        };
-        let Ok((first, last)) = edge.strict_domain() else {
-            return Ok(whole);
-        };
-        for vertex in [edge.start(), edge.end()] {
-            if let Ok(direction) = (topo.vertex(vertex)?.point() - center).normalize() {
-                sum += direction;
-            }
-        }
-        arcs.push((circle.clone(), first.min(last), first.max(last)));
-    }
-    let Ok(m) = sum.normalize() else {
-        return Ok(whole);
-    };
-    // On an arc, `ρ u · m = (c − C) · m + r (cos t e1 + sin t e2) · m`.
-    let mut least = f64::INFINITY;
-    for (circle, lo, hi) in &arcs {
-        let a = circle.radius() * circle.u_axis().dot(m);
-        let b = circle.radius() * circle.v_axis().dot(m);
-        let phase = b.atan2(a);
-        let (cos_lo, _) = cosine_range((lo - phase, hi - phase));
-        let value = a
-            .hypot(b)
-            .mul_add(cos_lo, (circle.center() - center).dot(m));
-        least = least.min(value / radius);
-    }
-    // Rounding in the arc reads, and edges lying off the sphere within
-    // their tolerance, are covered by a generous slack.
-    let cosine = least - 1e-9;
-    if !(0.0..1.0).contains(&cosine) {
-        return Ok(whole);
-    }
-    if !lies_on_the_cap_side(topo, face, center - m * radius)? {
-        return Ok(whole);
-    }
-    let sine = cosine.mul_add(-cosine, 1.0).max(0.0).sqrt();
-    Ok((
-        center + m * (radius * cosine),
-        radius.mul_add(sine, Tolerance::new().linear),
-    ))
-}
-
-/// Whether a sphere face whose boundary lies in a cap is the side of its
-/// boundary inside that cap, not the side holding the rest of the sphere:
-/// decided exactly by the trim reader putting the cap's `antipode` outside
-/// the face. Undecided faces (the reader needs a planar neighbour to read
-/// the loop's winding) are not on the cap side.
-fn lies_on_the_cap_side(
-    topo: &Topology,
-    face: FaceId,
-    antipode: Point3,
-) -> Result<bool, crate::OperationsError> {
-    Ok(remus_check::classify::sphere_arc_trim_contains(topo, face, antipode)? == Some(false))
-}
-
 /// The radii of a cone of the given `tan` (of its angle from the radial
 /// plane) over the heights `(low, high)` from its apex: radius `|h| / tan`,
 /// zero where the heights cross the apex.
@@ -1157,64 +1106,6 @@ fn sine_range(phi: (f64, f64)) -> (f64, f64) {
     cosine_range((phi.0 - FRAC_PI_2, phi.1 - FRAC_PI_2))
 }
 
-/// The minor angles a torus face covers, `φ` measured from the outward
-/// radial towards the axis, when every boundary edge is a rim (a circle
-/// about the axis, at one angle) or an arc of a meridian circle (whose
-/// angle runs monotonically between its ends): the union of those angles,
-/// when it is one arc short of a turn. `None` for any other boundary.
-fn torus_minor_angles(
-    topo: &Topology,
-    face: FaceId,
-    origin: Point3,
-    axis: Vec3,
-    major: f64,
-) -> Result<Option<(f64, f64)>, crate::OperationsError> {
-    let tol = Tolerance::new();
-    let angle = |p: Point3| {
-        let d = p - origin;
-        let h = d.dot(axis);
-        let radial = (d - axis * h).length();
-        h.atan2(radial - major)
-    };
-    let mut arcs: Vec<(f64, f64)> = Vec::new();
-    for id in remus_topology::explorer::face_edges(topo, face)? {
-        let edge = topo.edge(id)?;
-        let EdgeCurve::Circle(circle) = edge.curve() else {
-            return Ok(None);
-        };
-        let Ok(normal) = circle.normal().normalize() else {
-            return Ok(None);
-        };
-        let start = topo.vertex(edge.start())?.point();
-        let end = topo.vertex(edge.end())?.point();
-        let offset = circle.center() - origin;
-        let rim =
-            normal.cross(axis).length() <= tol.angular && offset.cross(axis).length() <= tol.linear;
-        let meridian = normal.dot(axis).abs() <= tol.angular
-            && offset.dot(axis).abs() <= tol.linear
-            && normal.dot(offset).abs() <= tol.linear;
-        if rim {
-            let a = angle(start);
-            arcs.push((a, a));
-        } else if meridian {
-            let Ok((first, last)) = edge.strict_domain() else {
-                return Ok(None);
-            };
-            let middle =
-                edge.curve()
-                    .evaluate_with_endpoints(f64::midpoint(first, last), start, end);
-            let (a, m, b) = (angle(start), angle(middle), angle(end));
-            // The arc from `a` to `b` through `m`, as increasing angles.
-            let up = |x: f64| a + (x - a).rem_euclid(TAU);
-            let (m, b) = (up(m), up(b));
-            arcs.push(if m <= b { (a, b) } else { (b - TAU, a) });
-        } else {
-            return Ok(None);
-        }
-    }
-    Ok(circular_union(&arcs).map(|(a, b)| (a - ANGLE_SLACK, b + ANGLE_SLACK)))
-}
-
 /// The one arc that `arcs` cover together, when their union is a single arc
 /// short of a turn (merged on the circle, across the seam too). `None` when
 /// they leave more than one piece (which side of a gap a face takes is not
@@ -1232,7 +1123,11 @@ fn circular_union(arcs: &[(f64, f64)]) -> Option<(f64, f64)> {
             (start, start + (b - a))
         })
         .collect();
-    if pieces.is_empty() || pieces.iter().any(|&(a, b)| !(b - a < TAU)) {
+    if pieces.is_empty()
+        || pieces
+            .iter()
+            .any(|&(a, b)| (b - a).partial_cmp(&TAU) != Some(std::cmp::Ordering::Less))
+    {
         return None;
     }
     pieces.compact_sort_by(|x, y| x.0.total_cmp(&y.0));
