@@ -80,7 +80,7 @@
 //! hand-computed `dof == num_params − rank` with expected rank. Tolerances scale
 //! with the placement (`1e-8·scale` on lengths, `1e-9` rad on angles, `1e-8`
 //! absolute at T); the solve tolerance itself scales with residual units
-//! (length-unit `1e-10·max(1,scale)`, area-unit `1e-10·max(1,scale²)`). No tolerance
+//! (angular `1e-10` rad, length-unit `1e-10·max(1,scale)`, area-unit `1e-10·max(1,scale²)`). No tolerance
 //! was loosened to make a cell pass; inconsistent cells assert `!converged`.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -108,7 +108,7 @@ fn tol_len(scale: f64) -> f64 {
     TOL * scale.max(1.0)
 }
 
-/// Area-unit solve tolerance (Angle/Perpendicular/Parallel/Tangent*Arc) for a scale.
+/// Area-unit solve tolerance (Angle/Perpendicular/Tangent*Arc) for a scale.
 fn tol_area(scale: f64) -> f64 {
     TOL * scale.max(1.0).powi(2)
 }
@@ -306,7 +306,8 @@ fn line_orient_horizontal_vertical_perp_parallel_angle_equallength() {
         sys.add_constraint(Constraint::Parallel(l1, l2)).unwrap();
         sys.add_constraint(Constraint::FixX(q, 3.0 * scale))
             .unwrap();
-        let r = sys.solve(200, tol_area(scale)).unwrap();
+        // Parallelism is angular, so its solve tolerance is independent of drawing size.
+        let r = sys.solve(200, TOL).unwrap();
         assert!(r.converged, "parallel {scale}: {}", r.max_residual);
         let (_, qy) = pt(&sys, q);
         assert_len("parallel y", qy, 2.0 * scale, scale);
