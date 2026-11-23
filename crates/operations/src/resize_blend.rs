@@ -11,6 +11,7 @@ mod cap_chamfer;
 mod planar_travel;
 mod radial_resize;
 mod riding_chamfer;
+mod rim_chamfer;
 pub(crate) use radial_resize::resize_cylindrical_strip;
 mod axial_rim_join;
 mod sphere_seam;
@@ -1452,9 +1453,9 @@ pub(crate) fn remove_recognized_blend_faces(
 /// prismatic regions that reach freeform carrier patches may instead be moved as
 /// one rigid, proof-gated patch when every boundary extension stays exact.
 ///
-/// `Ok(None)` means the selection has no tangent analytic blend neighbor and
-/// no complete coaxial chamfer on a cap rim, and the ordinary planar path
-/// should run. Once a blend is recognized, every refusal is returned rather
+/// `Ok(None)` means the selection has no tangent analytic blend neighbor, no
+/// complete coaxial chamfer on a cap rim and no recognized rim chamfer band
+/// ([`rim_chamfer`]), and the ordinary planar path should run. Once a blend is recognized, every refusal is returned rather
 /// than falling back to an approximation.
 pub(crate) fn move_planar_faces_with_blends(
     topo: &mut Topology,
@@ -2080,8 +2081,9 @@ fn adjacent_blend_seed(
 }
 
 /// The first neighbour of the selection that makes the move blend-aware: a
-/// tangent constant-radius blend carrier, or a complete coaxial chamfer cone
-/// on a planar cap's rim ([`cap_chamfer::is_axial_cap_chamfer`]).
+/// tangent constant-radius blend carrier, a complete coaxial chamfer cone
+/// on a planar cap's rim ([`cap_chamfer::is_axial_cap_chamfer`]), or a face
+/// of a chamfer band on the rim ([`rim_chamfer::rim_chamfers`]).
 ///
 /// A chamfer is not tangent to its cap and carries no blend radius, but it
 /// must still travel with the cap. Left to the plain planar engine, which
@@ -2127,7 +2129,33 @@ fn adjacent_analytic_blend_seed(
             }
         }
     }
+    // A chamfered rim with no tangent blend (#1957): the band must travel
+    // with the cap like a blend, not be re-limited as a draft is.
+    if let Some(direction) = rim_direction(topo, selected_faces)? {
+        let rim = rim_chamfer::rim_chamfers(topo, &adjacency, selected_faces, direction)?;
+        if let Some(&face) = rim.carried.first() {
+            return Ok(Some(face));
+        }
+    }
     Ok(None)
+}
+
+/// The outward normal shared by every face of a planar selection.
+fn rim_direction(
+    topo: &Topology,
+    selected_faces: &[FaceId],
+) -> Result<Option<Vec3>, OperationsError> {
+    let mut direction: Option<Vec3> = None;
+    for &face in selected_faces {
+        let Some(normal) = topo.face(face)?.effective_plane_normal() else {
+            return Ok(None);
+        };
+        if direction.is_some_and(|before| before.dot(normal) < 1.0 - Tolerance::new().angular) {
+            return Ok(None);
+        }
+        direction.get_or_insert(normal);
+    }
+    Ok(direction)
 }
 
 fn is_local_blend_face(
@@ -2256,6 +2284,23 @@ fn translation_invariant_blend_region(
             }
         }
     }
+
+    // Chamfer bands on the cap's rim travel with it (#1957). A band standing
+    // on walls like a chamfer but not recognized as one is a draft the
+    // translation cannot re-limit, so a move carrying only chamfers refuses
+    // rather than carrying it as well.
+    let rim = rim_chamfer::rim_chamfers(topo, &adjacency, selected_faces, direction)?;
+    if region.is_empty()
+        && !rim.carried.is_empty()
+        && let Some((face, reason)) = rim.declined.first()
+    {
+        return Err(reconstruction(format!(
+            "the cap's rim mixes a chamfer with sloped face {} that is not one ({reason}); \
+             the move cannot carry one and re-limit the other",
+            face.index()
+        )));
+    }
+    region.extend(rim.carried.iter().copied());
 
     if region.is_empty() {
         return Err(reconstruction(
