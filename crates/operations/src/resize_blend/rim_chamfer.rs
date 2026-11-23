@@ -367,36 +367,41 @@ fn chamfer_setbacks(
 
     let mut found = None;
     for (&wall, edges) in &wall_edges {
-        let setbacks = match (topo.face(wall)?.surface(), &surface) {
-            (FaceSurface::Plane { .. }, FaceSurface::Plane { normal, .. }) => {
-                let Some(outward) = topo.face(wall)?.effective_plane_normal() else {
-                    continue;
-                };
-                let anchor = edge_ends(topo, edges[0])?[0];
-                plane_wall_setbacks(topo, &cap_edges, edges, cap, outward, anchor, *normal)?
+        let wall_surface = topo.face(wall)?.surface();
+        // A plane chamfer stands on a plane wall, a cone on a cylinder; any
+        // other pairing explains nothing.
+        let setbacks = if let (FaceSurface::Plane { .. }, FaceSurface::Plane { normal, .. }) =
+            (wall_surface, &surface)
+        {
+            let Some(outward) = topo.face(wall)?.effective_plane_normal() else {
+                continue;
+            };
+            let anchor = edge_ends(topo, edges[0])?[0];
+            plane_wall_setbacks(topo, &cap_edges, edges, cap, outward, anchor, *normal)?
+        } else if let (FaceSurface::Cylinder(cylinder), FaceSurface::Cone(cone)) =
+            (wall_surface, &surface)
+        {
+            let outward = if topo.face(wall)?.is_reversed() {
+                -1.0
+            } else {
+                1.0
+            };
+            let apex_off = (cone.apex() - cylinder.origin()).cross(cylinder.axis());
+            if apex_off.length() > tolerance_at(cone.apex()) {
+                continue;
             }
-            (FaceSurface::Cylinder(cylinder), FaceSurface::Cone(cone)) => {
-                let outward = if topo.face(wall)?.is_reversed() {
-                    -1.0
-                } else {
-                    1.0
-                };
-                let apex_off = (cone.apex() - cylinder.origin()).cross(cylinder.axis());
-                if apex_off.length() > tolerance_at(cone.apex()) {
-                    continue;
-                }
-                cylinder_wall_setbacks(
-                    topo,
-                    &cap_edges,
-                    edges,
-                    cap,
-                    cylinder.origin(),
-                    cylinder.axis(),
-                    cylinder.radius(),
-                    outward,
-                )?
-            }
-            _ => None,
+            cylinder_wall_setbacks(
+                topo,
+                &cap_edges,
+                edges,
+                cap,
+                cylinder.origin(),
+                cylinder.axis(),
+                cylinder.radius(),
+                outward,
+            )?
+        } else {
+            None
         };
         if let Some(setbacks) = setbacks {
             if found.is_some() {
