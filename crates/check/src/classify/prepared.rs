@@ -86,7 +86,7 @@ struct PreparedFace {
 /// polygon, so they carry no window; neither does a face with fewer than three outer vertices
 /// (a full-surface face contains every point) or with a non-finite vertex.
 #[derive(Debug, Clone, Copy)]
-struct TrimWindow {
+pub(super) struct TrimWindow {
     /// The two coordinates `point_in_polygon_3d` keeps.
     axes: (usize, usize),
     min: [f64; 2],
@@ -94,7 +94,7 @@ struct TrimWindow {
 }
 
 impl TrimWindow {
-    fn of(surface: &FaceSurface, trim: &super::boundary::FaceTrimData) -> Option<Self> {
+    pub(super) fn of(surface: &FaceSurface, trim: &super::boundary::FaceTrimData) -> Option<Self> {
         match surface {
             // Sphere faces may take the qualified great-circle trim, and
             // cylinder, cone and torus faces their UV trim, so the polygon's
@@ -137,7 +137,7 @@ impl TrimWindow {
 
     /// Whether `point` lies strictly outside the rectangle. A non-finite
     /// coordinate never compares outside, so it keeps the full test.
-    fn excludes(&self, point: Point3) -> bool {
+    pub(super) fn excludes(&self, point: Point3) -> bool {
         let (a, b) = (point.0[self.axes.0], point.0[self.axes.1]);
         a < self.min[0] || a > self.max[0] || b < self.min[1] || b > self.max[1]
     }
