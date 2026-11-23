@@ -612,61 +612,6 @@ pub fn panic_message(payload: &Box<dyn std::any::Any + Send>, operation: &str) -
     }
 }
 
-/// Sample a closed periodic curve (period = TAU) into a flat `[x, y, z, ...]` buffer.
-///
-/// Produces `n` evenly-spaced points in `[0, TAU)` — the endpoint at `TAU` is
-/// excluded because it duplicates `t = 0` on periodic curves. Callers that need
-/// a closed polyline should append the first point or close the loop in JS.
-///
-/// Returns an empty buffer if `n == 0`.
-pub fn sample_full_period_curve(n: usize, evaluate: impl Fn(f64) -> Point3) -> Vec<f64> {
-    if n <= 1 {
-        if n == 1 {
-            let p = evaluate(0.0);
-            return vec![p.x(), p.y(), p.z()];
-        }
-        return Vec::new();
-    }
-    let mut result = Vec::with_capacity(n * 3);
-    for i in 0..n {
-        let t = std::f64::consts::TAU * (i as f64) / (n as f64);
-        let p = evaluate(t);
-        result.push(p.x());
-        result.push(p.y());
-        result.push(p.z());
-    }
-    result
-}
-
-/// Sample an aperiodic curve over the closed parameter span `[t0, t1]`,
-/// endpoints included.
-///
-/// The counterpart of [`sample_full_period_curve`] for curves with no
-/// period — an unbounded conic branch has no `TAU` to wrap around, and its
-/// extent comes entirely from the edge's two vertices, so both ends must be
-/// emitted (unlike the periodic sampler, where the last sample would repeat
-/// the first). Returns a flattened `[x, y, z, ...]` array.
-#[must_use]
-pub fn sample_open_span(n: usize, t0: f64, t1: f64, evaluate: impl Fn(f64) -> Point3) -> Vec<f64> {
-    if n == 0 {
-        return Vec::new();
-    }
-    if n == 1 {
-        let p = evaluate(t0);
-        return vec![p.x(), p.y(), p.z()];
-    }
-    let mut result = Vec::with_capacity(n * 3);
-    for i in 0..n {
-        #[allow(clippy::cast_precision_loss)]
-        let f = i as f64 / (n - 1) as f64;
-        let p = evaluate((t1 - t0).mul_add(f, t0));
-        result.push(p.x());
-        result.push(p.y());
-        result.push(p.z());
-    }
-    result
-}
-
 /// Create a tiny degenerate polygon face at a point, matching the vertex
 /// count of the first existing profile. Used for loft start/end points.
 pub fn create_apex_face(

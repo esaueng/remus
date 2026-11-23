@@ -202,9 +202,14 @@ fn batch_fillet_preserves_a_distant_cavity() {
         );
         let expected = 8000.0 - 8.0 - convex_fillet_removed(2.0, 20.0);
         assert!((volume(&mut kernel, result) - expected).abs() < 1e-3);
+        let copied = kernel.topo().solid(result_id).unwrap().inner_shells()[0];
+        assert_ne!(copied, cavity);
+        let copied_root = kernel
+            .topo_mut()
+            .add_solid(remus_topology::solid::Solid::new(copied, Vec::new()));
         assert_eq!(
-            kernel.topo().solid(result_id).unwrap().inner_shells()[0],
-            cavity
+            remus_io::arena_io::serialize_solid(kernel.topo(), copied_root).unwrap(),
+            cavity_before
         );
         assert_eq!(
             remus_io::arena_io::serialize_solid(kernel.topo(), cavity_root).unwrap(),

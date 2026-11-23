@@ -455,3 +455,30 @@ fn solid_without_a_cavity_keeps_the_planar_engines() {
         "{volume}"
     );
 }
+
+#[test]
+fn translating_a_hollow_fillet_preserves_every_source_vertex() {
+    let mut topo = Topology::new();
+    let solid = hollow_box(&mut topo, 9.);
+    let edge = top_front_edge(&topo, solid);
+    let vertices = |t: &Topology, s| {
+        remus_topology::explorer::solid_vertices(t, s)
+            .unwrap()
+            .into_iter()
+            .map(|v| (v, t.vertex(v).unwrap().point()))
+            .collect::<Vec<_>>()
+    };
+    let source = vertices(&topo, solid);
+    assert_eq!(source.len(), 16);
+    let result = fillet_cascade(&mut topo, solid, &[edge], 0.35).unwrap();
+    let before = vertices(&topo, result.solid);
+    transform_solid(&mut topo, result.solid, &Mat4::translation(30., 0., 0.)).unwrap();
+    assert_eq!(source, vertices(&topo, solid));
+    for (v, p) in before {
+        assert!(
+            (topo.vertex(v).unwrap().point() - p - remus_math::vec::Vec3::new(30., 0., 0.))
+                .length()
+                < 1e-10
+        );
+    }
+}

@@ -507,7 +507,7 @@ pub fn try_build_analytic_classifier_with_tolerance(
     }
 
     // Pure sphere.
-    if has_sphere && !has_planar && !has_cylinder {
+    if has_sphere && !has_planar && !has_cylinder && !has_cone {
         let (center, radius) = sphere_info?;
         return Some(AnalyticClassifier::Sphere { center, radius });
     }
