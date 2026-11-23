@@ -4965,6 +4965,92 @@ fn nurbs_is_line_like(
     }))
 }
 
+/// A section spline may be a fitted copy of an analytic conic boundary, or the
+/// opposite side of a curved lens (e.g. a torus seam circle and a torus×torus
+/// intersection spline sharing both seam crossings). Verify in both directions
+/// that interior conic samples lie on the spline's branch and that interior
+/// spline samples stay within the fitted-seam band of the conic's exact arc
+/// branch before collapsing a two-edge loop.
+fn nurbs_is_conic_like(
+    topo: &Topology,
+    conic: &remus_topology::edge::Edge,
+    spline: &remus_topology::edge::Edge,
+) -> bool {
+    const FIT_BAND: f64 = 1e-4;
+    const MIN_SAMPLES: usize = 8;
+    const MAX_SAMPLES: usize = 64;
+    let EdgeCurve::NurbsCurve(curve) = spline.curve() else {
+        return false;
+    };
+    let (Ok((c0, c1)), Ok((s0, s1))) = (conic.strict_domain(), spline.strict_domain()) else {
+        return false;
+    };
+    let (lo, hi) = (c0.min(c1), c0.max(c1));
+    let tau = std::f64::consts::TAU;
+    if !(lo.is_finite() && hi.is_finite() && hi > lo && hi - lo <= tau + 1e-9) {
+        return false;
+    }
+    let eval_conic = |t: f64| match conic.curve() {
+        EdgeCurve::Circle(c) => Some(c.evaluate(t)),
+        EdgeCurve::Ellipse(e) => Some(e.evaluate(t)),
+        EdgeCurve::Line
+        | EdgeCurve::NurbsCurve(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => None,
+    };
+    let project_conic = |p: Point3| match conic.curve() {
+        EdgeCurve::Circle(c) => Some(c.project(p)),
+        EdgeCurve::Ellipse(e) => Some(e.project(p)),
+        EdgeCurve::Line
+        | EdgeCurve::NurbsCurve(_)
+        | EdgeCurve::Hyperbola(_)
+        | EdgeCurve::Parabola(_) => None,
+    };
+    // Conic → spline: quarter, midpoint, and three-quarter points on the conic
+    // arc must lie on the spline's trimmed branch (midpoint first to reject
+    // genuine lenses on the first projection).
+    for frac in [0.5, 0.25, 0.75] {
+        let Some(conic_pt) = eval_conic(lo + (hi - lo) * frac) else {
+            return false;
+        };
+        // A projection that fails proves nothing: keep the edges distinct
+        // rather than failing the boolean.
+        if !matches!(
+            point_on_edge_branch(topo, spline, conic_pt, FIT_BAND),
+            Ok(true)
+        ) {
+            return false;
+        }
+    }
+    let (Some(conic_lo), Some(conic_hi)) = (eval_conic(lo), eval_conic(hi)) else {
+        return false;
+    };
+    let mid_param = 0.5 * (lo + hi);
+    let samples = (curve.control_points().len() * 2).clamp(MIN_SAMPLES, MAX_SAMPLES);
+    for k in 1..samples {
+        #[allow(clippy::cast_precision_loss)]
+        let frac = k as f64 / samples as f64;
+        let t = s0 + (s1 - s0) * frac;
+        let p = curve.evaluate(t);
+        let Some(raw) = project_conic(p) else {
+            return false;
+        };
+        let u = raw + tau * ((mid_param - raw) / tau).round();
+        let dist = if u >= lo - 1e-9 && u <= hi + 1e-9 {
+            let Some(q) = eval_conic(u.clamp(lo, hi)) else {
+                return false;
+            };
+            (p - q).length()
+        } else {
+            (p - conic_lo).length().min((p - conic_hi).length())
+        };
+        if !dist.is_finite() || dist > FIT_BAND {
+            return false;
+        }
+    }
+    true
+}
+
 /// Merge duplicate edges across selected faces by quantized endpoint position.
 ///
 /// For each group of edges with the same quantized start/end positions,
@@ -5208,20 +5294,40 @@ fn merge_duplicate_edges(topo: &mut Topology, face_ids: &mut [FaceId]) -> Result
                     (EdgeCurve::Line, EdgeCurve::NurbsCurve(_))
                         | (EdgeCurve::NurbsCurve(_), EdgeCurve::Line)
                 );
-                if (mixed_line_conic || mixed_line_nurbs)
+                let mixed_conic_nurbs = matches!(
+                    (canon_edge.curve(), dup_edge.curve()),
+                    (
+                        EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_),
+                        EdgeCurve::NurbsCurve(_)
+                    ) | (
+                        EdgeCurve::NurbsCurve(_),
+                        EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_)
+                    )
+                );
+                if (mixed_line_conic || mixed_line_nurbs || mixed_conic_nurbs)
                     && unification_collapses_wire(topo, face_ids, &replacements, canonical, dup)?
                 {
-                    let line_like_nurbs = if mixed_line_nurbs {
+                    let fitted_copy = if mixed_line_nurbs {
                         let (line, spline) = if matches!(canon_edge.curve(), EdgeCurve::Line) {
                             (canon_edge, dup_edge)
                         } else {
                             (dup_edge, canon_edge)
                         };
                         nurbs_is_line_like(topo, line, spline)?
+                    } else if mixed_conic_nurbs {
+                        let (conic, spline) = if matches!(
+                            canon_edge.curve(),
+                            EdgeCurve::Circle(_) | EdgeCurve::Ellipse(_)
+                        ) {
+                            (canon_edge, dup_edge)
+                        } else {
+                            (dup_edge, canon_edge)
+                        };
+                        nurbs_is_conic_like(topo, conic, spline)
                     } else {
                         false
                     };
-                    if mixed_line_conic || !line_like_nurbs {
+                    if !fitted_copy {
                         continue;
                     }
                 }
@@ -7385,6 +7491,96 @@ mod tests {
                 result.edges()[0].edge() != result.edges()[1].edge(),
                 expect_distinct,
                 "bow={bow}, spline_first={spline_first}"
+            );
+        }
+    }
+
+    #[test]
+    fn duplicate_edge_merge_distinguishes_curved_and_conic_like_nurbs_lenses() {
+        use remus_math::curves::Circle3D;
+        use remus_math::nurbs::interpolate;
+        use remus_topology::{edge::Edge, face::Face, vertex::Vertex, wire::Wire};
+
+        let circle =
+            Circle3D::new(Point3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 1.0), 5.0).unwrap();
+        let t0 = 0.0;
+        let t1 = std::f64::consts::FRAC_PI_2;
+        let a = circle.evaluate(t0);
+        let b = circle.evaluate(t1);
+
+        // Two-edge lens of a circle arc and a NURBS curve sharing both
+        // endpoints: a genuinely deflected spline (bow=1.0) must remain
+        // distinct in either edge-id order; a spline fitted to the circle arc
+        // within FIT_BAND (bow=0.0) collapses as a fitted copy; a spline
+        // following the complementary 3π/2 arc of the same circle stays
+        // distinct.
+        for (bow, complement, spline_first, expect_distinct) in [
+            (1.0, false, false, true),
+            (1.0, false, true, true),
+            (0.0, false, false, false),
+            (0.0, false, true, false),
+            (0.0, true, false, true),
+            (0.0, true, true, true),
+        ] {
+            let mut topo = Topology::new();
+            let va = topo.add_vertex(Vertex::new(a, 1e-7));
+            let vb = topo.add_vertex(Vertex::new(b, 1e-7));
+            let pts: Vec<Point3> = (0..=16)
+                .map(|k| {
+                    #[allow(clippy::cast_precision_loss)]
+                    let frac = k as f64 / 16.0;
+                    let angle = if complement {
+                        t0 - (std::f64::consts::TAU - (t1 - t0)) * frac
+                    } else {
+                        t0 + (t1 - t0) * frac
+                    };
+                    let p = circle.evaluate(angle);
+                    Point3::new(
+                        p.x(),
+                        p.y(),
+                        p.z() + bow * (std::f64::consts::PI * frac).sin(),
+                    )
+                })
+                .collect();
+            let curve = interpolate(&pts, 3).unwrap();
+            let mut spline = Edge::new(va, vb, EdgeCurve::NurbsCurve(curve));
+            spline.set_trim(Some((0.0, 1.0)));
+            let mut arc = Edge::new(va, vb, EdgeCurve::Circle(circle.clone()));
+            arc.set_trim(Some((t0, t1)));
+            let (arc_id, spline_id) = if spline_first {
+                let spline_id = topo.add_edge(spline);
+                (topo.add_edge(arc), spline_id)
+            } else {
+                let arc_id = topo.add_edge(arc);
+                (arc_id, topo.add_edge(spline))
+            };
+            let wire = topo.add_wire(
+                Wire::new(
+                    vec![
+                        OrientedEdge::new(arc_id, true),
+                        OrientedEdge::new(spline_id, false),
+                    ],
+                    true,
+                )
+                .unwrap(),
+            );
+            let face = topo.add_face(Face::new(
+                wire,
+                vec![],
+                FaceSurface::Plane {
+                    normal: Vec3::new(0.0, 0.0, 1.0),
+                    d: 0.0,
+                },
+            ));
+            let mut faces = [face];
+            merge_duplicate_edges(&mut topo, &mut faces).unwrap();
+            let result = topo
+                .wire(topo.face(faces[0]).unwrap().outer_wire())
+                .unwrap();
+            assert_eq!(
+                result.edges()[0].edge() != result.edges()[1].edge(),
+                expect_distinct,
+                "bow={bow}, complement={complement}, spline_first={spline_first}"
             );
         }
     }
