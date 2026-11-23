@@ -82,7 +82,7 @@ pub(super) fn outside_planar_sweep(
     })
 }
 
-fn cylinder_envelope(
+pub(super) fn cylinder_envelope(
     topo: &Topology,
     face: FaceId,
     cylinder: &remus_math::surfaces::CylindricalSurface,
@@ -303,7 +303,7 @@ fn face_clears_coaxial_core(
 /// is tilted from the frame projects to an ellipse within `r · sin(tilt)` of
 /// the circle it is read as, and the result also gives up a relative
 /// rounding allowance on the coordinates' scale.
-fn planar_face_axis_clearance(
+pub(super) fn planar_face_axis_clearance(
     topo: &Topology,
     face: FaceId,
     origin: Point3,
