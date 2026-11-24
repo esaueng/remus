@@ -3,7 +3,35 @@
 //! The error enum sits below every operation, so the types its variants embed
 //! must too (RFC 0007 stage 0). Each is re-exported at its original path:
 //! `heal::HealingReport`, `resize_blend::ResizeBlendError`,
-//! `blend_cluster::BlendClusterError`.
+//! `blend_cluster::BlendClusterError`, `push_pull::AmbiguousRimBand`.
+
+use remus_topology::edge::EdgeId;
+use remus_topology::face::FaceId;
+
+/// A band on a moved planar cap's rim that geometry alone cannot read as a
+/// chamfer or a draft, and that no journal history decides (#1957).
+///
+/// The band stands on walls the move slides along and cuts one cap edge at
+/// constant setbacks: a two-distance chamfer and a drafted section have
+/// exactly this shape, equal setbacks included (a 45° draft). Carried, it
+/// translates with the cap; read as a draft, the move re-limits it. The
+/// move refuses rather than guess; the caller decides with
+/// [`AmbiguousRimResolution`](crate::push_pull::AmbiguousRimResolution).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AmbiguousRimBand {
+    /// The selected cap face the band meets.
+    pub cap: FaceId,
+    /// The sloped band face (the first of its component in face order).
+    pub face: FaceId,
+    /// The wall the band stands on.
+    pub wall: FaceId,
+    /// An edge the band shares with the cap.
+    pub edge: EdgeId,
+    /// Setback of the band's cap edge from the sharp edge it replaced.
+    pub cap_setback: f64,
+    /// Depth of the band's wall edge below the cap plane.
+    pub wall_setback: f64,
+}
 
 /// Machine-readable kind of repair performed by [`heal_solid`](crate::heal::heal_solid).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

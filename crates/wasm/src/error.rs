@@ -779,6 +779,24 @@ impl From<remus_operations::OperationsError> for StructuredWasmError {
                 }
                 structured
             }
+            // A history-free rim band a face move cannot read as a chamfer or
+            // a draft (#1957): the caller's decision, category `unsupported`
+            // with a stable native code and the setbacks. Handles are left to
+            // the move bindings (`MoveInput::refusal`).
+            remus_operations::OperationsError::AmbiguousRimChamfer(band) => {
+                let mut structured = Self::unsupported(message);
+                structured.details.insert(
+                    "kernelCode".to_string(),
+                    Value::from("ambiguous_rim_chamfer"),
+                );
+                structured
+                    .details
+                    .insert("capSetback".to_string(), Value::from(band.cap_setback));
+                structured
+                    .details
+                    .insert("wallSetback".to_string(), Value::from(band.wall_setback));
+                structured
+            }
             // A declared move-face / replace-surface capability boundary
             // (capability matrix, "Direct edits"): category `unsupported`
             // with a stable native code and the typed cause as `reason`.

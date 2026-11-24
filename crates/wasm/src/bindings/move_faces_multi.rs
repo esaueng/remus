@@ -219,8 +219,22 @@ impl MoveInput {
 
     /// Projects a face-move failure. A `topology_change` refusal carries the
     /// `face` and `edge` it names as handles, each only when it belongs to
-    /// the input solid.
+    /// the input solid; an `ambiguous_rim_chamfer` refusal its band `face`,
+    /// `wall`, `cap` and cap `edge`.
     pub fn refusal(&self, error: OperationsError) -> StructuredWasmError {
+        if let OperationsError::AmbiguousRimChamfer(band) = &error {
+            let band = *band;
+            let mut structured = StructuredWasmError::from(error);
+            for (key, face) in [("face", band.face), ("wall", band.wall), ("cap", band.cap)] {
+                if self.faces.contains(&face) {
+                    structured = structured.with_detail(key, face_id_to_u32(face));
+                }
+            }
+            if self.edges.contains(&band.edge) {
+                structured = structured.with_detail("edge", edge_id_to_u32(band.edge));
+            }
+            return structured;
+        }
         let named = match &error {
             OperationsError::Offset(remus_offset::OffsetError::TopologyChange {
                 face,

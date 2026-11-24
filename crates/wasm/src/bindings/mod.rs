@@ -47,6 +47,8 @@ pub mod transform_detailed;
 pub mod transforms;
 
 #[cfg(test)]
+mod ambiguous_rim_move_tests;
+#[cfg(test)]
 mod batch_optional_args_tests;
 #[cfg(test)]
 mod blend_edge_coherence_tests;

@@ -55,7 +55,9 @@ use remus_topology::solid::SolidId;
 use crate::OperationsError;
 use crate::journal_ops::JournaledSolidOp;
 use crate::measure::volume_memo::{ContentKey, solid_move_key};
-use crate::push_pull::{DirectEditEvolution, MoveFacesResult, PreparedPlanarMove};
+use crate::push_pull::{
+    DirectEditEvolution, MoveFacesOptions, MoveFacesResult, PreparedPlanarMove, with_move_options,
+};
 
 /// A face selection of one source solid, prepared for repeated moves.
 ///
@@ -71,6 +73,8 @@ pub struct PreparedFaceMove {
     planar: Option<PreparedPlanarMove>,
     /// A multi-face move's preparation; `planar` is then `None`.
     multi: Option<crate::multi_move::PreparedMultiMove>,
+    /// The caller options every call runs under.
+    options: MoveFacesOptions,
 }
 
 impl std::fmt::Debug for PreparedFaceMove {
@@ -96,6 +100,24 @@ impl PreparedFaceMove {
         solid: SolidId,
         faces: &[FaceId],
     ) -> Result<Self, OperationsError> {
+        Self::prepare_with_options(topo, solid, faces, MoveFacesOptions::default())
+    }
+
+    /// [`Self::prepare`] with explicit caller `options`: every call of the
+    /// prepared move returns what
+    /// [`crate::push_pull::move_faces_with_options`] (or the journaled
+    /// [`crate::journal_ops::move_faces_journaled_with_options`]) returns
+    /// with them. Reads the topology only.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::prepare`].
+    pub fn prepare_with_options(
+        topo: &Topology,
+        solid: SolidId,
+        faces: &[FaceId],
+        options: MoveFacesOptions,
+    ) -> Result<Self, OperationsError> {
         let _span = crate::performance::span("move_faces.prepare");
         topo.solid(solid)?;
         let source = solid_move_key(topo, solid).ok_or_else(|| OperationsError::InvalidInput {
@@ -106,9 +128,16 @@ impl PreparedFaceMove {
             faces: faces.to_vec(),
             source,
             scope: crate::journal_ops::solid_entity_keys(topo, solid)?,
-            planar: PreparedPlanarMove::prepare(topo, solid, faces)?,
+            planar: with_move_options(options, || PreparedPlanarMove::prepare(topo, solid, faces))?,
             multi: None,
+            options,
         })
+    }
+
+    /// The caller options the prepared move runs under.
+    #[must_use]
+    pub const fn options(&self) -> MoveFacesOptions {
+        self.options
     }
 
     /// Prepares [multi-face moves](crate::multi_move) of `faces` of `solid`:
@@ -140,6 +169,7 @@ impl PreparedFaceMove {
             multi: Some(crate::multi_move::PreparedMultiMove::prepare(
                 topo, solid, faces, weights,
             )?),
+            options: MoveFacesOptions::default(),
         })
     }
 
@@ -183,7 +213,7 @@ impl PreparedFaceMove {
         distance: f64,
     ) -> Result<MoveFacesResult, OperationsError> {
         self.require_current(topo)?;
-        Ok(self.edit(topo, distance)?.0)
+        with_move_options(self.options, || Ok(self.edit(topo, distance)?.0))
     }
 
     /// [`crate::journal_ops::move_faces_journaled`] of the prepared
@@ -202,6 +232,14 @@ impl PreparedFaceMove {
     ) -> Result<JournaledSolidOp, OperationsError> {
         let _total = crate::performance::span("move_faces.journaled");
         self.require_current(topo)?;
+        with_move_options(self.options, || self.journaled(topo, distance))
+    }
+
+    fn journaled(
+        &mut self,
+        topo: &mut Topology,
+        distance: f64,
+    ) -> Result<JournaledSolidOp, OperationsError> {
         if self.planar.is_none() && self.multi.is_none() {
             return crate::journal_ops::move_faces_journaled(
                 topo,
@@ -243,7 +281,9 @@ impl PreparedFaceMove {
         approximation: Option<crate::face_move_quality::FaceMoveApproximation>,
     ) -> Result<crate::face_move_quality::QualifiedFaceMove, OperationsError> {
         self.require_current(topo)?;
-        let (edit, quality, _) = self.edit_with_quality(topo, distance, approximation)?;
+        let (edit, quality, _) = with_move_options(self.options, || {
+            self.edit_with_quality(topo, distance, approximation)
+        })?;
         Ok(crate::face_move_quality::QualifiedFaceMove {
             result: edit.0,
             quality,
@@ -263,16 +303,20 @@ impl PreparedFaceMove {
     ) -> Result<(JournaledSolidOp, crate::face_move_quality::FaceMoveQuality), OperationsError>
     {
         self.require_current(topo)?;
-        remus_topology::transaction::run_transacted(topo, |topo| {
-            let mut pending = topo.journal_begin("move_faces");
-            pending.add_scope(self.scope.clone());
-            let (edit, quality, rebuild) = self.edit_with_quality(topo, distance, approximation)?;
-            Ok((
-                crate::journal_ops::record_qualified_face_move(
-                    topo, pending, self.solid, edit, rebuild,
-                )?,
-                quality,
-            ))
+        let options = self.options;
+        with_move_options(options, || {
+            remus_topology::transaction::run_transacted(topo, |topo| {
+                let mut pending = topo.journal_begin("move_faces");
+                pending.add_scope(self.scope.clone());
+                let (edit, quality, rebuild) =
+                    self.edit_with_quality(topo, distance, approximation)?;
+                Ok((
+                    crate::journal_ops::record_qualified_face_move(
+                        topo, pending, self.solid, edit, rebuild,
+                    )?,
+                    quality,
+                ))
+            })
         })
     }
 
@@ -298,7 +342,9 @@ impl PreparedFaceMove {
         match self.edit(topo, distance) {
             Ok(edit) => Ok((edit, FaceMoveQuality::Exact, CapRebuild::No)),
             Err(error) => {
-                let Some(permission) = approximation else {
+                let Some(permission) = approximation
+                    .filter(|_| !matches!(error, OperationsError::AmbiguousRimChamfer(_)))
+                else {
                     return Err(error);
                 };
                 remus_topology::transaction::run_transacted(topo, |topo| {

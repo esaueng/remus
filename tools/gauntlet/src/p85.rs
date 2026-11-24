@@ -2382,6 +2382,11 @@ fn operations_diagnostic(error: &OperationsError) -> DiagnosticRecord {
             "healing_verification_unavailable",
             error.to_string(),
         ),
+        OperationsError::AmbiguousRimChamfer(_) => error_diagnostic(
+            FailureCategory::Unsupported,
+            "ambiguous_rim_chamfer",
+            error.to_string(),
+        ),
         OperationsError::HealingRepairRefused { .. } => error_diagnostic(
             FailureCategory::Unsupported,
             "healing_repair_refused",

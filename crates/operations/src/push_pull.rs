@@ -79,7 +79,10 @@ pub struct MoveFacesResult {
 /// Returns a structured [`remus_offset::OffsetError`] through
 /// [`crate::OperationsError::Offset`] when the selection is unsupported or
 /// the move would change topology. A failed postcondition also returns an
-/// error and leaves the input topology unchanged.
+/// error and leaves the input topology unchanged. A sloped band on a planar
+/// cap's rim that could be a chamfer or a draft, with no journal history to
+/// tell which, refuses with [`crate::OperationsError::AmbiguousRimChamfer`];
+/// [`move_faces_with_options`] resolves it.
 pub fn move_faces(
     topo: &mut Topology,
     solid: SolidId,
@@ -87,6 +90,129 @@ pub fn move_faces(
     distance: f64,
 ) -> Result<SolidId, crate::OperationsError> {
     Ok(move_faces_with_evolution(topo, solid, faces, distance)?.solid)
+}
+
+pub use crate::error_payloads::AmbiguousRimBand;
+
+/// How a face move reads a sloped band on a planar cap's rim that geometry
+/// cannot tell between a chamfer and a draft (#1957).
+///
+/// Such a band stands on walls the move slides along and cuts one cap edge
+/// at constant setbacks: a two-distance chamfer and a drafted section have
+/// that shape, and equal setbacks describe a 45° draft as well as a
+/// symmetric chamfer. When the journal records the operation that made the
+/// band, the record decides (a `chamfer` entry is carried, anything else is
+/// re-limited as a draft) and this setting is not read. It applies only to
+/// bands without that record: imported bodies, and bodies edited without
+/// the journal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AmbiguousRimResolution {
+    /// Refuse with [`crate::OperationsError::AmbiguousRimChamfer`], naming
+    /// the band, leaving the source untouched.
+    #[default]
+    Refuse,
+    /// Read the band as a chamfer: it translates with the cap and the walls
+    /// it stands on change length.
+    TreatAsChamfer,
+    /// Read the band as a draft: it keeps its plane (or cone) and the move
+    /// re-limits it against the moved cap.
+    TreatAsDraft,
+}
+
+impl AmbiguousRimResolution {
+    /// Stable name used across the WASM boundary.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Refuse => "refuse",
+            Self::TreatAsChamfer => "chamfer",
+            Self::TreatAsDraft => "draft",
+        }
+    }
+
+    /// The resolution named `code` ([`Self::code`]).
+    #[must_use]
+    pub fn from_code(code: &str) -> Option<Self> {
+        [Self::Refuse, Self::TreatAsChamfer, Self::TreatAsDraft]
+            .into_iter()
+            .find(|resolution| resolution.code() == code)
+    }
+}
+
+/// Caller options of a face move ([`move_faces_with_options`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct MoveFacesOptions {
+    /// How a history-free rim band that could be a chamfer or a draft is
+    /// read. Defaults to refusing.
+    pub ambiguous_rim: AmbiguousRimResolution,
+}
+
+impl MoveFacesOptions {
+    /// The default options: the contract of [`move_faces`].
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            ambiguous_rim: AmbiguousRimResolution::Refuse,
+        }
+    }
+
+    /// These options with `resolution` for ambiguous rim bands.
+    #[must_use]
+    pub const fn with_ambiguous_rim(mut self, resolution: AmbiguousRimResolution) -> Self {
+        self.ambiguous_rim = resolution;
+        self
+    }
+}
+
+thread_local! {
+    static AMBIGUOUS_RIM: std::cell::Cell<AmbiguousRimResolution> =
+        const { std::cell::Cell::new(AmbiguousRimResolution::Refuse) };
+}
+
+/// Run `f` with `options` in force for every face move it makes on this
+/// thread, restoring the previous options afterwards however `f` ends.
+///
+/// The explicit entry points ([`move_faces_with_options`],
+/// [`crate::journal_ops::move_faces_journaled_with_options`],
+/// [`crate::prepared_move::PreparedFaceMove::prepare_with_options`]) are
+/// built on it; it also carries the options into the other move variants
+/// (the quality-aware [`crate::face_move_quality::move_faces_with_quality`],
+/// for one).
+pub fn with_move_options<T>(options: MoveFacesOptions, f: impl FnOnce() -> T) -> T {
+    struct Restore(AmbiguousRimResolution);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            AMBIGUOUS_RIM.with(|cell| cell.set(self.0));
+        }
+    }
+    let _restore = Restore(AMBIGUOUS_RIM.with(|cell| cell.replace(options.ambiguous_rim)));
+    f()
+}
+
+/// The ambiguous-rim resolution in force ([`with_move_options`]).
+pub(crate) fn ambiguous_rim_resolution() -> AmbiguousRimResolution {
+    AMBIGUOUS_RIM.with(std::cell::Cell::get)
+}
+
+/// [`move_faces_with_evolution`] with explicit caller `options`.
+///
+/// With [`MoveFacesOptions::default`] this is [`move_faces_with_evolution`].
+///
+/// # Errors
+///
+/// The refusals of [`move_faces_with_evolution`]; any failure restores the
+/// topology to its pre-call state.
+pub fn move_faces_with_options(
+    topo: &mut Topology,
+    solid: SolidId,
+    faces: &[FaceId],
+    distance: f64,
+    options: MoveFacesOptions,
+) -> Result<MoveFacesResult, crate::OperationsError> {
+    with_move_options(options, || {
+        move_faces_with_evolution(topo, solid, faces, distance)
+    })
 }
 
 /// [`move_faces`] with construction-derived face evolution.
@@ -124,6 +250,9 @@ pub(crate) fn move_faces_with_entity_evolution(
             && let Some(edit) = crate::thread::face_move::rebuild(topo, solid, faces, distance)?
         {
             return Ok(edit);
+        }
+        if let Some(band) = crate::resize_blend::ambiguous_rim_band(topo, solid, faces)? {
+            return Err(crate::OperationsError::AmbiguousRimChamfer(band));
         }
         let boundary_pairs;
         let result = if let Some((face, new_radius)) =
@@ -291,6 +420,8 @@ pub(crate) fn require_closed_shells(
 pub(crate) struct PreparedPlanarMove {
     source_faces: Vec<FaceId>,
     lineage_key: std::sync::Arc<()>,
+    /// The ambiguous rim band every call refuses on.
+    ambiguous: Option<AmbiguousRimBand>,
     blend: Option<crate::resize_blend::PreparedBlendMove>,
     /// The swept-region refusal of a move without blends, when the
     /// selection has a plane to sweep.
@@ -320,6 +451,18 @@ impl PreparedPlanarMove {
         if crate::thread::face_move::is_mouth(topo, solid, faces) {
             return Ok(None);
         }
+        // A refusal of every distance alike: each call returns it, as the
+        // unprepared move does.
+        if let Some(band) = crate::resize_blend::ambiguous_rim_band(topo, solid, faces)? {
+            return Ok(Some(Self {
+                source_faces,
+                lineage_key: std::sync::Arc::clone(topo.journal().lineage_key()),
+                ambiguous: Some(band),
+                blend: None,
+                swept: None,
+                prismatic: None,
+            }));
+        }
         let blend = crate::resize_blend::PreparedBlendMove::prepare(topo, solid, faces)?;
         let mut swept = None;
         let mut prismatic = None;
@@ -337,6 +480,7 @@ impl PreparedPlanarMove {
         Ok(Some(Self {
             source_faces,
             lineage_key: std::sync::Arc::clone(topo.journal().lineage_key()),
+            ambiguous: None,
             blend,
             swept,
             prismatic,
@@ -355,6 +499,9 @@ impl PreparedPlanarMove {
         // barrier can invalidate chamfer provenance on unchanged geometry.
         if !std::sync::Arc::ptr_eq(&self.lineage_key, topo.journal().lineage_key()) {
             return move_faces_with_entity_evolution(topo, solid, faces, distance);
+        }
+        if let Some(band) = self.ambiguous {
+            return Err(crate::OperationsError::AmbiguousRimChamfer(band));
         }
         let snapshot = remus_topology::transaction::RollbackSnapshot::capture(topo);
         let outcome = (|| -> Result<DirectEditEvolution, crate::OperationsError> {

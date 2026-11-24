@@ -157,6 +157,34 @@ impl RemusKernel {
             .into_ts()?)
     }
 
+    /// [`moveFacesDetailed`](Self::move_faces_detailed) with caller options.
+    ///
+    /// `options` is a JSON object. `ambiguousRim` (`"refuse"`, the default,
+    /// `"chamfer"` or `"draft"`) says how to read a sloped band on a planar
+    /// cap's rim that could be a chamfer or a draft and has no journal
+    /// history to tell which (an imported body, or one edited without the
+    /// journal): `moveFacesDetailed` refuses such a move with
+    /// `details.kernelCode: "ambiguous_rim_chamfer"`, naming the band's
+    /// `face`, `wall`, `cap` and cap `edge` and its `capSetback` and
+    /// `wallSetback`. `"chamfer"` carries the band with the face; `"draft"`
+    /// re-limits it against the moved face. A band the journal records is
+    /// read by its record whatever `ambiguousRim` says. `details` echoes
+    /// the `ambiguousRim` used. An unknown key or value is an
+    /// `invalid_argument` refusal.
+    #[wasm_bindgen(js_name = "moveFacesDetailedWithOptions")]
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn move_faces_detailed_with_options(
+        &mut self,
+        solid: u32,
+        faces: Vec<u32>,
+        distance: f64,
+        options: &str,
+    ) -> Result<tsify::Ts<SolidOperationDetailedResult>, JsError> {
+        Ok(self
+            .move_faces_detailed_with_options_impl(solid, &faces, distance, options)
+            .into_ts()?)
+    }
+
     /// Move several planar faces together, each along its own outward
     /// normal, and return an exact result or a typed refusal.
     ///
@@ -483,35 +511,64 @@ impl RemusKernel {
         corner_stations: Option<u32>,
     ) -> SolidOperationDetailedResult {
         self.run_modifier_detailed("moveFaces", "Move faces", |kernel| {
-            validate_finite(distance, "distance")?;
-            let permission = face_move_permission(corner_stations)?;
-            validate_work_count(u32::try_from(faces.len()).unwrap_or(u32::MAX), "faces")?;
-            let solid_id = kernel.resolve_solid(solid)?;
-            let face_ids = faces
-                .iter()
-                .map(|&face| kernel.resolve_face(face))
-                .collect::<Result<Vec<_>, _>>()?;
-            super::operations::validate_move_faces_topology_work(
-                kernel.topo(),
-                solid_id,
-                &face_ids,
-            )?;
-            let input = MoveInput::capture(kernel.topo(), solid_id)?;
-            let result = remus_operations::face_move_quality::move_faces_with_quality(
-                kernel.topo_mut(),
-                solid_id,
-                &face_ids,
-                distance,
-                permission,
-            )
-            .map_err(|error| input.refusal(error))?;
-            let mut details = face_move_quality_json(result.quality)
-                .as_object()
-                .cloned()
-                .unwrap_or_default();
-            details.insert("distance".into(), Value::from(distance));
-            Ok((solid_id_to_u32(result.result.solid), details))
+            kernel.move_faces_detailed_body(solid, faces, distance, corner_stations)
         })
+    }
+
+    /// [`Self::move_faces_detailed_impl`] under the caller options in
+    /// `options` ([`parse_move_faces_options`]).
+    pub(crate) fn move_faces_detailed_with_options_impl(
+        &mut self,
+        solid: u32,
+        faces: &[u32],
+        distance: f64,
+        options: &str,
+    ) -> SolidOperationDetailedResult {
+        self.run_modifier_detailed("moveFaces", "Move faces", |kernel| {
+            let options = parse_move_faces_options(options)?;
+            let (solid, mut details) =
+                remus_operations::push_pull::with_move_options(options, || {
+                    kernel.move_faces_detailed_body(solid, faces, distance, None)
+                })?;
+            details.insert(
+                "ambiguousRim".into(),
+                Value::from(options.ambiguous_rim.code()),
+            );
+            Ok((solid, details))
+        })
+    }
+
+    fn move_faces_detailed_body(
+        &mut self,
+        solid: u32,
+        faces: &[u32],
+        distance: f64,
+        corner_stations: Option<u32>,
+    ) -> Result<(u32, Map<String, Value>), StructuredWasmError> {
+        validate_finite(distance, "distance")?;
+        let permission = face_move_permission(corner_stations)?;
+        validate_work_count(u32::try_from(faces.len()).unwrap_or(u32::MAX), "faces")?;
+        let solid_id = self.resolve_solid(solid)?;
+        let face_ids = faces
+            .iter()
+            .map(|&face| self.resolve_face(face))
+            .collect::<Result<Vec<_>, _>>()?;
+        super::operations::validate_move_faces_topology_work(self.topo(), solid_id, &face_ids)?;
+        let input = MoveInput::capture(self.topo(), solid_id)?;
+        let result = remus_operations::face_move_quality::move_faces_with_quality(
+            self.topo_mut(),
+            solid_id,
+            &face_ids,
+            distance,
+            permission,
+        )
+        .map_err(|error| input.refusal(error))?;
+        let mut details = face_move_quality_json(result.quality)
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+        details.insert("distance".into(), Value::from(distance));
+        Ok((solid_id_to_u32(result.result.solid), details))
     }
 
     pub(crate) fn fillet_detailed_impl(
@@ -1097,3 +1154,41 @@ mod envelope_oracle_tests;
 
 #[cfg(test)]
 mod exact_nurbs_tests;
+
+/// The face-move options of a JSON object: `ambiguousRim` (`"refuse"`,
+/// `"chamfer"` or `"draft"`). An absent key keeps its default; anything else
+/// is refused.
+pub fn parse_move_faces_options(
+    options: &str,
+) -> Result<remus_operations::push_pull::MoveFacesOptions, StructuredWasmError> {
+    use remus_operations::push_pull::{AmbiguousRimResolution, MoveFacesOptions};
+    let invalid = |reason: String| StructuredWasmError::invalid_argument(reason, Some("options"));
+    let value: Value = serde_json::from_str(options)
+        .map_err(|error| invalid(format!("moveFaces options: {error}")))?;
+    let Value::Object(map) = value else {
+        return Err(invalid("moveFaces options must be a JSON object".into()));
+    };
+    let mut parsed = MoveFacesOptions::new();
+    for (key, value) in map {
+        match key.as_str() {
+            "ambiguousRim" => {
+                let resolution = value
+                    .as_str()
+                    .and_then(AmbiguousRimResolution::from_code)
+                    .ok_or_else(|| {
+                        invalid(format!(
+                            "moveFaces options: ambiguousRim must be \"refuse\", \"chamfer\" or \
+                             \"draft\", not {value}"
+                        ))
+                    })?;
+                parsed = parsed.with_ambiguous_rim(resolution);
+            }
+            _ => {
+                return Err(invalid(format!(
+                    "moveFaces options: unknown option \"{key}\""
+                )));
+            }
+        }
+    }
+    Ok(parsed)
+}

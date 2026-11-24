@@ -55,6 +55,26 @@ impl RemusKernel {
         Ok(self.prepare_move_faces_impl(solid, &faces)?)
     }
 
+    /// [`prepareMoveFaces`](Self::prepare_move_faces) with caller options:
+    /// every move of the returned handle runs under them. `options` is the
+    /// JSON object `moveFacesDetailedWithOptions` takes.
+    ///
+    /// # Errors
+    ///
+    /// As `prepareMoveFaces`, and for an unknown option or value.
+    #[wasm_bindgen(js_name = "prepareMoveFacesWithOptions")]
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn prepare_move_faces_with_options(
+        &mut self,
+        solid: u32,
+        faces: Vec<u32>,
+        options: &str,
+    ) -> Result<u32, JsError> {
+        let options = super::modifier_detailed::parse_move_faces_options(options)
+            .map_err(|error| JsError::new(error.message()))?;
+        Ok(self.prepare_move_faces_with_options_impl(solid, &faces, options)?)
+    }
+
     /// `moveFaces` of a prepared selection: moves it `distance` from the
     /// prepared source and returns the new solid handle.
     ///
@@ -126,6 +146,19 @@ impl RemusKernel {
         solid: u32,
         faces: &[u32],
     ) -> Result<u32, WasmError> {
+        self.prepare_move_faces_with_options_impl(
+            solid,
+            faces,
+            remus_operations::push_pull::MoveFacesOptions::default(),
+        )
+    }
+
+    pub(crate) fn prepare_move_faces_with_options_impl(
+        &mut self,
+        solid: u32,
+        faces: &[u32],
+        options: remus_operations::push_pull::MoveFacesOptions,
+    ) -> Result<u32, WasmError> {
         validate_work_count(u32::try_from(faces.len()).unwrap_or(u32::MAX), "faces")?;
         let solid_id = self.resolve_solid(solid)?;
         let face_ids = faces
@@ -133,7 +166,9 @@ impl RemusKernel {
             .map(|&face| self.resolve_face(face))
             .collect::<Result<Vec<_>, _>>()?;
         super::operations::validate_move_faces_topology_work(self.topo(), solid_id, &face_ids)?;
-        self.insert_prepared_move(|topo| PreparedFaceMove::prepare(topo, solid_id, &face_ids))
+        self.insert_prepared_move(|topo| {
+            PreparedFaceMove::prepare_with_options(topo, solid_id, &face_ids, options)
+        })
     }
 
     /// Registers the move `prepare` builds under a fresh handle, within the

@@ -1286,6 +1286,11 @@ fn operations_diagnostic(error: &OperationsError) -> DiagnosticRecord {
                 error.to_string(),
             )
         }
+        OperationsError::AmbiguousRimChamfer(_) => DiagnosticRecord::error(
+            FailureCategory::Unsupported,
+            "ambiguous_rim_chamfer",
+            error.to_string(),
+        ),
         OperationsError::HealingRepairRefused { .. } => DiagnosticRecord::error(
             FailureCategory::Unsupported,
             "healing_repair_refused",

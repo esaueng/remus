@@ -62,7 +62,11 @@ pub(crate) fn edit_with_quality(
     match crate::push_pull::move_faces_with_entity_evolution(topo, solid, faces, distance) {
         Ok(result) => Ok((result, FaceMoveQuality::Exact, CapRebuild::No)),
         Err(error) => {
-            let Some(permission) = approximation else {
+            // An ambiguous rim is the caller's decision, not a geometry
+            // failure a sampled cap join could recover.
+            let Some(permission) =
+                approximation.filter(|_| !matches!(error, OperationsError::AmbiguousRimChamfer(_)))
+            else {
                 return Err(error);
             };
             remus_topology::transaction::run_transacted(topo, |topo| {
