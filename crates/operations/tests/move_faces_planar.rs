@@ -384,6 +384,17 @@ fn planar_move_retrims_a_sloped_neighbor() {
 /// refuse. Short of the apex the move is legal and keeps the exact volume.
 #[test]
 fn cap_move_refuses_past_the_apex_of_converging_planar_walls() {
+    let live_counts = |topo: &Topology| {
+        [
+            topo.num_vertices(),
+            topo.num_edges(),
+            topo.num_wires(),
+            topo.num_faces(),
+            topo.num_shells(),
+            topo.num_solids(),
+        ]
+    };
+
     // Tapered prism: the sloped wall x = 10 - z/3 meets the x = 0 wall at
     // z = 30, so the cap at z = 6 can rise by less than 24.
     for (distance, legal) in [(23.0, true), (24.0, false), (25.0, false), (30.0, false)] {
@@ -391,6 +402,7 @@ fn cap_move_refuses_past_the_apex_of_converging_planar_walls() {
         let source = sloped_prism(&mut topo);
         let selected = outward_faces(&topo, source, Vec3::new(0.0, 0.0, 1.0));
         let counts = solid_entity_counts(&topo, source).expect("source counts");
+        let before_move = live_counts(&topo);
         let outcome = move_faces(&mut topo, source, &selected, distance);
         if legal {
             let result = outcome.expect("move short of the apex");
@@ -407,6 +419,11 @@ fn cap_move_refuses_past_the_apex_of_converging_planar_walls() {
                     OperationsError::Offset(OffsetError::TopologyChange { .. })
                 ),
                 "distance {distance}: {error}"
+            );
+            assert_eq!(
+                live_counts(&topo),
+                before_move,
+                "refused move leaked entities"
             );
             assert_eq!(solid_entity_counts(&topo, source).unwrap(), counts);
             assert_volume(&topo, source, 216.0);
@@ -447,6 +464,7 @@ fn cap_move_refuses_past_the_apex_of_converging_planar_walls() {
         .expect("drafted block");
         let before = solid_volume(&topo, source, DEFLECTION).unwrap();
         let selected = outward_faces(&topo, source, Vec3::new(0.0, 0.0, 1.0));
+        let before_move = live_counts(&topo);
         let outcome = move_faces(&mut topo, source, &selected, distance);
         if legal {
             let result = outcome.expect("move short of the apex");
@@ -464,6 +482,11 @@ fn cap_move_refuses_past_the_apex_of_converging_planar_walls() {
                     OperationsError::Offset(OffsetError::TopologyChange { .. })
                 ),
                 "distance {distance}: {error}"
+            );
+            assert_eq!(
+                live_counts(&topo),
+                before_move,
+                "refused move leaked entities"
             );
             assert_volume(&topo, source, before);
         }
