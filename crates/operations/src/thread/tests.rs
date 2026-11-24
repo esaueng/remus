@@ -3824,3 +3824,61 @@ fn moving_a_single_threaded_pad_keeps_the_second_bore_on_its_fixed_cap() {
         );
     }
 }
+
+/// A modeled thread's crest and root lands are short, wide cylinder strips
+/// trimmed by the climbing flank helices. Squared into the parameter box,
+/// each took `n_u` dense trim rows — rows forty times closer than its
+/// columns, ~7.8k triangles a land on an M27-sized internal thread at a
+/// display deflection, 1.1M triangles on one threaded part. Unrolled, each
+/// land meshes isotropically: a few hundred triangles, closed, manifold,
+/// within the chord slab of the exact volume, and its triangles still on
+/// the cylinder to within the deflection.
+#[test]
+fn wide_thread_lands_mesh_isotropically_at_display_deflection() {
+    let mut topo = Topology::new();
+    let form = ThreadForm::iso_metric(1.5, ThreadKind::Internal);
+    let (outer, h) = (20.0, 9.0);
+    let minor = 13.5 - form.depth;
+    let (body, face) = bored(&mut topo, outer, minor, h);
+    let outcome = cut_thread(&mut topo, body, face, &form, &tight(&form)).unwrap();
+    let solid = outcome.solid;
+    let (deflection, angular) = (0.026, 0.06);
+    let (mesh, offsets) = crate::tessellate::tessellate_solid_grouped_with_tolerance(
+        &topo, solid, deflection, angular,
+    )
+    .unwrap();
+    let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
+    let mut lands = 0;
+    for (index, &face) in faces.iter().enumerate() {
+        let FaceSurface::Cylinder(cylinder) = topo.face(face).unwrap().surface() else {
+            continue;
+        };
+        if cylinder.radius() > 13.5 + 1e-9 {
+            continue;
+        }
+        lands += 1;
+        let range = offsets[index] as usize..offsets[index + 1] as usize;
+        let triangles = range.len() / 3;
+        assert!(triangles <= 1_500, "land {index}: {triangles} triangles");
+        for corner in range.step_by(3) {
+            let points = [0, 1, 2].map(|k| mesh.positions[mesh.indices[corner + k] as usize]);
+            let centroid = Point3::new(
+                (points[0].x() + points[1].x() + points[2].x()) / 3.0,
+                (points[0].y() + points[1].y() + points[2].y()) / 3.0,
+                (points[0].z() + points[1].z() + points[2].z()) / 3.0,
+            );
+            let offset = centroid - cylinder.origin();
+            let radial = offset - cylinder.axis() * offset.dot(cylinder.axis());
+            assert!(
+                (radial.length() - cylinder.radius()).abs() <= deflection,
+                "land {index}: a chord {} off its cylinder",
+                (radial.length() - cylinder.radius()).abs()
+            );
+        }
+    }
+    assert!(lands >= 8, "{lands} lands");
+    let expected = volume(&topo, solid);
+    let audit =
+        crate::tessellate::mesh_audit::audit_display_mesh(&topo, solid, deflection, angular);
+    assert!(audit.sound_off_cones(deflection, expected), "{audit:?}");
+}

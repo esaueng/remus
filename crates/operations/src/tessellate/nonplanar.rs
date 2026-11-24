@@ -3568,7 +3568,30 @@ pub(super) fn tessellate_nonplanar_cdt(
         | FaceSurface::Sphere(_)
         | FaceSurface::Torus(_) => None,
     };
-    let v_scale = if du > 1e-15 && dv > 1e-15 {
+    // A short, wide cylinder band trimmed by a curve that climbs through it
+    // (a modeled thread's half-turn strip: 1.5 mm tall, 60 mm around)
+    // squared into the parameter box needs `n_u` dense trim rows to stay
+    // isotropic there, forty times the rows its surface needs: ~3.7k interior
+    // points per band, 1.1M triangles on one threaded part. A cylinder
+    // unrolls isometrically, so triangulate such a band in its unrolled chart
+    // (`v` over the radius, both axes in surface lengths), where rows the
+    // columns' arc apart are isotropic. Bands taller than they are wide, and
+    // trims that only follow a rim, keep the squared box: their dense rows
+    // already match the columns, and the squared box is what keeps Delaunay
+    // insertion from losing triangles on a tall sliver.
+    let unrolled_radius = match chart_surface {
+        FaceSurface::Cylinder(cylinder)
+            if sheared.is_none()
+                && cylinder.radius() * du > dv
+                && climbing_nurbs_trim(topo, outer_edges, &boundary_uv, &boundary_3d, du, dv) =>
+        {
+            Some(cylinder.radius())
+        }
+        _ => None,
+    };
+    let v_scale = if let Some(radius) = unrolled_radius {
+        1.0 / radius
+    } else if du > 1e-15 && dv > 1e-15 {
         // A NURBS chart triangulates in surface lengths along each axis
         // (see `sheared_chart::metric_v_scale`): its knot units are not
         // lengths, and squaring up its parameter box folded slivers on a
@@ -3970,7 +3993,12 @@ pub(super) fn tessellate_nonplanar_cdt(
                 }
             }
 
-            let dense_dv = dv / n_u as f64;
+            // On an unrolled wide cylinder (see `unrolled_radius`) the chart
+            // is the surface itself, so rows the columns' own arc apart are
+            // isotropic there, as `dv / n_u` rows are in the squared box.
+            let dense_dv = unrolled_radius.map_or(dv / n_u as f64, |radius| {
+                (radius * du / n_u as f64).max(dv / n_u as f64)
+            });
             if curved_v_max > curved_v_min && dense_dv > 1.0e-15 {
                 let lo = (curved_v_min - dense_dv).max(v_min);
                 let hi = (curved_v_max + dense_dv).min(v_max);
@@ -5077,6 +5105,53 @@ fn estimate_surface_radius(surface: &FaceSurface) -> f64 {
         FaceSurface::Torus(torus) => torus.major_radius() + torus.minor_radius(),
         FaceSurface::Nurbs(_) | FaceSurface::Plane { .. } => 1.0,
     }
+}
+
+/// Whether a cylinder face's outer wire has a NURBS edge whose
+/// samples move through both `u` and `v`: a trim that climbs across the
+/// rulings rather than following a rim or a seam (`has_nurbs_revolved_wire`
+/// in `tessellate_nonplanar_cdt`), and no ellipse edge, whose seeding reads
+/// the raw parameter box.
+fn climbing_nurbs_trim(
+    topo: &Topology,
+    outer_edges: &[remus_topology::wire::OrientedEdge],
+    boundary_uv: &[(f64, f64)],
+    boundary_3d: &[(Point3, u32, remus_topology::edge::EdgeId, bool)],
+    du: f64,
+    dv: f64,
+) -> bool {
+    let is = |oriented: &remus_topology::wire::OrientedEdge, ellipse: bool| {
+        topo.edge(oriented.edge()).is_ok_and(|edge| {
+            if ellipse {
+                matches!(edge.curve(), EdgeCurve::Ellipse(_))
+            } else {
+                matches!(edge.curve(), EdgeCurve::NurbsCurve(_))
+            }
+        })
+    };
+    if outer_edges.iter().any(|oriented| is(oriented, true)) {
+        return false;
+    }
+    outer_edges.iter().any(|oriented| {
+        if !is(oriented, false) {
+            return false;
+        }
+        let mut span = (
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        );
+        for (&(u, v), sample) in boundary_uv.iter().zip(boundary_3d) {
+            if sample.2 == oriented.edge() {
+                span.0 = span.0.min(u);
+                span.1 = span.1.max(u);
+                span.2 = span.2.min(v);
+                span.3 = span.3.max(v);
+            }
+        }
+        span.1 - span.0 > 1e-9 * du && span.3 - span.2 > 1e-9 * dv
+    })
 }
 
 /// Rows for a cylinder or cone whose boundary runs along its rims and also
