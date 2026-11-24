@@ -3872,6 +3872,23 @@ export class RemusKernel {
      */
     moveFacesDetailed(solid: number, faces: Uint32Array, distance: number): SolidOperationDetailedResult;
     /**
+     * [`moveFacesDetailed`](Self::move_faces_detailed) with caller options.
+     *
+     * `options` is a JSON object. `ambiguousRim` (`"refuse"`, the default,
+     * `"chamfer"` or `"draft"`) says how to read a sloped band on a planar
+     * cap's rim that could be a chamfer or a draft and has no journal
+     * history to tell which (an imported body, or one edited without the
+     * journal): `moveFacesDetailed` refuses such a move with
+     * `details.kernelCode: "ambiguous_rim_chamfer"`, naming the band's
+     * `face`, `wall`, `cap` and cap `edge` and its `capSetback` and
+     * `wallSetback`. `"chamfer"` carries the band with the face; `"draft"`
+     * re-limits it against the moved face. A band the journal records is
+     * read by its record whatever `ambiguousRim` says. `details` echoes
+     * the `ambiguousRim` used. An unknown key or value is an
+     * `invalid_argument` refusal.
+     */
+    moveFacesDetailedWithOptions(solid: number, faces: Uint32Array, distance: number, options: string): SolidOperationDetailedResult;
+    /**
      * Move faces with construction history.
      *
      * Planar re-limitation and coaxial bore moves include edge and vertex
@@ -3917,6 +3934,15 @@ export class RemusKernel {
      * was.
      */
     moveFacesMultiDetailed(solid: number, faces: Uint32Array, distances: Float64Array): SolidOperationDetailedResult;
+    /**
+     * [`moveFacesMultiDetailed`](Self::move_faces_multi_detailed) with
+     * caller options: the JSON object `moveFacesDetailedWithOptions` takes.
+     * A multi-face move only re-limits the faces it does not move, so
+     * `ambiguousRim: "draft"` lets it proceed over a history-free rim band,
+     * while a band read as a chamfer (`"chamfer"`, or its journal history)
+     * refuses as `unsupported`.
+     */
+    moveFacesMultiDetailedWithOptions(solid: number, faces: Uint32Array, distances: Float64Array, options: string): SolidOperationDetailedResult;
     /**
      * `moveFacesMulti` journaled as one `move_faces` entry with exact face,
      * edge and vertex history. Returns JSON `{"solid", "op"}`.
@@ -4235,6 +4261,16 @@ export class RemusKernel {
      * prepared moves are already live.
      */
     prepareMoveFacesMulti(solid: number, faces: Uint32Array, weights?: Float64Array | null): number;
+    /**
+     * [`prepareMoveFaces`](Self::prepare_move_faces) with caller options:
+     * every move of the returned handle runs under them. `options` is the
+     * JSON object `moveFacesDetailedWithOptions` takes.
+     *
+     * # Errors
+     *
+     * As `prepareMoveFaces`, and for an unknown option or value.
+     */
+    prepareMoveFacesWithOptions(solid: number, faces: Uint32Array, options: string): number;
     /**
      * Prepare live radius edits of the blend band containing `face`
      * (`resizeBlend` through its blend group) for an interactive drag.
