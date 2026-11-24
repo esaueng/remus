@@ -5052,25 +5052,26 @@ fn instantiate_wire_edge(
     );
     if !is_line {
         edge.set_trim(orientation.trim);
-        let domain = edge.strict_domain().map_err(|error| {
+        edge.strict_domain().map_err(|error| {
             AlgoError::FaceSplitFailed(format!(
                 "invalid carried {} range: {error}",
                 edge.curve().type_tag()
             ))
         })?;
-        if pcurve_edge.source_topo_edge.is_none()
-            && matches!(edge.curve(), EdgeCurve::NurbsCurve(_))
-        {
-            let (residual, slack) = stored_endpoint_residual(topo, &edge, domain)?;
-            if residual > stored_tolerance && residual <= guard {
-                let required = (residual + slack).min(guard);
-                if !max_entity_tolerance.is_finite() || required > max_entity_tolerance {
-                    return Err(AlgoError::FaceSplitFailed(format!(
-                        "fitted section endpoint needs edge tolerance {required:e}, above the entity tolerance cap {max_entity_tolerance:e}"
-                    )));
-                }
-                edge.set_tolerance(Some(required))?;
+    }
+    if pcurve_edge.source_topo_edge.is_none()
+        && matches!(edge.curve(), EdgeCurve::NurbsCurve(_))
+        && let Some(domain) = edge.trim()
+    {
+        let (residual, slack) = stored_endpoint_residual(topo, &edge, domain)?;
+        if residual > stored_tolerance && residual <= guard {
+            let required = (residual + slack).min(guard);
+            if !max_entity_tolerance.is_finite() || required > max_entity_tolerance {
+                return Err(AlgoError::FaceSplitFailed(format!(
+                    "fitted section endpoint needs edge tolerance {required:e}, above the entity tolerance cap {max_entity_tolerance:e}"
+                )));
             }
+            edge.set_tolerance(Some(required))?;
         }
     }
     let edge_id = topo.add_edge(edge);
