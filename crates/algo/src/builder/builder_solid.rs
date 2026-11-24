@@ -89,6 +89,22 @@ pub fn clean_selected_faces(
     cap_planes: &[CapPlane],
     lineage: &mut super::split_types::EdgeLineageLog,
 ) -> Result<(Vec<FaceId>, Vec<Option<FaceId>>), AlgoError> {
+    let (faces, sources, _) = clean_selected_faces_tracked(topo, selected, cap_planes, lineage)?;
+    Ok((faces, sources))
+}
+
+/// Cleaned faces, their sources, and the declined conic × NURBS edges.
+type TrackedCleanFaces = (Vec<FaceId>, Vec<Option<FaceId>>, Vec<EdgeId>);
+
+/// [`clean_selected_faces`], also returning the edges of conic × NURBS pairs
+/// the duplicate-edge merge declined to unify (their fitted-copy bound was not
+/// proven). Shell assembly refuses a result that leaves one of them free.
+fn clean_selected_faces_tracked(
+    topo: &mut Topology,
+    selected: &[SelectedFace],
+    cap_planes: &[CapPlane],
+    lineage: &mut super::split_types::EdgeLineageLog,
+) -> Result<TrackedCleanFaces, AlgoError> {
     if selected.is_empty() {
         return Err(AlgoError::AssemblyFailed("no faces selected".into()));
     }
@@ -203,7 +219,7 @@ pub fn clean_selected_faces(
     // same geometric boundary. Merge them by quantized endpoint position so that
     // the BuilderSolid's connectivity flood-fill sees shared edges.
     // This is operation-safe: only operates on BOP-selected faces.
-    merge_duplicate_edges(topo, &mut face_ids)?;
+    let declined = merge_duplicate_edges(topo, &mut face_ids)?;
     // BK_FACES=1 dumps the selected faces' wires after the merge (edge IDs +
     // curve kinds + endpoints) for diagnosing lost/shared-edge defects.
     // BK_FACES=2 dumps the same AFTER spur-excise + normalize (the result
@@ -259,7 +275,44 @@ pub fn clean_selected_faces(
         dump_face_wires(topo, &face_ids, "FACES step08-cap");
     }
 
-    Ok((face_ids, sources))
+    Ok((face_ids, sources, declined))
+}
+
+/// Refuse assembly when an edge of a declined conic × NURBS pair is left
+/// with a single use: the pair could not be shown to be one curve, so its
+/// edges were kept apart, and a free one would make the result an open body.
+fn reject_free_declined_edges(
+    topo: &Topology,
+    face_ids: &[FaceId],
+    declined: &[EdgeId],
+) -> Result<(), AlgoError> {
+    if declined.is_empty() {
+        return Ok(());
+    }
+    let watched: DetHashSet<EdgeId> = declined.iter().copied().collect();
+    let mut uses: DetHashMap<EdgeId, usize> = DetHashMap::default();
+    for &fid in face_ids {
+        let face = topo.face(fid)?;
+        for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied()) {
+            for oe in topo.wire(wid)?.edges() {
+                if watched.contains(&oe.edge()) {
+                    *uses.entry(oe.edge()).or_default() += 1;
+                }
+            }
+        }
+    }
+    let mut free: Vec<EdgeId> = uses
+        .into_iter()
+        .filter_map(|(edge, count)| (count == 1).then_some(edge))
+        .collect();
+    if free.is_empty() {
+        return Ok(());
+    }
+    free.compact_sort_unstable_by_key(|e| e.index());
+    Err(AlgoError::AssemblyFailed(format!(
+        "conic and NURBS edges {free:?} share their endpoints but are not a certified \
+         fitted copy, and leave the shell open"
+    )))
 }
 
 /// Assemble every disconnected growth region as its own solid.
@@ -279,8 +332,10 @@ pub fn build_solids_with_origins(
     cap_planes: &[CapPlane],
     lineage: &mut super::split_types::EdgeLineageLog,
 ) -> Result<(Vec<SolidId>, FaceProvenance), AlgoError> {
-    let (face_ids, sources) = clean_selected_faces(topo, selected, cap_planes, lineage)?;
+    let (face_ids, sources, declined) =
+        clean_selected_faces_tracked(topo, selected, cap_planes, lineage)?;
     reject_endless_cylinder_faces(topo, &face_ids)?;
+    reject_free_declined_edges(topo, &face_ids, &declined)?;
 
     // Snapshot provenance now that face_ids / sources are final and parallel:
     // map each result-bound face to the input face it derives from (None for a
@@ -4967,88 +5022,31 @@ fn nurbs_is_line_like(
 
 /// A section spline may be a fitted copy of an analytic conic boundary, or the
 /// opposite side of a curved lens (e.g. a torus seam circle and a torus×torus
-/// intersection spline sharing both seam crossings). Verify in both directions
-/// that interior conic samples lie on the spline's branch and that interior
-/// spline samples stay within the fitted-seam band of the conic's exact arc
-/// branch before collapsing a two-edge loop.
+/// intersection spline sharing both seam crossings). Collapse the two-edge
+/// loop only when the spline's trimmed range is certified, span by span,
+/// within the fitted-seam band of the conic's arc (see [`conic_fit`]). A bound
+/// that cannot be proven keeps the edges apart.
 fn nurbs_is_conic_like(
-    topo: &Topology,
     conic: &remus_topology::edge::Edge,
     spline: &remus_topology::edge::Edge,
 ) -> bool {
+    // The band the line case uses: fitted seam copies wobble by ~5e-5.
     const FIT_BAND: f64 = 1e-4;
-    const MIN_SAMPLES: usize = 8;
-    const MAX_SAMPLES: usize = 64;
     let EdgeCurve::NurbsCurve(curve) = spline.curve() else {
         return false;
     };
     let (Ok((c0, c1)), Ok((s0, s1))) = (conic.strict_domain(), spline.strict_domain()) else {
         return false;
     };
-    let (lo, hi) = (c0.min(c1), c0.max(c1));
-    let tau = std::f64::consts::TAU;
-    if !(lo.is_finite() && hi.is_finite() && hi > lo && hi - lo <= tau + 1e-9) {
-        return false;
-    }
-    let eval_conic = |t: f64| match conic.curve() {
-        EdgeCurve::Circle(c) => Some(c.evaluate(t)),
-        EdgeCurve::Ellipse(e) => Some(e.evaluate(t)),
+    let arc = match conic.curve() {
+        EdgeCurve::Circle(c) => conic_fit::ConicArc::circle(c, c0, c1),
+        EdgeCurve::Ellipse(e) => conic_fit::ConicArc::ellipse(e, c0, c1),
         EdgeCurve::Line
         | EdgeCurve::NurbsCurve(_)
         | EdgeCurve::Hyperbola(_)
-        | EdgeCurve::Parabola(_) => None,
+        | EdgeCurve::Parabola(_) => return false,
     };
-    let project_conic = |p: Point3| match conic.curve() {
-        EdgeCurve::Circle(c) => Some(c.project(p)),
-        EdgeCurve::Ellipse(e) => Some(e.project(p)),
-        EdgeCurve::Line
-        | EdgeCurve::NurbsCurve(_)
-        | EdgeCurve::Hyperbola(_)
-        | EdgeCurve::Parabola(_) => None,
-    };
-    // Conic → spline: quarter, midpoint, and three-quarter points on the conic
-    // arc must lie on the spline's trimmed branch (midpoint first to reject
-    // genuine lenses on the first projection).
-    for frac in [0.5, 0.25, 0.75] {
-        let Some(conic_pt) = eval_conic(lo + (hi - lo) * frac) else {
-            return false;
-        };
-        // A projection that fails proves nothing: keep the edges distinct
-        // rather than failing the boolean.
-        if !matches!(
-            point_on_edge_branch(topo, spline, conic_pt, FIT_BAND),
-            Ok(true)
-        ) {
-            return false;
-        }
-    }
-    let (Some(conic_lo), Some(conic_hi)) = (eval_conic(lo), eval_conic(hi)) else {
-        return false;
-    };
-    let mid_param = 0.5 * (lo + hi);
-    let samples = (curve.control_points().len() * 2).clamp(MIN_SAMPLES, MAX_SAMPLES);
-    for k in 1..samples {
-        #[allow(clippy::cast_precision_loss)]
-        let frac = k as f64 / samples as f64;
-        let t = s0 + (s1 - s0) * frac;
-        let p = curve.evaluate(t);
-        let Some(raw) = project_conic(p) else {
-            return false;
-        };
-        let u = raw + tau * ((mid_param - raw) / tau).round();
-        let dist = if u >= lo - 1e-9 && u <= hi + 1e-9 {
-            let Some(q) = eval_conic(u.clamp(lo, hi)) else {
-                return false;
-            };
-            (p - q).length()
-        } else {
-            (p - conic_lo).length().min((p - conic_hi).length())
-        };
-        if !dist.is_finite() || dist > FIT_BAND {
-            return false;
-        }
-    }
-    true
+    conic_fit::nurbs_certified_on_conic(&arc, curve, s0, s1, FIT_BAND)
 }
 
 /// Merge duplicate edges across selected faces by quantized endpoint position.
@@ -5057,12 +5055,18 @@ fn nurbs_is_conic_like(
 /// picks one canonical edge and rebuilds the other faces' wires to reference it.
 /// Uses snapshot-then-allocate to satisfy the borrow checker.
 #[allow(clippy::too_many_lines)]
-fn merge_duplicate_edges(topo: &mut Topology, face_ids: &mut [FaceId]) -> Result<(), AlgoError> {
+/// Returns the edges of conic × NURBS pairs that were left apart because
+/// their fitted-copy bound was not proven.
+fn merge_duplicate_edges(
+    topo: &mut Topology,
+    face_ids: &mut [FaceId],
+) -> Result<Vec<EdgeId>, AlgoError> {
     use remus_topology::edge::EdgeId;
 
     let tol = MERGE_TOL;
 
     let mut entries: Vec<EdgeEntry> = Vec::new();
+    let mut declined: Vec<EdgeId> = Vec::new();
 
     for (fi, &fid) in face_ids.iter().enumerate() {
         let face = topo.face(fid)?;
@@ -5323,7 +5327,11 @@ fn merge_duplicate_edges(topo: &mut Topology, face_ids: &mut [FaceId]) -> Result
                         } else {
                             (dup_edge, canon_edge)
                         };
-                        nurbs_is_conic_like(topo, conic, spline)
+                        let certified = nurbs_is_conic_like(conic, spline);
+                        if !certified {
+                            declined.extend([canonical, dup]);
+                        }
+                        certified
                     } else {
                         false
                     };
@@ -5338,7 +5346,7 @@ fn merge_duplicate_edges(topo: &mut Topology, face_ids: &mut [FaceId]) -> Result
     }
 
     if replacements.is_empty() {
-        return Ok(());
+        return Ok(declined);
     }
 
     // Flatten chains: phase 2 may redirect a phase-1 canonical (which already
@@ -5546,7 +5554,7 @@ fn merge_duplicate_edges(topo: &mut Topology, face_ids: &mut [FaceId]) -> Result
         }
     }
 
-    Ok(())
+    Ok(declined)
 }
 
 /// Remove doubled faces: two or more selected faces whose outer wires reference
@@ -6575,6 +6583,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
+    use std::f64::consts::FRAC_PI_2;
 
     #[test]
     fn planar_cap_loop_nesting_distinguishes_holes_and_disjoint_caps() {
@@ -7585,6 +7594,380 @@ mod tests {
         }
     }
 
+    /// A two-edge lens `[conic, spline]` on a planar face; whether the
+    /// duplicate-edge merge unifies its edges.
+    fn conic_nurbs_lens_merges(
+        conic: EdgeCurve,
+        conic_trim: (f64, f64),
+        spline: remus_math::nurbs::curve::NurbsCurve,
+        spline_trim: (f64, f64),
+    ) -> bool {
+        use remus_topology::{edge::Edge, vertex::Vertex, wire::Wire};
+        let (a, b) = match &conic {
+            EdgeCurve::Circle(c) => (c.evaluate(conic_trim.0), c.evaluate(conic_trim.1)),
+            EdgeCurve::Ellipse(e) => (e.evaluate(conic_trim.0), e.evaluate(conic_trim.1)),
+            EdgeCurve::Line
+            | EdgeCurve::NurbsCurve(_)
+            | EdgeCurve::Hyperbola(_)
+            | EdgeCurve::Parabola(_) => unreachable!(),
+        };
+        let mut topo = Topology::new();
+        let va = topo.add_vertex(Vertex::new(a, 1e-7));
+        let vb = topo.add_vertex(Vertex::new(b, 1e-7));
+        let mut arc = Edge::new(va, vb, conic);
+        arc.set_trim(Some(conic_trim));
+        let mut sp = Edge::new(va, vb, EdgeCurve::NurbsCurve(spline));
+        sp.set_trim(Some(spline_trim));
+        let arc_id = topo.add_edge(arc);
+        let sp_id = topo.add_edge(sp);
+        let wire = topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(arc_id, true),
+                    OrientedEdge::new(sp_id, false),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        let face = topo.add_face(Face::new(
+            wire,
+            vec![],
+            FaceSurface::Plane {
+                normal: Vec3::new(0.0, 0.0, 1.0),
+                d: 0.0,
+            },
+        ));
+        let mut faces = [face];
+        let declined = merge_duplicate_edges(&mut topo, &mut faces).unwrap();
+        let result = topo
+            .wire(topo.face(faces[0]).unwrap().outer_wire())
+            .unwrap();
+        let merged = result.edges()[0].edge() == result.edges()[1].edge();
+        assert_eq!(declined.is_empty(), merged, "declined pairs are reported");
+        merged
+    }
+
+    /// Rational quadratic spans of the circle `|p| = r` in the xy plane
+    /// between consecutive `angles`, joined at double knots `knots`.
+    fn rational_circle_spans(
+        r: f64,
+        angles: &[f64],
+        knots: &[f64],
+    ) -> (Vec<Point3>, Vec<f64>, Vec<f64>) {
+        assert_eq!(angles.len(), knots.len());
+        let at = |t: f64, rad: f64| Point3::new(rad * t.cos(), rad * t.sin(), 0.0);
+        let mut cps = vec![at(angles[0], r)];
+        let mut ws = vec![1.0];
+        let mut kv = vec![knots[0]; 3];
+        for i in 1..angles.len() {
+            let h = 0.5 * (angles[i] - angles[i - 1]);
+            cps.push(at(angles[i - 1] + h, r / h.cos()));
+            ws.push(h.cos());
+            cps.push(at(angles[i], r));
+            ws.push(1.0);
+            let reps = if i + 1 == angles.len() { 3 } else { 2 };
+            kv.extend(std::iter::repeat_n(knots[i], reps));
+        }
+        (cps, ws, kv)
+    }
+
+    fn quarter_circle(r: f64) -> remus_math::curves::Circle3D {
+        remus_math::curves::Circle3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            r,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap()
+    }
+
+    /// Review finding 1 (#1974): the identical quarter arc trimmed out of the
+    /// second turn of a two-turn carrier is the arc's copy, whatever point of
+    /// the first turn a whole-carrier projection would pick.
+    #[test]
+    fn duplicate_edge_merge_unifies_an_arc_copy_on_a_later_carrier_turn() {
+        use remus_math::nurbs::curve::NurbsCurve;
+        let quarters: Vec<f64> = (0..=8).map(|k| f64::from(k) * FRAC_PI_2).collect();
+        let knots: Vec<f64> = (0..=8).map(f64::from).collect();
+        let (cps, ws, kv) = rational_circle_spans(5.0, &quarters, &knots);
+        let carrier = NurbsCurve::new(2, kv, cps, ws).unwrap();
+        assert!(conic_nurbs_lens_merges(
+            EdgeCurve::Circle(quarter_circle(5.0)),
+            (0.0, FRAC_PI_2),
+            carrier,
+            (4.0, 5.0),
+        ));
+    }
+
+    /// Review finding 1 (#1974) end to end: the arc and its later-turn copy as
+    /// an out-and-back inner wire on a box cap. The pair unifies, the spur
+    /// goes, and the box closes with every edge used twice.
+    #[test]
+    fn arc_copy_on_a_later_carrier_turn_closes_the_box() {
+        use remus_math::nurbs::curve::NurbsCurve;
+        let quarters: Vec<f64> = (0..=8).map(|k| f64::from(k) * FRAC_PI_2).collect();
+        let knots: Vec<f64> = (0..=8).map(f64::from).collect();
+        let (cps, ws, kv) = rational_circle_spans(5.0, &quarters, &knots);
+        let carrier = NurbsCurve::new(2, kv, cps, ws).unwrap();
+        let (solid, topo) = box_with_cap_lens(carrier, (4.0, 5.0)).unwrap();
+        let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
+        assert_eq!(faces.len(), 6);
+        let mut uses: DetHashMap<EdgeId, usize> = DetHashMap::default();
+        for &fid in &faces {
+            let face = topo.face(fid).unwrap();
+            for wid in std::iter::once(face.outer_wire()).chain(face.inner_wires().iter().copied())
+            {
+                for oe in topo.wire(wid).unwrap().edges() {
+                    *uses.entry(oe.edge()).or_default() += 1;
+                }
+            }
+        }
+        assert_eq!(uses.len(), 12);
+        assert!(uses.values().all(|&n| n == 2), "edge uses: {uses:?}");
+    }
+
+    /// A lens the merge must keep apart, left as an out-and-back inner wire on
+    /// a box cap, has nothing to pair with: assembly refuses rather than
+    /// returning an open body.
+    #[test]
+    fn uncertified_cap_lens_refuses_instead_of_an_open_body() {
+        use remus_math::nurbs::curve::NurbsCurve;
+        let (mut cps, ws, kv) = rational_circle_spans(5.0, &[0.0, FRAC_PI_2], &[0.0, 1.0]);
+        cps[1] = Point3::new(5.5, 5.5, 0.0);
+        let lens = NurbsCurve::new(2, kv, cps, ws).unwrap();
+        let err = box_with_cap_lens(lens, (0.0, 1.0)).unwrap_err();
+        assert!(
+            matches!(&err, AlgoError::AssemblyFailed(msg) if msg.contains("certified")),
+            "{err:?}"
+        );
+    }
+
+    /// A 20-unit box whose top cap carries the out-and-back inner wire
+    /// `[quarter circle r = 5 about (10, 10, 20), spline]`, through
+    /// `build_solid`. The spline is given about the origin and moved there.
+    fn box_with_cap_lens(
+        spline: remus_math::nurbs::curve::NurbsCurve,
+        spline_trim: (f64, f64),
+    ) -> Result<(SolidId, Topology), AlgoError> {
+        use remus_math::nurbs::curve::NurbsCurve;
+        use remus_topology::{edge::Edge, vertex::Vertex, wire::Wire};
+        let mut topo = Topology::new();
+        let cube = remus_topology::test_utils::make_unit_cube_manifold(&mut topo);
+        let faces = remus_topology::explorer::solid_faces(&topo, cube).unwrap();
+        let mut moved: DetHashSet<remus_topology::vertex::VertexId> = DetHashSet::default();
+        let mut top = None;
+        for &fid in &faces {
+            let face = topo.face(fid).unwrap();
+            let FaceSurface::Plane { normal, d } = *face.surface() else {
+                unreachable!()
+            };
+            if normal.z() > 0.5 {
+                top = Some(fid);
+            }
+            let oes: Vec<_> = topo.wire(face.outer_wire()).unwrap().edges().to_vec();
+            topo.face_mut(fid).unwrap().set_surface(FaceSurface::Plane {
+                normal,
+                d: 20.0 * d,
+            });
+            for oe in oes {
+                let e = topo.edge(oe.edge()).unwrap();
+                for vid in [e.start(), e.end()] {
+                    if moved.insert(vid) {
+                        let p = topo.vertex(vid).unwrap().point();
+                        topo.vertex_mut(vid).unwrap().set_point(Point3::new(
+                            20.0 * p.x(),
+                            20.0 * p.y(),
+                            20.0 * p.z(),
+                        ));
+                    }
+                }
+            }
+        }
+        let top = top.unwrap();
+        let centre = Vec3::new(10.0, 10.0, 20.0);
+        let circle = remus_math::curves::Circle3D::new_with_ref(
+            Point3::new(10.0, 10.0, 20.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            5.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        let spline = NurbsCurve::new(
+            spline.degree(),
+            spline.knots().to_vec(),
+            spline
+                .control_points()
+                .iter()
+                .map(|&p| p + centre)
+                .collect(),
+            spline.weights().to_vec(),
+        )
+        .unwrap();
+        let va = topo.add_vertex(Vertex::new(circle.evaluate(0.0), 1e-7));
+        let vb = topo.add_vertex(Vertex::new(circle.evaluate(FRAC_PI_2), 1e-7));
+        let mut arc = Edge::new(va, vb, EdgeCurve::Circle(circle));
+        arc.set_trim(Some((0.0, FRAC_PI_2)));
+        let mut sp = Edge::new(va, vb, EdgeCurve::NurbsCurve(spline));
+        sp.set_trim(Some(spline_trim));
+        let arc_id = topo.add_edge(arc);
+        let sp_id = topo.add_edge(sp);
+        let hole = topo.add_wire(
+            Wire::new(
+                vec![
+                    OrientedEdge::new(arc_id, true),
+                    OrientedEdge::new(sp_id, false),
+                ],
+                true,
+            )
+            .unwrap(),
+        );
+        let outer = topo.face(top).unwrap().outer_wire();
+        topo.set_face_boundary_wires(top, outer, vec![hole])
+            .unwrap();
+        let selected: Vec<SelectedFace> = faces
+            .iter()
+            .map(|&fid| SelectedFace {
+                face_id: fid,
+                source_face: fid,
+                reversed: false,
+            })
+            .collect();
+        let solid = build_solid(
+            &mut topo,
+            &selected,
+            &[],
+            &mut crate::builder::split_types::EdgeLineageLog::default(),
+        )?;
+        Ok((solid, topo))
+    }
+
+    /// Largest distance of `curve` over `[s0, s1]` from the circle `|p| = r`
+    /// in the xy plane, by dense sampling (an oracle independent of the
+    /// certificate).
+    fn sampled_circle_gap(
+        curve: &remus_math::nurbs::curve::NurbsCurve,
+        s0: f64,
+        s1: f64,
+        r: f64,
+    ) -> f64 {
+        (0..=20_000)
+            .map(|k| {
+                let p = curve.evaluate(s0 + (s1 - s0) * f64::from(k) / 20_000.0);
+                (p.x().hypot(p.y()) - r).hypot(p.z())
+            })
+            .fold(0.0, f64::max)
+    }
+
+    /// Review finding 2 (#1974): a lens between the uniform samples. The
+    /// quarter circle in rational spans at angles `0, 0.02, 0.04, π/2` (knots
+    /// `0, 0.01, 0.02, 1`), interior control points pushed out by 1e-6 and the
+    /// middle span's centre point by `bump` more. The merge must unify exactly
+    /// the copies within the 1e-4 fit band: a 0.01 lens and one just outside
+    /// the band stay apart; a bump that keeps the spline inside the band (the
+    /// review's 6.2e-5 lens) is a fitted copy by the band's definition.
+    #[test]
+    fn duplicate_edge_merge_keeps_a_lens_between_uniform_samples() {
+        use remus_math::nurbs::curve::NurbsCurve;
+        const BAND: f64 = 1e-4;
+        for bump in [0.02, 4e-4, 2.6e-4, 1.24e-4, 5e-5, 0.0] {
+            let (mut cps, ws, kv) =
+                rational_circle_spans(5.0, &[0.0, 0.02, 0.04, FRAC_PI_2], &[0.0, 0.01, 0.02, 1.0]);
+            let last = cps.len() - 1;
+            for (i, p) in cps.iter_mut().enumerate() {
+                if i == 0 || i == last {
+                    continue;
+                }
+                let radial = Vec3::new(p.x(), p.y(), 0.0).normalize().unwrap();
+                *p = *p + radial * (1e-6 + if i == 3 { bump } else { 0.0 });
+            }
+            let curve = NurbsCurve::new(2, kv, cps, ws).unwrap();
+            let gap = sampled_circle_gap(&curve, 0.0, 1.0, 5.0);
+            let merged = conic_nurbs_lens_merges(
+                EdgeCurve::Circle(quarter_circle(5.0)),
+                (0.0, FRAC_PI_2),
+                curve,
+                (0.0, 1.0),
+            );
+            assert!(!merged || gap <= BAND, "bump={bump}: merged a {gap:e} lens");
+            assert!(
+                merged || gap > 0.8 * BAND,
+                "bump={bump}: kept a {gap:e} fitted copy apart"
+            );
+            if bump >= 0.02 {
+                assert!(gap > 9e-3, "bump={bump}: gap {gap:e}");
+            }
+        }
+    }
+
+    /// Review finding 3 (#1974): a flat ellipse (semiaxes 500 and 5) and its
+    /// exact rational quarter with the middle control point moved along the
+    /// minor axis. Within the band it unifies, past it the pair stays apart.
+    #[test]
+    fn duplicate_edge_merge_judges_a_flat_ellipse_copy_by_distance() {
+        use remus_math::curves::Ellipse3D;
+        use remus_math::nurbs::curve::NurbsCurve;
+        let ellipse = Ellipse3D::new_with_ref(
+            Point3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            500.0,
+            5.0,
+            Vec3::new(1.0, 0.0, 0.0),
+        )
+        .unwrap();
+        // Distance to the ellipse by a fine parameter scan (independent oracle).
+        let gap = |curve: &NurbsCurve| {
+            (0..=4000)
+                .map(|k| {
+                    let p = curve.evaluate(f64::from(k) / 4000.0);
+                    // Coarse scan, then Newton on (p − e(t))·e'(t) = 0.
+                    let mut t = (0..=400)
+                        .map(|j| FRAC_PI_2 * f64::from(j) / 400.0)
+                        .min_by(|a, b| {
+                            (p - ellipse.evaluate(*a))
+                                .length()
+                                .total_cmp(&(p - ellipse.evaluate(*b)).length())
+                        })
+                        .unwrap();
+                    for _ in 0..50 {
+                        let (c, s) = (t.cos(), t.sin());
+                        let d1 = Vec3::new(-500.0 * s, 5.0 * c, 0.0);
+                        let d2 = Vec3::new(-500.0 * c, -5.0 * s, 0.0);
+                        let r = p - ellipse.evaluate(t);
+                        let step = r.dot(d1) / (d1.dot(d1) - r.dot(d2));
+                        t = (t + step).clamp(0.0, FRAC_PI_2);
+                    }
+                    (p - ellipse.evaluate(t)).length()
+                })
+                .fold(0.0, f64::max)
+        };
+        for (shift, expect_merge) in [(0.0, true), (1e-4, true), (1e-3, false)] {
+            let curve = NurbsCurve::new(
+                2,
+                vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                vec![
+                    Point3::new(500.0, 0.0, 0.0),
+                    Point3::new(500.0, 5.0 + shift, 0.0),
+                    Point3::new(0.0, 5.0, 0.0),
+                ],
+                vec![1.0, std::f64::consts::FRAC_1_SQRT_2, 1.0],
+            )
+            .unwrap();
+            let g = gap(&curve);
+            assert_eq!(g <= 1e-4, expect_merge, "shift={shift}: gap {g:e}");
+            assert_eq!(
+                conic_nurbs_lens_merges(
+                    EdgeCurve::Ellipse(ellipse.clone()),
+                    (0.0, FRAC_PI_2),
+                    curve,
+                    (0.0, 1.0),
+                ),
+                expect_merge,
+                "shift={shift}: gap {g:e}"
+            );
+        }
+    }
+
     #[test]
     fn duplicate_edge_merge_preserves_complementary_nurbs_branches() {
         use remus_math::nurbs::curve::NurbsCurve;
@@ -7725,6 +8108,8 @@ mod tests {
         assert_eq!(edge.strict_domain().unwrap(), (0.0, 1.0));
     }
 }
+
+mod conic_fit;
 
 #[cfg(test)]
 mod helper_oracle_tests;

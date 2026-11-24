@@ -8,9 +8,14 @@ guarded wire-collapsing line × conic and line × NURBS pairs but not
 conic × NURBS, so it merged the section spline into the seam circle, which
 collapsed the lens into a spur and left an open four-face body. A
 conic × NURBS pair that would collapse a wire now merges only when the spline
-is a fitted copy of the conic arc (both directions within the 1e-4 fitted-seam
-band, `nurbs_is_conic_like` in `algo/src/builder/builder_solid.rs`); a real
-lens stays two edges. The imported pair (`tests/data/issue_1833_crossing_sweep_tool.step`
+is a certified fitted copy of the conic arc: over its trimmed range, cut into
+rational Bézier spans halved until decided, the conic's implicit is bounded by
+Bernstein coefficients and turned into a distance bound, the out-of-plane
+offset by the control hull and the branch by unwrapped angular wedges, all
+within the 1e-4 fitted-seam band (`algo/src/builder/builder_solid/conic_fit.rs`).
+A lens wider than the band stays two edges wherever it falls between samples, and if a pair
+left apart is then a free edge, assembly refuses (`AssemblyFailed`) rather than
+return an open body. The imported pair (`tests/data/issue_1833_crossing_sweep_tool.step`
 with the B76 target) now cuts to a closed five-face plane/torus B-rep through
 `boolean`, `boolean_with_options` (four faces after unification),
 entity-evolution and journaled entry points; intersect (formerly
