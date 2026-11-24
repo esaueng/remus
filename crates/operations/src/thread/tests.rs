@@ -2641,8 +2641,10 @@ fn a_flush_start_collar_meshes_closed_at_display_deflections() {
 /// grid point (`tessellate_nonplanar_cdt`'s base grid) a few 1e-8 inside
 /// their chord in the chart: inside in the chart, but the cone's `(u, v)`
 /// chart is no development, so the chord's image runs beside the 3D chord
-/// and the point lay past it, turning the triangle over. The CDT now leaves
-/// such candidates out (`tessellate::nonplanar::chord_fold`).
+/// and the point lay past it, turning the triangle over. The CDT now checks
+/// its cone triangles against the cone's normal and triangulates again
+/// without the interior points that turned one over
+/// (`tessellate::nonplanar::cone_fold_repair`).
 #[test]
 fn thread_cone_faces_mesh_without_inverted_slivers() {
     let mut unsound = Vec::new();

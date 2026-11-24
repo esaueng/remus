@@ -3718,6 +3718,9 @@ pub(super) fn tessellate_nonplanar_cdt(
     // filter, by CDT id, beside the point itself: emission reuses it when the
     // CDT still holds that point bit for bit (the closure is pure).
     let mut interior_samples: Vec<Option<(Point2, (Point3, Vec3))>> = Vec::new();
+    // The constrained CDT of a cone face before its interior points, with
+    // those points and their samples (B289, see `cone_fold_repair`).
+    let mut cone_repair_input: Option<ConeRepairInput> = None;
 
     if du > 1e-15 && dv > 1e-15 {
         let sheared_grid = sheared.map(|(chart, surface)| {
@@ -4061,72 +4064,29 @@ pub(super) fn tessellate_nonplanar_cdt(
             .chain(hole_boundaries_3d.iter().flatten())
             .map(|&(point, _, _, _)| point_merge_key(point, MERGE_GRID))
             .collect();
-        // B289: on a cone the `(u, v)` chart is no development, so a chart
-        // chord's image runs beside its 3D chord, and a candidate a hair
-        // inside the chart chord can lie past the 3D one: the triangle the
-        // CDT builds from them turns over. Leave such candidates out (see
-        // `chord_fold`); the other carriers keep their grid unchanged.
-        let fold_guard = match face_data.surface() {
-            FaceSurface::Cone(_) => {
-                let outer_space: Vec<Point3> = boundary_3d.iter().map(|s| s.0).collect();
-                let hole_charts: Vec<Vec<Point2>> = hole_uvs
-                    .iter()
-                    .map(|hole| hole.iter().map(|&(u, v)| to_cdt(u, v)).collect())
-                    .collect();
-                let hole_spaces: Vec<Vec<Point3>> = hole_boundaries_3d
-                    .iter()
-                    .map(|hole| hole.iter().map(|s| s.0).collect())
-                    .collect();
-                Some(chord_fold::ChordFoldGuard::new(
-                    std::iter::once((boundary_pts.as_slice(), outer_space.as_slice())).chain(
-                        hole_charts
-                            .iter()
-                            .zip(&hole_spaces)
-                            .map(|(chart, space)| (chart.as_slice(), space.as_slice())),
-                    ),
-                    |point| interior_point_3d(point).0,
-                ))
-            }
-            // B24: exhaustive over `FaceSurface`.
-            FaceSurface::Plane { .. }
-            | FaceSurface::Nurbs(_)
-            | FaceSurface::Cylinder(_)
-            | FaceSurface::Sphere(_)
-            | FaceSurface::Torus(_) => None,
-        };
         let mut kept_samples = Vec::with_capacity(interior_pts.len());
         interior_pts.retain(|&point| {
             let sample = interior_point_3d(point);
-            if fold_guard
-                .as_ref()
-                .is_some_and(|guard| guard.folds(point, sample.0))
-            {
-                return false;
-            }
             let kept = taken.insert(point_merge_key(sample.0, MERGE_GRID));
             if kept {
                 kept_samples.push(sample);
             }
             kept
         });
+        // B289: a cone face keeps the constrained CDT before its interior
+        // points go in, so the repair below can triangulate again without
+        // the points it drops (see `cone_fold_repair`).
+        if !interior_pts.is_empty() && matches!(face_data.surface(), FaceSurface::Cone(_)) {
+            cone_repair_input = Some((cdt.clone(), interior_pts.clone(), kept_samples.clone()));
+        }
         if !interior_pts.is_empty() {
-            let interior_cdt_ids = cdt
-                .insert_points_hilbert(&interior_pts)
-                .map_err(crate::OperationsError::Math)?;
-            let max_interior = interior_cdt_ids.iter().copied().max().unwrap_or(0);
-            if cdt_to_global.len() <= max_interior {
-                cdt_to_global.resize(max_interior + 1, None);
-            }
-            interior_samples.resize(max_interior + 1, None);
-            for ((&id, &point), &sample) in interior_cdt_ids
-                .iter()
-                .zip(&interior_pts)
-                .zip(&kept_samples)
-            {
-                if let Some(slot) = interior_samples.get_mut(id) {
-                    slot.get_or_insert((point, sample));
-                }
-            }
+            insert_interior_samples(
+                &mut cdt,
+                &interior_pts,
+                &kept_samples,
+                &mut cdt_to_global,
+                &mut interior_samples,
+            )?;
         }
     }
 
@@ -4134,6 +4094,100 @@ pub(super) fn tessellate_nonplanar_cdt(
         .map(|i| (boundary_cdt_ids[i], boundary_cdt_ids[(i + 1) % n_boundary]))
         .collect();
     cdt.remove_exterior(&boundary_pairs);
+
+    // B289: the `(u, v)` chart of a cone is no development, so a chart chord's
+    // image runs beside its 3D chord and an interior point the CDT joins to
+    // a boundary chord can lie past it in space: the triangle turns over, or
+    // stands on edge just short of it. Check every triangle against the
+    // cone's normal and triangulate again without the interior vertex each
+    // such triangle is squashed onto, until none is left that an interior
+    // vertex could be dropped from (see `cone_fold_repair`). A round that
+    // turns more triangles over than the one before is undone, so the repair
+    // never leaves a face worse than it found it. Other carriers, and cone
+    // faces whose triangles all face the cone's way, keep their mesh bit for
+    // bit.
+    if let (FaceSurface::Cone(cone), Some((base, mut points, mut samples))) =
+        (face_data.surface(), cone_repair_input)
+    {
+        let mut previous: Option<(usize, Cdt, Vec<Option<u32>>, Vec<_>)> = None;
+        for round in 0..=cone_fold_repair::MAX_ROUNDS {
+            let position = |id: usize| -> Point3 {
+                if let Some(gid) = cdt_to_global.get(id).copied().flatten() {
+                    merged.positions[gid as usize]
+                } else if let Some((point, sample)) = interior_samples.get(id).copied().flatten()
+                    && point.x().to_bits() == cdt.vertices()[id].x().to_bits()
+                    && point.y().to_bits() == cdt.vertices()[id].y().to_bits()
+                {
+                    sample.0
+                } else {
+                    interior_point_3d(cdt.vertices()[id]).0
+                }
+            };
+            // Only the interior points this face was given; boundary, hole
+            // and constraint-recovery (Steiner) vertices always stay.
+            let removable = |id: usize| -> Option<usize> {
+                if cdt_to_global.get(id).copied().flatten().is_some() {
+                    return None;
+                }
+                let (point, _) = interior_samples.get(id).copied().flatten()?;
+                (point.x().to_bits() == cdt.vertices()[id].x().to_bits()
+                    && point.y().to_bits() == cdt.vertices()[id].y().to_bits())
+                .then_some(id)
+            };
+            let (turned_over, drop) = cone_fold_repair::check(
+                cone,
+                &cdt.triangles(),
+                cdt.vertices(),
+                position,
+                removable,
+            );
+            if let Some((before, ..)) = &previous
+                && turned_over > *before
+            {
+                if let Some((_, kept_cdt, kept_ids, kept_samples)) = previous.take() {
+                    (cdt, cdt_to_global, interior_samples) = (kept_cdt, kept_ids, kept_samples);
+                }
+                break;
+            }
+            if drop.is_empty() || round == cone_fold_repair::MAX_ROUNDS {
+                break;
+            }
+            let dropped: DetHashSet<(u64, u64)> = drop
+                .iter()
+                .map(|&id| {
+                    let point = cdt.vertices()[id];
+                    (point.x().to_bits(), point.y().to_bits())
+                })
+                .collect();
+            let mut kept = Vec::with_capacity(points.len());
+            let mut kept_samples = Vec::with_capacity(samples.len());
+            for (&point, &sample) in points.iter().zip(&samples) {
+                if !dropped.contains(&(point.x().to_bits(), point.y().to_bits())) {
+                    kept.push(point);
+                    kept_samples.push(sample);
+                }
+            }
+            (points, samples) = (kept, kept_samples);
+            let checked = std::mem::replace(&mut cdt, base.clone());
+            previous = Some((
+                turned_over,
+                checked,
+                cdt_to_global.clone(),
+                std::mem::take(&mut interior_samples),
+            ));
+            cdt_to_global.truncate(base.vertices().len());
+            if !points.is_empty() {
+                insert_interior_samples(
+                    &mut cdt,
+                    &points,
+                    &samples,
+                    &mut cdt_to_global,
+                    &mut interior_samples,
+                )?;
+            }
+            cdt.remove_exterior(&boundary_pairs);
+        }
+    }
 
     let cdt_verts = cdt.vertices();
     let triangles = cdt.triangles();
@@ -4238,6 +4292,39 @@ pub(super) fn tessellate_nonplanar_cdt(
         merged.indices.extend_from_slice(&triangle);
     }
 
+    Ok(())
+}
+
+/// The constrained CDT of a cone face before its interior points go in,
+/// with those points and their surface samples (B289).
+type ConeRepairInput = (
+    remus_math::cdt::Cdt,
+    Vec<remus_math::vec::Point2>,
+    Vec<(Point3, Vec3)>,
+);
+
+/// Insert a CDT's interior points, recording each one's surface sample by
+/// CDT id (the first point at an id keeps it).
+fn insert_interior_samples(
+    cdt: &mut remus_math::cdt::Cdt,
+    points: &[remus_math::vec::Point2],
+    samples: &[(Point3, Vec3)],
+    cdt_to_global: &mut Vec<Option<u32>>,
+    interior_samples: &mut Vec<Option<(remus_math::vec::Point2, (Point3, Vec3))>>,
+) -> Result<(), crate::OperationsError> {
+    let interior_cdt_ids = cdt
+        .insert_points_hilbert(points)
+        .map_err(crate::OperationsError::Math)?;
+    let max_interior = interior_cdt_ids.iter().copied().max().unwrap_or(0);
+    if cdt_to_global.len() <= max_interior {
+        cdt_to_global.resize(max_interior + 1, None);
+    }
+    interior_samples.resize(max_interior + 1, None);
+    for ((&id, &point), &sample) in interior_cdt_ids.iter().zip(points).zip(samples) {
+        if let Some(slot) = interior_samples.get_mut(id) {
+            slot.get_or_insert((point, sample));
+        }
+    }
     Ok(())
 }
 
@@ -5832,8 +5919,8 @@ fn sphere_native_arcs_in_hemisphere(
     Ok(true)
 }
 
-mod chord_fold;
 mod collapsed_boundary;
+mod cone_fold_repair;
 mod sheared_chart;
 mod touching_cycles;
 
