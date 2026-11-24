@@ -1605,7 +1605,13 @@ fn cylinder_strip_eligible(topo: &Topology, id: FaceId) -> bool {
         {
             Ok(EdgeCurve::Circle(_)) => circles += 1,
             Ok(EdgeCurve::NurbsCurve(_)) => (),
-            _ => return false,
+            Ok(
+                EdgeCurve::Line
+                | EdgeCurve::Ellipse(_)
+                | EdgeCurve::Parabola(_)
+                | EdgeCurve::Hyperbola(_),
+            )
+            | Err(_) => return false,
         }
     }
     circles == 2

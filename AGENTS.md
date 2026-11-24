@@ -701,6 +701,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Distance queries | `distance.rs` |
 | Independent global maximum-distance oracles (tests) | `distance/maximum_tests.rs` |
 | Tessellation | `tessellate/` (mod, face, planar, nonplanar, nurbs, solid, edge_sampling, mesh_ops, tests, tests/face_cache, tests/mesh_oracles, tests/mutation_oracles) |
+| Certified display triangulation of a trimmed cylinder between angularly monotone rim chains | `tessellate/nonplanar/cylinder_strip.rs` |
 | Differential oracle for the interior grid's boundary scans: the `(i + 1) % n` indexed containment and clearance loops kept verbatim (tests) | `tessellate/nonplanar/polygon_scan_oracle_tests.rs` |
 | Whole display meshes with the NURBS chart frame built over shared and over copied knots and weights, bit for bit (tests) | `tessellate/nonplanar/frame_storage_oracle_tests.rs` |
 | Freshly generated swept bodies (threads, an in-place coil, a helical gear) and ordinary curved ones for the tessellator's bit-identity oracles (tests) | `tessellate/swept_fixtures.rs` |
