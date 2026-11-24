@@ -467,8 +467,15 @@ fn resize_and_reblend(
         sharp_edges.push(carried);
     }
     let plans = plan_reblend(&group.cluster, &restoration.removed, &BTreeMap::new())?;
-    let rebuilt = repeated_refusal::during(gate == Gate::Full && plans.len() > 1, || {
-        reblend_restoration_gated(work, edited.solid, &sharp_edges, &plans, gate)
+    let retry_plans = gate == Gate::Full && plans.len() > 1;
+    let rebuilt = repeated_refusal::during(retry_plans, || {
+        let mut rebuild =
+            || reblend_restoration_gated(work, edited.solid, &sharp_edges, &plans, gate);
+        if retry_plans {
+            remus_check::properties::face_integrator::with_fitted_edge_readings(rebuild)
+        } else {
+            rebuild()
+        }
     })?;
     Ok(Built {
         solid: rebuilt.solid,
