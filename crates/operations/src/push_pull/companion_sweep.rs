@@ -458,13 +458,27 @@ impl Sweep {
                 // that height (`offset + |t| sin`) plus `ρ sin`.
                 let shift = (origin - self.origin).dot(self.axis);
                 let height_slack = reach.mul_add(1.0 - cosine, radius * sine);
+                let offset = self.radius_of(origin);
+                let tilt_slack = sine * (reach + radius);
+                let (shape, radial_slack) = match own.shape {
+                    // For a constant band, the two triangle inequalities
+                    // also give clearance when the offset exceeds the radius.
+                    Shape::Band { lo, hi } => (
+                        Shape::Band {
+                            lo: (lo - offset).max(offset - hi).max(0.0),
+                            hi: hi + offset,
+                        },
+                        tilt_slack,
+                    ),
+                    shape => (shape, offset + tilt_slack),
+                };
                 return Ok(finite_profile(Profile {
                     shift,
                     height_slack,
-                    radial_slack: sine.mul_add(reach + radius, self.radius_of(origin)),
+                    radial_slack,
                     heights: self.box_heights(own.heights, bounds, shift, height_slack),
+                    shape,
                     scale: magnitude(origin),
-                    ..own
                 }));
             }
         }

@@ -691,13 +691,13 @@ fn offset_faces_checked(
     swept: Option<&SweptRegionCheck>,
 ) -> Result<remus_offset::MoveFacesEntityResult, crate::OperationsError> {
     if let Some(swept) = swept {
-        swept.check_offset(topo, distance)?;
+        swept.check_offset_before_rebuild(topo, distance)?;
     }
     let moved = crate::performance::timed("move_faces.offset_engine", || {
         remus_offset::move_faces_with_entity_map(topo, solid, faces, distance)
     })?;
     if let Some(swept) = swept {
-        swept.check_rebuilt_offset(topo, &moved)?;
+        swept.check_rebuilt_offset(topo, &moved, distance)?;
     }
     Ok(moved)
 }
@@ -916,7 +916,7 @@ impl SweptRegionCheck {
         topo: &Topology,
         distance: f64,
     ) -> Result<(), crate::OperationsError> {
-        self.check_footprints(topo, distance, Footprint::Joined)
+        self.check_footprints(topo, distance, Footprint::Joined, &self.swept)
     }
 
     /// [`Self::check`] for an ordinary offset, which may re-limit a swept
@@ -928,7 +928,23 @@ impl SweptRegionCheck {
         topo: &Topology,
         distance: f64,
     ) -> Result<(), crate::OperationsError> {
-        self.check_footprints(topo, distance, Footprint::Offset)
+        self.check_footprints(topo, distance, Footprint::Offset, &self.swept)
+    }
+
+    /// Defer a potential widening cap until its rebuilt rim is available.
+    fn check_offset_before_rebuild(
+        &self,
+        topo: &Topology,
+        distance: f64,
+    ) -> Result<(), crate::OperationsError> {
+        self.check_footprints(
+            topo,
+            distance,
+            Footprint::Offset,
+            self.swept
+                .iter()
+                .filter(|swept| swept.limiting_cone.is_none()),
+        )
     }
 
     /// Ordinary offsets of a circular cap on a single coaxial cone are
@@ -938,6 +954,7 @@ impl SweptRegionCheck {
         &self,
         topo: &Topology,
         moved: &remus_offset::MoveFacesEntityResult,
+        distance: f64,
     ) -> Result<(), crate::OperationsError> {
         for swept in &self.swept {
             let Some(support) = swept.limiting_cone else {
@@ -958,6 +975,7 @@ impl SweptRegionCheck {
                 self.normal,
             )?
             else {
+                self.check_footprints(topo, distance, Footprint::Offset, [swept])?;
                 continue;
             };
             for candidate in &swept.candidates {
@@ -984,14 +1002,15 @@ impl SweptRegionCheck {
         topo: &Topology,
         distance: f64,
     ) -> Result<(), crate::OperationsError> {
-        self.check_footprints(topo, distance, Footprint::Rigid)
+        self.check_footprints(topo, distance, Footprint::Rigid, &self.swept)
     }
 
-    fn check_footprints(
+    fn check_footprints<'a>(
         &self,
         topo: &Topology,
         distance: f64,
         footprint: Footprint,
+        faces: impl IntoIterator<Item = &'a SweptFace>,
     ) -> Result<(), crate::OperationsError> {
         let delta = self.normal * distance;
         for SweptFace {
@@ -1000,7 +1019,7 @@ impl SweptRegionCheck {
             prismatic,
             candidates,
             ..
-        } in &self.swept
+        } in faces
         {
             let destination = Aabb3 {
                 min: original.min + delta,

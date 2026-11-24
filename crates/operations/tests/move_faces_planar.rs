@@ -836,22 +836,25 @@ fn floor_moves_keep_tangent_rulings_exact_for_a_later_top_move() {
 fn a_widening_cap_refuses_to_sweep_into_a_fixed_post() {
     use remus_operations::prepared_move::PreparedFaceMove;
 
-    for (post_x, post_height, square, distance, collision) in [
-        (31.5, 10.0, false, 2.0, true),
-        (28.5, 10.0, true, 5.0, true),
-        (31.5, 4.2, false, 2.0, false),
-        (28.5, 10.0, true, 2.0, false),
-        (31.5, 10.0, false, 0.5, false),
-        (34.0, 10.0, false, 2.0, false),
+    for (post_x, post_y, post_height, square, distance, collision) in [
+        (31.5, 20.0, 10.0, false, 2.0, true),
+        (28.5, 28.5, 10.0, true, 5.0, true),
+        (28.0, 28.0, 10.0, false, 1.0, true),
+        (31.5, 20.0, 4.2, false, 2.0, false),
+        (28.5, 28.5, 4.2, true, 2.0, false),
+        (28.5, 28.5, 10.0, true, 2.0, false),
+        (28.0, 28.0, 10.0, false, 0.4, false),
+        (31.5, 20.0, 10.0, false, 0.5, false),
+        (34.0, 20.0, 10.0, false, 2.0, false),
     ] {
         let mut topo = Topology::new();
         let plate = make_box(&mut topo, 40.0, 40.0, 2.0).unwrap();
         let frustum = make_cone(&mut topo, 8.0, 10.0, 4.0).unwrap();
         transform_solid(&mut topo, frustum, &Mat4::translation(20.0, 20.0, 2.0)).unwrap();
-        let (post, post_y) = if square {
-            (make_box(&mut topo, 1.0, 1.0, post_height).unwrap(), post_x)
+        let post = if square {
+            make_box(&mut topo, 1.0, 1.0, post_height).unwrap()
         } else {
-            (make_cylinder(&mut topo, 1.0, post_height).unwrap(), 20.0)
+            make_cylinder(&mut topo, 1.0, post_height).unwrap()
         };
         transform_solid(&mut topo, post, &Mat4::translation(post_x, post_y, 2.0)).unwrap();
         let body = boolean(&mut topo, BooleanOp::Fuse, plate, frustum).unwrap();
@@ -909,7 +912,7 @@ fn a_widening_cap_refuses_to_sweep_into_a_fixed_post() {
                 assert_volume(&source, body, before);
             } else {
                 let moved = moved.unwrap_or_else(|error| {
-                    panic!("post x {post_x}, height {post_height}, square {square}, move {distance}: {error}")
+                    panic!("post ({post_x}, {post_y}), height {post_height}, square {square}, move {distance}: {error}")
                 });
                 assert_volume(&source, moved, before + extension);
                 assert_verified(&source, moved);
