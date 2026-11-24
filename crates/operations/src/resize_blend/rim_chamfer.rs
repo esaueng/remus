@@ -204,6 +204,12 @@ pub(super) fn rim_chamfers_among(
     direction: Vec3,
     also_moving: &[FaceId],
 ) -> Result<RimChamfers, OperationsError> {
+    let resolution = crate::push_pull::ambiguous_rim_resolution();
+    // Saved moves predate rim-band recognition. Axial mouths and tangent blends
+    // are still recognized by the original blend walk, along with their riders.
+    if resolution == AmbiguousRimResolution::LegacyReplay {
+        return Ok(RimChamfers::default());
+    }
     let moves_too = |face: FaceId| also_moving.contains(&face);
     let mut ordered = selected.to_vec();
     ordered.compact_sort_unstable_by_key(|face| face.index());
@@ -282,7 +288,7 @@ pub(super) fn rim_chamfers_among(
                 result.carried.extend(component);
             }
             Identity::NotChamfer(reason) => result.declined.push((component[0], reason)),
-            Identity::Ambiguous(band) => match crate::push_pull::ambiguous_rim_resolution() {
+            Identity::Ambiguous(band) => match resolution {
                 AmbiguousRimResolution::TreatAsChamfer => {
                     result.largest_band = result.largest_band.max(component.len());
                     result.carried.extend(component);
@@ -294,7 +300,9 @@ pub(super) fn rim_chamfers_among(
                         component[0].index()
                     ),
                 )),
-                AmbiguousRimResolution::Refuse => result.ambiguous.push(band),
+                AmbiguousRimResolution::Refuse | AmbiguousRimResolution::LegacyReplay => {
+                    result.ambiguous.push(band);
+                }
             },
         }
     }

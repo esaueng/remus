@@ -104,7 +104,8 @@ pub use crate::error_payloads::AmbiguousRimBand;
 /// band, the record decides (a `chamfer` entry is carried, anything else is
 /// re-limited as a draft) and this setting is not read. It applies only to
 /// bands without that record: imported bodies, and bodies edited without
-/// the journal.
+/// the journal. The replay-only [`Self::LegacyReplay`] instead selects the
+/// move behavior from before rim-band recognition was introduced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AmbiguousRimResolution {
     /// Refuse with [`crate::OperationsError::AmbiguousRimChamfer`], naming
@@ -117,6 +118,9 @@ pub enum AmbiguousRimResolution {
     /// Read the band as a draft: it keeps its plane (or cone) and the move
     /// re-limits it against the moved cap.
     TreatAsDraft,
+    /// Replay a face move recorded before rim-band recognition. The original
+    /// move can still carry a band with an independent blend or bore mouth.
+    LegacyReplay,
 }
 
 impl AmbiguousRimResolution {
@@ -127,15 +131,21 @@ impl AmbiguousRimResolution {
             Self::Refuse => "refuse",
             Self::TreatAsChamfer => "chamfer",
             Self::TreatAsDraft => "draft",
+            Self::LegacyReplay => "legacyReplay",
         }
     }
 
     /// The resolution named `code` ([`Self::code`]).
     #[must_use]
     pub fn from_code(code: &str) -> Option<Self> {
-        [Self::Refuse, Self::TreatAsChamfer, Self::TreatAsDraft]
-            .into_iter()
-            .find(|resolution| resolution.code() == code)
+        [
+            Self::Refuse,
+            Self::TreatAsChamfer,
+            Self::TreatAsDraft,
+            Self::LegacyReplay,
+        ]
+        .into_iter()
+        .find(|resolution| resolution.code() == code)
     }
 }
 
