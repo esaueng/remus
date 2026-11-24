@@ -75,6 +75,10 @@ pub struct PreparedFaceMove {
     multi: Option<crate::multi_move::PreparedMultiMove>,
     /// The caller options every call runs under.
     options: MoveFacesOptions,
+    /// How the preparation read the selection's rim bands
+    /// ([`crate::resize_blend::rim_reading`]); a call whose reading differs
+    /// (the journal changed under an unchanged solid) is stale.
+    rim: Vec<(usize, u8)>,
 }
 
 impl std::fmt::Debug for PreparedFaceMove {
@@ -123,14 +127,17 @@ impl PreparedFaceMove {
         let source = solid_move_key(topo, solid).ok_or_else(|| OperationsError::InvalidInput {
             reason: format!("solid {} has missing entities", solid.index()),
         })?;
-        Ok(Self {
-            solid,
-            faces: faces.to_vec(),
-            source,
-            scope: crate::journal_ops::solid_entity_keys(topo, solid)?,
-            planar: with_move_options(options, || PreparedPlanarMove::prepare(topo, solid, faces))?,
-            multi: None,
-            options,
+        with_move_options(options, || {
+            Ok(Self {
+                solid,
+                faces: faces.to_vec(),
+                source,
+                scope: crate::journal_ops::solid_entity_keys(topo, solid)?,
+                planar: PreparedPlanarMove::prepare(topo, solid, faces)?,
+                multi: None,
+                options,
+                rim: crate::resize_blend::rim_reading(topo, solid, faces)?,
+            })
         })
     }
 
@@ -155,21 +162,40 @@ impl PreparedFaceMove {
         faces: &[FaceId],
         weights: &[f64],
     ) -> Result<Self, OperationsError> {
+        Self::prepare_multi_with_options(topo, solid, faces, weights, MoveFacesOptions::default())
+    }
+
+    /// [`Self::prepare_multi`] with explicit caller `options`, which every
+    /// call of the prepared move runs under. Reads the topology only.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::prepare_multi`].
+    pub fn prepare_multi_with_options(
+        topo: &Topology,
+        solid: SolidId,
+        faces: &[FaceId],
+        weights: &[f64],
+        options: MoveFacesOptions,
+    ) -> Result<Self, OperationsError> {
         let _span = crate::performance::span("move_faces.prepare");
         topo.solid(solid)?;
         let source = solid_move_key(topo, solid).ok_or_else(|| OperationsError::InvalidInput {
             reason: format!("solid {} has missing entities", solid.index()),
         })?;
-        Ok(Self {
-            solid,
-            faces: faces.to_vec(),
-            source,
-            scope: crate::journal_ops::solid_entity_keys(topo, solid)?,
-            planar: None,
-            multi: Some(crate::multi_move::PreparedMultiMove::prepare(
-                topo, solid, faces, weights,
-            )?),
-            options: MoveFacesOptions::default(),
+        with_move_options(options, || {
+            Ok(Self {
+                solid,
+                faces: faces.to_vec(),
+                source,
+                scope: crate::journal_ops::solid_entity_keys(topo, solid)?,
+                planar: None,
+                multi: Some(crate::multi_move::PreparedMultiMove::prepare(
+                    topo, solid, faces, weights,
+                )?),
+                options,
+                rim: crate::resize_blend::rim_reading(topo, solid, faces)?,
+            })
         })
     }
 
@@ -257,16 +283,29 @@ impl PreparedFaceMove {
     }
 
     fn require_current(&self, topo: &Topology) -> Result<(), OperationsError> {
-        if self.is_current(topo) {
-            Ok(())
-        } else {
-            Err(OperationsError::InvalidInput {
+        if !self.is_current(topo) {
+            return Err(OperationsError::InvalidInput {
                 reason: format!(
                     "prepared face move is stale: solid {} changed since it was prepared",
                     self.solid.index()
                 ),
-            })
+            });
         }
+        // The rim reading depends on the journal too: a barrier recorded
+        // since preparation can sever the history that read a band.
+        let rim = with_move_options(self.options, || {
+            crate::resize_blend::rim_reading(topo, self.solid, &self.faces)
+        })?;
+        if rim != self.rim {
+            return Err(OperationsError::InvalidInput {
+                reason: format!(
+                    "prepared face move is stale: the history of a rim band of solid {} \
+                     changed since it was prepared",
+                    self.solid.index()
+                ),
+            });
+        }
+        Ok(())
     }
 
     /// The prepared move with explicit permission for sampled cap reconstruction.

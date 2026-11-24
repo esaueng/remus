@@ -108,6 +108,9 @@ pub(crate) fn move_faces_multi_with_entity_evolution(
     if let Some(distance) = remus_offset::coplanar_group_distance(topo, faces, distances)? {
         return crate::push_pull::move_faces_with_entity_evolution(topo, solid, faces, distance);
     }
+    if let Some(refusal) = crate::resize_blend::multi_move_rim_refusal(topo, solid, faces)? {
+        return Err(refusal.to_error());
+    }
     let checks = MultiChecks::prepare(topo, solid, faces)?;
     multi_edit(topo, solid, faces, distances, checks.as_ref())
 }
@@ -472,6 +475,8 @@ pub(crate) struct PreparedMultiMove {
     /// the selection is one coplanar group (so every call is that move).
     group: Option<PreparedPlanarMove>,
     checks: Option<MultiChecks>,
+    /// The rim refusal every call that is not the coplanar move returns.
+    rim_refusal: Option<crate::resize_blend::MultiRimRefusal>,
 }
 
 impl PreparedMultiMove {
@@ -511,6 +516,7 @@ impl PreparedMultiMove {
             weights,
             group,
             checks: MultiChecks::prepare(topo, solid, faces)?,
+            rim_refusal: crate::resize_blend::multi_move_rim_refusal(topo, solid, faces)?,
         })
     }
 
@@ -544,6 +550,9 @@ impl PreparedMultiMove {
                     group_distance,
                 ),
             };
+        }
+        if let Some(refusal) = &self.rim_refusal {
+            return Err(refusal.to_error());
         }
         multi_edit(topo, solid, faces, &distances, self.checks.as_ref())
     }

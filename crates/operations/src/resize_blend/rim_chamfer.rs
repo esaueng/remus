@@ -102,6 +102,9 @@ pub(super) struct RimChamfers {
     /// Faces of every component recognized as a rim chamfer, in face order.
     pub(super) carried: Vec<FaceId>,
     largest_band: usize,
+    /// Complete coaxial cones the cap carries by the rule of #1808
+    /// ([`super::cap_chamfer::is_axial_cap_chamfer`]), in face order.
+    pub(super) axial: Vec<FaceId>,
     /// One face and the reason for every component that stands on walls like
     /// a chamfer but is not recognized as one, in face order.
     pub(super) declined: Vec<(FaceId, String)>,
@@ -187,6 +190,20 @@ pub(super) fn rim_chamfers(
     selected: &[FaceId],
     direction: Vec3,
 ) -> Result<RimChamfers, OperationsError> {
+    rim_chamfers_among(topo, adjacency, selected, direction, &[])
+}
+
+/// [`rim_chamfers`] of the cap `selected` when the faces `also_moving` move
+/// in the same edit along their own normals (a multi-face move): a
+/// component reaching one of them is not a band on walls.
+pub(super) fn rim_chamfers_among(
+    topo: &Topology,
+    adjacency: &AdjacencyIndex,
+    selected: &[FaceId],
+    direction: Vec3,
+    also_moving: &[FaceId],
+) -> Result<RimChamfers, OperationsError> {
+    let moves_too = |face: FaceId| also_moving.contains(&face);
     let mut ordered = selected.to_vec();
     ordered.compact_sort_unstable_by_key(|face| face.index());
     ordered.dedup();
@@ -218,7 +235,7 @@ pub(super) fn rim_chamfers(
         let mut queue = VecDeque::from([seed]);
         let mut stands_on_walls = true;
         while let Some(current) = queue.pop_front() {
-            if !is_band_surface(topo.face(current)?.surface(), direction) {
+            if moves_too(current) || !is_band_surface(topo.face(current)?.surface(), direction) {
                 stands_on_walls = false;
             }
             for edge in super::face_edges(topo, current)? {
@@ -251,7 +268,7 @@ pub(super) fn rim_chamfers(
                 direction,
             )?
         {
-            result.carried.push(*face);
+            result.axial.push(*face);
             continue;
         }
         match component_identity(topo, adjacency, &is_selected, &component, cap)? {

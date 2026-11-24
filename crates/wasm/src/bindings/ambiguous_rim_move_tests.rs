@@ -167,3 +167,41 @@ fn malformed_options_are_refused() {
         );
     }
 }
+
+/// `executeBatch` reaches the same options: `moveFacesDetailedWithOptions`
+/// with `options` resolves the band, without it refuses, and malformed
+/// options are refused; each matches the direct call.
+#[test]
+fn the_batch_route_takes_the_same_options() {
+    let cases = [
+        (Some(serde_json::json!({"ambiguousRim": "chamfer"})), "ok"),
+        (Some(serde_json::json!({"ambiguousRim": "draft"})), "ok"),
+        (None, "error"),
+        (Some(serde_json::json!({"ambiguousRim": "maybe"})), "error"),
+    ];
+    for (options, status) in cases {
+        let mut kernel = RemusKernel::new();
+        let (solid, bottom) = fixture(&mut kernel);
+        let mut args = serde_json::json!({"solid": solid, "faces": [bottom], "distance": 2.0});
+        if let Some(options) = &options {
+            args["options"] = options.clone();
+        }
+        let input = serde_json::json!([{"op": "moveFacesDetailedWithOptions", "args": args}]);
+        let output: serde_json::Value =
+            serde_json::from_str(&kernel.execute_batch(&input.to_string())).unwrap();
+        let batch = output[0]["ok"].clone();
+        assert_eq!(batch["status"], status, "{options:?}: {output}");
+
+        let mut kernel = RemusKernel::new();
+        let (solid, bottom) = fixture(&mut kernel);
+        let text = options.map_or_else(|| "{}".to_owned(), |options| options.to_string());
+        let direct = serde_json::to_value(kernel.move_faces_detailed_with_options_impl(
+            solid,
+            &[bottom],
+            2.0,
+            &text,
+        ))
+        .unwrap();
+        assert_eq!(batch, direct, "{text}");
+    }
+}

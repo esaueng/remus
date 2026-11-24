@@ -2163,6 +2163,111 @@ pub(crate) fn ambiguous_rim_band(
     Ok(rim.ambiguous.first().copied())
 }
 
+/// How the move in force reads every rim band of `selected_faces`: each
+/// band face (the first of a declined or ambiguous component) with its
+/// reading, in face order. A coplanar selection is read as one cap; any
+/// other selection face by face, as a multi-face move reads it.
+///
+/// A prepared move compares it call by call with its preparation's: the
+/// reading depends on the journal, which can change (a barrier severing a
+/// band's history) while the solid's content does not.
+pub(crate) fn rim_reading(
+    topo: &Topology,
+    solid: SolidId,
+    selected_faces: &[FaceId],
+) -> Result<Vec<(usize, u8)>, OperationsError> {
+    let adjacency = solid_adjacency(topo, solid)?;
+    let mut reading = Vec::new();
+    let mut read = |rim: rim_chamfer::RimChamfers| {
+        reading.extend(rim.carried.iter().map(|face| (face.index(), 0)));
+        reading.extend(rim.axial.iter().map(|face| (face.index(), 1)));
+        reading.extend(rim.declined.iter().map(|(face, _)| (face.index(), 2)));
+        reading.extend(rim.ambiguous.iter().map(|band| (band.face.index(), 3)));
+    };
+    if let Some(direction) = rim_direction(topo, selected_faces)? {
+        read(rim_chamfer::rim_chamfers(
+            topo,
+            &adjacency,
+            selected_faces,
+            direction,
+        )?);
+    } else {
+        for &face in selected_faces {
+            if let Some(direction) = topo.face(face)?.effective_plane_normal() {
+                read(rim_chamfer::rim_chamfers_among(
+                    topo,
+                    &adjacency,
+                    &[face],
+                    direction,
+                    selected_faces,
+                )?);
+            }
+        }
+    }
+    reading.compact_sort_unstable();
+    reading.dedup();
+    Ok(reading)
+}
+
+/// The refusal of a multi-face move (faces moving along different normals)
+/// over a rim band (#1957). The multi-face solver keeps every unselected
+/// face on its support, so it re-limits a band and can never carry one:
+/// a band read as a chamfer (by its history, or by the caller) refuses
+/// rather than being extended into a draft, and a band no history reads
+/// refuses with [`OperationsError::AmbiguousRimChamfer`] unless the caller
+/// reads it as a draft. Complete coaxial cones keep the solver's existing
+/// behaviour.
+pub(crate) fn multi_move_rim_refusal(
+    topo: &Topology,
+    solid: SolidId,
+    selected_faces: &[FaceId],
+) -> Result<Option<MultiRimRefusal>, OperationsError> {
+    let adjacency = solid_adjacency(topo, solid)?;
+    for &face in selected_faces {
+        let Some(direction) = topo.face(face)?.effective_plane_normal() else {
+            continue;
+        };
+        let rim =
+            rim_chamfer::rim_chamfers_among(topo, &adjacency, &[face], direction, selected_faces)?;
+        if let Some(band) = rim.ambiguous.first() {
+            return Ok(Some(MultiRimRefusal::Ambiguous(*band)));
+        }
+        if let Some(band) = rim.carried.first() {
+            return Ok(Some(MultiRimRefusal::CannotCarry(format!(
+                "chamfer face {} on the rim of face {} must travel with it, and a \
+                     multi-face move re-limits every face it does not move; move face {} \
+                     on its own",
+                band.index(),
+                face.index(),
+                face.index()
+            ))));
+        }
+    }
+    Ok(None)
+}
+
+/// A [`multi_move_rim_refusal`], kept by a prepared move for every call.
+#[derive(Debug, Clone)]
+pub(crate) enum MultiRimRefusal {
+    /// A band no history reads, the caller leaving the decision to the move.
+    Ambiguous(rim_chamfer::AmbiguousRimBand),
+    /// A band read as a chamfer, which the multi-face solver cannot carry.
+    CannotCarry(String),
+}
+
+impl MultiRimRefusal {
+    /// The refusal as the move returns it.
+    pub(crate) fn to_error(&self) -> OperationsError {
+        match self {
+            Self::Ambiguous(band) => OperationsError::AmbiguousRimChamfer(*band),
+            Self::CannotCarry(reason) => OperationsError::Unsupported {
+                operation: "move_faces_multi",
+                reason: reason.clone(),
+            },
+        }
+    }
+}
+
 /// The outward normal shared by every face of a planar selection.
 fn rim_direction(
     topo: &Topology,

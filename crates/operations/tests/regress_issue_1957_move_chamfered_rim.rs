@@ -1063,3 +1063,122 @@ fn prepared_move_defers_oversized_chamfer_refusal_until_after_journal_gap() {
         );
     }
 }
+
+/// A prepared move reads a band by its history once; a barrier recorded
+/// since (the solid unchanged) severs that history, and the prepared handle
+/// is then stale rather than carrying a band the fresh move refuses.
+#[test]
+fn a_prepared_move_is_stale_once_a_barrier_severs_the_band_history() {
+    let mut topo = Topology::new();
+    let blank = make_box(&mut topo, X, Y, Z).unwrap();
+    let rim = edges_where(&topo, blank, bottom_rim);
+    let solid = chamfer_journaled(&mut topo, blank, &rim, CHAMFER, CHAMFER)
+        .unwrap()
+        .result
+        .solid;
+    let face = bottom(&topo, solid);
+    let mut prepared = PreparedFaceMove::prepare(&topo, solid, &[face]).unwrap();
+    prepared.move_faces(&mut topo, 2.0).unwrap();
+
+    let pending = topo.journal_begin("barrier_fixture");
+    remus_operations::journal_ops::record_barrier_over_solid(&mut topo, pending, solid).unwrap();
+    assert!(prepared.is_current(&topo), "the solid itself is unchanged");
+    let error = move_faces(&mut topo, solid, &[face], 2.0).unwrap_err();
+    assert!(
+        matches!(error, OperationsError::AmbiguousRimChamfer(_)),
+        "unexpected refusal: {error}"
+    );
+    let error = prepared.move_faces(&mut topo, 2.0).unwrap_err();
+    assert!(
+        error.to_string().contains("history of a rim band"),
+        "unexpected refusal: {error}"
+    );
+    // Prepared again it agrees with the fresh move.
+    let mut prepared = PreparedFaceMove::prepare(&topo, solid, &[face]).unwrap();
+    assert!(matches!(
+        prepared.move_faces(&mut topo, 2.0),
+        Err(OperationsError::AmbiguousRimChamfer(_))
+    ));
+}
+
+/// A multi-face move keeps every face it does not move on its support, so it
+/// can only re-limit a rim band: history-free bands refuse unless read as
+/// drafts, bands read as chamfers refuse; directly and prepared, the
+/// prepared handle keeping the options it was prepared with.
+#[test]
+fn multi_face_moves_refuse_rim_bands_they_cannot_carry() {
+    use remus_operations::multi_move::move_faces_multi;
+    use remus_operations::push_pull::with_move_options;
+    let before = [
+        [0.0, 0.0],
+        [X, 0.0],
+        [X, 10.0],
+        [58.0, 15.0],
+        [2.0, 15.0],
+        [0.0, 10.0],
+    ];
+    let mut topo = Topology::new();
+    let solid = prism(&mut topo, &before);
+    let top = face_facing(&topo, solid, Vec3::new(0.0, 0.0, 1.0));
+    let floor = face_facing(&topo, solid, Vec3::new(0.0, 0.0, -1.0));
+    let faces = [top, floor];
+    let distances = [2.0, 1.0];
+    let counts = solid_entity_counts(&topo, solid).unwrap();
+
+    let error = move_faces_multi(&mut topo, solid, &faces, &distances).unwrap_err();
+    assert!(
+        matches!(error, OperationsError::AmbiguousRimChamfer(band) if band.cap == top),
+        "unexpected refusal: {error}"
+    );
+    let error = with_move_options(AS_CHAMFER, || {
+        move_faces_multi(&mut topo, solid, &faces, &distances)
+    })
+    .unwrap_err();
+    assert!(
+        matches!(error, OperationsError::Unsupported { .. }),
+        "unexpected refusal: {error}"
+    );
+    assert_eq!(solid_entity_counts(&topo, solid).unwrap(), counts);
+
+    // Read as a draft, the sloped planes stay and the top is re-limited; the
+    // floor moves down by 1.
+    let moved = with_move_options(AS_DRAFT, || {
+        move_faces_multi(&mut topo, solid, &faces, &distances)
+    })
+    .unwrap();
+    let after = [
+        [0.0, -1.0],
+        [X, -1.0],
+        [X, 10.0],
+        [57.2, 17.0],
+        [2.8, 17.0],
+        [0.0, 10.0],
+    ];
+    let expected = Y * profile_area(&after);
+    let got = solid_volume(&topo, moved, DEFLECTION).unwrap();
+    assert!(
+        (got - expected).abs() < 1e-6 * expected,
+        "volume {got}, expected {expected}"
+    );
+
+    // Prepared: the handle runs under the options it was prepared with, never
+    // the ambient ones.
+    let mut prepared =
+        PreparedFaceMove::prepare_multi_with_options(&topo, solid, &faces, &[2.0, 1.0], AS_DRAFT)
+            .unwrap();
+    let dragged = prepared.move_faces(&mut topo, 1.0).unwrap().solid;
+    let got = solid_volume(&topo, dragged, DEFLECTION).unwrap();
+    assert!(
+        (got - expected).abs() < 1e-6 * expected,
+        "prepared volume {got}"
+    );
+    let mut prepared = with_move_options(AS_DRAFT, || {
+        PreparedFaceMove::prepare_multi(&topo, solid, &faces, &[2.0, 1.0]).unwrap()
+    });
+    assert_eq!(prepared.options(), MoveFacesOptions::default());
+    assert!(matches!(
+        prepared.move_faces(&mut topo, 1.0),
+        Err(OperationsError::AmbiguousRimChamfer(_))
+    ));
+    assert_eq!(solid_entity_counts(&topo, solid).unwrap(), counts);
+}
