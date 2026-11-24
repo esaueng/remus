@@ -185,10 +185,8 @@ pub(crate) fn move_faces_with_entity_evolution(
                 evolution: result.evolution,
             }
         } else {
-            refuse_swept_face_intersections(topo, solid, faces, distance)?;
-            let moved = crate::performance::timed("move_faces.offset_engine", || {
-                remus_offset::move_faces_with_entity_map(topo, solid, faces, distance)
-            })?;
+            let swept = prepare_offset_sweep(topo, solid, faces)?;
+            let moved = offset_faces_checked(topo, solid, faces, distance, swept.as_ref())?;
 
             boundary_pairs = boundary_entity_pairs(&moved);
             if !crate::blend_ops::display_only_blends() && move_is_prismatic(topo, solid, faces)? {
@@ -325,16 +323,7 @@ impl PreparedPlanarMove {
         let mut swept = None;
         let mut prismatic = None;
         if blend.is_none() {
-            if let Some(normal) = topo.face(reference)?.effective_plane_normal() {
-                let selected: std::collections::HashSet<_> = faces.iter().copied().collect();
-                swept = Some(SweptRegionCheck::prepare(
-                    topo,
-                    solid,
-                    &selected,
-                    &std::collections::HashSet::new(),
-                    normal,
-                )?);
-            }
+            swept = prepare_offset_sweep(topo, solid, faces)?;
             if move_is_prismatic(topo, solid, faces)? {
                 let deflection = verify_deflection(topo, solid);
                 let before = solid_volume(topo, solid, deflection)?;
@@ -373,12 +362,8 @@ impl PreparedPlanarMove {
                     evolution: moved.evolution,
                 }
             } else {
-                if let Some(swept) = &self.swept {
-                    swept.check_offset(topo, distance)?;
-                }
-                let moved = crate::performance::timed("move_faces.offset_engine", || {
-                    remus_offset::move_faces_with_entity_map(topo, solid, faces, distance)
-                })?;
+                let moved =
+                    offset_faces_checked(topo, solid, faces, distance, self.swept.as_ref())?;
                 boundary_pairs = boundary_entity_pairs(&moved);
                 if let Some((before, area)) = self.prismatic
                     && !crate::blend_ops::display_only_blends()
@@ -675,27 +660,46 @@ fn validate_cylindrical_bore_boundary(
     Ok(())
 }
 
-fn refuse_swept_face_intersections(
+fn prepare_offset_sweep(
     topo: &Topology,
     solid: SolidId,
-    selected_faces: &[FaceId],
-    distance: f64,
-) -> Result<(), crate::OperationsError> {
-    let Some(&reference) = selected_faces.first() else {
-        return Ok(());
+    faces: &[FaceId],
+) -> Result<Option<SweptRegionCheck>, crate::OperationsError> {
+    let Some(&reference) = faces.first() else {
+        return Ok(None);
     };
     let Some(normal) = topo.face(reference)?.effective_plane_normal() else {
-        return Ok(());
+        return Ok(None);
     };
-    let selected: std::collections::HashSet<_> = selected_faces.iter().copied().collect();
     SweptRegionCheck::prepare(
         topo,
         solid,
-        &selected,
-        &std::collections::HashSet::new(),
+        &faces.iter().copied().collect(),
+        &HashSet::new(),
         normal,
-    )?
-    .check_offset(topo, distance)
+    )
+    .map(Some)
+}
+
+/// Build a tentative offset under the caller's rollback scope. Check both
+/// the source sweep and any growth in the rebuilt footprint before commit.
+fn offset_faces_checked(
+    topo: &mut Topology,
+    solid: SolidId,
+    faces: &[FaceId],
+    distance: f64,
+    swept: Option<&SweptRegionCheck>,
+) -> Result<remus_offset::MoveFacesEntityResult, crate::OperationsError> {
+    if let Some(swept) = swept {
+        swept.check_offset_before_rebuild(topo, distance)?;
+    }
+    let moved = crate::performance::timed("move_faces.offset_engine", || {
+        remus_offset::move_faces_with_entity_map(topo, solid, faces, distance)
+    })?;
+    if let Some(swept) = swept {
+        swept.check_rebuilt_offset(topo, &moved, distance)?;
+    }
+    Ok(moved)
 }
 
 #[cfg(test)]
@@ -713,7 +717,7 @@ pub(crate) fn refuse_swept_region_intersections(
 
 /// The distance-independent half of the swept-region refusal:
 /// for each swept face, its box and the box of every nonadjacent face that
-/// does not already touch it.
+/// can reach its source footprint or a cap that widens on a conical support.
 #[derive(Debug, Clone)]
 pub(crate) struct SweptRegionCheck {
     normal: Vec3,
@@ -735,6 +739,7 @@ struct SweptFace {
     face: FaceId,
     original: Aabb3,
     prismatic: bool,
+    limiting_cone: Option<FaceId>,
     candidates: Vec<SweptCandidate>,
 }
 
@@ -753,6 +758,7 @@ enum Footprint {
 struct SweptCandidate {
     face: FaceId,
     bounds: Aabb3,
+    overlaps_source: bool,
     /// [`coaxial_sweep_is_radially_disjoint`] holds for the face's source
     /// boundary. Like the planar footprint proof it only clears the
     /// candidate while that boundary translates rigidly.
@@ -780,6 +786,13 @@ impl SweptRegionCheck {
                 }
             }
             let original = crate::measure::face_bounding_box(topo, moved_face)?;
+            let mut neighbours = adjacent.iter().copied().filter(|&face| face != moved_face);
+            let limiting_cone = neighbours.next().filter(|&face| {
+                neighbours.next().is_none()
+                    && topo
+                        .face(face)
+                        .is_ok_and(|face| matches!(face.surface(), FaceSurface::Cone(_)))
+            });
             let mut candidates = Vec::new();
             for &candidate in &source_faces {
                 if swept_faces.contains(&candidate)
@@ -789,13 +802,16 @@ impl SweptRegionCheck {
                     continue;
                 }
                 let bounds = crate::measure::face_bounding_box(topo, candidate)?;
-                if !original.intersects(bounds) {
+                let overlaps_source = original.intersects(bounds);
+                if !overlaps_source || limiting_cone.is_some() {
                     candidates.push(SweptCandidate {
                         face: candidate,
                         bounds,
-                        radially_clear: coaxial_sweep_is_radially_disjoint(
-                            topo, moved_face, candidate, normal,
-                        )?,
+                        overlaps_source,
+                        radially_clear: !overlaps_source
+                            && coaxial_sweep_is_radially_disjoint(
+                                topo, moved_face, candidate, normal,
+                            )?,
                     });
                 }
             }
@@ -813,6 +829,7 @@ impl SweptRegionCheck {
                 face: moved_face,
                 original,
                 prismatic,
+                limiting_cone,
                 candidates,
             });
         }
@@ -899,7 +916,7 @@ impl SweptRegionCheck {
         topo: &Topology,
         distance: f64,
     ) -> Result<(), crate::OperationsError> {
-        self.check_footprints(topo, distance, Footprint::Joined)
+        self.check_footprints(topo, distance, Footprint::Joined, &self.swept)
     }
 
     /// [`Self::check`] for an ordinary offset, which may re-limit a swept
@@ -911,7 +928,71 @@ impl SweptRegionCheck {
         topo: &Topology,
         distance: f64,
     ) -> Result<(), crate::OperationsError> {
-        self.check_footprints(topo, distance, Footprint::Offset)
+        self.check_footprints(topo, distance, Footprint::Offset, &self.swept)
+    }
+
+    /// Defer a potential widening cap until its rebuilt rim is available.
+    fn check_offset_before_rebuild(
+        &self,
+        topo: &Topology,
+        distance: f64,
+    ) -> Result<(), crate::OperationsError> {
+        self.check_footprints(
+            topo,
+            distance,
+            Footprint::Offset,
+            self.swept
+                .iter()
+                .filter(|swept| swept.limiting_cone.is_none()),
+        )
+    }
+
+    /// Ordinary offsets of a circular cap on a single coaxial cone are
+    /// re-limited by that cone. A widening cap must clear all fixed faces,
+    /// including those whose boxes already overlapped the original cap box.
+    fn check_rebuilt_offset(
+        &self,
+        topo: &Topology,
+        moved: &remus_offset::MoveFacesEntityResult,
+        distance: f64,
+    ) -> Result<(), crate::OperationsError> {
+        for swept in &self.swept {
+            let Some(support) = swept.limiting_cone else {
+                continue;
+            };
+            let rebuilt = moved.face_map.get(&swept.face.index()).ok_or_else(|| {
+                remus_offset::OffsetError::TopologyChange {
+                    face: Some(swept.face),
+                    edge: None,
+                    reason: "no rebuilt face to check for offset clearance".into(),
+                }
+            })?;
+            let Some(sweep) = companion_sweep::Sweep::for_widening_cap(
+                topo,
+                swept.face,
+                *rebuilt,
+                support,
+                self.normal,
+            )?
+            else {
+                self.check_footprints(topo, distance, Footprint::Offset, [swept])?;
+                continue;
+            };
+            for candidate in &swept.candidates {
+                if !sweep.clears_fixed_face(topo, candidate.face)? {
+                    return Err(remus_offset::OffsetError::TopologyChange {
+                        face: Some(swept.face),
+                        edge: None,
+                        reason: format!(
+                            "re-limited face reaches nonadjacent face {} before completing the move",
+                            candidate.face.index()
+                        ),
+                    }
+                    .into());
+                }
+            }
+        }
+        Ok(())
     }
 
     // The blend translation path moves the selected trims as rigid geometry.
@@ -921,14 +1002,15 @@ impl SweptRegionCheck {
         topo: &Topology,
         distance: f64,
     ) -> Result<(), crate::OperationsError> {
-        self.check_footprints(topo, distance, Footprint::Rigid)
+        self.check_footprints(topo, distance, Footprint::Rigid, &self.swept)
     }
 
-    fn check_footprints(
+    fn check_footprints<'a>(
         &self,
         topo: &Topology,
         distance: f64,
         footprint: Footprint,
+        faces: impl IntoIterator<Item = &'a SweptFace>,
     ) -> Result<(), crate::OperationsError> {
         let delta = self.normal * distance;
         for SweptFace {
@@ -936,7 +1018,8 @@ impl SweptRegionCheck {
             original,
             prismatic,
             candidates,
-        } in &self.swept
+            ..
+        } in faces
         {
             let destination = Aabb3 {
                 min: original.min + delta,
@@ -948,7 +1031,8 @@ impl SweptRegionCheck {
             if let Some(SweptCandidate {
                 face: candidate, ..
             }) = candidates.iter().find(|candidate| {
-                swept.intersects(candidate.bounds)
+                !candidate.overlaps_source
+                    && swept.intersects(candidate.bounds)
                     && !((radial && candidate.radially_clear)
                         || (rigid
                             // Every face moving with this one must miss the

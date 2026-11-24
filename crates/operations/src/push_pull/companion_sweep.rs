@@ -74,7 +74,7 @@ pub(super) struct Companion {
 /// A companion with an axis along the move: the axis frame, its profile in
 /// that frame and its certified box.
 #[derive(Debug, Clone)]
-struct Sweep {
+pub(super) struct Sweep {
     origin: Point3,
     /// Unit axis, oriented with the move.
     axis: Vec3,
@@ -118,6 +118,8 @@ enum Shape {
     Band { lo: f64, hi: f64 },
     /// A cone with its apex at own height zero: radius `|h| / tan`.
     Cone { tan: f64 },
+    /// The whole disk inside the cone at each swept height.
+    ConicDisk { tan: f64 },
     /// Points `(major + minor cos φ, minor sin φ)` for minor angles `φ` in
     /// `phi` (a torus about own height zero; a sphere has `major` zero).
     Arc {
@@ -289,6 +291,108 @@ impl Sweep {
         }))
     }
 
+    /// The planar disk a widening cap traces along its single conical wall.
+    /// The cone fixes the radius at every intermediate height. Check both
+    /// rims against the cone's axis and account for their measured extent.
+    pub(super) fn for_widening_cap(
+        topo: &Topology,
+        source: FaceId,
+        rebuilt: FaceId,
+        support: FaceId,
+        direction: Vec3,
+    ) -> Result<Option<Self>, crate::OperationsError> {
+        let FaceSurface::Cone(cone) = topo.face(support)?.surface() else {
+            return Ok(None);
+        };
+        let axis = cone.axis().normalize()?;
+        let tilt = axis.cross(direction).length();
+        let tol = Tolerance::new();
+        if tilt > tol.angular {
+            return Ok(None);
+        }
+        let (source_face, rebuilt_face) = (topo.face(source)?, topo.face(rebuilt)?);
+        if !source_face.inner_wires().is_empty() || !rebuilt_face.inner_wires().is_empty() {
+            return Ok(None);
+        }
+        let (Some(source), Some(rebuilt)) = (
+            radial_clearance::circular_wire(topo, source_face.outer_wire(), axis)?,
+            radial_clearance::circular_wire(topo, rebuilt_face.outer_wire(), axis)?,
+        ) else {
+            return Ok(None);
+        };
+
+        let origin = cone.apex();
+        let tan = cone.half_angle().tan();
+        let start = source.center - origin;
+        let end = rebuilt.center - origin;
+        let (start_height, end_height) = (start.dot(axis), end.dot(axis));
+        if start_height.is_sign_negative() != end_height.is_sign_negative()
+            || end_height.abs() <= start_height.abs()
+        {
+            return Ok(None);
+        }
+
+        let scale = magnitude(origin)
+            .max(magnitude(source.center))
+            .max(magnitude(rebuilt.center));
+        let rounding = 1e-12_f64.mul_add(scale, tol.linear);
+        let radial_slack = (start.cross(axis).length() + source.max_reach
+            - start_height.abs() / tan)
+            .max(end.cross(axis).length() + rebuilt.max_reach - end_height.abs() / tan)
+            .max(0.0);
+        let height_slack = tilt.mul_add(source.max_reach.max(rebuilt.max_reach), rounding);
+        let heights = (start_height.min(end_height), start_height.max(end_height));
+        let profile = finite_profile(Profile {
+            shift: 0.0,
+            height_slack,
+            radial_slack,
+            heights,
+            shape: Shape::ConicDisk { tan },
+            scale,
+        });
+        Ok(profile.map(|profile| Self {
+            origin,
+            axis,
+            profile,
+            bounds: None,
+            scale,
+        }))
+    }
+
+    /// Prove that the fixed face misses the widening cap at all swept heights.
+    pub(super) fn clears_fixed_face(
+        &self,
+        topo: &Topology,
+        face: FaceId,
+    ) -> Result<bool, crate::OperationsError> {
+        let bounds = certified_box(topo, face)?;
+        if let Some(bounds) = bounds {
+            let margin =
+                1e-12_f64.mul_add(self.scale + box_magnitude(bounds), Tolerance::new().linear);
+            let (low, high) = height_range(bounds, self.origin, self.axis);
+            if self
+                .profile
+                .radii((low - margin, high + margin))
+                .is_none_or(|(_, hi)| self.box_lower_radius(bounds) > hi + margin)
+            {
+                return Ok(true);
+            }
+        }
+
+        let profile = self.candidate_profile(topo, face, bounds)?;
+        Ok(self.clears(
+            &Reach {
+                face,
+                bounds,
+                scale: bounds
+                    .map_or(0.0, box_magnitude)
+                    .max(profile.as_ref().map_or(0.0, |p| p.scale)),
+                profile,
+            },
+            Vec3::new(0.0, 0.0, 0.0),
+        ))
+    }
+
     fn radius_of(&self, point: Point3) -> f64 {
         (point - self.origin).cross(self.axis).length()
     }
@@ -354,13 +458,27 @@ impl Sweep {
                 // that height (`offset + |t| sin`) plus `ρ sin`.
                 let shift = (origin - self.origin).dot(self.axis);
                 let height_slack = reach.mul_add(1.0 - cosine, radius * sine);
+                let offset = self.radius_of(origin);
+                let tilt_slack = sine * (reach + radius);
+                let (shape, radial_slack) = match own.shape {
+                    // For a constant band, the two triangle inequalities
+                    // also give clearance when the offset exceeds the radius.
+                    Shape::Band { lo, hi } => (
+                        Shape::Band {
+                            lo: (lo - offset).max(offset - hi).max(0.0),
+                            hi: hi + offset,
+                        },
+                        tilt_slack,
+                    ),
+                    shape => (shape, offset + tilt_slack),
+                };
                 return Ok(finite_profile(Profile {
                     shift,
                     height_slack,
-                    radial_slack: sine.mul_add(reach + radius, self.radius_of(origin)),
+                    radial_slack,
                     heights: self.box_heights(own.heights, bounds, shift, height_slack),
+                    shape,
                     scale: magnitude(origin),
-                    ..own
                 }));
             }
         }
@@ -460,11 +578,21 @@ impl Sweep {
         upper
     }
 
-    /// No point of a box is nearer the axis than its centre less its
-    /// half-diagonal.
+    /// Project the box along the radial direction to its centre. This
+    /// distance along a unit vector normal to the axis bounds the radius
+    /// below, even for a tall box with little width across the axis.
     fn box_lower_radius(&self, bounds: Aabb3) -> f64 {
         let half = (bounds.max - bounds.min) * 0.5;
-        (self.radius_of(bounds.min + half) - half.length()).max(0.0)
+        let radial = self
+            .axis
+            .cross((bounds.min + half - self.origin).cross(self.axis));
+        let Ok(direction) = radial.normalize() else {
+            return 0.0;
+        };
+        let extent = direction.x().abs() * half.x()
+            + direction.y().abs() * half.y()
+            + direction.z().abs() * half.z();
+        (radial.length() - extent).max(0.0)
     }
 
     /// The largest distance from the axis of any point of a planar face's
@@ -594,6 +722,7 @@ impl Shape {
         match self {
             Self::Band { lo, hi } => Some((*lo, *hi)),
             Self::Cone { tan } => Some(cone_radii((low, high), *tan)),
+            Self::ConicDisk { tan } => Some((0.0, cone_radii((low, high), *tan).1)),
             Self::Arc { major, minor, phi } => arc_radii(*major, *minor, *phi, (low, high)),
             Self::Tube(tube) => tube.radii((low, high)),
         }
@@ -677,7 +806,7 @@ fn finite_profile(profile: Profile) -> Option<Profile> {
     ];
     let shape_finite = match &profile.shape {
         Shape::Band { lo, hi } => lo.is_finite() && hi.is_finite(),
-        Shape::Cone { tan } => tan.is_finite() && *tan > 0.0,
+        Shape::Cone { tan } | Shape::ConicDisk { tan } => tan.is_finite() && *tan > 0.0,
         Shape::Arc { major, minor, phi } => {
             major.is_finite() && minor.is_finite() && phi.0.is_finite() && phi.1.is_finite()
         }
