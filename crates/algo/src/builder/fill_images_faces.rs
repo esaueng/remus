@@ -668,6 +668,7 @@ pub fn fill_images_faces(
                 topo,
                 split,
                 tol,
+                context.max_entity_tolerance,
                 face_id,
                 &mut shared_edge_cache,
                 &cb_qpair_edges,
@@ -4723,6 +4724,7 @@ fn build_topology_face(
     topo: &mut Topology,
     split: &super::split_types::SplitSubFace,
     tol: Tolerance,
+    max_entity_tolerance: f64,
     _parent_face_id: FaceId,
     _shared_edge_cache: &mut DetHashMap<(usize, usize), remus_topology::edge::EdgeId>,
     _cb_qpair_edges: &DetHashMap<CbEdgeKey, remus_topology::edge::EdgeId>,
@@ -4805,8 +4807,14 @@ fn build_topology_face(
         // different per-call vertex caches, so shared edges would have wrong
         // VertexId connections at wire junctions.
         // merge_duplicate_edges in BuilderSolid handles cross-face sharing.
-        let (edge_id, forward) =
-            instantiate_wire_edge(topo, start_vid, end_vid, pcurve_edge, tol.linear)?;
+        let (edge_id, forward) = instantiate_wire_edge(
+            topo,
+            start_vid,
+            end_vid,
+            pcurve_edge,
+            tol.linear,
+            max_entity_tolerance,
+        )?;
         if let Some(pb) = pcurve_edge.pave_block_id {
             lineage.to_pave_block.insert(edge_id.index(), pb);
         }
@@ -4844,8 +4852,14 @@ fn build_topology_face(
                 &quantize,
                 tol,
             );
-            let (edge_id, forward) =
-                instantiate_wire_edge(topo, start_vid, end_vid, pcurve_edge, tol.linear)?;
+            let (edge_id, forward) = instantiate_wire_edge(
+                topo,
+                start_vid,
+                end_vid,
+                pcurve_edge,
+                tol.linear,
+                max_entity_tolerance,
+            )?;
             if let Some(pb) = pcurve_edge.pave_block_id {
                 lineage.to_pave_block.insert(edge_id.index(), pb);
             }
@@ -5019,9 +5033,11 @@ fn instantiate_wire_edge(
     end_vid: remus_topology::vertex::VertexId,
     pcurve_edge: &super::split_types::OrientedPCurveEdge,
     tolerance: f64,
+    max_entity_tolerance: f64,
 ) -> Result<(remus_topology::edge::EdgeId, bool), AlgoError> {
     let stored_tolerance = carried_edge_tolerance(topo, pcurve_edge, tolerance)?;
-    let orientation = preflight_wire_edge(pcurve_edge, (tolerance * 100.0).max(stored_tolerance))?;
+    let guard = (tolerance * 100.0).max(stored_tolerance);
+    let orientation = preflight_wire_edge(pcurve_edge, guard)?;
     let is_line = matches!(pcurve_edge.curve_3d, EdgeCurve::Line);
     let (storage_start, storage_end) = if orientation.reverse_storage {
         (end_vid, start_vid)
@@ -5043,12 +5059,67 @@ fn instantiate_wire_edge(
             ))
         })?;
     }
+    if pcurve_edge.source_topo_edge.is_none()
+        && matches!(edge.curve(), EdgeCurve::NurbsCurve(_))
+        && let Some(domain) = edge.trim()
+    {
+        let (residual, slack) = stored_endpoint_residual(topo, &edge, domain)?;
+        if residual > stored_tolerance && residual <= guard {
+            let required = (residual + slack).min(guard);
+            if !max_entity_tolerance.is_finite() || required > max_entity_tolerance {
+                return Err(AlgoError::FaceSplitFailed(format!(
+                    "fitted section endpoint needs edge tolerance {required:e}, above the entity tolerance cap {max_entity_tolerance:e}"
+                )));
+            }
+            edge.set_tolerance(Some(required))?;
+        }
+    }
     let edge_id = topo.add_edge(edge);
     Ok((edge_id, orientation.forward))
 }
 
+/// Larger distance between the stored edge's curve, evaluated at its strict
+/// domain ends, and the bounding vertices it is stored against (NaN when an
+/// end does not evaluate to a finite point), with the evaluation roundoff
+/// slack at the endpoints' coordinate scale.
+///
+/// The preflight admits a carried edge whose ends land within the weld band
+/// of the wire's endpoints. That band is wider than the operation tolerance:
+/// a fitted section curve can miss a pave vertex minted on an exact analytic
+/// crossing by a few times `tol.linear`. Stamping the operation tolerance on
+/// such an edge records a claim its own geometry violates, and every strict
+/// reader (the arena codec, and through it each export) then refuses the
+/// solid. RFC 0004's max-of-contributors rule makes the stored tolerance
+/// cover the measured deviation instead. Consumers re-measure the same ends
+/// through other evaluation paths (the STEP writer restricts the carrier by
+/// knot insertion first), which reproduce the residual only to roundoff, so
+/// the claim carries that roundoff on top.
+fn stored_endpoint_residual(
+    topo: &Topology,
+    edge: &Edge,
+    (t_start, t_end): (f64, f64),
+) -> Result<(f64, f64), AlgoError> {
+    let start = topo.vertex(edge.start())?.point();
+    let end = topo.vertex(edge.end())?.point();
+    let curve = edge.curve();
+    let start_residual = (curve.evaluate_with_endpoints(t_start, start, end) - start).length();
+    let end_residual = (curve.evaluate_with_endpoints(t_end, start, end) - end).length();
+    // `f64::max` would drop a NaN end; keep it, so a non-finite end never
+    // passes the caller's `<= guard` test and never becomes a stored claim.
+    let residual = if start_residual.is_nan() || end_residual.is_nan() {
+        f64::NAN
+    } else {
+        start_residual.max(end_residual)
+    };
+    let scale = [start, end]
+        .iter()
+        .flat_map(|point| [point.x(), point.y(), point.z()])
+        .fold(0.0_f64, |largest, coordinate| largest.max(coordinate.abs()));
+    Ok((residual, 64.0 * f64::EPSILON * scale))
+}
+
 // Splitting an imported boundary must retain its existing tolerance contract.
-// Generated section edges have no source and keep the operation tolerance.
+// Generated section edges start at the operation tolerance.
 fn carried_edge_tolerance(
     topo: &Topology,
     edge: &super::split_types::OrientedPCurveEdge,
@@ -5765,7 +5836,14 @@ mod tests {
     ) -> Result<(EdgeId, bool), AlgoError> {
         let start_id = topo.add_vertex(Vertex::new(edge.start_3d, 1e-7));
         let end_id = topo.add_vertex(Vertex::new(edge.end_3d, 1e-7));
-        instantiate_wire_edge(topo, start_id, end_id, edge, 1e-7)
+        instantiate_wire_edge(
+            topo,
+            start_id,
+            end_id,
+            edge,
+            1e-7,
+            remus_math::context::DEFAULT_MAX_ENTITY_TOLERANCE,
+        )
     }
 
     #[test]
@@ -5775,8 +5853,15 @@ mod tests {
         let start_id = topo.add_vertex(Vertex::new(missing.start_3d, 1e-7));
         let end_id = topo.add_vertex(Vertex::new(missing.end_3d, 1e-7));
         let edge_count = topo.num_edges();
-        let error = instantiate_wire_edge(&mut topo, start_id, end_id, &missing, 1e-7)
-            .expect_err("missing authority must refuse");
+        let error = instantiate_wire_edge(
+            &mut topo,
+            start_id,
+            end_id,
+            &missing,
+            1e-7,
+            remus_math::context::DEFAULT_MAX_ENTITY_TOLERANCE,
+        )
+        .expect_err("missing authority must refuse");
         assert!(matches!(error, AlgoError::FaceSplitFailed(_)));
         assert_eq!(topo.num_edges(), edge_count);
 
@@ -5785,10 +5870,87 @@ mod tests {
         let start_id = topo.add_vertex(Vertex::new(mismatch.start_3d, 1e-7));
         let end_id = topo.add_vertex(Vertex::new(mismatch.end_3d, 1e-7));
         let edge_count = topo.num_edges();
-        let error = instantiate_wire_edge(&mut topo, start_id, end_id, &mismatch, 1e-7)
-            .expect_err("endpoint mismatch must refuse");
+        let error = instantiate_wire_edge(
+            &mut topo,
+            start_id,
+            end_id,
+            &mismatch,
+            1e-7,
+            remus_math::context::DEFAULT_MAX_ENTITY_TOLERANCE,
+        )
+        .expect_err("endpoint mismatch must refuse");
         assert!(matches!(error, AlgoError::FaceSplitFailed(_)));
         assert_eq!(topo.num_edges(), edge_count);
+    }
+
+    /// Instantiate a fitted section whose stored vertices sit `offset` off
+    /// its ends, returning the stored claim and measured residual.
+    fn instantiate_offset_section(offset: f64) -> (Option<f64>, f64) {
+        let trim = (0.2, 0.8);
+        let mut edge = circle_wire_edge(Some(trim), true);
+        let points: Vec<_> = (0..=6)
+            .map(|index| {
+                let x = f64::from(index);
+                Point3::new(x, 0.1 * x * x, 0.0)
+            })
+            .collect();
+        let curve = interpolate(&points, 3).unwrap();
+        edge.start_3d = ParametricCurve::evaluate(&curve, trim.0);
+        edge.end_3d = ParametricCurve::evaluate(&curve, trim.1);
+        edge.curve_3d = EdgeCurve::NurbsCurve(curve);
+        let lift = Vec3::new(0.0, 0.0, offset);
+        let mut topo = Topology::new();
+        let start_id = topo.add_vertex(Vertex::new(edge.start_3d + lift, 1e-7));
+        let end_id = topo.add_vertex(Vertex::new(edge.end_3d + lift, 1e-7));
+        let (edge_id, _) = instantiate_wire_edge(
+            &mut topo,
+            start_id,
+            end_id,
+            &edge,
+            1e-7,
+            remus_math::context::DEFAULT_MAX_ENTITY_TOLERANCE,
+        )
+        .unwrap();
+        let stored = topo.edge(edge_id).unwrap();
+        let (t0, t1) = stored.strict_domain().unwrap();
+        let start = topo.vertex(stored.start()).unwrap().point();
+        let end = topo.vertex(stored.end()).unwrap().point();
+        let residual = [(t0, start), (t1, end)]
+            .into_iter()
+            .map(|(t, p)| (stored.curve().evaluate_with_endpoints(t, start, end) - p).length())
+            .fold(0.0_f64, f64::max);
+        (stored.tolerance(), residual)
+    }
+
+    #[test]
+    fn final_edge_writer_claims_the_measured_endpoint_residual_within_the_weld_band() {
+        // #1831: a fitted section span lands a few tolerances off its pave
+        // vertices. The writer accepts it (weld band = 100 x tol) and must
+        // then claim a tolerance that covers what it accepted.
+        let (claim, residual) = instantiate_offset_section(4.9e-7);
+        let claim = claim.expect("generated edges carry an explicit tolerance");
+        assert!(residual > 1e-7);
+        assert!(
+            claim >= residual,
+            "claim {claim:e} below residual {residual:e}"
+        );
+        assert!(
+            claim - residual < 1e-12,
+            "claim {claim:e} is not the residual {residual:e}"
+        );
+
+        // An exact edge keeps the operation tolerance.
+        assert_eq!(instantiate_offset_section(0.0).0, Some(1e-7));
+    }
+
+    #[test]
+    fn final_edge_writer_does_not_widen_past_the_band_it_certified() {
+        // A residual beyond the weld band was never certified by the
+        // preflight (it measured the wire's own endpoints), so it is not
+        // laundered into a claim: the strict readers keep refusing it.
+        let (claim, residual) = instantiate_offset_section(5e-5);
+        assert!(residual > 1e-5);
+        assert_eq!(claim, Some(1e-7));
     }
 
     #[test]
@@ -5799,8 +5961,15 @@ mod tests {
         let mut topo = Topology::new();
         let seam = topo.add_vertex(Vertex::new(edge.start_3d, 1e-7));
         let edge_count = topo.num_edges();
-        let error = instantiate_wire_edge(&mut topo, seam, seam, &edge, 1e-7)
-            .expect_err("multi-turn authority must refuse");
+        let error = instantiate_wire_edge(
+            &mut topo,
+            seam,
+            seam,
+            &edge,
+            1e-7,
+            remus_math::context::DEFAULT_MAX_ENTITY_TOLERANCE,
+        )
+        .expect_err("multi-turn authority must refuse");
         assert!(matches!(error, AlgoError::FaceSplitFailed(_)));
         assert_eq!(topo.num_edges(), edge_count);
     }
