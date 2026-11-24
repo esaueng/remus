@@ -378,6 +378,121 @@ fn planar_move_retrims_a_sloped_neighbor() {
     );
 }
 
+/// Issue #1836: a cap moved past where its converging planar walls meet
+/// turns its rebuilt edges around. Every count, loop containment (the cap
+/// has no inner loop) and watertightness still pass, so the fold itself must
+/// refuse. Short of the apex the move is legal and keeps the exact volume.
+#[test]
+fn cap_move_refuses_past_the_apex_of_converging_planar_walls() {
+    let live_counts = |topo: &Topology| {
+        [
+            topo.num_vertices(),
+            topo.num_edges(),
+            topo.num_wires(),
+            topo.num_faces(),
+            topo.num_shells(),
+            topo.num_solids(),
+        ]
+    };
+
+    // Tapered prism: the sloped wall x = 10 - z/3 meets the x = 0 wall at
+    // z = 30, so the cap at z = 6 can rise by less than 24.
+    for (distance, legal) in [(23.0, true), (24.0, false), (25.0, false), (30.0, false)] {
+        let mut topo = Topology::new();
+        let source = sloped_prism(&mut topo);
+        let selected = outward_faces(&topo, source, Vec3::new(0.0, 0.0, 1.0));
+        let counts = solid_entity_counts(&topo, source).expect("source counts");
+        let before_move = live_counts(&topo);
+        let outcome = move_faces(&mut topo, source, &selected, distance);
+        if legal {
+            let result = outcome.expect("move short of the apex");
+            let top = 8.0 - distance / 3.0;
+            assert_volume(&topo, result, 4.0 * (10.0 + top) / 2.0 * (6.0 + distance));
+            assert_verified(&topo, result);
+        } else {
+            let error = outcome
+                .map(|_| ())
+                .expect_err(&format!("move past the apex by {distance}"));
+            assert!(
+                matches!(
+                    error,
+                    OperationsError::Offset(OffsetError::TopologyChange { .. })
+                ),
+                "distance {distance}: {error}"
+            );
+            assert_eq!(
+                live_counts(&topo),
+                before_move,
+                "refused move leaked entities"
+            );
+            assert_eq!(solid_entity_counts(&topo, source).unwrap(), counts);
+            assert_volume(&topo, source, 216.0);
+        }
+    }
+
+    // Drafted block: four walls lean in by 0.5 rad and meet 3.361/tan(0.5)
+    // above the 6.722-wide cap.
+    let slope = 0.5f64.tan();
+    let base = 10.0 - 2.0 * 3.0 * slope;
+    let apex = base / (2.0 * slope);
+    for (distance, legal) in [
+        (1.0, true),
+        (apex - 0.05, true),
+        (apex + 0.5, false),
+        (20.0, false),
+    ] {
+        let mut topo = Topology::new();
+        let block = make_box(&mut topo, 10.0, 10.0, 3.0).expect("block");
+        let walls: Vec<_> = solid_faces(&topo, block)
+            .unwrap()
+            .into_iter()
+            .filter(|&face| {
+                topo.face(face)
+                    .unwrap()
+                    .effective_plane_normal()
+                    .is_some_and(|normal| normal.z().abs() < 1e-9)
+            })
+            .collect();
+        let source = remus_operations::draft::draft(
+            &mut topo,
+            block,
+            &walls,
+            Vec3::new(0.0, 0.0, 1.0),
+            Point3::new(5.0, 5.0, 0.0),
+            -0.5,
+        )
+        .expect("drafted block");
+        let before = solid_volume(&topo, source, DEFLECTION).unwrap();
+        let selected = outward_faces(&topo, source, Vec3::new(0.0, 0.0, 1.0));
+        let before_move = live_counts(&topo);
+        let outcome = move_faces(&mut topo, source, &selected, distance);
+        if legal {
+            let result = outcome.expect("move short of the apex");
+            let top = base - 2.0 * distance * slope;
+            let added = distance / 3.0 * top.mul_add(top, base.mul_add(base, base * top));
+            assert_volume(&topo, result, before + added);
+            assert_verified(&topo, result);
+        } else {
+            let error = outcome
+                .map(|_| ())
+                .expect_err(&format!("move past the apex by {distance}"));
+            assert!(
+                matches!(
+                    error,
+                    OperationsError::Offset(OffsetError::TopologyChange { .. })
+                ),
+                "distance {distance}: {error}"
+            );
+            assert_eq!(
+                live_counts(&topo),
+                before_move,
+                "refused move leaked entities"
+            );
+            assert_volume(&topo, source, before);
+        }
+    }
+}
+
 #[test]
 fn coplanar_face_group_moves_rigidly() {
     let mut topo = Topology::new();

@@ -419,14 +419,16 @@ fn rebuild_planar_moves(
         &mut data,
     )?;
     validate_rebuilt_wires(topo, &source_wire_shapes, &data)?;
-    if shifts.is_per_face() {
-        multi::validate_edge_directions(
-            topo,
-            &source_edge_faces,
-            |face| selected.contains(&face),
-            &boundary_maps,
-        )?;
-    }
+    // A uniform move folds too: a cap pushed past the apex of converging
+    // planar walls (a drafted block or a tapered prism) turns its rebuilt
+    // edges around while every count, the loop-containment check (it reads
+    // only faces with inner loops) and watertightness still pass.
+    multi::validate_edge_directions(
+        topo,
+        &source_edge_faces,
+        |face| selected.contains(&face),
+        &boundary_maps,
+    )?;
 
     let result = crate::assemble::assemble_solid_with_face_map(topo, &data)?;
     super::validate_offset_result(topo, result.solid)?;
