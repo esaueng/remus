@@ -3568,7 +3568,46 @@ pub(super) fn tessellate_nonplanar_cdt(
         | FaceSurface::Sphere(_)
         | FaceSurface::Torus(_) => None,
     };
-    let v_scale = if du > 1e-15 && dv > 1e-15 {
+    // A short, wide cylinder band trimmed by a curve that climbs through it
+    // (a modeled thread's half-turn land: 1.5 mm tall, 60 mm around) squared
+    // into the parameter box needs `n_u` dense trim rows to stay isotropic
+    // there, about forty times the rows its surface needs: ~3.7k interior
+    // points per land, 1.1M triangles on one threaded part. A cylinder
+    // unrolls isometrically, so triangulate such a band in its unrolled chart
+    // (`v` over the radius, both axes in surface lengths), where rows the
+    // columns' arc apart are isotropic.
+    //
+    // Only a band at least `UNROLLED_BAND_ASPECT` times wider than tall
+    // qualifies: a cross-drilled bore wall (about as wide as long) keeps the
+    // squared box, its dense rows and its mesh. The unrolled chart also
+    // compresses `v` by that aspect against the squared box, so a band whose
+    // boundary samples (any two) would land closer than `UNROLLED_MIN_SAMPLE_GAP`
+    // there (a near-flat wall of a huge radius with a sliver-high side)
+    // keeps the squared box rather than merge two samples in the CDT.
+    let unrolled_radius = match chart_surface {
+        FaceSurface::Cylinder(cylinder)
+            if sheared.is_none()
+                && cylinder.radius() * du >= UNROLLED_BAND_ASPECT * dv
+                && climbing_nurbs_trim(topo, outer_edges, &boundary_uv, &boundary_3d, du, dv)
+                && unrolled_samples_stay_apart(
+                    &std::iter::once(boundary_uv.as_slice())
+                        .chain(hole_uvs.iter().map(Vec::as_slice))
+                        .collect::<Vec<_>>(),
+                    cylinder.radius(),
+                ) =>
+        {
+            Some(cylinder.radius())
+        }
+        FaceSurface::Cylinder(_)
+        | FaceSurface::Plane { .. }
+        | FaceSurface::Nurbs(_)
+        | FaceSurface::Cone(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => None,
+    };
+    let v_scale = if let Some(radius) = unrolled_radius {
+        1.0 / radius
+    } else if du > 1e-15 && dv > 1e-15 {
         // A NURBS chart triangulates in surface lengths along each axis
         // (see `sheared_chart::metric_v_scale`): its knot units are not
         // lengths, and squaring up its parameter box folded slivers on a
@@ -3970,7 +4009,12 @@ pub(super) fn tessellate_nonplanar_cdt(
                 }
             }
 
-            let dense_dv = dv / n_u as f64;
+            // On an unrolled wide cylinder (see `unrolled_radius`) the chart
+            // is the surface itself, so rows the columns' own arc apart are
+            // isotropic there, as `dv / n_u` rows are in the squared box.
+            let dense_dv = unrolled_radius.map_or(dv / n_u as f64, |radius| {
+                (radius * du / n_u as f64).max(dv / n_u as f64)
+            });
             if curved_v_max > curved_v_min && dense_dv > 1.0e-15 {
                 let lo = (curved_v_min - dense_dv).max(v_min);
                 let hi = (curved_v_max + dense_dv).min(v_max);
@@ -5077,6 +5121,107 @@ fn estimate_surface_radius(surface: &FaceSurface) -> f64 {
         FaceSurface::Torus(torus) => torus.major_radius() + torus.minor_radius(),
         FaceSurface::Nurbs(_) | FaceSurface::Plane { .. } => 1.0,
     }
+}
+
+/// How many times wider (around) than tall (along) a cylinder band must be
+/// to triangulate in its unrolled chart; see `unrolled_radius` in
+/// [`tessellate_nonplanar_cdt`]. Thread lands run about 40:1, ordinary
+/// trimmed walls and cross-drilled bores near 1:1.
+const UNROLLED_BAND_ASPECT: f64 = 8.0;
+
+/// The smallest chart distance two distinct boundary samples may
+/// have in an unrolled chart: a hundred times the CDT's duplicate-point
+/// tolerance (1e-8), so no two boundary samples merge.
+const UNROLLED_MIN_SAMPLE_GAP: f64 = 1e-6;
+
+/// Whether every two distinct boundary samples, across all of a face's
+/// rings, stay at least [`UNROLLED_MIN_SAMPLE_GAP`] apart in the unrolled
+/// chart `(u, v / radius)` of a cylinder of `radius`. Not only neighbours:
+/// opposite rims of a band only a sliver high meet in that chart too.
+/// Samples are bucketed by gap-sized cells, so each is compared with the few
+/// in its own and the adjacent cells.
+fn unrolled_samples_stay_apart(rings: &[&[(f64, f64)]], radius: f64) -> bool {
+    if !(radius.is_finite() && radius > 0.0) {
+        return false;
+    }
+    let gap = UNROLLED_MIN_SAMPLE_GAP;
+    let mut cells: DetHashMap<(i64, i64), Vec<(f64, f64)>> = DetHashMap::default();
+    for ring in rings {
+        for &(u, v) in *ring {
+            let point = (u, v / radius);
+            if !(point.0.is_finite() && point.1.is_finite()) {
+                return false;
+            }
+            #[allow(clippy::cast_possible_truncation)]
+            let cell = (
+                (point.0 / gap).floor() as i64,
+                (point.1 / gap).floor() as i64,
+            );
+            for du in -1..=1 {
+                for dv in -1..=1 {
+                    let Some(near) = cells.get(&(cell.0 + du, cell.1 + dv)) else {
+                        continue;
+                    };
+                    // Exact repeats (a closing sample, a shared corner) are
+                    // one point in any chart.
+                    if near.iter().any(|&other| {
+                        other != point && (other.0 - point.0).hypot(other.1 - point.1) < gap
+                    }) {
+                        return false;
+                    }
+                }
+            }
+            cells.entry(cell).or_default().push(point);
+        }
+    }
+    true
+}
+
+/// Whether a cylinder face's outer wire has a NURBS edge whose
+/// samples move through both `u` and `v`: a trim that climbs across the
+/// rulings rather than following a rim or a seam (`has_nurbs_revolved_wire`
+/// in `tessellate_nonplanar_cdt`), and no ellipse edge, whose seeding reads
+/// the raw parameter box.
+fn climbing_nurbs_trim(
+    topo: &Topology,
+    outer_edges: &[remus_topology::wire::OrientedEdge],
+    boundary_uv: &[(f64, f64)],
+    boundary_3d: &[(Point3, u32, remus_topology::edge::EdgeId, bool)],
+    du: f64,
+    dv: f64,
+) -> bool {
+    let is = |oriented: &remus_topology::wire::OrientedEdge, ellipse: bool| {
+        topo.edge(oriented.edge()).is_ok_and(|edge| {
+            if ellipse {
+                matches!(edge.curve(), EdgeCurve::Ellipse(_))
+            } else {
+                matches!(edge.curve(), EdgeCurve::NurbsCurve(_))
+            }
+        })
+    };
+    if outer_edges.iter().any(|oriented| is(oriented, true)) {
+        return false;
+    }
+    outer_edges.iter().any(|oriented| {
+        if !is(oriented, false) {
+            return false;
+        }
+        let mut span = (
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        );
+        for (&(u, v), sample) in boundary_uv.iter().zip(boundary_3d) {
+            if sample.2 == oriented.edge() {
+                span.0 = span.0.min(u);
+                span.1 = span.1.max(u);
+                span.2 = span.2.min(v);
+                span.3 = span.3.max(v);
+            }
+        }
+        span.1 - span.0 > 1e-9 * du && span.3 - span.2 > 1e-9 * dv
+    })
 }
 
 /// Rows for a cylinder or cone whose boundary runs along its rims and also

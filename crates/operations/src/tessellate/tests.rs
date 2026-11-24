@@ -26,6 +26,7 @@ pub(super) mod mesh_passes;
 mod mutation_oracles;
 mod pool_fallback;
 mod sheared_chart;
+mod unrolled_band;
 
 #[test]
 fn tessellate_square() {

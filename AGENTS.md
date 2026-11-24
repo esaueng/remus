@@ -713,6 +713,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | One chart boundary for a torus face whose wires touch its outer wire: cycles sharing a vertex with it (seam slits and period-winding band boundaries left by face unification) spliced into one boundary walk | `tessellate/nonplanar/touching_cycles.rs` |
 | Thread flank display-mesh shading and density regressions (tests) | `tessellate/tests/sheared_chart.rs` |
 | In-place helical sweep (coil) display meshes: no side facet folds into the tube, no slivers (tests) | `tessellate/tests/coil_chart.rs` |
+| Unrolled chart of wide thread-land cylinder bands: leaves cross-drilled bores and huge-radius sliver bands on the squared box (tests) | `tessellate/tests/unrolled_band.rs` |
 | Projection retry for a NURBS face whose coarse seed grid fails: a narrow strip swept many turns, retried from a node in every knot span (tests) | `tessellate/nonplanar/frame_projection_tests.rs` |
 | Interior grid samples reused at emission: meshes with the reuse on and off compared bit for bit (tests) | `tessellate/nonplanar/interior_sample_tests.rs` |
 | Signed native vector-area qualification for a hemisphere chart | `tessellate/nonplanar/sphere_chart_orientation.rs` |
