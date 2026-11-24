@@ -413,12 +413,12 @@ pub(super) fn planar_face_axis_clearance(
 
 /// A wire of arcs of one circle, up to tolerance, about the first arc's
 /// centre.
-struct CircularWire {
-    center: Point3,
+pub(super) struct CircularWire {
+    pub(super) center: Point3,
     /// No point of any arc lies closer to `center` than this.
     min_reach: f64,
     /// No point of any arc lies farther from `center` than this.
-    max_reach: f64,
+    pub(super) max_reach: f64,
 }
 
 /// A wire made only of arcs of one circle whose normal is parallel to
@@ -428,7 +428,7 @@ struct CircularWire {
 /// little beyond it, so the reach is bounded over every arc: a point of an
 /// arc lies within its radius of its own centre, which lies within the
 /// centres' offset of the first.
-fn circular_wire(
+pub(super) fn circular_wire(
     topo: &Topology,
     wire: remus_topology::wire::WireId,
     direction: Vec3,

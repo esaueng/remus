@@ -836,14 +836,24 @@ fn floor_moves_keep_tangent_rulings_exact_for_a_later_top_move() {
 fn a_widening_cap_refuses_to_sweep_into_a_fixed_post() {
     use remus_operations::prepared_move::PreparedFaceMove;
 
-    for (post_x, distance, collision) in [(31.5, 2.0, true), (31.5, 0.5, false), (34.0, 2.0, false)]
-    {
+    for (post_x, post_height, square, distance, collision) in [
+        (31.5, 10.0, false, 2.0, true),
+        (28.5, 10.0, true, 5.0, true),
+        (31.5, 4.2, false, 2.0, false),
+        (28.5, 10.0, true, 2.0, false),
+        (31.5, 10.0, false, 0.5, false),
+        (34.0, 10.0, false, 2.0, false),
+    ] {
         let mut topo = Topology::new();
         let plate = make_box(&mut topo, 40.0, 40.0, 2.0).unwrap();
         let frustum = make_cone(&mut topo, 8.0, 10.0, 4.0).unwrap();
         transform_solid(&mut topo, frustum, &Mat4::translation(20.0, 20.0, 2.0)).unwrap();
-        let post = make_cylinder(&mut topo, 1.0, 10.0).unwrap();
-        transform_solid(&mut topo, post, &Mat4::translation(post_x, 20.0, 2.0)).unwrap();
+        let (post, post_y) = if square {
+            (make_box(&mut topo, 1.0, 1.0, post_height).unwrap(), post_x)
+        } else {
+            (make_cylinder(&mut topo, 1.0, post_height).unwrap(), 20.0)
+        };
+        transform_solid(&mut topo, post, &Mat4::translation(post_x, post_y, 2.0)).unwrap();
         let body = boolean(&mut topo, BooleanOp::Fuse, plate, frustum).unwrap();
         let body = boolean(&mut topo, BooleanOp::Fuse, body, post).unwrap();
         remus_operations::heal::unify_faces(&mut topo, body).unwrap();
@@ -884,9 +894,10 @@ fn a_widening_cap_refuses_to_sweep_into_a_fixed_post() {
                 move_faces(&mut source, body, &[cap], distance)
             };
             if collision {
-                // At z = 7.75, x = 30.75 lies in both the post and the widening
-                // frustum. The source cap stops at x = 30.
-                let error = moved.expect_err("the widened cap would hit the post");
+                // The round post lies beyond the original cap box. The
+                // square post overlaps that box but is radially clear
+                // until the larger move reaches it.
+                let error = moved.unwrap_err();
                 assert!(
                     matches!(&error,
                         OperationsError::Offset(OffsetError::TopologyChange { reason, .. })
@@ -897,9 +908,24 @@ fn a_widening_cap_refuses_to_sweep_into_a_fixed_post() {
                 assert_eq!(live_counts(&source), counts);
                 assert_volume(&source, body, before);
             } else {
-                let moved = moved.expect("the widening move clears the post");
+                let moved = moved.unwrap_or_else(|error| {
+                    panic!("post x {post_x}, height {post_height}, square {square}, move {distance}: {error}")
+                });
                 assert_volume(&source, moved, before + extension);
                 assert_verified(&source, moved);
+                let probe_height = 6.0 + distance * 0.5;
+                let probe_radius = 10.0 + distance * 0.25;
+                for (offset, expected) in [
+                    (-0.1, PointClassification::Inside),
+                    (0.1, PointClassification::Outside),
+                ] {
+                    assert_classification(
+                        &source,
+                        moved,
+                        Point3::new(20.0, 20.0 + probe_radius + offset, probe_height),
+                        expected,
+                    );
+                }
             }
         }
     }
