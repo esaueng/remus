@@ -5292,6 +5292,17 @@ export class RemusKernel {
      */
     tessellateSolidGroupedBinary(solid: number, deflection: number, angular_tolerance?: number | null): JsGroupedMesh;
     /**
+     * Face-grouped display mesh for consumers generating their own normals.
+     *
+     * Positions, indices and face offsets use the full grouped-mesh contract.
+     * The returned normals array is empty.
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle is invalid or tessellation fails.
+     */
+    tessellateSolidGroupedPositions(solid: number, deflection: number, angular_tolerance?: number | null): JsGroupedMesh;
+    /**
      * Tessellate a solid and include per-vertex UV coordinates.
      *
      * Returns a JSON string containing `{ positions, normals, indices, uvs }`.

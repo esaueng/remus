@@ -432,6 +432,7 @@ export const remuskernel_tessellateSheet: (a: number, b: number, c: number, d: n
 export const remuskernel_tessellateSolid: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const remuskernel_tessellateSolidGrouped: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const remuskernel_tessellateSolidGroupedBinary: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
+export const remuskernel_tessellateSolidGroupedPositions: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const remuskernel_tessellateSolidUV: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const remuskernel_thicken: (a: number, b: number, c: number) => [number, number, number];
 export const remuskernel_toBREP: (a: number, b: number) => [number, number, number];
