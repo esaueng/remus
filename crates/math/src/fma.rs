@@ -1,8 +1,8 @@
 //! Correctly rounded fused multiply-add that stays fast on `wasm32`.
 //!
 //! `f64::mul_add` rounds `a·b + c` once. Native targets do that in one
-//! instruction; WebAssembly has no fused multiply-add, so there it is a call
-//! into `compiler_builtins`' integer-arithmetic `fma` (with 128-bit multiplies
+//! instruction. Baseline WebAssembly has no fused multiply-add, so there it calls
+//! `compiler_builtins`' integer-arithmetic `fma` (with 128-bit multiplies
 //! through `__multi3`). In the kernel's WASM build that fallback was the
 //! largest single cost of ray classification (over half of the samples of
 //! `solidEdgeRelations` on the hammer-holder fixture).
@@ -10,8 +10,10 @@
 //! [`fma`] returns exactly the value `f64::mul_add` returns, on every target:
 //!
 //! - on everything except `wasm32` it *is* `f64::mul_add`;
-//! - on `wasm32`, operands in a range where no intermediate can underflow or
-//!   overflow go through `emulated_fma`: Boldo and Melquiond's emulation from
+//! - on `wasm32`, exact-product shortcuts run before optional fused dispatch;
+//! - remaining operands in a range where no intermediate can underflow or
+//!   overflow use a qualified fused implementation when available. The software
+//!   fallback uses Boldo and Melquiond's emulation from
 //!   error-free transformations and one rounding to odd ("Emulation of FMA
 //!   and correctly rounded sums: proved algorithms using rounding to odd",
 //!   IEEE Transactions on Computers, 2008). A zero factor with finite
@@ -33,8 +35,7 @@
 const FACTOR_MIN: f64 = f64::from_bits((1023 - 450) << 52);
 /// Largest factor magnitude the emulated path accepts: `2^450`.
 ///
-/// Keeps the Veltkamp split (`134217729 · a`) and the product far below
-/// overflow.
+/// Keeps the rounded high parts and every partial product far below overflow.
 const FACTOR_MAX: f64 = f64::from_bits((1023 + 450) << 52);
 /// Largest addend magnitude the emulated path accepts: `2^900`.
 ///
@@ -44,17 +45,14 @@ const ADDEND_MAX: f64 = f64::from_bits((1023 + 900) << 52);
 /// `a·b + c` rounded once, bit-identical to `a.mul_add(b, c)`.
 ///
 /// See the [module documentation](self) for how `wasm32` avoids the slow
-/// software `fma` without changing a single result bit. On `wasm32` this is
-/// one call to an out-of-line emulation, like the `mul_add` call it replaces,
-/// so the module does not grow (inlining the emulation at every call site
-/// added ~0.4 MB to the optimized kernel, past the 10 MiB raw budget it had
-/// then).
+/// software `fma` without changing the rounded result. The software emulation
+/// stays out of line to avoid duplicating it in the kernel's call sites.
 #[inline]
 #[must_use]
 pub fn fma(a: f64, b: f64, c: f64) -> f64 {
     #[cfg(target_arch = "wasm32")]
     {
-        wasm_fma(a, b, c)
+        software_fma(a, b, c)
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -62,15 +60,73 @@ pub fn fma(a: f64, b: f64, c: f64) -> f64 {
     }
 }
 
-/// The out-of-line `wasm32` body of [`fma`]: the emulation where it is
-/// exact, `f64::mul_add` everywhere else. Compiled natively for the tests,
+#[cfg(all(
+    target_arch = "wasm32",
+    target_feature = "simd128",
+    feature = "wasm-fused-arithmetic"
+))]
+mod dispatch {
+    use std::cell::OnceCell;
+
+    type MultiplyAdd = extern "C" fn(f64, f64, f64) -> f64;
+
+    thread_local! {
+        static FUNCTION: OnceCell<Option<MultiplyAdd>> = const { OnceCell::new() };
+    }
+
+    // A type-matched slot reserved solely for this implementation. Keep it
+    // distinct from other function pointers even under identical-code folding.
+    extern "C" fn reserved(a: f64, b: f64, c: f64) -> f64 {
+        std::hint::black_box(&FUNCTION);
+        a.mul_add(b, c)
+    }
+
+    #[inline]
+    pub(super) fn accelerated(a: f64, b: f64, c: f64) -> Option<f64> {
+        FUNCTION
+            .with(|cell| cell.get().copied().flatten())
+            .map(|fused| fused(a, b, c))
+    }
+
+    pub(super) fn install(install: impl FnOnce(usize) -> bool) {
+        FUNCTION.with(|cell| {
+            cell.get_or_init(|| {
+                let slot = std::hint::black_box(reserved as MultiplyAdd);
+                install(slot as usize).then_some(slot)
+            });
+        });
+    }
+}
+
+/// Install an optional, correctly rounded multiply-add in this WASM instance.
+/// The host writes the reserved table slot only after qualifying the function;
+/// otherwise the original software path remains active.
+#[cfg(all(
+    target_arch = "wasm32",
+    target_feature = "simd128",
+    feature = "wasm-fused-arithmetic"
+))]
+pub fn install_wasm_fma(install: impl FnOnce(usize) -> bool) {
+    dispatch::install(install);
+}
+
+/// Out-of-line arithmetic shared by the baseline and optional fused paths.
+/// Compiled natively without optional WASM dispatch for the tests,
 /// which compare it with the native `mul_add`.
 #[inline(never)]
 #[cfg_attr(not(any(target_arch = "wasm32", test)), allow(dead_code))]
 #[allow(clippy::suboptimal_flops)]
-fn wasm_fma(a: f64, b: f64, c: f64) -> f64 {
+fn software_fma(a: f64, b: f64, c: f64) -> f64 {
     if in_emulated_range(a, b, c) {
         if let Some(fused) = exact_product_fma(a, b, c) {
+            return fused;
+        }
+        #[cfg(all(
+            target_arch = "wasm32",
+            target_feature = "simd128",
+            feature = "wasm-fused-arithmetic"
+        ))]
+        if let Some(fused) = dispatch::accelerated(a, b, c) {
             return fused;
         }
         emulated_fma(a, b, c)
@@ -113,8 +169,13 @@ impl FusedMulAdd for f64 {
 #[must_use]
 #[cfg_attr(not(any(target_arch = "wasm32", test)), allow(dead_code))]
 fn in_emulated_range(a: f64, b: f64, c: f64) -> bool {
-    const FACTORS: std::ops::RangeInclusive<f64> = FACTOR_MIN..=FACTOR_MAX;
-    FACTORS.contains(&a.abs()) && FACTORS.contains(&b.abs()) && c.abs() <= ADDEND_MAX
+    // Shifting out the sign preserves magnitude ordering. A wrapping unsigned
+    // difference tests both inclusive bounds, including for NaNs and infinities.
+    let normal_factor = |x: f64| {
+        (x.to_bits() << 1).wrapping_sub(FACTOR_MIN.to_bits() << 1)
+            <= (FACTOR_MAX.to_bits() - FACTOR_MIN.to_bits()) << 1
+    };
+    normal_factor(a) & normal_factor(b) & (c.abs() <= ADDEND_MAX)
 }
 
 /// The fused result of operands accepted by `in_emulated_range` whose product
@@ -155,13 +216,18 @@ fn two_sum(a: f64, b: f64) -> (f64, f64) {
     (s, (a - a_virtual) + (b - b_virtual))
 }
 
-/// Veltkamp split of `a` into two 26-bit halves, `a = hi + lo` exactly.
+/// Split a normal factor in the accepted range into exact high and low parts.
+/// Rounding its magnitude to a multiple of 2^27 significand units leaves at
+/// most 26 significant bits in the high part. The remainder has magnitude at
+/// most 2^26 units and also fits in 26 significant bits (including a tie,
+/// whose remainder is a power of two). Subtraction is exact by Sterbenz's
+/// lemma. A carry into the exponent produces the next power of two.
 #[inline]
 #[cfg_attr(not(any(target_arch = "wasm32", test)), allow(dead_code))]
 fn split(a: f64) -> (f64, f64) {
-    const SPLITTER: f64 = 134_217_729.0; // 2^27 + 1
-    let t = SPLITTER * a;
-    let hi = t - (t - a);
+    const HALF_STEP: u64 = 1 << 26;
+    const LOW_BITS: u64 = (1 << 27) - 1;
+    let hi = f64::from_bits((a.to_bits() + HALF_STEP) & !LOW_BITS);
     (hi, a - hi)
 }
 
@@ -274,7 +340,7 @@ mod tests {
 
     fn assert_same(a: f64, b: f64, c: f64) {
         let expected = a.mul_add(b, c);
-        let got = wasm_fma(a, b, c);
+        let got = software_fma(a, b, c);
         assert!(
             got.to_bits() == expected.to_bits() || (got.is_nan() && expected.is_nan()),
             "fma({a:e}, {b:e}, {c:e}) [{:#x}, {:#x}, {:#x}]: emulated {got:e} ({:#x}), \
@@ -360,6 +426,26 @@ mod tests {
             let c = rng.sign() * unit * (2 * rng.below(1 << 10) + 1) as f64;
             assert_same(a, b, c);
             assert_same(a, b, -c);
+        }
+    }
+
+    #[test]
+    fn rounded_split_preserves_product_residual_at_ties_and_exponent_carries() {
+        let half_step = 1_u64 << 26;
+        for exponent in [-450, 0, 449] {
+            let base = u64::try_from(1023 + exponent).unwrap() << 52;
+            for boundary in [base + half_step, base + (1 << 52) - half_step] {
+                for bits in [boundary - 1, boundary, boundary + 1] {
+                    for sign in [1.0, -1.0] {
+                        let a = sign * f64::from_bits(bits);
+                        for b in [a, -a, 1.0 + f64::EPSILON, 2.0 - f64::EPSILON] {
+                            let (product, residual) = two_prod(a, b);
+                            assert_eq!(residual.to_bits(), a.mul_add(b, -product).to_bits());
+                            assert_same(a, b, -product);
+                        }
+                    }
+                }
+            }
         }
     }
 
