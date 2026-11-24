@@ -357,9 +357,9 @@ pub(super) fn named_face(
     faces.first().copied()
 }
 
-/// Refuses a per-face move that turns a straight source edge around: its
-/// ends passed each other, so the faces it bounds folded over (a pocket
-/// wall moved past the opposite wall).
+/// Refuses a move that turns a straight source edge around: its ends passed
+/// each other, so the faces it bounds folded over (a pocket wall moved past
+/// the opposite wall, or a cap moved past the apex of converging walls).
 pub(super) fn validate_edge_directions<V: std::ops::Deref<Target = [FaceId]>>(
     topo: &Topology,
     source_edge_faces: &BTreeMap<usize, V>,
