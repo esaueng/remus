@@ -105,7 +105,6 @@ fn fast_in_circle(a: Point2, b: Point2, c: Point2, d: Point2) -> f64 {
 // ---------------------------------------------------------------------------
 
 /// A triangle in the CDT.
-#[derive(Clone)]
 struct CdtTriangle {
     /// Vertex indices in counter-clockwise order.
     v: [usize; 3],
@@ -117,10 +116,6 @@ struct CdtTriangle {
 }
 
 /// Half-edge based Constrained Delaunay Triangulation.
-///
-/// A clone carries the whole state, so inserting into a clone does exactly
-/// what inserting into the original would have done.
-#[derive(Clone)]
 pub struct Cdt {
     vertices: Vec<Point2>,
     triangles: Vec<CdtTriangle>,
@@ -159,7 +154,6 @@ pub struct Cdt {
 /// threshold files every existing vertex in index order, which is the grid
 /// the CDT would have built incrementally. Both offset computations wrap,
 /// so the two agree even at saturated cell indices.
-#[derive(Clone)]
 enum DupIndex {
     /// No grid yet; queries scan the vertices.
     Scan,

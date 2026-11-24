@@ -61,7 +61,6 @@ const INDEX_MIN_VERTICES: usize = 64;
 const INDEX_MIN_TAIL: usize = 64;
 
 /// The collinear-vertex index of one CDT.
-#[derive(Clone)]
 pub(super) enum CollinearIndex {
     /// Not built yet. Counts the vertex tests plain scans have made, so the
     /// index is built only once scanning has cost about as much as sorting.
@@ -77,7 +76,6 @@ pub(super) enum CollinearIndex {
 }
 
 /// Every finite non-super vertex below `end`, sorted along each axis.
-#[derive(Clone)]
 pub(super) struct AxisIndex {
     /// `(x, y, vi)`, ordered by `x` then `vi`.
     by_x: Vec<(f64, f64, usize)>,
