@@ -172,9 +172,6 @@ fn converged_volume(topo: &Topology, solid: SolidId) -> f64 {
 fn assert_volume(topo: &Topology, solid: SolidId, reference: f64, what: &str) -> f64 {
     let converged = converged_volume(topo, solid);
     let measured = solid_volume(topo, solid, 0.002).unwrap();
-    println!(
-        "{what}: converged mesh {converged:.6}, solid_volume {measured:.6}, ref {reference:.6}"
-    );
     assert!(
         (converged - reference).abs() < 5e-3,
         "{what}: converged mesh volume {converged}, reference {reference}"
