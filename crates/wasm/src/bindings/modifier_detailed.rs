@@ -168,9 +168,11 @@ impl RemusKernel {
     /// `face`, `wall`, `cap` and cap `edge` and its `capSetback` and
     /// `wallSetback`. `"chamfer"` carries the band with the face; `"draft"`
     /// re-limits it against the moved face. A band the journal records is
-    /// read by its record whatever `ambiguousRim` says. `details` echoes
+    /// read by its record for all three choices. `details` echoes
     /// the `ambiguousRim` used. An unknown key or value is an
     /// `invalid_argument` refusal.
+    /// For saved moves from before rim-band recognition, `"legacyReplay"`
+    /// uses the original planar move and riding-chamfer rules.
     #[wasm_bindgen(js_name = "moveFacesDetailedWithOptions")]
     #[allow(clippy::needless_pass_by_value)]
     pub fn move_faces_detailed_with_options(
@@ -1229,7 +1231,7 @@ pub fn parse_move_faces_options(
                     .and_then(AmbiguousRimResolution::from_code)
                     .ok_or_else(|| {
                         invalid(format!(
-                            "moveFaces options: ambiguousRim must be \"refuse\", \"chamfer\" or \
+                            "moveFaces options: ambiguousRim must be \"refuse\", \"chamfer\", \"legacyReplay\" or \
                              \"draft\", not {value}"
                         ))
                     })?;
