@@ -66,6 +66,12 @@ thread_local! {
     static SCOPE: RefCell<Option<Scope>> = const { RefCell::new(None) };
 }
 
+/// Whether work done now contributes to a caller's budget or step count.
+#[must_use]
+pub fn is_governed() -> bool {
+    SCOPE.with(|scope| scope.borrow().is_some())
+}
+
 /// What a governed blend did.
 #[derive(Debug)]
 pub struct GovernedRun<T> {

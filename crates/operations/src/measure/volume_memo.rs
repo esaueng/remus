@@ -837,6 +837,15 @@ fn solid_content_key_with_budget(
     canonical: bool,
     budget: Option<usize>,
 ) -> Option<ContentKey> {
+    solid_content_writer(topo, solid, canonical, budget).map(ContentWriter::finish)
+}
+
+fn solid_content_writer(
+    topo: &Topology,
+    solid: SolidId,
+    canonical: bool,
+    budget: Option<usize>,
+) -> Option<ContentWriter> {
     let _key = crate::performance::span("volume.content-key");
     let mut w = ContentWriter::new(canonical);
     w.max_words = budget.map(|bytes| bytes / 8);
@@ -858,7 +867,7 @@ fn solid_content_key_with_budget(
             append_face(&mut w, topo, face_id, &mut edges_seen, &mut vertices_seen)?;
         }
     }
-    (!w.overflowed).then(|| w.finish())
+    (!w.overflowed).then_some(w)
 }
 
 pub(super) fn face_content_key(
@@ -887,9 +896,15 @@ pub(super) fn face_content_key(
 /// coedges — handles, closure, edge use, pcurve and periodic winding — which
 /// a face move copies alongside the wires. `None` when an entity is missing.
 pub fn solid_move_key(topo: &Topology, solid: SolidId) -> Option<ContentKey> {
-    let base = solid_content_key(topo, solid)?;
-    let mut w = ContentWriter::new(false);
-    w.words = base.words.into_vec();
+    solid_move_key_with_budget(topo, solid, None)
+}
+
+pub fn solid_move_key_with_budget(
+    topo: &Topology,
+    solid: SolidId,
+    budget: Option<usize>,
+) -> Option<ContentKey> {
+    let mut w = solid_content_writer(topo, solid, false, budget)?;
     for face_id in remus_topology::explorer::solid_faces(topo, solid).ok()? {
         let face = topo.face(face_id).ok()?;
         w.count(face.boundary_loops().len());
@@ -899,6 +914,9 @@ pub fn solid_move_key(topo: &Topology, solid: SolidId) -> Option<ContentKey> {
             w.flag(boundary.is_closed());
             w.count(boundary.coedges().len());
             for &coedge_id in boundary.coedges() {
+                if w.overflowed {
+                    return None;
+                }
                 let coedge = topo.coedge(coedge_id).ok()?;
                 w.count(coedge_id.index());
                 w.count(coedge.edge().index());
@@ -918,7 +936,7 @@ pub fn solid_move_key(topo: &Topology, solid: SolidId) -> Option<ContentKey> {
             }
         }
     }
-    Some(w.finish())
+    (!w.overflowed).then(|| w.finish())
 }
 
 #[cfg(test)]

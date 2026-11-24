@@ -87,6 +87,10 @@ pub(super) fn volume(
     });
 }
 
+pub fn capturing() -> bool {
+    CAPTURE.with(|slot| slot.borrow().is_some())
+}
+
 pub(super) fn active() -> bool {
     CAPTURE.with(|slot| {
         slot.borrow()
