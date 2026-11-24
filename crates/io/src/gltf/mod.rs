@@ -4,6 +4,7 @@
 //! suitable for web viewers, game engines, and real-time 3D applications.
 
 pub mod reader;
+mod scene;
 pub mod writer;
 
 pub use reader::{read_glb, read_glb_solid, read_glb_with_limits};

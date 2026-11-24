@@ -28,10 +28,8 @@ const MAX_CYLINDER_GRID_POINTS: usize = 1_000_000;
 /// cannot amplify a valid boundary into an unbounded allocation.
 const MAX_CONSTRAINT_INDEX_ENTRIES: usize = 1_000_000;
 
-/// Bound the quadratic work of the rare ear-clipping fallback. CDT remains
-/// the primary path; a boundary that exceeds this budget returns to the
-/// legacy constant-work fallback instead of consuming unbounded CPU time.
-const MAX_EAR_CLIP_POINT_TESTS: usize = 10_000_000;
+/// Maximum point-in-triangle tests in one ear-clipping budget.
+pub const MAX_EAR_CLIP_POINT_TESTS: usize = 10_000_000;
 
 fn cylinder_grid_rows(
     physical_u_step: f64,
@@ -2088,7 +2086,52 @@ fn fan_triangulate(n: usize) -> Vec<u32> {
     indices
 }
 
+/// Triangulate a simple polygon in its own plane, preserving corner indices and
+/// winding. Returns `None` for a degenerate outline or exhausted ear-clipping budget.
+#[must_use]
+pub fn triangulate_polygon(points: &[Point3], remaining_tests: &mut usize) -> Option<Vec<u32>> {
+    use remus_math::vec::Point2;
+    let origin = *points.first()?;
+    if points.len() < 3 || u32::try_from(points.len()).is_err() {
+        return None;
+    }
+    // Work relative to one corner so a common large translation does not
+    // erase the area. Drop the dominant normal axis for a stable chart.
+    let mut area = Vec3::new(0., 0., 0.);
+    for pair in points[1..].windows(2) {
+        area += (pair[0] - origin).cross(pair[1] - origin);
+    }
+    let projected: Vec<_> = points
+        .iter()
+        .map(|&p| {
+            let q = p - origin;
+            if area.x().abs() >= area.y().abs().max(area.z().abs()) {
+                Point2::new(q.y(), q.z())
+            } else if area.y().abs() >= area.z().abs() {
+                Point2::new(q.z(), q.x())
+            } else {
+                Point2::new(q.x(), q.y())
+            }
+        })
+        .collect();
+    // Retain existing triangle order whenever the fan covers the polygon.
+    let fan = fan_triangulate(points.len());
+    if triangulation_covers_polygon(&projected, &fan) {
+        Some(fan)
+    } else {
+        ear_clip_with_budget(&projected, remaining_tests)
+    }
+}
+
 pub(super) fn ear_clip_triangulate(points: &[remus_math::vec::Point2]) -> Option<Vec<u32>> {
+    let mut budget = MAX_EAR_CLIP_POINT_TESTS;
+    ear_clip_with_budget(points, &mut budget)
+}
+
+fn ear_clip_with_budget(
+    points: &[remus_math::vec::Point2],
+    remaining_tests: &mut usize,
+) -> Option<Vec<u32>> {
     use remus_math::predicates::orient2d;
 
     let signed_area_twice = points
@@ -2103,7 +2146,6 @@ pub(super) fn ear_clip_triangulate(points: &[remus_math::vec::Point2]) -> Option
     let ccw = signed_area_twice > 0.0;
     let mut remaining: Vec<usize> = (0..points.len()).collect();
     let mut indices = Vec::with_capacity(points.len().saturating_sub(2) * 3);
-    let mut point_tests = 0_usize;
 
     while remaining.len() > 3 {
         let mut clipped = false;
@@ -2121,10 +2163,7 @@ pub(super) fn ear_clip_triangulate(points: &[remus_math::vec::Point2]) -> Option
                 if candidate == previous || candidate == current || candidate == next {
                     continue;
                 }
-                if point_tests >= MAX_EAR_CLIP_POINT_TESTS {
-                    return None;
-                }
-                point_tests += 1;
+                *remaining_tests = remaining_tests.checked_sub(1)?;
                 let point = points[candidate];
                 // An outline can pass through one vertex twice (a hole's rim
                 // touching the face boundary at a point). The other visit

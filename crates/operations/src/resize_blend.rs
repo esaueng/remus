@@ -2867,7 +2867,8 @@ pub(crate) fn analyze_translation(
         |face| invariant_carriers.contains(&face),
         direction,
     )?;
-    let excluded_candidates = moved_faces.union(&invariant_carriers).copied().collect();
+    let excluded_candidates: HashSet<FaceId> =
+        moved_faces.union(&invariant_carriers).copied().collect();
     let swept = crate::push_pull::SweptRegionCheck::prepare(
         topo,
         solid,
@@ -2880,7 +2881,9 @@ pub(crate) fn analyze_translation(
     // chamfer running into the opening the cap surrounds).
     .with_rigid_companions(
         topo,
+        solid,
         moved_faces.difference(&swept_faces).copied().collect(),
+        &excluded_candidates,
     )?;
     let entities = translated_entities(topo, solid, &adjacency, moved_faces, direction)?;
     let mesh_clearances = match &entities {
@@ -3045,10 +3048,12 @@ fn execute_translation(
     analysis: &TranslationAnalysis,
     distance: f64,
 ) -> Result<BlendMoveEntities, OperationsError> {
-    analysis.swept.check_rigid_translation(topo, distance)?;
+    // The exact axial limits first: where a moving blend reaches a fixed rim
+    // on their shared support, that is the refusal to report.
     for clearance in &analysis.axial_clearance {
         clearance.check(distance)?;
     }
+    analysis.swept.check_rigid_translation(topo, distance)?;
     let entities = analysis
         .entities
         .as_ref()
@@ -5782,22 +5787,27 @@ fn heal_plane_cylinder_band(
     let plane_new_wire = topo.add_wire(Wire::new(vec![plane_oriented], true)?);
     replace_face_wire(topo, plane, plane_wire_id, plane_new_wire)?;
 
-    let mut seam_candidates: Vec<EdgeId> = cylinder_wire
-        .iter()
-        .map(OrientedEdge::edge)
-        .filter(|edge| *edge != *cylinder_contact)
-        .filter(|edge| {
-            matches!(
-                topo.edge(*edge).map(remus_topology::edge::Edge::curve),
-                Ok(EdgeCurve::Line)
-            )
-        })
-        .collect();
+    // Only the straight edge that ends on the band's contact vertex moves: it
+    // is lengthened to the sharp vertex. A wall can carry other straight
+    // rulings in the same wire, where a fused or cut body meets it lower
+    // down, and those stay exactly as they are, so they are not candidates.
+    let mut seam_candidates: Vec<EdgeId> = Vec::new();
+    for edge in cylinder_wire.iter().map(OrientedEdge::edge) {
+        if edge == *cylinder_contact {
+            continue;
+        }
+        let data = topo.edge(edge)?;
+        if matches!(data.curve(), EdgeCurve::Line)
+            && (data.start() == old_contact_vertex || data.end() == old_contact_vertex)
+        {
+            seam_candidates.push(edge);
+        }
+    }
     seam_candidates.compact_sort_unstable_by_key(|edge| edge.index());
     seam_candidates.dedup();
     let [old_seam] = seam_candidates.as_slice() else {
         return Err(reconstruction(format!(
-            "closed cylinder support has {} seam edges; exactly one is required",
+            "closed cylinder support has {} seam edges on the band contact; exactly one is required",
             seam_candidates.len()
         )));
     };

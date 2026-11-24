@@ -362,6 +362,7 @@ Quick reference — find the right file for any task:
 | Phase-FF regressions on a face of many spans (a helical sweep side over three turns): the broad-phase box holds the bulge past its rails, and plane sections seed every span and come back whole (tests) | `pave_filler/phase_ff/multi_span_section_tests.rs` |
 | Independent-oracle tests for builder-solid helpers (conic support, closed-pair traversal, revolved wire winding, cylinder faces with an odd number of rims refused, rims counted by their geometry whatever their parameter's speed, bounded walls of every make passed, unread loops left alone) | `builder/builder_solid/helper_oracle_tests.rs` |
 | Differential oracle for the NURBS arc refinement's knot-span box prefilter: it rejects only vertices the unchanged search rejects (tests) | `builder/builder_solid/arc_refine_oracle_tests.rs` |
+| Certified fitted-copy test for a NURBS edge against a circle or ellipse arc sharing its endpoints (the duplicate-edge merge's conic × NURBS gate): the trimmed NURBS cut into rational Bézier spans and halved until decided, the conic's implicit bounded by Bernstein coefficients, in-plane distance from it (gradient floor for ellipses), out-of-plane offset from the control hull, branch by unwrapped angular wedges; unproven spans keep the edges apart | `builder/builder_solid/conic_fit.rs` |
 | Independent-oracle tests for fill-images section helpers (cap discs, closed-section containment, curved-face segment classifier) | `builder/fill_images_faces/helper_oracle_tests.rs` |
 
 ### L2: blend (`crates/blend/src/`)
@@ -548,6 +549,7 @@ Quick reference — find the right file for any task:
 | Cavity (inner shell) extent checks | `cavity.rs` |
 | Shell-interference certificates (slab collapse, cavity clearance, cavity inside the outer shell) | `interference.rs` |
 | Topology-preserving planar face moves | `move_faces.rs` |
+| Multi-face planar moves (B287): every selected plane offset by its own distance along its own outward normal, edges and vertices rebuilt once from their final supports; inverted or collapsed edges refuse naming the moved face; a coplanar group runs the coplanar move bit for bit | `move_faces/multi.rs` |
 | Quarter-cylinder replacement clearance | `move_faces/quarter_cylinder.rs` |
 | Clearance for coaxially resizing a general partial-turn boss wall | `move_faces/partial_cylinder.rs` |
 
@@ -705,6 +707,8 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Bit-identity oracle for the NURBS edge sizing measures that carry each segment's end over to the next, with pinned evaluation counts (tests) | `tessellate/edge_measure_oracle_tests.rs` |
 | Metric (first-fundamental-form) chart for an open NURBS face whose parameter lines run nearly parallel, e.g. a thread flank: interior grid and CDT in surface lengths; the averaged-metric `v` scale every other NURBS CDT chart triangulates with | `tessellate/nonplanar/sheared_chart.rs` |
 | Collapsed NURBS domain sides (a pole, or a blend rail stopping at a corner of its own radius) read from the control net, and monotone chart placement of the CDT boundary samples on them | `tessellate/nonplanar/collapsed_boundary.rs` |
+| Turned-over triangles of a cone face's CDT (B289: the chart chord's image runs beside its 3D chord): a sign test against the cone's chart normal at each centroid, on the triangle list emission already reads (a clean face allocates nothing more); only when one is turned over, the constrained CDT rebuilt from scratch without the interior vertex each is squashed onto, round by round (at most 16), kept only with strictly fewer turned over and every changed triangle within the deflection by `deviation_bound` (closed-form distance on a 6-division barycentric grid and 8 points per edge, plus a circumferential curvature term), else the plain CDT mesh; boundary and Steiner vertices never dropped | `tessellate/nonplanar/cone_fold_repair.rs` |
+| Cone bands meshed with and without the repair (B289 reviews: rounds 1 to 3, a sweep of widths 1e-1 to 1e-5 over half-angles 0.05 to 1.4 at three deflections, apex at the origin and `1e8` out, both nappes and orientations): the plain mesh bit for bit, or strictly fewer inverted triangles with every changed one within the deflection (dense closed-form distance), one boundary cycle; clean cones pinned to `main`'s mesh fingerprints; the narrow bands the repair cannot fix kept no worse (#1979) (tests) | `tessellate/tests/cone_chord_fold.rs` |
 | One chart boundary for a torus face whose wires touch its outer wire: cycles sharing a vertex with it (seam slits and period-winding band boundaries left by face unification) spliced into one boundary walk | `tessellate/nonplanar/touching_cycles.rs` |
 | Thread flank display-mesh shading and density regressions (tests) | `tessellate/tests/sheared_chart.rs` |
 | In-place helical sweep (coil) display meshes: no side facet folds into the tube, no slivers (tests) | `tessellate/tests/coil_chart.rs` |
@@ -767,7 +771,11 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Shared loft/sweep/pipe/revolve end caps | `cap.rs` |
 | Journal ingestion for modeling operations | `journal_ops.rs` |
 | Direct push/pull face editing | `push_pull.rs` |
+| Multi-face moves (B287): stepped tops, pocket and boss walls moved together along their own normals, swept-region refusals per face, journaled and prepared (weights) variants | `multi_move.rs` |
+| Multi-face move acceptance against chained single moves: stepped tops, pocket walls in and out, boss walls, per-face distances, collapse refusals naming the face, prepared parity and staleness (tests) | `tests/move_faces_multi.rs` |
 | Conservative radial separation proofs for periodic face sweeps | `push_pull/radial_clearance.rs` |
+| Clearance of faces carried rigidly by a swept selection (a cap's chamfer): cone and cylinder companions about the move checked against every face they may reach, by certified boxes or by (radius, height) profiles bisected over the candidate's heights; cones and cylinders across the axis read over their own angles, torus and sphere candidates as their whole carrier within their certified box | `push_pull/companion_sweep.rs` |
+| A cap's 45° chamfer carried into a coaxial collar or a tab below the cap's swept box refuses; clear controls return the oracle fuse (tests, #1949) | `tests/regress_issue_1949_carried_chamfer_clearance.rs` |
 | Coaxial resize of a full-turn cylindrical wall whose rims meet a sphere off-axis (re-intersected rims, sliding rim vertices) | `push_pull/sphere_rim_resize.rs` |
 | Face moves with explicit permission and quality disclosure for sampled cap reconstruction | `face_move_quality.rs` |
 | Prepared face moves: repeated moves of one source selection to new distances, distance-independent analysis read once (`PreparedFaceMove`) | `prepared_move.rs` |
@@ -836,9 +844,10 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | IGES read/write | `iges/reader.rs`, `iges/writer.rs` |
 | STL read/write/import | `stl/reader.rs`, `stl/writer.rs`, `stl/import.rs` |
 | 3MF read/write | `threemf/reader.rs`, `threemf/writer.rs` |
+| Deferred OBJ and PLY polygon triangulation with a shared import work budget | `polygon_faces.rs` |
 | OBJ read/write | `obj/reader.rs`, `obj/writer.rs` |
 | PLY read/write | `ply/reader.rs`, `ply/writer.rs` |
-| glTF read/write | `gltf/reader.rs`, `gltf/writer.rs` |
+| glTF read/write and static mesh placement in the selected scene | `gltf/reader.rs`, `gltf/writer.rs`, `gltf/scene.rs` |
 | Exact arena (sub-topology) serialization | `arena_io.rs` |
 | Hand-written arena document JSON codec (`serde_json`-exact reads and writes) | `arena_io/codec.rs` |
 | Differential oracle: the derived `serde_json` arena codec kept verbatim (tests) | `arena_io/codec_oracle_tests.rs` |
@@ -912,6 +921,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Whole-session snapshots (`snapshot`, `fromSnapshot`, `snapshotDigest`, `snapshotBuildId`): the topology verbatim plus the session handle counters, `snapshot:<code>` refusals | `bindings/snapshot.rs` |
 | Snapshot contracts: handle and counter parity, stale-handle refusals, journaled edits byte-identical after a restore (primitives and the Gentle-Gecko STEP), refusals of transient, poisoned, truncated, corrupt, foreign-format and foreign-build input (tests) | `bindings/snapshot_tests.rs` |
 | Prepared face moves for interactive drags (`prepareMoveFaces`, `moveFacesPrepared`, `moveFacesPreparedJournaled`, `releasePreparedMove`) | `bindings/prepared_move.rs` |
+| Multi-face moves (`moveFacesMulti`, `moveFacesMultiJournaled`, `moveFacesMultiDetailed`, `prepareMoveFacesMulti`), direct and batch, with their contract tests | `bindings/move_faces_multi.rs`, `bindings/move_faces_multi/tests.rs` |
 | Prepared blend-group edits for live drags (`prepareResizeBlend`, `prepareResizeCylindricalFace`, `previewPreparedGroupEdit`, `commitPreparedGroupEdit`, `commitPreparedGroupEditJournaled`, `releasePreparedGroupEdit`) | `bindings/prepared_group_edit.rs` |
 | Prepared Gecko boss and band drags through checkpoint restores against the unprepared and journaled calls, typed refusals and the live-handle cap (tests) | `bindings/prepared_group_edit/tests.rs` |
 | Imported Gecko A2/A6/A7 journaled direct edits, inferred handle continuity and preview cancellation (tests) | `bindings/gecko_edit_tests.rs` |

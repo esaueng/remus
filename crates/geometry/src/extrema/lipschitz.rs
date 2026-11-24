@@ -258,26 +258,21 @@ pub fn nurbs_curve_curve_distance(
     let (u0, u1) = curve1.domain();
     let (v0, v1) = curve2.domain();
 
-    let lip = estimate_curve_curve_lipschitz(curve1, curve2);
-
-    if lip < 1e-15 {
-        // Curves appear coincident or degenerate.
-        let p1 = curve1.evaluate((u0 + u1) * 0.5);
-        let p2 = curve2.evaluate((v0 + v1) * 0.5);
-        return ((p1 - p2).length(), p1, p2);
-    }
-
-    let f = |u: f64, v: f64| -> f64 {
-        let p1 = curve1.evaluate(u);
-        let p2 = curve2.evaluate(v);
-        (p1 - p2).length_squared()
+    // Work and termination thresholds are expressed in unit-square
+    // coordinates, independent of the scale of either knot vector.
+    let points = |u: f64, v: f64| {
+        (
+            curve1.evaluate((u1 - u0).mul_add(u, u0)),
+            curve2.evaluate((v1 - v0).mul_add(v, v0)),
+        )
     };
-
-    let opt = LipschitzOptimizer::new();
-    let (best_u, best_v, _) = opt.minimize_2d(f, (u0, u1), (v0, v1), 1e-4);
-
-    let p1 = curve1.evaluate(best_u);
-    let p2 = curve2.evaluate(best_v);
+    let squared_distance = |u, v| {
+        let (p, q) = points(u, v);
+        (p - q).length_squared()
+    };
+    let (u, v, _) =
+        LipschitzOptimizer::new().minimize_2d(squared_distance, (0.0, 1.0), (0.0, 1.0), 1e-4);
+    let (p1, p2) = points(u, v);
     ((p1 - p2).length(), p1, p2)
 }
 
@@ -618,11 +613,21 @@ mod tests {
     }
 
     #[test]
+    fn crossing_witnesses_are_invariant_under_knot_rescaling() {
+        let foot = Point3::new(1., 0., 0.);
+        for (u, v) in [(1., 1.), (1e18, 1.), (1., 1e18), (1e18, 1e18)] {
+            let segment = |a, b, end| {
+                NurbsCurve::new(1, vec![0., 0., end, end], vec![a, b], vec![1., 1.]).unwrap()
+            };
+            let a = segment(Point3::new(0., 0., 0.), Point3::new(4., 0., 0.), u);
+            let b = segment(Point3::new(1., -1., 0.), Point3::new(1., 1., 0.), v);
+            let (d, p, q) = nurbs_curve_curve_distance(&a, &b);
+            assert!(d < 1e-12 && (p - foot).length() < 1e-12 && (q - foot).length() < 1e-12);
+        }
+    }
+
+    #[test]
     fn nurbs_distance_between_coincident_curves_is_zero() {
-        // Identical curves sample to identical points, so the estimated
-        // Lipschitz bound is exactly zero and the degenerate branch is taken.
-        // Whatever parameter that branch picks, it must pick the *same* one on
-        // both curves, or the reported distance is not zero.
         let c1 = line_segment_c1();
         let c2 = line_segment_c1();
         assert!(estimate_curve_curve_lipschitz(&c1, &c2) < 1e-15);

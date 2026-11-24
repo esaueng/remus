@@ -19,11 +19,22 @@ use crate::handles::{
 };
 use remus_geometry::convert::{DetectedCurveKind, detect_curve_kind, detect_surface_kind};
 
-use crate::helpers::{frenet_from_derivatives, sample_full_period_curve, sample_open_span};
+use crate::helpers::frenet_from_derivatives;
 use crate::kernel::RemusKernel;
 use crate::types::{
     EdgeConvexityRelation, EdgeConvexityResult, EdgeRelationRow, FaceMaterialSense,
 };
+
+// Keep the established (unnormalized) planar UV axes invertible in both queries.
+fn plane_chart(normal: Vec3, d: f64) -> (Point3, Vec3, Vec3) {
+    let up = if normal.x().abs() < 0.9 {
+        Vec3::new(1., 0., 0.)
+    } else {
+        Vec3::new(0., 1., 0.)
+    };
+    let x = normal.cross(up);
+    (Point3::new(0., 0., 0.) + normal * d, x, normal.cross(x))
+}
 
 #[wasm_bindgen]
 impl RemusKernel {
@@ -684,9 +695,6 @@ impl RemusKernel {
     ///
     /// Returns flattened `[x, y, z, ...]` samples walking exactly the edge's
     /// own parameter span — the same sampler the solid wireframe uses.
-    /// Unlike [`tessellateEdge`](Self::tessellate_edge), a circle, ellipse,
-    /// or closed-NURBS edge yields its actual arc (vertex-anchored), never a
-    /// full-period trace of the parent curve.
     ///
     /// # Errors
     ///
@@ -1030,20 +1038,8 @@ impl RemusKernel {
         let face_data = self.topo.face(face_id)?;
         let point = match face_data.surface() {
             FaceSurface::Plane { normal, d } => {
-                // Build a point on the plane: p = d * normal + u * x_axis + v * y_axis
-                // Choose arbitrary axes perpendicular to normal
-                let up = if normal.x().abs() < 0.9 {
-                    Vec3::new(1.0, 0.0, 0.0)
-                } else {
-                    Vec3::new(0.0, 1.0, 0.0)
-                };
-                let x_axis = normal.cross(up);
-                let y_axis = normal.cross(x_axis);
-                Point3::new(
-                    normal.x() * d + x_axis.x() * u + y_axis.x() * v,
-                    normal.y() * d + x_axis.y() * u + y_axis.y() * v,
-                    normal.z() * d + x_axis.z() * u + y_axis.z() * v,
-                )
+                let (origin, x, y) = plane_chart(*normal, *d);
+                origin + x * u + y * v
             }
             FaceSurface::Nurbs(surface) => surface.evaluate(u, v),
             FaceSurface::Cylinder(cyl) => cyl.evaluate(u, v),
@@ -1069,174 +1065,28 @@ impl RemusKernel {
         validate_finite(u, "u")?;
         validate_finite(v, "v")?;
         let face_id = self.resolve_face(face)?;
-        let face_data = self.topo.face(face_id)?;
-        match face_data.surface() {
-            FaceSurface::Plane { .. } => Ok(vec![0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]),
-            FaceSurface::Nurbs(surface) => {
-                let derivs = surface.derivatives(u, v, 2);
-                // derivs[i][j] = d^(i+j) S / du^i dv^j
-                let su = if derivs.len() > 1 && !derivs[1].is_empty() {
-                    derivs[1][0]
-                } else {
-                    return Ok(vec![0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]);
-                };
-                let sv = if !derivs.is_empty() && derivs[0].len() > 1 {
-                    derivs[0][1]
-                } else {
-                    return Ok(vec![0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]);
-                };
-                let suu = if derivs.len() > 2 && !derivs[2].is_empty() {
-                    derivs[2][0]
-                } else {
-                    Vec3::new(0.0, 0.0, 0.0)
-                };
-                let suv = if derivs.len() > 1 && derivs[1].len() > 1 {
-                    derivs[1][1]
-                } else {
-                    Vec3::new(0.0, 0.0, 0.0)
-                };
-                let svv = if !derivs.is_empty() && derivs[0].len() > 2 {
-                    derivs[0][2]
-                } else {
-                    Vec3::new(0.0, 0.0, 0.0)
-                };
-
-                let normal = su.cross(sv);
-                let normal = match normal.normalize() {
-                    Ok(n) => n,
-                    Err(_) => return Ok(vec![0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]),
-                };
-
-                // First fundamental form coefficients
-                let ee = su.dot(su);
-                let ff = su.dot(sv);
-                let gg = sv.dot(sv);
-
-                // Second fundamental form coefficients
-                let ll = suu.dot(normal);
-                let mm = suv.dot(normal);
-                let nn = svv.dot(normal);
-
-                // Principal curvatures from shape operator eigenvalues
-                let denom = ee * gg - ff * ff;
-                if denom.abs() < 1e-30 {
-                    return Ok(vec![0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0]);
-                }
-                let h = 0.5 * (ee * nn - 2.0 * ff * mm + gg * ll) / denom; // mean curvature
-                let k = (ll * nn - mm * mm) / denom; // Gaussian curvature
-                let disc = (h * h - k).max(0.0).sqrt();
-                let k1 = h + disc;
-                let k2 = h - disc;
-
-                // Principal directions (approximate)
-                let su_norm = su.normalize().unwrap_or(Vec3::new(1.0, 0.0, 0.0));
-                let sv_norm = sv.normalize().unwrap_or(Vec3::new(0.0, 1.0, 0.0));
-
-                Ok(vec![
-                    k1,
-                    k2,
-                    su_norm.x(),
-                    su_norm.y(),
-                    su_norm.z(),
-                    sv_norm.x(),
-                    sv_norm.y(),
-                    sv_norm.z(),
-                ])
-            }
-            FaceSurface::Cylinder(cyl) => {
-                let r = cyl.radius();
-                let axis = cyl.axis().normalize().unwrap_or(Vec3::new(0.0, 0.0, 1.0));
-                let point = cyl.evaluate(u, v);
-                let to_axis = Vec3::new(
-                    cyl.origin().x() - point.x()
-                        + axis.x()
-                            * axis.dot(Vec3::new(
-                                point.x() - cyl.origin().x(),
-                                point.y() - cyl.origin().y(),
-                                point.z() - cyl.origin().z(),
-                            )),
-                    cyl.origin().y() - point.y()
-                        + axis.y()
-                            * axis.dot(Vec3::new(
-                                point.x() - cyl.origin().x(),
-                                point.y() - cyl.origin().y(),
-                                point.z() - cyl.origin().z(),
-                            )),
-                    cyl.origin().z() - point.z()
-                        + axis.z()
-                            * axis.dot(Vec3::new(
-                                point.x() - cyl.origin().x(),
-                                point.y() - cyl.origin().y(),
-                                point.z() - cyl.origin().z(),
-                            )),
-                );
-                let radial = to_axis.normalize().unwrap_or(Vec3::new(1.0, 0.0, 0.0));
-                Ok(vec![
-                    1.0 / r,
-                    0.0,
-                    radial.x(),
-                    radial.y(),
-                    radial.z(),
-                    axis.x(),
-                    axis.y(),
-                    axis.z(),
-                ])
-            }
-            FaceSurface::Sphere(sph) => {
-                let r = sph.radius();
-                let point = sph.evaluate(u, v);
-                let radial = Vec3::new(
-                    point.x() - sph.center().x(),
-                    point.y() - sph.center().y(),
-                    point.z() - sph.center().z(),
-                )
-                .normalize()
-                .unwrap_or(Vec3::new(0.0, 0.0, 1.0));
-                // Both principal curvatures are 1/r for a sphere
-                let d1 = Vec3::new(-radial.y(), radial.x(), 0.0)
-                    .normalize()
-                    .unwrap_or(Vec3::new(1.0, 0.0, 0.0));
-                let d2 = radial.cross(d1);
-                Ok(vec![
-                    1.0 / r,
-                    1.0 / r,
-                    d1.x(),
-                    d1.y(),
-                    d1.z(),
-                    d2.x(),
-                    d2.y(),
-                    d2.z(),
-                ])
-            }
-            FaceSurface::Cone(cone) => {
-                let half_angle = cone.half_angle();
-                let v_pos = v.abs().max(1e-10);
-                let local_r = v_pos * half_angle.sin();
-                let k_parallel = if local_r > 1e-15 {
-                    half_angle.cos() / local_r
-                } else {
-                    0.0
-                };
-                let axis = cone.axis().normalize().unwrap_or(Vec3::new(0.0, 0.0, 1.0));
-                Ok(vec![
-                    0.0,
-                    k_parallel,
-                    axis.x(),
-                    axis.y(),
-                    axis.z(),
-                    1.0,
-                    0.0,
-                    0.0,
-                ])
-            }
-            FaceSurface::Torus(torus) => {
-                let r_major = torus.major_radius();
-                let r_minor = torus.minor_radius();
-                let k1 = 1.0 / r_minor;
-                let k2 = u.cos() / (r_major + r_minor * u.cos());
-                Ok(vec![k1, k2, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0])
-            }
-        }
+        let report = remus_check::analyze::curvature::surface_curvature(&self.topo, face_id, u, v)?;
+        let (a, b) = if let Some(directions) = report.directions {
+            directions
+        } else {
+            let n = self.evaluate_surface_normal(face, u, v)?;
+            let frame = remus_math::frame::Frame3::from_normal(
+                Point3::new(0., 0., 0.),
+                Vec3::new(n[0], n[1], n[2]),
+            )
+            .map_err(|e| JsError::new(&e.to_string()))?;
+            (frame.x, frame.y)
+        };
+        Ok(vec![
+            report.k1,
+            report.k2,
+            a.x(),
+            a.y(),
+            a.z(),
+            b.x(),
+            b.y(),
+            b.z(),
+        ])
     }
 
     /// Tessellate an edge curve into polyline segments.
@@ -1249,65 +1099,9 @@ impl RemusKernel {
     pub fn tessellate_edge(&self, edge: u32, num_points: u32) -> Result<Vec<f64>, JsError> {
         let num_points = validate_work_count(num_points, "num_points")?;
         let edge_id = self.resolve_edge(edge)?;
-        let edge_data = self.topo.edge(edge_id)?;
-
-        match edge_data.curve() {
-            EdgeCurve::Line => {
-                let start = self.topo.vertex(edge_data.start())?.point();
-                let end = self.topo.vertex(edge_data.end())?.point();
-                Ok(vec![
-                    start.x(),
-                    start.y(),
-                    start.z(),
-                    end.x(),
-                    end.y(),
-                    end.z(),
-                ])
-            }
-            EdgeCurve::NurbsCurve(curve) => {
-                let (u0, u1) = curve.domain();
-                let n = std::cmp::max(2, num_points);
-                let mut result = Vec::with_capacity(n * 3);
-                for i in 0..n {
-                    #[allow(clippy::cast_precision_loss)]
-                    let t = u0 + (u1 - u0) * (i as f64) / ((n - 1) as f64);
-                    let p = curve.evaluate(t);
-                    result.push(p.x());
-                    result.push(p.y());
-                    result.push(p.z());
-                }
-                Ok(result)
-            }
-            EdgeCurve::Circle(circle) => {
-                let n = std::cmp::max(2, num_points);
-                Ok(sample_full_period_curve(n, |t| circle.evaluate(t)))
-            }
-            EdgeCurve::Ellipse(ellipse) => {
-                let n = std::cmp::max(2, num_points);
-                Ok(sample_full_period_curve(n, |t| ellipse.evaluate(t)))
-            }
-            // Not periodic: sample the arc bounded by the edge's own
-            // vertices rather than a full period that does not exist.
-            EdgeCurve::Hyperbola(h) => {
-                let start = self.topo.vertex(edge_data.start())?.point();
-                let end = self.topo.vertex(edge_data.end())?.point();
-                let n = std::cmp::max(2, num_points);
-                Ok(sample_open_span(n, h.project(start), h.project(end), |t| {
-                    h.evaluate(t)
-                }))
-            }
-            EdgeCurve::Parabola(pb) => {
-                let start = self.topo.vertex(edge_data.start())?.point();
-                let end = self.topo.vertex(edge_data.end())?.point();
-                let n = std::cmp::max(2, num_points);
-                Ok(sample_open_span(
-                    n,
-                    pb.project(start),
-                    pb.project(end),
-                    |t| pb.evaluate(t),
-                ))
-            }
-        }
+        let points =
+            remus_operations::tessellate::sample_edge_fixed(&self.topo, edge_id, num_points)?;
+        Ok(points.iter().flat_map(|p| [p.x(), p.y(), p.z()]).collect())
     }
 
     /// Check if an edge is forward-oriented in a given wire.
@@ -1365,7 +1159,13 @@ impl RemusKernel {
                     cone.apex(),
                     cone.axis(),
                 )?;
-                Ok(vec![0.0, 2.0 * PI, v_range.0, v_range.1])
+                let axial_per_slant = cone.half_angle().sin();
+                Ok(vec![
+                    0.0,
+                    2.0 * PI,
+                    v_range.0 / axial_per_slant,
+                    v_range.1 / axial_per_slant,
+                ])
             }
             FaceSurface::Sphere(_) => Ok(vec![0.0, 2.0 * PI, -PI / 2.0, PI / 2.0]),
             FaceSurface::Torus(_) => Ok(vec![0.0, 2.0 * PI, 0.0, 2.0 * PI]),
@@ -1402,8 +1202,16 @@ impl RemusKernel {
                     pz - dist_to_plane * normal.z(),
                 );
                 let dist = (proj - target).length();
-                // UV coordinates: project onto plane's local frame
-                Ok(vec![proj.x(), proj.y(), proj.x(), proj.y(), proj.z(), dist])
+                let (origin, x, y) = plane_chart(*normal, *d);
+                let delta = proj - origin;
+                Ok(vec![
+                    delta.dot(x) / x.length_squared(),
+                    delta.dot(y) / y.length_squared(),
+                    proj.x(),
+                    proj.y(),
+                    proj.z(),
+                    dist,
+                ])
             }
             FaceSurface::Nurbs(surface) => {
                 // Newton iteration for closest point on NURBS surface
@@ -1465,8 +1273,18 @@ impl RemusKernel {
                 let dist = (proj - target).length();
                 Ok(vec![best_u, best_v, proj.x(), proj.y(), proj.z(), dist])
             }
+            FaceSurface::Cone(cone) => {
+                let p = remus_geometry::extrema::point_to_cone(target, cone);
+                Ok(vec![
+                    p.u,
+                    p.v,
+                    p.point.x(),
+                    p.point.y(),
+                    p.point.z(),
+                    p.distance,
+                ])
+            }
             surface @ (FaceSurface::Cylinder(_)
-            | FaceSurface::Cone(_)
             | FaceSurface::Sphere(_)
             | FaceSurface::Torus(_)) => {
                 // Closed-form foot of the perpendicular. A grid search over a

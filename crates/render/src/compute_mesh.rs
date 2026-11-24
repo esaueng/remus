@@ -350,12 +350,10 @@ fn axial_range(
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 struct GpuDescriptor {
-    center: [f32; 3],
+    relative_origin: [f32; 3],
     radius: f32,
-    axis_origin: [f32; 3],
-    v0: f32,
     axis: [f32; 3],
-    v1: f32,
+    height: f32,
     x_ref: [f32; 3],
     u0: f32,
     y_ref: [f32; 3],
@@ -448,15 +446,21 @@ pub fn render_cylinder_compute_offscreen(
         ));
     }
 
+    // Rebase the carrier at the lower rim as well as the model center. Two
+    // nearby trim heights can coincide in f32 far along their carrier axis.
+    let origin = desc.axis_origin - desc.center;
+    let relative_lower_ring = Vec3::new(
+        desc.axis.x().mul_add(desc.v0, origin.x()),
+        desc.axis.y().mul_add(desc.v0, origin.y()),
+        desc.axis.z().mul_add(desc.v0, origin.z()),
+    );
     // --- Descriptor uniform -----------------------------------------------
     #[allow(clippy::cast_possible_truncation)]
     let gpu_desc = GpuDescriptor {
-        center: pt_f32(desc.center),
+        relative_origin: vec_f32(relative_lower_ring),
         radius: desc.radius as f32,
-        axis_origin: pt_f32(desc.axis_origin),
-        v0: desc.v0 as f32,
         axis: vec_f32(desc.axis),
-        v1: desc.v1 as f32,
+        height: (desc.v1 - desc.v0) as f32,
         x_ref: vec_f32(desc.x_ref),
         u0: desc.u0 as f32,
         y_ref: vec_f32(desc.y_ref),
@@ -919,11 +923,6 @@ impl RenderTargets {
 #[allow(clippy::cast_possible_truncation)]
 fn vec_f32(v: Vec3) -> [f32; 3] {
     [v.x() as f32, v.y() as f32, v.z() as f32]
-}
-
-#[allow(clippy::cast_possible_truncation)]
-fn pt_f32(p: Point3) -> [f32; 3] {
-    [p.x() as f32, p.y() as f32, p.z() as f32]
 }
 
 #[cfg(test)]

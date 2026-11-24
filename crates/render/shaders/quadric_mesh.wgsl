@@ -9,21 +9,16 @@
 // Currently meshes a cylinder. The vertex storage buffer is a flat `array<u32>`
 // so the byte layout exactly matches the CPU `Vertex` struct consumed by the
 // draw pass: 7 words per vertex = [px, py, pz, nx, ny, nz, face_id], a 28-byte
-// stride. Positions are written relative to `desc.center` (RTC) so the f64
+// stride. Positions are written relative to the model center (RTC) so the f64
 // model center can be folded into the camera matrix on the CPU, matching the
 // precision scheme of the solid path.
 
 struct Descriptor {
-    // RTC origin: positions are emitted relative to this point.
-    center: vec3<f32>,
+    // Center-relative lower rim origin, computed in f64 before upload.
+    relative_origin: vec3<f32>,
     radius: f32,
-    // A point on the cylinder axis at v = 0 (the axis need not pass through the
-    // world origin).
-    axis_origin: vec3<f32>,
-    v0: f32,
-    // Cylinder axis (unit, points along increasing v).
     axis: vec3<f32>,
-    v1: f32,
+    height: f32,
     // Orthonormal radial reference frame; x_ref is u = 0.
     x_ref: vec3<f32>,
     u0: f32,
@@ -98,12 +93,10 @@ fn cs_vertices(@builtin(global_invocation_id) gid: vec3<u32>) {
     let fu = f32(i) / f32(max(desc.n_u, 1u));
     let u = desc.u0 + span * fu;
     let fv = f32(j) / f32(max(desc.n_v, 1u));
-    let v = desc.v0 + (desc.v1 - desc.v0) * fv;
+    let v = desc.height * fv;
 
     let radial = cos(u) * desc.x_ref + sin(u) * desc.y_ref;
-    let world = desc.axis_origin + radial * desc.radius + desc.axis * v;
-    // RTC: subtract the model center so GPU coordinates stay small.
-    let pos = world - desc.center;
+    let pos = desc.relative_origin + radial * desc.radius + desc.axis * v;
     // Outward radial normal (direction only, unaffected by the center shift).
     let normal = normalize(radial);
 

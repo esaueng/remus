@@ -11,6 +11,8 @@
 //!   misses; management cost must not be claimed as a win).
 //! - thrashing: 32 solids round-robin with capacity 16 (FIFO evicts; still
 //!   correct, hit rate near zero).
+//! - spur gear: repeated single-point queries around the roots of 60 teeth
+//!   with NURBS flanks, plus probes inside and outside the body.
 //!
 //! Reports hit rate, rebuilds, retained bytes, and preparation counters
 //! (`perf-counters` feature) alongside wall-clock. Run:
@@ -117,6 +119,58 @@ fn bench_repeated(c: &mut Criterion) {
         });
     });
 
+    group.finish();
+}
+
+fn bench_gear_ring(c: &mut Criterion) {
+    use std::f64::consts::TAU;
+
+    use remus_check::classify::PointClassification;
+    use remus_operations::gear::{GearKind, GearParams, GearPlacement, make_gear};
+
+    let mut topo = Topology::new();
+    let params = GearParams::standard(GearKind::External, 1.5, 60, 20.0);
+    let solid = make_gear(&mut topo, &params, &GearPlacement::default())
+        .unwrap()
+        .solid;
+    let options = ClassifyOptions {
+        tolerance: 1e-6,
+        ..ClassifyOptions::default()
+    };
+    let mut points = Vec::new();
+    for tooth in 0..params.teeth {
+        // The OpenZCAD replay probes either side of each tooth space at
+        // radius 43.695 mm, halfway up and just outside the caps.
+        for phase in [0.4671, 0.5329] {
+            let angle = TAU * (f64::from(tooth) + phase) / f64::from(params.teeth);
+            let (sin, cos) = angle.sin_cos();
+            for z in [10.0, -0.2, 20.2] {
+                points.push(Point3::new(43.695 * cos, 43.695 * sin, z));
+            }
+        }
+        // At mid-height these rings lie inside every root and beyond every tip.
+        let (sin, cos) = (TAU * f64::from(tooth) / f64::from(params.teeth)).sin_cos();
+        for radius in [42.0, 48.0] {
+            points.push(Point3::new(radius * cos, radius * sin, 10.0));
+        }
+    }
+
+    let mut group = c.benchmark_group("cache/gear-60t-ring");
+    group
+        .sample_size(10)
+        .warm_up_time(Duration::from_millis(500))
+        .measurement_time(Duration::from_secs(2));
+    group.bench_function("persistent-single-point", |b| {
+        b.iter(|| {
+            let mut cache = ClassificationCache::new();
+            let mut inside = 0usize;
+            for &point in &points {
+                let verdict = cache.classify_point(&topo, solid, point, &options).unwrap();
+                inside += usize::from(verdict == PointClassification::Inside);
+            }
+            black_box((inside, cache.stats()))
+        });
+    });
     group.finish();
 }
 
@@ -265,6 +319,7 @@ fn _assert_solid(_: &mut Criterion, _: &Topology, _: SolidId) {}
 criterion_group!(
     benches,
     bench_repeated,
+    bench_gear_ring,
     bench_occasional_edits,
     bench_constant_edits,
     bench_thrashing

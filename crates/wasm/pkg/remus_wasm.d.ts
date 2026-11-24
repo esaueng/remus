@@ -3889,6 +3889,44 @@ export class RemusKernel {
      */
     moveFacesJournaledWithQuality(solid: number, faces: Uint32Array, distance: number, corner_stations?: number | null): string;
     /**
+     * Move several planar faces together, each along its own outward
+     * normal, and return the new solid handle.
+     *
+     * `distances` holds one signed distance for every face, or one per
+     * face. Faces may lie on different parallel planes, have different or
+     * opposite normals, and share edges; every edge and vertex is rebuilt
+     * once from its final supports, keeping the source topology.
+     *
+     * # Errors
+     *
+     * Returns an error for an invalid handle, an empty selection or one of
+     * more than 64 faces, a distance list of the wrong length, a zero or
+     * non-finite distance, or a move that collapses, inverts or splits a
+     * face (the error names the face). A refusal leaves the topology
+     * unchanged.
+     */
+    moveFacesMulti(solid: number, faces: Uint32Array, distances: Float64Array): number;
+    /**
+     * Move several planar faces together, each along its own outward
+     * normal, and return an exact result or a typed refusal.
+     *
+     * Additive twin of [`moveFacesMulti`](Self::move_faces_multi_binding).
+     * `details` carries `quality: "exact"`, the `distances` and the total
+     * `faceEvolution`. A refusal (`topology_change` naming the face that
+     * collapses or folds) returns no solid and leaves the topology as it
+     * was.
+     */
+    moveFacesMultiDetailed(solid: number, faces: Uint32Array, distances: Float64Array): SolidOperationDetailedResult;
+    /**
+     * `moveFacesMulti` journaled as one `move_faces` entry with exact face,
+     * edge and vertex history. Returns JSON `{"solid", "op"}`.
+     *
+     * # Errors
+     *
+     * As `moveFacesMulti`; a refusal restores topology and history.
+     */
+    moveFacesMultiJournaled(solid: number, faces: Uint32Array, distances: Float64Array): string;
+    /**
      * `moveFaces` of a prepared selection: moves it `distance` from the
      * prepared source and returns the new solid handle.
      *
@@ -4180,6 +4218,23 @@ export class RemusKernel {
      * `moveFaces` work limits, or when 16 prepared moves are already live.
      */
     prepareMoveFaces(solid: number, faces: Uint32Array): number;
+    /**
+     * Prepare repeated multi-face moves for an interactive drag.
+     *
+     * `moveFacesPrepared(handle, distance)` and
+     * `moveFacesPreparedJournaled(handle, distance)` then return what
+     * `moveFacesMulti` and `moveFacesMultiJournaled` return with face `i`
+     * moved `weights[i] × distance` (omit `weights` for all ones), and
+     * refuse once the source changed since preparation. Release with
+     * `releasePreparedMove`. Preparing edits nothing.
+     *
+     * # Errors
+     *
+     * Returns an error for an invalid handle, weights that are not finite
+     * or not one per face, a selection over the work limits, or when 16
+     * prepared moves are already live.
+     */
+    prepareMoveFacesMulti(solid: number, faces: Uint32Array, weights?: Float64Array | null): number;
     /**
      * Prepare live radius edits of the blend band containing `face`
      * (`resizeBlend` through its blend group) for an interactive drag.
@@ -4579,9 +4634,6 @@ export class RemusKernel {
      *
      * Returns flattened `[x, y, z, ...]` samples walking exactly the edge's
      * own parameter span — the same sampler the solid wireframe uses.
-     * Unlike [`tessellateEdge`](Self::tessellate_edge), a circle, ellipse,
-     * or closed-NURBS edge yields its actual arc (vertex-anchored), never a
-     * full-period trace of the parent curve.
      *
      * # Errors
      *

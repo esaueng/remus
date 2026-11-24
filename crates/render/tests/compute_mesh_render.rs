@@ -521,3 +521,48 @@ fn compute_mesh_matches_cpu_for_off_origin_cylinder() {
         gpu_bbox.2
     );
 }
+
+#[test]
+fn cylinder_id_buffer_survives_a_far_common_translation() {
+    if probe_adapter().is_none() {
+        println!("SKIP: no wgpu adapter");
+        return;
+    }
+    let render = |shift, axial| {
+        let center = Point3::new(shift, shift, axial + 1.);
+        let desc = CylinderDescriptor {
+            center,
+            axis_origin: Point3::new(shift, shift, 0.),
+            axis: Vec3::new(0., 0., 1.),
+            x_ref: Vec3::new(1., 0., 0.),
+            y_ref: Vec3::new(0., 1., 0.),
+            radius: 1.,
+            v0: axial,
+            v1: axial + 2.,
+            u0: 0.,
+            u1: std::f64::consts::TAU,
+        };
+        let cam = Camera {
+            eye: center + Vec3::new(0., -8., 0.),
+            target: center,
+            up: Vec3::new(0., 0., 1.),
+            fov_y: 0.6,
+            aspect: 1.,
+            near: 1.,
+            far: 20.,
+        };
+        render_cylinder_compute_offscreen(
+            &desc,
+            TessFactor::new(64, 2),
+            1,
+            &cam,
+            &RenderOpts::new(128, 128),
+        )
+        .unwrap()
+        .id_buffer
+    };
+    let origin = render(0., 0.);
+    assert!(origin.iter().filter(|&&id| id != 0).count() > 2000);
+    assert_eq!(origin, render(1e8, 0.));
+    assert_eq!(origin, render(1e8, 1e8));
+}

@@ -1046,3 +1046,115 @@ fn batch_planar_pair_query_rejects_many_holes_atomically() {
         faces
     );
 }
+
+fn face_of_type(k: &RemusKernel, solid: u32, kind: &str) -> u32 {
+    k.get_solid_faces(solid)
+        .unwrap()
+        .into_iter()
+        .find(|&f| k.get_surface_type(f).unwrap() == kind)
+        .unwrap()
+}
+
+#[test]
+fn legacy_curvature_matches_inner_torus_and_cylinder_tangents() {
+    let (mut k, cylinder) = kernel_with_cylinder();
+    let torus = k.make_torus_solid(3., 1., 16).unwrap();
+    let f = face_of_type(&k, torus, "torus");
+    let c = k
+        .measure_curvature_at_surface(f, 0., std::f64::consts::PI)
+        .unwrap();
+    assert!((c[0] - 1.).abs() < 1e-12 && (c[1] + 0.5).abs() < 1e-12);
+    let f = face_of_type(&k, cylinder, "cylinder");
+    let c = k.measure_curvature_at_surface(f, 0.4, 0.5).unwrap();
+    let n = k.evaluate_surface_normal(f, 0.4, 0.5).unwrap();
+    assert_eq!(c.len(), 8);
+    for d in c[2..].chunks_exact(3) {
+        assert!((d.iter().map(|x| x * x).sum::<f64>() - 1.).abs() < 1e-12);
+        assert!(d.iter().zip(&n).map(|(x, y)| x * y).sum::<f64>().abs() < 1e-12);
+    }
+}
+
+#[test]
+fn projected_uv_round_trips_on_axis_aligned_and_oblique_planes() {
+    let (mut k, solid) = kernel_with_box();
+    for rotated in [false, true] {
+        if rotated {
+            let m =
+                remus_math::mat::Mat4::rotation_x(0.37) * remus_math::mat::Mat4::rotation_y(0.61);
+            k.transform_solid_binding(solid, m.0.into_iter().flatten().collect())
+                .unwrap();
+        }
+        for face in k.get_solid_faces(solid).unwrap() {
+            let p = k.project_point_on_surface(face, 8., 1., 2.).unwrap();
+            let q = k.evaluate_surface(face, p[0], p[1]).unwrap();
+            for (a, b) in q.iter().zip(&p[2..5]) {
+                assert!((a - b).abs() < 1e-11);
+            }
+        }
+    }
+}
+
+#[test]
+fn projected_cone_normal_displacement_returns_its_foot() {
+    let mut k = RemusKernel::new();
+    let solid = k.make_cone_solid(8., 2., 12.).unwrap();
+    let f = face_of_type(&k, solid, "cone");
+    let p = k.evaluate_surface(f, 0.7, 15.).unwrap();
+    let n = k.evaluate_surface_normal(f, 0.7, 15.).unwrap();
+    let foot = k
+        .project_point_on_surface(f, p[0] + n[0], p[1] + n[1], p[2] + n[2])
+        .unwrap();
+    assert!((foot[1] - 15.).abs() < 1e-12 && (foot[5] - 1.).abs() < 1e-12);
+    for (a, b) in p.iter().zip(&foot[2..5]) {
+        assert!((a - b).abs() < 1e-12);
+    }
+    let apex = k.project_point_on_surface(f, 0., 0., 20.).unwrap();
+    assert!(apex[1].abs() < 1e-12 && (apex[4] - 16.).abs() < 1e-12);
+}
+
+#[test]
+fn cone_domain_ends_reach_both_frustum_rims() {
+    let mut k = RemusKernel::new();
+    let solid = k.make_cone_solid(8., 2., 12.).unwrap();
+    let f = face_of_type(&k, solid, "cone");
+    let domain = k.get_surface_domain(f).unwrap();
+    for (&v, (radius, z)) in domain[2..].iter().zip([(2., 12.), (8., 0.)]) {
+        let p = k.evaluate_surface(f, 0., v).unwrap();
+        assert!((p[0].hypot(p[1]) - radius).abs() < 1e-12 && (p[2] - z).abs() < 1e-12);
+    }
+}
+
+#[test]
+fn fixed_count_samples_only_its_circle_and_nurbs_trim() {
+    use remus_topology::{
+        edge::{Edge, EdgeCurve},
+        vertex::Vertex,
+    };
+    let mut k = RemusKernel::new();
+    let arc = k
+        .make_circle_arc_3d(1., 0., 0., 0., 1., 0., 0., 0., 0., 0., 0., 1.)
+        .unwrap();
+    let samples = k.tessellate_edge(arc, 5).unwrap();
+    assert_eq!(samples.len(), 15);
+    for (i, p) in samples.chunks_exact(3).enumerate() {
+        let t = f64::from(u32::try_from(i).unwrap()) * std::f64::consts::PI / 8.;
+        assert!((p[0] - t.cos()).abs() < 1e-12 && (p[1] - t.sin()).abs() < 1e-12);
+    }
+    let curve = remus_math::nurbs::NurbsCurve::new(
+        1,
+        vec![0., 0., 1., 1.],
+        vec![Point3::new(0., 0., 0.), Point3::new(4., 0., 0.)],
+        vec![1., 1.],
+    )
+    .unwrap();
+    let t = k.topo_mut();
+    let a = t.add_vertex(Vertex::new(curve.evaluate(0.25), 1e-7));
+    let b = t.add_vertex(Vertex::new(curve.evaluate(0.75), 1e-7));
+    let mut edge = Edge::new(a, b, EdgeCurve::NurbsCurve(curve));
+    edge.set_trim(Some((0.25, 0.75)));
+    let e = u32::try_from(t.add_edge(edge).index()).unwrap();
+    assert_eq!(
+        k.tessellate_edge(e, 3).unwrap(),
+        vec![1., 0., 0., 2., 0., 0., 3., 0., 0.]
+    );
+}

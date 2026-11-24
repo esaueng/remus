@@ -305,6 +305,7 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "moveFacesJournaledWithQuality"
         | "moveFacesPrepared"
         | "moveFacesPreparedJournaled"
+        | "moveFacesMultiJournaled"
         | "previewPreparedGroupEdit"
         | "commitPreparedGroupEdit"
         | "commitPreparedGroupEditJournaled"
@@ -340,6 +341,8 @@ fn batch_op_kind(op: &str) -> Option<BatchOpKind> {
         | "moveFaces"
         | "moveFacesDetailed"
         | "moveFacesWithQualityDetailed"
+        | "moveFacesMulti"
+        | "moveFacesMultiDetailed"
         | "resizeCylindricalFace"
         | "resizeCylindricalFaceDetailed"
         | "extrude"
@@ -1779,6 +1782,35 @@ impl RemusKernel {
                 })()
                 .unwrap_or_else(|error| {
                     SolidOperationDetailedResult::error(error.with_direct_operation("moveFaces"))
+                });
+                serde_json::to_value(result).map_err(StructuredWasmError::from)
+            }
+            "moveFacesMulti" => {
+                let solid = get_u32(args, "solid")?;
+                let faces = get_u32_array(args, "faces")?;
+                let distances = get_f64_array(args, "distances")?;
+                let result = self.move_faces_multi_structured(solid, &faces, &distances)?;
+                Ok(serde_json::json!(result))
+            }
+            "moveFacesMultiJournaled" => {
+                let solid = get_u32(args, "solid")?;
+                let faces = get_u32_array(args, "faces")?;
+                let distances = get_f64_array(args, "distances")?;
+                self.move_faces_multi_journaled_json(solid, &faces, &distances)
+            }
+            "moveFacesMultiDetailed" => {
+                let result = (|| {
+                    let solid = get_u32(args, "solid")?;
+                    let faces = get_u32_array(args, "faces")?;
+                    let distances = get_f64_array(args, "distances")?;
+                    Ok::<_, StructuredWasmError>(
+                        self.move_faces_multi_detailed_impl(solid, &faces, &distances),
+                    )
+                })()
+                .unwrap_or_else(|error| {
+                    SolidOperationDetailedResult::error(
+                        error.with_direct_operation("moveFacesMulti"),
+                    )
                 });
                 serde_json::to_value(result).map_err(StructuredWasmError::from)
             }

@@ -3485,3 +3485,24 @@ fn fixed_ellipse_parameters_survive_existing_resource_refusals() {
         (5.0, 4.0)
     );
 }
+
+#[test]
+fn fixed_parallel_constraint_is_invariant_under_drawing_scale() {
+    for length in [1e-5, 1., 1e5] {
+        for (x, y, satisfied) in [(0., length, false), (-length, 0., true), (0., 0., false)] {
+            let mut sys = GcsSystem::new();
+            let mut point = |x, y| sys.add_point(PointData { x, y, fixed: true }).unwrap();
+            let a = point(0., 0.);
+            let b = point(length, 0.);
+            let c = point(x, y);
+            let l1 = sys.add_line(a, b).unwrap();
+            let l2 = sys.add_line(a, c).unwrap();
+            sys.add_constraint(Constraint::Parallel(l1, l2)).unwrap();
+            assert_eq!(
+                sys.solve(100, 1e-8).unwrap().converged,
+                satisfied,
+                "{length} {x} {y}"
+            );
+        }
+    }
+}

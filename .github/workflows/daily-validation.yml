@@ -54,16 +54,25 @@ jobs:
       # --redact keeps any match's secret material out of the job log.
       - run: gitleaks git --log-opts="--all" --redact .
   msrv:
+    name: MSRV (${{ matrix.toolchain }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - toolchain: "1.88.0"
+            packages: --workspace --exclude remus-gauntlet
+          - toolchain: "1.93.0"
+            packages: -p remus-gauntlet
     if: github.repository == 'esaueng/remus' && github.ref == 'refs/heads/main' && github.ref_protected
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
-      RUSTUP_TOOLCHAIN: 1.88.0
+      RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
         with:
-          toolchain: "1.88.0"
-      - run: cargo +1.88.0 check --workspace --all-features --locked
+          toolchain: ${{ matrix.toolchain }}
+      - run: cargo check --locked --all-features ${{ matrix.packages }}

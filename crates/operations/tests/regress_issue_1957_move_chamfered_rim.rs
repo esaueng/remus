@@ -656,9 +656,14 @@ fn prepared_journaled_move_uses_the_same_chamfer_identity_after_a_gap() {
         .solid;
     let direct_volume = solid_volume(&direct_topo, direct, DEFLECTION).unwrap();
 
-    for qualified in [false, true] {
+    for (multi, qualified) in [(false, false), (false, true), (true, false), (true, true)] {
         let mut preview_topo = topo.clone();
-        let mut prepared = PreparedFaceMove::prepare(&preview_topo, solid, &[face]).unwrap();
+        let mut prepared = if multi {
+            PreparedFaceMove::prepare_multi(&preview_topo, solid, &[face], &[])
+        } else {
+            PreparedFaceMove::prepare(&preview_topo, solid, &[face])
+        }
+        .unwrap();
         let moved = if qualified {
             prepared
                 .move_faces_journaled_with_quality(&mut preview_topo, 1.5, None)
@@ -778,10 +783,14 @@ fn prepared_move_defers_oversized_chamfer_refusal_until_after_journal_gap() {
     );
     let expected = solid_volume(&direct_topo, direct.solid, DEFLECTION).unwrap();
 
-    for qualified in [false, true] {
+    for (multi, qualified) in [(false, false), (false, true), (true, false), (true, true)] {
         let mut preview_topo = topo.clone();
-        let mut prepared = PreparedFaceMove::prepare(&preview_topo, solid, &[face])
-            .expect("preparation must defer the lineage-dependent refusal");
+        let mut prepared = if multi {
+            PreparedFaceMove::prepare_multi(&preview_topo, solid, &[face], &[])
+        } else {
+            PreparedFaceMove::prepare(&preview_topo, solid, &[face])
+        }
+        .expect("preparation must defer the lineage-dependent refusal");
         let result = if qualified {
             prepared
                 .move_faces_journaled_with_quality(&mut preview_topo, distance, None)

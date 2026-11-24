@@ -34,7 +34,7 @@ as Classify Changes finishes. Nothing waits for Repository Policy.
 | always | Classify Changes, Repository Policy (the policy catalog, then a secrets scan of the run's new commits) | every run |
 | `heavy` | Test, Native tests (1/6 to 6/6), Clippy (also links the examples and compiles the fuzz targets), Complexity Guards, Approximation Census, WASM without optional I/O, Software Rendering | a PR or `main` push whose diff is neither only docs and metadata (docs, `.claude/`, `.github/` outside `workflows/`) nor only the committed packages |
 | `wasm` | WASM Build & Validate, WASM runtime suites, W9 Preflight, WASM Size Gate (PRs only) | a heavy run whose diff touches a WASM-affecting path: anything under `crates/`, `xtask/` or `tools/vs-bench/`, the root manifests and toolchain, the WASM-related workflows and scripts |
-| `full` | MSRV (1.88), Cargo Deny (licenses, sources and the RustSec advisories) | a heavy run whose diff touches `Cargo.toml`, `Cargo.lock`, `deny.toml`, `clippy.toml`, `rust-toolchain.toml`, `.cargo/`, `.config/` or `.github/workflows/` |
+| `full` | MSRV (1.88 for all crates except the native gauntlet, 1.93 for the gauntlet), Cargo Deny (licenses, sources and the RustSec advisories) | a heavy run whose diff touches `Cargo.toml`, `Cargo.lock`, `deny.toml`, `clippy.toml`, `rust-toolchain.toml`, `.cargo/`, `.config/` or `.github/workflows/` |
 | `docs` | Documentation (rustdoc and the mdBook) | every heavy run, every merge group with a source change, and a diff that touches docs |
 
 The `ci:full` label and a manual dispatch select every tier whatever the

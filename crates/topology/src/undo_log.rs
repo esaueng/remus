@@ -768,6 +768,34 @@ impl Topology {
         Ok(())
     }
 
+    /// Record the index entries a solid deletion will remove. Each key has
+    /// its own inverse, so enumeration order does not affect rollback. A key
+    /// with two retiring endpoints still gets only one record.
+    pub(super) fn record_retiring_pcurve_uses(
+        &mut self,
+        retiring: &super::SolidEntities,
+    ) -> Result<(), TopologyError> {
+        if retiring.faces.is_empty() && retiring.edges.is_empty() {
+            return Ok(());
+        }
+        let recording = self.scopes_alive();
+        if !recording && self.undo.append.is_empty() {
+            return Ok(());
+        }
+        for (key, coedge) in self.pcurves.raw_uses() {
+            if retiring.faces.contains(&key.face) || retiring.edges.contains(&key.edge) {
+                self.undo.guard_append_use(key.edge, key.face)?;
+                if recording {
+                    self.undo.push(UndoRecord::PcurveUse {
+                        key,
+                        old: Some(coedge),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Indexes one authoritative coedge use, recording the previous value.
     ///
     /// Equivalent to [`Self::record_pcurve_write`] followed by the registry

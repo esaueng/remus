@@ -6751,6 +6751,97 @@ class RemusKernel {
         }
     }
     /**
+     * Move several planar faces together, each along its own outward
+     * normal, and return the new solid handle.
+     *
+     * `distances` holds one signed distance for every face, or one per
+     * face. Faces may lie on different parallel planes, have different or
+     * opposite normals, and share edges; every edge and vertex is rebuilt
+     * once from its final supports, keeping the source topology.
+     *
+     * # Errors
+     *
+     * Returns an error for an invalid handle, an empty selection or one of
+     * more than 64 faces, a distance list of the wrong length, a zero or
+     * non-finite distance, or a move that collapses, inverts or splits a
+     * face (the error names the face). A refusal leaves the topology
+     * unchanged.
+     * @param {number} solid
+     * @param {Uint32Array} faces
+     * @param {Float64Array} distances
+     * @returns {number}
+     */
+    moveFacesMulti(solid, faces, distances) {
+        const ptr0 = passArray32ToWasm0(faces, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArrayF64ToWasm0(distances, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_moveFacesMulti(this.__wbg_ptr, solid, ptr0, len0, ptr1, len1);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Move several planar faces together, each along its own outward
+     * normal, and return an exact result or a typed refusal.
+     *
+     * Additive twin of [`moveFacesMulti`](Self::move_faces_multi_binding).
+     * `details` carries `quality: "exact"`, the `distances` and the total
+     * `faceEvolution`. A refusal (`topology_change` naming the face that
+     * collapses or folds) returns no solid and leaves the topology as it
+     * was.
+     * @param {number} solid
+     * @param {Uint32Array} faces
+     * @param {Float64Array} distances
+     * @returns {SolidOperationDetailedResult}
+     */
+    moveFacesMultiDetailed(solid, faces, distances) {
+        const ptr0 = passArray32ToWasm0(faces, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArrayF64ToWasm0(distances, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_moveFacesMultiDetailed(this.__wbg_ptr, solid, ptr0, len0, ptr1, len1);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * `moveFacesMulti` journaled as one `move_faces` entry with exact face,
+     * edge and vertex history. Returns JSON `{"solid", "op"}`.
+     *
+     * # Errors
+     *
+     * As `moveFacesMulti`; a refusal restores topology and history.
+     * @param {number} solid
+     * @param {Uint32Array} faces
+     * @param {Float64Array} distances
+     * @returns {string}
+     */
+    moveFacesMultiJournaled(solid, faces, distances) {
+        let deferred4_0;
+        let deferred4_1;
+        try {
+            const ptr0 = passArray32ToWasm0(faces, wasm.__wbindgen_malloc);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passArrayF64ToWasm0(distances, wasm.__wbindgen_malloc);
+            const len1 = WASM_VECTOR_LEN;
+            const ret = wasm.remuskernel_moveFacesMultiJournaled(this.__wbg_ptr, solid, ptr0, len0, ptr1, len1);
+            var ptr3 = ret[0];
+            var len3 = ret[1];
+            if (ret[3]) {
+                ptr3 = 0; len3 = 0;
+                throw takeFromExternrefTable0(ret[2]);
+            }
+            deferred4_0 = ptr3;
+            deferred4_1 = len3;
+            return getStringFromWasm0(ptr3, len3);
+        } finally {
+            wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
+        }
+    }
+    /**
      * `moveFaces` of a prepared selection: moves it `distance` from the
      * prepared source and returns the new solid handle.
      *
@@ -7381,6 +7472,37 @@ class RemusKernel {
         const ptr0 = passArray32ToWasm0(faces, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.remuskernel_prepareMoveFaces(this.__wbg_ptr, solid, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * Prepare repeated multi-face moves for an interactive drag.
+     *
+     * `moveFacesPrepared(handle, distance)` and
+     * `moveFacesPreparedJournaled(handle, distance)` then return what
+     * `moveFacesMulti` and `moveFacesMultiJournaled` return with face `i`
+     * moved `weights[i] × distance` (omit `weights` for all ones), and
+     * refuse once the source changed since preparation. Release with
+     * `releasePreparedMove`. Preparing edits nothing.
+     *
+     * # Errors
+     *
+     * Returns an error for an invalid handle, weights that are not finite
+     * or not one per face, a selection over the work limits, or when 16
+     * prepared moves are already live.
+     * @param {number} solid
+     * @param {Uint32Array} faces
+     * @param {Float64Array | null} [weights]
+     * @returns {number}
+     */
+    prepareMoveFacesMulti(solid, faces, weights) {
+        const ptr0 = passArray32ToWasm0(faces, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        var ptr1 = isLikeNone(weights) ? 0 : passArrayF64ToWasm0(weights, wasm.__wbindgen_malloc);
+        var len1 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_prepareMoveFacesMulti(this.__wbg_ptr, solid, ptr0, len0, ptr1, len1);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -8300,9 +8422,6 @@ class RemusKernel {
      *
      * Returns flattened `[x, y, z, ...]` samples walking exactly the edge's
      * own parameter span — the same sampler the solid wireframe uses.
-     * Unlike [`tessellateEdge`](Self::tessellate_edge), a circle, ellipse,
-     * or closed-NURBS edge yields its actual arc (vertex-anchored), never a
-     * full-period trace of the parent curve.
      *
      * # Errors
      *

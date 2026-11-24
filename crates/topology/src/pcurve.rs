@@ -234,7 +234,7 @@ impl PCurveRegistry {
         self.uses.remove(&key);
     }
 
-    /// Every indexed use, in map order (callers sort).
+    /// Every indexed use, in unspecified order.
     pub(crate) fn raw_uses(&self) -> impl Iterator<Item = (PCurveKey, CoedgeId)> + '_ {
         self.uses.iter().map(|(key, coedge)| (*key, *coedge))
     }

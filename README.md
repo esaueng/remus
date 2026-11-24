@@ -427,7 +427,8 @@ in this repository does not imply that an artifact has been published.
 
 ### Building from source
 
-MSRV is Rust 1.88, and CI holds that floor. Day-to-day development uses the
+The kernel and WASM crates support Rust 1.88. Building the entire workspace
+requires Rust 1.93 for the native corpus gauntlet. Day-to-day development uses the
 toolchain pinned in `rust-toolchain.toml`, which rustup picks up automatically
 along with the `wasm32-unknown-unknown` target.
 

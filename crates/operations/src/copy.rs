@@ -84,7 +84,7 @@ struct PlanFace {
 /// Vertices, edges and wires are numbered by dense first-seen ordinal in
 /// the traversal and faces by visit, so the write phase indexes vectors of
 /// new handles instead of hashing source indices.
-struct CopyPlan {
+pub(crate) struct CopyPlan {
     vertices: Vec<VertexSnap>,
     edges: Vec<PlanEdge>,
     wires: Vec<PlanWire>,
@@ -241,7 +241,7 @@ fn restore_face_coedge_authority(
 
 /// Snapshots `solid_id` for copying, with every lookup in the order the
 /// copy paths have always made them (so the first error is unchanged).
-fn build_copy_plan(
+pub(crate) fn build_copy_plan(
     source: &Topology,
     solid_id: SolidId,
 ) -> Result<CopyPlan, crate::OperationsError> {
@@ -1216,6 +1216,15 @@ fn copy_solid_ids(
         .map(Vec::len)
         .fold(0usize, usize::saturating_add);
     materialize_copy(topo, plan, face_count)
+}
+
+/// Materialize a previously captured body after its construction scope was rewound.
+pub(crate) fn restore_planned_body(
+    topo: &mut Topology,
+    plan: CopyPlan,
+) -> Result<CopiedSolidEntities, crate::OperationsError> {
+    let face_count = plan.shells.iter().map(Vec::len).sum();
+    materialize_copy(topo, plan, face_count).map(CopyIds::into_entities)
 }
 
 /// Copies a solid between independent arenas.

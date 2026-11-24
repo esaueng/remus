@@ -86,7 +86,29 @@ fn face_line_within_budget_still_reports_its_malformed_corner() {
             "{short:?}: {error}"
         );
     }
-    // A budget-sized fan still imports whole: 12 corners, 10 triangles.
-    let mesh = read_obj_with_limits(&long_face(12, ""), limits).unwrap();
-    assert_eq!(mesh.indices.len(), 30);
+    // A face tracing the same triangle four times has no simple polygon boundary.
+    let error = read_obj_with_limits(&long_face(12, ""), limits).unwrap_err();
+    assert!(matches!(error, IoError::ParseError { .. }), "{error}");
+}
+
+#[test]
+fn a_simple_twelve_corner_face_fills_the_remaining_triangle_budget() {
+    // Two preceding triangles leave ten slots for the twelve-corner cap.
+    let obj = "v 5 0 0\nv 4 3 0\nv 3 4 0\nv 0 5 0\nv -3 4 0\nv -4 3 0\n\
+               v -5 0 0\nv -4 -3 0\nv -3 -4 0\nv 0 -5 0\nv 3 -4 0\nv 4 -3 0\n\
+               f 1 2 3\nf 4 5 6\nf 1 2 3 4 5 6 7 8 9 10 11 12\n";
+    let limits = ImportLimits {
+        max_model_entities: 12,
+        ..ImportLimits::default()
+    };
+    let mesh = read_obj_with_limits(obj, limits).unwrap();
+    assert_eq!(mesh.indices.len(), 36);
+    assert!(matches!(
+        read_obj_with_limits(&format!("{obj}f 1 2 3\n"), limits),
+        Err(IoError::LimitExceeded {
+            resource: "OBJ triangles",
+            limit: 12,
+            actual: 13
+        })
+    ));
 }

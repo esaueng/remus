@@ -2172,22 +2172,9 @@ impl Topology {
                 self.record_loop_retire(loop_id)?;
             }
         }
-        // Record every destroyed index and attribute entry before removing
-        // it; entries of pre-existing entities trip an armed append-only
-        // guard here, before any retirement lands.
-        for &face_id in &retiring.faces {
-            for (edge, forward, _) in self.pcurves.uses_for_face(face_id) {
-                self.record_pcurve_write(edge, face_id, forward)?;
-            }
-        }
-        for &edge_id in &retiring.edges {
-            for (face, forward, _) in self.pcurves.uses_for_edge(edge_id) {
-                // Keys already covered by the face pass above record once.
-                if !retiring.faces.contains(&face) {
-                    self.record_pcurve_write(edge_id, face, forward)?;
-                }
-            }
-        }
+        // Record every affected index and attribute entry before removing
+        // it, so a guard on a pre-existing entry can refuse the removal.
+        self.record_retiring_pcurve_uses(&retiring)?;
         for &face_id in &retiring.faces {
             self.record_face_attribute(face_id)?;
         }
@@ -3714,6 +3701,47 @@ mod tests {
             topo.boundary_loop_specs(&[wire], None).is_ok(),
             "the profile's boundary re-derives"
         );
+    }
+
+    #[test]
+    fn deleting_a_new_face_on_old_edges_keeps_the_pcurve_append_guard() {
+        use crate::transaction::{AppendPath, run_append_only};
+
+        let mut topo = Topology::new();
+        let (kept, source, edge) = make_triangle_solid(&mut topo, 0.0);
+        let wire = topo.face(source).unwrap().outer_wire();
+        topo.set_pcurve(edge, source, test_pcurve(2.0)).unwrap();
+        let loops = topo.loops_of_face(source).unwrap().to_vec();
+        let mut attempts = 0;
+        let ((), path) = run_append_only(&mut topo, |t| {
+            attempts += 1;
+            let surface = t.face(source).unwrap().surface().clone();
+            let face = t.add_face(Face::new(wire, vec![], surface));
+            let shell = t.add_shell(Shell::new(vec![face]).unwrap());
+            let solid = t.add_solid(Solid::new(shell, vec![]));
+            let result = t.delete_solid(solid);
+            if attempts == 1 {
+                assert!(matches!(
+                    result,
+                    Err(DeleteSolidError::Topology(
+                        TopologyError::AppendOnlyGuardTrip { entity: "pcurve" }
+                    ))
+                ));
+            }
+            result
+        })
+        .unwrap();
+
+        assert_eq!(path, AppendPath::FullFallback);
+        assert_eq!(attempts, 2);
+        assert_eq!(topo.num_solids(), 1);
+        assert!(topo.solid(kept).is_ok());
+        assert_eq!(topo.loops_of_face(source).unwrap(), loops);
+        assert_eq!(
+            topo.pcurve(edge, source).unwrap().unwrap().evaluate(0.0),
+            Point2::new(2.0, 0.0)
+        );
+        validate_boundary_authority(&topo).unwrap();
     }
 
     #[test]

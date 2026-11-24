@@ -1981,6 +1981,55 @@
       "reason": "evolution/journal surface; B18 audit scope, already typed with its payload"
     },
     {
+      "js": "moveFacesMulti",
+      "rust": "move_faces_multi_binding",
+      "file": "bindings/move_faces_multi.rs",
+      "gate": "shipped",
+      "class": "geometry_mutation",
+      "coverage": "covered",
+      "owner": "B287",
+      "reason": "typed by moveFacesMultiDetailed; direct/batch/detailed parity and refusals that leave the source unchanged",
+      "twin": "moveFacesMultiDetailed",
+      "batch_ops": [
+        "moveFacesMultiDetailed"
+      ],
+      "witnesses": [
+        "direct_batch_and_detailed_multi_moves_agree",
+        "walls_moved_past_each_other_refuse_naming_a_wall_without_edits"
+      ],
+      "schema": "solid_envelope"
+    },
+    {
+      "js": "moveFacesMultiDetailed",
+      "rust": "move_faces_multi_detailed",
+      "file": "bindings/modifier_detailed.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B287",
+      "reason": "O4.7 twin of moveFacesMulti; the typed surface itself, no further twin required"
+    },
+    {
+      "js": "moveFacesMultiJournaled",
+      "rust": "move_faces_multi_journaled_js",
+      "file": "bindings/move_faces_multi.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B287",
+      "reason": "evolution/journal surface of the multi-face move; same {solid, op} payload as moveFacesJournaled"
+    },
+    {
+      "js": "prepareMoveFacesMulti",
+      "rust": "prepare_move_faces_multi",
+      "file": "bindings/move_faces_multi.rs",
+      "gate": "shipped",
+      "class": "lifecycle_session",
+      "coverage": "special",
+      "owner": "B287",
+      "reason": "prepared multi-face move session handle; reads the topology only, no solid twin applicable"
+    },
+    {
       "js": "multiSectionSweep",
       "rust": "multi_section_sweep",
       "file": "bindings/operations.rs",
