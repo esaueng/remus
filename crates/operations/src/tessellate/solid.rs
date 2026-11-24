@@ -706,11 +706,55 @@ pub fn tessellate_solid_grouped_with_tolerance(
     deflection: f64,
     angular_tol: f64,
 ) -> Result<(TriangleMesh, Vec<u32>), crate::OperationsError> {
-    let (mut mesh, tri_faces, n_faces) = tessellate_solid_core(
+    grouped_mesh(
         topo,
         solid,
         deflection,
         angular_tol,
+        MeshBoundaryMode::ClosedSolid,
+    )
+}
+
+/// Face-grouped viewport mesh for a consumer that generates its own normals.
+///
+/// The same tolerances, shared boundary vertices and face ordering apply.
+/// Eligible cylindrical strips use a certified boundary triangulation.
+/// The returned normals array is empty.
+///
+/// # Errors
+///
+/// Returns an error if topology lookup or face tessellation fails.
+pub fn tessellate_solid_grouped_positions(
+    topo: &Topology,
+    solid: SolidId,
+    deflection: f64,
+    angular_tol: f64,
+) -> Result<(TriangleMesh, Vec<u32>), crate::OperationsError> {
+    let (mut mesh, offsets) = grouped_mesh(
+        topo,
+        solid,
+        deflection,
+        angular_tol,
+        MeshBoundaryMode::ClosedDisplayPositions,
+    )?;
+    mesh.normals.clear();
+    Ok((mesh, offsets))
+}
+
+fn grouped_mesh(
+    topo: &Topology,
+    solid: SolidId,
+    deflection: f64,
+    angular_tol: f64,
+    boundary: MeshBoundaryMode,
+) -> Result<(TriangleMesh, Vec<u32>), crate::OperationsError> {
+    let faces = remus_topology::explorer::solid_faces(topo, solid)?;
+    let (mut mesh, tri_faces, n_faces) = tessellate_faces_core(
+        topo,
+        &faces,
+        deflection,
+        angular_tol,
+        boundary,
         true,
         false,
         RetentionClass::Display,
@@ -1538,9 +1582,39 @@ fn build_boundary_plan(
     Ok(plan)
 }
 
+/// The boundary-only mesher takes one cylindrical wire with two circular rims
+/// and two spline edges. Include that choice in the per-face cache key.
+fn cylinder_strip_eligible(topo: &Topology, id: FaceId) -> bool {
+    let Ok(face) = topo.face(id) else {
+        return false;
+    };
+    if !matches!(face.surface(), FaceSurface::Cylinder(_)) || !face.inner_wires().is_empty() {
+        return false;
+    }
+    let Ok(wire) = topo.wire(face.outer_wire()) else {
+        return false;
+    };
+    if wire.edges().len() != 4 {
+        return false;
+    }
+    let mut circles = 0;
+    for edge in wire.edges() {
+        match topo
+            .edge(edge.edge())
+            .map(remus_topology::edge::Edge::curve)
+        {
+            Ok(EdgeCurve::Circle(_)) => circles += 1,
+            Ok(EdgeCurve::NurbsCurve(_)) => (),
+            _ => return false,
+        }
+    }
+    circles == 2
+}
+
 #[derive(Clone, Copy)]
 enum MeshBoundaryMode {
     ClosedSolid,
+    ClosedDisplayPositions,
     OpenSheet,
     ClosedMeasurement,
     OpenMeasurement,
@@ -1977,6 +2051,15 @@ fn tessellate_faces_core(
     let mut cache_session = face_cache::Session::begin(retention);
     for &fi in &other_face_indices {
         let face_id = all_faces[fi];
+        let cylinder_strip = if matches!(boundary_mode, MeshBoundaryMode::ClosedDisplayPositions)
+            && !plan.policy.circle_floor
+            && angular_tol > 0.0
+            && cylinder_strip_eligible(topo, face_id)
+        {
+            face_cache::CylinderStripPolicy::CertifyInWorldSpace
+        } else {
+            face_cache::CylinderStripPolicy::Ineligible
+        };
         let allow_latitude_cap = !plan.policy.circle_floor
             && has_trimmed_same_sphere_neighbor(topo, face_id, &edge_face_map)?;
         let mut capture = None;
@@ -1990,6 +2073,7 @@ fn tessellate_faces_core(
                     circle_floor: plan.policy.circle_floor,
                     allow_latitude_cap,
                     allow_analytic_hemisphere,
+                    cylinder_strip,
                 },
                 &plan.edge_chains,
                 &plan.merged.positions,
@@ -2027,6 +2111,7 @@ fn tessellate_faces_core(
             plan.policy.circle_floor,
             allow_latitude_cap,
             allow_analytic_hemisphere,
+            cylinder_strip,
             &plan.edge_chains,
             &mut plan.merged,
             &mut plan.point_to_global,
@@ -2053,7 +2138,9 @@ fn tessellate_faces_core(
     drop(curved);
     if !matches!(
         boundary_mode,
-        MeshBoundaryMode::ClosedMeasurement | MeshBoundaryMode::OpenMeasurement
+        MeshBoundaryMode::ClosedMeasurement
+            | MeshBoundaryMode::OpenMeasurement
+            | MeshBoundaryMode::ClosedDisplayPositions
     ) {
         let normals = crate::performance::span("mesh.boundary-normals");
         let n_verts = plan.merged.positions.len();
@@ -2190,7 +2277,9 @@ fn tessellate_faces_core(
 
     let closed = matches!(
         boundary_mode,
-        MeshBoundaryMode::ClosedSolid | MeshBoundaryMode::ClosedMeasurement
+        MeshBoundaryMode::ClosedSolid
+            | MeshBoundaryMode::ClosedMeasurement
+            | MeshBoundaryMode::ClosedDisplayPositions
     );
     let had_boundary = closed
         && super::mesh_ops::weld_boundary_vertices_cached(
@@ -2368,6 +2457,7 @@ pub(super) fn tessellate_face_with_shared_edges(
     circle_floor: bool,
     allow_latitude_cap: bool,
     allow_analytic_hemisphere: bool,
+    cylinder_strip: face_cache::CylinderStripPolicy,
     edge_global_indices: &DetHashMap<usize, Vec<u32>>,
     merged: &mut TriangleMesh,
     point_to_global: &mut PointMergeMap,
@@ -2382,6 +2472,8 @@ pub(super) fn tessellate_face_with_shared_edges(
     let idx_start = merged.indices.len();
     let pos_start = merged.positions.len();
 
+    let allow_cylinder_strip =
+        cylinder_strip == face_cache::CylinderStripPolicy::CertifyInWorldSpace;
     if allow_analytic_hemisphere {
         tessellate_nonplanar_snap(
             topo,
@@ -2553,6 +2645,7 @@ pub(super) fn tessellate_face_with_shared_edges(
                 deflection,
                 angular_tol,
                 circle_floor,
+                allow_cylinder_strip,
                 edge_global_indices,
                 merged,
                 point_to_global,
@@ -2656,6 +2749,7 @@ pub(super) fn tessellate_face_with_shared_edges(
                     deflection,
                     angular_tol,
                     circle_floor,
+                    allow_cylinder_strip,
                     edge_global_indices,
                     merged,
                     point_to_global,
@@ -2696,6 +2790,7 @@ pub(super) fn tessellate_face_with_shared_edges(
                 deflection,
                 angular_tol,
                 circle_floor,
+                allow_cylinder_strip,
                 edge_global_indices,
                 merged,
                 point_to_global,
@@ -2802,6 +2897,7 @@ pub(super) fn tessellate_face_with_shared_edges(
                 deflection,
                 angular_tol,
                 circle_floor,
+                allow_cylinder_strip,
                 edge_global_indices,
                 merged,
                 point_to_global,
@@ -3159,6 +3255,7 @@ mod inner_tangent_runout_tests {
                         plan.policy.circle_floor,
                         true,
                         false,
+                        face_cache::CylinderStripPolicy::Ineligible,
                         &plan.edge_chains,
                         &mut plan.merged,
                         &mut plan.point_to_global,

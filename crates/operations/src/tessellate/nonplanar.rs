@@ -2909,6 +2909,7 @@ pub(super) fn tessellate_nonplanar_cdt(
     deflection: f64,
     angular_tol: f64,
     circle_floor: bool,
+    allow_cylinder_strip: bool,
     edge_global_indices: &DetHashMap<usize, Vec<u32>>,
     merged: &mut TriangleMesh,
     point_to_global: &mut PointMergeMap,
@@ -3498,6 +3499,21 @@ pub(super) fn tessellate_nonplanar_cdt(
         }
     }
 
+    if allow_cylinder_strip
+        && angular_tol > 0.0
+        && let FaceSurface::Cylinder(cylinder) = chart_surface
+        && hole_uvs.is_empty()
+        && let Some(triangles) = cylinder_strip::triangles(
+            cylinder,
+            &boundary_uv,
+            &boundary_3d,
+            deflection,
+            angular_tol,
+        )
+    {
+        merged.indices.extend(triangles);
+        return Ok(());
+    }
     let du = u_max - u_min;
     let dv = v_max - v_min;
 
@@ -6014,6 +6030,7 @@ fn sphere_native_arcs_in_hemisphere(
 
 mod collapsed_boundary;
 pub(super) mod cone_fold_repair;
+mod cylinder_strip;
 mod sheared_chart;
 mod touching_cycles;
 
@@ -7407,6 +7424,7 @@ pub(super) fn tessellate_trimmed_sphere_uvs(
             face_data,
             deflection,
             angular_tol,
+            false,
             false,
             &empty_pool,
             &mut merged,

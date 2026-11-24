@@ -177,6 +177,33 @@ impl RemusKernel {
         Ok(JsGroupedMesh::new(mesh, face_offsets)?)
     }
 
+    /// Face-grouped display mesh for consumers generating their own normals.
+    ///
+    /// Positions, indices and face offsets use the full grouped-mesh contract.
+    /// The returned normals array is empty.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the solid handle is invalid or tessellation fails.
+    #[wasm_bindgen(js_name = "tessellateSolidGroupedPositions")]
+    pub fn tessellate_solid_grouped_positions(
+        &self,
+        solid: u32,
+        deflection: f64,
+        angular_tolerance: Option<f64>,
+    ) -> Result<JsGroupedMesh, JsError> {
+        validate_positive(deflection, "deflection")?;
+        let angular_tol = resolve_angular_tol(angular_tolerance)?;
+        let id = self.resolve_solid(solid)?;
+        let (mesh, offsets) = tessellate::tessellate_solid_grouped_positions(
+            &self.topo,
+            id,
+            deflection,
+            angular_tol,
+        )?;
+        Ok(JsGroupedMesh::new(mesh, offsets)?)
+    }
+
     /// Tessellate a solid and include per-vertex UV coordinates.
     ///
     /// Returns a JSON string containing `{ positions, normals, indices, uvs }`.

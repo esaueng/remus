@@ -256,6 +256,15 @@ pub(super) struct MeshRequest {
     pub(super) circle_floor: bool,
     pub(super) allow_latitude_cap: bool,
     pub(super) allow_analytic_hemisphere: bool,
+    pub(super) cylinder_strip: CylinderStripPolicy,
+}
+
+/// A strip certificate depends on world-space boundary residuals. Only
+/// bit-identical positions can reuse a face that was eligible for it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum CylinderStripPolicy {
+    Ineligible,
+    CertifyInWorldSpace,
 }
 
 /// Content key of one face's stage-D mesh.
@@ -660,6 +669,7 @@ pub(super) fn face_key(
     b.flag(request.circle_floor);
     b.flag(request.allow_latitude_cap);
     b.flag(request.allow_analytic_hemisphere);
+    b.flag(request.cylinder_strip == CylinderStripPolicy::CertifyInWorldSpace);
     b.flag(face.is_reversed());
 
     let mut edge_ordinals: DetHashMap<usize, u64> = DetHashMap::default();
@@ -744,13 +754,17 @@ pub(super) fn face_key(
     let wall_chart = remus_algo::wall_chart(face.surface()).is_some();
     b.flag(wall_chart);
     let mut signature = Vec::new();
-    let translation = translation_rule(
-        face.surface(),
-        &boundary_points,
-        has_pcurve,
-        outer_circle && wall_chart,
-        &mut signature,
-    );
+    let translation = if request.cylinder_strip == CylinderStripPolicy::CertifyInWorldSpace {
+        TranslationRule::Refused
+    } else {
+        translation_rule(
+            face.surface(),
+            &boundary_points,
+            has_pcurve,
+            outer_circle && wall_chart,
+            &mut signature,
+        )
+    };
     b.surface(face.surface());
 
     let mut by_gid: Vec<(u32, u32)> = gid_ordinals.into_iter().collect();

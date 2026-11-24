@@ -26,6 +26,7 @@ use super::{ClassifyOptions, ClassifySource, PointClassification};
 use crate::CheckError;
 
 mod ray_prefilter;
+pub(super) use ray_prefilter::SpanBoxes;
 
 /// One face's share of the frozen preparation.
 #[derive(Debug, Clone)]

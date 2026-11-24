@@ -720,6 +720,7 @@ fn nonplanar_cdt_survives_steiner_split_boundary() {
         0.1,
         remus_math::chord::DEFAULT_ANGULAR_TOL,
         false,
+        false,
         &edge_global_indices,
         &mut merged,
         &mut point_to_global,
@@ -3283,6 +3284,21 @@ fn grouped_tessellation_watertight_box_cut_cylinder() {
     // Grouped output is a triangle-order permutation of the ungrouped mesh.
     assert_eq!(mesh.indices.len(), watertight.indices.len());
     assert_eq!(mesh.positions.len(), watertight.positions.len());
+}
+
+#[test]
+fn grouped_positions_preserve_ordinary_faces_and_their_ranges() {
+    let mut topo = Topology::new();
+    let solid = make_box_with_through_hole(&mut topo);
+    let (plain, offsets) =
+        super::tessellate_solid_grouped_positions(&topo, solid, 0.1, 0.06).unwrap();
+    let (shaded, shaded_offsets) =
+        tessellate_solid_grouped_with_tolerance(&topo, solid, 0.1, 0.06).unwrap();
+    assert!(plain.normals.is_empty());
+    assert_eq!(shaded.normals.len(), shaded.positions.len());
+    assert_eq!(plain.positions, shaded.positions);
+    assert_eq!(plain.indices, shaded.indices);
+    assert_eq!(offsets, shaded_offsets);
 }
 
 #[test]
