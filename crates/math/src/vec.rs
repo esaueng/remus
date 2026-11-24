@@ -141,6 +141,14 @@ impl Vector<3> {
     /// Dot product of two 3D vectors.
     #[must_use]
     pub fn dot(self, rhs: Self) -> f64 {
+        #[cfg(all(
+            target_arch = "wasm32",
+            target_feature = "simd128",
+            feature = "wasm-fused-arithmetic"
+        ))]
+        if let Some(value) = crate::fma::dispatch::finite_dot3(self.0, rhs.0) {
+            return value;
+        }
         self.0[0].fma(rhs.0[0], self.0[1].fma(rhs.0[1], self.0[2] * rhs.0[2]))
     }
 
