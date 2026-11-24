@@ -362,6 +362,7 @@ Quick reference — find the right file for any task:
 | Phase-FF regressions on a face of many spans (a helical sweep side over three turns): the broad-phase box holds the bulge past its rails, and plane sections seed every span and come back whole (tests) | `pave_filler/phase_ff/multi_span_section_tests.rs` |
 | Independent-oracle tests for builder-solid helpers (conic support, closed-pair traversal, revolved wire winding, cylinder faces with an odd number of rims refused, rims counted by their geometry whatever their parameter's speed, bounded walls of every make passed, unread loops left alone) | `builder/builder_solid/helper_oracle_tests.rs` |
 | Differential oracle for the NURBS arc refinement's knot-span box prefilter: it rejects only vertices the unchanged search rejects (tests) | `builder/builder_solid/arc_refine_oracle_tests.rs` |
+| Certified fitted-copy test for a NURBS edge against a circle or ellipse arc sharing its endpoints (the duplicate-edge merge's conic × NURBS gate): the trimmed NURBS cut into rational Bézier spans and halved until decided, the conic's implicit bounded by Bernstein coefficients, in-plane distance from it (gradient floor for ellipses), out-of-plane offset from the control hull, branch by unwrapped angular wedges; unproven spans keep the edges apart | `builder/builder_solid/conic_fit.rs` |
 | Independent-oracle tests for fill-images section helpers (cap discs, closed-section containment, curved-face segment classifier) | `builder/fill_images_faces/helper_oracle_tests.rs` |
 
 ### L2: blend (`crates/blend/src/`)
