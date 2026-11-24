@@ -305,6 +305,9 @@ export const remuskernel_moveFaces: (a: number, b: number, c: number, d: number,
 export const remuskernel_moveFacesDetailed: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const remuskernel_moveFacesJournaled: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
 export const remuskernel_moveFacesJournaledWithQuality: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
+export const remuskernel_moveFacesMulti: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
+export const remuskernel_moveFacesMultiDetailed: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
+export const remuskernel_moveFacesMultiJournaled: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
 export const remuskernel_moveFacesPrepared: (a: number, b: number, c: number) => [number, number, number];
 export const remuskernel_moveFacesPreparedJournaled: (a: number, b: number, c: number) => [number, number, number, number];
 export const remuskernel_moveFacesPreparedJournaledWithQuality: (a: number, b: number, c: number, d: number) => [number, number, number, number];
@@ -330,6 +333,7 @@ export const remuskernel_polygonBoolean2d: (a: number, b: number, c: number, d: 
 export const remuskernel_polygonUnion2d: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number];
 export const remuskernel_polygonsIntersect2d: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const remuskernel_prepareMoveFaces: (a: number, b: number, c: number, d: number) => [number, number, number];
+export const remuskernel_prepareMoveFacesMulti: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
 export const remuskernel_prepareResizeBlend: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const remuskernel_prepareResizeCylindricalFace: (a: number, b: number, c: number) => [number, number, number];
 export const remuskernel_previewPreparedGroupEdit: (a: number, b: number, c: number) => [number, number, number];
