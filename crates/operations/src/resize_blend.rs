@@ -2163,54 +2163,6 @@ pub(crate) fn ambiguous_rim_band(
     Ok(rim.ambiguous.first().copied())
 }
 
-/// How the move in force reads every rim band of `selected_faces`: each
-/// band face (the first of a declined or ambiguous component) with its
-/// reading and the cap it was read for (`0` for the whole selection read as
-/// one cap, as the one-cap move reads it; `1 + face index` for each face
-/// read alone, as a multi-face move reads it), in order.
-///
-/// A prepared move compares it call by call with its preparation's: the
-/// reading depends on the journal, which can change (a barrier severing a
-/// band's history) while the solid's content does not.
-pub(crate) fn rim_reading(
-    topo: &Topology,
-    solid: SolidId,
-    selected_faces: &[FaceId],
-) -> Result<Vec<(usize, usize, u8)>, OperationsError> {
-    let adjacency = solid_adjacency(topo, solid)?;
-    let mut reading = Vec::new();
-    let mut read = |rim: rim_chamfer::RimChamfers, cap: usize| {
-        reading.extend(rim.carried.iter().map(|face| (cap, face.index(), 0)));
-        reading.extend(rim.axial.iter().map(|face| (cap, face.index(), 1)));
-        reading.extend(rim.declined.iter().map(|(face, _)| (cap, face.index(), 2)));
-        reading.extend(rim.ambiguous.iter().map(|band| (cap, band.face.index(), 3)));
-    };
-    // Both readings: the one-cap move reads a coplanar selection whole, a
-    // multi-face move reads it face by face (parallel faces at different
-    // heights are two caps). A prepared move may take either path.
-    if let Some(direction) = rim_direction(topo, selected_faces)? {
-        let rim = rim_chamfer::rim_chamfers(topo, &adjacency, selected_faces, direction)?;
-        read(rim, 0);
-    }
-    for &face in selected_faces {
-        if let Some(direction) = topo.face(face)?.effective_plane_normal() {
-            read(
-                rim_chamfer::rim_chamfers_among(
-                    topo,
-                    &adjacency,
-                    &[face],
-                    direction,
-                    selected_faces,
-                )?,
-                face.index() + 1,
-            );
-        }
-    }
-    reading.compact_sort_unstable();
-    reading.dedup();
-    Ok(reading)
-}
-
 /// The refusal of a multi-face move (faces moving along different normals)
 /// over a rim band (#1957). The multi-face solver keeps every unselected
 /// face on its support, so it re-limits a band and can never carry one:
@@ -2423,8 +2375,9 @@ fn translation_invariant_blend_region(
     // so its presence does not exempt an ambiguous outer rim.
     let rim = rim_chamfer::rim_chamfers(topo, &adjacency, selected_faces, direction)?;
     rim.validate_carry_limit()?;
+    let carries_rim = !rim.carried.is_empty() || !rim.axial.is_empty();
     if !has_tangent_blend
-        && !rim.carried.is_empty()
+        && carries_rim
         && let Some((face, reason)) = rim.declined.first()
     {
         return Err(reconstruction(format!(

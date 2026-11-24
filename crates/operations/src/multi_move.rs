@@ -489,6 +489,10 @@ pub(crate) struct PreparedMultiMove {
     checks: Option<MultiChecks>,
     /// The rim refusal every call that is not the coplanar move returns.
     rim_refusal: Option<crate::resize_blend::MultiRimRefusal>,
+    /// The journal lineage the rim refusal was read under: a call after it
+    /// changed (a barrier can sever a band's history on unchanged geometry)
+    /// runs the unprepared move.
+    lineage_key: std::sync::Arc<()>,
 }
 
 impl PreparedMultiMove {
@@ -529,6 +533,7 @@ impl PreparedMultiMove {
             group,
             checks: MultiChecks::prepare(topo, solid, faces)?,
             rim_refusal: crate::resize_blend::multi_move_rim_refusal(topo, solid, faces)?,
+            lineage_key: std::sync::Arc::clone(topo.journal().lineage_key()),
         })
     }
 
@@ -550,6 +555,9 @@ impl PreparedMultiMove {
         distance: f64,
     ) -> Result<DirectEditEvolution, OperationsError> {
         let distances = self.distances(distance);
+        if !std::sync::Arc::ptr_eq(&self.lineage_key, topo.journal().lineage_key()) {
+            return move_faces_multi_with_entity_evolution(topo, solid, faces, &distances);
+        }
         if let Some(group_distance) =
             remus_offset::coplanar_group_distance(topo, faces, &distances)?
         {

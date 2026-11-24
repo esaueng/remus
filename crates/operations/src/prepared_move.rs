@@ -75,10 +75,6 @@ pub struct PreparedFaceMove {
     multi: Option<crate::multi_move::PreparedMultiMove>,
     /// The caller options every call runs under.
     options: MoveFacesOptions,
-    /// How the preparation read the selection's rim bands
-    /// ([`crate::resize_blend::rim_reading`]); a call whose reading differs
-    /// (the journal changed under an unchanged solid) is stale.
-    rim: Vec<(usize, usize, u8)>,
 }
 
 impl std::fmt::Debug for PreparedFaceMove {
@@ -136,7 +132,6 @@ impl PreparedFaceMove {
                 planar: PreparedPlanarMove::prepare(topo, solid, faces)?,
                 multi: None,
                 options,
-                rim: crate::resize_blend::rim_reading(topo, solid, faces)?,
             })
         })
     }
@@ -194,7 +189,6 @@ impl PreparedFaceMove {
                     topo, solid, faces, weights,
                 )?),
                 options,
-                rim: crate::resize_blend::rim_reading(topo, solid, faces)?,
             })
         })
     }
@@ -287,20 +281,6 @@ impl PreparedFaceMove {
             return Err(OperationsError::InvalidInput {
                 reason: format!(
                     "prepared face move is stale: solid {} changed since it was prepared",
-                    self.solid.index()
-                ),
-            });
-        }
-        // The rim reading depends on the journal too: a barrier recorded
-        // since preparation can sever the history that read a band.
-        let rim = with_move_options(self.options, || {
-            crate::resize_blend::rim_reading(topo, self.solid, &self.faces)
-        })?;
-        if rim != self.rim {
-            return Err(OperationsError::InvalidInput {
-                reason: format!(
-                    "prepared face move is stale: the history of a rim band of solid {} \
-                     changed since it was prepared",
                     self.solid.index()
                 ),
             });
