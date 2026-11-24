@@ -94,9 +94,23 @@ const MAX_LINEAGE_STEPS: usize = 4096;
 pub(super) struct RimChamfers {
     /// Faces of every component recognized as a rim chamfer, in face order.
     pub(super) carried: Vec<FaceId>,
+    largest_band: usize,
     /// One face and the reason for every component that stands on walls like
     /// a chamfer but is not recognized as one, in face order.
     pub(super) declined: Vec<(FaceId, String)>,
+}
+
+impl RimChamfers {
+    /// Enforce the rebuild limit when executing with the current lineage.
+    pub(super) fn validate_carry_limit(&self) -> Result<(), OperationsError> {
+        if self.largest_band > MAX_BAND_FACES {
+            return Err(super::reconstruction(format!(
+                "rim chamfer has {} faces, above the carry limit of {MAX_BAND_FACES}",
+                self.largest_band
+            )));
+        }
+        Ok(())
+    }
 }
 
 /// The selected cap's plane: outward normal and offset `n · p`.
@@ -197,13 +211,10 @@ pub(super) fn rim_chamfers(
         }
         component.compact_sort_unstable_by_key(|face| face.index());
         match component_identity(topo, adjacency, &is_selected, &component, cap)? {
-            Ok(()) if component.len() > MAX_BAND_FACES => {
-                return Err(super::reconstruction(format!(
-                    "rim chamfer has {} faces, above the carry limit of {MAX_BAND_FACES}",
-                    component.len()
-                )));
+            Ok(()) => {
+                result.largest_band = result.largest_band.max(component.len());
+                result.carried.extend(component);
             }
-            Ok(()) => result.carried.extend(component),
             Err(reason) => result.declined.push((component[0], reason)),
         }
     }

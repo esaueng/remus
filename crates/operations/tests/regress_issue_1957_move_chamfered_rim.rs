@@ -712,20 +712,24 @@ fn a_chamfered_bore_does_not_override_mixed_outer_rim_refusal() {
     assert_eq!(solid_entity_counts(&topo, solid).unwrap(), counts);
 }
 
+fn regular_prism(topo: &mut Topology, sides: u32) -> SolidId {
+    let points: Vec<_> = (0..sides)
+        .map(|index| {
+            let t = std::f64::consts::TAU * f64::from(index) / f64::from(sides);
+            Point3::new(20.0 * t.cos(), 20.0 * t.sin(), 0.0)
+        })
+        .collect();
+    let profile = remus_topology::builder::make_planar_face(topo, &points, 1e-7).unwrap();
+    extrude(topo, profile, Vec3::new(0.0, 0.0, 1.0), Z).unwrap()
+}
+
 /// A bevel split into many connected patches must not be re-limited as a
 /// draft simply because the rim recognizer reached its work limit.
 #[test]
 fn large_connected_bevel_cannot_fall_through_to_planar_move() {
     const SIDES: u32 = 72;
     let mut topo = Topology::new();
-    let points: Vec<_> = (0..SIDES)
-        .map(|index| {
-            let t = std::f64::consts::TAU * f64::from(index) / f64::from(SIDES);
-            Point3::new(20.0 * t.cos(), 20.0 * t.sin(), 0.0)
-        })
-        .collect();
-    let profile = remus_topology::builder::make_planar_face(&mut topo, &points, 1e-7).unwrap();
-    let solid = extrude(&mut topo, profile, Vec3::new(0.0, 0.0, 1.0), Z).unwrap();
+    let solid = regular_prism(&mut topo, SIDES);
     let rim = edges_where(&topo, solid, bottom_rim);
     assert_eq!(rim.len(), SIDES as usize);
     let solid = chamfer(&mut topo, solid, &rim, CHAMFER);
@@ -746,5 +750,52 @@ fn large_connected_bevel_cannot_fall_through_to_planar_move() {
             error.to_string().contains("above the carry limit"),
             "unexpected refusal: {error}"
         ),
+    }
+}
+
+/// Preparation cannot reject a chamfer on history that the eventual
+/// journaled move will sever before classifying the rim.
+#[test]
+fn prepared_move_defers_oversized_chamfer_refusal_until_after_journal_gap() {
+    let mut topo = Topology::new();
+    let prism = regular_prism(&mut topo, 72);
+    let rim = edges_where(&topo, prism, bottom_rim);
+    let solid = chamfer_journaled(&mut topo, prism, &rim, 0.3, 0.6)
+        .unwrap()
+        .result
+        .solid;
+    make_box(&mut topo, X, Y, Z).unwrap();
+    let face = bottom(&topo, solid);
+    let distance = -0.1;
+
+    let mut direct_topo = topo.clone();
+    let direct = move_faces_journaled(&mut direct_topo, solid, &[face], distance)
+        .expect("the journal gap makes the unequal rim a draft");
+    assert!(
+        validate_solid(&direct_topo, direct.solid)
+            .unwrap()
+            .is_valid()
+    );
+    let expected = solid_volume(&direct_topo, direct.solid, DEFLECTION).unwrap();
+
+    for qualified in [false, true] {
+        let mut preview_topo = topo.clone();
+        let mut prepared = PreparedFaceMove::prepare(&preview_topo, solid, &[face])
+            .expect("preparation must defer the lineage-dependent refusal");
+        let result = if qualified {
+            prepared
+                .move_faces_journaled_with_quality(&mut preview_topo, distance, None)
+                .unwrap()
+                .0
+        } else {
+            prepared
+                .move_faces_journaled(&mut preview_topo, distance)
+                .unwrap()
+        };
+        let actual = solid_volume(&preview_topo, result.solid, DEFLECTION).unwrap();
+        assert!(
+            (actual - expected).abs() < 1e-7,
+            "prepared {actual}, direct {expected}"
+        );
     }
 }

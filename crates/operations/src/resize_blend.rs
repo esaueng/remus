@@ -2292,6 +2292,7 @@ fn translation_invariant_blend_region(
     // rather than carrying it as well. An axial mouth is a chamfer too,
     // so its presence does not exempt an ambiguous outer rim.
     let rim = rim_chamfer::rim_chamfers(topo, &adjacency, selected_faces, direction)?;
+    rim.validate_carry_limit()?;
     if !has_tangent_blend
         && !rim.carried.is_empty()
         && let Some((face, reason)) = rim.declined.first()
