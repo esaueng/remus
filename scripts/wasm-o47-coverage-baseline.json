@@ -1971,6 +1971,16 @@
       "reason": "O4.7 twin; the typed surface itself, no further twin required"
     },
     {
+      "js": "moveFacesDetailedWithOptions",
+      "rust": "move_faces_detailed_with_options",
+      "file": "bindings/modifier_detailed.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "O4.7",
+      "reason": "Typed solid envelope of moveFacesDetailed with caller options (#1957: how a history-free rim band is read); the typed surface itself, no further twin required."
+    },
+    {
       "js": "moveFacesJournaled",
       "rust": "move_faces_journaled_js",
       "file": "bindings/evolution.rs",
@@ -2008,6 +2018,16 @@
       "coverage": "special",
       "owner": "B287",
       "reason": "O4.7 twin of moveFacesMulti; the typed surface itself, no further twin required"
+    },
+    {
+      "js": "moveFacesMultiDetailedWithOptions",
+      "rust": "move_faces_multi_detailed_with_options",
+      "file": "bindings/modifier_detailed.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B287",
+      "reason": "Typed solid envelope of moveFacesMultiDetailed with caller options (#1957: how a history-free rim band is read); the typed surface itself, no further twin required."
     },
     {
       "js": "moveFacesMultiJournaled",
@@ -2832,6 +2852,16 @@
       "coverage": "special",
       "owner": "B30",
       "reason": "prepared-move session handle; reads the topology only, no solid twin applicable"
+    },
+    {
+      "js": "prepareMoveFacesWithOptions",
+      "rust": "prepare_move_faces_with_options",
+      "file": "bindings/prepared_move.rs",
+      "gate": "shipped",
+      "class": "lifecycle_session",
+      "coverage": "special",
+      "owner": "B30",
+      "reason": "prepared-move session handle with caller options (#1957); reads the topology only, no solid twin applicable"
     },
     {
       "js": "releasePreparedMove",

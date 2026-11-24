@@ -499,6 +499,23 @@ pub enum OperationsError {
         threshold: f64,
     },
 
+    /// A history-free band on the moved cap's rim could be a chamfer or a
+    /// draft (#1957): the move refuses rather than guess, leaving the source
+    /// untouched. Resolve it with
+    /// [`MoveFacesOptions`](crate::push_pull::MoveFacesOptions).
+    #[error(
+        "ambiguous rim band: face {} between cap {} and wall {} (cap edge {}, setbacks {} on the \
+         cap and {} on the wall) has no history that reads it as a chamfer or a draft; pass an \
+         explicit ambiguous-rim resolution (treat as chamfer, or treat as draft)",
+        .0.face.index(),
+        .0.cap.index(),
+        .0.wall.index(),
+        .0.edge.index(),
+        .0.cap_setback,
+        .0.wall_setback
+    )]
+    AmbiguousRimChamfer(error_payloads::AmbiguousRimBand),
+
     /// A referenced topology entity was not found.
     #[error(transparent)]
     Topology(#[from] remus_topology::TopologyError),

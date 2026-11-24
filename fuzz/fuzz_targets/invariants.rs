@@ -1119,6 +1119,7 @@ pub fn exact_boolean_outcome(
                 remus_operations::OperationsError::PatternInstancesOverlap { .. } => {
                     "PatternInstancesOverlap"
                 }
+                remus_operations::OperationsError::AmbiguousRimChamfer(_) => "AmbiguousRimChamfer",
                 remus_operations::OperationsError::Topology(_) => "Topology",
                 remus_operations::OperationsError::Math(_) => "Math",
                 remus_operations::OperationsError::Algo(_) => "Algo",

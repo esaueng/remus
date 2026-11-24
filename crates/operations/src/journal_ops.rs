@@ -945,6 +945,26 @@ pub fn move_faces_journaled(
     })
 }
 
+/// [`move_faces_journaled`] with explicit caller `options`
+/// ([`crate::push_pull::MoveFacesOptions`]), for example to read a
+/// history-free rim band as a chamfer or a draft.
+///
+/// # Errors
+///
+/// The refusals of [`move_faces_journaled`]; every failure restores
+/// topology and history together.
+pub fn move_faces_journaled_with_options(
+    topo: &mut Topology,
+    solid: SolidId,
+    faces: &[remus_topology::FaceId],
+    distance: f64,
+    options: crate::push_pull::MoveFacesOptions,
+) -> Result<JournaledSolidOp, OperationsError> {
+    crate::push_pull::with_move_options(options, || {
+        move_faces_journaled(topo, solid, faces, distance)
+    })
+}
+
 /// [`move_faces_journaled`] with explicit sampled-reconstruction permission.
 ///
 /// Returns construction quality alongside the journaled result. Exact-only

@@ -108,8 +108,23 @@ pub(crate) fn move_faces_multi_with_entity_evolution(
     if let Some(distance) = remus_offset::coplanar_group_distance(topo, faces, distances)? {
         return crate::push_pull::move_faces_with_entity_evolution(topo, solid, faces, distance);
     }
+    // A zero or non-finite distance is the solver's own refusal, whatever
+    // the rim.
+    if distances_valid(distances)
+        && let Some(refusal) = crate::resize_blend::multi_move_rim_refusal(topo, solid, faces)?
+    {
+        return Err(refusal.to_error());
+    }
     let checks = MultiChecks::prepare(topo, solid, faces)?;
     multi_edit(topo, solid, faces, distances, checks.as_ref())
+}
+
+/// Whether every distance is one the multi-face solver accepts (finite and
+/// non-zero); the rim refusal never masks the solver's own.
+fn distances_valid(distances: &[f64]) -> bool {
+    distances
+        .iter()
+        .all(|distance| distance.is_finite() && distance.abs() > 0.0)
 }
 
 /// The selection-size refusals, before anything reads the faces.
@@ -472,6 +487,12 @@ pub(crate) struct PreparedMultiMove {
     /// the selection is one coplanar group (so every call is that move).
     group: Option<PreparedPlanarMove>,
     checks: Option<MultiChecks>,
+    /// The rim refusal every call that is not the coplanar move returns.
+    rim_refusal: Option<crate::resize_blend::MultiRimRefusal>,
+    /// The journal lineage the rim refusal was read under: a call after it
+    /// changed (a barrier can sever a band's history on unchanged geometry)
+    /// runs the unprepared move.
+    lineage_key: std::sync::Arc<()>,
 }
 
 impl PreparedMultiMove {
@@ -511,6 +532,8 @@ impl PreparedMultiMove {
             weights,
             group,
             checks: MultiChecks::prepare(topo, solid, faces)?,
+            rim_refusal: crate::resize_blend::multi_move_rim_refusal(topo, solid, faces)?,
+            lineage_key: std::sync::Arc::clone(topo.journal().lineage_key()),
         })
     }
 
@@ -532,6 +555,9 @@ impl PreparedMultiMove {
         distance: f64,
     ) -> Result<DirectEditEvolution, OperationsError> {
         let distances = self.distances(distance);
+        if !std::sync::Arc::ptr_eq(&self.lineage_key, topo.journal().lineage_key()) {
+            return move_faces_multi_with_entity_evolution(topo, solid, faces, &distances);
+        }
         if let Some(group_distance) =
             remus_offset::coplanar_group_distance(topo, faces, &distances)?
         {
@@ -544,6 +570,11 @@ impl PreparedMultiMove {
                     group_distance,
                 ),
             };
+        }
+        if let Some(refusal) = &self.rim_refusal
+            && distances_valid(&distances)
+        {
+            return Err(refusal.to_error());
         }
         multi_edit(topo, solid, faces, &distances, self.checks.as_ref())
     }

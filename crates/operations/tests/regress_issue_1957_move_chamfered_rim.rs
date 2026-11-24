@@ -12,9 +12,12 @@
 //!
 //! The other side of the criterion (`resize_blend/rim_chamfer.rs`): a draft
 //! (a frustum side, or a tapered section standing on straight walls) has the
-//! shape of a chamfer band but is re-limited, never carried. Without journal
-//! history a band is a chamfer only with equal setbacks; with history, only
-//! when a `chamfer` entry generated it.
+//! shape of a chamfer band but is re-limited, never carried. A band the
+//! journal traces to a `chamfer` entry is carried; one it traces to any other
+//! entry is a draft. Without that history, geometry cannot tell the two
+//! apart (equal setbacks describe a 45° draft too), so the move refuses with
+//! `AmbiguousRimChamfer` unless the caller resolves it
+//! (`MoveFacesOptions::with_ambiguous_rim`).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -26,11 +29,16 @@ use remus_operations::OperationsError;
 use remus_operations::blend_ops::{chamfer_v2, fillet_cascade, planar_chamfer_with_origins};
 use remus_operations::boolean::{BooleanOp, boolean};
 use remus_operations::extrude::extrude;
-use remus_operations::journal_ops::{chamfer_journaled, move_faces_journaled, solid_entity_keys};
+use remus_operations::journal_ops::{
+    chamfer_journaled, extrude_journaled, move_faces_journaled, move_faces_journaled_with_options,
+    solid_entity_keys,
+};
 use remus_operations::measure::{face_area, solid_bounding_box, solid_volume};
 use remus_operations::prepared_move::PreparedFaceMove;
 use remus_operations::primitives::make_box;
-use remus_operations::push_pull::move_faces;
+use remus_operations::push_pull::{
+    AmbiguousRimResolution, MoveFacesOptions, move_faces, move_faces_with_options,
+};
 use remus_operations::tessellate::{is_watertight, tessellate_solid_with_tolerance};
 use remus_operations::transform::transform_solid;
 use remus_operations::validate::validate_solid;
@@ -119,8 +127,13 @@ fn rounded_box(topo: &mut Topology) -> SolidId {
     fillet_cascade(topo, solid, &edges, ROUND).unwrap().solid
 }
 
+const AS_CHAMFER: MoveFacesOptions =
+    MoveFacesOptions::new().with_ambiguous_rim(AmbiguousRimResolution::TreatAsChamfer);
+const AS_DRAFT: MoveFacesOptions =
+    MoveFacesOptions::new().with_ambiguous_rim(AmbiguousRimResolution::TreatAsDraft);
+
 /// A symmetric chamfer as the app builds one: the planar bevel first, the
-/// general engine after.
+/// general engine after. Unjournaled: the band has no history.
 fn chamfer(topo: &mut Topology, solid: SolidId, edges: &[EdgeId], distance: f64) -> SolidId {
     match planar_chamfer_with_origins(topo, solid, edges, distance) {
         Ok((chamfered, _)) => chamfered,
@@ -168,6 +181,7 @@ fn assert_carried(
     distance: f64,
     section: f64,
     label: &str,
+    options: MoveFacesOptions,
 ) -> SolidId {
     let face = bottom(topo, solid);
     let counts = solid_entity_counts(topo, solid).unwrap();
@@ -176,8 +190,9 @@ fn assert_carried(
     let before = solid_bounding_box(topo, solid).unwrap();
     let face_before = face_area(topo, face, DEFLECTION).unwrap();
 
-    let moved = move_faces(topo, solid, &[face], distance)
-        .unwrap_or_else(|error| panic!("{label}, move {distance}: {error}"));
+    let moved = move_faces_with_options(topo, solid, &[face], distance, options)
+        .unwrap_or_else(|error| panic!("{label}, move {distance}: {error}"))
+        .solid;
 
     assert!(
         validate_solid(topo, moved).unwrap().is_valid(),
@@ -231,7 +246,8 @@ fn assert_carried(
     );
 
     // The prepared (drag) path gives the same body.
-    let mut prepared = PreparedFaceMove::prepare(topo, solid, &[face]).unwrap();
+    let mut prepared =
+        PreparedFaceMove::prepare_with_options(topo, solid, &[face], options).unwrap();
     let dragged = prepared.move_faces(topo, distance).unwrap().solid;
     assert_eq!(solid_entity_counts(topo, dragged).unwrap(), counts);
     let dragged_volume = solid_volume(topo, dragged, DEFLECTION).unwrap();
@@ -243,24 +259,38 @@ fn assert_carried(
     moved
 }
 
-/// The bodies of the issue's repro, each with its wall section.
-fn issue_bodies(topo: &mut Topology) -> Vec<(&'static str, SolidId, f64)> {
+/// The bodies of the issue's repro, each with its wall section. With
+/// `journaled`, each chamfer is recorded in the journal; without, the bands
+/// have no history (as after an import). The blanks are built first: an
+/// unjournaled edit between two journaled ones leaves a barrier that severs
+/// the earlier band's history.
+fn issue_bodies(topo: &mut Topology, journaled: bool) -> Vec<(&'static str, SolidId, f64)> {
     let rounded = rounded_box(topo);
-    let rim = edges_where(topo, rounded, bottom_rim);
-    let rounded_chamfer = chamfer(topo, rounded, &rim, CHAMFER);
-
+    let rounded_rim = edges_where(topo, rounded, bottom_rim);
     let sharp = make_box(topo, X, Y, Z).unwrap();
-    let rim = edges_where(topo, sharp, bottom_rim);
-    let sharp_chamfer = chamfer(topo, sharp, &rim, CHAMFER);
-
-    let sharp = make_box(topo, X, Y, Z).unwrap();
-    let one = edges_where(topo, sharp, front_bottom);
+    let sharp_rim = edges_where(topo, sharp, bottom_rim);
+    let single = make_box(topo, X, Y, Z).unwrap();
+    let one = edges_where(topo, single, front_bottom);
     assert_eq!(one.len(), 1);
-    let one_edge = chamfer(topo, sharp, &one, CHAMFER);
+    let control_blank = rounded_box(topo);
+    let control_rim = edges_where(topo, control_blank, bottom_rim);
 
-    let rounded = rounded_box(topo);
-    let rim = edges_where(topo, rounded, bottom_rim);
-    let control = fillet_cascade(topo, rounded, &rim, CHAMFER).unwrap().solid;
+    let cut = |topo: &mut Topology, solid: SolidId, edges: &[EdgeId]| {
+        if journaled {
+            chamfer_journaled(topo, solid, edges, CHAMFER, CHAMFER)
+                .unwrap()
+                .result
+                .solid
+        } else {
+            chamfer(topo, solid, edges, CHAMFER)
+        }
+    };
+    let rounded_chamfer = cut(topo, rounded, &rounded_rim);
+    let sharp_chamfer = cut(topo, sharp, &sharp_rim);
+    let one_edge = cut(topo, single, &one);
+    let control = fillet_cascade(topo, control_blank, &control_rim, CHAMFER)
+        .unwrap()
+        .solid;
 
     vec![
         (
@@ -282,13 +312,68 @@ fn issue_bodies(topo: &mut Topology) -> Vec<(&'static str, SolidId, f64)> {
     ]
 }
 
+/// Journaled chamfers travel with the moved face by default; history-free
+/// ones when the caller reads them as chamfers.
 #[test]
 fn chamfered_rims_travel_with_the_moved_face() {
     for distance in [2.0, -2.0, 0.1, -0.1, 20.0, -15.0, -19.6] {
-        let mut topo = Topology::new();
-        for (label, solid, section) in issue_bodies(&mut topo) {
-            assert_carried(&mut topo, solid, distance, section, label);
+        for (journaled, options) in [(true, MoveFacesOptions::default()), (false, AS_CHAMFER)] {
+            let mut topo = Topology::new();
+            for (label, solid, section) in issue_bodies(&mut topo, journaled) {
+                let label = format!("{label}, journaled {journaled}");
+                assert_carried(&mut topo, solid, distance, section, &label, options);
+            }
         }
+    }
+}
+
+/// Without history a chamfer band and a draft have one shape: the default
+/// move refuses, naming the band, on the direct, journaled and prepared
+/// paths, and leaves the source as it was. The fillet control still moves.
+#[test]
+fn history_free_chamfered_rims_refuse_by_default() {
+    let mut topo = Topology::new();
+    for (label, solid, _) in issue_bodies(&mut topo, false) {
+        let face = bottom(&topo, solid);
+        let counts = solid_entity_counts(&topo, solid).unwrap();
+        let volume = solid_volume(&topo, solid, DEFLECTION).unwrap();
+        let journal = topo.journal().entries().len();
+        if label.starts_with("control") {
+            move_faces(&mut topo, solid, &[face], 2.0).unwrap();
+            continue;
+        }
+        let mut prepared = PreparedFaceMove::prepare(&topo, solid, &[face]).unwrap();
+        let errors = [
+            move_faces(&mut topo, solid, &[face], 2.0).unwrap_err(),
+            move_faces_journaled(&mut topo, solid, &[face], -2.0).unwrap_err(),
+            prepared.move_faces(&mut topo, 2.0).unwrap_err(),
+            prepared.move_faces_journaled(&mut topo, -2.0).unwrap_err(),
+        ];
+        for error in errors {
+            let OperationsError::AmbiguousRimChamfer(band) = error else {
+                panic!("{label}: expected an ambiguous-rim refusal, got {error}");
+            };
+            assert_eq!(band.cap, face, "{label}");
+            assert!(
+                (band.cap_setback - CHAMFER).abs() < 1e-9
+                    && (band.wall_setback - CHAMFER).abs() < 1e-9,
+                "{label}: setbacks {band:?}"
+            );
+            let edge = topo.edge(band.edge).unwrap();
+            for vertex in [edge.start(), edge.end()] {
+                assert!(topo.vertex(vertex).unwrap().point().z().abs() < 1e-9);
+            }
+            assert!(
+                topo.face(band.wall)
+                    .unwrap()
+                    .effective_plane_normal()
+                    .is_none_or(|n| n.z().abs() < 1e-9),
+                "{label}: the wall is not vertical"
+            );
+        }
+        assert_eq!(solid_entity_counts(&topo, solid).unwrap(), counts);
+        assert!((solid_volume(&topo, solid, DEFLECTION).unwrap() - volume).abs() <= 1e-9 * volume);
+        assert_eq!(topo.journal().entries().len(), journal, "{label}");
     }
 }
 
@@ -298,11 +383,12 @@ fn chamfered_rims_travel_with_the_moved_face() {
 fn a_carried_chamfer_refuses_to_cross_the_far_face() {
     for distance in [-19.7, -20.0, -25.0] {
         let mut topo = Topology::new();
-        for (label, solid, _) in issue_bodies(&mut topo) {
+        for (label, solid, _) in issue_bodies(&mut topo, false) {
             let face = bottom(&topo, solid);
             let counts = solid_entity_counts(&topo, solid).unwrap();
             let volume = solid_volume(&topo, solid, DEFLECTION).unwrap();
-            let error = move_faces(&mut topo, solid, &[face], distance)
+            let error = move_faces_with_options(&mut topo, solid, &[face], distance, AS_CHAMFER)
+                .map(|moved| moved.solid)
                 .expect_err(&format!("{label}: a move of {distance} must refuse"));
             assert!(
                 matches!(
@@ -367,20 +453,23 @@ fn journaled_two_distance_and_distance_angle_chamfers_travel() {
                 );
                 // The moved band keeps its history through the move.
                 for distance in [-3.0, 2.0] {
-                    assert_carried(&mut topo, first, distance, section, &label);
+                    let options = MoveFacesOptions::default();
+                    assert_carried(&mut topo, first, distance, section, &label, options);
                 }
                 for distance in [2.0, -2.0] {
-                    assert_carried(&mut topo, solid, distance, section, &label);
+                    let options = MoveFacesOptions::default();
+                    assert_carried(&mut topo, solid, distance, section, &label, options);
                 }
             }
         }
     }
 }
 
-/// Without journal history, unequal setbacks are read as a draft: the band is
-/// not carried (the move re-limits it, or refuses over rounded corners).
+/// Without journal history, unequal setbacks are as ambiguous as equal ones:
+/// the default move refuses; read as a draft the band is re-limited (or the
+/// move refuses over rounded corners), read as a chamfer it is carried.
 #[test]
-fn unjournaled_unequal_setbacks_are_not_carried() {
+fn unjournaled_unequal_setbacks_follow_the_caller() {
     for rounded in [false, true] {
         let mut topo = Topology::new();
         let body = if rounded {
@@ -397,17 +486,33 @@ fn unjournaled_unequal_setbacks_are_not_carried() {
         };
         let volume = solid_volume(&topo, solid, DEFLECTION).unwrap();
         let face = bottom(&topo, solid);
-        if let Ok(moved) = move_faces(&mut topo, solid, &[face], -2.0) {
-            let change = solid_volume(&topo, moved, DEFLECTION).unwrap() - volume;
+        let error = move_faces(&mut topo, solid, &[face], -0.2).unwrap_err();
+        let OperationsError::AmbiguousRimChamfer(band) = error else {
+            panic!("rounded {rounded}: expected an ambiguous-rim refusal, got {error}");
+        };
+        let setbacks = [
+            band.cap_setback.min(band.wall_setback),
+            band.cap_setback.max(band.wall_setback),
+        ];
+        assert!(
+            (setbacks[0] - 0.3).abs() < 1e-9 && (setbacks[1] - 0.6).abs() < 1e-9,
+            "rounded {rounded}: {band:?}"
+        );
+        if let Ok(moved) = move_faces_with_options(&mut topo, solid, &[face], -0.2, AS_DRAFT) {
+            let change = solid_volume(&topo, moved.solid, DEFLECTION).unwrap() - volume;
             assert!(
-                (change + 2.0 * section).abs() > 1.0,
-                "rounded {rounded}: an unrecorded two-distance band was carried"
+                (change + 0.2 * section).abs() > 0.1,
+                "rounded {rounded}: a band read as a draft was carried"
             );
+        }
+        for distance in [2.0, -2.0] {
+            let label = format!("unjournaled 0.3/0.6, rounded {rounded}");
+            assert_carried(&mut topo, solid, distance, section, &label, AS_CHAMFER);
         }
     }
 }
 
-/// A rim holding a recognized chamfer and a band that is not one refuses: the
+/// A rim holding a recognized chamfer and a band read as a draft refuses: the
 /// translation cannot carry one and re-limit the other.
 #[test]
 fn a_rim_mixing_a_chamfer_and_a_draft_refuses() {
@@ -420,13 +525,46 @@ fn a_rim_mixing_a_chamfer_and_a_draft_refuses() {
     let solid = chamfer_v2(&mut topo, solid, &back, 0.3, 0.6).unwrap().solid;
     let face = bottom(&topo, solid);
     let counts = solid_entity_counts(&topo, solid).unwrap();
-    let error = move_faces(&mut topo, solid, &[face], -2.0)
+    // The back band, recorded as made by something other than a chamfer, is
+    // a draft; the front band, with no history, is read as a chamfer.
+    let back_band = solid_faces(&topo, solid)
+        .unwrap()
+        .into_iter()
+        .find(|&band| {
+            topo.face(band)
+                .unwrap()
+                .effective_plane_normal()
+                .is_some_and(|n| n.y() > 1e-9 && n.z() < -1e-9)
+        })
+        .unwrap();
+    record_as_made_by(&mut topo, &[back_band], "taper_fixture");
+    let error = move_faces_with_options(&mut topo, solid, &[face], -0.2, AS_CHAMFER)
         .expect_err("a chamfer and a draft on one rim must refuse");
     assert!(
         error.to_string().contains("mixes a chamfer"),
         "unexpected refusal: {error}"
     );
     assert_eq!(solid_entity_counts(&topo, solid).unwrap(), counts);
+}
+
+/// Records every entity of `faces` as generated by a `kind` entry.
+fn record_as_made_by(topo: &mut Topology, faces: &[FaceId], kind: &str) {
+    let pending = topo.journal_begin(kind);
+    let keys: Vec<_> = faces
+        .iter()
+        .map(|face| remus_topology::journal::EntityKey::face(face.index()))
+        .collect();
+    let mut draft = EvolutionDraft::construction();
+    draft.add_scope(keys.iter().copied());
+    for key in &keys {
+        draft.push(
+            *key,
+            EventDraft::Generated {
+                sources: Vec::new(),
+            },
+        );
+    }
+    topo.journal_record_evolution(pending, draft).unwrap();
 }
 
 /// A prism of the profile `points` (in x–z) extruded 40 along y.
@@ -470,6 +608,7 @@ fn assert_relimited(
     before: &[[f64; 2]],
     after: &[[f64; 2]],
     label: &str,
+    options: MoveFacesOptions,
 ) {
     let face = face_facing(topo, solid, Vec3::new(0.0, 0.0, 1.0));
     let volume = solid_volume(topo, solid, DEFLECTION).unwrap();
@@ -477,8 +616,9 @@ fn assert_relimited(
         (volume - Y * profile_area(before)).abs() < 1e-6,
         "{label}: source volume"
     );
-    let moved = move_faces(topo, solid, &[face], distance)
-        .unwrap_or_else(|error| panic!("{label}: {error}"));
+    let moved = move_faces_with_options(topo, solid, &[face], distance, options)
+        .unwrap_or_else(|error| panic!("{label}: {error}"))
+        .solid;
     assert!(validate_solid(topo, moved).unwrap().is_valid(), "{label}");
     let expected = Y * profile_area(after);
     let got = solid_volume(topo, moved, DEFLECTION).unwrap();
@@ -501,13 +641,53 @@ fn a_frustum_side_is_relimited() {
     ];
     let mut topo = Topology::new();
     let solid = prism(&mut topo, &before);
-    assert_relimited(&mut topo, solid, 2.0, &before, &after, "frustum");
+    assert_relimited(
+        &mut topo,
+        solid,
+        2.0,
+        &before,
+        &after,
+        "frustum",
+        MoveFacesOptions::default(),
+    );
 }
 
-/// A tapered section standing on straight walls, its setbacks unequal (2 on
-/// the cap, 5 on the walls): a draft, re-limited.
+/// Moves the top of the prism of `before` up by `distance` and checks the
+/// sloped band was carried: the profile keeps its shape above the walls,
+/// which lengthen by `distance`.
+fn assert_section_carried(
+    topo: &mut Topology,
+    solid: SolidId,
+    distance: f64,
+    before: &[[f64; 2]],
+    options: MoveFacesOptions,
+    label: &str,
+) {
+    let face = face_facing(topo, solid, Vec3::new(0.0, 0.0, 1.0));
+    let area = face_area(topo, face, DEFLECTION).unwrap();
+    let moved = move_faces_with_options(topo, solid, &[face], distance, options)
+        .unwrap_or_else(|error| panic!("{label}: {error}"))
+        .solid;
+    assert!(validate_solid(topo, moved).unwrap().is_valid(), "{label}");
+    let expected = Y * (profile_area(before) + distance * X);
+    let got = solid_volume(topo, moved, DEFLECTION).unwrap();
+    assert!(
+        (got - expected).abs() < 1e-6 * expected,
+        "{label}: volume {got}, carried is {expected}"
+    );
+    let top = face_facing(topo, moved, Vec3::new(0.0, 0.0, 1.0));
+    assert!((face_area(topo, top, DEFLECTION).unwrap() - area).abs() < 1e-9 * area);
+    let bounds = solid_bounding_box(topo, moved).unwrap();
+    assert!((bounds.max.z() - (15.0 + distance)).abs() < 1e-9, "{label}");
+    assert!(bounds.min.x().abs() < 1e-9 && (bounds.max.x() - X).abs() < 1e-9);
+}
+
+/// A tapered section standing on straight walls (2 on the cap, 5 on the
+/// walls) with no history: refused by default, re-limited as a draft,
+/// carried as a chamfer, whichever the caller reads it as. Through the
+/// prepared path too.
 #[test]
-fn a_tapered_section_on_straight_walls_is_relimited() {
+fn a_tapered_section_on_straight_walls_follows_the_caller() {
     let before = [
         [0.0, 0.0],
         [X, 0.0],
@@ -526,13 +706,29 @@ fn a_tapered_section_on_straight_walls_is_relimited() {
     ];
     let mut topo = Topology::new();
     let solid = prism(&mut topo, &before);
-    assert_relimited(&mut topo, solid, 2.0, &before, &after, "tapered section");
+    let face = face_facing(&topo, solid, Vec3::new(0.0, 0.0, 1.0));
+    let error = move_faces(&mut topo, solid, &[face], 2.0).unwrap_err();
+    assert!(
+        matches!(error, OperationsError::AmbiguousRimChamfer(_)),
+        "unexpected refusal: {error}"
+    );
+    let mut prepared = PreparedFaceMove::prepare(&topo, solid, &[face]).unwrap();
+    assert!(matches!(
+        prepared.move_faces(&mut topo, 2.0),
+        Err(OperationsError::AmbiguousRimChamfer(_))
+    ));
+    let label = "tapered section read as a draft";
+    assert_relimited(&mut topo, solid, 2.0, &before, &after, label, AS_DRAFT);
+    let label = "tapered section read as a chamfer";
+    assert_section_carried(&mut topo, solid, 2.0, &before, AS_CHAMFER, label);
 }
 
 /// A 45° section standing on straight walls has the equal setbacks of a
-/// chamfer. Without history it is read as one and carried; when the journal
-/// records it as generated by another operation, it is a draft and is
-/// re-limited.
+/// symmetric chamfer. Without history it is ambiguous: refused by default,
+/// carried or re-limited when the caller says which. When the journal records
+/// it as made by another operation (a fixture entry, or a journaled
+/// extrusion of the tapered profile) it is a draft and is re-limited by
+/// default.
 #[test]
 fn journal_history_decides_an_equal_setback_section() {
     let before = [
@@ -555,18 +751,21 @@ fn journal_history_decides_an_equal_setback_section() {
     let mut topo = Topology::new();
     let solid = prism(&mut topo, &before);
     let face = face_facing(&topo, solid, Vec3::new(0.0, 0.0, 1.0));
-    let volume = solid_volume(&topo, solid, DEFLECTION).unwrap();
-    let moved = move_faces(&mut topo, solid, &[face], 2.0).unwrap();
-    let change = solid_volume(&topo, moved, DEFLECTION).unwrap() - volume;
-    assert!(
-        (change - 2.0 * X * Y).abs() < 1e-6 * X * Y,
-        "an unrecorded 45° section is carried as a chamfer: volume changed by {change}"
-    );
+    let error = move_faces(&mut topo, solid, &[face], 2.0).unwrap_err();
+    let OperationsError::AmbiguousRimChamfer(band) = error else {
+        panic!("an unrecorded 45° section must refuse, got {error}");
+    };
+    assert_eq!(band.cap, face);
+    assert!((band.cap_setback - 5.0).abs() < 1e-9 && (band.wall_setback - 5.0).abs() < 1e-9);
+    let label = "unrecorded 45° section read as a chamfer";
+    assert_section_carried(&mut topo, solid, 2.0, &before, AS_CHAMFER, label);
+    let label = "unrecorded 45° section read as a draft";
+    assert_relimited(&mut topo, solid, 2.0, &before, &after, label, AS_DRAFT);
 
     let mut topo = Topology::new();
     let solid = prism(&mut topo, &before);
-    let pending = topo.journal_begin("taper_fixture");
     let keys = solid_entity_keys(&topo, solid).unwrap();
+    let pending = topo.journal_begin("taper_fixture");
     let mut draft = EvolutionDraft::construction();
     draft.add_scope(keys.iter().copied());
     for key in &keys {
@@ -578,7 +777,61 @@ fn journal_history_decides_an_equal_setback_section() {
         );
     }
     topo.journal_record_evolution(pending, draft).unwrap();
-    assert_relimited(&mut topo, solid, 2.0, &before, &after, "recorded taper");
+    let options = MoveFacesOptions::default();
+    assert_relimited(
+        &mut topo,
+        solid,
+        2.0,
+        &before,
+        &after,
+        "recorded taper",
+        options,
+    );
+    // History outranks the caller's reading: a recorded draft is re-limited
+    // even when the caller would read ambiguous bands as chamfers.
+    let label = "recorded taper, caller reads ambiguity as chamfer";
+    assert_relimited(&mut topo, solid, 2.0, &before, &after, label, AS_CHAMFER);
+
+    // A journaled extrusion of the tapered profile is a draft too, through the
+    // journaled and prepared moves as well.
+    let mut topo = Topology::new();
+    let points: Vec<Point3> = before
+        .iter()
+        .map(|p| Point3::new(p[0], 0.0, p[1]))
+        .collect();
+    let profile = remus_topology::builder::make_planar_face(&mut topo, &points, 1e-7).unwrap();
+    let normal = topo
+        .face(profile)
+        .unwrap()
+        .effective_plane_normal()
+        .unwrap();
+    let direction = Vec3::new(0.0, -normal.y().signum(), 0.0);
+    let solid = extrude_journaled(&mut topo, profile, direction, Y)
+        .unwrap()
+        .solid;
+    // The journaled move first: an unjournaled move before it would leave a
+    // barrier severing the band's history.
+    let options = MoveFacesOptions::default();
+    let face = face_facing(&topo, solid, Vec3::new(0.0, 0.0, 1.0));
+    let expected = Y * profile_area(&after);
+    let journaled = move_faces_journaled_with_options(&mut topo, solid, &[face], 2.0, options)
+        .unwrap()
+        .solid;
+    let got = solid_volume(&topo, journaled, DEFLECTION).unwrap();
+    assert!((got - expected).abs() < 1e-6 * expected, "journaled: {got}");
+    let mut prepared = PreparedFaceMove::prepare(&topo, solid, &[face]).unwrap();
+    let dragged = prepared.move_faces(&mut topo, 2.0).unwrap().solid;
+    let got = solid_volume(&topo, dragged, DEFLECTION).unwrap();
+    assert!((got - expected).abs() < 1e-6 * expected, "prepared: {got}");
+    assert_relimited(
+        &mut topo,
+        solid,
+        2.0,
+        &before,
+        &after,
+        "extruded taper",
+        options,
+    );
 }
 
 /// The carried chamfer sweeps material the cap's own sweep does not: a
@@ -595,7 +848,7 @@ fn a_carried_chamfer_refuses_to_sweep_through_a_cavity() {
     let solid = boolean(&mut topo, BooleanOp::Cut, solid, cavity).unwrap();
     let face = bottom(&topo, solid);
     let counts = solid_entity_counts(&topo, solid).unwrap();
-    let error = move_faces(&mut topo, solid, &[face], -2.0)
+    let error = move_faces_with_options(&mut topo, solid, &[face], -2.0, AS_CHAMFER)
         .expect_err("the chamfer would sweep through the cavity");
     assert!(
         error
@@ -612,7 +865,7 @@ fn a_carried_chamfer_refuses_to_sweep_through_a_cavity() {
 fn a_translated_body_carries_its_chamfer_the_same() {
     for offset in [1e3, 4e6] {
         let mut topo = Topology::new();
-        for (label, solid, section) in issue_bodies(&mut topo) {
+        for (label, solid, section) in issue_bodies(&mut topo, false) {
             transform_solid(
                 &mut topo,
                 solid,
@@ -622,8 +875,10 @@ fn a_translated_body_carries_its_chamfer_the_same() {
             for distance in [2.0, -2.0] {
                 let face = bottom(&topo, solid);
                 let volume = solid_volume(&topo, solid, DEFLECTION).unwrap();
-                let moved = move_faces(&mut topo, solid, &[face], distance)
-                    .unwrap_or_else(|error| panic!("{label} at {offset}: {error}"));
+                let moved =
+                    move_faces_with_options(&mut topo, solid, &[face], distance, AS_CHAMFER)
+                        .unwrap_or_else(|error| panic!("{label} at {offset}: {error}"))
+                        .solid;
                 let change = solid_volume(&topo, moved, DEFLECTION).unwrap() - volume;
                 let expected = distance * section;
                 assert!(
@@ -636,8 +891,9 @@ fn a_translated_body_carries_its_chamfer_the_same() {
     }
 }
 
-/// A journal gap introduced by an unrelated edit changes the identity
-/// evidence available to both the direct and prepared journaled moves.
+/// A journal gap introduced by an unrelated edit severs the band's history
+/// for the direct and the prepared journaled moves alike: both refuse it as
+/// ambiguous, and read as a draft both build the same body.
 #[test]
 fn prepared_journaled_move_uses_the_same_chamfer_identity_after_a_gap() {
     let mut topo = Topology::new();
@@ -651,35 +907,52 @@ fn prepared_journaled_move_uses_the_same_chamfer_identity_after_a_gap() {
     let face = bottom(&topo, solid);
 
     let mut direct_topo = topo.clone();
-    let direct = move_faces_journaled(&mut direct_topo, solid, &[face], 1.5)
+    assert!(matches!(
+        move_faces_journaled(&mut direct_topo, solid, &[face], 1.5),
+        Err(OperationsError::AmbiguousRimChamfer(_))
+    ));
+    let direct = move_faces_journaled_with_options(&mut direct_topo, solid, &[face], 1.5, AS_DRAFT)
         .unwrap()
         .solid;
     let direct_volume = solid_volume(&direct_topo, direct, DEFLECTION).unwrap();
 
     for (multi, qualified) in [(false, false), (false, true), (true, false), (true, true)] {
-        let mut preview_topo = topo.clone();
-        let mut prepared = if multi {
-            PreparedFaceMove::prepare_multi(&preview_topo, solid, &[face], &[])
-        } else {
-            PreparedFaceMove::prepare(&preview_topo, solid, &[face])
+        for options in [MoveFacesOptions::default(), AS_DRAFT] {
+            let mut preview_topo = topo.clone();
+            let mut prepared = if multi {
+                PreparedFaceMove::prepare_multi_with_options(
+                    &preview_topo,
+                    solid,
+                    &[face],
+                    &[],
+                    options,
+                )
+            } else {
+                PreparedFaceMove::prepare_with_options(&preview_topo, solid, &[face], options)
+            }
+            .unwrap();
+            let moved = if qualified {
+                prepared
+                    .move_faces_journaled_with_quality(&mut preview_topo, 1.5, None)
+                    .map(|(moved, _)| moved)
+            } else {
+                prepared.move_faces_journaled(&mut preview_topo, 1.5)
+            };
+            if options == AS_DRAFT {
+                let moved = moved.unwrap();
+                let prepared_volume = solid_volume(&preview_topo, moved.solid, DEFLECTION).unwrap();
+                assert!(
+                    (prepared_volume - direct_volume).abs() < 1e-7,
+                    "direct result volume {direct_volume}, prepared result volume \
+                     {prepared_volume}"
+                );
+            } else {
+                assert!(
+                    matches!(moved, Err(OperationsError::AmbiguousRimChamfer(_))),
+                    "multi {multi}, qualified {qualified}: {moved:?}"
+                );
+            }
         }
-        .unwrap();
-        let moved = if qualified {
-            prepared
-                .move_faces_journaled_with_quality(&mut preview_topo, 1.5, None)
-                .unwrap()
-                .0
-        } else {
-            prepared
-                .move_faces_journaled(&mut preview_topo, 1.5)
-                .unwrap()
-        };
-        let prepared_volume = solid_volume(&preview_topo, moved.solid, DEFLECTION).unwrap();
-
-        assert!(
-            (prepared_volume - direct_volume).abs() < 1e-7,
-            "direct result volume {direct_volume}, prepared result volume {prepared_volume}"
-        );
     }
 }
 
@@ -711,7 +984,14 @@ fn a_chamfered_bore_does_not_override_mixed_outer_rim_refusal() {
         .solid;
     let face = bottom(&topo, solid);
     let counts = solid_entity_counts(&topo, solid).unwrap();
-    let error = move_faces(&mut topo, solid, &[face], -0.5)
+    let error = move_faces(&mut topo, solid, &[face], -0.5).unwrap_err();
+    assert!(
+        matches!(error, OperationsError::AmbiguousRimChamfer(_)),
+        "{error}"
+    );
+    // Read as drafts, the outer bands are re-limited while the mouth cone
+    // travels with the cap: the translation cannot do both.
+    let error = move_faces_with_options(&mut topo, solid, &[face], -0.5, AS_DRAFT)
         .expect_err("a chamfered bore cannot override the mixed rim refusal");
     assert!(error.to_string().contains("mixes a chamfer"), "{error}");
     assert_eq!(solid_entity_counts(&topo, solid).unwrap(), counts);
@@ -741,7 +1021,13 @@ fn large_connected_bevel_cannot_fall_through_to_planar_move() {
     let face = bottom(&topo, solid);
     let volume = solid_volume(&topo, solid, DEFLECTION).unwrap();
     let distance = -0.1;
-    match move_faces(&mut topo, solid, &[face], distance) {
+    assert!(matches!(
+        move_faces(&mut topo, solid, &[face], distance),
+        Err(OperationsError::AmbiguousRimChamfer(_))
+    ));
+    match move_faces_with_options(&mut topo, solid, &[face], distance, AS_CHAMFER)
+        .map(|moved| moved.solid)
+    {
         Ok(moved) => {
             let area = f64::from(SIDES) * 200.0 * (std::f64::consts::TAU / f64::from(SIDES)).sin();
             let change = solid_volume(&topo, moved, DEFLECTION).unwrap() - volume;
@@ -774,8 +1060,13 @@ fn prepared_move_defers_oversized_chamfer_refusal_until_after_journal_gap() {
     let distance = -0.1;
 
     let mut direct_topo = topo.clone();
-    let direct = move_faces_journaled(&mut direct_topo, solid, &[face], distance)
-        .expect("the journal gap makes the unequal rim a draft");
+    assert!(matches!(
+        move_faces_journaled(&mut direct_topo, solid, &[face], distance),
+        Err(OperationsError::AmbiguousRimChamfer(_))
+    ));
+    let direct =
+        move_faces_journaled_with_options(&mut direct_topo, solid, &[face], distance, AS_DRAFT)
+            .expect("after the journal gap the caller reads the unequal rim as a draft");
     assert!(
         validate_solid(&direct_topo, direct.solid)
             .unwrap()
@@ -786,9 +1077,15 @@ fn prepared_move_defers_oversized_chamfer_refusal_until_after_journal_gap() {
     for (multi, qualified) in [(false, false), (false, true), (true, false), (true, true)] {
         let mut preview_topo = topo.clone();
         let mut prepared = if multi {
-            PreparedFaceMove::prepare_multi(&preview_topo, solid, &[face], &[])
+            PreparedFaceMove::prepare_multi_with_options(
+                &preview_topo,
+                solid,
+                &[face],
+                &[],
+                AS_DRAFT,
+            )
         } else {
-            PreparedFaceMove::prepare(&preview_topo, solid, &[face])
+            PreparedFaceMove::prepare_with_options(&preview_topo, solid, &[face], AS_DRAFT)
         }
         .expect("preparation must defer the lineage-dependent refusal");
         let result = if qualified {
@@ -805,6 +1102,248 @@ fn prepared_move_defers_oversized_chamfer_refusal_until_after_journal_gap() {
         assert!(
             (actual - expected).abs() < 1e-7,
             "prepared {actual}, direct {expected}"
+        );
+    }
+}
+
+/// A prepared move reads a band by its history; a barrier recorded since
+/// (the solid unchanged) severs that history, and the prepared handle then
+/// refuses as the fresh move does rather than carrying the band.
+#[test]
+fn a_prepared_move_follows_a_barrier_that_severs_the_band_history() {
+    let mut topo = Topology::new();
+    let blank = make_box(&mut topo, X, Y, Z).unwrap();
+    let rim = edges_where(&topo, blank, bottom_rim);
+    let solid = chamfer_journaled(&mut topo, blank, &rim, CHAMFER, CHAMFER)
+        .unwrap()
+        .result
+        .solid;
+    let face = bottom(&topo, solid);
+    let mut prepared = PreparedFaceMove::prepare(&topo, solid, &[face]).unwrap();
+    prepared.move_faces(&mut topo, 2.0).unwrap();
+
+    let pending = topo.journal_begin("barrier_fixture");
+    remus_operations::journal_ops::record_barrier_over_solid(&mut topo, pending, solid).unwrap();
+    assert!(prepared.is_current(&topo), "the solid itself is unchanged");
+    let error = move_faces(&mut topo, solid, &[face], 2.0).unwrap_err();
+    assert!(
+        matches!(error, OperationsError::AmbiguousRimChamfer(_)),
+        "unexpected refusal: {error}"
+    );
+    let error = prepared.move_faces(&mut topo, 2.0).unwrap_err();
+    assert!(
+        matches!(error, OperationsError::AmbiguousRimChamfer(_)),
+        "unexpected refusal: {error}"
+    );
+    // Prepared again it agrees with the fresh move.
+    let mut prepared = PreparedFaceMove::prepare(&topo, solid, &[face]).unwrap();
+    assert!(matches!(
+        prepared.move_faces(&mut topo, 2.0),
+        Err(OperationsError::AmbiguousRimChamfer(_))
+    ));
+}
+
+/// A multi-face move keeps every face it does not move on its support, so it
+/// can only re-limit a rim band: history-free bands refuse unless read as
+/// drafts, bands read as chamfers refuse; directly and prepared, the
+/// prepared handle keeping the options it was prepared with.
+#[test]
+fn multi_face_moves_refuse_rim_bands_they_cannot_carry() {
+    use remus_operations::multi_move::move_faces_multi;
+    use remus_operations::push_pull::with_move_options;
+    let before = [
+        [0.0, 0.0],
+        [X, 0.0],
+        [X, 10.0],
+        [58.0, 15.0],
+        [2.0, 15.0],
+        [0.0, 10.0],
+    ];
+    let mut topo = Topology::new();
+    let solid = prism(&mut topo, &before);
+    let top = face_facing(&topo, solid, Vec3::new(0.0, 0.0, 1.0));
+    let floor = face_facing(&topo, solid, Vec3::new(0.0, 0.0, -1.0));
+    let faces = [top, floor];
+    let distances = [2.0, 1.0];
+    let counts = solid_entity_counts(&topo, solid).unwrap();
+
+    let error = move_faces_multi(&mut topo, solid, &faces, &distances).unwrap_err();
+    assert!(
+        matches!(error, OperationsError::AmbiguousRimChamfer(band) if band.cap == top),
+        "unexpected refusal: {error}"
+    );
+    let error = with_move_options(AS_CHAMFER, || {
+        move_faces_multi(&mut topo, solid, &faces, &distances)
+    })
+    .unwrap_err();
+    assert!(
+        matches!(error, OperationsError::Unsupported { .. }),
+        "unexpected refusal: {error}"
+    );
+    assert_eq!(solid_entity_counts(&topo, solid).unwrap(), counts);
+
+    // Read as a draft, the sloped planes stay and the top is re-limited; the
+    // floor moves down by 1.
+    let moved = with_move_options(AS_DRAFT, || {
+        move_faces_multi(&mut topo, solid, &faces, &distances)
+    })
+    .unwrap();
+    let after = [
+        [0.0, -1.0],
+        [X, -1.0],
+        [X, 10.0],
+        [57.2, 17.0],
+        [2.8, 17.0],
+        [0.0, 10.0],
+    ];
+    let expected = Y * profile_area(&after);
+    let got = solid_volume(&topo, moved, DEFLECTION).unwrap();
+    assert!(
+        (got - expected).abs() < 1e-6 * expected,
+        "volume {got}, expected {expected}"
+    );
+
+    // Prepared: the handle runs under the options it was prepared with, never
+    // the ambient ones.
+    let mut prepared =
+        PreparedFaceMove::prepare_multi_with_options(&topo, solid, &faces, &[2.0, 1.0], AS_DRAFT)
+            .unwrap();
+    let dragged = prepared.move_faces(&mut topo, 1.0).unwrap().solid;
+    let got = solid_volume(&topo, dragged, DEFLECTION).unwrap();
+    assert!(
+        (got - expected).abs() < 1e-6 * expected,
+        "prepared volume {got}"
+    );
+    let mut prepared = with_move_options(AS_DRAFT, || {
+        PreparedFaceMove::prepare_multi(&topo, solid, &faces, &[2.0, 1.0]).unwrap()
+    });
+    assert_eq!(prepared.options(), MoveFacesOptions::default());
+    assert!(matches!(
+        prepared.move_faces(&mut topo, 1.0),
+        Err(OperationsError::AmbiguousRimChamfer(_))
+    ));
+    assert_eq!(solid_entity_counts(&topo, solid).unwrap(), counts);
+}
+
+/// Two parallel terraces at different heights are two caps to a multi-face
+/// move: after a barrier severs the upper terrace's chamfer history, the
+/// prepared handle refuses as the fresh move now does.
+#[test]
+fn a_prepared_multi_move_of_parallel_terraces_tracks_each_rim() {
+    use remus_operations::multi_move::move_faces_multi;
+    let profile = [
+        [0.0, 0.0],
+        [X, 0.0],
+        [X, 10.0],
+        [30.0, 10.0],
+        [30.0, 15.0],
+        [0.0, 15.0],
+    ];
+    let mut topo = Topology::new();
+    let blank = prism(&mut topo, &profile);
+    let edge = edges_where(&topo, blank, |a, b| {
+        near(a[0], 0.0) && near(b[0], 0.0) && near(a[2], 15.0) && near(b[2], 15.0)
+    });
+    assert_eq!(edge.len(), 1);
+    let solid = chamfer_journaled(&mut topo, blank, &edge, 0.5, 0.5)
+        .unwrap()
+        .result
+        .solid;
+    let up = Vec3::new(0.0, 0.0, 1.0);
+    let tops: Vec<FaceId> = solid_faces(&topo, solid)
+        .unwrap()
+        .into_iter()
+        .filter(|&face| {
+            topo.face(face)
+                .unwrap()
+                .effective_plane_normal()
+                .is_some_and(|n| n.dot(up) > 1.0 - 1e-9)
+        })
+        .collect();
+    assert_eq!(tops.len(), 2);
+    let weights = [1.0, 2.0];
+    let error = move_faces_multi(&mut topo, solid, &tops, &weights).unwrap_err();
+    assert!(
+        matches!(error, OperationsError::Unsupported { .. }),
+        "a journaled chamfer cannot be carried by a multi-face move: {error}"
+    );
+    let mut prepared = PreparedFaceMove::prepare_multi(&topo, solid, &tops, &weights).unwrap();
+    assert!(matches!(
+        prepared.move_faces(&mut topo, 1.0),
+        Err(OperationsError::Unsupported { .. })
+    ));
+
+    let pending = topo.journal_begin("barrier_fixture");
+    remus_operations::journal_ops::record_barrier_over_solid(&mut topo, pending, solid).unwrap();
+    let error = move_faces_multi(&mut topo, solid, &tops, &weights).unwrap_err();
+    assert!(
+        matches!(error, OperationsError::AmbiguousRimChamfer(_)),
+        "unexpected refusal: {error}"
+    );
+    let error = prepared.move_faces(&mut topo, 1.0).unwrap_err();
+    assert!(
+        matches!(error, OperationsError::AmbiguousRimChamfer(_)),
+        "unexpected refusal: {error}"
+    );
+}
+
+/// A chamfer face moved along with the cap does not hide the strips of its
+/// ring that stay fixed: they are still read, and refuse without history.
+#[test]
+fn selecting_one_strip_of_a_ring_still_reads_the_others() {
+    use remus_operations::multi_move::move_faces_multi;
+    let mut topo = Topology::new();
+    let blank = make_box(&mut topo, X, Y, Z).unwrap();
+    let rim = edges_where(&topo, blank, bottom_rim);
+    let solid = chamfer(&mut topo, blank, &rim, CHAMFER);
+    let cap = bottom(&topo, solid);
+    let strip = solid_faces(&topo, solid)
+        .unwrap()
+        .into_iter()
+        .find(|&face| {
+            topo.face(face)
+                .unwrap()
+                .effective_plane_normal()
+                .is_some_and(|n| n.y() < -1e-9 && n.z() < -1e-9)
+        })
+        .unwrap();
+    let wall = face_facing(&topo, solid, Vec3::new(0.0, -1.0, 0.0));
+    let faces = [cap, strip, wall];
+    let counts = solid_entity_counts(&topo, solid).unwrap();
+    let error = move_faces_multi(&mut topo, solid, &faces, &[0.1, 0.1, 0.1]).unwrap_err();
+    let OperationsError::AmbiguousRimChamfer(band) = error else {
+        panic!("expected an ambiguous-rim refusal, got {error}");
+    };
+    assert_eq!(band.cap, cap);
+    assert!(
+        !faces.contains(&band.face),
+        "the refusal names a fixed strip"
+    );
+    assert_eq!(solid_entity_counts(&topo, solid).unwrap(), counts);
+}
+
+/// The rim refusal never masks the multi-face solver's own refusal of a
+/// zero or non-finite distance.
+#[test]
+fn an_invalid_multi_move_distance_is_refused_as_such() {
+    use remus_operations::multi_move::move_faces_multi;
+    let before = [
+        [0.0, 0.0],
+        [X, 0.0],
+        [X, 10.0],
+        [58.0, 15.0],
+        [2.0, 15.0],
+        [0.0, 10.0],
+    ];
+    let mut topo = Topology::new();
+    let solid = prism(&mut topo, &before);
+    let top = face_facing(&topo, solid, Vec3::new(0.0, 0.0, 1.0));
+    let floor = face_facing(&topo, solid, Vec3::new(0.0, 0.0, -1.0));
+    for distances in [[2.0, 0.0], [2.0, f64::NAN]] {
+        let error = move_faces_multi(&mut topo, solid, &[top, floor], &distances).unwrap_err();
+        assert!(
+            !matches!(error, OperationsError::AmbiguousRimChamfer(_)),
+            "{distances:?}: {error}"
         );
     }
 }

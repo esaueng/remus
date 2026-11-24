@@ -2140,6 +2140,88 @@ fn adjacent_analytic_blend_seed(
     Ok(None)
 }
 
+/// The rim band of a planar selection that no history reads as a chamfer or
+/// a draft, when the caller left that decision to the move
+/// ([`crate::push_pull::AmbiguousRimResolution::Refuse`]): the move refuses
+/// on it rather than guess (#1957). `None` for any other selection, and
+/// whenever the caller resolved the ambiguity.
+pub(crate) fn ambiguous_rim_band(
+    topo: &Topology,
+    solid: SolidId,
+    selected_faces: &[FaceId],
+) -> Result<Option<rim_chamfer::AmbiguousRimBand>, OperationsError> {
+    if crate::push_pull::ambiguous_rim_resolution()
+        != crate::push_pull::AmbiguousRimResolution::Refuse
+    {
+        return Ok(None);
+    }
+    let Some(direction) = rim_direction(topo, selected_faces)? else {
+        return Ok(None);
+    };
+    let adjacency = solid_adjacency(topo, solid)?;
+    let rim = rim_chamfer::rim_chamfers(topo, &adjacency, selected_faces, direction)?;
+    Ok(rim.ambiguous.first().copied())
+}
+
+/// The refusal of a multi-face move (faces moving along different normals)
+/// over a rim band (#1957). The multi-face solver keeps every unselected
+/// face on its support, so it re-limits a band and can never carry one:
+/// a band read as a chamfer (by its history, or by the caller) refuses
+/// rather than being extended into a draft, and a band no history reads
+/// refuses with [`OperationsError::AmbiguousRimChamfer`] unless the caller
+/// reads it as a draft. Complete coaxial cones keep the solver's existing
+/// behaviour.
+pub(crate) fn multi_move_rim_refusal(
+    topo: &Topology,
+    solid: SolidId,
+    selected_faces: &[FaceId],
+) -> Result<Option<MultiRimRefusal>, OperationsError> {
+    let adjacency = solid_adjacency(topo, solid)?;
+    for &face in selected_faces {
+        let Some(direction) = topo.face(face)?.effective_plane_normal() else {
+            continue;
+        };
+        let rim =
+            rim_chamfer::rim_chamfers_among(topo, &adjacency, &[face], direction, selected_faces)?;
+        if let Some(band) = rim.ambiguous.first() {
+            return Ok(Some(MultiRimRefusal::Ambiguous(*band)));
+        }
+        if let Some(band) = rim.carried.first() {
+            return Ok(Some(MultiRimRefusal::CannotCarry(format!(
+                "chamfer face {} on the rim of face {} must travel with it, and a \
+                     multi-face move re-limits every face it does not move; move face {} \
+                     on its own",
+                band.index(),
+                face.index(),
+                face.index()
+            ))));
+        }
+    }
+    Ok(None)
+}
+
+/// A [`multi_move_rim_refusal`], kept by a prepared move for every call.
+#[derive(Debug, Clone)]
+pub(crate) enum MultiRimRefusal {
+    /// A band no history reads, the caller leaving the decision to the move.
+    Ambiguous(rim_chamfer::AmbiguousRimBand),
+    /// A band read as a chamfer, which the multi-face solver cannot carry.
+    CannotCarry(String),
+}
+
+impl MultiRimRefusal {
+    /// The refusal as the move returns it.
+    pub(crate) fn to_error(&self) -> OperationsError {
+        match self {
+            Self::Ambiguous(band) => OperationsError::AmbiguousRimChamfer(*band),
+            Self::CannotCarry(reason) => OperationsError::Unsupported {
+                operation: "move_faces_multi",
+                reason: reason.clone(),
+            },
+        }
+    }
+}
+
 /// The outward normal shared by every face of a planar selection.
 fn rim_direction(
     topo: &Topology,
@@ -2293,8 +2375,9 @@ fn translation_invariant_blend_region(
     // so its presence does not exempt an ambiguous outer rim.
     let rim = rim_chamfer::rim_chamfers(topo, &adjacency, selected_faces, direction)?;
     rim.validate_carry_limit()?;
+    let carries_rim = !rim.carried.is_empty() || !rim.axial.is_empty();
     if !has_tangent_blend
-        && !rim.carried.is_empty()
+        && carries_rim
         && let Some((face, reason)) = rim.declined.first()
     {
         return Err(reconstruction(format!(
@@ -6523,6 +6606,7 @@ pub fn resize_blend_failure_code(error: &OperationsError) -> &'static str {
         // The group route (`blend_cluster::resize_band_through_group`)
         // refuses with the cluster's own stable codes.
         OperationsError::BlendCluster(error) => error.code(),
+        OperationsError::AmbiguousRimChamfer(_) => "ambiguous-rim-chamfer",
         // Dispatches on the typed error enum, not on `EdgeCurve`/`FaceSurface`:
         // every non-resize-blend error maps to the generic code. Spelled per
         // variant so a new `OperationsError` variant is a compile error here

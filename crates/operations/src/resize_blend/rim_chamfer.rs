@@ -35,9 +35,9 @@
 //!
 //!    Exact edge curves only: sampled or spline edges never qualify.
 //! 3. **It is a chamfer, not a draft.** Geometry alone cannot tell a
-//!    two-distance chamfer from a drafted section standing on straight walls,
-//!    so the face's identity comes from the journal when it records one, and
-//!    from the setbacks otherwise:
+//!    two-distance chamfer from a drafted section standing on straight walls
+//!    (equal setbacks describe a 45° draft as well as a symmetric chamfer),
+//!    so the face's identity comes from the journal:
 //!    - when the journal traces every face of the component, through the
 //!      entries that modified or preserved it and with no barrier after the
 //!      entry that made it, to that entry, the band is a chamfer exactly
@@ -47,21 +47,28 @@
 //!      (a chamfer cannot attribute the cones it turns round rounded
 //!      corners), but only in a construction record that names the faces it
 //!      kept, so a record that names nothing proves nothing;
-//!    - without such a record, it is a chamfer only when every face's two
-//!      setbacks are equal (`d_c = d_w`), the equal-distance chamfer the
-//!      blend-group recognizer reads ([`crate::blend_cluster`]). Unequal
-//!      setbacks are read as a draft and re-limited, as before. Any
-//!      unjournaled edit followed by a journaled operation leaves a global
-//!      barrier, so history is conservative: a band whose record it severs
-//!      falls back to the setback rule.
+//!    - without such a record the band is **ambiguous**. It is read as the
+//!      caller's [`AmbiguousRimResolution`] says: carried as a chamfer,
+//!      re-limited as a draft, or (the default) refused with
+//!      [`crate::OperationsError::AmbiguousRimChamfer`] naming the band.
+//!      Any unjournaled edit followed by a journaled operation leaves a
+//!      global barrier, so history is conservative: a band whose record it
+//!      severs is ambiguous again.
+//!
+//! A complete cone between the cap and one coaxial cylinder (a hole mouth
+//! or a boss rim, [`super::cap_chamfer::is_axial_cap_chamfer`]) keeps the
+//! rule of #1808: it travels with the cap whatever its setbacks.
 //!
 //! A component that fails 1 is not a rim band at all and is ignored here. A
-//! component that passes 1 but fails 2 or 3 is *declined*: it is not carried,
+//! component that passes 1 but fails 2, or is read as a draft by 3, is
+//! *declined*: it is not carried,
 //! and a move that carries another chamfer of the same cap refuses rather
 //! than translating it (the translation cannot carry one band and re-limit
 //! another).
 
 use crate::OperationsError;
+pub(super) use crate::push_pull::AmbiguousRimBand;
+use crate::push_pull::AmbiguousRimResolution;
 use remus_math::compact_sort::CompactSort;
 use remus_math::det_hash::DetHashSet;
 use remus_math::tolerance::Tolerance;
@@ -95,9 +102,33 @@ pub(super) struct RimChamfers {
     /// Faces of every component recognized as a rim chamfer, in face order.
     pub(super) carried: Vec<FaceId>,
     largest_band: usize,
+    /// Complete coaxial cones the cap carries by the rule of #1808
+    /// ([`super::cap_chamfer::is_axial_cap_chamfer`]), in face order.
+    pub(super) axial: Vec<FaceId>,
     /// One face and the reason for every component that stands on walls like
     /// a chamfer but is not recognized as one, in face order.
     pub(super) declined: Vec<(FaceId, String)>,
+    /// One band of every component no history reads as a chamfer or a
+    /// draft, when the caller left the decision to the move
+    /// ([`AmbiguousRimResolution::Refuse`]), in face order.
+    pub(super) ambiguous: Vec<AmbiguousRimBand>,
+}
+
+/// What criteria 2 and 3 make of a component.
+enum Identity {
+    Chamfer,
+    NotChamfer(String),
+    Ambiguous(AmbiguousRimBand),
+}
+
+/// The setbacks of one face read as an exact chamfer of one cap edge.
+#[derive(Clone, Copy)]
+struct Setbacks {
+    cap_face: FaceId,
+    cap_edge: EdgeId,
+    wall: FaceId,
+    cap: f64,
+    wall_depth: f64,
 }
 
 impl RimChamfers {
@@ -150,13 +181,30 @@ fn is_wall(surface: &FaceSurface, direction: Vec3) -> bool {
 }
 
 /// The rim chamfer bands next to `selected` (coplanar planar faces facing
-/// `direction`). An empty result for any other selection.
+/// `direction`), ambiguous bands read by the resolution in force
+/// ([`crate::push_pull::ambiguous_rim_resolution`]). An empty result for any
+/// other selection.
 pub(super) fn rim_chamfers(
     topo: &Topology,
     adjacency: &AdjacencyIndex,
     selected: &[FaceId],
     direction: Vec3,
 ) -> Result<RimChamfers, OperationsError> {
+    rim_chamfers_among(topo, adjacency, selected, direction, &[])
+}
+
+/// [`rim_chamfers`] of the cap `selected` when the faces `also_moving` move
+/// in the same edit along their own normals (a multi-face move). A moving
+/// face is never part of a band; it bounds the bands it meets as the cap
+/// does, so the faces of a band it splits are still read.
+pub(super) fn rim_chamfers_among(
+    topo: &Topology,
+    adjacency: &AdjacencyIndex,
+    selected: &[FaceId],
+    direction: Vec3,
+    also_moving: &[FaceId],
+) -> Result<RimChamfers, OperationsError> {
+    let moves_too = |face: FaceId| also_moving.contains(&face);
     let mut ordered = selected.to_vec();
     ordered.compact_sort_unstable_by_key(|face| face.index());
     ordered.dedup();
@@ -169,7 +217,10 @@ pub(super) fn rim_chamfers(
     for &face in &ordered {
         for edge in super::face_edges(topo, face)? {
             for adjacent in super::distinct_faces(adjacency.faces_for_edge(edge)) {
-                if !is_selected(adjacent) && !is_wall(topo.face(adjacent)?.surface(), direction) {
+                if !is_selected(adjacent)
+                    && !moves_too(adjacent)
+                    && !is_wall(topo.face(adjacent)?.surface(), direction)
+                {
                     seeds.push(adjacent);
                 }
             }
@@ -195,6 +246,7 @@ pub(super) fn rim_chamfers(
                 for adjacent in super::distinct_faces(adjacency.faces_for_edge(edge)) {
                     if adjacent == current
                         || is_selected(adjacent)
+                        || moves_too(adjacent)
                         || is_wall(topo.face(adjacent)?.surface(), direction)
                     {
                         continue;
@@ -210,12 +262,40 @@ pub(super) fn rim_chamfers(
             continue;
         }
         component.compact_sort_unstable_by_key(|face| face.index());
+        // A complete coaxial cone travels with the cap whatever its history
+        // (#1808); the blend walk carries it.
+        if let [face] = component.as_slice()
+            && super::cap_chamfer::is_axial_cap_chamfer(
+                topo,
+                adjacency,
+                is_selected,
+                *face,
+                direction,
+            )?
+        {
+            result.axial.push(*face);
+            continue;
+        }
         match component_identity(topo, adjacency, &is_selected, &component, cap)? {
-            Ok(()) => {
+            Identity::Chamfer => {
                 result.largest_band = result.largest_band.max(component.len());
                 result.carried.extend(component);
             }
-            Err(reason) => result.declined.push((component[0], reason)),
+            Identity::NotChamfer(reason) => result.declined.push((component[0], reason)),
+            Identity::Ambiguous(band) => match crate::push_pull::ambiguous_rim_resolution() {
+                AmbiguousRimResolution::TreatAsChamfer => {
+                    result.largest_band = result.largest_band.max(component.len());
+                    result.carried.extend(component);
+                }
+                AmbiguousRimResolution::TreatAsDraft => result.declined.push((
+                    component[0],
+                    format!(
+                        "face {} has no history and the caller reads it as a draft",
+                        component[0].index()
+                    ),
+                )),
+                AmbiguousRimResolution::Refuse => result.ambiguous.push(band),
+            },
         }
     }
     result
@@ -275,25 +355,27 @@ fn cap_plane(
     }))
 }
 
-/// Whether `component` is a rim chamfer (criteria 2 and 3): `Ok(Ok(()))`
-/// when it is, `Ok(Err(reason))` when it is not.
+/// What criteria 2 and 3 make of `component`.
 fn component_identity(
     topo: &Topology,
     adjacency: &AdjacencyIndex,
     is_selected: &impl Fn(FaceId) -> bool,
     component: &[FaceId],
     cap: Cap,
-) -> Result<Result<(), String>, OperationsError> {
-    let mut setbacks = Vec::with_capacity(component.len());
+) -> Result<Identity, OperationsError> {
+    let mut first = None;
     for &face in component {
         let Some(found) = chamfer_setbacks(topo, adjacency, is_selected, face, cap)? else {
-            return Ok(Err(format!(
+            return Ok(Identity::NotChamfer(format!(
                 "face {} is not a constant-setback chamfer of one cap edge on a wall",
                 face.index()
             )));
         };
-        setbacks.push((face, found));
+        first.get_or_insert((face, found));
     }
+    let Some((face, setbacks)) = first else {
+        return Ok(Identity::NotChamfer("empty band".into()));
+    };
 
     // History, when the journal holds the origin of every face: each came
     // out of a chamfer entry.
@@ -307,34 +389,24 @@ fn component_identity(
             .zip(&origins)
             .find(|(_, origin)| origin.kind != "chamfer")
         {
-            return Ok(Err(format!(
+            return Ok(Identity::NotChamfer(format!(
                 "face {} came out of a `{}` operation, not a chamfer: a draft is re-limited",
                 face.index(),
                 origin.kind
             )));
         }
-        return Ok(Ok(()));
+        return Ok(Identity::Chamfer);
     }
 
-    // No history: only the equal-distance chamfer is told from a draft.
-    for (face, (d_cap, d_wall)) in setbacks {
-        if !close(d_cap, d_wall, face_point(topo, face)?) {
-            return Ok(Err(format!(
-                "face {} has unequal setbacks {d_cap} (cap) and {d_wall} (wall) and no chamfer \
-                 history: read as a draft",
-                face.index()
-            )));
-        }
-    }
-    Ok(Ok(()))
-}
-
-fn face_point(topo: &Topology, face: FaceId) -> Result<Point3, OperationsError> {
-    let vertices = remus_topology::explorer::face_vertices(topo, face)?;
-    Ok(match vertices.first() {
-        Some(&vertex) => topo.vertex(vertex)?.point(),
-        None => Point3::new(0.0, 0.0, 0.0),
-    })
+    // No history: a chamfer and a draft on walls have this one shape.
+    Ok(Identity::Ambiguous(AmbiguousRimBand {
+        cap: setbacks.cap_face,
+        face,
+        wall: setbacks.wall,
+        edge: setbacks.cap_edge,
+        cap_setback: setbacks.cap,
+        wall_setback: setbacks.wall_depth,
+    }))
 }
 
 fn edge_ends(topo: &Topology, edge: EdgeId) -> Result<[Point3; 2], OperationsError> {
@@ -354,9 +426,10 @@ fn chamfer_setbacks(
     is_selected: &impl Fn(FaceId) -> bool,
     face: FaceId,
     cap: Cap,
-) -> Result<Option<(f64, f64)>, OperationsError> {
+) -> Result<Option<Setbacks>, OperationsError> {
     let surface = topo.face(face)?.surface().clone();
     let mut cap_edges = Vec::new();
+    let mut cap_face = None;
     let mut wall_edges: BTreeMap<FaceId, Vec<EdgeId>> = BTreeMap::new();
     for edge in super::face_edges(topo, face)? {
         for other in super::distinct_faces(adjacency.faces_for_edge(edge)) {
@@ -365,14 +438,15 @@ fn chamfer_setbacks(
             }
             if is_selected(other) {
                 cap_edges.push(edge);
+                cap_face.get_or_insert(other);
             } else if is_wall(topo.face(other)?.surface(), cap.normal) {
                 wall_edges.entry(other).or_default().push(edge);
             }
         }
     }
-    if cap_edges.is_empty() {
+    let (Some(&cap_edge), Some(cap_face)) = (cap_edges.first(), cap_face) else {
         return Ok(None);
-    }
+    };
     for &edge in &cap_edges {
         for point in edge_ends(topo, edge)? {
             if !close(dot(point, cap.normal), cap.level, point) {
@@ -419,12 +493,18 @@ fn chamfer_setbacks(
         } else {
             None
         };
-        if let Some(setbacks) = setbacks {
+        if let Some((cap, wall_depth)) = setbacks {
             if found.is_some() {
                 // Two walls explain the face: not a chamfer of one edge.
                 return Ok(None);
             }
-            found = Some(setbacks);
+            found = Some(Setbacks {
+                cap_face,
+                cap_edge,
+                wall,
+                cap,
+                wall_depth,
+            });
         }
     }
     Ok(found)
