@@ -110,7 +110,7 @@ fn integrate_parametric_before<S: ParametricSurface, const AREA_ONLY: bool>(
     let du_patch = (u_range.1 - u_range.0) / nu as f64;
     let u_scale = du_patch / 2.0;
     let mut acc = Accumulator {
-        volume_only: rule.volume_only,
+        moments: rule.moments,
         ..Accumulator::default()
     };
     // One scratch per face integration: every NURBS abscissa below reuses
@@ -367,7 +367,7 @@ fn compare<S: ParametricSurface>(
                                     adaptive,
                                     knots,
                                     reference: Point3::new(0.4, -0.7, 1.3),
-                                    volume_only,
+                                    moments: MomentRequest::for_flux(volume_only),
                                     ruled_guard: false,
                                     flux: Some(&flux),
                                     cone_apex: None,

@@ -62,6 +62,25 @@ pub use fan_bound::PlanarFanBound;
 use loop_index::{IntervalIndex, winding_number_over};
 use remus_math::fma::FusedMulAdd;
 
+/// Components a fixed-rule volume reader consumes from each quadrature point.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum MomentRequest {
+    #[default]
+    Full,
+    VolumeAreaAndFlux,
+    SignedVolume,
+}
+
+impl MomentRequest {
+    fn for_flux(volume_only: bool) -> Self {
+        if volume_only {
+            Self::VolumeAreaAndFlux
+        } else {
+            Self::Full
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct IntegrationRule<'a> {
     order: usize,
@@ -74,7 +93,7 @@ struct IntegrationRule<'a> {
     reference: Point3,
     /// Omit unused moments in fixed orientation reads. Keep this a runtime
     /// policy so full and volume requests share the large integration code.
-    volume_only: bool,
+    moments: MomentRequest,
     /// Qualification-only reduction of a positive-weight linear v span to
     /// its straight generator. Its area term is a stricter lower bound.
     ruled_guard: bool,
@@ -127,7 +146,7 @@ impl<'a> IntegrationRule<'a> {
             adaptive: self.requested_refinement(),
             knots: self.knots,
             reference: self.reference,
-            volume_only: self.volume_only,
+            moments: self.moments,
             ruled_guard: self.ruled_guard,
             flux: self.flux,
             cone_apex: self.cone_apex,
@@ -319,7 +338,7 @@ pub fn integrate_face_fixed_about(
             adaptive: None,
             knots: None,
             reference,
-            volume_only: false,
+            moments: MomentRequest::Full,
             ruled_guard: false,
             flux: None,
             cone_apex: None,
@@ -372,7 +391,7 @@ pub(crate) fn integrate_face_fixed_flux_with_boundary_about(
             adaptive: None,
             knots: None,
             reference,
-            volume_only,
+            moments: MomentRequest::for_flux(volume_only),
             ruled_guard: false,
             flux: Some(&flux),
             cone_apex: None,
@@ -512,7 +531,7 @@ pub fn integrate_ruled_guard_volume_about(
             adaptive: None,
             knots: None,
             reference,
-            volume_only: true,
+            moments: MomentRequest::VolumeAreaAndFlux,
             ruled_guard: true,
             flux: Some(&flux),
             cone_apex: None,
@@ -550,7 +569,7 @@ pub fn integrate_face_area(
         adaptive: None,
         knots: None,
         reference: Point3::new(0.0, 0.0, 0.0),
-        volume_only: false,
+        moments: MomentRequest::Full,
         ruled_guard: false,
         flux: None,
         cone_apex: None,
@@ -712,6 +731,40 @@ pub fn integrate_face_about(
     options: &PropertiesOptions,
     reference: Point3,
 ) -> Result<FaceContribution, CheckError> {
+    integrate_face_for_request(topo, face_id, options, reference, MomentRequest::Full)
+}
+
+/// Signed volume about `reference`, using the same trim, Gauss points and
+/// convergence criteria as [`integrate_face_about`].
+///
+/// A fixed-rule NURBS reading omits the area, vector area and moments at each abscissa.
+///
+/// # Errors
+///
+/// Returns the same invalid-input and integration errors as [`integrate_face_about`].
+pub fn integrate_face_volume_about(
+    topo: &Topology,
+    face_id: FaceId,
+    options: &PropertiesOptions,
+    reference: Point3,
+) -> Result<f64, CheckError> {
+    Ok(integrate_face_for_request(
+        topo,
+        face_id,
+        options,
+        reference,
+        MomentRequest::SignedVolume,
+    )?
+    .volume)
+}
+
+fn integrate_face_for_request(
+    topo: &Topology,
+    face_id: FaceId,
+    options: &PropertiesOptions,
+    reference: Point3,
+    request: MomentRequest,
+) -> Result<FaceContribution, CheckError> {
     options.validate()?;
     if ![reference.x(), reference.y(), reference.z()]
         .iter()
@@ -721,21 +774,24 @@ pub fn integrate_face_about(
             "integration reference point must be finite".into(),
         ));
     }
-    integrate_face_impl::<false>(
-        topo,
-        face_id,
-        IntegrationRule {
-            order: options.gauss_order,
-            adaptive: Some(options),
-            knots: None,
-            reference,
-            volume_only: false,
-            ruled_guard: false,
-            flux: None,
-            cone_apex: None,
-            boundary: None,
-        },
-    )
+    let mut rule = IntegrationRule {
+        order: options.gauss_order,
+        adaptive: Some(options),
+        knots: None,
+        reference,
+        moments: MomentRequest::Full,
+        ruled_guard: false,
+        flux: None,
+        cone_apex: None,
+        boundary: None,
+    };
+    if request == MomentRequest::SignedVolume
+        && rule.requested_refinement().is_none()
+        && matches!(topo.face(face_id)?.surface(), FaceSurface::Nurbs(_))
+    {
+        rule.moments = request;
+    }
+    integrate_face_impl::<false>(topo, face_id, rule)
 }
 
 /// The cone face's reading on its own boundary when it qualifies (see
@@ -1798,7 +1854,7 @@ pub fn integrate_torus_band_face_about(
             adaptive: None,
             knots: None,
             reference,
-            volume_only: false,
+            moments: MomentRequest::Full,
             ruled_guard: false,
             flux: None,
             cone_apex: None,
@@ -1981,7 +2037,7 @@ fn integrate_torus_tube_band<const AREA_ONLY: bool>(
     }
     let gauss = gauss_legendre_points(order);
     let mut acc = Accumulator {
-        volume_only: rule.volume_only,
+        moments: rule.moments,
         ..Accumulator::default()
     };
     let mut scratch = DerivativeScratch::new();
@@ -4966,7 +5022,7 @@ macro_rules! accumulate_normal {
         // A strict orientation probe needs no centroid or inertia moments.
         // Keep area, volume and flux arithmetic above identical to the full
         // fixed rule so cold readings and reference/translation reuse agree.
-        if $acc.volume_only {
+        if $acc.moments != MomentRequest::Full {
             return;
         }
 
@@ -4993,8 +5049,8 @@ macro_rules! accumulate_normal {
 /// Running totals of a face's contribution over quadrature abscissae.
 #[derive(Default)]
 struct Accumulator {
-    /// Runtime fixed-rule policy; adaptive/full accumulation leaves it false.
-    volume_only: bool,
+    /// Components required from the fixed-rule samples.
+    moments: MomentRequest,
     area: f64,
     vol: f64,
     mx: f64,
@@ -5083,6 +5139,12 @@ impl Accumulator {
             du.z() * dv.x() - du.x() * dv.z(),
             du.x() * dv.y() - du.y() * dv.x(),
         );
+        if !AREA_ONLY && self.moments == MomentRequest::SignedVolume {
+            // Same volume term and order as accumulate_normal; the caller
+            // does not consume a Jacobian length, vector area or moments.
+            self.vol += w * (p - reference).dot(n) / 3.0;
+            return;
+        }
         let n_len = n.length();
         accumulate_normal!(self, p, n, n_len, w, reference, AREA_ONLY);
     }
@@ -5443,7 +5505,7 @@ fn $name<S: ParametricSurface, const AREA_ONLY: bool>(
     let du_patch = (u_range.1 - u_range.0) / nu as f64;
     let u_scale = du_patch / 2.0;
     let mut acc = Accumulator {
-        volume_only: rule.volume_only,
+        moments: rule.moments,
         ..Accumulator::default()
     };
     // One scratch per face integration: every NURBS abscissa below reuses
@@ -5953,7 +6015,7 @@ fn integrate_knot_aligned<S: ParametricSurface, const AREA_ONLY: bool>(
     let gauss_pts = gauss_legendre_points(rule.order);
     let budget = MAX_KNOT_ALIGNED_CELLS.saturating_mul(gauss_pts.len());
     let mut acc = Accumulator {
-        volume_only: rule.volume_only,
+        moments: rule.moments,
         ..Accumulator::default()
     };
     let mut scratch = DerivativeScratch::new();
@@ -6731,7 +6793,7 @@ mod tests {
                     adaptive: None,
                     knots: None,
                     reference: Point3::new(0.0, 0.0, 0.0),
-                    volume_only: false,
+                    moments: MomentRequest::Full,
                     ruled_guard: false,
                     flux: None,
                     cone_apex: None,
@@ -7874,7 +7936,7 @@ mod tests {
                 adaptive: None,
                 knots: Some(knots),
                 reference: Point3::new(0.0, 0.0, 0.0),
-                volume_only: false,
+                moments: MomentRequest::Full,
                 ruled_guard: false,
                 flux: None,
                 cone_apex: None,
@@ -7947,7 +8009,7 @@ mod tests {
             adaptive: None,
             knots: Some(knots),
             reference: Point3::new(0.0, 0.0, 0.0),
-            volume_only: false,
+            moments: MomentRequest::Full,
             ruled_guard: false,
             flux: None,
             cone_apex: None,
@@ -8086,7 +8148,7 @@ mod tests {
                 adaptive: None,
                 knots: Some(knots),
                 reference: Point3::new(0.3, -0.2, 0.1),
-                volume_only: false,
+                moments: MomentRequest::Full,
                 ruled_guard: false,
                 flux: None,
                 cone_apex: None,
@@ -8206,7 +8268,7 @@ mod tests {
             adaptive: None,
             knots: Some(knots),
             reference: Point3::new(0.0, 0.0, 0.0),
-            volume_only: false,
+            moments: MomentRequest::Full,
             ruled_guard: false,
             flux: None,
             cone_apex: None,
@@ -8251,7 +8313,7 @@ mod tests {
             adaptive: None,
             knots: Some(knots),
             reference: Point3::new(0.0, 0.0, 0.0),
-            volume_only: false,
+            moments: MomentRequest::Full,
             ruled_guard: false,
             flux: None,
             cone_apex: None,
@@ -8297,7 +8359,7 @@ mod tests {
             adaptive: None,
             knots: Some(knots),
             reference: Point3::new(0.0, 0.0, 0.0),
-            volume_only: false,
+            moments: MomentRequest::Full,
             ruled_guard: false,
             flux: None,
             cone_apex: None,
@@ -8347,7 +8409,7 @@ mod tests {
             adaptive: None,
             knots: Some(knots),
             reference: Point3::new(0.0, 0.0, 0.0),
-            volume_only: false,
+            moments: MomentRequest::Full,
             ruled_guard: false,
             flux: None,
             cone_apex: None,
@@ -8449,7 +8511,7 @@ mod cylinder_row_tests {
                     adaptive: None,
                     knots: None,
                     reference: Point3::new(0.2, -0.3, 0.4),
-                    volume_only,
+                    moments: MomentRequest::for_flux(volume_only),
                     ruled_guard: false,
                     flux: Some(&flux),
                     cone_apex: None,
@@ -8469,7 +8531,7 @@ mod cylinder_row_tests {
                     adaptive: None,
                     knots: None,
                     reference: Point3::new(0.2, -0.3, 0.4),
-                    volume_only,
+                    moments: MomentRequest::for_flux(volume_only),
                     ruled_guard: false,
                     flux: Some(&flux),
                     cone_apex: None,
@@ -8626,7 +8688,7 @@ mod cylinder_row_tests {
                     adaptive: Some(&options),
                     knots: None,
                     reference: Point3::new(0.2, -0.3, 0.4),
-                    volume_only: false,
+                    moments: MomentRequest::Full,
                     ruled_guard: false,
                     flux,
                     cone_apex: None,

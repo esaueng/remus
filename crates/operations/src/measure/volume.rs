@@ -1350,10 +1350,9 @@ fn open_mesh_exact_volume(
     };
     let mut total = 0.0;
     for fid in faces {
-        total += remus_check::properties::face_integrator::integrate_face_about(
+        total += remus_check::properties::face_integrator::integrate_face_volume_about(
             topo, fid, &options, reference,
-        )?
-        .volume;
+        )?;
     }
     if !total.is_finite() || negligible_volume(topo, solid).is_none_or(|floor| total.abs() <= floor)
     {
