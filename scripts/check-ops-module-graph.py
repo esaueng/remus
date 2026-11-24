@@ -56,7 +56,7 @@ TIERS: dict[str, list[str]] = {
         "offset_trim", "offset_v2", "shell_op", "draft", "thread",
     ],
     "remus-operations": [
-        "journal_ops", "prepared_move", "imprint", "pattern", "assembly",
+        "journal_ops", "prepared_move", "multi_move", "imprint", "pattern", "assembly",
         "sketch", "linked_sketch", "sew", "untrim", "offset_wire", "gear",
     ],
 }

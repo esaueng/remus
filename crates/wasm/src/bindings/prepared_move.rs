@@ -11,6 +11,10 @@
 //! refuse, without editing anything, once the source has changed since
 //! preparation. A checkpoint `restore` that brings the prepared source back
 //! keeps the preparation valid.
+//!
+//! `prepareMoveFacesMulti` ([`super::move_faces_multi`]) registers a
+//! multi-face move in the same table: the same `moveFacesPrepared*` calls
+//! move it, and `releasePreparedMove` releases it.
 
 use std::collections::BTreeMap;
 
@@ -129,6 +133,17 @@ impl RemusKernel {
             .map(|&face| self.resolve_face(face))
             .collect::<Result<Vec<_>, _>>()?;
         super::operations::validate_move_faces_topology_work(self.topo(), solid_id, &face_ids)?;
+        self.insert_prepared_move(|topo| PreparedFaceMove::prepare(topo, solid_id, &face_ids))
+    }
+
+    /// Registers the move `prepare` builds under a fresh handle, within the
+    /// live-move cap.
+    pub(crate) fn insert_prepared_move(
+        &mut self,
+        prepare: impl FnOnce(
+            &remus_topology::Topology,
+        ) -> Result<PreparedFaceMove, remus_operations::OperationsError>,
+    ) -> Result<u32, WasmError> {
         if self.prepared_moves.live.len() >= MAX_PREPARED_MOVES {
             return Err(WasmError::InvalidInput {
                 reason: format!("{MAX_PREPARED_MOVES} prepared moves are live; release one first"),
@@ -140,7 +155,7 @@ impl RemusKernel {
             .ok_or_else(|| WasmError::InvalidInput {
                 reason: "prepared move handles are exhausted".into(),
             })?;
-        let prepared = PreparedFaceMove::prepare(self.topo(), solid_id, &face_ids)?;
+        let prepared = prepare(self.topo())?;
         self.prepared_moves.live.insert(handle, prepared);
         self.prepared_moves.next = next;
         Ok(handle)
