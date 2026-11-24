@@ -415,12 +415,7 @@ pub fn recognize_blend_cluster(
         .into());
     }
     let adjacency = topo.build_adjacency(solid)?;
-    let mut recognizer = Recognizer {
-        topo,
-        adjacency: &adjacency,
-        facts: BTreeMap::new(),
-        carriers: std::cell::RefCell::new(BTreeMap::new()),
-    };
+    let mut recognizer = Recognizer::new(topo, &adjacency);
     let start = recognizer.start(seed)?;
     let members = recognizer.close(start)?;
     assemble(&mut recognizer, seed, &members)
@@ -620,6 +615,15 @@ struct Recognizer<'a> {
 type CarrierRead<'a> = Result<std::rc::Rc<MeasuredCarrier<'a>>, String>;
 
 impl<'a> Recognizer<'a> {
+    fn new(topo: &'a Topology, adjacency: &'a AdjacencyIndex) -> Self {
+        Self {
+            topo,
+            adjacency,
+            facts: BTreeMap::new(),
+            carriers: std::cell::RefCell::new(BTreeMap::new()),
+        }
+    }
+
     /// The measured read of `face`'s carrier, or why it does not read.
     fn carrier(&self, face: FaceId) -> CarrierRead<'a> {
         if let Some(known) = self.carriers.borrow().get(&face) {
