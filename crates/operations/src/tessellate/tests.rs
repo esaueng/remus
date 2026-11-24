@@ -19,6 +19,7 @@ use super::*;
 
 mod analytic_grid_oracle;
 mod coil_chart;
+mod cone_chord_fold;
 mod face_cache;
 mod mesh_oracles;
 pub(super) mod mesh_passes;

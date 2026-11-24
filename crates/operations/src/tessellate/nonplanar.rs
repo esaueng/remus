@@ -3601,55 +3601,70 @@ pub(super) fn tessellate_nonplanar_cdt(
             )
         },
     );
-    let mut cdt = Cdt::with_capacity(bounds, n_boundary);
-
-    let mut cdt_to_global: Vec<Option<u32>> = vec![None; 3]; // 3 super-triangle verts
-
+    // The constrained CDT of the face's boundary and holes, before any
+    // interior point: built once here, and again from scratch only by a cone
+    // face's fold repair (B289, see `cone_fold_repair`), which must leave
+    // every other face's work unchanged.
     let boundary_pts: Vec<Point2> = boundary_uv.iter().map(|&(u, v)| to_cdt(u, v)).collect();
-    let boundary_cdt_ids = cdt
-        .insert_points_hilbert(&boundary_pts)
-        .map_err(crate::OperationsError::Math)?;
-    let max_cdt_idx = boundary_cdt_ids.iter().copied().max().unwrap_or(2);
-    if cdt_to_global.len() <= max_cdt_idx {
-        cdt_to_global.resize(max_cdt_idx + 1, None);
-    }
-    for (i, &cdt_idx) in boundary_cdt_ids.iter().enumerate() {
-        cdt_to_global[cdt_idx] = Some(boundary_3d[i].1);
-    }
+    let build_constrained = || -> Result<ConstrainedCdt, crate::OperationsError> {
+        let mut cdt = Cdt::with_capacity(bounds, n_boundary);
 
-    for i in 0..n_boundary {
-        let v0 = boundary_cdt_ids[i];
-        let v1 = boundary_cdt_ids[(i + 1) % n_boundary];
-        cdt.insert_constraint(v0, v1)
-            .map_err(crate::OperationsError::Math)?;
-    }
+        let mut cdt_to_global: Vec<Option<u32>> = vec![None; 3]; // 3 super-triangle verts
 
-    let mut hole_cdt_ids: Vec<Vec<usize>> = Vec::with_capacity(hole_uvs.len());
-    let mut hole_pairs: Vec<(usize, usize)> = Vec::new();
-    for (hole, hole_3d) in hole_uvs.iter().zip(&hole_boundaries_3d) {
-        let points: Vec<Point2> = hole.iter().map(|&(u, v)| to_cdt(u, v)).collect();
-        let ids = cdt
-            .insert_points_hilbert(&points)
+        let boundary_cdt_ids = cdt
+            .insert_points_hilbert(&boundary_pts)
             .map_err(crate::OperationsError::Math)?;
-        let max_id = ids.iter().copied().max().unwrap_or(2);
-        if cdt_to_global.len() <= max_id {
-            cdt_to_global.resize(max_id + 1, None);
+        let max_cdt_idx = boundary_cdt_ids.iter().copied().max().unwrap_or(2);
+        if cdt_to_global.len() <= max_cdt_idx {
+            cdt_to_global.resize(max_cdt_idx + 1, None);
         }
-        for (&id, &(_, global_id, _, _)) in ids.iter().zip(hole_3d) {
-            if cdt_to_global[id].replace(global_id).is_some() {
-                return Err(crate::OperationsError::InvalidInput {
-                    reason: "non-planar cap hole collapses in parameter space".into(),
-                });
-            }
+        for (i, &cdt_idx) in boundary_cdt_ids.iter().enumerate() {
+            cdt_to_global[cdt_idx] = Some(boundary_3d[i].1);
         }
-        for index in 0..ids.len() {
-            let pair = (ids[index], ids[(index + 1) % ids.len()]);
-            cdt.insert_constraint(pair.0, pair.1)
+
+        for i in 0..n_boundary {
+            let v0 = boundary_cdt_ids[i];
+            let v1 = boundary_cdt_ids[(i + 1) % n_boundary];
+            cdt.insert_constraint(v0, v1)
                 .map_err(crate::OperationsError::Math)?;
-            hole_pairs.push(pair);
         }
-        hole_cdt_ids.push(ids);
-    }
+
+        let mut hole_cdt_ids: Vec<Vec<usize>> = Vec::with_capacity(hole_uvs.len());
+        let mut hole_pairs: Vec<(usize, usize)> = Vec::new();
+        for (hole, hole_3d) in hole_uvs.iter().zip(&hole_boundaries_3d) {
+            let points: Vec<Point2> = hole.iter().map(|&(u, v)| to_cdt(u, v)).collect();
+            let ids = cdt
+                .insert_points_hilbert(&points)
+                .map_err(crate::OperationsError::Math)?;
+            let max_id = ids.iter().copied().max().unwrap_or(2);
+            if cdt_to_global.len() <= max_id {
+                cdt_to_global.resize(max_id + 1, None);
+            }
+            for (&id, &(_, global_id, _, _)) in ids.iter().zip(hole_3d) {
+                if cdt_to_global[id].replace(global_id).is_some() {
+                    return Err(crate::OperationsError::InvalidInput {
+                        reason: "non-planar cap hole collapses in parameter space".into(),
+                    });
+                }
+            }
+            for index in 0..ids.len() {
+                let pair = (ids[index], ids[(index + 1) % ids.len()]);
+                cdt.insert_constraint(pair.0, pair.1)
+                    .map_err(crate::OperationsError::Math)?;
+                hole_pairs.push(pair);
+            }
+            hole_cdt_ids.push(ids);
+        }
+        Ok((
+            cdt,
+            cdt_to_global,
+            boundary_cdt_ids,
+            hole_cdt_ids,
+            hole_pairs,
+        ))
+    };
+    let (mut cdt, mut cdt_to_global, boundary_cdt_ids, hole_cdt_ids, hole_pairs) =
+        build_constrained()?;
 
     // Surface point and normal of an interior (non-boundary) CDT vertex.
     let interior_point_3d = |cdt_pt: Point2| -> (Point3, Vec3) {
@@ -3718,6 +3733,9 @@ pub(super) fn tessellate_nonplanar_cdt(
     // filter, by CDT id, beside the point itself: emission reuses it when the
     // CDT still holds that point bit for bit (the closure is pure).
     let mut interior_samples: Vec<Option<(Point2, (Point3, Vec3))>> = Vec::new();
+    // A cone face's interior points and their samples, kept for its fold
+    // repair (B289, see `cone_fold_repair`); moved, never copied.
+    let mut cone_interior: Option<ConeInterior> = None;
 
     if du > 1e-15 && dv > 1e-15 {
         let sheared_grid = sheared.map(|(chart, surface)| {
@@ -4071,22 +4089,15 @@ pub(super) fn tessellate_nonplanar_cdt(
             kept
         });
         if !interior_pts.is_empty() {
-            let interior_cdt_ids = cdt
-                .insert_points_hilbert(&interior_pts)
-                .map_err(crate::OperationsError::Math)?;
-            let max_interior = interior_cdt_ids.iter().copied().max().unwrap_or(0);
-            if cdt_to_global.len() <= max_interior {
-                cdt_to_global.resize(max_interior + 1, None);
-            }
-            interior_samples.resize(max_interior + 1, None);
-            for ((&id, &point), &sample) in interior_cdt_ids
-                .iter()
-                .zip(&interior_pts)
-                .zip(&kept_samples)
-            {
-                if let Some(slot) = interior_samples.get_mut(id) {
-                    slot.get_or_insert((point, sample));
-                }
+            insert_interior_samples(
+                &mut cdt,
+                &interior_pts,
+                &kept_samples,
+                &mut cdt_to_global,
+                &mut interior_samples,
+            )?;
+            if matches!(face_data.surface(), FaceSurface::Cone(_)) {
+                cone_interior = Some((interior_pts, kept_samples));
             }
         }
     }
@@ -4096,8 +4107,167 @@ pub(super) fn tessellate_nonplanar_cdt(
         .collect();
     cdt.remove_exterior(&boundary_pairs);
 
+    let mut triangles = cdt.triangles();
+
+    // B289: the `(u, v)` chart of a cone is no development, so a chart chord's
+    // image runs beside its 3D chord and an interior point the CDT joins to
+    // a boundary chord can lie past it in space: the triangle turns over.
+    // Every triangle of a cone face is checked against the cone's normal on
+    // the triangle list emission reads anyway; a face with none turned over
+    // (and every other carrier) is emitted exactly as triangulated. Otherwise
+    // the CDT is rebuilt from scratch without the interior vertex each
+    // turned-over triangle is squashed onto, round by round, and a rebuilt
+    // mesh replaces the first only when it turns strictly fewer triangles
+    // over and every triangle it does not share with the first stays within
+    // the deflection of the cone, bounded densely with a curvature term (see
+    // `cone_fold_repair`).
+    // Otherwise the face keeps the CDT's first triangulation.
+    if let (FaceSurface::Cone(cone), Some((mut points, mut samples))) =
+        (face_data.surface(), cone_interior)
+    {
+        type Reuse = [Option<(Point2, (Point3, Vec3))>];
+        let same_point = |a: Point2, b: Point2| {
+            a.x().to_bits() == b.x().to_bits() && a.y().to_bits() == b.y().to_bits()
+        };
+        let position = |cdt: &Cdt, ids: &[Option<u32>], reuse: &Reuse, id: usize| -> Point3 {
+            if let Some(point) = ids
+                .get(id)
+                .copied()
+                .flatten()
+                .and_then(|gid| merged.positions.get(gid as usize).copied())
+            {
+                point
+            } else if let Some((point, sample)) = reuse.get(id).copied().flatten()
+                && same_point(point, cdt.vertices()[id])
+            {
+                sample.0
+            } else {
+                interior_point_3d(cdt.vertices()[id]).0
+            }
+        };
+        // Only the interior points this face was given; boundary, hole and
+        // constraint-recovery (Steiner) vertices always stay.
+        let removable = |cdt: &Cdt, ids: &[Option<u32>], reuse: &Reuse, id: usize| {
+            if ids.get(id).copied().flatten().is_some() {
+                return None;
+            }
+            let (point, _) = reuse.get(id).copied().flatten()?;
+            same_point(point, cdt.vertices()[id]).then_some(id)
+        };
+        // Whether emission keeps a triangle (super-triangle vertices are
+        // skipped by `check` itself): not inside a hole.
+        let emitted = |cdt: &Cdt, (i0, i1, i2): (usize, usize, usize)| {
+            let verts = cdt.vertices();
+            let centroid = Point2::new(
+                (verts[i0].x() + verts[i1].x() + verts[i2].x()) / 3.0,
+                (verts[i0].y() + verts[i1].y() + verts[i2].y()) / 3.0,
+            );
+            let (u, v) = from_cdt(centroid);
+            !hole_uvs
+                .iter()
+                .any(|hole| point_in_polygon_2d(hole, Point2::new(u, v)))
+        };
+        let check =
+            |cdt: &Cdt, ids: &[Option<u32>], reuse: &Reuse, tris: &[(usize, usize, usize)]| {
+                cone_fold_repair::check(
+                    cone,
+                    tris,
+                    cdt.vertices(),
+                    |id| position(cdt, ids, reuse, id),
+                    |id| removable(cdt, ids, reuse, id),
+                    |tri| emitted(cdt, tri),
+                )
+            };
+        let (first, first_drop) = check(&cdt, &cdt_to_global, &interior_samples, &triangles);
+        if first > 0 && !first_drop.is_empty() && cone_fold_repair::enabled() {
+            let keys = |cdt: &Cdt, drop: &[usize]| -> DetHashSet<(u64, u64)> {
+                drop.iter()
+                    .map(|&id| {
+                        let point = cdt.vertices()[id];
+                        (point.x().to_bits(), point.y().to_bits())
+                    })
+                    .collect()
+            };
+            let mut dropped = keys(&cdt, &first_drop);
+            // The first mesh's triangles, by their vertices' positions.
+            let plain: DetHashSet<[[u64; 3]; 3]> = triangles
+                .iter()
+                .filter(|&&(i0, i1, i2)| i0 >= 3 && i1 >= 3 && i2 >= 3)
+                .map(|&(i0, i1, i2)| {
+                    cone_fold_repair::triangle_key(
+                        [i0, i1, i2]
+                            .map(|id| position(&cdt, &cdt_to_global, &interior_samples, id)),
+                    )
+                })
+                .collect();
+            let mut previous = first;
+            let mut best: Option<RepairedCdt> = None;
+            for _ in 0..cone_fold_repair::MAX_ROUNDS {
+                let (kept, kept_samples): (Vec<_>, Vec<_>) = points
+                    .iter()
+                    .zip(&samples)
+                    .filter(|(point, _)| {
+                        !dropped.contains(&(point.x().to_bits(), point.y().to_bits()))
+                    })
+                    .map(|(&point, &sample)| (point, sample))
+                    .unzip();
+                (points, samples) = (kept, kept_samples);
+                // A rebuild that fails leaves the face its first mesh.
+                let Ok((mut next, mut next_ids, ..)) = build_constrained() else {
+                    break;
+                };
+                let mut next_reuse = Vec::new();
+                if !points.is_empty()
+                    && insert_interior_samples(
+                        &mut next,
+                        &points,
+                        &samples,
+                        &mut next_ids,
+                        &mut next_reuse,
+                    )
+                    .is_err()
+                {
+                    break;
+                }
+                next.remove_exterior(&boundary_pairs);
+                let next_triangles = next.triangles();
+                let (count, drop) = check(&next, &next_ids, &next_reuse, &next_triangles);
+                if count > previous {
+                    break;
+                }
+                previous = count;
+                // The gate: strictly fewer turned over than the best so far
+                // (the first mesh to start with), and every triangle the
+                // first mesh does not have within the deflection. Triangles
+                // the rebuild shares with the first mesh are the CDT's own.
+                let to_beat = best.as_ref().map_or(first, |kept| kept.0);
+                let accepted = count < to_beat
+                    && next_triangles
+                        .iter()
+                        .filter(|&&(i0, i1, i2)| i0 >= 3 && i1 >= 3 && i2 >= 3)
+                        .filter(|&&tri| emitted(&next, tri))
+                        .map(|&(i0, i1, i2)| {
+                            [i0, i1, i2].map(|id| position(&next, &next_ids, &next_reuse, id))
+                        })
+                        .filter(|&p| !plain.contains(&cone_fold_repair::triangle_key(p)))
+                        .all(|p| cone_fold_repair::deviation_bound(cone, p) <= deflection);
+                let done = count == 0 || drop.is_empty();
+                dropped = keys(&next, &drop);
+                if accepted {
+                    best = Some((count, next, next_ids, next_reuse, next_triangles));
+                }
+                if done {
+                    break;
+                }
+            }
+            if let Some((_, kept, kept_ids, kept_reuse, kept_triangles)) = best {
+                (cdt, cdt_to_global, interior_samples, triangles) =
+                    (kept, kept_ids, kept_reuse, kept_triangles);
+            }
+        }
+    }
+
     let cdt_verts = cdt.vertices();
-    let triangles = cdt.triangles();
 
     // Size by the FINAL vertex count, not the insert-time id map: constraint
     // recovery can grow the triangulation past what insert_points_hilbert
@@ -4199,6 +4369,55 @@ pub(super) fn tessellate_nonplanar_cdt(
         merged.indices.extend_from_slice(&triangle);
     }
 
+    Ok(())
+}
+
+/// A cone face's interior CDT points and their surface samples (B289).
+type ConeInterior = (Vec<remus_math::vec::Point2>, Vec<(Point3, Vec3)>);
+
+/// The constrained CDT of a face before its interior points: the CDT, its
+/// id-to-mesh map, and the outer and hole boundary ids and hole pairs.
+type ConstrainedCdt = (
+    remus_math::cdt::Cdt,
+    Vec<Option<u32>>,
+    Vec<usize>,
+    Vec<Vec<usize>>,
+    Vec<(usize, usize)>,
+);
+
+/// A cone face's CDT rebuilt by its fold repair (B289): how many triangles
+/// it turns over, the CDT, its id-to-mesh map, its interior samples by CDT
+/// id, and its triangles.
+type RepairedCdt = (
+    usize,
+    remus_math::cdt::Cdt,
+    Vec<Option<u32>>,
+    Vec<Option<(remus_math::vec::Point2, (Point3, Vec3))>>,
+    Vec<(usize, usize, usize)>,
+);
+
+/// Insert a CDT's interior points, recording each one's surface sample by
+/// CDT id (the first point at an id keeps it).
+fn insert_interior_samples(
+    cdt: &mut remus_math::cdt::Cdt,
+    points: &[remus_math::vec::Point2],
+    samples: &[(Point3, Vec3)],
+    cdt_to_global: &mut Vec<Option<u32>>,
+    interior_samples: &mut Vec<Option<(remus_math::vec::Point2, (Point3, Vec3))>>,
+) -> Result<(), crate::OperationsError> {
+    let interior_cdt_ids = cdt
+        .insert_points_hilbert(points)
+        .map_err(crate::OperationsError::Math)?;
+    let max_interior = interior_cdt_ids.iter().copied().max().unwrap_or(0);
+    if cdt_to_global.len() <= max_interior {
+        cdt_to_global.resize(max_interior + 1, None);
+    }
+    interior_samples.resize(max_interior + 1, None);
+    for ((&id, &point), &sample) in interior_cdt_ids.iter().zip(points).zip(samples) {
+        if let Some(slot) = interior_samples.get_mut(id) {
+            slot.get_or_insert((point, sample));
+        }
+    }
     Ok(())
 }
 
@@ -5794,6 +6013,7 @@ fn sphere_native_arcs_in_hemisphere(
 }
 
 mod collapsed_boundary;
+pub(super) mod cone_fold_repair;
 mod sheared_chart;
 mod touching_cycles;
 
