@@ -3345,6 +3345,46 @@ fn a_cap_shared_by_two_thread_mouths_refuses_before_generic_offset() {
 }
 
 #[test]
+fn grouped_display_preserves_a_modeled_threads_closed_face_ranges() {
+    use crate::tessellate::{
+        tessellate_solid_grouped_positions, tessellate_solid_grouped_with_tolerance,
+    };
+
+    let mut topo = Topology::new();
+    let form = ThreadForm::iso_metric(1.0, ThreadKind::Internal);
+    let (blank, bore) = bored(&mut topo, 6.0, 3.0 - form.depth, 6.0);
+    let solid = cut_thread(
+        &mut topo,
+        blank,
+        bore,
+        &form,
+        &both_ends(ThreadEnd::Chamfer { angle: PI / 4.0 }),
+    )
+    .unwrap()
+    .solid;
+    let (shaded, reference) =
+        tessellate_solid_grouped_with_tolerance(&topo, solid, 0.01, 0.06).unwrap();
+    let (display, ranges) = tessellate_solid_grouped_positions(&topo, solid, 0.01, 0.06).unwrap();
+    assert!(is_watertight(&shaded) && is_watertight(&display));
+    assert!(display.normals.is_empty());
+    assert_eq!(ranges.len(), reference.len());
+    assert_eq!(ranges.first(), Some(&0));
+    assert_eq!(
+        ranges.last().copied().unwrap() as usize,
+        display.indices.len()
+    );
+    assert!(
+        ranges
+            .windows(2)
+            .all(|r| r[1] > r[0] && (r[1] - r[0]) % 3 == 0)
+    );
+    assert!(
+        display.indices.len() < shaded.indices.len(),
+        "the thread must exercise display strip meshing"
+    );
+}
+
+#[test]
 fn ledge_beside_a_modeled_thread_offsets_in_both_directions() {
     let mut topo = Topology::new();
     let section = [

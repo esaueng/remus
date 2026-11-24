@@ -206,7 +206,7 @@ impl ScanBox {
 
 /// The span boxes of one NURBS face as the prefilter scans them.
 #[derive(Debug)]
-pub(super) struct SpanBoxes {
+pub(in crate::classify) struct SpanBoxes {
     boxes: Vec<ScanBox>,
     /// Runs of consecutive `boxes`, each behind the box that holds it; empty
     /// when the boxes are scanned on their own.
@@ -235,10 +235,23 @@ impl Clone for SpanBoxes {
 }
 
 impl SpanBoxes {
+    pub(in crate::classify) fn for_cached_rays(surface: &NurbsSurface) -> Option<Self> {
+        Self::for_strip(surface).or_else(|| Self::for_surface(surface))
+    }
+
+    pub(in crate::classify) fn heap_bytes(&self) -> usize {
+        self.boxes.capacity() * size_of::<ScanBox>()
+            + self.groups.capacity() * size_of::<(ScanBox, Range<usize>)>()
+    }
+
+    pub(in crate::classify) fn misses_ray(&self, origin: Point3, direction: Vec3) -> bool {
+        self.due() && direction.dot(direction) >= 1e-20 && self.test(origin, direction)
+    }
+
     /// A point farther than the boundary tolerance from every local convex
     /// hull cannot project onto the surface within that tolerance. Use the
     /// same rounding margin as the existing whole-support hull test.
-    fn excludes_point(&self, point: Point3, tolerance: f64) -> bool {
+    pub(in crate::classify) fn excludes_point(&self, point: Point3, tolerance: f64) -> bool {
         if !point.0.into_iter().all(f64::is_finite) {
             return false;
         }
@@ -538,14 +551,8 @@ impl PreparedSolid<'_> {
         if !prepared.prefilter && !prepared.strip_prefilter {
             return false;
         }
-        let Some(boxes) = self.nurbs_boxes(prepared).filter(|boxes| boxes.due()) else {
-            return false;
-        };
-        let usable = matches!(
-            direction.dot(direction).partial_cmp(&1e-20),
-            Some(Ordering::Greater | Ordering::Equal)
-        );
-        usable && boxes.test(origin, direction)
+        self.nurbs_boxes(prepared)
+            .is_some_and(|boxes| boxes.misses_ray(origin, direction))
     }
 }
 

@@ -63,7 +63,7 @@ use remus_topology::face::FaceId;
 use remus_topology::solid::SolidId;
 
 use super::boundary::FaceCache;
-use super::prepared::TrimWindow;
+use super::prepared::{SpanBoxes, TrimWindow};
 use super::{ClassifyOptions, ClassifySource, PointClassification};
 use crate::CheckError;
 
@@ -89,6 +89,7 @@ struct CacheEntry {
     planes: Box<[(usize, FaceCache)]>,
     /// NURBS trim windows in face traversal order, admitted within the byte budget.
     nurbs_windows: Box<[(usize, TrimWindow)]>,
+    ray_boxes: Box<[(usize, SpanBoxes)]>,
     skeleton: super::graze::BoundarySkeleton,
     retained_bytes: usize,
 }
@@ -361,6 +362,7 @@ impl ClassificationCache {
             trims: trims.into_boxed_slice(),
             planes: Box::default(),
             nurbs_windows: Box::default(),
+            ray_boxes: Box::default(),
             skeleton,
             retained_bytes,
         };
@@ -384,7 +386,14 @@ impl ClassificationCache {
             if used <= available {
                 break;
             }
-            let released = size_of_val(&*cached.nurbs_windows);
+            let released = size_of_val(&*cached.nurbs_windows)
+                + size_of_val(&*cached.ray_boxes)
+                + cached
+                    .ray_boxes
+                    .iter()
+                    .map(|(_, b)| b.heap_bytes())
+                    .sum::<usize>();
+            cached.ray_boxes = Box::default();
             cached.nurbs_windows = Box::default();
             cached.retained_bytes -= released;
             used -= released;
@@ -433,6 +442,26 @@ impl ClassificationCache {
             }
         }
         entry.nurbs_windows = windows.into_boxed_slice();
+        let mut ray_boxes = Vec::new();
+        for (index, &fid) in entry.faces.iter().enumerate() {
+            let slot = size_of::<(usize, SpanBoxes)>();
+            if spare < slot {
+                break;
+            }
+            if entry.trims[index].is_some()
+                && let Ok(face) = topo.face(fid)
+                && let remus_topology::face::FaceSurface::Nurbs(surface) = face.surface()
+                && let Some(boxes) = SpanBoxes::for_cached_rays(surface)
+            {
+                let bytes = slot + boxes.heap_bytes();
+                if bytes <= spare {
+                    spare -= bytes;
+                    entry.retained_bytes += bytes;
+                    ray_boxes.push((index, boxes));
+                }
+            }
+        }
+        entry.ray_boxes = ray_boxes.into_boxed_slice();
         self.entries.push(entry);
         self.rebuilds = self.rebuilds.saturating_add(1);
         Ok(CacheLookup::Retained(self.entries.len() - 1))
@@ -466,9 +495,12 @@ struct CachedSource<'a> {
 impl ClassifySource for CachedSource<'_> {
     fn check_boundary(&self, point: Point3, tolerance: f64) -> Result<bool, CheckError> {
         let mut windows = self.entry.nurbs_windows.iter().peekable();
+        let mut boxes = self.entry.ray_boxes.iter().peekable();
         for (index, (fid, trim)) in self.entry.faces.iter().zip(&self.entry.trims).enumerate() {
-            if let Some((_, window)) = windows.next_if(|(i, _)| *i == index)
-                && window.excludes(point)
+            let boxes = boxes.next_if(|(i, _)| *i == index);
+            let window = windows.next_if(|(i, _)| *i == index);
+            if window.is_some_and(|(_, w)| w.excludes(point))
+                || boxes.is_some_and(|(_, b)| b.excludes_point(point, tolerance))
             {
                 continue;
             }
@@ -500,6 +532,14 @@ impl ClassifySource for CachedSource<'_> {
         let candidates = self.entry.bvh.query_ray(point, direction);
         let mut crossings = 0u32;
         for face_idx in candidates {
+            if let Ok(i) = self
+                .entry
+                .ray_boxes
+                .binary_search_by_key(&face_idx, |(index, _)| *index)
+                && self.entry.ray_boxes[i].1.misses_ray(point, direction)
+            {
+                continue;
+            }
             let fid = self.entry.faces[face_idx];
             let owned_trim;
             let trim = if let Some(cached) = &self.entry.trims[face_idx] {
@@ -631,7 +671,7 @@ mod tests {
     }
 
     #[test]
-    fn cached_nurbs_trim_window_preserves_boundary_verdicts_with_or_without_spare_bytes() {
+    fn cached_nurbs_windows_and_spans_preserve_verdicts_with_or_without_spare_bytes() {
         use remus_math::nurbs::NurbsSurface;
         use remus_topology::face::FaceSurface;
 
@@ -656,13 +696,14 @@ mod tests {
         let surface = NurbsSurface::new(
             1,
             1,
-            knots.clone(),
+            vec![0.0, 0.0, 0.5, 1.0, 1.0],
             knots,
             vec![
                 vec![Point3::new(-1.0, -1.0, 1.0), Point3::new(-1.0, 2.0, 1.0)],
+                vec![Point3::new(0.5, -1.0, 1.0), Point3::new(0.5, 2.0, 1.0)],
                 vec![Point3::new(2.0, -1.0, 1.0), Point3::new(2.0, 2.0, 1.0)],
             ],
-            vec![vec![1.0; 2]; 2],
+            vec![vec![1.0; 2]; 3],
         )
         .unwrap();
         topo.face_mut(faces[top])
@@ -693,7 +734,16 @@ mod tests {
         assert!(window.excludes(Point3::new(0.5, 1.25, 1.0)));
         assert!(!window.excludes(Point3::new(0.5, 1.0, 1.0)));
 
-        let base_bytes = cache.retained_bytes() - size_of::<(usize, TrimWindow)>();
+        let ray_boxes = &cache.entries[0].ray_boxes;
+        assert_eq!(ray_boxes.len(), 1);
+        let (span_face, spans) = &ray_boxes[0];
+        assert_eq!(*span_face, top);
+        assert!(spans.excludes_point(Point3::new(0.5, 0.5, 0.5), options.tolerance));
+        assert!(!spans.excludes_point(Point3::new(0.5, 0.5, 1.0), options.tolerance));
+        let base_bytes = cache.retained_bytes()
+            - size_of::<(usize, TrimWindow)>()
+            - size_of::<(usize, SpanBoxes)>()
+            - spans.heap_bytes();
         let mut tight = ClassificationCache::with_capacity_and_byte_budget(1, base_bytes);
         assert_eq!(
             tight
@@ -702,6 +752,7 @@ mod tests {
             expected
         );
         assert!(tight.entries[0].nurbs_windows.is_empty());
+        assert!(tight.entries[0].ray_boxes.is_empty());
         assert_eq!(tight.retained_bytes(), base_bytes);
 
         let probe = points[0];
@@ -715,6 +766,7 @@ mod tests {
         assert_eq!(two.entries[0].nurbs_windows.len(), 1);
         two.classify_point(&topo, planar, probe, &options).unwrap();
         assert!(two.entries[0].nurbs_windows.is_empty());
+        assert!(two.entries[0].ray_boxes.is_empty());
         assert_eq!(two.retained_bytes(), budget);
         for id in [solid, planar] {
             two.classify_point(&topo, id, probe, &options).unwrap();
