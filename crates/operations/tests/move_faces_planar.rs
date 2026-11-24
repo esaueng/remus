@@ -830,3 +830,77 @@ fn floor_moves_keep_tangent_rulings_exact_for_a_later_top_move() {
         );
     }
 }
+
+/// A widening frustum's rebuilt cap extends past its translated source box.
+#[test]
+fn a_widening_cap_refuses_to_sweep_into_a_fixed_post() {
+    use remus_operations::prepared_move::PreparedFaceMove;
+
+    for (post_x, distance, collision) in [(31.5, 2.0, true), (31.5, 0.5, false), (34.0, 2.0, false)]
+    {
+        let mut topo = Topology::new();
+        let plate = make_box(&mut topo, 40.0, 40.0, 2.0).unwrap();
+        let frustum = make_cone(&mut topo, 8.0, 10.0, 4.0).unwrap();
+        transform_solid(&mut topo, frustum, &Mat4::translation(20.0, 20.0, 2.0)).unwrap();
+        let post = make_cylinder(&mut topo, 1.0, 10.0).unwrap();
+        transform_solid(&mut topo, post, &Mat4::translation(post_x, 20.0, 2.0)).unwrap();
+        let body = boolean(&mut topo, BooleanOp::Fuse, plate, frustum).unwrap();
+        let body = boolean(&mut topo, BooleanOp::Fuse, body, post).unwrap();
+        remus_operations::heal::unify_faces(&mut topo, body).unwrap();
+        let up = Vec3::new(0.0, 0.0, 1.0);
+        let cap = solid_faces(&topo, body)
+            .unwrap()
+            .into_iter()
+            .find(|&face| {
+                topo.face(face)
+                    .unwrap()
+                    .effective_plane_normal()
+                    .is_some_and(|normal| normal.dot(up) > 1.0 - 1e-9)
+                    && (plane_coordinate(&topo, face, up) - 6.0).abs() < 1e-7
+            })
+            .expect("frustum cap");
+        let before = solid_volume(&topo, body, DEFLECTION).unwrap();
+        let radius = 10.0 + 0.5 * distance;
+        let extension = PI * distance / 3.0 * (100.0 + 10.0 * radius + radius * radius);
+        let live_counts = |topo: &Topology| {
+            [
+                topo.num_vertices(),
+                topo.num_edges(),
+                topo.num_wires(),
+                topo.num_faces(),
+                topo.num_solids(),
+            ]
+        };
+        let counts = live_counts(&topo);
+
+        for prepared in [false, true] {
+            let mut source = topo.clone();
+            let moved = if prepared {
+                PreparedFaceMove::prepare(&source, body, &[cap])
+                    .unwrap()
+                    .move_faces(&mut source, distance)
+                    .map(|result| result.solid)
+            } else {
+                move_faces(&mut source, body, &[cap], distance)
+            };
+            if collision {
+                // At z = 7.75, x = 30.75 lies in both the post and the widening
+                // frustum. The source cap stops at x = 30.
+                let error = moved.expect_err("the widened cap would hit the post");
+                assert!(
+                    matches!(&error,
+                        OperationsError::Offset(OffsetError::TopologyChange { reason, .. })
+                        if reason.contains("re-limited face reaches nonadjacent face")
+                    ),
+                    "unexpected refusal: {error}"
+                );
+                assert_eq!(live_counts(&source), counts);
+                assert_volume(&source, body, before);
+            } else {
+                let moved = moved.expect("the widening move clears the post");
+                assert_volume(&source, moved, before + extension);
+                assert_verified(&source, moved);
+            }
+        }
+    }
+}

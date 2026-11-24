@@ -185,10 +185,8 @@ pub(crate) fn move_faces_with_entity_evolution(
                 evolution: result.evolution,
             }
         } else {
-            refuse_swept_face_intersections(topo, solid, faces, distance)?;
-            let moved = crate::performance::timed("move_faces.offset_engine", || {
-                remus_offset::move_faces_with_entity_map(topo, solid, faces, distance)
-            })?;
+            let swept = prepare_offset_sweep(topo, solid, faces)?;
+            let moved = offset_faces_checked(topo, solid, faces, distance, swept.as_ref())?;
 
             boundary_pairs = boundary_entity_pairs(&moved);
             if !crate::blend_ops::display_only_blends() && move_is_prismatic(topo, solid, faces)? {
@@ -325,16 +323,7 @@ impl PreparedPlanarMove {
         let mut swept = None;
         let mut prismatic = None;
         if blend.is_none() {
-            if let Some(normal) = topo.face(reference)?.effective_plane_normal() {
-                let selected: std::collections::HashSet<_> = faces.iter().copied().collect();
-                swept = Some(SweptRegionCheck::prepare(
-                    topo,
-                    solid,
-                    &selected,
-                    &std::collections::HashSet::new(),
-                    normal,
-                )?);
-            }
+            swept = prepare_offset_sweep(topo, solid, faces)?;
             if move_is_prismatic(topo, solid, faces)? {
                 let deflection = verify_deflection(topo, solid);
                 let before = solid_volume(topo, solid, deflection)?;
@@ -373,12 +362,8 @@ impl PreparedPlanarMove {
                     evolution: moved.evolution,
                 }
             } else {
-                if let Some(swept) = &self.swept {
-                    swept.check_offset(topo, distance)?;
-                }
-                let moved = crate::performance::timed("move_faces.offset_engine", || {
-                    remus_offset::move_faces_with_entity_map(topo, solid, faces, distance)
-                })?;
+                let moved =
+                    offset_faces_checked(topo, solid, faces, distance, self.swept.as_ref())?;
                 boundary_pairs = boundary_entity_pairs(&moved);
                 if let Some((before, area)) = self.prismatic
                     && !crate::blend_ops::display_only_blends()
@@ -675,27 +660,46 @@ fn validate_cylindrical_bore_boundary(
     Ok(())
 }
 
-fn refuse_swept_face_intersections(
+fn prepare_offset_sweep(
     topo: &Topology,
     solid: SolidId,
-    selected_faces: &[FaceId],
-    distance: f64,
-) -> Result<(), crate::OperationsError> {
-    let Some(&reference) = selected_faces.first() else {
-        return Ok(());
+    faces: &[FaceId],
+) -> Result<Option<SweptRegionCheck>, crate::OperationsError> {
+    let Some(&reference) = faces.first() else {
+        return Ok(None);
     };
     let Some(normal) = topo.face(reference)?.effective_plane_normal() else {
-        return Ok(());
+        return Ok(None);
     };
-    let selected: std::collections::HashSet<_> = selected_faces.iter().copied().collect();
     SweptRegionCheck::prepare(
         topo,
         solid,
-        &selected,
-        &std::collections::HashSet::new(),
+        &faces.iter().copied().collect(),
+        &HashSet::new(),
         normal,
-    )?
-    .check_offset(topo, distance)
+    )
+    .map(Some)
+}
+
+/// Build a tentative offset under the caller's rollback scope. Check both
+/// the source sweep and any growth in the rebuilt footprint before commit.
+fn offset_faces_checked(
+    topo: &mut Topology,
+    solid: SolidId,
+    faces: &[FaceId],
+    distance: f64,
+    swept: Option<&SweptRegionCheck>,
+) -> Result<remus_offset::MoveFacesEntityResult, crate::OperationsError> {
+    if let Some(swept) = swept {
+        swept.check_offset(topo, distance)?;
+    }
+    let moved = crate::performance::timed("move_faces.offset_engine", || {
+        remus_offset::move_faces_with_entity_map(topo, solid, faces, distance)
+    })?;
+    if let Some(swept) = swept {
+        swept.check_rebuilt_offset(topo, &moved)?;
+    }
+    Ok(moved)
 }
 
 #[cfg(test)]
@@ -912,6 +916,48 @@ impl SweptRegionCheck {
         distance: f64,
     ) -> Result<(), crate::OperationsError> {
         self.check_footprints(topo, distance, Footprint::Offset)
+    }
+
+    /// An ordinary non-prismatic offset can re-limit the selected plane
+    /// against sloped walls. Its rebuilt footprint may exceed the source
+    /// box translated to the new level. Check the additional reach against
+    /// the same fixed faces before accepting the rebuilt solid.
+    fn check_rebuilt_offset(
+        &self,
+        topo: &Topology,
+        moved: &remus_offset::MoveFacesEntityResult,
+    ) -> Result<(), crate::OperationsError> {
+        for swept in &self.swept {
+            if swept.prismatic || swept.candidates.is_empty() {
+                continue;
+            }
+            let rebuilt = moved.face_map.get(&swept.face.index()).ok_or_else(|| {
+                remus_offset::OffsetError::TopologyChange {
+                    face: Some(swept.face),
+                    edge: None,
+                    reason: "no rebuilt face to check for offset clearance".into(),
+                }
+            })?;
+            let destination =
+                crate::measure::conservative_face_set_bounding_box(topo, &[*rebuilt])?;
+            let bounds = swept.original.union(destination);
+            if let Some(candidate) = swept
+                .candidates
+                .iter()
+                .find(|candidate| bounds.intersects(candidate.bounds))
+            {
+                return Err(remus_offset::OffsetError::TopologyChange {
+                    face: Some(swept.face),
+                    edge: None,
+                    reason: format!(
+                        "re-limited face reaches nonadjacent face {} before completing the move",
+                        candidate.face.index()
+                    ),
+                }
+                .into());
+            }
+        }
+        Ok(())
     }
 
     // The blend translation path moves the selected trims as rigid geometry.
