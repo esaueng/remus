@@ -3883,9 +3883,11 @@ export class RemusKernel {
      * `face`, `wall`, `cap` and cap `edge` and its `capSetback` and
      * `wallSetback`. `"chamfer"` carries the band with the face; `"draft"`
      * re-limits it against the moved face. A band the journal records is
-     * read by its record whatever `ambiguousRim` says. `details` echoes
+     * read by its record for all three choices. `details` echoes
      * the `ambiguousRim` used. An unknown key or value is an
      * `invalid_argument` refusal.
+     * For saved moves from before rim-band recognition, `"legacyReplay"`
+     * uses the original planar move and riding-chamfer rules.
      */
     moveFacesDetailedWithOptions(solid: number, faces: Uint32Array, distance: number, options: string): SolidOperationDetailedResult;
     /**
@@ -5291,6 +5293,17 @@ export class RemusKernel {
      * Returns an error if the solid handle is invalid or tessellation fails.
      */
     tessellateSolidGroupedBinary(solid: number, deflection: number, angular_tolerance?: number | null): JsGroupedMesh;
+    /**
+     * Face-grouped display mesh for consumers generating their own normals.
+     *
+     * Positions, indices and face offsets use the full grouped-mesh contract.
+     * The returned normals array is empty.
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle is invalid or tessellation fails.
+     */
+    tessellateSolidGroupedPositions(solid: number, deflection: number, angular_tolerance?: number | null): JsGroupedMesh;
     /**
      * Tessellate a solid and include per-vertex UV coordinates.
      *

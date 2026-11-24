@@ -6698,9 +6698,11 @@ class RemusKernel {
      * `face`, `wall`, `cap` and cap `edge` and its `capSetback` and
      * `wallSetback`. `"chamfer"` carries the band with the face; `"draft"`
      * re-limits it against the moved face. A band the journal records is
-     * read by its record whatever `ambiguousRim` says. `details` echoes
+     * read by its record for all three choices. `details` echoes
      * the `ambiguousRim` used. An unknown key or value is an
      * `invalid_argument` refusal.
+     * For saved moves from before rim-band recognition, `"legacyReplay"`
+     * uses the original planar move and riding-chamfer rules.
      * @param {number} solid
      * @param {Uint32Array} faces
      * @param {number} distance
@@ -9798,6 +9800,27 @@ class RemusKernel {
         return JsGroupedMesh.__wrap(ret[0]);
     }
     /**
+     * Face-grouped display mesh for consumers generating their own normals.
+     *
+     * Positions, indices and face offsets use the full grouped-mesh contract.
+     * The returned normals array is empty.
+     *
+     * # Errors
+     *
+     * Returns an error if the solid handle is invalid or tessellation fails.
+     * @param {number} solid
+     * @param {number} deflection
+     * @param {number | null} [angular_tolerance]
+     * @returns {JsGroupedMesh}
+     */
+    tessellateSolidGroupedPositions(solid, deflection, angular_tolerance) {
+        const ret = wasm.remuskernel_tessellateSolidGroupedPositions(this.__wbg_ptr, solid, deflection, !isLikeNone(angular_tolerance), isLikeNone(angular_tolerance) ? 0 : angular_tolerance);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return JsGroupedMesh.__wrap(ret[0]);
+    }
+    /**
      * Tessellate a solid and include per-vertex UV coordinates.
      *
      * Returns a JSON string containing `{ positions, normals, indices, uvs }`.
@@ -10466,6 +10489,10 @@ function __wbg_get_imports() {
             getDataViewMemory0().setInt32(arg0 + 4 * 1, len1, true);
             getDataViewMemory0().setInt32(arg0 + 4 * 0, ptr1, true);
         },
+        __wbg___wbindgen_function_table_808ea415bac79cd6: function() {
+            const ret = wasm.__wbindgen_export;
+            return ret;
+        },
         __wbg___wbindgen_in_aca499c5de7ff5e5: function(arg0, arg1) {
             const ret = arg0 in arg1;
             return ret;
@@ -10516,6 +10543,10 @@ function __wbg_get_imports() {
         __wbg___wbindgen_throw_344f42d3211c4765: function(arg0, arg1) {
             throw new Error(getStringFromWasm0(arg0, arg1));
         },
+        __wbg_call_44b7209e1e252e6a: function() { return handleError(function (arg0, arg1, arg2, arg3, arg4) {
+            const ret = arg0.call(arg1, arg2, arg3, arg4);
+            return ret;
+        }, arguments); },
         __wbg_call_8a2dd23819f8a60a: function() { return handleError(function (arg0, arg1) {
             const ret = arg0.call(arg1);
             return ret;
@@ -10527,6 +10558,14 @@ function __wbg_get_imports() {
         __wbg_error_ac6390e62825f31f: function(arg0, arg1) {
             console.error(getStringFromWasm0(arg0, arg1));
         },
+        __wbg_exports_085d8a69333b42bc: function(arg0) {
+            const ret = arg0.exports;
+            return ret;
+        },
+        __wbg_get_78f252d074a84d0b: function() { return handleError(function (arg0, arg1) {
+            const ret = Reflect.get(arg0, arg1);
+            return ret;
+        }, arguments); },
         __wbg_get_c7eb1f358a7654df: function() { return handleError(function (arg0, arg1) {
             const ret = Reflect.get(arg0, arg1);
             return ret;
@@ -10543,6 +10582,16 @@ function __wbg_get_imports() {
             let result;
             try {
                 result = arg0 instanceof ArrayBuffer;
+            } catch (_) {
+                result = false;
+            }
+            const ret = result;
+            return ret;
+        },
+        __wbg_instanceof_Table_4b4d507f81f7ae7c: function(arg0) {
+            let result;
+            try {
+                result = arg0 instanceof WebAssembly.Table;
             } catch (_) {
                 result = false;
             }
@@ -10590,16 +10639,28 @@ function __wbg_get_imports() {
             const ret = new Array();
             return ret;
         },
+        __wbg_new_711fb31c64c1c363: function() { return handleError(function (arg0) {
+            const ret = new WebAssembly.Module(arg0);
+            return ret;
+        }, arguments); },
         __wbg_new_7796ffc7ed656783: function() {
             const ret = new Map();
             return ret;
         },
+        __wbg_new_944c2b5ed6653041: function() { return handleError(function (arg0, arg1) {
+            const ret = new WebAssembly.Instance(arg0, arg1);
+            return ret;
+        }, arguments); },
         __wbg_new_cd45aabdf6073e84: function(arg0) {
             const ret = new Uint8Array(arg0);
             return ret;
         },
         __wbg_new_da52cf8fe3429cb2: function() {
             const ret = new Object();
+            return ret;
+        },
+        __wbg_new_from_slice_77cdfb7977362f3c: function(arg0, arg1) {
+            const ret = new Uint8Array(getArrayU8FromWasm0(arg0, arg1));
             return ret;
         },
         __wbg_next_6dbf2c0ac8cde20f: function(arg0) {
@@ -10621,6 +10682,9 @@ function __wbg_get_imports() {
             const ret = arg0.set(arg1, arg2);
             return ret;
         },
+        __wbg_set_5d8eaa6b2caf4444: function() { return handleError(function (arg0, arg1, arg2) {
+            arg0.set(arg1 >>> 0, arg2);
+        }, arguments); },
         __wbg_set_6be42768c690e380: function(arg0, arg1, arg2) {
             arg0[arg1] = arg2;
         },
