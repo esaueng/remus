@@ -413,12 +413,23 @@ impl NurbsCurve {
             ders_bf_heap = vec![0.0; required];
             &mut ders_bf_heap
         };
-        basis::ders_basis_funs_into(span, u, p, du, &self.knots, ders_bf);
+        if du == 1 {
+            basis::ders_basis_funs_first_into(span, u, p, &self.knots, ders_bf);
+        } else {
+            basis::ders_basis_funs_into(span, u, p, du, &self.knots, ders_bf);
+        }
 
         // Compute homogeneous derivatives: Aw[k] = (Aw_x, Aw_y, Aw_z, w) for k-th deriv.
         // Homogeneous derivatives vanish above the polynomial degree, but
         // derivatives of the rational quotient need not vanish there.
-        let mut aw = vec![[0.0f64; 4]; d + 1];
+        let mut first_order = [[0.0f64; 4]; 2];
+        let mut higher_orders;
+        let aw: &mut [[f64; 4]] = if d <= 1 {
+            &mut first_order[..=d]
+        } else {
+            higher_orders = vec![[0.0f64; 4]; d + 1];
+            &mut higher_orders
+        };
         let weight_scale = self.max_weight();
         debug_assert!(weight_scale.is_finite() && weight_scale > 0.0);
         for (k, aw_k) in aw.iter_mut().enumerate().take(du + 1) {
@@ -1004,6 +1015,33 @@ mod weight_cache_tests {
             ],
         )
         .unwrap()
+    }
+
+    #[test]
+    fn short_derivative_requests_match_the_general_solve_bitwise() {
+        for scale in [1.0, 1.0e-200] {
+            let curve = rational_arc(scale);
+            for u in [
+                -1.0,
+                -0.0,
+                0.13,
+                0.5_f64.next_down(),
+                0.5,
+                0.5_f64.next_up(),
+                0.93,
+                1.0,
+                2.0,
+            ] {
+                let general = curve.derivatives(u, 2);
+                for order in 0..=1 {
+                    let short = curve.derivatives(u, order);
+                    assert_eq!(short.len(), order + 1);
+                    for (actual, expected) in short.iter().zip(&general) {
+                        assert_eq!(actual.0.map(f64::to_bits), expected.0.map(f64::to_bits));
+                    }
+                }
+            }
+        }
     }
 
     #[test]
