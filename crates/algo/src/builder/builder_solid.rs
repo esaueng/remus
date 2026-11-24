@@ -7710,7 +7710,8 @@ mod tests {
         let knots: Vec<f64> = (0..=8).map(f64::from).collect();
         let (cps, ws, kv) = rational_circle_spans(5.0, &quarters, &knots);
         let carrier = NurbsCurve::new(2, kv, cps, ws).unwrap();
-        let (solid, topo) = box_with_cap_lens(carrier, (4.0, 5.0)).unwrap();
+        let (solid, topo) =
+            box_with_cap_lens(carrier, (4.0, 5.0), Vec3::new(0.0, 0.0, 0.0)).unwrap();
         let faces = remus_topology::explorer::solid_faces(&topo, solid).unwrap();
         assert_eq!(faces.len(), 6);
         let mut uses: DetHashMap<EdgeId, usize> = DetHashMap::default();
@@ -7736,7 +7737,28 @@ mod tests {
         let (mut cps, ws, kv) = rational_circle_spans(5.0, &[0.0, FRAC_PI_2], &[0.0, 1.0]);
         cps[1] = Point3::new(5.5, 5.5, 0.0);
         let lens = NurbsCurve::new(2, kv, cps, ws).unwrap();
-        let err = box_with_cap_lens(lens, (0.0, 1.0)).unwrap_err();
+        let err = box_with_cap_lens(lens, (0.0, 1.0), Vec3::new(0.0, 0.0, 0.0)).unwrap_err();
+        assert!(
+            matches!(&err, AlgoError::AssemblyFailed(msg) if msg.contains("certified")),
+            "{err:?}"
+        );
+    }
+
+    /// Review round 2, case 5 (#1974), a known limitation: the box-cap
+    /// fixture with the arc's exact rational copy, translated 3e8 along x.
+    /// The certificate's rounding allowance grows with the world coordinates
+    /// and passes half the band there, so the pair is declined and the
+    /// assembly refuses. It must stay a typed refusal, never an open body.
+    /// Follow-up: certify in coordinates relative to the conic's centre
+    /// (esaueng/remus#1978).
+    #[test]
+    fn far_translated_cap_copy_refuses_instead_of_an_open_body() {
+        use remus_math::nurbs::curve::NurbsCurve;
+        let (cps, ws, kv) = rational_circle_spans(5.0, &[0.0, FRAC_PI_2], &[0.0, 1.0]);
+        let copy = NurbsCurve::new(2, kv, cps, ws).unwrap();
+        // At the origin the copy closes the box.
+        assert!(box_with_cap_lens(copy.clone(), (0.0, 1.0), Vec3::new(0.0, 0.0, 0.0)).is_ok());
+        let err = box_with_cap_lens(copy, (0.0, 1.0), Vec3::new(3e8, 0.0, 0.0)).unwrap_err();
         assert!(
             matches!(&err, AlgoError::AssemblyFailed(msg) if msg.contains("certified")),
             "{err:?}"
@@ -7745,10 +7767,12 @@ mod tests {
 
     /// A 20-unit box whose top cap carries the out-and-back inner wire
     /// `[quarter circle r = 5 about (10, 10, 20), spline]`, through
-    /// `build_solid`. The spline is given about the origin and moved there.
+    /// `build_solid`, all moved by `offset`. The spline is given about the
+    /// origin and moved with the circle's centre.
     fn box_with_cap_lens(
         spline: remus_math::nurbs::curve::NurbsCurve,
         spline_trim: (f64, f64),
+        offset: Vec3,
     ) -> Result<(SolidId, Topology), AlgoError> {
         use remus_math::nurbs::curve::NurbsCurve;
         use remus_topology::{edge::Edge, vertex::Vertex, wire::Wire};
@@ -7768,26 +7792,24 @@ mod tests {
             let oes: Vec<_> = topo.wire(face.outer_wire()).unwrap().edges().to_vec();
             topo.face_mut(fid).unwrap().set_surface(FaceSurface::Plane {
                 normal,
-                d: 20.0 * d,
+                d: 20.0 * d + normal.dot(offset),
             });
             for oe in oes {
                 let e = topo.edge(oe.edge()).unwrap();
                 for vid in [e.start(), e.end()] {
                     if moved.insert(vid) {
                         let p = topo.vertex(vid).unwrap().point();
-                        topo.vertex_mut(vid).unwrap().set_point(Point3::new(
-                            20.0 * p.x(),
-                            20.0 * p.y(),
-                            20.0 * p.z(),
-                        ));
+                        topo.vertex_mut(vid).unwrap().set_point(
+                            Point3::new(20.0 * p.x(), 20.0 * p.y(), 20.0 * p.z()) + offset,
+                        );
                     }
                 }
             }
         }
         let top = top.unwrap();
-        let centre = Vec3::new(10.0, 10.0, 20.0);
+        let centre = Vec3::new(10.0, 10.0, 20.0) + offset;
         let circle = remus_math::curves::Circle3D::new_with_ref(
-            Point3::new(10.0, 10.0, 20.0),
+            Point3::new(0.0, 0.0, 0.0) + centre,
             Vec3::new(0.0, 0.0, 1.0),
             5.0,
             Vec3::new(1.0, 0.0, 0.0),
