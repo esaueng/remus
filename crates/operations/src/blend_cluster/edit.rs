@@ -54,6 +54,8 @@
 //! WASM module tier: `core` (reached from `resizeBlend` and
 //! `resizeCylindricalFace`).
 
+mod repeated_refusal;
+
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -465,7 +467,9 @@ fn resize_and_reblend(
         sharp_edges.push(carried);
     }
     let plans = plan_reblend(&group.cluster, &restoration.removed, &BTreeMap::new())?;
-    let rebuilt = reblend_restoration_gated(work, edited.solid, &sharp_edges, &plans, gate)?;
+    let rebuilt = repeated_refusal::during(gate == Gate::Full && plans.len() > 1, || {
+        reblend_restoration_gated(work, edited.solid, &sharp_edges, &plans, gate)
+    })?;
     Ok(Built {
         solid: rebuilt.solid,
         seed: group.seed,
@@ -603,7 +607,7 @@ pub fn fillet_through_blend_group(
             };
             selected.push(mapped);
         }
-        group_fillet(work, copied.solid, &selected, radius)
+        repeated_refusal::run(work, copied.solid, &selected, radius, group_fillet)
     })
 }
 
