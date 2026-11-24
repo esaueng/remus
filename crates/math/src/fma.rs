@@ -65,13 +65,15 @@ pub fn fma(a: f64, b: f64, c: f64) -> f64 {
     target_feature = "simd128",
     feature = "wasm-fused-arithmetic"
 ))]
-mod dispatch {
+pub(crate) mod dispatch {
     use std::cell::OnceCell;
 
     type MultiplyAdd = extern "C" fn(f64, f64, f64) -> f64;
+    type Dot3 = extern "C" fn(f64, f64, f64, f64, f64, f64) -> f64;
 
     thread_local! {
         static FUNCTION: OnceCell<Option<MultiplyAdd>> = const { OnceCell::new() };
+        static DOT3: OnceCell<Option<Dot3>> = const { OnceCell::new() };
     }
 
     // A type-matched slot reserved solely for this implementation. Keep it
@@ -79,6 +81,29 @@ mod dispatch {
     extern "C" fn reserved(a: f64, b: f64, c: f64) -> f64 {
         std::hint::black_box(&FUNCTION);
         a.mul_add(b, c)
+    }
+
+    extern "C" fn reserved_dot3(x: f64, a: f64, y: f64, b: f64, z: f64, c: f64) -> f64 {
+        std::hint::black_box(&DOT3);
+        super::fma(x, a, super::fma(y, b, z * c))
+    }
+
+    /// A finite result from the qualified vector function in this WASM instance.
+    pub fn finite_dot3(left: [f64; 3], right: [f64; 3]) -> Option<f64> {
+        let dot = DOT3.with(|slot| slot.get().copied().flatten())?;
+        let result = dot(left[0], right[0], left[1], right[1], left[2], right[2]);
+        // A non-finite inner term cannot contribute to a finite dot product.
+        // Re-evaluate non-finite results with the original NaN handling.
+        result.is_finite().then_some(result)
+    }
+
+    pub(super) fn install_dot3(install: impl FnOnce(usize) -> bool) {
+        DOT3.with(|cell| {
+            cell.get_or_init(|| {
+                let slot = std::hint::black_box(reserved_dot3 as Dot3);
+                install(slot as usize).then_some(slot)
+            });
+        });
     }
 
     #[inline]
@@ -99,6 +124,7 @@ mod dispatch {
 }
 
 /// Install an optional, correctly rounded multiply-add in this WASM instance.
+///
 /// The host writes the reserved table slot only after qualifying the function;
 /// otherwise the original software path remains active.
 #[cfg(all(
@@ -108,6 +134,19 @@ mod dispatch {
 ))]
 pub fn install_wasm_fma(install: impl FnOnce(usize) -> bool) {
     dispatch::install(install);
+}
+
+/// Install the optional three-component dot product in this WASM instance.
+///
+/// The host must first qualify both fused stages and the intervening ordinary
+/// product. The arguments are the three coordinate pairs in x, y, z order.
+#[cfg(all(
+    target_arch = "wasm32",
+    target_feature = "simd128",
+    feature = "wasm-fused-arithmetic"
+))]
+pub fn install_wasm_dot3(install: impl FnOnce(usize) -> bool) {
+    dispatch::install_dot3(install);
 }
 
 /// Out-of-line arithmetic shared by the baseline and optional fused paths.
