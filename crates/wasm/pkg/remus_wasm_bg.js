@@ -10526,6 +10526,10 @@ export function __wbg___wbindgen_string_get_b0ca35b86a603356(arg0, arg1) {
 export function __wbg___wbindgen_throw_344f42d3211c4765(arg0, arg1) {
     throw new Error(getStringFromWasm0(arg0, arg1));
 }
+export function __wbg_apply_3ac86a26fdb56c05() { return handleError(function (arg0, arg1, arg2) {
+    const ret = arg0.apply(arg1, arg2);
+    return ret;
+}, arguments); }
 export function __wbg_call_44b7209e1e252e6a() { return handleError(function (arg0, arg1, arg2, arg3, arg4) {
     const ret = arg0.call(arg1, arg2, arg3, arg4);
     return ret;
@@ -10660,6 +10664,10 @@ export function __wbg_now_aca6ff702e646588() {
 }
 export function __wbg_prototypesetcall_4770620bbe4688a0(arg0, arg1, arg2) {
     Uint8Array.prototype.set.call(getArrayU8FromWasm0(arg0, arg1), arg2);
+}
+export function __wbg_push_d2ae3af0c1217ae6(arg0, arg1) {
+    const ret = arg0.push(arg1);
+    return ret;
 }
 export function __wbg_set_575dd786d51585f8(arg0, arg1, arg2) {
     const ret = arg0.set(arg1, arg2);
