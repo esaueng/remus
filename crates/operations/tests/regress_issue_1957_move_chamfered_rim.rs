@@ -132,6 +132,9 @@ const AS_CHAMFER: MoveFacesOptions =
 const AS_DRAFT: MoveFacesOptions =
     MoveFacesOptions::new().with_ambiguous_rim(AmbiguousRimResolution::TreatAsDraft);
 
+const LEGACY_REPLAY: MoveFacesOptions =
+    MoveFacesOptions::new().with_ambiguous_rim(AmbiguousRimResolution::LegacyReplay);
+
 /// A symmetric chamfer as the app builds one: the planar bevel first, the
 /// general engine after. Unjournaled: the band has no history.
 fn chamfer(topo: &mut Topology, solid: SolidId, edges: &[EdgeId], distance: f64) -> SolidId {
@@ -762,6 +765,16 @@ fn journal_history_decides_an_equal_setback_section() {
     let label = "unrecorded 45° section read as a draft";
     assert_relimited(&mut topo, solid, 2.0, &before, &after, label, AS_DRAFT);
 
+    assert_relimited(
+        &mut topo,
+        solid,
+        2.0,
+        &before,
+        &after,
+        "saved planar move",
+        LEGACY_REPLAY,
+    );
+
     let mut topo = Topology::new();
     let solid = prism(&mut topo, &before);
     let keys = solid_entity_keys(&topo, solid).unwrap();
@@ -995,6 +1008,91 @@ fn a_chamfered_bore_does_not_override_mixed_outer_rim_refusal() {
         .expect_err("a chamfered bore cannot override the mixed rim refusal");
     assert!(error.to_string().contains("mixes a chamfer"), "{error}");
     assert_eq!(solid_entity_counts(&topo, solid).unwrap(), counts);
+}
+
+/// Before rim disambiguation a chamfered bore mouth seeded a translation,
+/// and the unrecorded outer bevel rode with that cap.
+#[test]
+fn legacy_replay_carries_the_unrecorded_rim_with_a_chamfered_bore() {
+    let mut topo = Topology::new();
+    let sharp = make_box(&mut topo, X, Y, Z).unwrap();
+    let radius = 5.0;
+    let tool = remus_operations::primitives::make_cylinder(&mut topo, radius, Z + 10.0).unwrap();
+    transform_solid(&mut topo, tool, &Mat4::translation(20.0, 20.0, -5.0)).unwrap();
+    let drilled = boolean(&mut topo, BooleanOp::Cut, sharp, tool).unwrap();
+    let edges = edges_where(&topo, drilled, bottom_rim);
+    let solid = chamfer(&mut topo, drilled, &edges, CHAMFER);
+    let face = bottom(&topo, solid);
+    assert!(matches!(
+        move_faces(&mut topo, solid, &[face], 2.0),
+        Err(OperationsError::AmbiguousRimChamfer(_))
+    ));
+    assert_carried(
+        &mut topo,
+        solid,
+        2.0,
+        X * Y - PI * radius * radius,
+        "saved bore move",
+        LEGACY_REPLAY,
+    );
+}
+
+/// A varying setback cannot seed a chamfer move, but the earlier move did
+/// carry this oblique band with the chamfered bore.
+#[test]
+fn legacy_replay_allows_an_oblique_rider_with_a_chamfered_bore() {
+    let mut topo = Topology::new();
+    let plate = make_box(&mut topo, X, Y, Z).unwrap();
+    // The cutter removes x + 0.02*y - z > 58.4 along the bottom corner.
+    let profile = remus_topology::builder::make_planar_face(
+        &mut topo,
+        &[
+            Point3::new(48.42, -1.0, -10.0),
+            Point3::new(80.0, -1.0, -10.0),
+            Point3::new(80.0, -1.0, 21.58),
+        ],
+        1e-7,
+    )
+    .unwrap();
+    let sweep = Vec3::new(-0.02 * (Y + 2.0), Y + 2.0, 0.0);
+    let wedge = extrude(
+        &mut topo,
+        profile,
+        sweep * sweep.length().recip(),
+        sweep.length(),
+    )
+    .unwrap();
+    let plate = boolean(&mut topo, BooleanOp::Cut, plate, wedge).unwrap();
+    let bore = remus_operations::primitives::make_cylinder(&mut topo, 5.0, Z + 10.0).unwrap();
+    transform_solid(&mut topo, bore, &Mat4::translation(20.0, 20.0, -5.0)).unwrap();
+    let plate = boolean(&mut topo, BooleanOp::Cut, plate, bore).unwrap();
+    let mouth: Vec<_> = edges_where(&topo, plate, bottom_rim)
+        .into_iter()
+        .filter(|&id| {
+            matches!(
+                topo.edge(id).unwrap().curve(),
+                remus_topology::edge::EdgeCurve::Circle(_)
+            )
+        })
+        .collect();
+    assert_eq!(mouth.len(), 1);
+    let solid = chamfer(&mut topo, plate, &mouth, CHAMFER);
+    let face = bottom(&topo, solid);
+    let refused = move_faces(&mut topo, solid, &[face], 2.0).unwrap_err();
+    assert!(
+        refused
+            .to_string()
+            .contains("not a constant-setback chamfer"),
+        "{refused}"
+    );
+    assert_carried(
+        &mut topo,
+        solid,
+        2.0,
+        X * Y - PI * 25.0,
+        "saved oblique rider",
+        LEGACY_REPLAY,
+    );
 }
 
 fn regular_prism(topo: &mut Topology, sides: u32) -> SolidId {

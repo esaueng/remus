@@ -176,6 +176,10 @@ fn the_batch_route_takes_the_same_options() {
     let cases = [
         (Some(serde_json::json!({"ambiguousRim": "chamfer"})), "ok"),
         (Some(serde_json::json!({"ambiguousRim": "draft"})), "ok"),
+        (
+            Some(serde_json::json!({"ambiguousRim": "legacyReplay"})),
+            "ok",
+        ),
         (None, "error"),
         (Some(serde_json::json!({"ambiguousRim": "maybe"})), "error"),
     ];

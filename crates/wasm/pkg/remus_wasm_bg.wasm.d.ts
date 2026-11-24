@@ -432,6 +432,7 @@ export const remuskernel_tessellateSheet: (a: number, b: number, c: number, d: n
 export const remuskernel_tessellateSolid: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const remuskernel_tessellateSolidGrouped: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const remuskernel_tessellateSolidGroupedBinary: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
+export const remuskernel_tessellateSolidGroupedPositions: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const remuskernel_tessellateSolidUV: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
 export const remuskernel_thicken: (a: number, b: number, c: number) => [number, number, number];
 export const remuskernel_toBREP: (a: number, b: number) => [number, number, number];
@@ -469,6 +470,7 @@ export const __wbg_set_jsvec3_y: (a: number, b: number) => void;
 export const __wbg_get_jsvec3_x: (a: number) => number;
 export const __wbindgen_malloc: (a: number, b: number) => number;
 export const __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
+export const __wbindgen_export: WebAssembly.Table;
 export const __wbindgen_exn_store: (a: number) => void;
 export const __externref_table_alloc: () => number;
 export const __wbindgen_externrefs: WebAssembly.Table;
