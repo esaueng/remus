@@ -3569,21 +3569,29 @@ pub(super) fn tessellate_nonplanar_cdt(
         | FaceSurface::Torus(_) => None,
     };
     // A short, wide cylinder band trimmed by a curve that climbs through it
-    // (a modeled thread's half-turn strip: 1.5 mm tall, 60 mm around)
-    // squared into the parameter box needs `n_u` dense trim rows to stay
-    // isotropic there, forty times the rows its surface needs: ~3.7k interior
-    // points per band, 1.1M triangles on one threaded part. A cylinder
+    // (a modeled thread's half-turn land: 1.5 mm tall, 60 mm around) squared
+    // into the parameter box needs `n_u` dense trim rows to stay isotropic
+    // there, about forty times the rows its surface needs: ~3.7k interior
+    // points per land, 1.1M triangles on one threaded part. A cylinder
     // unrolls isometrically, so triangulate such a band in its unrolled chart
     // (`v` over the radius, both axes in surface lengths), where rows the
-    // columns' arc apart are isotropic. Bands taller than they are wide, and
-    // trims that only follow a rim, keep the squared box: their dense rows
-    // already match the columns, and the squared box is what keeps Delaunay
-    // insertion from losing triangles on a tall sliver.
+    // columns' arc apart are isotropic.
+    //
+    // Only a band at least `UNROLLED_BAND_ASPECT` times wider than tall
+    // qualifies: a cross-drilled bore wall (about as wide as long) keeps the
+    // squared box, its dense rows and its mesh. The unrolled chart also
+    // compresses `v` by that aspect against the squared box, so a band whose
+    // boundary samples would land closer than `UNROLLED_MIN_SAMPLE_GAP`
+    // there (a near-flat wall of a huge radius with a sliver-high side)
+    // keeps the squared box rather than merge two samples in the CDT.
     let unrolled_radius = match chart_surface {
         FaceSurface::Cylinder(cylinder)
             if sheared.is_none()
-                && cylinder.radius() * du > dv
-                && climbing_nurbs_trim(topo, outer_edges, &boundary_uv, &boundary_3d, du, dv) =>
+                && cylinder.radius() * du >= UNROLLED_BAND_ASPECT * dv
+                && climbing_nurbs_trim(topo, outer_edges, &boundary_uv, &boundary_3d, du, dv)
+                && std::iter::once(boundary_uv.as_slice())
+                    .chain(hole_uvs.iter().map(Vec::as_slice))
+                    .all(|ring| unrolled_ring_keeps_samples(ring, cylinder.radius())) =>
         {
             Some(cylinder.radius())
         }
@@ -5105,6 +5113,34 @@ fn estimate_surface_radius(surface: &FaceSurface) -> f64 {
         FaceSurface::Torus(torus) => torus.major_radius() + torus.minor_radius(),
         FaceSurface::Nurbs(_) | FaceSurface::Plane { .. } => 1.0,
     }
+}
+
+/// How many times wider (around) than tall (along) a cylinder band must be
+/// to triangulate in its unrolled chart; see `unrolled_radius` in
+/// [`tessellate_nonplanar_cdt`]. Thread lands run about 40:1, ordinary
+/// trimmed walls and cross-drilled bores near 1:1.
+const UNROLLED_BAND_ASPECT: f64 = 8.0;
+
+/// The smallest chart distance two consecutive distinct boundary samples may
+/// have in an unrolled chart: a hundred times the CDT's duplicate-point
+/// tolerance (1e-8), so no boundary sample merges with its neighbour.
+const UNROLLED_MIN_SAMPLE_GAP: f64 = 1e-6;
+
+/// Whether every pair of consecutive distinct samples of a closed boundary
+/// ring stays at least [`UNROLLED_MIN_SAMPLE_GAP`] apart in the unrolled
+/// chart `(u, v / radius)` of a cylinder of `radius`.
+fn unrolled_ring_keeps_samples(ring: &[(f64, f64)], radius: f64) -> bool {
+    if !(radius.is_finite() && radius > 0.0) {
+        return false;
+    }
+    let count = ring.len();
+    (0..count).all(|index| {
+        let (u0, v0) = ring[index];
+        let (u1, v1) = ring[(index + 1) % count];
+        let (du, dv) = (u1 - u0, v1 - v0);
+        // Exact repeats (a closing sample) are the same point in any chart.
+        (du == 0.0 && dv == 0.0) || du.hypot(dv / radius) >= UNROLLED_MIN_SAMPLE_GAP
+    })
 }
 
 /// Whether a cylinder face's outer wire has a NURBS edge whose
