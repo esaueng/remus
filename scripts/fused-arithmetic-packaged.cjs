@@ -7,7 +7,7 @@ const { spawnSync } = require('node:child_process');
 
 function runFusedArithmeticPackaged(kernelFile) {
   const modes = process.env.REMUS_TEST_SCALAR_PACKAGE === '1'
-    ? ['scalar'] : ['native', 'unsupported', 'unfused'];
+    ? ['scalar'] : ['native', 'unsupported', 'unfused', 'scalar-function-only'];
   for (const mode of modes) {
     const run = spawnSync(process.execPath, [__filename, kernelFile, mode], {
       encoding: 'utf8',
@@ -29,12 +29,13 @@ function checkHost(kernelFile, mode) {
   const unfusedBody = '0a0c010a0020002001a22002a00b';
   const bytes = (body) => Buffer.from(modulePrefix + body, 'hex');
   const delta = 2 ** -27;
-  const qualified = mode === 'native' && WebAssembly.validate(bytes(fusedBody)) &&
+  const qualified = (mode === 'native' || mode === 'scalar-function-only') && WebAssembly.validate(bytes(fusedBody)) &&
     new WebAssembly.Instance(new NativeModule(bytes(fusedBody))).exports.madd(
       1 + delta, 1 - delta, -1,
     ) === -(delta ** 2);
   let slot;
   let installed;
+  let vectorSlot;
   WebAssembly.Module = new Proxy(NativeModule, {
     construct(target, args) {
       // The main kernel has already been instantiated by require(). Inspect
@@ -43,7 +44,9 @@ function checkHost(kernelFile, mode) {
       if (mode === 'unsupported') throw new WebAssembly.CompileError();
       // (func (export "madd") (param f64 f64 f64) (result f64)
       //   (f64.add (f64.mul (local.get 0) (local.get 1)) (local.get 2)))
-      return Reflect.construct(target, mode === 'unfused' ? [bytes(unfusedBody)] : args);
+      if (mode === 'unfused') return Reflect.construct(target, [bytes(unfusedBody)]);
+      if (mode === 'scalar-function-only') return Reflect.construct(target, [bytes(fusedBody)]);
+      return Reflect.construct(target, args);
     },
   });
   WebAssembly.Table.prototype.set = function (index, fn) {
@@ -51,6 +54,10 @@ function checkHost(kernelFile, mode) {
       assert.equal(installed, undefined, 'one fused slot per module instance');
       installed = fn;
       slot = { table: this, index };
+    }
+    if (typeof fn === 'function' && fn.length === 6) {
+      assert.equal(vectorSlot, undefined, 'one vector slot per module instance');
+      vectorSlot = { table: this, index, dot: fn };
     }
     return writeTable.call(this, index, fn);
   };
@@ -65,6 +72,32 @@ function checkHost(kernelFile, mode) {
   }
   assert.equal(attempts, mode === 'scalar' ? 0 : 1);
   assert.equal(Boolean(installed), qualified);
+  assert.equal(Boolean(vectorSlot), qualified && mode === 'native');
+  if (vectorSlot) {
+    const { dot, table, index } = vectorSlot;
+    assert.equal(dot(1 + delta, 1 - delta, -1, 1, 0, 0), -(delta ** 2));
+    assert.equal(dot(0, 0, 1 + delta, 1 - delta, -1, 1), -(delta ** 2));
+    assert.equal(dot(0, 0, -1, 1, 1 + delta, 1 - delta), 0);
+    assert.equal(dot(-0, 1, -0, 1, -0, 1), -0);
+    assert.equal(dot(0, 0, Number.MIN_VALUE, 0.5, Number.MIN_VALUE, 1), 2 * Number.MIN_VALUE);
+    // The same six-argument WASM type is required to replace a table slot.
+    const forwarder = Buffer.from(
+      '0061736d01000000010b0160067c7c7c7c7c7c017c02070101780166000007080104646f74330000', 'hex',
+    );
+    let calls = 0;
+    const { dot3 } = new WebAssembly.Instance(new NativeModule(forwarder), {
+      x: { f(...args) { calls++; return dot(...args); } },
+    }).exports;
+    writeTable.call(table, index, dot3);
+    const kernel = new RemusKernel();
+    try {
+      assert.equal(kernel.volume(kernel.makeBox(3, 5, 7), 0.1), 105);
+      assert.ok(calls > 0, 'the Rust kernel dispatches vector dots during measurement');
+    } finally {
+      writeTable.call(table, index, dot);
+      kernel.free();
+    }
+  }
   if (installed) {
     assert.equal(installed(1 + delta, 1 - delta, -1), -(delta ** 2));
     assert.equal(installed(Number.MAX_VALUE, 2, -Number.MAX_VALUE), Number.MAX_VALUE);

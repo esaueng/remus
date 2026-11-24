@@ -6,23 +6,30 @@ use js_sys::WebAssembly::{Instance, Module, Table};
 use js_sys::{Function, Object, Reflect, Uint8Array};
 use wasm_bindgen::{JsCast, JsValue};
 
-/// A standalone module with no memory or imports. Its sole export splats
-/// three f64 operands, applies f64x2.relaxed_madd, and extracts lane zero.
+/// A standalone module without memory or imports. Both stages of the dot
+/// product call the same scalar multiply-add that the host qualifies.
 #[rustfmt::skip]
 const MODULE: &[u8] = &[
     0, 97, 115, 109, 1, 0, 0, 0,                 // WASM magic and version
-    1, 8, 1, 0x60, 3, 0x7c, 0x7c, 0x7c, 1, 0x7c, // type (f64, f64, f64) -> f64
-    3, 2, 1, 0,                                    // one function of type 0
-    7, 8, 1, 4, b'm', b'a', b'd', b'd', 0, 0,     // export function 0 as "madd"
-    10, 22, 1, 20, 0,                              // one body with no locals
+    1, 18, 2,                                      // two function signatures
+    0x60, 3, 0x7c, 0x7c, 0x7c, 1, 0x7c,          // (f64 × 3) -> f64
+    0x60, 6, 0x7c, 0x7c, 0x7c, 0x7c, 0x7c, 0x7c, 1, 0x7c, // (f64 × 6) -> f64
+    3, 3, 2, 0, 1,                                // functions madd and dot3
+    7, 15, 2, 4, b'm', b'a', b'd', b'd', 0, 0, 4, b'd', b'o', b't', b'3', 0, 1,
+    10, 42, 2, 20, 0,                             // first body, no locals
     0x20, 0, 0xfd, 0x14,                           // local.get 0, f64x2.splat
     0x20, 1, 0xfd, 0x14,                           // local.get 1, f64x2.splat
     0x20, 2, 0xfd, 0x14,                           // local.get 2, f64x2.splat
     0xfd, 0x87, 0x02,                              // f64x2.relaxed_madd
     0xfd, 0x21, 0, 0x0b,                           // f64x2.extract_lane 0, end
+    19, 0,                                        // dot3 body, no locals
+    0x20, 0, 0x20, 1, 0x20, 2, 0x20, 3,          // x, a, y, b
+    0x20, 4, 0x20, 5, 0xa2,                      // z * c, rounded first
+    0x10, 0, 0x10, 0, 0x0b,                      // madd(y,b,z*c), madd(x,a,...)
 ];
 
-pub(super) fn initialize() {
+/// Qualify and install the optional arithmetic functions once per kernel instance.
+pub fn initialize() {
     remus_math::fma::install_wasm_fma(|slot| install(slot).is_some());
 }
 
@@ -48,9 +55,39 @@ fn install(slot: usize) -> Option<()> {
         )
         .ok()?
         .as_f64()?;
-    if witness != -(delta * delta) {
+    if witness.to_bits() != (-(delta * delta)).to_bits() {
         return None;
     }
     let table: Table = wasm_bindgen::function_table().dyn_into().ok()?;
-    table.set(u32::try_from(slot).ok()?, &fused).ok()
+    table.set(u32::try_from(slot).ok()?, &fused).ok()?;
+    remus_math::fma::install_wasm_dot3(|slot| {
+        install_dot3(&instance, &table, slot, delta).is_some()
+    });
+    Some(())
+}
+
+fn install_dot3(instance: &Instance, table: &Table, slot: usize, delta: f64) -> Option<()> {
+    let dot: Function = Reflect::get(&instance.exports(), &"dot3".into())
+        .ok()?
+        .dyn_into()
+        .ok()?;
+    let residual = -(delta * delta);
+    // Exercise cancellation separately in each fused stage. A third case
+    // distinguishes the rounded leaf product from a third fused operation.
+    let cases = [
+        ([1.0 + delta, 1.0 - delta, -1.0, 1.0, 0.0, 0.0], residual),
+        ([0.0, 0.0, 1.0 + delta, 1.0 - delta, -1.0, 1.0], residual),
+        ([0.0, 0.0, -1.0, 1.0, 1.0 + delta, 1.0 - delta], 0.0),
+    ];
+    for (terms, expected) in cases {
+        let args = js_sys::Array::new();
+        for term in terms {
+            args.push(&JsValue::from_f64(term));
+        }
+        let observed = dot.apply(&JsValue::UNDEFINED, &args).ok()?.as_f64()?;
+        if observed.to_bits() != expected.to_bits() {
+            return None;
+        }
+    }
+    table.set(u32::try_from(slot).ok()?, &dot).ok()
 }
