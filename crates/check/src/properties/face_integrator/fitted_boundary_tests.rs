@@ -183,6 +183,33 @@ fn the_closure_allowance_holds_what_projection_moves_on_a_cone() {
     }
 }
 
+fn cylinder_reading_bits(reading: &cylinder_green::GreenReading) -> [u64; 19] {
+    let c = &reading.contribution;
+    let fitted = reading.fitted.expect("the fitted trim was certified");
+    [
+        c.area,
+        c.volume,
+        c.volume_moment_x,
+        c.volume_moment_y,
+        c.volume_moment_z,
+        c.volume_second_x,
+        c.volume_second_y,
+        c.volume_second_z,
+        c.volume_product_xy,
+        c.volume_product_xz,
+        c.volume_product_yz,
+        c.centroid_x,
+        c.centroid_y,
+        c.centroid_z,
+        reading.flux.x(),
+        reading.flux.y(),
+        reading.flux.z(),
+        fitted.span_disagreement,
+        fitted.closure_allowance,
+    ]
+    .map(f64::to_bits)
+}
+
 /// On cylinders: the band between a circle and an oblique section of the
 /// cylinder, the section a rational quadratic pushed up to 2e-4 of the
 /// radius off the wall, at three scales.
@@ -221,15 +248,30 @@ fn the_closure_allowance_holds_what_projection_moves_on_a_cylinder() {
         ));
         let data = topo.face(face).unwrap().clone();
         let sink = Cell::new(None);
-        let reading = cylinder_green::integrate::<false>(
-            &topo,
-            &data,
-            &cylinder,
-            &collecting_rule(&sink),
-            1.0,
-        )
-        .unwrap()
-        .expect("the boundary reading");
+        let read = || {
+            cylinder_green::integrate::<false>(
+                &topo,
+                &data,
+                &cylinder,
+                &collecting_rule(&sink),
+                1.0,
+            )
+            .unwrap()
+            .expect("the boundary reading")
+        };
+        let reading = read();
+        cylinder_green::with_fitted_edge_readings(|| {
+            let first = read();
+            let reused = read();
+            assert_eq!(
+                cylinder_reading_bits(&first),
+                cylinder_reading_bits(&reading)
+            );
+            assert_eq!(
+                cylinder_reading_bits(&reused),
+                cylinder_reading_bits(&reading)
+            );
+        });
         let (moved, allowance, disagreement, volume) =
             fitted_terms(&reading, stored_vector_area(&topo, face));
         assert!(

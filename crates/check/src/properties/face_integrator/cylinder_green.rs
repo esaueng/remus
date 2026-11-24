@@ -51,6 +51,9 @@
 //! `du/dt` is the edge velocity projected on `∂P/∂u`. No `u` unwrapping is
 //! needed: `u` enters only through the periodic surface point.
 
+mod fitted_readings;
+pub use fitted_readings::with_fitted_edge_readings;
+use remus_math::nurbs::curve::NurbsCurve;
 use remus_math::nurbs::surface::DerivativeScratch;
 use remus_math::quadrature::gauss_legendre_points;
 use remus_math::surfaces::CylindricalSurface;
@@ -307,35 +310,13 @@ pub(super) fn integrate<const AREA_ONLY: bool>(
             let EdgeCurve::NurbsCurve(nurbs) = span.curve else {
                 return Ok(None);
             };
-            let (coarse_pieces, fine_pieces) = (
-                knot_pieces(nurbs.knots(), lo, hi, 1),
-                knot_pieces(nurbs.knots(), lo, hi, 2),
-            );
-            // Every term, even for a volume-only rule: the edge is kept on
-            // the same agreement whatever the request, so a volume-only
-            // reading takes the path the full one takes, bit for bit.
-            let (mut coarse, mut fine) = (Accumulator::default(), Accumulator::default());
-            let (mut coarse_measure, mut fine_measure) =
-                (EdgeMeasure::default(), EdgeMeasure::default());
-            if !reading.edge::<AREA_ONLY>(
-                &span,
-                direction,
-                &coarse_pieces,
-                &mut coarse,
-                &mut coarse_measure,
-            ) || !reading.edge::<AREA_ONLY>(
-                &span,
-                direction,
-                &fine_pieces,
-                &mut fine,
-                &mut fine_measure,
-            ) {
+            let Some(((coarse, coarse_measure), (fine, fine_measure))) =
+                fitted_readings::read(&reading, nurbs, lo, hi, direction, || {
+                    reading.fitted_pair(&span, nurbs, lo, hi, direction, length_scale)
+                })
+            else {
                 return Ok(None);
-            }
-            let converged = readings_agree(&coarse, &fine, length_scale);
-            if !converged {
-                return Ok(None);
-            }
+            };
             fitted.add(
                 (&coarse, coarse_measure),
                 (&fine, fine_measure),
@@ -419,6 +400,42 @@ struct Reading<'a> {
 }
 
 impl Reading<'_> {
+    fn fitted_pair(
+        &self,
+        span: &EdgeSpan<'_>,
+        nurbs: &NurbsCurve,
+        lo: f64,
+        hi: f64,
+        direction: f64,
+        length_scale: f64,
+    ) -> Option<fitted_readings::Pair> {
+        let (coarse_pieces, fine_pieces) = (
+            knot_pieces(nurbs.knots(), lo, hi, 1),
+            knot_pieces(nurbs.knots(), lo, hi, 2),
+        );
+        // Every term, even for a volume-only rule: the edge is kept on
+        // the same agreement whatever the request, so a volume-only
+        // reading takes the path the full one takes, bit for bit.
+        let (mut coarse, mut fine) = (Accumulator::default(), Accumulator::default());
+        let (mut coarse_measure, mut fine_measure) =
+            (EdgeMeasure::default(), EdgeMeasure::default());
+        if !self.edge::<false>(
+            span,
+            direction,
+            &coarse_pieces,
+            &mut coarse,
+            &mut coarse_measure,
+        ) || !self.edge::<false>(span, direction, &fine_pieces, &mut fine, &mut fine_measure)
+        {
+            return None;
+        }
+        let converged = readings_agree(&coarse, &fine, length_scale);
+        if !converged {
+            return None;
+        }
+        Some(((coarse, coarse_measure), (fine, fine_measure)))
+    }
+
     /// Add `−∮ F du` along `span` over `intervals` (run in `direction`), one
     /// Gauss–Legendre rule per interval, and what its points read of the edge
     /// to `measure`. `false` when the edge is not a curve this path reads, or

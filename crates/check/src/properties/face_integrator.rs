@@ -32,6 +32,7 @@ mod cone_nappe_tests;
 #[cfg(test)]
 mod cylinder_band_tests;
 mod cylinder_green;
+pub use cylinder_green::with_fitted_edge_readings;
 mod fan_bound;
 #[cfg(test)]
 mod fan_bound_review_tests;
@@ -5114,7 +5115,7 @@ macro_rules! accumulate_normal {
 }
 
 /// Running totals of a face's contribution over quadrature abscissae.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Accumulator {
     /// Components required from the fixed-rule samples.
     moments: MomentRequest,
