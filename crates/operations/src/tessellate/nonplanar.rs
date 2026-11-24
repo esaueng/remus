@@ -3598,7 +3598,12 @@ pub(super) fn tessellate_nonplanar_cdt(
         {
             Some(cylinder.radius())
         }
-        _ => None,
+        FaceSurface::Cylinder(_)
+        | FaceSurface::Plane { .. }
+        | FaceSurface::Nurbs(_)
+        | FaceSurface::Cone(_)
+        | FaceSurface::Sphere(_)
+        | FaceSurface::Torus(_) => None,
     };
     let v_scale = if let Some(radius) = unrolled_radius {
         1.0 / radius
