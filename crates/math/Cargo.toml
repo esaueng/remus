@@ -52,6 +52,8 @@ serde = ["dep:serde"]
 # `contract_4lane_bit_identical` plus the hammer-holder exact-output record
 # in `docs/kernel-maturity/o33-simd-evidence.md`.
 simd = []
+# Let the WASM kernel supply a runtime-qualified fused operation.
+wasm-fused-arithmetic = []
 
 [lints]
 workspace = true

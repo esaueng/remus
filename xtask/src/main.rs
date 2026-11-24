@@ -52,9 +52,14 @@ fn build_packages(simd: bool, kernel_io: bool, defer_package_tests: bool) -> any
         println!(
             "Package runtime tests deferred; both CI runtime jobs must pass before publication."
         );
+        if !simd {
+            println!(
+                "For the scalar build, run REMUS_TEST_SCALAR_PACKAGE=1 node scripts/test-wasm-smoke.mjs"
+            );
+        }
         Ok(())
     } else {
-        wasm::run_package_tests()
+        wasm::run_package_tests(simd)
     }
 }
 

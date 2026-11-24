@@ -804,7 +804,7 @@ pub fn version_packages() -> Result<()> {
 /// smoke test streams its output; the consumer test writes stdout and stderr
 /// to one log, printed whole once it exits, so the two never interleave.
 /// Both always run to completion and every failure is reported.
-pub fn run_package_tests() -> Result<()> {
+pub fn run_package_tests(simd: bool) -> Result<()> {
     let root = project_root()?;
     let smoke = root.join("scripts/test-wasm-smoke.mjs");
     let consumer = root.join("scripts/test-wasm-tarball-consumer.mjs");
@@ -828,7 +828,12 @@ pub fn run_package_tests() -> Result<()> {
         .spawn()
         .with_context(|| format!("failed to run: {consumer_cmd:?}"))?;
 
-    let smoke_result = run_cmd(Command::new("node").arg(&smoke)).context("smoke test failed");
+    let smoke_result = run_cmd(
+        Command::new("node")
+            .arg(&smoke)
+            .env("REMUS_TEST_SCALAR_PACKAGE", if simd { "0" } else { "1" }),
+    )
+    .context("smoke test failed");
     let consumer_status = consumer_child
         .wait()
         .context("waiting for the installed-tarball consumer test")?;

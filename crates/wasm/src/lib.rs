@@ -11,6 +11,8 @@ use wasm_bindgen::prelude::*;
 
 mod bindings;
 pub mod error;
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+mod fused_arithmetic;
 mod handles;
 mod helpers;
 pub mod holed_face;

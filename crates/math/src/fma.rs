@@ -1,8 +1,8 @@
 //! Correctly rounded fused multiply-add that stays fast on `wasm32`.
 //!
 //! `f64::mul_add` rounds `a·b + c` once. Native targets do that in one
-//! instruction; WebAssembly has no fused multiply-add, so there it is a call
-//! into `compiler_builtins`' integer-arithmetic `fma` (with 128-bit multiplies
+//! instruction. Baseline WebAssembly has no fused multiply-add, so there it calls
+//! `compiler_builtins`' integer-arithmetic `fma` (with 128-bit multiplies
 //! through `__multi3`). In the kernel's WASM build that fallback was the
 //! largest single cost of ray classification (over half of the samples of
 //! `solidEdgeRelations` on the hammer-holder fixture).
@@ -10,7 +10,8 @@
 //! [`fma`] returns exactly the value `f64::mul_add` returns, on every target:
 //!
 //! - on everything except `wasm32` it *is* `f64::mul_add`;
-//! - on `wasm32`, operands in a range where no intermediate can underflow or
+//! - on `wasm32` with a qualified fused implementation, finite inputs use it;
+//! - on the software path, operands in a range where no intermediate can underflow or
 //!   overflow go through `emulated_fma`: Boldo and Melquiond's emulation from
 //!   error-free transformations and one rounding to odd ("Emulation of FMA
 //!   and correctly rounded sums: proved algorithms using rounding to odd",
@@ -44,22 +45,76 @@ const ADDEND_MAX: f64 = f64::from_bits((1023 + 900) << 52);
 /// `a·b + c` rounded once, bit-identical to `a.mul_add(b, c)`.
 ///
 /// See the [module documentation](self) for how `wasm32` avoids the slow
-/// software `fma` without changing a single result bit. On `wasm32` this is
-/// one call to an out-of-line emulation, like the `mul_add` call it replaces,
-/// so the module does not grow (inlining the emulation at every call site
-/// added ~0.4 MB to the optimized kernel, past the 10 MiB raw budget it had
-/// then).
+/// software `fma` without changing the rounded result. The software emulation
+/// stays out of line to avoid duplicating it in the kernel's call sites.
 #[inline]
 #[must_use]
 pub fn fma(a: f64, b: f64, c: f64) -> f64 {
     #[cfg(target_arch = "wasm32")]
     {
-        wasm_fma(a, b, c)
+        #[cfg(all(feature = "wasm-fused-arithmetic", target_feature = "simd128"))]
+        {
+            dispatch::call(a, b, c)
+        }
+        #[cfg(not(all(feature = "wasm-fused-arithmetic", target_feature = "simd128")))]
+        {
+            software_fma(a, b, c)
+        }
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
         a.mul_add(b, c)
     }
+}
+
+#[cfg(all(
+    target_arch = "wasm32",
+    target_feature = "simd128",
+    feature = "wasm-fused-arithmetic"
+))]
+mod dispatch {
+    use std::cell::OnceCell;
+
+    type MultiplyAdd = extern "C" fn(f64, f64, f64) -> f64;
+
+    thread_local! {
+        static FUNCTION: OnceCell<Option<MultiplyAdd>> = const { OnceCell::new() };
+    }
+
+    // A type-matched slot reserved solely for this implementation. Keep it
+    // distinct from other function pointers even under identical-code folding.
+    extern "C" fn reserved(a: f64, b: f64, c: f64) -> f64 {
+        std::hint::black_box(&FUNCTION);
+        super::software_fma(a, b, c)
+    }
+
+    pub(super) fn call(a: f64, b: f64, c: f64) -> f64 {
+        match FUNCTION.with(|cell| cell.get().copied().flatten()) {
+            Some(fused) if a.is_finite() && b.is_finite() && c.is_finite() => fused(a, b, c),
+            _ => super::software_fma(a, b, c),
+        }
+    }
+
+    pub(super) fn install(install: impl FnOnce(usize) -> bool) {
+        FUNCTION.with(|cell| {
+            cell.get_or_init(|| {
+                let slot = std::hint::black_box(reserved as MultiplyAdd);
+                install(slot as usize).then_some(slot)
+            });
+        });
+    }
+}
+
+/// Install an optional, correctly rounded multiply-add in this WASM instance.
+/// The host writes the reserved table slot only after qualifying the function;
+/// otherwise the original software path remains active.
+#[cfg(all(
+    target_arch = "wasm32",
+    target_feature = "simd128",
+    feature = "wasm-fused-arithmetic"
+))]
+pub fn install_wasm_fma(install: impl FnOnce(usize) -> bool) {
+    dispatch::install(install);
 }
 
 /// The out-of-line `wasm32` body of [`fma`]: the emulation where it is
@@ -68,7 +123,7 @@ pub fn fma(a: f64, b: f64, c: f64) -> f64 {
 #[inline(never)]
 #[cfg_attr(not(any(target_arch = "wasm32", test)), allow(dead_code))]
 #[allow(clippy::suboptimal_flops)]
-fn wasm_fma(a: f64, b: f64, c: f64) -> f64 {
+fn software_fma(a: f64, b: f64, c: f64) -> f64 {
     if in_emulated_range(a, b, c) {
         if let Some(fused) = exact_product_fma(a, b, c) {
             return fused;
@@ -274,7 +329,7 @@ mod tests {
 
     fn assert_same(a: f64, b: f64, c: f64) {
         let expected = a.mul_add(b, c);
-        let got = wasm_fma(a, b, c);
+        let got = software_fma(a, b, c);
         assert!(
             got.to_bits() == expected.to_bits() || (got.is_nan() && expected.is_nan()),
             "fma({a:e}, {b:e}, {c:e}) [{:#x}, {:#x}, {:#x}]: emulated {got:e} ({:#x}), \

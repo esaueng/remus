@@ -84,6 +84,8 @@ impl RemusKernel {
     /// [`Self::new`] and session-snapshot restore, so a restored kernel reads
     /// and fills the same caches as a fresh one.
     pub(crate) fn with_module_caches(topology: Topology) -> Self {
+        #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+        crate::fused_arithmetic::initialize();
         crate::panics::install_hook();
         // Content-keyed face integrals, NURBS areas, face boxes, planar arc
         // pcurves, revolved wire areas, the ray classifier's torus trims and

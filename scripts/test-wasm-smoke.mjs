@@ -5,6 +5,7 @@
  * that bodies cross between them as exact arena documents.
  *
  * Usage: node scripts/test-wasm-smoke.mjs
+ * For a kernel built with --no-simd, set REMUS_TEST_SCALAR_PACKAGE=1.
  */
 
 import assert from 'node:assert/strict';
@@ -54,6 +55,7 @@ import { runBoundedTabRolloverPackaged } from './bounded-tab-rollover-packaged.m
 import { runPackagedPreviewWorkContract } from './perf/face-drag-session/packaged_contract.cjs';
 import { runLinkedSketchPackaged } from './linked-sketch-packaged.mjs';
 import { runRotationalFaceEditsPackaged } from './rotational-face-edits-packaged.mjs';
+import { runFusedArithmeticPackaged } from './fused-arithmetic-packaged.cjs';
 import { suiteParts } from './packaged-suite-parts.mjs';
 import {
   runOpenZcadAnalyticFlangeBooleanRegression,
@@ -101,6 +103,7 @@ const { RemusIo } = require(resolve(projectRoot, 'crates/wasm-io/pkg/remus_wasm_
 // CI splits the suites below across jobs; see packaged-suite-parts.mjs.
 const part = suiteParts();
 
+part(() => runFusedArithmeticPackaged(resolve(projectRoot, 'crates/wasm/pkg/remus_wasm_node.cjs')));
 part(() => runSecurityResourceRegressions({ RemusKernel, RemusIo }));
 part(() => runSingleEdgeChamferPackaged({ RemusKernel }));
 part(() => runBrepImportPackaged({ RemusKernel, RemusIo }));
