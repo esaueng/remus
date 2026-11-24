@@ -467,6 +467,8 @@ impl PendingOp {
 #[derive(Debug, Default, Clone)]
 pub struct Journal {
     entries: Vec<JournalEntry>,
+    // Runtime identity of the ancestry data. Clones and full restores share it.
+    lineage_key: std::sync::Arc<()>,
     next_op: u64,
     next_ordinal: u64,
     /// Live index: ordinal → the entity's current arena key.
@@ -476,6 +478,15 @@ pub struct Journal {
 }
 
 impl Journal {
+    /// Runtime identity of the recorded lineage and its entity index.
+    ///
+    /// Compare with `Arc::ptr_eq`. Clones and full checkpoint restores
+    /// preserve this identity. An append or partial rewind invalidates it.
+    #[must_use]
+    pub fn lineage_key(&self) -> &std::sync::Arc<()> {
+        &self.lineage_key
+    }
+
     /// All recorded entries, oldest first.
     #[must_use]
     pub fn entries(&self) -> &[JournalEntry] {
@@ -669,6 +680,7 @@ impl Journal {
         scope.compact_sort_unstable();
         scope.dedup();
         let op = self.issue_op();
+        self.lineage_key = std::sync::Arc::new(());
         self.entries.push(JournalEntry {
             op,
             kind,
@@ -701,6 +713,7 @@ impl Journal {
         affected_ordinals.compact_sort_unstable();
         affected_ordinals.dedup();
         let op = self.issue_op();
+        self.lineage_key = std::sync::Arc::new(());
         self.entries.push(JournalEntry {
             op,
             kind,
@@ -715,6 +728,7 @@ impl Journal {
     /// Records the synthetic global barrier for unaccounted mutations.
     pub(crate) fn record_global_barrier(&mut self, ticks_after: u64) -> OpId {
         let op = self.issue_op();
+        self.lineage_key = std::sync::Arc::new(());
         self.entries.push(JournalEntry {
             op,
             kind: UNJOURNALED_MUTATIONS.to_owned(),
@@ -737,6 +751,7 @@ impl Journal {
     /// (the journal analogue of arena slot preservation).
     pub(crate) fn restore_preserving_ids(&mut self, snapshot: &Self) {
         self.entries.clone_from(&snapshot.entries);
+        self.lineage_key.clone_from(&snapshot.lineage_key);
         self.key_by_ordinal.clone_from(&snapshot.key_by_ordinal);
         self.ordinal_by_key.clone_from(&snapshot.ordinal_by_key);
         self.next_op = self.next_op.max(snapshot.next_op);
@@ -757,6 +772,9 @@ impl Journal {
         entries_len: usize,
         created: &[(EntityKey, JournalOrdinal)],
     ) {
+        if self.entries.len() > entries_len {
+            self.lineage_key = std::sync::Arc::new(());
+        }
         self.entries.truncate(entries_len);
         for (key, ordinal) in created.iter().rev() {
             if self.key_by_ordinal.get(&ordinal.0) == Some(key) {
@@ -1183,6 +1201,7 @@ impl Journal {
         }
         Ok(Self {
             entries,
+            lineage_key: std::sync::Arc::new(()),
             next_op: snapshot.next_op,
             next_ordinal: snapshot.next_ordinal,
             key_by_ordinal,

@@ -33,7 +33,9 @@
 //! back under the same handles — the drag loop's restore — is the same
 //! source, even though it advances the topology's cache generation.
 //! Selections the preparation does not cover (a bore move, an empty or
-//! invalid selection) run the unprepared move on every call.
+//! invalid selection) run the unprepared move on every call. A change in
+//! journal lineage also uses the unprepared path for a planar group so a
+//! recorded barrier cannot leave cached chamfer identity in use.
 //!
 //! # Multi-face moves
 //!

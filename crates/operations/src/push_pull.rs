@@ -290,6 +290,7 @@ pub(crate) fn require_closed_shells(
 /// the same code and returns what the unprepared move returns.
 pub(crate) struct PreparedPlanarMove {
     source_faces: Vec<FaceId>,
+    lineage_key: std::sync::Arc<()>,
     blend: Option<crate::resize_blend::PreparedBlendMove>,
     /// The swept-region refusal of a move without blends, when the
     /// selection has a plane to sweep.
@@ -335,6 +336,7 @@ impl PreparedPlanarMove {
         }
         Ok(Some(Self {
             source_faces,
+            lineage_key: std::sync::Arc::clone(topo.journal().lineage_key()),
             blend,
             swept,
             prismatic,
@@ -349,6 +351,11 @@ impl PreparedPlanarMove {
         faces: &[FaceId],
         distance: f64,
     ) -> Result<DirectEditEvolution, crate::OperationsError> {
+        // Journaled callers have opened the operation by this point. A new
+        // barrier can invalidate chamfer provenance on unchanged geometry.
+        if !std::sync::Arc::ptr_eq(&self.lineage_key, topo.journal().lineage_key()) {
+            return move_faces_with_entity_evolution(topo, solid, faces, distance);
+        }
         let snapshot = remus_topology::transaction::RollbackSnapshot::capture(topo);
         let outcome = (|| -> Result<DirectEditEvolution, crate::OperationsError> {
             let boundary_pairs;
