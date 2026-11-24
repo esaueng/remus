@@ -2808,7 +2808,8 @@ pub(crate) fn analyze_translation(
         |face| invariant_carriers.contains(&face),
         direction,
     )?;
-    let excluded_candidates = moved_faces.union(&invariant_carriers).copied().collect();
+    let excluded_candidates: HashSet<FaceId> =
+        moved_faces.union(&invariant_carriers).copied().collect();
     let swept = crate::push_pull::SweptRegionCheck::prepare(
         topo,
         solid,
@@ -2821,7 +2822,9 @@ pub(crate) fn analyze_translation(
     // chamfer running into the opening the cap surrounds).
     .with_rigid_companions(
         topo,
+        solid,
         moved_faces.difference(&swept_faces).copied().collect(),
+        &excluded_candidates,
     )?;
     let entities = translated_entities(topo, solid, &adjacency, moved_faces, direction)?;
     let mesh_clearances = match &entities {
@@ -2986,10 +2989,12 @@ fn execute_translation(
     analysis: &TranslationAnalysis,
     distance: f64,
 ) -> Result<BlendMoveEntities, OperationsError> {
-    analysis.swept.check_rigid_translation(topo, distance)?;
+    // The exact axial limits first: where a moving blend reaches a fixed rim
+    // on their shared support, that is the refusal to report.
     for clearance in &analysis.axial_clearance {
         clearance.check(distance)?;
     }
+    analysis.swept.check_rigid_translation(topo, distance)?;
     let entities = analysis
         .entities
         .as_ref()

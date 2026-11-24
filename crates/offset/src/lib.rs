@@ -82,8 +82,10 @@ pub use interference::{
     verify_cavities_inside_outer,
 };
 pub use move_faces::{
-    MoveFacesEntityResult, MoveFacesResult, move_faces, move_faces_with_entity_map,
-    move_faces_with_face_map, replace_surface_with_entity_map, replace_surface_with_face_map,
+    MAX_MULTI_MOVE_FACES, MoveFacesEntityResult, MoveFacesResult, coplanar_group_distance,
+    move_faces, move_faces_multi, move_faces_multi_with_entity_map, move_faces_multi_with_face_map,
+    move_faces_with_entity_map, move_faces_with_face_map, replace_surface_with_entity_map,
+    replace_surface_with_face_map,
 };
 pub use self_int::{SelfIntersectionRemoval, remove_folded_uniform_l_prism_region};
 
