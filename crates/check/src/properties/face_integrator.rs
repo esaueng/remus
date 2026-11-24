@@ -913,9 +913,9 @@ fn integrate_face_impl<const AREA_ONLY: bool>(
                 false,
                 true,
             )?;
-            // Every rule (fixed or adaptive, full, volume-only or area-only)
-            // takes the row-normal sampler: it keeps every sample, and every
-            // contribution and flux bit (see `cylinder_row_tests`).
+            // Fixed cylinder rows can share their normal and any proven
+            // constant density. Each quadrature weight still contributes in
+            // its original order (see `cylinder_row_tests`).
             #[cfg(target_arch = "wasm32")]
             let sampled = integrate_cylinder_with_trimming::<_, AREA_ONLY>(
                 s,
@@ -4967,6 +4967,76 @@ impl CylinderRowNormal {
 
 #[cfg(any(target_arch = "wasm32", test))]
 impl CylinderRowNormal {
+    /// Accumulate a trimmed cylinder row if all its abscissae have the
+    /// same rounded density. Area and normal depend only on u. Higher
+    /// moments need the individual positions even when density is constant.
+    #[allow(clippy::too_many_arguments, clippy::cast_precision_loss)]
+    fn add_window<S: ParametricSurface, const AREA_ONLY: bool>(
+        &mut self,
+        acc: &mut Accumulator,
+        surface: &S,
+        (u, u_weight, u_scale): (f64, f64, f64),
+        (start, width, cells): (f64, f64, usize),
+        gauss: &[GaussPoint],
+        reference: Point3,
+        scratch: &mut DerivativeScratch,
+    ) -> bool {
+        // Two endpoint evaluations cost more than they save on short rows.
+        if (!AREA_ONLY && acc.moments == MomentRequest::Full) || cells * gauss.len() < 6 {
+            return false;
+        }
+        let half = width / 2.0;
+        let node = |cell: usize, x| half.fma(x, width.fma(cell as f64, start) + half);
+        let first = node(0, gauss[0].x);
+        let last = node(cells - 1, gauss[gauss.len() - 1].x);
+        if !u.is_finite() || !first.is_finite() || !last.is_finite() || width < 0.0 {
+            return false;
+        }
+
+        let (point, du, dv) = surface.point_and_partials_with_scratch(u, first, scratch);
+        let (normal, length) = self.normal(u, du, dv);
+        let density = if AREA_ONLY {
+            0.0
+        } else {
+            let (end, _, _) = surface.point_and_partials_with_scratch(u, last, scratch);
+            let Some(value) = Self::constant_density(point - reference, end - reference, normal)
+            else {
+                return false;
+            };
+            value
+        };
+        for _ in 0..cells {
+            for gp in gauss {
+                let weight = u_weight * gp.w * u_scale * half;
+                acc.area += weight * length;
+                if !AREA_ONLY {
+                    acc.add_volume_and_flux(density, normal, weight);
+                }
+            }
+        }
+        true
+    }
+
+    /// At fixed u each cylinder coordinate is monotone in v. Choose the
+    /// extreme corners in dot-product order. Multiplication, rounded
+    /// addition and fused multiply-add are monotone in their addends, so
+    /// equal finite corner values enclose every rounded sample. Reject zero
+    /// because the two signs of zero compare equal.
+    fn constant_density(mut low: Vec3, mut high: Vec3, normal: Vec3) -> Option<f64> {
+        for axis in 0..3 {
+            let n = normal.0[axis];
+            if !n.is_finite() || !low.0[axis].is_finite() || !high.0[axis].is_finite() {
+                return None;
+            }
+            if (low.0[axis] > high.0[axis]) != n.is_sign_negative() {
+                std::mem::swap(&mut low.0[axis], &mut high.0[axis]);
+            }
+        }
+        let density = low.dot(normal);
+        (density.is_finite() && density != 0.0 && density.to_bits() == high.dot(normal).to_bits())
+            .then_some(density)
+    }
+
     #[inline]
     fn add<S: ParametricSurface + ?Sized, const AREA_ONLY: bool>(
         &mut self,
@@ -5014,10 +5084,7 @@ macro_rules! accumulate_normal {
         let p = $point - $reference;
 
         // Volume: (1/3) P dot N (unnormalized N includes Jacobian)
-        $acc.vol += $w * p.dot($n) / 3.0;
-        $acc.nx += $w * $n.x();
-        $acc.ny += $w * $n.y();
-        $acc.nz += $w * $n.z();
+        $acc.add_volume_and_flux(p.dot($n), $n, $w);
 
         // A strict orientation probe needs no centroid or inertia moments.
         // Keep area, volume and flux arithmetic above identical to the full
@@ -5075,6 +5142,14 @@ struct Accumulator {
 }
 
 impl Accumulator {
+    #[inline]
+    fn add_volume_and_flux(&mut self, density: f64, normal: Vec3, weight: f64) {
+        self.vol += weight * density / 3.0;
+        self.nx += weight * normal.x();
+        self.ny += weight * normal.y();
+        self.nz += weight * normal.z();
+    }
+
     /// Add every sum of `other`, a reading of more of the same face.
     fn absorb(&mut self, other: &Self) {
         self.area += other.area;
@@ -5349,6 +5424,10 @@ impl RepeatedSpanNodes {
 
 /// Static sample expansion keeps the ordinary loop's original direct call.
 macro_rules! quadrature_sample {
+    (fresh; window $($args:tt)*) => { false };
+    (cylinder; window $row:ident, $area:ident, $($args:expr),+) => {
+        $row.add_window::<_, $area>($($args),+)
+    };
     (fresh; reuse_axial_spans) => {
         false
     };
@@ -5557,6 +5636,9 @@ fn $name<S: ParametricSurface, const AREA_ONLY: bool>(
                         let nv = patch_count(b - a, scale.v);
                         let dv_patch = (b - a) / nv as f64;
                         let v_scale = dv_patch / 2.0;
+                        if quadrature_sample!($sampler; window normals, AREA_ONLY, &mut acc, surface, (u, gpu.w, u_scale), (a, dv_patch, nv), gauss_pts, rule.reference, &mut scratch) {
+                            continue;
+                        }
                         if quadrature_sample!($sampler; reuse_axial_spans)
                             && let Some(nodes) = span_nodes.repeated((a, b), nv, dv_patch, gauss_pts)
                         {
@@ -8442,6 +8524,104 @@ mod cylinder_row_tests {
     use super::*;
     use remus_math::surfaces::CylindricalSurface;
 
+    #[test]
+    fn constant_density_declines_signed_zero_and_nonfinite_results() {
+        let zero = Vec3::new(0.0, -0.0, 0.0);
+        let axis = Vec3::new(0.0, 1.0, 0.0);
+        assert_eq!(CylinderRowNormal::constant_density(zero, zero, axis), None);
+        let huge = Vec3::new(1.0, f64::MAX, 0.0);
+        assert_eq!(CylinderRowNormal::constant_density(huge, huge, huge), None);
+        assert_eq!(
+            CylinderRowNormal::constant_density(zero, Vec3::new(f64::NAN, 1.0, 0.0), axis),
+            None
+        );
+    }
+
+    #[test]
+    fn constant_density_windows_match_individual_samples_bitwise() {
+        let mut hits = 0;
+        let mut declines = 0;
+        for axis in [
+            Vec3::new(0.0, 0.0, 1.0),
+            Vec3::new(-1.0, -0.0, 0.0),
+            Vec3::new(1e-15, 0.0, 1.0),
+            Vec3::new(0.3, -0.4, 0.8),
+        ] {
+            for scale in [1e-5, 1.0, 1e8, 1e24] {
+                let cyl = CylindricalSurface::new(
+                    Point3::new(12.0 * scale, -13.0 * scale, 0.25 * scale),
+                    axis,
+                    scale,
+                )
+                .unwrap();
+                for u in [-0.0, -0.71, 0.123, 1.5, 6.27] {
+                    for (a, width) in [(-8.0 * scale, 4.0 * scale), (0.001, 1e-17), (2.0, 1.0)] {
+                        for order in [1, 3, 5, 8, 12, 20] {
+                            let gauss = gauss_legendre_points(order);
+                            assert!(gauss.windows(2).all(|w| w[0].x < w[1].x));
+                            for count in [1, 6, 16] {
+                                for moments in [
+                                    MomentRequest::SignedVolume,
+                                    MomentRequest::VolumeAreaAndFlux,
+                                ] {
+                                    let init = || Accumulator {
+                                        moments,
+                                        area: 0.014,
+                                        vol: -0.137,
+                                        nx: 0.234,
+                                        ny: -0.747,
+                                        nz: 0.583,
+                                        ..Accumulator::default()
+                                    };
+                                    let reference = Point3::new(0.125, 2.3, -6.7);
+                                    let mut got = init();
+                                    let mut expected = init();
+                                    let accepted = CylinderRowNormal::default()
+                                        .add_window::<_, false>(
+                                            &mut got,
+                                            &cyl,
+                                            (u, 0.29, 0.75),
+                                            (a, width, count),
+                                            gauss,
+                                            reference,
+                                            &mut DerivativeScratch::new(),
+                                        );
+                                    if !accepted {
+                                        declines += 1;
+                                        continue;
+                                    }
+                                    hits += 1;
+                                    let half = width / 2.0;
+                                    let mut normals = CylinderRowNormal::default();
+                                    let mut scratch = DerivativeScratch::new();
+                                    for i in 0..count {
+                                        let mid = width.fma(i as f64, a) + half;
+                                        for g in gauss {
+                                            let v = half.fma(g.x, mid);
+                                            let w = 0.29 * g.w * 0.75 * half;
+                                            normals.add::<_, false>(
+                                                &mut expected,
+                                                &cyl,
+                                                (u, v, w),
+                                                reference,
+                                                &mut scratch,
+                                            );
+                                        }
+                                    }
+                                    assert_eq!(
+                                        got.flux(1.0).0.map(f64::to_bits),
+                                        expected.flux(1.0).0.map(f64::to_bits)
+                                    );
+                                    assert_eq!(bits(&got.finish(1.0)), bits(&expected.finish(1.0)));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(hits > 1000 && declines > 1000);
+    }
     #[test]
     fn repeated_axial_span_preserves_nodes_and_restarts_after_a_trim_change() {
         for order in [1, 3, 5, 8] {
