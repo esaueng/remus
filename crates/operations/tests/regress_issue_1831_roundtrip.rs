@@ -48,3 +48,41 @@ fn curved_cut_serializes_and_round_trips_through_step() {
         PointClassification::Inside
     );
 }
+
+#[test]
+fn curved_cut_refuses_when_the_fitted_edge_exceeds_the_entity_tolerance_cap() {
+    let mut topo = Topology::new();
+    let target = read_one(&mut topo, TARGET);
+    let tool = read_one(&mut topo, TOOL);
+    let counts = (
+        topo.num_vertices(),
+        topo.num_edges(),
+        topo.num_faces(),
+        topo.num_solids(),
+    );
+    let context = remus_math::context::OperationContext::new().with_max_entity_tolerance(2e-7);
+
+    let error = remus_algo::gfa::boolean_with_context(
+        &mut topo,
+        remus_algo::bop::BooleanOp::Cut,
+        target,
+        tool,
+        &context,
+    )
+    .expect_err("the measured edge deviation exceeds this operation's cap");
+
+    assert!(
+        matches!(&error, remus_algo::error::AlgoError::FaceSplitFailed(reason)
+            if reason.contains("above the entity tolerance cap")),
+        "unexpected refusal: {error}"
+    );
+    assert_eq!(
+        (
+            topo.num_vertices(),
+            topo.num_edges(),
+            topo.num_faces(),
+            topo.num_solids()
+        ),
+        counts
+    );
+}

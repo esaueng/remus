@@ -668,6 +668,7 @@ pub fn fill_images_faces(
                 topo,
                 split,
                 tol,
+                context.max_entity_tolerance,
                 face_id,
                 &mut shared_edge_cache,
                 &cb_qpair_edges,
@@ -4723,6 +4724,7 @@ fn build_topology_face(
     topo: &mut Topology,
     split: &super::split_types::SplitSubFace,
     tol: Tolerance,
+    max_entity_tolerance: f64,
     _parent_face_id: FaceId,
     _shared_edge_cache: &mut DetHashMap<(usize, usize), remus_topology::edge::EdgeId>,
     _cb_qpair_edges: &DetHashMap<CbEdgeKey, remus_topology::edge::EdgeId>,
@@ -4805,8 +4807,14 @@ fn build_topology_face(
         // different per-call vertex caches, so shared edges would have wrong
         // VertexId connections at wire junctions.
         // merge_duplicate_edges in BuilderSolid handles cross-face sharing.
-        let (edge_id, forward) =
-            instantiate_wire_edge(topo, start_vid, end_vid, pcurve_edge, tol.linear)?;
+        let (edge_id, forward) = instantiate_wire_edge(
+            topo,
+            start_vid,
+            end_vid,
+            pcurve_edge,
+            tol.linear,
+            max_entity_tolerance,
+        )?;
         if let Some(pb) = pcurve_edge.pave_block_id {
             lineage.to_pave_block.insert(edge_id.index(), pb);
         }
@@ -4844,8 +4852,14 @@ fn build_topology_face(
                 &quantize,
                 tol,
             );
-            let (edge_id, forward) =
-                instantiate_wire_edge(topo, start_vid, end_vid, pcurve_edge, tol.linear)?;
+            let (edge_id, forward) = instantiate_wire_edge(
+                topo,
+                start_vid,
+                end_vid,
+                pcurve_edge,
+                tol.linear,
+                max_entity_tolerance,
+            )?;
             if let Some(pb) = pcurve_edge.pave_block_id {
                 lineage.to_pave_block.insert(edge_id.index(), pb);
             }
@@ -5019,6 +5033,7 @@ fn instantiate_wire_edge(
     end_vid: remus_topology::vertex::VertexId,
     pcurve_edge: &super::split_types::OrientedPCurveEdge,
     tolerance: f64,
+    max_entity_tolerance: f64,
 ) -> Result<(remus_topology::edge::EdgeId, bool), AlgoError> {
     let stored_tolerance = carried_edge_tolerance(topo, pcurve_edge, tolerance)?;
     let guard = (tolerance * 100.0).max(stored_tolerance);
@@ -5048,7 +5063,13 @@ fn instantiate_wire_edge(
         {
             let (residual, slack) = stored_endpoint_residual(topo, &edge, domain)?;
             if residual > stored_tolerance && residual <= guard {
-                edge.set_tolerance(Some((residual + slack).min(guard)))?;
+                let required = (residual + slack).min(guard);
+                if !max_entity_tolerance.is_finite() || required > max_entity_tolerance {
+                    return Err(AlgoError::FaceSplitFailed(format!(
+                        "fitted section endpoint needs edge tolerance {required:e}, above the entity tolerance cap {max_entity_tolerance:e}"
+                    )));
+                }
+                edge.set_tolerance(Some(required))?;
             }
         }
     }
@@ -5814,7 +5835,14 @@ mod tests {
     ) -> Result<(EdgeId, bool), AlgoError> {
         let start_id = topo.add_vertex(Vertex::new(edge.start_3d, 1e-7));
         let end_id = topo.add_vertex(Vertex::new(edge.end_3d, 1e-7));
-        instantiate_wire_edge(topo, start_id, end_id, edge, 1e-7)
+        instantiate_wire_edge(
+            topo,
+            start_id,
+            end_id,
+            edge,
+            1e-7,
+            remus_math::context::DEFAULT_MAX_ENTITY_TOLERANCE,
+        )
     }
 
     #[test]
@@ -5824,8 +5852,15 @@ mod tests {
         let start_id = topo.add_vertex(Vertex::new(missing.start_3d, 1e-7));
         let end_id = topo.add_vertex(Vertex::new(missing.end_3d, 1e-7));
         let edge_count = topo.num_edges();
-        let error = instantiate_wire_edge(&mut topo, start_id, end_id, &missing, 1e-7)
-            .expect_err("missing authority must refuse");
+        let error = instantiate_wire_edge(
+            &mut topo,
+            start_id,
+            end_id,
+            &missing,
+            1e-7,
+            remus_math::context::DEFAULT_MAX_ENTITY_TOLERANCE,
+        )
+        .expect_err("missing authority must refuse");
         assert!(matches!(error, AlgoError::FaceSplitFailed(_)));
         assert_eq!(topo.num_edges(), edge_count);
 
@@ -5834,8 +5869,15 @@ mod tests {
         let start_id = topo.add_vertex(Vertex::new(mismatch.start_3d, 1e-7));
         let end_id = topo.add_vertex(Vertex::new(mismatch.end_3d, 1e-7));
         let edge_count = topo.num_edges();
-        let error = instantiate_wire_edge(&mut topo, start_id, end_id, &mismatch, 1e-7)
-            .expect_err("endpoint mismatch must refuse");
+        let error = instantiate_wire_edge(
+            &mut topo,
+            start_id,
+            end_id,
+            &mismatch,
+            1e-7,
+            remus_math::context::DEFAULT_MAX_ENTITY_TOLERANCE,
+        )
+        .expect_err("endpoint mismatch must refuse");
         assert!(matches!(error, AlgoError::FaceSplitFailed(_)));
         assert_eq!(topo.num_edges(), edge_count);
     }
@@ -5859,7 +5901,15 @@ mod tests {
         let mut topo = Topology::new();
         let start_id = topo.add_vertex(Vertex::new(edge.start_3d + lift, 1e-7));
         let end_id = topo.add_vertex(Vertex::new(edge.end_3d + lift, 1e-7));
-        let (edge_id, _) = instantiate_wire_edge(&mut topo, start_id, end_id, &edge, 1e-7).unwrap();
+        let (edge_id, _) = instantiate_wire_edge(
+            &mut topo,
+            start_id,
+            end_id,
+            &edge,
+            1e-7,
+            remus_math::context::DEFAULT_MAX_ENTITY_TOLERANCE,
+        )
+        .unwrap();
         let stored = topo.edge(edge_id).unwrap();
         let (t0, t1) = stored.strict_domain().unwrap();
         let start = topo.vertex(stored.start()).unwrap().point();
@@ -5910,8 +5960,15 @@ mod tests {
         let mut topo = Topology::new();
         let seam = topo.add_vertex(Vertex::new(edge.start_3d, 1e-7));
         let edge_count = topo.num_edges();
-        let error = instantiate_wire_edge(&mut topo, seam, seam, &edge, 1e-7)
-            .expect_err("multi-turn authority must refuse");
+        let error = instantiate_wire_edge(
+            &mut topo,
+            seam,
+            seam,
+            &edge,
+            1e-7,
+            remus_math::context::DEFAULT_MAX_ENTITY_TOLERANCE,
+        )
+        .expect_err("multi-turn authority must refuse");
         assert!(matches!(error, AlgoError::FaceSplitFailed(_)));
         assert_eq!(topo.num_edges(), edge_count);
     }
