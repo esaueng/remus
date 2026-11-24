@@ -899,12 +899,14 @@ impl SweptRegionCheck {
         delta: Vec3,
     ) -> bool {
         self.companions.iter().all(|companion| {
-            let original = companion.original();
-            let destination = Aabb3 {
-                min: original.min + delta,
-                max: original.max + delta,
-            };
-            !original.union(destination).intersects(bounds)
+            let boxes_miss = companion.original().is_some_and(|original| {
+                let destination = Aabb3 {
+                    min: original.min + delta,
+                    max: original.max + delta,
+                };
+                !original.union(destination).intersects(bounds)
+            });
+            boxes_miss
                 || (companion.planar()
                     && radial_clearance::outside_planar_sweep(
                         topo,

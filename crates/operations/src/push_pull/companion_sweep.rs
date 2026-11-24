@@ -64,8 +64,9 @@ const ANGLE_SLACK: f64 = 1e-9;
 #[derive(Debug, Clone)]
 pub(super) struct Companion {
     face: FaceId,
-    /// The face's measured box, for the swept faces' companion test.
-    original: Aabb3,
+    /// A box for the swept faces' companion test. For a NURBS face this
+    /// is available only when the bound is certified.
+    original: Option<Aabb3>,
     planar: bool,
     sweep: Option<Sweep>,
     candidates: Vec<Reach>,
@@ -177,8 +178,15 @@ impl Companion {
         adjacent: &dyn Fn(FaceId) -> bool,
         direction: Vec3,
     ) -> Result<Self, crate::OperationsError> {
-        let original = crate::measure::face_bounding_box(topo, face)?;
-        let planar = matches!(topo.face(face)?.surface(), FaceSurface::Plane { .. });
+        let surface = topo.face(face)?.surface();
+        // The measured trim domain samples the boundary and can miss a
+        // narrow lobe. Clearance needs the certified NURBS bound (#1950).
+        let original = if matches!(surface, FaceSurface::Nurbs(_)) {
+            certified_box(topo, face)?
+        } else {
+            Some(crate::measure::face_bounding_box(topo, face)?)
+        };
+        let planar = matches!(surface, FaceSurface::Plane { .. });
         let sweep = Sweep::read(topo, face, direction)?;
         let mut candidates = Vec::new();
         if let Some(sweep) = &sweep {
@@ -211,7 +219,7 @@ impl Companion {
         self.face
     }
 
-    pub(super) const fn original(&self) -> Aabb3 {
+    pub(super) const fn original(&self) -> Option<Aabb3> {
         self.original
     }
 
@@ -1660,5 +1668,157 @@ mod tests {
         let (a, b) = super::covering_arc(&[3.0, -3.0, PI]).unwrap();
         assert!((b - a - (TAU - 6.0)).abs() < 1e-12);
         assert!(super::covering_arc(&[0.0, 2.0, 4.0]).is_none());
+    }
+
+    /// A flat NURBS patch `(10u, v, 0)` trimmed to `x ≤ 2`, except for a
+    /// tongue its right edge pushes out to `x = 8` at `y = 0.5` between the
+    /// edge's boundary samples (issue #1950).
+    fn lobed_nurbs_face(topo: &mut Topology) -> FaceId {
+        use remus_math::nurbs::{curve::NurbsCurve, surface::NurbsSurface};
+        use remus_topology::{
+            edge::{Edge, EdgeCurve},
+            face::Face,
+            vertex::Vertex,
+            wire::{OrientedEdge, Wire},
+        };
+        let surface = NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![
+                vec![Point3::new(0.0, 0.0, 0.0), Point3::new(0.0, 1.0, 0.0)],
+                vec![Point3::new(10.0, 0.0, 0.0), Point3::new(10.0, 1.0, 0.0)],
+            ],
+            vec![vec![1.0; 2]; 2],
+        )
+        .unwrap();
+        let tongue = NurbsCurve::new(
+            1,
+            vec![0.0, 0.0, 0.02, 0.06, 0.1, 1.0, 1.0],
+            vec![
+                Point3::new(2.0, 0.0, 0.0),
+                Point3::new(2.0, 0.45, 0.0),
+                Point3::new(8.0, 0.5, 0.0),
+                Point3::new(2.0, 0.55, 0.0),
+                Point3::new(2.0, 1.0, 0.0),
+            ],
+            vec![1.0; 5],
+        )
+        .unwrap();
+        let corners = [(0.0, 0.0), (2.0, 0.0), (2.0, 1.0), (0.0, 1.0)]
+            .map(|(x, y)| topo.add_vertex(Vertex::new(Point3::new(x, y, 0.0), 1e-7)));
+        let curves = [
+            EdgeCurve::Line,
+            EdgeCurve::NurbsCurve(tongue),
+            EdgeCurve::Line,
+            EdgeCurve::Line,
+        ];
+        let uses = curves
+            .into_iter()
+            .enumerate()
+            .map(|(i, curve)| {
+                let trim = matches!(curve, EdgeCurve::NurbsCurve(_)).then_some((0.0, 1.0));
+                let mut edge = Edge::new(corners[i], corners[(i + 1) % 4], curve);
+                edge.set_trim(trim);
+                OrientedEdge::new(topo.add_edge(edge), true)
+            })
+            .collect();
+        let wire = topo.add_wire(Wire::new(uses, true).unwrap());
+        topo.add_face(Face::new(wire, Vec::new(), FaceSurface::Nurbs(surface)))
+    }
+
+    /// Issue #1950: a carried NURBS support with a narrow trim lobe between
+    /// its boundary samples. An L-shaped cap at the support's height has a
+    /// box over a fixed block in the lobe's path but a footprint clear of
+    /// it, so only the companion test stands between the lobe and the
+    /// block: the support's box must hold the lobe for the move to refuse.
+    #[test]
+    fn a_nurbs_companion_lobe_between_samples_still_reaches() {
+        use super::super::{SweptCandidate, SweptFace, SweptRegionCheck};
+        use crate::primitives::make_box;
+        use remus_topology::{
+            edge::{Edge, EdgeCurve},
+            face::Face,
+            vertex::Vertex,
+            wire::{OrientedEdge, Wire},
+        };
+
+        let mut topo = Topology::new();
+        let support = lobed_nurbs_face(&mut topo);
+        let sampled = crate::measure::face_bounding_box(&topo, support).unwrap();
+        assert!(
+            sampled.max.x() < 3.0,
+            "fixture no longer hides the tongue from the sampled box: {sampled:?}"
+        );
+
+        // The cap: the strips y in [-2, -1] and x in [11, 12] at z = 0.
+        let outline = [
+            (-1.0, -2.0),
+            (12.0, -2.0),
+            (12.0, 3.0),
+            (11.0, 3.0),
+            (11.0, -1.0),
+            (-1.0, -1.0),
+        ]
+        .map(|(x, y)| topo.add_vertex(Vertex::new(Point3::new(x, y, 0.0), 1e-7)));
+        let uses = (0..outline.len())
+            .map(|i| {
+                let edge = topo.add_edge(Edge::new(
+                    outline[i],
+                    outline[(i + 1) % outline.len()],
+                    EdgeCurve::Line,
+                ));
+                OrientedEdge::new(edge, true)
+            })
+            .collect();
+        let wire = topo.add_wire(Wire::new(uses, true).unwrap());
+        let cap = topo.add_face(Face::new(
+            wire,
+            Vec::new(),
+            FaceSurface::Plane { normal: UP, d: 0.0 },
+        ));
+
+        // A fixed block over the tongue, 0.5 above it.
+        let block = make_box(&mut topo, 1.0, 0.2, 0.1).unwrap();
+        transform_solid(&mut topo, block, &Mat4::translation(5.0, 0.4, 0.5)).unwrap();
+        let obstacle = faces_where(&topo, block, |_| true)
+            .into_iter()
+            .find(|&f| topo.face(f).unwrap().effective_plane_normal().unwrap().z() < -0.5)
+            .unwrap();
+        let bounds = crate::measure::face_bounding_box(&topo, obstacle).unwrap();
+
+        let check = |travel: f64| {
+            SweptRegionCheck {
+                normal: UP,
+                swept: vec![SweptFace {
+                    face: cap,
+                    original: crate::measure::face_bounding_box(&topo, cap).unwrap(),
+                    prismatic: false,
+                    limiting_cone: None,
+                    candidates: vec![SweptCandidate {
+                        face: obstacle,
+                        bounds,
+                        overlaps_source: false,
+                        radially_clear: false,
+                    }],
+                }],
+                companions: vec![
+                    Companion::prepare(&topo, support, &[obstacle], &|_| false, &|_| false, UP)
+                        .unwrap(),
+                ],
+            }
+            .check_rigid_translation(&topo, travel)
+        };
+        // Moved 1, the tongue at x = 5..6 rises through the block's base.
+        let error = check(1.0).expect_err("the tongue's sweep reaches the block");
+        assert!(matches!(
+            error,
+            crate::OperationsError::Offset(remus_offset::OffsetError::TopologyChange {
+                face: Some(face), ..
+            }) if face == cap
+        ));
+        // Moved 0.25 nothing reaches it.
+        assert!(check(0.25).is_ok());
     }
 }
