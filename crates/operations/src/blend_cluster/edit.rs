@@ -671,6 +671,7 @@ fn group_fillet_as_is(
     touched.compact_sort_unstable_by_key(|face| face.index());
     touched.dedup();
     // The one group the chain runs into.
+    let mut recognizer = super::Recognizer::new(work, &adjacency);
     let mut cluster: Option<BlendCluster> = None;
     for &face in &touched {
         if cluster
@@ -679,12 +680,19 @@ fn group_fillet_as_is(
         {
             continue;
         }
-        let Ok(found) = recognize_blend_cluster(work, solid, face) else {
-            continue;
-        };
-        if !found.seed_is_member {
+        // Support seeds can recognize their neighbours, but only a proven
+        // member on the chain can select a group here. Share the immutable
+        // solid's measured face facts across all candidate member seeds.
+        let _span = crate::performance::span("blend_group.recognize");
+        if !matches!(recognizer.member_facts(face), Ok(Some(_))) {
             continue;
         }
+        let Ok(members) = recognizer.close(vec![face]) else {
+            continue;
+        };
+        let Ok(found) = super::assemble(&mut recognizer, face, &members) else {
+            continue;
+        };
         if cluster.is_some() {
             return Ok(None);
         }
