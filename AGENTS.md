@@ -882,6 +882,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Task | File(s) |
 |------|---------|
 | `RemusKernel` struct, constructor, private helpers | `kernel.rs` |
+| Runtime qualification of the host’s fused multiply-add and installation in the kernel’s reserved WebAssembly function slot | `fused_arithmetic.rs` |
 | Error types, validation helpers (`validate_positive`, `validate_finite`) | `error.rs` |
 | Shape type wrappers (`JsMesh`, `JsEdgeLines`, `JsPoint3`, `JsVec3`) | `shapes.rs` |
 | Entity handle resolution (`resolve_*`) & ID converters | `handles.rs` |
