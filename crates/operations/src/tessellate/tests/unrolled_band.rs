@@ -3,7 +3,7 @@
 //! thread's lands, about forty times wider than tall. These pin what it must
 //! leave alone: a cross-drilled bore wall, about as wide as long, keeps its
 //! squared-box mesh; and a near-flat band of a huge radius, whose sliver-high
-//! side the unrolled chart would squeeze under the CDT's duplicate-point
+//! side or waist the unrolled chart would squeeze under the CDT's duplicate-point
 //! tolerance, keeps every face of its solid.
 
 use std::collections::BTreeMap;
@@ -167,4 +167,132 @@ fn a_huge_radius_band_with_a_sliver_side_keeps_every_face() {
         incidence.values().all(|&count| count == 2),
         "an edge not shared by two triangles"
     );
+}
+
+/// A closed band between cylinders of radius 10 000 and 9 999, 0.1 rad
+/// around, whose rims are split at its middle angle, where its top plane
+/// leaves it only 4e-5 high. The rim samples there are not neighbours along
+/// the boundary, but unrolled they would sit 4e-9 apart and merge in the
+/// CDT, pinching the band's boundary into two loops.
+fn waisted_band_mesh(slope: f64) -> (Vec<u32>, usize, [usize; 2]) {
+    let origin = Point3::new(0.0, 0.0, 0.0);
+    let axis = Vec3::new(0.0, 0.0, 1.0);
+    let r = 10_000.0;
+    let angle = [0.2, 0.25, 0.3];
+    let cylinders =
+        [r, r - 1.0].map(|radius| CylindricalSurface::new(origin, axis, radius).unwrap());
+    let radial = (cylinders[0].evaluate(angle[1], 0.0) - origin) * (1.0 / r);
+    let on_plane = |p: Point3, top: bool| {
+        if top {
+            p + axis * slope.mul_add(r - (p - origin).dot(radial), 4e-5)
+        } else {
+            p
+        }
+    };
+    let mut topo = Topology::new();
+    let points: [Point3; 12] =
+        std::array::from_fn(|i| on_plane(cylinders[i / 6].evaluate(angle[i % 3], 0.0), i % 6 >= 3));
+    let vertices = points.map(|p| topo.add_vertex(Vertex::new(p, 1e-7)));
+    let loops: [&[usize]; 6] = [
+        &[0, 1, 2, 5, 4, 3],
+        &[6, 9, 10, 11, 8, 7],
+        &[2, 1, 0, 6, 7, 8],
+        &[3, 4, 5, 11, 10, 9],
+        &[0, 3, 9, 6],
+        &[5, 2, 8, 11],
+    ];
+    let mut edges = BTreeMap::new();
+    let mut faces = Vec::new();
+    for (index, ring) in loops.into_iter().enumerate() {
+        let mut uses = Vec::new();
+        for j in 0..ring.len() {
+            let (from, to) = (ring[j], ring[(j + 1) % ring.len()]);
+            let (low, high) = (from.min(to), from.max(to));
+            let edge = *edges.entry((low, high)).or_insert_with(|| {
+                let curve = if low / 3 == high / 3 {
+                    let (a, b) = (angle[low % 3], angle[high % 3]);
+                    let c = ((b - a) / 2.0).cos();
+                    let middle = cylinders[low / 6].evaluate(f64::midpoint(a, b), 0.0);
+                    let control = origin + (middle - origin) * (1.0 / c);
+                    EdgeCurve::NurbsCurve(
+                        NurbsCurve::new(
+                            2,
+                            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                            vec![points[low], on_plane(control, low % 6 >= 3), points[high]],
+                            vec![1.0, c, 1.0],
+                        )
+                        .unwrap(),
+                    )
+                } else {
+                    EdgeCurve::Line
+                };
+                let mut edge = Edge::new(vertices[low], vertices[high], curve);
+                edge.set_trim(Some((0.0, 1.0)));
+                topo.add_edge(edge)
+            });
+            uses.push(OrientedEdge::new(edge, from < to));
+        }
+        let wire = topo.add_wire(Wire::new(uses, true).unwrap());
+        let surface = if index < 2 {
+            FaceSurface::Cylinder(cylinders[index].clone())
+        } else {
+            let p = points[ring[0]];
+            let normal = (points[ring[1]] - p)
+                .cross(points[ring[2]] - p)
+                .normalize()
+                .unwrap();
+            FaceSurface::Plane {
+                normal,
+                d: normal.dot(p - origin),
+            }
+        };
+        faces.push(topo.add_face(if index == 1 {
+            Face::new_reversed(wire, vec![], surface)
+        } else {
+            Face::new(wire, vec![], surface)
+        }));
+    }
+    let shell = topo.add_shell(Shell::new(faces).unwrap());
+    let solid = topo.add_solid(Solid::new(shell, vec![]));
+    let (mesh, offsets) =
+        tessellate_solid_grouped_with_tolerance(&topo, solid, 0.05, 0.06).unwrap();
+    let per_face = offsets
+        .windows(2)
+        .map(|pair| (pair[1] - pair[0]) / 3)
+        .collect();
+    let mut incidence = BTreeMap::new();
+    for triangle in mesh.indices.chunks_exact(3) {
+        for j in 0..3 {
+            let (p, q) = (triangle[j], triangle[(j + 1) % 3]);
+            *incidence.entry((p.min(q), p.max(q))).or_insert(0) += 1;
+        }
+    }
+    let unpaired = incidence.values().filter(|&&count| count != 2).count();
+    let outer = &mesh.indices[offsets[0] as usize..offsets[1] as usize];
+    let used = |p: Point3| {
+        outer
+            .iter()
+            .filter(|&&index| (mesh.positions[index as usize] - p).length() < 1e-8)
+            .count()
+    };
+    (per_face, unpaired, [used(points[1]), used(points[4])])
+}
+
+#[test]
+fn a_huge_radius_band_with_a_sliver_waist_keeps_both_rims() {
+    for slope in [0.0, 1e-3] {
+        let (per_face, unpaired, midpoints) = waisted_band_mesh(slope);
+        assert!(
+            per_face.iter().all(|&count| count > 0),
+            "slope {slope}: {per_face:?}"
+        );
+        assert_eq!(
+            unpaired, 0,
+            "slope {slope}: edges not shared by two triangles"
+        );
+        assert!(
+            midpoints.iter().all(|&uses| uses > 0),
+            "slope {slope}: rim midpoints {midpoints:?}"
+        );
+    }
 }

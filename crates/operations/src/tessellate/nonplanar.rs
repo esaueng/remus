@@ -3581,7 +3581,7 @@ pub(super) fn tessellate_nonplanar_cdt(
     // qualifies: a cross-drilled bore wall (about as wide as long) keeps the
     // squared box, its dense rows and its mesh. The unrolled chart also
     // compresses `v` by that aspect against the squared box, so a band whose
-    // boundary samples would land closer than `UNROLLED_MIN_SAMPLE_GAP`
+    // boundary samples (any two) would land closer than `UNROLLED_MIN_SAMPLE_GAP`
     // there (a near-flat wall of a huge radius with a sliver-high side)
     // keeps the squared box rather than merge two samples in the CDT.
     let unrolled_radius = match chart_surface {
@@ -3589,9 +3589,12 @@ pub(super) fn tessellate_nonplanar_cdt(
             if sheared.is_none()
                 && cylinder.radius() * du >= UNROLLED_BAND_ASPECT * dv
                 && climbing_nurbs_trim(topo, outer_edges, &boundary_uv, &boundary_3d, du, dv)
-                && std::iter::once(boundary_uv.as_slice())
-                    .chain(hole_uvs.iter().map(Vec::as_slice))
-                    .all(|ring| unrolled_ring_keeps_samples(ring, cylinder.radius())) =>
+                && unrolled_samples_stay_apart(
+                    &std::iter::once(boundary_uv.as_slice())
+                        .chain(hole_uvs.iter().map(Vec::as_slice))
+                        .collect::<Vec<_>>(),
+                    cylinder.radius(),
+                ) =>
         {
             Some(cylinder.radius())
         }
@@ -5121,26 +5124,52 @@ fn estimate_surface_radius(surface: &FaceSurface) -> f64 {
 /// trimmed walls and cross-drilled bores near 1:1.
 const UNROLLED_BAND_ASPECT: f64 = 8.0;
 
-/// The smallest chart distance two consecutive distinct boundary samples may
+/// The smallest chart distance two distinct boundary samples may
 /// have in an unrolled chart: a hundred times the CDT's duplicate-point
-/// tolerance (1e-8), so no boundary sample merges with its neighbour.
+/// tolerance (1e-8), so no two boundary samples merge.
 const UNROLLED_MIN_SAMPLE_GAP: f64 = 1e-6;
 
-/// Whether every pair of consecutive distinct samples of a closed boundary
-/// ring stays at least [`UNROLLED_MIN_SAMPLE_GAP`] apart in the unrolled
-/// chart `(u, v / radius)` of a cylinder of `radius`.
-fn unrolled_ring_keeps_samples(ring: &[(f64, f64)], radius: f64) -> bool {
+/// Whether every two distinct boundary samples, across all of a face's
+/// rings, stay at least [`UNROLLED_MIN_SAMPLE_GAP`] apart in the unrolled
+/// chart `(u, v / radius)` of a cylinder of `radius`. Not only neighbours:
+/// opposite rims of a band only a sliver high meet in that chart too.
+/// Samples are bucketed by gap-sized cells, so each is compared with the few
+/// in its own and the adjacent cells.
+fn unrolled_samples_stay_apart(rings: &[&[(f64, f64)]], radius: f64) -> bool {
     if !(radius.is_finite() && radius > 0.0) {
         return false;
     }
-    let count = ring.len();
-    (0..count).all(|index| {
-        let (u0, v0) = ring[index];
-        let (u1, v1) = ring[(index + 1) % count];
-        let (du, dv) = (u1 - u0, v1 - v0);
-        // Exact repeats (a closing sample) are the same point in any chart.
-        (du == 0.0 && dv == 0.0) || du.hypot(dv / radius) >= UNROLLED_MIN_SAMPLE_GAP
-    })
+    let gap = UNROLLED_MIN_SAMPLE_GAP;
+    let mut cells: DetHashMap<(i64, i64), Vec<(f64, f64)>> = DetHashMap::default();
+    for ring in rings {
+        for &(u, v) in *ring {
+            let point = (u, v / radius);
+            if !(point.0.is_finite() && point.1.is_finite()) {
+                return false;
+            }
+            #[allow(clippy::cast_possible_truncation)]
+            let cell = (
+                (point.0 / gap).floor() as i64,
+                (point.1 / gap).floor() as i64,
+            );
+            for du in -1..=1 {
+                for dv in -1..=1 {
+                    let Some(near) = cells.get(&(cell.0 + du, cell.1 + dv)) else {
+                        continue;
+                    };
+                    // Exact repeats (a closing sample, a shared corner) are
+                    // one point in any chart.
+                    if near.iter().any(|&other| {
+                        other != point && (other.0 - point.0).hypot(other.1 - point.1) < gap
+                    }) {
+                        return false;
+                    }
+                }
+            }
+            cells.entry(cell).or_default().push(point);
+        }
+    }
+    true
 }
 
 /// Whether a cylinder face's outer wire has a NURBS edge whose
