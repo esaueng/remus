@@ -42,7 +42,7 @@ fn ruled_planar_patch_has_closed_form_volume_and_flux() {
                 adaptive: None,
                 knots: None,
                 reference: Point3::new(1000.0, -300.0, 1.0),
-                volume_only: true,
+                moments: MomentRequest::VolumeAreaAndFlux,
                 ruled_guard: true,
                 flux: Some(&flux),
                 cone_apex: None,
@@ -104,7 +104,7 @@ fn ruled_generators_agree_with_independent_tensor_quadrature() {
                         adaptive: None,
                         knots: Some((s.knots_u(), s.knots_v())),
                         reference: Point3::new(0.13, -0.27, 0.41),
-                        volume_only: true,
+                        moments: MomentRequest::VolumeAreaAndFlux,
                         ruled_guard: false,
                         flux: Some(&old_flux),
                         cone_apex: None,
@@ -191,7 +191,7 @@ fn knot_aligned_rows_match_every_original_sample_bit_for_bit() {
                         adaptive: None,
                         knots: Some((surface.knots_u(), surface.knots_v())),
                         reference,
-                        volume_only,
+                        moments: MomentRequest::for_flux(volume_only),
                         ruled_guard: false,
                         flux: Some(&old_flux),
                         cone_apex: None,
@@ -224,6 +224,28 @@ fn knot_aligned_rows_match_every_original_sample_bit_for_bit() {
                         (surface.knots_u(), surface.knots_v()),
                     )
                     .unwrap();
+                    if !volume_only {
+                        let signed = integrate_knot_aligned::<_, false>(
+                            &surface,
+                            (0.0, 1.0),
+                            (0.0, 1.0),
+                            IntegrationRule {
+                                moments: MomentRequest::SignedVolume,
+                                flux: None,
+                                ..rule
+                            },
+                            -1.0,
+                            &trim,
+                            scale,
+                            (surface.knots_u(), surface.knots_v()),
+                        )
+                        .unwrap();
+                        assert_eq!(
+                            signed.map(|c| c.volume.to_bits()),
+                            old.as_ref().map(|c| c.volume.to_bits()),
+                            "{label}, {trim_label}, signed volume order {order}"
+                        );
+                    }
                     assert_eq!(
                         old.as_ref().map(contribution_bits),
                         new.as_ref().map(contribution_bits),
@@ -299,7 +321,7 @@ fn integrate_knot_aligned_reference<S: ParametricSurface, const AREA_ONLY: bool>
     let gauss_v = gauss_legendre_points(v_order.unwrap_or(rule.order));
     let budget = MAX_KNOT_ALIGNED_CELLS.saturating_mul(gauss_pts.len());
     let mut acc = Accumulator {
-        volume_only: rule.volume_only,
+        moments: rule.moments,
         ..Accumulator::default()
     };
     let mut scratch = DerivativeScratch::new();

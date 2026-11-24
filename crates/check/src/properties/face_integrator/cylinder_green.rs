@@ -243,7 +243,7 @@ pub(super) fn integrate<const AREA_ONLY: bool>(
     sign: f64,
 ) -> Result<Option<GreenReading>, CheckError> {
     let fresh = || Accumulator {
-        volume_only: rule.volume_only,
+        moments: rule.moments,
         ..Accumulator::default()
     };
     let mut acc = fresh();

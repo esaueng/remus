@@ -98,7 +98,7 @@ pub(super) fn integrate<const AREA_ONLY: bool>(
         return Ok(None);
     }
     let fresh = || Accumulator {
-        volume_only: rule.volume_only,
+        moments: rule.moments,
         ..Accumulator::default()
     };
     let mut acc = fresh();

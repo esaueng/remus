@@ -1091,6 +1091,36 @@ fn non_finite_references_fail_with_cold_warm_and_disabled_caches() {
 /// z = 9 L u(1-u)v(1-v), x = u, y = v. Its integral of z is L/4;
 /// integrating (P-R) dot (-z_u,-z_v,1)/3 gives L/4 - R_z/3.
 #[test]
+fn signed_nurbs_volume_matches_full_properties_for_fixed_and_refined_rules() {
+    use crate::properties::{PropertiesOptions, face_integrator};
+
+    let mut topo = Topology::new();
+    let face = nurbs_pillow(&mut topo, 0.7);
+    for reversed in [false, true] {
+        topo.face_mut(face).unwrap().set_reversed(reversed);
+        for eps in [PropertiesOptions::default().adaptive_eps, 1e-5] {
+            for order in [2, 5, 8] {
+                let options = PropertiesOptions {
+                    gauss_order: order,
+                    adaptive_eps: eps,
+                    ..Default::default()
+                };
+                for reference in [origin(), Point3::new(-7.0, 3.5, 0.75)] {
+                    let full =
+                        face_integrator::integrate_face_about(&topo, face, &options, reference)
+                            .unwrap();
+                    let volume = face_integrator::integrate_face_volume_about(
+                        &topo, face, &options, reference,
+                    )
+                    .unwrap();
+                    assert_eq!(volume.to_bits(), full.volume.to_bits());
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn volume_only_nurbs_matches_polynomial_divergence_oracle() {
     let mut topo = Topology::new();
     let mut cache = FaceIntegralCache::disabled();

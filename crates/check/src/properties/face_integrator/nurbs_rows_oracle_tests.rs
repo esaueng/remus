@@ -66,7 +66,7 @@ impl Accumulator {
         // A strict orientation probe needs no centroid or inertia moments.
         // Keep area, volume and flux arithmetic above identical to the full
         // fixed rule so cold readings and reference/translation reuse agree.
-        if self.volume_only {
+        if self.moments != MomentRequest::Full {
             return;
         }
 
@@ -176,7 +176,7 @@ fn integrate_parametric_reference<S: ParametricSurface, const AREA_ONLY: bool>(
     let du_patch = (u_range.1 - u_range.0) / nu as f64;
     let u_scale = du_patch / 2.0;
     let mut acc = Accumulator {
-        volume_only: rule.volume_only,
+        moments: rule.moments,
         ..Accumulator::default()
     };
     // One scratch per face integration: every NURBS abscissa below reuses
@@ -454,7 +454,7 @@ fn both<const AREA_ONLY: bool>(
             adaptive: None,
             knots: None,
             reference: Point3::new(0.4, -1.25, 0.75),
-            volume_only,
+            moments: MomentRequest::for_flux(volume_only),
             ruled_guard: false,
             flux: Some(&flux),
             cone_apex: None,

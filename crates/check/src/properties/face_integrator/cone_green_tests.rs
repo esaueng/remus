@@ -37,8 +37,8 @@ use remus_topology::wire::{OrientedEdge, Wire};
 use crate::properties::PropertiesOptions;
 
 use super::{
-    FaceContribution, IntegrationRule, analytic_face_area, cone_green, integrate_face_about,
-    integrate_face_area, integrate_face_fixed_about,
+    FaceContribution, IntegrationRule, MomentRequest, analytic_face_area, cone_green,
+    integrate_face_about, integrate_face_area, integrate_face_fixed_about,
 };
 
 /// One oblique section of a cone, in a frame with the cone's axis `â` and
@@ -431,7 +431,7 @@ fn rule(flux: Option<&Cell<Option<Vec3>>>) -> IntegrationRule<'_> {
         adaptive: None,
         knots: None,
         reference: Point3::new(0.0, 0.0, 0.0),
-        volume_only: false,
+        moments: MomentRequest::Full,
         ruled_guard: false,
         flux,
         cone_apex: None,

@@ -30,7 +30,7 @@ use remus_topology::vertex::Vertex;
 use remus_topology::wire::{OrientedEdge, Wire};
 
 use super::cone_green_tests::{Section, closed_nurbs_edge, reversed, sections};
-use super::{IntegrationRule, cone_green, cylinder_green};
+use super::{IntegrationRule, MomentRequest, cone_green, cylinder_green};
 
 /// Radial push of each control point, as a fraction of the scale: the first
 /// and last points of a closed rim coincide, and so do their pushes.
@@ -108,7 +108,7 @@ fn collecting_rule(sink: &Cell<Option<Vec3>>) -> IntegrationRule<'_> {
         adaptive: None,
         knots: None,
         reference: Point3::new(0.0, 0.0, 0.0),
-        volume_only: true,
+        moments: MomentRequest::VolumeAreaAndFlux,
         ruled_guard: false,
         flux: Some(sink),
         cone_apex: None,
@@ -261,7 +261,7 @@ fn a_volume_only_reading_takes_the_full_readings_path_bit_for_bit() {
             let sink = Cell::new(None);
             let light = collecting_rule(&sink);
             let full = IntegrationRule {
-                volume_only: false,
+                moments: MomentRequest::Full,
                 ..light
             };
             let read = |rule: &IntegrationRule<'_>| {
