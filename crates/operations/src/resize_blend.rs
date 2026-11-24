@@ -2264,6 +2264,7 @@ fn translation_invariant_blend_region(
         }
     }
 
+    let has_tangent_blend = !queue.is_empty();
     while let Some(current) = queue.pop_front() {
         for edge in face_edges(topo, current)? {
             for candidate in distinct_faces(adjacency.faces_for_edge(edge)) {
@@ -2288,9 +2289,10 @@ fn translation_invariant_blend_region(
     // Chamfer bands on the cap's rim travel with it (#1957). A band standing
     // on walls like a chamfer but not recognized as one is a draft the
     // translation cannot re-limit, so a move carrying only chamfers refuses
-    // rather than carrying it as well.
+    // rather than carrying it as well. An axial mouth is a chamfer too,
+    // so its presence does not exempt an ambiguous outer rim.
     let rim = rim_chamfer::rim_chamfers(topo, &adjacency, selected_faces, direction)?;
-    if region.is_empty()
+    if !has_tangent_blend
         && !rim.carried.is_empty()
         && let Some((face, reason)) = rim.declined.first()
     {

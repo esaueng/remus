@@ -75,8 +75,7 @@ use remus_topology::journal::{
 };
 use std::collections::{BTreeMap, VecDeque};
 
-/// More faces than any chamfer ring round one cap carries; a component this
-/// large is a body region, not a detail.
+/// Limit on the number of faces rebuilt by a single carried chamfer band.
 const MAX_BAND_FACES: usize = 64;
 
 /// Absolute floor of the tolerance on setbacks and depths.
@@ -193,11 +192,17 @@ pub(super) fn rim_chamfers(
                 }
             }
         }
-        if !stands_on_walls || component.len() > MAX_BAND_FACES {
+        if !stands_on_walls {
             continue;
         }
         component.compact_sort_unstable_by_key(|face| face.index());
         match component_identity(topo, adjacency, &is_selected, &component, cap)? {
+            Ok(()) if component.len() > MAX_BAND_FACES => {
+                return Err(super::reconstruction(format!(
+                    "rim chamfer has {} faces, above the carry limit of {MAX_BAND_FACES}",
+                    component.len()
+                )));
+            }
             Ok(()) => result.carried.extend(component),
             Err(reason) => result.declined.push((component[0], reason)),
         }

@@ -635,3 +635,116 @@ fn a_translated_body_carries_its_chamfer_the_same() {
         }
     }
 }
+
+/// A journal gap introduced by an unrelated edit changes the identity
+/// evidence available to both the direct and prepared journaled moves.
+#[test]
+fn prepared_journaled_move_uses_the_same_chamfer_identity_after_a_gap() {
+    let mut topo = Topology::new();
+    let body = make_box(&mut topo, X, Y, Z).unwrap();
+    let edges = edges_where(&topo, body, front_bottom);
+    let solid = chamfer_journaled(&mut topo, body, &edges, 0.3, 0.6)
+        .unwrap()
+        .result
+        .solid;
+    make_box(&mut topo, X, Y, Z).unwrap();
+    let face = bottom(&topo, solid);
+
+    let mut direct_topo = topo.clone();
+    let direct = move_faces_journaled(&mut direct_topo, solid, &[face], 1.5)
+        .unwrap()
+        .solid;
+    let direct_volume = solid_volume(&direct_topo, direct, DEFLECTION).unwrap();
+
+    for qualified in [false, true] {
+        let mut preview_topo = topo.clone();
+        let mut prepared = PreparedFaceMove::prepare(&preview_topo, solid, &[face]).unwrap();
+        let moved = if qualified {
+            prepared
+                .move_faces_journaled_with_quality(&mut preview_topo, 1.5, None)
+                .unwrap()
+                .0
+        } else {
+            prepared
+                .move_faces_journaled(&mut preview_topo, 1.5)
+                .unwrap()
+        };
+        let prepared_volume = solid_volume(&preview_topo, moved.solid, DEFLECTION).unwrap();
+
+        assert!(
+            (prepared_volume - direct_volume).abs() < 1e-7,
+            "direct result volume {direct_volume}, prepared result volume {prepared_volume}"
+        );
+    }
+}
+
+/// A chamfered bore must not allow the moving cap to carry an unrelated
+/// outer band that the geometry could not identify as a chamfer.
+#[test]
+fn a_chamfered_bore_does_not_override_mixed_outer_rim_refusal() {
+    let mut topo = Topology::new();
+    let sharp = make_box(&mut topo, X, Y, Z).unwrap();
+    let tool = remus_operations::primitives::make_cylinder(&mut topo, 3.0, Z + 2.0).unwrap();
+    transform_solid(&mut topo, tool, &Mat4::translation(X / 2.0, Y / 2.0, -1.0)).unwrap();
+    let drilled = boolean(&mut topo, BooleanOp::Cut, sharp, tool).unwrap();
+    let front = edges_where(&topo, drilled, front_bottom);
+    let solid = chamfer(&mut topo, drilled, &front, CHAMFER);
+    let back = edges_where(&topo, solid, back_bottom);
+    let solid = chamfer_v2(&mut topo, solid, &back, 0.3, 0.6).unwrap().solid;
+    let mouth: Vec<_> = edges_where(&topo, solid, bottom_rim)
+        .into_iter()
+        .filter(|&id| {
+            matches!(
+                topo.edge(id).unwrap().curve(),
+                remus_topology::edge::EdgeCurve::Circle(_)
+            )
+        })
+        .collect();
+    assert_eq!(mouth.len(), 1);
+    let solid = chamfer_v2(&mut topo, solid, &mouth, CHAMFER, CHAMFER)
+        .unwrap()
+        .solid;
+    let face = bottom(&topo, solid);
+    let counts = solid_entity_counts(&topo, solid).unwrap();
+    let error = move_faces(&mut topo, solid, &[face], -0.5)
+        .expect_err("a chamfered bore cannot override the mixed rim refusal");
+    assert!(error.to_string().contains("mixes a chamfer"), "{error}");
+    assert_eq!(solid_entity_counts(&topo, solid).unwrap(), counts);
+}
+
+/// A bevel split into many connected patches must not be re-limited as a
+/// draft simply because the rim recognizer reached its work limit.
+#[test]
+fn large_connected_bevel_cannot_fall_through_to_planar_move() {
+    const SIDES: u32 = 72;
+    let mut topo = Topology::new();
+    let points: Vec<_> = (0..SIDES)
+        .map(|index| {
+            let t = std::f64::consts::TAU * f64::from(index) / f64::from(SIDES);
+            Point3::new(20.0 * t.cos(), 20.0 * t.sin(), 0.0)
+        })
+        .collect();
+    let profile = remus_topology::builder::make_planar_face(&mut topo, &points, 1e-7).unwrap();
+    let solid = extrude(&mut topo, profile, Vec3::new(0.0, 0.0, 1.0), Z).unwrap();
+    let rim = edges_where(&topo, solid, bottom_rim);
+    assert_eq!(rim.len(), SIDES as usize);
+    let solid = chamfer(&mut topo, solid, &rim, CHAMFER);
+    let face = bottom(&topo, solid);
+    let volume = solid_volume(&topo, solid, DEFLECTION).unwrap();
+    let distance = -0.1;
+    match move_faces(&mut topo, solid, &[face], distance) {
+        Ok(moved) => {
+            let area = f64::from(SIDES) * 200.0 * (std::f64::consts::TAU / f64::from(SIDES)).sin();
+            let change = solid_volume(&topo, moved, DEFLECTION).unwrap() - volume;
+            assert!(
+                (change - distance * area).abs() < 1e-6,
+                "bevel was re-limited: volume change {change}, expected {}",
+                distance * area
+            );
+        }
+        Err(error) => assert!(
+            error.to_string().contains("above the carry limit"),
+            "unexpected refusal: {error}"
+        ),
+    }
+}

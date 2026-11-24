@@ -33,7 +33,11 @@
 //! back under the same handles — the drag loop's restore — is the same
 //! source, even though it advances the topology's cache generation.
 //! Selections the preparation does not cover (a bore move, an empty or
-//! invalid selection) run the unprepared move on every call.
+//! invalid selection) run the unprepared move on every call. A change in
+//! journal lineage also uses the unprepared path so a recorded barrier
+//! cannot leave cached chamfer identity in use.
+
+use std::sync::Arc;
 
 use remus_topology::Topology;
 use remus_topology::face::FaceId;
@@ -53,6 +57,7 @@ pub struct PreparedFaceMove {
     solid: SolidId,
     faces: Vec<FaceId>,
     source: ContentKey,
+    lineage_key: Arc<()>,
     /// The journal's pre-operation scope: every entity of the source.
     scope: Vec<EntityKey>,
     /// `None` runs the unprepared move on every call.
@@ -90,6 +95,7 @@ impl PreparedFaceMove {
             solid,
             faces: faces.to_vec(),
             source,
+            lineage_key: Arc::clone(topo.journal().lineage_key()),
             scope: crate::journal_ops::solid_entity_keys(topo, solid)?,
             planar: PreparedPlanarMove::prepare(topo, solid, faces)?,
         })
@@ -282,9 +288,14 @@ impl PreparedFaceMove {
         topo: &mut Topology,
         distance: f64,
     ) -> Result<DirectEditEvolution, OperationsError> {
+        // Journaled callers enter here after journal_begin has accounted for
+        // unjournaled edits. A new barrier can invalidate chamfer provenance
+        // even when the source geometry still matches.
         match &mut self.planar {
-            Some(planar) => planar.move_faces(topo, self.solid, &self.faces, distance),
-            None => crate::push_pull::move_faces_with_entity_evolution(
+            Some(planar) if Arc::ptr_eq(&self.lineage_key, topo.journal().lineage_key()) => {
+                planar.move_faces(topo, self.solid, &self.faces, distance)
+            }
+            _ => crate::push_pull::move_faces_with_entity_evolution(
                 topo,
                 self.solid,
                 &self.faces,
