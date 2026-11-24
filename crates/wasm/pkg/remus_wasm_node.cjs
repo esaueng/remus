@@ -6687,6 +6687,38 @@ class RemusKernel {
         return takeFromExternrefTable0(ret[0]);
     }
     /**
+     * [`moveFacesDetailed`](Self::move_faces_detailed) with caller options.
+     *
+     * `options` is a JSON object. `ambiguousRim` (`"refuse"`, the default,
+     * `"chamfer"` or `"draft"`) says how to read a sloped band on a planar
+     * cap's rim that could be a chamfer or a draft and has no journal
+     * history to tell which (an imported body, or one edited without the
+     * journal): `moveFacesDetailed` refuses such a move with
+     * `details.kernelCode: "ambiguous_rim_chamfer"`, naming the band's
+     * `face`, `wall`, `cap` and cap `edge` and its `capSetback` and
+     * `wallSetback`. `"chamfer"` carries the band with the face; `"draft"`
+     * re-limits it against the moved face. A band the journal records is
+     * read by its record whatever `ambiguousRim` says. `details` echoes
+     * the `ambiguousRim` used. An unknown key or value is an
+     * `invalid_argument` refusal.
+     * @param {number} solid
+     * @param {Uint32Array} faces
+     * @param {number} distance
+     * @param {string} options
+     * @returns {SolidOperationDetailedResult}
+     */
+    moveFacesDetailedWithOptions(solid, faces, distance, options) {
+        const ptr0 = passArray32ToWasm0(faces, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(options, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_moveFacesDetailedWithOptions(this.__wbg_ptr, solid, ptr0, len0, distance, ptr1, len1);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
      * Move faces with construction history.
      *
      * Planar re-limitation and coaxial bore moves include edge and vertex
@@ -6802,6 +6834,32 @@ class RemusKernel {
         const ptr1 = passArrayF64ToWasm0(distances, wasm.__wbindgen_malloc);
         const len1 = WASM_VECTOR_LEN;
         const ret = wasm.remuskernel_moveFacesMultiDetailed(this.__wbg_ptr, solid, ptr0, len0, ptr1, len1);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return takeFromExternrefTable0(ret[0]);
+    }
+    /**
+     * [`moveFacesMultiDetailed`](Self::move_faces_multi_detailed) with
+     * caller options: the JSON object `moveFacesDetailedWithOptions` takes.
+     * A multi-face move only re-limits the faces it does not move, so
+     * `ambiguousRim: "draft"` lets it proceed over a history-free rim band,
+     * while a band read as a chamfer (`"chamfer"`, or its journal history)
+     * refuses as `unsupported`.
+     * @param {number} solid
+     * @param {Uint32Array} faces
+     * @param {Float64Array} distances
+     * @param {string} options
+     * @returns {SolidOperationDetailedResult}
+     */
+    moveFacesMultiDetailedWithOptions(solid, faces, distances, options) {
+        const ptr0 = passArray32ToWasm0(faces, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArrayF64ToWasm0(distances, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(options, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_moveFacesMultiDetailedWithOptions(this.__wbg_ptr, solid, ptr0, len0, ptr1, len1, ptr2, len2);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
@@ -7503,6 +7561,30 @@ class RemusKernel {
         var ptr1 = isLikeNone(weights) ? 0 : passArrayF64ToWasm0(weights, wasm.__wbindgen_malloc);
         var len1 = WASM_VECTOR_LEN;
         const ret = wasm.remuskernel_prepareMoveFacesMulti(this.__wbg_ptr, solid, ptr0, len0, ptr1, len1);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return ret[0] >>> 0;
+    }
+    /**
+     * [`prepareMoveFaces`](Self::prepare_move_faces) with caller options:
+     * every move of the returned handle runs under them. `options` is the
+     * JSON object `moveFacesDetailedWithOptions` takes.
+     *
+     * # Errors
+     *
+     * As `prepareMoveFaces`, and for an unknown option or value.
+     * @param {number} solid
+     * @param {Uint32Array} faces
+     * @param {string} options
+     * @returns {number}
+     */
+    prepareMoveFacesWithOptions(solid, faces, options) {
+        const ptr0 = passArray32ToWasm0(faces, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(options, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.remuskernel_prepareMoveFacesWithOptions(this.__wbg_ptr, solid, ptr0, len0, ptr1, len1);
         if (ret[2]) {
             throw takeFromExternrefTable0(ret[1]);
         }
