@@ -205,3 +205,73 @@ fn the_batch_route_takes_the_same_options() {
         assert_eq!(batch, direct, "{text}");
     }
 }
+
+/// The multi-face twin takes the same options: over the history-free bottom
+/// rim, moving the bottom and the top apart refuses by default, proceeds
+/// when the band is read as a draft (the draft volume plus the top's slab),
+/// refuses as unsupported when it is read as a chamfer; the batch op
+/// matches the direct call.
+#[test]
+fn the_multi_face_twin_takes_the_same_options() {
+    let top_of = |kernel: &RemusKernel, solid: u32| {
+        let id = kernel.resolve_solid(solid).unwrap();
+        let face = solid_faces(kernel.topo(), id)
+            .unwrap()
+            .into_iter()
+            .find(|&face| {
+                kernel
+                    .topo()
+                    .face(face)
+                    .unwrap()
+                    .effective_plane_normal()
+                    .is_some_and(|n| n.dot(Vec3::new(0.0, 0.0, 1.0)) > 1.0 - 1e-9)
+            })
+            .unwrap();
+        face_id_to_u32(face)
+    };
+    for (options, status, code) in [
+        ("{}", "error", Some("ambiguous_rim_chamfer")),
+        (r#"{"ambiguousRim":"draft"}"#, "ok", None),
+        (
+            r#"{"ambiguousRim":"chamfer"}"#,
+            "error",
+            Some("rim_chamfer_not_carried"),
+        ),
+    ] {
+        let mut kernel = RemusKernel::new();
+        let (solid, bottom) = fixture(&mut kernel);
+        let top = top_of(&kernel, solid);
+        let source = volume(&kernel, solid);
+        let direct = serde_json::to_value(kernel.move_faces_multi_detailed_with_options_impl(
+            solid,
+            &[bottom, top],
+            &[2.0, 1.0],
+            options,
+        ))
+        .unwrap();
+        assert_eq!(direct["status"], status, "{options}: {direct}");
+        if let Some(code) = code {
+            assert_eq!(direct["code"], code, "{options}: {direct}");
+            assert_eq!(direct["category"], "unsupported", "{options}: {direct}");
+        } else {
+            let moved = u32::try_from(direct["value"].as_u64().unwrap()).unwrap();
+            let expected = drafted_change(2.0) + X * Y;
+            let got = volume(&kernel, moved) - source;
+            assert!(
+                (got - expected).abs() <= 1e-9 * expected,
+                "{got} vs {expected}"
+            );
+        }
+
+        let mut kernel = RemusKernel::new();
+        let (solid, bottom) = fixture(&mut kernel);
+        let top = top_of(&kernel, solid);
+        let input = serde_json::json!([{"op": "moveFacesMultiDetailedWithOptions", "args": {
+            "solid": solid, "faces": [bottom, top], "distances": [2.0, 1.0],
+            "options": serde_json::from_str::<serde_json::Value>(options).unwrap(),
+        }}]);
+        let output: serde_json::Value =
+            serde_json::from_str(&kernel.execute_batch(&input.to_string())).unwrap();
+        assert_eq!(output[0]["ok"], direct, "{options}");
+    }
+}

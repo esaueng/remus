@@ -194,8 +194,9 @@ pub(super) fn rim_chamfers(
 }
 
 /// [`rim_chamfers`] of the cap `selected` when the faces `also_moving` move
-/// in the same edit along their own normals (a multi-face move): a
-/// component reaching one of them is not a band on walls.
+/// in the same edit along their own normals (a multi-face move). A moving
+/// face is never part of a band; it bounds the bands it meets as the cap
+/// does, so the faces of a band it splits are still read.
 pub(super) fn rim_chamfers_among(
     topo: &Topology,
     adjacency: &AdjacencyIndex,
@@ -216,7 +217,10 @@ pub(super) fn rim_chamfers_among(
     for &face in &ordered {
         for edge in super::face_edges(topo, face)? {
             for adjacent in super::distinct_faces(adjacency.faces_for_edge(edge)) {
-                if !is_selected(adjacent) && !is_wall(topo.face(adjacent)?.surface(), direction) {
+                if !is_selected(adjacent)
+                    && !moves_too(adjacent)
+                    && !is_wall(topo.face(adjacent)?.surface(), direction)
+                {
                     seeds.push(adjacent);
                 }
             }
@@ -235,13 +239,14 @@ pub(super) fn rim_chamfers_among(
         let mut queue = VecDeque::from([seed]);
         let mut stands_on_walls = true;
         while let Some(current) = queue.pop_front() {
-            if moves_too(current) || !is_band_surface(topo.face(current)?.surface(), direction) {
+            if !is_band_surface(topo.face(current)?.surface(), direction) {
                 stands_on_walls = false;
             }
             for edge in super::face_edges(topo, current)? {
                 for adjacent in super::distinct_faces(adjacency.faces_for_edge(edge)) {
                     if adjacent == current
                         || is_selected(adjacent)
+                        || moves_too(adjacent)
                         || is_wall(topo.face(adjacent)?.surface(), direction)
                     {
                         continue;

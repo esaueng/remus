@@ -108,11 +108,23 @@ pub(crate) fn move_faces_multi_with_entity_evolution(
     if let Some(distance) = remus_offset::coplanar_group_distance(topo, faces, distances)? {
         return crate::push_pull::move_faces_with_entity_evolution(topo, solid, faces, distance);
     }
-    if let Some(refusal) = crate::resize_blend::multi_move_rim_refusal(topo, solid, faces)? {
+    // A zero or non-finite distance is the solver's own refusal, whatever
+    // the rim.
+    if distances_valid(distances)
+        && let Some(refusal) = crate::resize_blend::multi_move_rim_refusal(topo, solid, faces)?
+    {
         return Err(refusal.to_error());
     }
     let checks = MultiChecks::prepare(topo, solid, faces)?;
     multi_edit(topo, solid, faces, distances, checks.as_ref())
+}
+
+/// Whether every distance is one the multi-face solver accepts (finite and
+/// non-zero); the rim refusal never masks the solver's own.
+fn distances_valid(distances: &[f64]) -> bool {
+    distances
+        .iter()
+        .all(|distance| distance.is_finite() && distance.abs() > 0.0)
 }
 
 /// The selection-size refusals, before anything reads the faces.
@@ -551,7 +563,9 @@ impl PreparedMultiMove {
                 ),
             };
         }
-        if let Some(refusal) = &self.rim_refusal {
+        if let Some(refusal) = &self.rim_refusal
+            && distances_valid(&distances)
+        {
             return Err(refusal.to_error());
         }
         multi_edit(topo, solid, faces, &distances, self.checks.as_ref())

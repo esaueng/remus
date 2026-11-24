@@ -206,6 +206,26 @@ impl RemusKernel {
             .into_ts()?)
     }
 
+    /// [`moveFacesMultiDetailed`](Self::move_faces_multi_detailed) with
+    /// caller options: the JSON object `moveFacesDetailedWithOptions` takes.
+    /// A multi-face move only re-limits the faces it does not move, so
+    /// `ambiguousRim: "draft"` lets it proceed over a history-free rim band,
+    /// while a band read as a chamfer (`"chamfer"`, or its journal history)
+    /// refuses as `unsupported`.
+    #[wasm_bindgen(js_name = "moveFacesMultiDetailedWithOptions")]
+    #[allow(clippy::needless_pass_by_value)]
+    pub fn move_faces_multi_detailed_with_options(
+        &mut self,
+        solid: u32,
+        faces: Vec<u32>,
+        distances: Vec<f64>,
+        options: &str,
+    ) -> Result<tsify::Ts<SolidOperationDetailedResult>, JsError> {
+        Ok(self
+            .move_faces_multi_detailed_with_options_impl(solid, &faces, &distances, options)
+            .into_ts()?)
+    }
+
     /// Fillet edges and return exact, disclosed-approximate, or refused
     /// results as typed data.
     ///
@@ -474,24 +494,56 @@ impl RemusKernel {
         distances: &[f64],
     ) -> SolidOperationDetailedResult {
         self.run_modifier_detailed("moveFacesMulti", "Move faces", |kernel| {
-            let (solid_id, face_ids) = kernel.resolve_multi_move(solid, faces, distances)?;
-            let input = MoveInput::capture(kernel.topo(), solid_id)?;
-            let result = remus_operations::multi_move::move_faces_multi_with_evolution(
-                kernel.topo_mut(),
-                solid_id,
-                &face_ids,
-                distances,
-            )
-            .map_err(|error| input.refusal(error))?;
-            let mut details = Map::new();
-            details.insert("quality".into(), Value::from("exact"));
-            details.insert("distances".into(), Value::from(distances.to_vec()));
-            details.insert(
-                "faceEvolution".into(),
-                face_move_evolution_json(&result.evolution),
-            );
-            Ok((solid_id_to_u32(result.solid), details))
+            kernel.move_faces_multi_detailed_body(solid, faces, distances)
         })
+    }
+
+    /// [`Self::move_faces_multi_detailed_impl`] under the caller options in
+    /// `options` ([`parse_move_faces_options`]).
+    pub(crate) fn move_faces_multi_detailed_with_options_impl(
+        &mut self,
+        solid: u32,
+        faces: &[u32],
+        distances: &[f64],
+        options: &str,
+    ) -> SolidOperationDetailedResult {
+        self.run_modifier_detailed("moveFacesMulti", "Move faces", |kernel| {
+            let options = parse_move_faces_options(options)?;
+            let (solid, mut details) =
+                remus_operations::push_pull::with_move_options(options, || {
+                    kernel.move_faces_multi_detailed_body(solid, faces, distances)
+                })?;
+            details.insert(
+                "ambiguousRim".into(),
+                Value::from(options.ambiguous_rim.code()),
+            );
+            Ok((solid, details))
+        })
+    }
+
+    fn move_faces_multi_detailed_body(
+        &mut self,
+        solid: u32,
+        faces: &[u32],
+        distances: &[f64],
+    ) -> Result<(u32, Map<String, Value>), StructuredWasmError> {
+        let (solid_id, face_ids) = self.resolve_multi_move(solid, faces, distances)?;
+        let input = MoveInput::capture(self.topo(), solid_id)?;
+        let result = remus_operations::multi_move::move_faces_multi_with_evolution(
+            self.topo_mut(),
+            solid_id,
+            &face_ids,
+            distances,
+        )
+        .map_err(|error| input.refusal(error))?;
+        let mut details = Map::new();
+        details.insert("quality".into(), Value::from("exact"));
+        details.insert("distances".into(), Value::from(distances.to_vec()));
+        details.insert(
+            "faceEvolution".into(),
+            face_move_evolution_json(&result.evolution),
+        );
+        Ok((solid_id_to_u32(result.solid), details))
     }
 
     pub(crate) fn move_faces_detailed_impl(

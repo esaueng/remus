@@ -2020,6 +2020,16 @@
       "reason": "O4.7 twin of moveFacesMulti; the typed surface itself, no further twin required"
     },
     {
+      "js": "moveFacesMultiDetailedWithOptions",
+      "rust": "move_faces_multi_detailed_with_options",
+      "file": "bindings/modifier_detailed.rs",
+      "gate": "shipped",
+      "class": "special_case",
+      "coverage": "special",
+      "owner": "B287",
+      "reason": "Typed solid envelope of moveFacesMultiDetailed with caller options (#1957: how a history-free rim band is read); the typed surface itself, no further twin required."
+    },
+    {
       "js": "moveFacesMultiJournaled",
       "rust": "move_faces_multi_journaled_js",
       "file": "bindings/move_faces_multi.rs",

@@ -78,7 +78,7 @@ pub struct PreparedFaceMove {
     /// How the preparation read the selection's rim bands
     /// ([`crate::resize_blend::rim_reading`]); a call whose reading differs
     /// (the journal changed under an unchanged solid) is stale.
-    rim: Vec<(usize, u8)>,
+    rim: Vec<(usize, usize, u8)>,
 }
 
 impl std::fmt::Debug for PreparedFaceMove {

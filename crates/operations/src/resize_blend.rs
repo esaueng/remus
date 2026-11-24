@@ -2165,8 +2165,9 @@ pub(crate) fn ambiguous_rim_band(
 
 /// How the move in force reads every rim band of `selected_faces`: each
 /// band face (the first of a declined or ambiguous component) with its
-/// reading, in face order. A coplanar selection is read as one cap; any
-/// other selection face by face, as a multi-face move reads it.
+/// reading and the cap it was read for (`0` for the whole selection read as
+/// one cap, as the one-cap move reads it; `1 + face index` for each face
+/// read alone, as a multi-face move reads it), in order.
 ///
 /// A prepared move compares it call by call with its preparation's: the
 /// reading depends on the journal, which can change (a barrier severing a
@@ -2175,33 +2176,34 @@ pub(crate) fn rim_reading(
     topo: &Topology,
     solid: SolidId,
     selected_faces: &[FaceId],
-) -> Result<Vec<(usize, u8)>, OperationsError> {
+) -> Result<Vec<(usize, usize, u8)>, OperationsError> {
     let adjacency = solid_adjacency(topo, solid)?;
     let mut reading = Vec::new();
-    let mut read = |rim: rim_chamfer::RimChamfers| {
-        reading.extend(rim.carried.iter().map(|face| (face.index(), 0)));
-        reading.extend(rim.axial.iter().map(|face| (face.index(), 1)));
-        reading.extend(rim.declined.iter().map(|(face, _)| (face.index(), 2)));
-        reading.extend(rim.ambiguous.iter().map(|band| (band.face.index(), 3)));
+    let mut read = |rim: rim_chamfer::RimChamfers, cap: usize| {
+        reading.extend(rim.carried.iter().map(|face| (cap, face.index(), 0)));
+        reading.extend(rim.axial.iter().map(|face| (cap, face.index(), 1)));
+        reading.extend(rim.declined.iter().map(|(face, _)| (cap, face.index(), 2)));
+        reading.extend(rim.ambiguous.iter().map(|band| (cap, band.face.index(), 3)));
     };
+    // Both readings: the one-cap move reads a coplanar selection whole, a
+    // multi-face move reads it face by face (parallel faces at different
+    // heights are two caps). A prepared move may take either path.
     if let Some(direction) = rim_direction(topo, selected_faces)? {
-        read(rim_chamfer::rim_chamfers(
-            topo,
-            &adjacency,
-            selected_faces,
-            direction,
-        )?);
-    } else {
-        for &face in selected_faces {
-            if let Some(direction) = topo.face(face)?.effective_plane_normal() {
-                read(rim_chamfer::rim_chamfers_among(
+        let rim = rim_chamfer::rim_chamfers(topo, &adjacency, selected_faces, direction)?;
+        read(rim, 0);
+    }
+    for &face in selected_faces {
+        if let Some(direction) = topo.face(face)?.effective_plane_normal() {
+            read(
+                rim_chamfer::rim_chamfers_among(
                     topo,
                     &adjacency,
                     &[face],
                     direction,
                     selected_faces,
-                )?);
-            }
+                )?,
+                face.index() + 1,
+            );
         }
     }
     reading.compact_sort_unstable();

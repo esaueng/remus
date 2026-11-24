@@ -1182,3 +1182,127 @@ fn multi_face_moves_refuse_rim_bands_they_cannot_carry() {
     ));
     assert_eq!(solid_entity_counts(&topo, solid).unwrap(), counts);
 }
+
+/// Two parallel terraces at different heights are two caps to a multi-face
+/// move: the prepared handle reads each, so a barrier severing the upper
+/// terrace's chamfer history makes it stale, as the fresh move now refuses
+/// differently.
+#[test]
+fn a_prepared_multi_move_of_parallel_terraces_tracks_each_rim() {
+    use remus_operations::multi_move::move_faces_multi;
+    let profile = [
+        [0.0, 0.0],
+        [X, 0.0],
+        [X, 10.0],
+        [30.0, 10.0],
+        [30.0, 15.0],
+        [0.0, 15.0],
+    ];
+    let mut topo = Topology::new();
+    let blank = prism(&mut topo, &profile);
+    let edge = edges_where(&topo, blank, |a, b| {
+        near(a[0], 0.0) && near(b[0], 0.0) && near(a[2], 15.0) && near(b[2], 15.0)
+    });
+    assert_eq!(edge.len(), 1);
+    let solid = chamfer_journaled(&mut topo, blank, &edge, 0.5, 0.5)
+        .unwrap()
+        .result
+        .solid;
+    let up = Vec3::new(0.0, 0.0, 1.0);
+    let tops: Vec<FaceId> = solid_faces(&topo, solid)
+        .unwrap()
+        .into_iter()
+        .filter(|&face| {
+            topo.face(face)
+                .unwrap()
+                .effective_plane_normal()
+                .is_some_and(|n| n.dot(up) > 1.0 - 1e-9)
+        })
+        .collect();
+    assert_eq!(tops.len(), 2);
+    let weights = [1.0, 2.0];
+    let error = move_faces_multi(&mut topo, solid, &tops, &weights).unwrap_err();
+    assert!(
+        matches!(error, OperationsError::Unsupported { .. }),
+        "a journaled chamfer cannot be carried by a multi-face move: {error}"
+    );
+    let mut prepared = PreparedFaceMove::prepare_multi(&topo, solid, &tops, &weights).unwrap();
+    assert!(matches!(
+        prepared.move_faces(&mut topo, 1.0),
+        Err(OperationsError::Unsupported { .. })
+    ));
+
+    let pending = topo.journal_begin("barrier_fixture");
+    remus_operations::journal_ops::record_barrier_over_solid(&mut topo, pending, solid).unwrap();
+    let error = move_faces_multi(&mut topo, solid, &tops, &weights).unwrap_err();
+    assert!(
+        matches!(error, OperationsError::AmbiguousRimChamfer(_)),
+        "unexpected refusal: {error}"
+    );
+    let error = prepared.move_faces(&mut topo, 1.0).unwrap_err();
+    assert!(
+        error.to_string().contains("history of a rim band"),
+        "unexpected refusal: {error}"
+    );
+}
+
+/// A chamfer face moved along with the cap does not hide the strips of its
+/// ring that stay fixed: they are still read, and refuse without history.
+#[test]
+fn selecting_one_strip_of_a_ring_still_reads_the_others() {
+    use remus_operations::multi_move::move_faces_multi;
+    let mut topo = Topology::new();
+    let blank = make_box(&mut topo, X, Y, Z).unwrap();
+    let rim = edges_where(&topo, blank, bottom_rim);
+    let solid = chamfer(&mut topo, blank, &rim, CHAMFER);
+    let cap = bottom(&topo, solid);
+    let strip = solid_faces(&topo, solid)
+        .unwrap()
+        .into_iter()
+        .find(|&face| {
+            topo.face(face)
+                .unwrap()
+                .effective_plane_normal()
+                .is_some_and(|n| n.y() < -1e-9 && n.z() < -1e-9)
+        })
+        .unwrap();
+    let wall = face_facing(&topo, solid, Vec3::new(0.0, -1.0, 0.0));
+    let faces = [cap, strip, wall];
+    let counts = solid_entity_counts(&topo, solid).unwrap();
+    let error = move_faces_multi(&mut topo, solid, &faces, &[0.1, 0.1, 0.1]).unwrap_err();
+    let OperationsError::AmbiguousRimChamfer(band) = error else {
+        panic!("expected an ambiguous-rim refusal, got {error}");
+    };
+    assert_eq!(band.cap, cap);
+    assert!(
+        !faces.contains(&band.face),
+        "the refusal names a fixed strip"
+    );
+    assert_eq!(solid_entity_counts(&topo, solid).unwrap(), counts);
+}
+
+/// The rim refusal never masks the multi-face solver's own refusal of a
+/// zero or non-finite distance.
+#[test]
+fn an_invalid_multi_move_distance_is_refused_as_such() {
+    use remus_operations::multi_move::move_faces_multi;
+    let before = [
+        [0.0, 0.0],
+        [X, 0.0],
+        [X, 10.0],
+        [58.0, 15.0],
+        [2.0, 15.0],
+        [0.0, 10.0],
+    ];
+    let mut topo = Topology::new();
+    let solid = prism(&mut topo, &before);
+    let top = face_facing(&topo, solid, Vec3::new(0.0, 0.0, 1.0));
+    let floor = face_facing(&topo, solid, Vec3::new(0.0, 0.0, -1.0));
+    for distances in [[2.0, 0.0], [2.0, f64::NAN]] {
+        let error = move_faces_multi(&mut topo, solid, &[top, floor], &distances).unwrap_err();
+        assert!(
+            !matches!(error, OperationsError::AmbiguousRimChamfer(_)),
+            "{distances:?}: {error}"
+        );
+    }
+}
