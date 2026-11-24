@@ -410,6 +410,83 @@ impl EdgeSpan<'_> {
     }
 }
 
+/// Two adjacent control points of a unit-weight, degree-one fitted edge.
+/// An integration piece can traverse the span in either direction.
+struct LinearTrim<'a> {
+    knots: &'a [f64],
+    span: usize,
+    points: &'a [Point3],
+}
+
+impl<'a> LinearTrim<'a> {
+    fn containing(edge: &'a EdgeCurve, middle: f64) -> Option<Self> {
+        let EdgeCurve::NurbsCurve(curve) = edge else {
+            return None;
+        };
+        if curve.degree() != 1
+            || curve.max_weight().to_bits() != 1.0_f64.to_bits()
+            || !middle.is_finite()
+        {
+            return None;
+        }
+        let knots = curve.knots();
+        let span =
+            remus_math::nurbs::basis::find_span(curve.control_points().len(), 1, middle, knots);
+        let range = span - 1..=span;
+        if curve.weights()[range.clone()]
+            .iter()
+            .any(|w| w.to_bits() != 1.0_f64.to_bits())
+        {
+            return None;
+        }
+        let points = &curve.control_points()[range];
+        // Two scaled basis terms have magnitude at most one each. Outside
+        // this range evaluate() can choose its compensated position instead.
+        if !points
+            .iter()
+            .flat_map(|p| p.0)
+            .all(|x| x.abs() < f64::MAX / 8.0)
+        {
+            return None;
+        }
+        Some(Self {
+            knots,
+            span,
+            points,
+        })
+    }
+
+    fn sample(&self, parameter: f64) -> Option<(Point3, Vec3)> {
+        if !(self.knots[self.span] < parameter && parameter < self.knots[self.span + 1]) {
+            return None;
+        }
+        let mut basis = [0.0; 4];
+        remus_math::nurbs::basis::ders_basis_funs_first_into(
+            self.span, parameter, 1, self.knots, &mut basis,
+        );
+        let [left, right, d_left, d_right] = basis;
+        if !left.is_normal() || !right.is_normal() || !d_right.is_finite() {
+            return None;
+        }
+        // Curve evaluation scales by the largest homogeneous position term.
+        // Derivatives use the curve's largest weight, which is one here.
+        let scale = left.max(right);
+        let (a, b) = (left / scale, right / scale);
+        let (start, end) = (self.points[0], self.points[1]);
+        let position = remus_math::vec::Position(std::array::from_fn(|axis| {
+            ((0.0 + a * start.0[axis]) + b * end.0[axis]) / (a + b)
+        }));
+        let weight = left + right;
+        let weight_derivative = (0.0 + d_left) + d_right;
+        let tangent = remus_math::vec::Vector(std::array::from_fn(|axis| {
+            let value = ((0.0 + left * start.0[axis]) + right * end.0[axis]) / weight;
+            let derivative = (0.0 + d_left * start.0[axis]) + d_right * end.0[axis];
+            (derivative - weight_derivative * value) / weight
+        }));
+        Some((position, tangent))
+    }
+}
+
 /// What every edge of one face is read against.
 struct Reading<'a> {
     cylinder: &'a CylindricalSurface,
@@ -438,12 +515,19 @@ impl Reading<'_> {
         for &(p0, p1) in intervals {
             let half = (p1 - p0) / 2.0;
             let mid = p0 + half;
+            let linear = LinearTrim::containing(span.curve, mid);
             for gp in edge_points {
                 let t = half.mul_add(gp.x, mid);
-                let point = span.curve.evaluate_with_endpoints(t, span.start, span.end);
-                let Some(dp_dt) = velocity(span.curve, t, span.start, span.end) else {
-                    return false;
-                };
+                let (point, dp_dt) =
+                    if let Some(sample) = linear.as_ref().and_then(|line| line.sample(t)) {
+                        sample
+                    } else {
+                        let point = span.curve.evaluate_with_endpoints(t, span.start, span.end);
+                        let Some(tangent) = velocity(span.curve, t, span.start, span.end) else {
+                            return false;
+                        };
+                        (point, tangent)
+                    };
                 // The angular rate of the projected point: ∂P/∂u has the
                 // radius's length, so a point at radial distance ρ moves in u
                 // at r/ρ times `dp·∂P/∂u / |∂P/∂u|²`. Exact trims lie on the
@@ -487,5 +571,78 @@ impl Reading<'_> {
             }
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod linear_span_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::gauss_legendre_points;
+    use super::{EdgeCurve, LinearTrim, Point3, velocity};
+    use remus_math::nurbs::curve::NurbsCurve;
+
+    #[test]
+    fn unit_linear_samples_match_curve_and_velocity_across_internal_breaks() {
+        for (origin, width, scale) in [
+            (0.0, 1.0, 1.0),
+            (-2.0, 0.125, 1e-180),
+            (1e90, 1e80, 1e120),
+            (-1e-90, 1e-90, 1e-75),
+        ] {
+            let mid = origin + width;
+            let end = mid + width;
+            let e = EdgeCurve::NurbsCurve(
+                NurbsCurve::new(
+                    1,
+                    vec![origin, origin, mid, mid, end, end],
+                    vec![
+                        Point3::new(-0.0, -scale, 0.5 * scale),
+                        Point3::new(scale, 0.0, 0.75 * scale),
+                        Point3::new(-scale, scale, -0.5 * scale),
+                        Point3::new(scale, -scale, -0.75 * scale),
+                    ],
+                    vec![1.0; 4],
+                )
+                .unwrap(),
+            );
+            let dummy = Point3::new(0.0, 0.0, 0.0);
+            for (lo, hi) in [(origin, mid), (mid, end)] {
+                let half = (hi - lo) / 2.0;
+                let center = lo + half;
+                let span = LinearTrim::containing(&e, center).unwrap();
+                assert!(span.sample(lo).is_none() && span.sample(hi).is_none());
+                for gp in gauss_legendre_points(16) {
+                    let t = half.mul_add(gp.x, center);
+                    let (p, v) = span.sample(t).unwrap();
+                    assert_eq!(
+                        p.0.map(f64::to_bits),
+                        e.evaluate_with_endpoints(t, dummy, dummy)
+                            .0
+                            .map(f64::to_bits)
+                    );
+                    assert_eq!(
+                        v.0.map(f64::to_bits),
+                        velocity(&e, t, dummy, dummy).unwrap().0.map(f64::to_bits)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rational_and_extreme_position_inputs_retain_general_evaluation() {
+        for (scale, weights) in [(1.0, vec![0.5, 1.0]), (f64::MAX / 4.0, vec![1.0; 2])] {
+            let e = EdgeCurve::NurbsCurve(
+                NurbsCurve::new(
+                    1,
+                    vec![0.0, 0.0, 1.0, 1.0],
+                    vec![Point3::new(scale, 1.0, 2.0), Point3::new(scale, 2.0, 1.0)],
+                    weights,
+                )
+                .unwrap(),
+            );
+            assert!(LinearTrim::containing(&e, 0.5).is_none());
+        }
     }
 }
