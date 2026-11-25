@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795544128081,
+  "lastUpdate": 1795628361437,
   "repoUrl": "https://github.com/esaueng/remus",
   "entries": {
     "Boolean perf": [
@@ -147685,6 +147685,304 @@ window.BENCHMARK_DATA = {
             "name": "blend_walker/plane_pair_steps",
             "value": 58707,
             "range": "± 154",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Peter",
+            "username": "petertoday",
+            "email": "171875562+petertoday@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "8df9c1c0c05ed680b22e5c84bd581def73c4e5e2",
+          "message": "fix(push-pull): clear NURBS faces and carried bands radially in sweep checks (#2017)\n\n## Problem\n\nMoving a planar block top that wraps a large boss with a threaded bore\nwas refused at every upward distance:\n\n`swept face reaches nonadjacent face … before completing the move`\n(after `plane/cylinder support contacts are not full closed loops` on\nthe remove/rebuild path).\n\n`SweptRegionCheck::check_footprints` is box-based with exact exemptions.\nThe block top's box and the box of the R2 junction torus it carries both\ncover the bore's footprint. The thread's flanks are NURBS faces, and:\n\n- `face_clears_coaxial_core` had no NURBS arm, so the swept face got no\nradial proof against the thread.\n- Rigid companions (a torus band, NURBS corner patches) had only the box\ntest in `companions_clear`.\n\nThe faces are in fact about 18 mm from the bore axis at most, while the\nblock top and torus stay 36+ mm from it.\n\n## Change\n\n- **NURBS hull bounds** (`radial_clearance.rs`). A NURBS face whose\nweights are all positive lies in its control hull. That gives:\n- an upper reach about an axis along the move: the farthest control\npoint from an axis near the centre of the projected points;\n- a lower bound: the distance from the axis to the projected convex\nhull, when the axis misses the hull.\n\n  Both refuse on overflow or non-finite values.\n- **`axis_core` / `axis_clearance`.** `axis_core` is factored out of\n`face_clears_coaxial_core` and gains the NURBS arm. Cylinder cores are\nnow bounded by `cylinder_envelope`, so sewn or fitted rims past the\ncarrier count. `axis_clearance` gives lower bounds for planar faces\nacross the move, tori about a parallel axis (with offset and tilt drift\ncharged) and NURBS hulls. The direction is normalized before tilt is\nread.\n- **`companion_clears_core`.** A companion and a candidate are cleared\nwhen either lies within a reach of an axis along the move and the other\nstays outside it.\n- **`companions_clear`** also accepts the companion's own `Sweep` proof\n(cone and cylinder companions).\n- **Rigid gate.** In a rigid footprint, companions must now clear a\ncandidate whichever proof cleared the swept face. Before, the radial\nbranch skipped companions entirely. Joined footprints keep their old\nsemantics: a cap joining its shoulder meets the fixed rim with its bands\nby design, and axial clearance bounds that.\n\n## Tests\n\n- `crates/operations/tests/regress_move_face_threaded_bore_clearance.rs`\nis a native rebuild of the edit's part: an R40 boss through the corner\nof a 74×67×35.5 block, a 5-edge R2 perimeter round, and a blind M-style\nbore threaded at pitch 1.5.\n  - The +1 and +10 moves of the block top build valid and watertight.\n- Each volume grows by exactly the roof area plus the two seam-round\nsections times the distance (closed form, 1e-9 relative).\n- A cup lip moved down onto an externally threaded post is still\nrefused, with the input unchanged.\n- On `main` this part refused even the +1 move with the reported\nmessage.\n- `push_pull/radial_clearance/hull_tests.rs` covers:\n- hull bounds against closed-form hulls, including degenerate and\noverflowing ones;\n- NURBS thread flanks inside a block top's clearance (cleared) and\nacross it (refused);\n- a carried torus beside threaded posts inside, under and off its tube;\n  - the review fixtures below.\n- `cargo test --release -p remus-operations --no-fail-fast` at head: all\n383 targets pass. `cargo clippy -p remus-operations --all-targets -D\nwarnings` is clean.\n- End to end (local only): the captured OpenZCAD fixture\n`offset-face-refused-20261124231418731`, replayed through OpenZCAD\nmain's harness. With the kernel pinned there (`ddba59b`), +10 and +1 are\nrefused with the reported message. With this branch's `cargo xtask\nwasm-build` package overlaid (`REMUS_WASM_PKG`), both apply.\n\n## Review\n\nReviewer: `gpt-6.2-sol`, medium effort, default service tier. One round.\n\nFixed:\n1. **(blocking)** Projected hull edges spanning ~1e155 overflowed to\nNaN, and `f64::min` dropped them, overstating the clearance. Hull bounds\nnow refuse non-finite distances and coordinates above 1e100. Test:\n`overflowing_hull_gives_no_bound`.\n2. **(blocking)** The cylinder core used the carrier radius. A sewn rim\nstored past the carrier (radius 10.005 on R10) let a torus band at\n10.002 clear it. It now uses `cylinder_envelope`. Test:\n`sewn_rim_past_its_cylinder_bounds_the_core`.\n3. **(blocking)** A non-unit move normal halved the tilt read from it,\nin both the gate and the allowance. The direction is now normalized.\nTest: `short_move_normal_keeps_the_tilt_allowance`.\n4. **(non-blocking)** The new rigid companion gate refused a chamfered\ncap carried past a post top in its opening, which the cone companion's\nown sweep proves clear. `companions_clear` now accepts the companion's\n`Sweep` proof. Test:\n`carried_chamfer_cleared_by_its_own_sweep_passes_a_post_in_the_opening`.\nThis test was not confirmed failing without the fix.\n\nDeclined: none.\n\nThe fixes are small and targeted, so no second review round was run.\n\n## Known gap, out of scope\n\nCompanions are only checked against candidates that the swept face's own\nbox reaches, and candidates whose box overlaps the source face are\nskipped. Both are unchanged here.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\n---------\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
+          "timestamp": "2026-11-25T04:32:24Z",
+          "url": "https://github.com/esaueng/remus/commit/8df9c1c0c05ed680b22e5c84bd581def73c4e5e2"
+        },
+        "date": 1795628356840,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "boolean/cut_box_box",
+            "value": 877387,
+            "range": "± 27074",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/fuse_box_box",
+            "value": 954906,
+            "range": "± 14841",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/intersect_box_box",
+            "value": 19891,
+            "range": "± 157",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_cut",
+            "value": 6557314,
+            "range": "± 12595",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_fuse",
+            "value": 6555379,
+            "range": "± 13390",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/torus_notch_intersect",
+            "value": 6440567,
+            "range": "± 3433",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cut_cylinder_through_box",
+            "value": 19838,
+            "range": "± 15",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/cross_drilled_cylinder",
+            "value": 6385289,
+            "range": "± 4625",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "boolean/perforated_cut_36",
+            "value": 36127387,
+            "range": "± 137512",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree3",
+            "value": 18,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree3",
+            "value": 81,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree3",
+            "value": 42,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree3",
+            "value": 150,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree3",
+            "value": 139,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree3",
+            "value": 576,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis/degree9",
+            "value": 100,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/basis_derivatives/degree9",
+            "value": 282,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_evaluate/degree9",
+            "value": 149,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/curve_derivatives/degree9",
+            "value": 382,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_evaluate/degree9",
+            "value": 747,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs/surface_derivatives/degree9",
+            "value": 2252,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_evaluate",
+            "value": 9,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/analytic_cylinder_project_point",
+            "value": 26,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/winding_number_64",
+            "value": 95,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "flamegraph_hot/point_in_polygon_64",
+            "value": 95,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "surface_projection/cached_grid/3",
+            "value": 16969,
+            "range": "± 34",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "surface_projection/cached_grid/9",
+            "value": 98102,
+            "range": "± 540",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/bilinear_hit",
+            "value": 2573,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_secant",
+            "value": 10633,
+            "range": "± 8",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/rational_cylinder_miss",
+            "value": 36941,
+            "range": "± 65",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_cached/quadratic_hit",
+            "value": 3734,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_seed",
+            "value": 411106,
+            "range": "± 280",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/quadric_march",
+            "value": 1794847,
+            "range": "± 3120",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_seed",
+            "value": 116201,
+            "range": "± 173",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/nurbs_march",
+            "value": 208978,
+            "range": "± 187",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ssi/plane_torus_grid",
+            "value": 262911,
+            "range": "± 506",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "bezier_clip/cubic_pair",
+            "value": 46878,
+            "range": "± 79",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/narrow_bump_flank",
+            "value": 25245,
+            "range": "± 67",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_hit",
+            "value": 16118,
+            "range": "± 13",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_miss",
+            "value": 94745,
+            "range": "± 262",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "nurbs_ray_completion/large_bicubic_grid_build",
+            "value": 114722,
+            "range": "± 90",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/1000",
+            "value": 538682,
+            "range": "± 22103",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cdt_insertion/10000",
+            "value": 6518678,
+            "range": "± 67160",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/box_cylinder_cut",
+            "value": 679610,
+            "range": "± 2743",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "gfa_phases/overlapping_boxes_fuse",
+            "value": 881841,
+            "range": "± 21924",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blend_walker/plane_pair_steps",
+            "value": 58554,
+            "range": "± 108",
             "unit": "ns/iter"
           }
         ]
