@@ -30,10 +30,13 @@
 //! Other companions (torus bands, sphere patches, planar and freeform
 //! faces, and cones and cylinders across the move) keep only the swept
 //! faces' companion test: a candidate a swept face may reach must also be
-//! cleared from every companion ([`super::SweptRegionCheck`]). Bounding a
-//! torus band or sphere patch needs the side of its boundary it lies on,
-//! which its rims alone do not say (a band between two rims may be the
-//! short one or the long one), so they stay a known gap.
+//! cleared from every companion ([`super::SweptRegionCheck`]), by their
+//! boxes or by a radial separation about an axis along the move (a torus
+//! band's whole tube or a NURBS patch's control hull outside the reach of
+//! the candidate). Bounding a torus band or sphere patch more tightly
+//! needs the side of its boundary it lies on, which its rims alone do not
+//! say (a band between two rims may be the short one or the long one), so
+//! they stay a known gap.
 
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
@@ -225,6 +228,27 @@ impl Companion {
 
     pub(super) const fn planar(&self) -> bool {
         self.planar
+    }
+
+    /// Whether this companion's own sweep proves it misses `candidate` over
+    /// a translation by `delta` (its swept box misses, or its profile about
+    /// its axis clears the candidate's). `false` without a sweep or when
+    /// the candidate is not one it reads.
+    pub(super) fn sweep_clears(&self, candidate: FaceId, delta: Vec3) -> bool {
+        let Some(sweep) = self.sweep.as_ref() else {
+            return false;
+        };
+        let Some(reach) = self.candidates.iter().find(|reach| reach.face == candidate) else {
+            return false;
+        };
+        let boxes_miss = matches!(
+            (sweep.bounds, reach.bounds),
+            (Some(original), Some(bounds)) if !original.union(Aabb3 {
+                min: original.min + delta,
+                max: original.max + delta,
+            }).intersects(bounds)
+        );
+        boxes_miss || sweep.clears(reach, delta)
     }
 
     /// The first candidate the companion may reach over a translation by

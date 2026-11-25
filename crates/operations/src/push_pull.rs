@@ -1045,9 +1045,11 @@ impl SweptRegionCheck {
     }
 
     /// Whether every rigid companion provably misses `candidate` over a
-    /// translation by `delta`: its swept box misses the candidate's box, or
-    /// it is planar and its own footprint proof clears the candidate. Curved
-    /// companions have only the box test.
+    /// translation by `delta`: its swept box misses the candidate's box, it
+    /// is planar and its own footprint proof clears the candidate, its own
+    /// sweep about its axis clears it, or the candidate lies within a reach
+    /// of an axis along the move that the companion stays outside of (a
+    /// junction torus about a boss, beside a thread inside the boss's bore).
     fn companions_clear(
         &self,
         topo: &Topology,
@@ -1071,6 +1073,14 @@ impl SweptRegionCheck {
                         candidate,
                         delta,
                     ))
+                || companion.sweep_clears(candidate, delta)
+                || radial_clearance::companion_clears_core(
+                    topo,
+                    companion.face(),
+                    candidate,
+                    self.normal,
+                )
+                .unwrap_or(false)
         })
     }
 
@@ -1199,18 +1209,23 @@ impl SweptRegionCheck {
             }) = candidates.iter().find(|candidate| {
                 !candidate.overlaps_source
                     && swept.intersects(candidate.bounds)
-                    && !((radial && candidate.radially_clear)
+                    && !(((radial && candidate.radially_clear)
                         || (rigid
-                            // Every face moving with this one must miss the
-                            // candidate too: a cap's footprint says nothing
-                            // about the chamfer it carries.
                             && radial_clearance::outside_planar_sweep(
                                 topo,
                                 *moved_face,
                                 candidate.face,
                                 delta,
-                            )
-                            && self.companions_clear(
+                            )))
+                        // In a rigid translation every face moving with this
+                        // one must miss the candidate too, whichever proof
+                        // cleared this one: a cap's footprint says nothing
+                        // about the chamfer it carries, nor its axis distance
+                        // about the band. A cap joining its shoulder meets
+                        // the fixed rim with its bands by design; the axial
+                        // travel limits bound those.
+                        && (!rigid
+                            || self.companions_clear(
                                 topo,
                                 candidate.face,
                                 candidate.bounds,
