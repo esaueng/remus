@@ -228,8 +228,8 @@ fn disc_clears_coaxial_shell(
 
 /// A planar face lying wholly outside a cylinder about an axis parallel to
 /// the move cannot reach a candidate wholly inside that cylinder: a boss's
-/// rounded rim, its cap or its wall, seen from a block top that wraps the
-/// boss. The face's distance from the candidate's axis is bounded below on
+/// rounded rim, its cap, its wall or the NURBS flanks of a thread in its
+/// bore, seen from a block top that wraps the boss. The face's distance from the candidate's axis is bounded below on
 /// its boundary, which holds for the whole face only when the axis does not
 /// pierce it.
 fn face_clears_coaxial_core(
@@ -238,6 +238,30 @@ fn face_clears_coaxial_core(
     candidate: FaceId,
     direction: Vec3,
 ) -> Result<bool, crate::OperationsError> {
+    let tol = Tolerance::new();
+    let Some((origin, upper_radius)) = axis_core(topo, candidate, direction)? else {
+        return Ok(false);
+    };
+    Ok(planar_face_axis_clearance(topo, moved, origin, direction)?
+        .is_some_and(|lower_radius| lower_radius > upper_radius + tol.linear))
+}
+
+/// An axis through the returned point along `direction` and the greatest
+/// distance from it of any point of `face`, or `None` when the face's
+/// carrier gives no such bound.
+///
+/// Cylinders and tori about an axis parallel to the move within tolerance
+/// are bounded about their own axis, charged its drift over the face's box;
+/// spheres about their centre; circular planar caps about their centre. A
+/// NURBS face lies in the convex hull of its carrier's control points when
+/// every weight is positive, and the distance from an axis is convex, so
+/// the farthest control point bounds it about the centre of a small circle
+/// around their projections.
+fn axis_core(
+    topo: &Topology,
+    candidate: FaceId,
+    direction: Vec3,
+) -> Result<Option<(Point3, f64)>, crate::OperationsError> {
     let tol = Tolerance::new();
     let tilt = |axis: Vec3| {
         let tilt = axis.cross(direction).length();
@@ -265,10 +289,14 @@ fn face_clears_coaxial_core(
             circular_wire(topo, topo.face(candidate)?.outer_wire(), direction)?
                 .map(|wire| (wire.center, wire.max_reach, 0.0))
         }
-        FaceSurface::Cone(_) | FaceSurface::Nurbs(_) => None,
+        // The hull bound is read about an axis along the move itself.
+        FaceSurface::Nurbs(surface) => {
+            return Ok(hull_points(surface).and_then(|points| hull_core(&points, direction)));
+        }
+        FaceSurface::Cone(_) => None,
     };
     let Some((origin, reach, tilt)) = core else {
-        return Ok(false);
+        return Ok(None);
     };
     // A carrier axis tilted from the move drifts from the parallel axis by
     // the sine of the tilt times the axial distance, which no point of the
@@ -282,9 +310,257 @@ fn face_clears_coaxial_core(
             }
         }
     }
-    let upper_radius = tilt.mul_add(far, reach);
-    Ok(planar_face_axis_clearance(topo, moved, origin, direction)?
-        .is_some_and(|lower_radius| lower_radius > upper_radius + tol.linear))
+    Ok(Some((origin, tilt.mul_add(far, reach))))
+}
+
+/// Whether a face translating rigidly with a swept selection (a blend band
+/// or patch it carries) provably never reaches the fixed `candidate`: one
+/// of the two lies within a reach of an axis along the move
+/// ([`axis_core`]), and every point of the other lies farther than that
+/// from the same axis ([`axis_clearance`]). Translation along the axis
+/// keeps both distances, so the proof holds for any distance, whichever of
+/// the two is the core (a junction torus about a boss beside a thread in
+/// its bore, or a cap's rim round inside a block top wrapping the boss).
+pub(super) fn companion_clears_core(
+    topo: &Topology,
+    companion: FaceId,
+    candidate: FaceId,
+    direction: Vec3,
+) -> Result<bool, crate::OperationsError> {
+    let separated = |core: FaceId, outer: FaceId| -> Result<bool, crate::OperationsError> {
+        let Some((origin, upper_radius)) = axis_core(topo, core, direction)? else {
+            return Ok(false);
+        };
+        Ok(axis_clearance(topo, outer, origin, direction)?
+            .is_some_and(|lower_radius| lower_radius > upper_radius + Tolerance::new().linear))
+    };
+    Ok(separated(candidate, companion)? || separated(companion, candidate)?)
+}
+
+/// A lower bound on the distance of every point of `face` from the axis
+/// through `origin` along `direction`, or `None` when none is readable.
+///
+/// A planar face across the move is bounded on its boundary
+/// ([`planar_face_axis_clearance`]). A torus about an axis parallel to the
+/// move within tolerance keeps its whole tube at least `major - minor` from
+/// its own axis, less the distance between the two axes and its drift over
+/// the face's box. A NURBS face with positive weights lies in the convex
+/// hull of its control points, bounded by that hull's distance from the
+/// axis ([`hull_axis_clearance`]). Other carriers give no bound.
+fn axis_clearance(
+    topo: &Topology,
+    face: FaceId,
+    origin: Point3,
+    direction: Vec3,
+) -> Result<Option<f64>, crate::OperationsError> {
+    let tol = Tolerance::new();
+    match topo.face(face)?.surface() {
+        FaceSurface::Plane { normal, .. } => {
+            if normal.cross(direction).length() > tol.angular {
+                return Ok(None);
+            }
+            planar_face_axis_clearance(topo, face, origin, direction)
+        }
+        FaceSurface::Torus(torus) => {
+            let Ok(unit) = direction.normalize() else {
+                return Ok(None);
+            };
+            let tilt = torus.z_axis().cross(direction).length();
+            if tilt > tol.angular {
+                return Ok(None);
+            }
+            let bounds = crate::measure::face_bounding_box(topo, face)?;
+            let mut far = 0.0_f64;
+            for x in [bounds.min.x(), bounds.max.x()] {
+                for y in [bounds.min.y(), bounds.max.y()] {
+                    for z in [bounds.min.z(), bounds.max.z()] {
+                        far = far.max((Point3::new(x, y, z) - torus.center()).length());
+                    }
+                }
+            }
+            let offset = (torus.center() - origin).cross(unit).length();
+            let scale = magnitude(origin).max(magnitude(torus.center())) + far;
+            let lower =
+                torus.major_radius() - torus.minor_radius() - offset - tilt * far - 1e-12 * scale;
+            Ok(Some(lower.max(0.0)))
+        }
+        FaceSurface::Nurbs(surface) => {
+            Ok(hull_points(surface)
+                .and_then(|points| hull_axis_clearance(&points, origin, direction)))
+        }
+        FaceSurface::Cylinder(_) | FaceSurface::Cone(_) | FaceSurface::Sphere(_) => Ok(None),
+    }
+}
+
+fn magnitude(p: Point3) -> f64 {
+    p.x().abs().max(p.y().abs()).max(p.z().abs())
+}
+
+/// The control points of a NURBS carrier whose weights are all positive and
+/// finite, so every point of it is a convex combination of them.
+fn hull_points(surface: &remus_math::nurbs::surface::NurbsSurface) -> Option<Vec<Point3>> {
+    let weights_positive = surface
+        .weights()
+        .iter()
+        .flatten()
+        .all(|&w| w.is_finite() && w > 0.0);
+    let points: Vec<Point3> = surface.control_points().iter().flatten().copied().collect();
+    let finite = points
+        .iter()
+        .all(|p| p.x().is_finite() && p.y().is_finite() && p.z().is_finite());
+    (weights_positive && finite && !points.is_empty()).then_some(points)
+}
+
+/// Two unit vectors completing the unit `axis` to a right-handed frame.
+fn across_frame(axis: Vec3) -> Option<(Vec3, Vec3)> {
+    let seed = if axis.x().abs() <= axis.y().abs() && axis.x().abs() <= axis.z().abs() {
+        Vec3::new(1.0, 0.0, 0.0)
+    } else if axis.y().abs() <= axis.z().abs() {
+        Vec3::new(0.0, 1.0, 0.0)
+    } else {
+        Vec3::new(0.0, 0.0, 1.0)
+    };
+    let first = axis.cross(seed).normalize().ok()?;
+    Some((first, axis.cross(first)))
+}
+
+/// An axis along `direction` and the greatest distance from it of any point
+/// in the convex hull of `points`.
+///
+/// The centre is chosen near the centre of the smallest circle around the
+/// points' projections (Badoiu–Clarkson steps from their box's centre), but
+/// any centre gives a sound bound: the reach is the farthest control point's
+/// distance from the chosen axis, which bounds the whole hull because
+/// distance from a line is convex, plus a rounding allowance on the
+/// coordinates' scale.
+fn hull_core(points: &[Point3], direction: Vec3) -> Option<(Point3, f64)> {
+    let axis = direction.normalize().ok()?;
+    let (e1, e2) = across_frame(axis)?;
+    let anchor = *points.first()?;
+    let flat: Vec<(f64, f64)> = points
+        .iter()
+        .map(|&p| {
+            let v = p - anchor;
+            (v.dot(e1), v.dot(e2))
+        })
+        .collect();
+    let (mut lo, mut hi) = (
+        (f64::INFINITY, f64::INFINITY),
+        (f64::NEG_INFINITY, f64::NEG_INFINITY),
+    );
+    for &(x, y) in &flat {
+        lo = (lo.0.min(x), lo.1.min(y));
+        hi = (hi.0.max(x), hi.1.max(y));
+    }
+    let mut centre = (f64::midpoint(lo.0, hi.0), f64::midpoint(lo.1, hi.1));
+    for step in 1..=64_u32 {
+        let mut farthest = centre;
+        let mut best = -1.0_f64;
+        for &(x, y) in &flat {
+            let d = (x - centre.0).hypot(y - centre.1);
+            if d > best {
+                best = d;
+                farthest = (x, y);
+            }
+        }
+        let rate = 1.0 / f64::from(step + 1);
+        centre = (
+            (farthest.0 - centre.0).mul_add(rate, centre.0),
+            (farthest.1 - centre.1).mul_add(rate, centre.1),
+        );
+    }
+    let origin = anchor + e1 * centre.0 + e2 * centre.1;
+    let mut reach = 0.0_f64;
+    let mut scale = magnitude(origin);
+    for &p in points {
+        reach = reach.max((p - origin).cross(axis).length());
+        scale = scale.max(magnitude(p));
+    }
+    let reach = 1e-12_f64.mul_add(scale, reach);
+    reach.is_finite().then_some((origin, reach))
+}
+
+/// A lower bound on the distance from the axis through `origin` along
+/// `direction` to every point in the convex hull of `points`, when the axis
+/// misses that hull.
+///
+/// The points are projected across the axis, their convex hull taken
+/// (monotone chain), and the pierce point's distance to the hull's boundary
+/// read when the pierce point lies outside it. An inside point lies farther
+/// than that distance from every edge's line, so once the distance clears
+/// the rounding allowance, an edge with the pierce point on its outer side
+/// decides the side. `None` when the axis pierces the hull or passes within
+/// the allowance of it.
+fn hull_axis_clearance(points: &[Point3], origin: Point3, direction: Vec3) -> Option<f64> {
+    use remus_math::compact_sort::CompactSort;
+    let axis = direction.normalize().ok()?;
+    let (e1, e2) = across_frame(axis)?;
+    let mut scale = magnitude(origin);
+    let mut flat: Vec<(f64, f64)> = points
+        .iter()
+        .map(|&p| {
+            scale = scale.max(magnitude(p));
+            let v = p - origin;
+            (v.dot(e1), v.dot(e2))
+        })
+        .collect();
+    flat.compact_sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    flat.dedup();
+    let cross = |o: (f64, f64), a: (f64, f64), b: (f64, f64)| {
+        (a.0 - o.0).mul_add(b.1 - o.1, -((a.1 - o.1) * (b.0 - o.0)))
+    };
+    // Counter-clockwise hull, collinear points dropped (monotone chain).
+    let mut hull: Vec<(f64, f64)> = Vec::with_capacity(flat.len() + 1);
+    if flat.len() == 1 {
+        hull.push(flat[0]);
+    } else {
+        for &p in &flat {
+            while hull.len() >= 2 && cross(hull[hull.len() - 2], hull[hull.len() - 1], p) <= 0.0 {
+                hull.pop();
+            }
+            hull.push(p);
+        }
+        hull.pop();
+        let lower = hull.len();
+        for &p in flat.iter().rev() {
+            while hull.len() >= lower + 2
+                && cross(hull[hull.len() - 2], hull[hull.len() - 1], p) <= 0.0
+            {
+                hull.pop();
+            }
+            hull.push(p);
+        }
+        hull.pop();
+    }
+    let segment = |a: (f64, f64), b: (f64, f64)| {
+        let along = (b.0 - a.0, b.1 - a.1);
+        let span = along.0.mul_add(along.0, along.1 * along.1);
+        let t = if span > 0.0 {
+            ((-a.0).mul_add(along.0, -a.1 * along.1) / span).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        along.0.mul_add(t, a.0).hypot(along.1.mul_add(t, a.1))
+    };
+    let count = hull.len();
+    let (distance, outside) = match count {
+        0 => return None,
+        1 => (hull[0].0.hypot(hull[0].1), true),
+        _ => {
+            let mut distance = f64::INFINITY;
+            let mut outside = count == 2;
+            for i in 0..count {
+                let (a, b) = (hull[i], hull[(i + 1) % count]);
+                distance = distance.min(segment(a, b));
+                outside |= cross(a, b, (0.0, 0.0)) < 0.0;
+            }
+            (distance, outside)
+        }
+    };
+    // Projection and distance carry a few roundings relative to the world
+    // coordinates; 1e-12 of their scale is far above that.
+    let allowance = 1e-12 * scale;
+    (outside && distance.is_finite() && distance > 2.0 * allowance).then_some(distance - allowance)
 }
 
 /// A lower bound on the distance from the axis through `origin` along
@@ -528,6 +804,9 @@ fn torus_strip_lower_radius(
     }
     Ok((rims >= 2 && seam.is_some()).then_some(lower.max(0.0)))
 }
+
+#[cfg(test)]
+mod hull_tests;
 
 #[cfg(test)]
 mod tests {

@@ -30,10 +30,13 @@
 //! Other companions (torus bands, sphere patches, planar and freeform
 //! faces, and cones and cylinders across the move) keep only the swept
 //! faces' companion test: a candidate a swept face may reach must also be
-//! cleared from every companion ([`super::SweptRegionCheck`]). Bounding a
-//! torus band or sphere patch needs the side of its boundary it lies on,
-//! which its rims alone do not say (a band between two rims may be the
-//! short one or the long one), so they stay a known gap.
+//! cleared from every companion ([`super::SweptRegionCheck`]), by their
+//! boxes or by a radial separation about an axis along the move (a torus
+//! band's whole tube or a NURBS patch's control hull outside the reach of
+//! the candidate). Bounding a torus band or sphere patch more tightly
+//! needs the side of its boundary it lies on, which its rims alone do not
+//! say (a band between two rims may be the short one or the long one), so
+//! they stay a known gap.
 
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
