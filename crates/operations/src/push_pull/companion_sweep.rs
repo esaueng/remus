@@ -230,6 +230,27 @@ impl Companion {
         self.planar
     }
 
+    /// Whether this companion's own sweep proves it misses `candidate` over
+    /// a translation by `delta` (its swept box misses, or its profile about
+    /// its axis clears the candidate's). `false` without a sweep or when
+    /// the candidate is not one it reads.
+    pub(super) fn sweep_clears(&self, candidate: FaceId, delta: Vec3) -> bool {
+        let Some(sweep) = self.sweep.as_ref() else {
+            return false;
+        };
+        let Some(reach) = self.candidates.iter().find(|reach| reach.face == candidate) else {
+            return false;
+        };
+        let boxes_miss = matches!(
+            (sweep.bounds, reach.bounds),
+            (Some(original), Some(bounds)) if !original.union(Aabb3 {
+                min: original.min + delta,
+                max: original.max + delta,
+            }).intersects(bounds)
+        );
+        boxes_miss || sweep.clears(reach, delta)
+    }
+
     /// The first candidate the companion may reach over a translation by
     /// `delta`, in face order, or `None` when every one is cleared.
     pub(super) fn blocking(&self, delta: Vec3) -> Option<FaceId> {

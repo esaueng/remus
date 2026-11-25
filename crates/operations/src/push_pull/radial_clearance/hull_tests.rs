@@ -211,3 +211,149 @@ fn carried_torus_clears_a_thread_only_inside_its_tube() {
             .is_none()
     );
 }
+
+/// Review fixture (Sol): a hull spanning 2e155 across overflows its edge
+/// spans; the NaN distances must refuse rather than drop out of the
+/// minimum, which read the true clearance of 1 as about 1e155.
+#[test]
+fn overflowing_hull_gives_no_bound() {
+    let points = [
+        Point3::new(-1e155, 1.0, 0.0),
+        Point3::new(1e155, 1.0, 0.0),
+        Point3::new(1e155, 1e150, 0.0),
+        Point3::new(-1e155, 1e150, 0.0),
+    ];
+    let origin = Point3::new(0.0, 0.0, 0.0);
+    assert!(hull_axis_clearance(&points, origin, UP).is_none());
+    assert!(hull_core(&points, UP).is_none());
+}
+
+fn cylinder_wall(topo: &Topology, solid: SolidId) -> FaceId {
+    solid_faces(topo, solid)
+        .unwrap()
+        .into_iter()
+        .find(|&f| matches!(topo.face(f).unwrap().surface(), FaceSurface::Cylinder(_)))
+        .unwrap()
+}
+
+/// Review fixture (Sol): a sewn rim stored 0.005 outside its radius-10
+/// cylinder bounds the wall's reach, so a coaxial torus band whose tube
+/// comes to 10.002 is not cleared from it.
+#[test]
+fn sewn_rim_past_its_cylinder_bounds_the_core() {
+    use remus_math::curves::Circle3D;
+    use remus_topology::edge::EdgeCurve;
+    let mut topo = Topology::new();
+    let post = make_cylinder(&mut topo, 10.0, 10.0).unwrap();
+    let wall = cylinder_wall(&topo, post);
+    let rim = remus_topology::explorer::face_edges(&topo, wall)
+        .unwrap()
+        .into_iter()
+        .find(|&e| matches!(topo.edge(e).unwrap().curve(), EdgeCurve::Circle(_)))
+        .unwrap();
+    let EdgeCurve::Circle(circle) = topo.edge(rim).unwrap().curve().clone() else {
+        unreachable!()
+    };
+    let wide = Circle3D::new(circle.center(), circle.normal(), 10.005).unwrap();
+    let trim = topo.edge(rim).unwrap().trim();
+    let edge = topo.edge_mut(rim).unwrap();
+    edge.set_curve(EdgeCurve::Circle(wide));
+    edge.set_trim(trim);
+    let (_, reach) = axis_core(&topo, wall, UP).unwrap().unwrap();
+    assert!(reach >= 10.005, "{reach}");
+    let band = torus_face(&mut topo, 11.002, 1.0, 5.0);
+    assert!(!companion_clears_core(&topo, band, wall, UP).unwrap());
+    // The carrier alone would have cleared it.
+    let lower = axis_clearance(&topo, band, Point3::new(0.0, 0.0, 0.0), UP)
+        .unwrap()
+        .unwrap();
+    assert!(lower > 10.0 + 1e-3, "{lower}");
+}
+
+/// Review fixture (Sol): the tilt gate and allowance read the sine of the
+/// angle from a unit direction; a half-length move normal must not halve
+/// them.
+#[test]
+fn short_move_normal_keeps_the_tilt_allowance() {
+    let mut topo = Topology::new();
+    // Tilted past the angular tolerance: no bound along either normal (a
+    // half-length normal read the tilt as 7.5e-13 and let it through).
+    let steep = make_cylinder(&mut topo, 1.0, 1e12).unwrap();
+    transform_solid(&mut topo, steep, &Mat4::rotation_y(1.5e-12)).unwrap();
+    let steep = cylinder_wall(&topo, steep);
+    assert!(axis_core(&topo, steep, UP).unwrap().is_none());
+    assert!(axis_core(&topo, steep, UP * 0.5).unwrap().is_none());
+    // Within it: the same reach, with the axis's whole drift charged.
+    let post = make_cylinder(&mut topo, 1.0, 1e12).unwrap();
+    transform_solid(&mut topo, post, &Mat4::rotation_y(0.9e-12)).unwrap();
+    let wall = cylinder_wall(&topo, post);
+    let (_, unit) = axis_core(&topo, wall, UP).unwrap().unwrap();
+    let (_, short) = axis_core(&topo, wall, UP * 0.5).unwrap().unwrap();
+    assert_eq!(unit.to_bits(), short.to_bits());
+    assert!(
+        unit >= 1.9 - 1e-9,
+        "the axis drifts 0.9 over its length: {unit}"
+    );
+}
+
+/// Review fixture (Sol): an annular cap with an inner 45° chamfer from
+/// radius 10 down to 9, around a central radius-4 post whose top disc at
+/// z = 3 lies inside the chamfer's swept box. The cap clears the disc
+/// radially, and the chamfer it carries clears it by its own cone profile;
+/// requiring companions on the radial branch must not refuse the move.
+#[test]
+fn carried_chamfer_cleared_by_its_own_sweep_passes_a_post_in_the_opening() {
+    use remus_topology::builder::{make_planar_face_from_wire, make_polygon_wire};
+    let mut topo = Topology::new();
+    let section = [
+        (0., -5.),
+        (20., -5.),
+        (20., 0.),
+        (10., 0.),
+        (9., -1.),
+        (9., -3.),
+        (4., -3.),
+        (4., 3.),
+        (0., 3.),
+    ]
+    .map(|(r, z)| Point3::new(r, 0., z));
+    let wire = make_polygon_wire(&mut topo, &section, 1e-7).unwrap();
+    let profile = make_planar_face_from_wire(&mut topo, wire).unwrap();
+    let ring = crate::revolve::revolve(
+        &mut topo,
+        profile,
+        Point3::new(0., 0., 0.),
+        UP,
+        std::f64::consts::TAU,
+    )
+    .unwrap();
+    let cap = solid_faces(&topo, ring)
+        .unwrap()
+        .into_iter()
+        .find(|&face| {
+            topo.face(face)
+                .unwrap()
+                .effective_plane_normal()
+                .is_some_and(|n| n.z() > 0.99)
+                && remus_topology::explorer::face_vertices(&topo, face)
+                    .unwrap()
+                    .iter()
+                    .all(|&v| topo.vertex(v).unwrap().point().z().abs() < 1e-9)
+        })
+        .unwrap();
+    let before = crate::measure::solid_volume(&topo, ring, 0.01).unwrap();
+    for distance in [1.0, 5.0] {
+        let mut scratch = topo.clone();
+        let moved = crate::push_pull::move_faces(&mut scratch, ring, &[cap], distance).unwrap();
+        let report = crate::validate::validate_solid(&scratch, moved).unwrap();
+        assert!(report.is_valid(), "{:?}", report.issues);
+        // The roof from the chamfer foot at 9 out to 20 rises; the bore wall
+        // below the chamfer stretches.
+        let grown = crate::measure::solid_volume(&scratch, moved, 0.01).unwrap() - before;
+        let expected = std::f64::consts::PI * (400.0 - 81.0) * distance;
+        assert!(
+            (grown - expected).abs() < 1e-6 * before,
+            "{grown} vs {expected}"
+        );
+    }
+}

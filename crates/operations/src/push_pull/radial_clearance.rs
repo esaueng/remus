@@ -263,6 +263,10 @@ fn axis_core(
     direction: Vec3,
 ) -> Result<Option<(Point3, f64)>, crate::OperationsError> {
     let tol = Tolerance::new();
+    // The tilt allowance reads the sine of the angle from a unit direction.
+    let Ok(direction) = direction.normalize() else {
+        return Ok(None);
+    };
     let tilt = |axis: Vec3| {
         let tilt = axis.cross(direction).length();
         (tilt <= tol.angular).then_some(tilt)
@@ -272,9 +276,12 @@ fn axis_core(
     // the angle between the two axes. Each bound holds for every trim of the
     // carrier.
     let core = match topo.face(candidate)?.surface() {
-        FaceSurface::Cylinder(cylinder) => {
-            tilt(cylinder.axis()).map(|tilt| (cylinder.origin(), cylinder.radius(), tilt))
-        }
+        // Fitted trims and sewn rims may reach past the carrier: the
+        // envelope covers every boundary curve, or the face is unbounded.
+        FaceSurface::Cylinder(cylinder) => tilt(cylinder.axis()).and_then(|tilt| {
+            cylinder_envelope(topo, candidate, cylinder)
+                .map(|reach| (cylinder.origin(), reach, tilt))
+        }),
         FaceSurface::Torus(torus) => tilt(torus.z_axis()).map(|tilt| {
             (
                 torus.center(),
@@ -354,6 +361,9 @@ fn axis_clearance(
     direction: Vec3,
 ) -> Result<Option<f64>, crate::OperationsError> {
     let tol = Tolerance::new();
+    let Ok(direction) = direction.normalize() else {
+        return Ok(None);
+    };
     match topo.face(face)?.surface() {
         FaceSurface::Plane { normal, .. } => {
             if normal.cross(direction).length() > tol.angular {
@@ -391,6 +401,10 @@ fn axis_clearance(
         FaceSurface::Cylinder(_) | FaceSurface::Cone(_) | FaceSurface::Sphere(_) => Ok(None),
     }
 }
+
+/// Coordinates beyond this square and multiply without overflow in the hull
+/// bounds; larger ones give no bound.
+const MAX_HULL_SCALE: f64 = 1e100;
 
 fn magnitude(p: Point3) -> f64 {
     p.x().abs().max(p.y().abs()).max(p.z().abs())
@@ -473,8 +487,16 @@ fn hull_core(points: &[Point3], direction: Vec3) -> Option<(Point3, f64)> {
     let mut reach = 0.0_f64;
     let mut scale = magnitude(origin);
     for &p in points {
-        reach = reach.max((p - origin).cross(axis).length());
+        let radial = (p - origin).cross(axis).length();
+        // `max` skips NaN: an overflowed distance must refuse, not vanish.
+        if !radial.is_finite() {
+            return None;
+        }
+        reach = reach.max(radial);
         scale = scale.max(magnitude(p));
+    }
+    if scale > MAX_HULL_SCALE {
+        return None;
     }
     let reach = 1e-12_f64.mul_add(scale, reach);
     reach.is_finite().then_some((origin, reach))
@@ -504,6 +526,10 @@ fn hull_axis_clearance(points: &[Point3], origin: Point3, direction: Vec3) -> Op
             (v.dot(e1), v.dot(e2))
         })
         .collect();
+    // Squared spans and products of coordinates must not overflow.
+    if scale.is_nan() || scale > MAX_HULL_SCALE {
+        return None;
+    }
     flat.compact_sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
     flat.dedup();
     let cross = |o: (f64, f64), a: (f64, f64), b: (f64, f64)| {
@@ -551,7 +577,12 @@ fn hull_axis_clearance(points: &[Point3], origin: Point3, direction: Vec3) -> Op
             let mut outside = count == 2;
             for i in 0..count {
                 let (a, b) = (hull[i], hull[(i + 1) % count]);
-                distance = distance.min(segment(a, b));
+                let reach = segment(a, b);
+                // `min` skips NaN: an unreadable edge must refuse.
+                if !reach.is_finite() {
+                    return None;
+                }
+                distance = distance.min(reach);
                 outside |= cross(a, b, (0.0, 0.0)) < 0.0;
             }
             (distance, outside)

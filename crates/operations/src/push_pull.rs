@@ -1046,10 +1046,10 @@ impl SweptRegionCheck {
 
     /// Whether every rigid companion provably misses `candidate` over a
     /// translation by `delta`: its swept box misses the candidate's box, it
-    /// is planar and its own footprint proof clears the candidate, or the
-    /// candidate lies within a reach of an axis along the move that the
-    /// companion stays outside of (a junction torus about a boss, beside a
-    /// thread inside the boss's bore).
+    /// is planar and its own footprint proof clears the candidate, its own
+    /// sweep about its axis clears it, or the candidate lies within a reach
+    /// of an axis along the move that the companion stays outside of (a
+    /// junction torus about a boss, beside a thread inside the boss's bore).
     fn companions_clear(
         &self,
         topo: &Topology,
@@ -1073,6 +1073,7 @@ impl SweptRegionCheck {
                         candidate,
                         delta,
                     ))
+                || companion.sweep_clears(candidate, delta)
                 || radial_clearance::companion_clears_core(
                     topo,
                     companion.face(),
