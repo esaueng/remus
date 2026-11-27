@@ -694,3 +694,35 @@ fn nurbs_roof_crossed_below_a_narrow_peak_is_a_crossing() {
         }
     }
 }
+
+/// A torus whose carrier axis is the unnormalised `(0, 0, 49)`, cut square to
+/// that axis below the tube: the normalised normal and axis agree to the last
+/// bit but leave a rounding residual along the axis. The ring probes must
+/// stay on the surface, so the miss stays a miss.
+#[test]
+fn exactly_axial_miss_on_a_torus_with_a_scaled_axis_stays_a_miss() {
+    use remus_math::surfaces::ToroidalSurface;
+    use remus_topology::explorer::solid_faces;
+    use remus_topology::face::FaceSurface;
+
+    let axis = Vec3::new(0.0, 0.0, 49.0);
+    for z in [-2.0, 2.0] {
+        let mut topo = Topology::new();
+        let torus = make_torus(&mut topo, 10.0, 1.0, 16).unwrap();
+        let face = solid_faces(&topo, torus).unwrap()[0];
+        let carrier =
+            ToroidalSurface::with_axis(Point3::new(0.0, 0.0, 0.0), 10.0, 1.0, axis).unwrap();
+        topo.face_mut(face)
+            .unwrap()
+            .set_surface(FaceSurface::Torus(carrier));
+        let result = split(&mut topo, torus, Point3::new(0.0, 0.0, z), axis);
+        assert!(
+            matches!(result, Err(OperationsError::InvalidInput { .. })),
+            "torus missed at z = {z} along its scaled axis, got {result:?}"
+        );
+        assert_crossing(
+            split(&mut topo, torus, Point3::new(0.0, 0.0, 0.5), axis),
+            "torus at z = 0.5 along its scaled axis",
+        );
+    }
+}

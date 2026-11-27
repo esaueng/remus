@@ -559,11 +559,14 @@ fn face_interior_reach(
                 // normal's radial part points, which on a large torus can
                 // still add `R·|w|` past the tolerance, so read the rings
                 // there, both ways round.
+                // Read the radial part in the torus's own frame, so the
+                // probes stay on the surface whatever rounding is left in
+                // the normal's axial part.
                 let axis = torus.z_axis();
-                let w = normal - axis * normal.dot(axis);
-                let len = w.length();
+                let (wx, wy) = (normal.dot(torus.x_axis()), normal.dot(torus.y_axis()));
+                let len = wx.hypot(wy);
                 let radial = if len > 0.0 && len.is_finite() {
-                    w * (1.0 / len)
+                    torus.x_axis() * (wx / len) + torus.y_axis() * (wy / len)
                 } else {
                     torus.x_axis()
                 };
@@ -955,7 +958,6 @@ fn half_space_split(
     d: f64,
     tol: Tolerance,
 ) -> Result<(SplitResult, SplitEvolution), OperationsError> {
-    use crate::boolean::BooleanOp;
     use remus_topology::explorer::solid_faces;
 
     let bounds = crate::measure::conservative_solid_bounding_box(topo, solid)?;
@@ -978,64 +980,95 @@ fn half_space_split(
         .map(remus_topology::arena::Id::index)
         .collect();
 
+    // Both halves are tried before any refusal is returned: an empty half
+    // means the plane does not split the body, whichever half refused first.
     let mut built = Vec::with_capacity(2);
+    let mut refusal = None;
     for (side, outward) in [(Side::Pos, normal), (Side::Neg, -normal)] {
-        // Each half is an intersection with its own side's box: the same
-        // construction for both halves, so neither depends on the other's
-        // boolean succeeding first.
-        let (tool, cap) = half_space_tool(topo, foot, outward, span)?;
-        let (half, history) =
-            crate::boolean::boolean_with_evolution(topo, BooleanOp::Intersect, solid, tool)?;
-        // The tool was scaffolding: retire it so the session does not keep an
-        // orphan cube. Entities the half shares with it stay live. Best
-        // effort — a retirement refused over an unrelated session problem
-        // only leaves the orphan behind, as the other boolean tools do.
-        if let Err(error) = topo.delete_solid(tool) {
-            log::debug!("split: half-space tool left in the arena: {error}");
-        }
-        // An intersection with no common material is the empty-solid
-        // sentinel: the plane leaves the body on the other side.
-        if solid_faces(topo, half)?.is_empty() {
-            return Err(OperationsError::EmptyResult {
-                reason: format!("the {} half-space holds none of the body", side.name()),
-            });
-        }
-        if !history.origin.is_exact() || !history.generated.is_empty() {
-            return Err(unsupported(format!(
-                "the half-space boolean for the {} half has no construction-derived \
-                 face history",
-                side.name()
-            )));
-        }
-        let mut evo = EvolutionMap::exact();
-        // Source order, so the map is built deterministically.
-        let sources: BTreeMap<usize, &Vec<usize>> = history
-            .modified
-            .iter()
-            .map(|(&src, out)| (src, out))
-            .collect();
-        for (src, outputs) in sources {
-            for &out in outputs {
-                if src == cap.index() {
-                    // The cap: synthesised by the operation, as in the trimmer.
-                    evo.add_unresolved(out, Vec::new());
-                } else if inputs.contains(&src) {
-                    evo.add_modified(src, out);
-                } else {
-                    return Err(unsupported(format!(
-                        "a side of the half-space tool entered the {} half",
-                        side.name()
-                    )));
-                }
+        match half_space_half(topo, solid, &inputs, foot, outward, span, side) {
+            Ok(half) => built.push(half),
+            Err(empty @ OperationsError::EmptyResult { .. }) => return Err(empty),
+            Err(error) => {
+                refusal.get_or_insert(error);
             }
         }
-        for (&out, candidates) in &history.unresolved {
-            evo.add_unresolved(out, candidates.clone());
-        }
-        let volume = gate(topo, half, side)?;
-        built.push((half, volume, evo));
+    }
+    if let Some(error) = refusal {
+        return Err(error);
     }
     conserve(topo, solid, built, tol)
+}
+
+/// One half of [`half_space_split`]: the body intersected with the box on
+/// `side` of the plane, gated, with its construction-derived face evolution.
+/// A half with none of the body is [`OperationsError::EmptyResult`].
+#[allow(clippy::too_many_arguments)]
+fn half_space_half(
+    topo: &mut Topology,
+    solid: SolidId,
+    inputs: &BTreeSet<usize>,
+    foot: Point3,
+    outward: Vec3,
+    span: f64,
+    side: Side,
+) -> Result<(SolidId, f64, EvolutionMap), OperationsError> {
+    use crate::boolean::BooleanOp;
+    use remus_topology::explorer::solid_faces;
+
+    // Each half is an intersection with its own side's box: the same
+    // construction for both halves, so neither depends on the other's
+    // boolean succeeding first.
+    let (tool, cap) = half_space_tool(topo, foot, outward, span)?;
+    let (half, history) =
+        crate::boolean::boolean_with_evolution(topo, BooleanOp::Intersect, solid, tool)?;
+    // The tool was scaffolding: retire it so the session does not keep an
+    // orphan cube. Entities the half shares with it stay live. Best
+    // effort — a retirement refused over an unrelated session problem
+    // only leaves the orphan behind, as the other boolean tools do.
+    if let Err(error) = topo.delete_solid(tool) {
+        log::debug!("split: half-space tool left in the arena: {error}");
+    }
+    // An intersection with no common material is the empty-solid
+    // sentinel: the plane leaves the body on the other side.
+    if solid_faces(topo, half)?.is_empty() {
+        return Err(OperationsError::EmptyResult {
+            reason: format!("the {} half-space holds none of the body", side.name()),
+        });
+    }
+    if !history.origin.is_exact() || !history.generated.is_empty() {
+        return Err(unsupported(format!(
+            "the half-space boolean for the {} half has no construction-derived \
+             face history",
+            side.name()
+        )));
+    }
+    let mut evo = EvolutionMap::exact();
+    // Source order, so the map is built deterministically.
+    let sources: BTreeMap<usize, &Vec<usize>> = history
+        .modified
+        .iter()
+        .map(|(&src, out)| (src, out))
+        .collect();
+    for (src, outputs) in sources {
+        for &out in outputs {
+            if src == cap.index() {
+                // The cap: synthesised by the operation, as in the trimmer.
+                evo.add_unresolved(out, Vec::new());
+            } else if inputs.contains(&src) {
+                evo.add_modified(src, out);
+            } else {
+                return Err(unsupported(format!(
+                    "a side of the half-space tool entered the {} half",
+                    side.name()
+                )));
+            }
+        }
+    }
+    for (&out, candidates) in &history.unresolved {
+        evo.add_unresolved(out, candidates.clone());
+    }
+    let volume = gate(topo, half, side)?;
+    Ok((half, volume, evo))
 }
 
 /// Require the halves to add back up to the body, and hand them back.
