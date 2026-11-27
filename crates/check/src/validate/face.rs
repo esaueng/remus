@@ -219,7 +219,7 @@ fn check_periodic_inner_wire_orientation(
     let face = topo.face(face_id)?;
     let surface = face.surface();
     // Every analytic surface here parameterizes u as an angle with period
-    // 2pi; v is angular only for the torus (mirrors `count_analytic_crossings`).
+    // 2pi; v is angular only for the torus (mirrors `count_analytic_crossings_with_trim`).
     let u_period = std::f64::consts::TAU;
     let v_period = match surface {
         remus_topology::face::FaceSurface::Torus(_) => Some(std::f64::consts::TAU),

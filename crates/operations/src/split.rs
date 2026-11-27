@@ -21,18 +21,31 @@
 //! volume-sum gates. What neither route can build is refused by name with
 //! [`OperationsError::Unsupported`], never approximated.
 //!
-//! A face is placed by the extent of its own boundary curves, computed in
-//! closed form for lines and circles. That is exact for everything this
-//! builds — a cylindrical band with full circular rims reaches no further
-//! along the plane's normal than its rims do — but a curved patch could in
-//! principle bow across the plane while its boundary stays clear of it. The
-//! closing check catches that: the halves are a decomposition of the body, so
-//! their volumes must add back up to it, and a face on the wrong side of the
-//! cap shows up as material counted twice or not at all.
+//! A face is placed by the extent of its surface, not only its boundary
+//! curves. Its boundary curves are bounded in closed form for lines and
+//! circles; beyond them, a face can only reach further along the plane's
+//! normal at an interior critical point of its carrier, where the surface
+//! normal is parallel to the plane's. Those points are solved exactly for
+//! spheres (two poles along the normal) and tori (four Gauss-map points, or
+//! the top and bottom rings when the normal lies along the axis), and kept
+//! when the face's own trim holds them. Planes have none, and a cylinder's or
+//! cone's critical rulings carry one distance from end to end, so their ends
+//! on the boundary already reach it. A NURBS face is bounded by its Bezier
+//! control nets, and is proven to cross only by a point of it that lies
+//! within its trim beyond the plane. So a plane through the bulge of a sphere
+//! or torus, clear of every edge, crosses the body; a plane that touches it at
+//! one point, or misses it, does not.
+//!
+//! The closing check backs this up: the halves are a decomposition of the
+//! body, so their volumes must add back up to it, and a face on the wrong side
+//! of the cap shows up as material counted twice or not at all.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use remus_math::curves::Circle3D;
+use remus_math::nurbs::decompose::{BezierPatch, surface_to_bezier_patches};
+use remus_math::nurbs::knot_ops::{surface_knot_insert_u, surface_knot_insert_v};
+use remus_math::nurbs::surface::NurbsSurface;
 use remus_math::tolerance::Tolerance;
 use remus_math::vec::{Point3, Vec3};
 use remus_topology::Topology;
@@ -64,6 +77,16 @@ const RANGE_SAMPLES: usize = 128;
 /// How nearly parallel a rim circle's axis must be to the cutting plane's
 /// normal before the section through that rim is accepted as a circle.
 const AXIS_PARALLEL_COSINE: f64 = 1.0 - 1e-9;
+
+/// Most Bezier patches a NURBS face's crossing search examines.
+const NURBS_PATCH_BUDGET: usize = 256;
+
+/// Deepest a NURBS face's crossing search quarters one Bezier patch.
+const NURBS_MAX_DEPTH: usize = 8;
+
+/// Most witness points a NURBS face's crossing search tests against the
+/// face's trim.
+const NURBS_TRIM_TESTS: usize = 32;
 
 /// Relative slack on the volume-sum identity. The halves reuse the input's own
 /// surfaces and `solid_volume` is exact on them, so the only difference is
@@ -361,12 +384,25 @@ fn split_with_evolution_impl(
     // crate's own `approx_eq` convention. Never loosened to admit a case.
     let eps = tol.linear.max(model_span(topo, &all_faces)? * tol.relative);
 
-    let contact = plane_contact(topo, &all_faces, normal, d, eps)?;
+    let mut contact = plane_contact(topo, &all_faces, normal, d, eps)?;
+    // The edges alone leave a side unreached: a curved face may still bow
+    // across the plane between edges clear of it (a sphere's bulge between
+    // its equator arcs, a torus between its seams).
+    for &fid in &all_faces {
+        let want = Reach {
+            above: contact.hi <= eps,
+            below: contact.lo >= -eps,
+        };
+        if !want.above && !want.below {
+            break;
+        }
+        let (lo, hi) = face_interior_reach(topo, fid, normal, d, eps, want)?;
+        contact.lo = contact.lo.min(lo);
+        contact.hi = contact.hi.max(hi);
+    }
     if contact.lo >= -eps || contact.hi <= eps {
-        // No edge of the body reaches across the plane: it misses the body,
-        // or only touches it. (A closed curved face could in principle bow
-        // across the plane between edges clear of it; that case is neither
-        // detected here nor built by the exact booleans.)
+        // No part of the body reaches across the plane: it misses the body,
+        // or only touches it.
         return Err(match contact.contained {
             Some(edge) => unsupported(format!(
                 "the cutting plane does not cross the solid's interior; it only \
@@ -402,8 +438,9 @@ fn split_with_evolution_impl(
     }
 }
 
-/// How the body's edges meet the cutting plane: the signed-distance extent
-/// over all of them, and the first edge the plane contains.
+/// How the body meets the cutting plane: the signed-distance extent over its
+/// edges (widened by any face proven to reach further), and the first edge the
+/// plane contains.
 struct PlaneContact {
     lo: f64,
     hi: f64,
@@ -437,6 +474,294 @@ fn plane_contact(
         }
     }
     Ok(contact)
+}
+
+/// Which sides of the plane a face still has to be proven to reach.
+#[derive(Clone, Copy)]
+struct Reach {
+    /// Strictly above (`> eps` along the normal).
+    above: bool,
+    /// Strictly below (`< -eps`).
+    below: bool,
+}
+
+/// The signed distances `(lo, hi)` a face is proven to reach in its interior,
+/// beyond its edges, on the sides `want` asks for; infinite where nothing was
+/// proven.
+///
+/// A linear function over a face attains its extremes on the face's boundary
+/// or at an interior critical point of its carrier, where the surface normal
+/// is parallel to the plane's. Only the second needs looking at here:
+///
+/// * a plane has none (or is parallel, and constant);
+/// * on a cylinder or cone the critical set is whole rulings, on which the
+///   distance is constant; a ruling's piece of a bounded face ends on the
+///   face's boundary at that same distance, so the edges reach it already.
+///   A cone's apex is singular, so it is tried as a point;
+/// * a sphere's are its two poles along the normal, `center ± r·n`;
+/// * a torus's are the four points whose normal is `±n`, or — with the
+///   normal along its axis — its top and bottom rings. A ring's piece of a
+///   face that does not hold the whole ring ends on the face's boundary at
+///   the ring's distance, so one point of each ring decides it;
+/// * a NURBS face is searched patch by patch ([`nurbs_interior_reach`]).
+///
+/// A critical point counts only where the face's own trim holds it
+/// ([`remus_check::classify::surface_point_in_face`]); a point the trim test
+/// cannot decide proves nothing.
+fn face_interior_reach(
+    topo: &Topology,
+    fid: FaceId,
+    normal: Vec3,
+    d: f64,
+    eps: f64,
+    want: Reach,
+) -> Result<(f64, f64), OperationsError> {
+    let at = |p: Point3| dot_normal_point(normal, p) - d;
+    let candidates: Vec<Point3> = match topo.face(fid)?.surface() {
+        FaceSurface::Plane { .. } | FaceSurface::Cylinder(_) => Vec::new(),
+        FaceSurface::Cone(cone) => vec![cone.apex()],
+        FaceSurface::Sphere(sphere) => {
+            let offset = normal * sphere.radius();
+            vec![sphere.center() + offset, sphere.center() - offset]
+        }
+        FaceSurface::Torus(torus) => {
+            use remus_geometry::bounds::surface::torus_direction_criticals;
+            if let (Some(mut up), Some(down)) = (
+                torus_direction_criticals(torus, normal),
+                torus_direction_criticals(torus, -normal),
+            ) {
+                up.extend(down);
+                up
+            } else {
+                // The normal lies along the axis: the critical sets are the
+                // top and bottom rings.
+                let rim = torus.center() + torus.x_axis() * torus.major_radius();
+                let lift = torus.z_axis() * torus.minor_radius();
+                vec![rim + lift, rim - lift]
+            }
+        }
+        FaceSurface::Nurbs(surface) => {
+            return Ok(nurbs_interior_reach(
+                topo, fid, surface, normal, d, eps, want,
+            ));
+        }
+    };
+
+    let mut trim = FaceTrim::new(topo, fid, candidates.len());
+    let mut reach = (f64::INFINITY, f64::NEG_INFINITY);
+    for p in candidates {
+        let x = at(p);
+        let wanted = (want.above && x > eps) || (want.below && x < -eps);
+        if wanted && trim.contains(p) {
+            reach = (reach.0.min(x), reach.1.max(x));
+        }
+    }
+    Ok(reach)
+}
+
+/// Trim membership of carrier points of one face, its trim read once on first
+/// use and at most `tests` points tested. A point the trim test cannot decide,
+/// or one past the budget, is not counted.
+struct FaceTrim<'a> {
+    topo: &'a Topology,
+    fid: FaceId,
+    prepared: Prepared<'a>,
+    tests: usize,
+}
+
+/// A face's trim, read on first use.
+enum Prepared<'a> {
+    Unread,
+    Read(Box<remus_check::classify::PreparedFaceTrim<'a>>),
+    /// The trim could not be read: no point of the face is counted.
+    Unreadable,
+}
+
+impl<'a> FaceTrim<'a> {
+    const fn new(topo: &'a Topology, fid: FaceId, tests: usize) -> Self {
+        Self {
+            topo,
+            fid,
+            prepared: Prepared::Unread,
+            tests,
+        }
+    }
+
+    fn contains(&mut self, p: Point3) -> bool {
+        if self.tests == 0 {
+            return false;
+        }
+        self.tests -= 1;
+        if matches!(self.prepared, Prepared::Unread) {
+            self.prepared = match remus_check::classify::PreparedFaceTrim::new(self.topo, self.fid)
+            {
+                Ok(trim) => Prepared::Read(Box::new(trim)),
+                Err(_) => Prepared::Unreadable,
+            };
+        }
+        match &self.prepared {
+            Prepared::Read(trim) => matches!(trim.contains(p), Ok(true)),
+            Prepared::Unread | Prepared::Unreadable => false,
+        }
+    }
+}
+
+/// A Bezier patch queued for [`nurbs_interior_reach`], ordered by how far its
+/// control net reaches past the plane on a wanted side, furthest first.
+struct QueuedPatch {
+    beyond: f64,
+    depth: usize,
+    patch: BezierPatch,
+}
+
+impl PartialEq for QueuedPatch {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other).is_eq()
+    }
+}
+
+impl Eq for QueuedPatch {}
+
+impl PartialOrd for QueuedPatch {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for QueuedPatch {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // Deeper patches second on ties, so the order is deterministic.
+        self.beyond
+            .total_cmp(&other.beyond)
+            .then_with(|| other.depth.cmp(&self.depth))
+    }
+}
+
+/// [`face_interior_reach`] for a NURBS face: a bounded search over its Bezier
+/// patches.
+///
+/// With positive weights a patch lies in the hull of its control net, so a
+/// patch whose net stays on the near side of `±eps` cannot reach across and
+/// is dropped. A patch whose net does reach across offers its corners (which
+/// lie on the surface) and its centre as witnesses; a witness beyond the plane
+/// that the face's trim holds proves the crossing. Otherwise the patch is
+/// quartered, up to [`NURBS_MAX_DEPTH`] levels. Patches are searched furthest
+/// past the plane first, up to [`NURBS_PATCH_BUDGET`] patches and
+/// [`NURBS_TRIM_TESTS`] trim tests. A search that runs out proves nothing —
+/// the face is then placed by its edges, as before, and the closing volume
+/// check still stands. (A carrier that reaches past the plane only outside
+/// its face's trim is the case that runs out.)
+fn nurbs_interior_reach(
+    topo: &Topology,
+    fid: FaceId,
+    surface: &NurbsSurface,
+    normal: Vec3,
+    d: f64,
+    eps: f64,
+    want: Reach,
+) -> (f64, f64) {
+    let at = |p: Point3| dot_normal_point(normal, p) - d;
+    let mut reach = (f64::INFINITY, f64::NEG_INFINITY);
+    if surface
+        .weights()
+        .iter()
+        .flatten()
+        .any(|w| !w.is_finite() || *w <= 0.0)
+    {
+        return reach;
+    }
+    let Ok(patches) = surface_to_bezier_patches(surface) else {
+        return reach;
+    };
+    // How far a patch's net reaches past the plane on a side still wanted;
+    // `None` when it cannot reach across at all.
+    let beyond = |patch: &BezierPatch, above: bool, below: bool| -> Option<f64> {
+        let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+        for &p in patch.surface.control_points().iter().flatten() {
+            let x = at(p);
+            lo = lo.min(x);
+            hi = hi.max(x);
+        }
+        let up = if above && hi > eps { hi - eps } else { 0.0 };
+        let down = if below && lo < -eps { -eps - lo } else { 0.0 };
+        let reach = up.max(down);
+        (reach > 0.0).then_some(reach)
+    };
+
+    let mut queue = std::collections::BinaryHeap::new();
+    for patch in patches {
+        if let Some(beyond) = beyond(&patch, want.above, want.below) {
+            queue.push(QueuedPatch {
+                beyond,
+                depth: 0,
+                patch,
+            });
+        }
+    }
+    let mut trim = FaceTrim::new(topo, fid, NURBS_TRIM_TESTS);
+    let mut tested: BTreeSet<[u64; 3]> = BTreeSet::new();
+    let mut budget = NURBS_PATCH_BUDGET;
+    while let Some(QueuedPatch { depth, patch, .. }) = queue.pop() {
+        let above = want.above && reach.1 <= eps;
+        let below = want.below && reach.0 >= -eps;
+        if (!above && !below) || budget == 0 || trim.tests == 0 {
+            break;
+        }
+        budget -= 1;
+
+        let net = patch.surface.control_points();
+        let (u0, u1) = patch.surface.domain_u();
+        let (v0, v1) = patch.surface.domain_v();
+        let mut witnesses: Vec<Point3> = Vec::with_capacity(5);
+        witnesses.push(
+            patch
+                .surface
+                .evaluate(f64::midpoint(u0, u1), f64::midpoint(v0, v1)),
+        );
+        if let (Some(first), Some(last)) = (net.first(), net.last()) {
+            witnesses.extend(first.first().copied());
+            witnesses.extend(first.last().copied());
+            witnesses.extend(last.first().copied());
+            witnesses.extend(last.last().copied());
+        }
+        for p in witnesses {
+            let x = at(p);
+            if !((above && x > eps) || (below && x < -eps)) {
+                continue;
+            }
+            // Neighbouring patches share their corners: test each point once.
+            if tested.insert([p.x().to_bits(), p.y().to_bits(), p.z().to_bits()])
+                && trim.contains(p)
+            {
+                reach = (reach.0.min(x), reach.1.max(x));
+            }
+        }
+
+        if depth < NURBS_MAX_DEPTH
+            && let Some(quarters) = quarter_patch(&patch.surface)
+        {
+            for quarter in quarters {
+                if let Some(beyond) = beyond(&quarter, above, below) {
+                    queue.push(QueuedPatch {
+                        beyond,
+                        depth: depth + 1,
+                        patch: quarter,
+                    });
+                }
+            }
+        }
+    }
+    reach
+}
+
+/// Split a single-span Bezier patch at its parameter midpoints into four.
+fn quarter_patch(surface: &NurbsSurface) -> Option<Vec<BezierPatch>> {
+    let (u0, u1) = surface.domain_u();
+    let (v0, v1) = surface.domain_v();
+    let split = surface_knot_insert_u(surface, f64::midpoint(u0, u1), surface.degree_u()).ok()?;
+    let split = surface_knot_insert_v(&split, f64::midpoint(v0, v1), split.degree_v()).ok()?;
+    let quarters = surface_to_bezier_patches(&split).ok()?;
+    (quarters.len() == 4).then_some(quarters)
 }
 
 /// A `2 * span` cube standing on the plane through `foot`, on the side
@@ -635,7 +960,7 @@ fn planar_split(
     let mut straddled = 0usize;
 
     for &fid in all_faces {
-        match face_side(topo, fid, &cuts)? {
+        match face_side(topo, fid, &cuts, normal, d, eps)? {
             // Untouched: surface, curved edges, orientation and every inner
             // wire travel through as topology rather than as positions.
             Some(Side::Pos) => {
@@ -927,13 +1252,36 @@ fn split_edge(
 }
 
 /// Which half `fid` belongs to whole, or `None` when the plane trims it.
+///
+/// A face whose edges all lie on one side may still bow across the plane
+/// between them (a sphere's cap above its rim). The trimmer has no section
+/// for that, so it is refused here and left to the half-space booleans.
 fn face_side(
     topo: &Topology,
     fid: FaceId,
     cuts: &BTreeMap<usize, EdgeCut>,
+    normal: Vec3,
+    d: f64,
+    eps: f64,
 ) -> Result<Option<Side>, OperationsError> {
     let face = topo.face(fid)?;
     let outer = wire_side(topo, face.outer_wire(), cuts)?;
+    if let Some(side) = outer {
+        let want = Reach {
+            above: side == Side::Neg,
+            below: side == Side::Pos,
+        };
+        let (lo, hi) = face_interior_reach(topo, fid, normal, d, eps, want)?;
+        if lo < -eps || hi > eps {
+            return Err(unsupported(format!(
+                "the cutting plane crosses the interior of face {} between its \
+                 edges, which all lie on the {} side; the section through it \
+                 is not bounded by any edge of the face, and is not implemented",
+                fid.index(),
+                side.name()
+            )));
+        }
+    }
 
     for (slot, &wid) in face.inner_wires().iter().enumerate() {
         match (outer, wire_side(topo, wid, cuts)?) {

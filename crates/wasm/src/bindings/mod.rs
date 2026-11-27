@@ -55,6 +55,8 @@ mod blend_edge_coherence_tests;
 #[cfg(test)]
 mod chamfer_freeform_tests;
 #[cfg(test)]
+mod curved_split_tests;
+#[cfg(test)]
 mod cylinder_cross_fuse_all_tests;
 #[cfg(test)]
 mod exact_sweep_tests;

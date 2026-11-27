@@ -5,7 +5,7 @@
 //! lies inside, outside, or on the boundary of a B-Rep solid.
 
 pub(crate) mod boundary;
-pub use boundary::surface_point_in_face;
+pub use boundary::{PreparedFaceTrim, surface_point_in_face};
 pub mod cache;
 pub(crate) mod graze;
 pub mod prepared;
