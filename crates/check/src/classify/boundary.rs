@@ -799,7 +799,7 @@ impl NurbsUvTrim {
         let spans = OnceCell::new();
         let project = |p: Point3| -> (f64, f64) { nurbs_project_uv(surface, p, grid, &spans) };
         // A full-surface face counts every forward hit that does not land in
-        // a hole. `count_analytic_crossings` tests this two ways -- too few
+        // a hole. `count_analytic_crossings_with_trim` tests this two ways -- too few
         // boundary points, OR every boundary point coincident -- and only the
         // first test was made here. A doubly-periodic face (a full torus) has
         // a boundary of exactly its seam endpoints: four vertices, all at one
@@ -872,22 +872,9 @@ fn hit_in_hole_3d(holes: &[Vec<Point3>], hit: Point3, normal: Vec3) -> bool {
 /// # Errors
 ///
 /// Returns an error if topology lookups fail.
-fn count_analytic_crossings<F>(
-    topo: &Topology,
-    face_id: FaceId,
-    hits: &[Point3],
-    project: F,
-    v_periodic: bool,
-    u_pole: Option<f64>,
-) -> Result<u32, CheckError>
-where
-    F: Fn(Point3) -> (f64, f64),
-{
-    count_analytic_crossings_with_trim(topo, face_id, None, None, hits, project, v_periodic, u_pole)
-}
-
-/// [`count_analytic_crossings`] with caller-supplied trim data and an optional
-/// prepared cache for the trim's UV images.
+///
+/// Takes caller-supplied trim data and an optional prepared cache for the
+/// trim's UV images.
 ///
 /// `trim` carries the prepared polygons; `None` builds them on demand exactly
 /// as the one-shot path always has (preserving its early-outs and errors).
@@ -961,54 +948,6 @@ where
     }
 
     Ok(crossings)
-}
-
-/// Count ray crossings of a spherical face whose outer boundary is planar,
-/// trimming against the boundary PLANE rather than a polygon inscribed in it.
-///
-/// Returns `None` when the boundary is not planar, so the caller keeps the
-/// polygon path for lunes and boolean-made spherical triangles.
-///
-/// # Why this exists
-///
-/// `face_polygon` samples a closed boundary edge at a fixed 32 points, so a
-/// hemisphere's equator becomes a 32-gon INSCRIBED in the true circle. A ray
-/// leaving the sphere within the scalloped band between chord and arc — angular
-/// half-width ~pi/n, so 0.098 r at n = 32 — is inside neither hemisphere's
-/// polygon: the north face rejects it on containment and the south face rejects
-/// it on the half-space test. The crossing is counted by NO face, parity flips,
-/// and an interior point is reported `Outside`. Measured on `make_sphere(1, s)`
-/// at 0.9 r: 32.4% wrong at s = 8, 3.3% at s = 32, still 0.25% at s = 128, every
-/// failure Inside -> Outside. The sphere CENTRE is always right, which is why
-/// the single-point tests never caught it.
-///
-/// This is the sagitta gap the `numerical-robustness` guidance names, and the
-/// same one `sphere_seam_plane_crossings` (`algo/src/pave_filler/phase_ff.rs`)
-/// already fixes for section circles — its doc describes this defect verbatim.
-///
-/// # Why the cap side comes from the surface, not the winding
-///
-/// The obvious form of this fix reuses the sign already computed here from the
-/// boundary polygon's Newell normal negated by `is_reversed`. That sign is
-/// wrong on boolean-produced spherical faces, where it survives today only
-/// because two complementary hemispheres tile the sphere and the errors cancel.
-/// Break the symmetry — `cut(box, sphere)` leaves an annular face whose
-/// complementary cap is not a face of the same solid — and a winding-derived
-/// half-space counts a phantom cap, which is an O(1) error rather than the
-/// bounded one it replaces.
-///
-/// So the side is taken from geometry the B-Rep states directly: the outward
-/// surface normal at a boundary point (analytic, `(p - centre)/r` flipped by
-/// `is_reversed`) crossed with the boundary's own traversal direction gives the
-/// inward tangent, and its component along the plane normal says which cap the
-/// face occupies.
-fn count_sphere_cap_crossings(
-    topo: &Topology,
-    face_id: FaceId,
-    hits: &[Point3],
-    sph: &remus_math::surfaces::SphericalSurface,
-) -> Result<Option<u32>, CheckError> {
-    count_sphere_cap_crossings_with_trim(topo, face_id, None, hits, sph)
 }
 
 /// The plane of a spherical cap's rim and the side of it the face occupies:
@@ -1162,8 +1101,47 @@ fn sphere_cap_contains(
     Ok(cap_holes.in_hole(point).map(|in_hole| !in_hole))
 }
 
-/// [`count_sphere_cap_crossings`] with caller-supplied trim data (`None`
-/// builds it on demand, exactly as the one-shot path always has).
+/// Count ray crossings of a spherical face whose outer boundary is planar,
+/// trimming against the boundary PLANE rather than a polygon inscribed in it.
+///
+/// Returns `None` when the boundary is not planar, so the caller keeps the
+/// polygon path for lunes and boolean-made spherical triangles.
+///
+/// # Why this exists
+///
+/// `face_polygon` samples a closed boundary edge at a fixed 32 points, so a
+/// hemisphere's equator becomes a 32-gon INSCRIBED in the true circle. A ray
+/// leaving the sphere within the scalloped band between chord and arc — angular
+/// half-width ~pi/n, so 0.098 r at n = 32 — is inside neither hemisphere's
+/// polygon: the north face rejects it on containment and the south face rejects
+/// it on the half-space test. The crossing is counted by NO face, parity flips,
+/// and an interior point is reported `Outside`. Measured on `make_sphere(1, s)`
+/// at 0.9 r: 32.4% wrong at s = 8, 3.3% at s = 32, still 0.25% at s = 128, every
+/// failure Inside -> Outside. The sphere CENTRE is always right, which is why
+/// the single-point tests never caught it.
+///
+/// This is the sagitta gap the `numerical-robustness` guidance names, and the
+/// same one `sphere_seam_plane_crossings` (`algo/src/pave_filler/phase_ff.rs`)
+/// already fixes for section circles — its doc describes this defect verbatim.
+///
+/// # Why the cap side comes from the surface, not the winding
+///
+/// The obvious form of this fix reuses the sign already computed here from the
+/// boundary polygon's Newell normal negated by `is_reversed`. That sign is
+/// wrong on boolean-produced spherical faces, where it survives today only
+/// because two complementary hemispheres tile the sphere and the errors cancel.
+/// Break the symmetry — `cut(box, sphere)` leaves an annular face whose
+/// complementary cap is not a face of the same solid — and a winding-derived
+/// half-space counts a phantom cap, which is an O(1) error rather than the
+/// bounded one it replaces.
+///
+/// So the side is taken from geometry the B-Rep states directly: the outward
+/// surface normal at a boundary point (analytic, `(p - centre)/r` flipped by
+/// `is_reversed`) crossed with the boundary's own traversal direction gives the
+/// inward tangent, and its component along the plane normal says which cap the
+/// face occupies.
+///
+/// `trim` is caller-supplied trim data; `None` builds it on demand.
 fn count_sphere_cap_crossings_with_trim(
     topo: &Topology,
     face_id: FaceId,
@@ -2286,16 +2264,8 @@ fn sphere_trim_reads_in_chart(
         })
 }
 
-fn count_3d_polygon_crossings(
-    topo: &Topology,
-    face_id: FaceId,
-    hits: &[Point3],
-) -> Result<u32, CheckError> {
-    count_3d_polygon_crossings_with_trim(topo, face_id, None, hits)
-}
-
-/// [`count_3d_polygon_crossings`] with caller-supplied trim data (`None`
-/// builds it on demand, exactly as the one-shot path always has).
+/// Count crossings of a face read as its 3D boundary polygon, with
+/// caller-supplied trim data (`None` builds it on demand).
 fn count_3d_polygon_crossings_with_trim(
     topo: &Topology,
     face_id: FaceId,
@@ -2888,7 +2858,7 @@ fn count_nurbs_hits_with_trim(
 
     // A boundary that encloses no UV area does not bound a patch -- it splits
     // the surface, and which half this face takes is carried by the WINDING of
-    // its boundary, not by anything in UV. `count_3d_polygon_crossings` reads
+    // its boundary, not by anything in UV. `count_3d_polygon_crossings_with_trim` reads
     // exactly that (the two hemispheres of a sphere traverse their shared
     // equatorial wire in opposite senses), and it needs no surface type, so it
     // serves any NURBS face of this shape.
@@ -3004,59 +2974,133 @@ pub fn surface_point_in_face(
     face_id: FaceId,
     point: Point3,
 ) -> Result<bool, CheckError> {
+    surface_point_in_face_with(topo, face_id, None, None, point)
+}
+
+/// [`surface_point_in_face`] for repeated queries against one face.
+///
+/// The face's trim polygons, and the UV images and seed grids derived from
+/// them, are built once and shared by every query, so each query costs one
+/// projection and one containment test. Every answer is the one
+/// [`surface_point_in_face`] gives for the same point: both run the same
+/// tests over the same trim data, which its cache holds bit for bit.
+#[derive(Debug)]
+pub struct PreparedFaceTrim<'a> {
+    topo: &'a Topology,
+    face_id: FaceId,
+    trim: FaceTrimData,
+    cache: FaceCache,
+}
+
+impl<'a> PreparedFaceTrim<'a> {
+    /// Read the trim of `face_id` for repeated membership queries.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a boundary entity or curve domain is invalid.
+    pub fn new(topo: &'a Topology, face_id: FaceId) -> Result<Self, CheckError> {
+        Ok(Self {
+            topo,
+            face_id,
+            trim: FaceTrimData::build(topo, face_id)?,
+            cache: FaceCache::default(),
+        })
+    }
+
+    /// Whether `point`, already on the face's support surface, lies within
+    /// its trims: [`surface_point_in_face`] on the prepared trim.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a boundary entity or curve domain is invalid, or
+    /// the containment test abstains.
+    pub fn contains(&self, point: Point3) -> Result<bool, CheckError> {
+        surface_point_in_face_with(
+            self.topo,
+            self.face_id,
+            Some(&self.trim),
+            Some(&self.cache),
+            point,
+        )
+    }
+}
+
+/// [`surface_point_in_face`] with optional prepared trim data and cache.
+/// `None` for both is the one-shot path exactly.
+fn surface_point_in_face_with(
+    topo: &Topology,
+    face_id: FaceId,
+    trim: Option<&FaceTrimData>,
+    cache: Option<&FaceCache>,
+    point: Point3,
+) -> Result<bool, CheckError> {
     let hits = [point];
     let count = match topo.face(face_id)?.surface() {
         FaceSurface::Plane { normal, .. } => {
-            let trim = FaceTrimData::build(topo, face_id)?;
+            let owned;
+            let trim = if let Some(trim) = trim {
+                trim
+            } else {
+                owned = FaceTrimData::build(topo, face_id)?;
+                &owned
+            };
             return Ok(point_in_polygon_3d(&point, &trim.outer, normal)
                 && !hit_in_hole_3d(&trim.holes, point, *normal));
         }
-        FaceSurface::Cylinder(surface) => count_analytic_crossings(
+        FaceSurface::Cylinder(surface) => count_analytic_crossings_with_trim(
             topo,
             face_id,
+            trim,
+            cache,
             &hits,
             |p| surface.project_point(p),
             false,
             None,
         )?,
-        FaceSurface::Cone(surface) => count_analytic_crossings(
+        FaceSurface::Cone(surface) => count_analytic_crossings_with_trim(
             topo,
             face_id,
+            trim,
+            cache,
             &hits,
             |p| surface.project_point(p),
             false,
             Some(CONE_APEX_V),
         )?,
-        FaceSurface::Torus(surface) => count_analytic_crossings(
+        FaceSurface::Torus(surface) => count_analytic_crossings_with_trim(
             topo,
             face_id,
+            trim,
+            cache,
             &hits,
             |p| surface.project_point(p),
             true,
             None,
         )?,
         FaceSurface::Sphere(surface) => {
-            if let Some(count) = count_sphere_cap_crossings(topo, face_id, &hits, surface)? {
-                count
-            } else if let Some(count) =
-                count_great_circle_trim_crossings(topo, face_id, None, &hits)?
+            if let Some(count) =
+                count_sphere_cap_crossings_with_trim(topo, face_id, trim, &hits, surface)?
             {
                 count
             } else if let Some(count) =
-                count_sphere_circle_patch_crossings(topo, face_id, None, &hits, surface)?
+                count_great_circle_trim_crossings(topo, face_id, cache, &hits)?
             {
                 count
             } else if let Some(count) =
-                count_sphere_arc_trim_crossings(topo, face_id, None, &hits, surface)?
+                count_sphere_circle_patch_crossings(topo, face_id, cache, &hits, surface)?
+            {
+                count
+            } else if let Some(count) =
+                count_sphere_arc_trim_crossings(topo, face_id, cache, &hits, surface)?
             {
                 count
             } else {
-                count_3d_polygon_crossings(topo, face_id, &hits)?
+                count_3d_polygon_crossings_with_trim(topo, face_id, trim, &hits)?
             }
         }
         FaceSurface::Nurbs(surface) => {
             let (u, v) = surface.project_point(point);
-            count_nurbs_hits_with_trim(topo, face_id, None, None, surface, &[(point, u, v)])?
+            count_nurbs_hits_with_trim(topo, face_id, trim, cache, surface, &[(point, u, v)])?
         }
     };
     Ok(count > 0)

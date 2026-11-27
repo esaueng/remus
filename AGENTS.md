@@ -463,6 +463,7 @@ Quick reference — find the right file for any task:
 | Shared utilities (face polygon, AABB, edge sampling) | `util.rs` |
 | Ray-surface intersection (all types + solvers) | `classify/ray_surface.rs` |
 | UV boundary polygon, containment tests | `classify/boundary.rs` |
+| Trim membership of a point on a face's carrier: one-shot `surface_point_in_face`, and `PreparedFaceTrim` reading the trim once for repeated queries against one face (same answers) | `classify/boundary.rs` |
 | Point-in-solid classification (ray casting) | `classify/mod.rs` |
 | Winding number classifier | `classify/winding.rs` |
 | Operation-local prepared context for repeated point classification (`PreparedSolid`) | `classify/prepared.rs` |
@@ -664,7 +665,8 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Shell (hollow solid) | `shell_op.rs` |
 | Draft (taper faces): the sharp construction (corners relocated to three-plane intersections, only the wires they sit on rebuilt), which names the curved faces it refuses on | `draft.rs` |
 | Draft through blends: a box with rounded vertical edges drafted on four walls and on one (tilted planes, exact R5 bands along the tilted sections, closed-form volume, ray-cast probes, total face history), the sharp construction's own refusal naming the bands, the rounded-top-loop case as a typed refusal naming the blend step that stopped it with its ready repro, and a curved neighbour that is no blend keeping the sharp refusal (tests) | `draft/blend_tests.rs` |
-| Section / Split | `section.rs`, `split.rs` |
+| Section / Split (a face's side of the plane read from its edges and its carrier's interior critical points held by its trim: sphere poles, torus Gauss-map points and rings, a bounded Bezier-patch search on NURBS faces) | `section.rs`, `split.rs` |
+| Split planes through a curved face's interior clear of its edges: spheres at, off and below the equator, cylinders along, across and lying, tori through the tube and the axis, closed-form halves, closed meshes and side probes; tangent, miss and edge-contact refusals unchanged; B-spline sphere side judgement; `PreparedFaceTrim` parity (tests) | `tests/regress_split_curved_interior.rs` |
 | Exact solid-face imprint with journal history | `imprint.rs` |
 | Bounded interior planar polygon imprint with complete construction history | `imprint/polygon.rs`, `imprint/polygon/interval.rs` |
 | Directional curve projection onto faces, solids, sketch planes (P-Class 7.4: sweep-plane sections, coaxial circles, fitted-arc cell, clipping/seams, sketch-plane maps) | `project_curve.rs` |
@@ -973,6 +975,7 @@ coordinates, where a fixed 1e-7 step loses too much to cancellation.
 | Direct/batch B6 primitive qualification | `bindings/qualify_primitives_tests.rs` |
 | Direct/batch B6 convex-hull/Minkowski qualification | `bindings/qualify_convex_hull_tests.rs` |
 | Direct/batch B6 plane-section/split qualification | `bindings/qualify_section_split_tests.rs` |
+| Handle-only `split` and batch `split` across a sphere's or torus's interior clear of its edges: closed-form halves bit for bit across both routes, tangent and missing planes still refused with the session unchanged (tests) | `bindings/curved_split_tests.rs` |
 | Per-edge convexity + face material-sense qualification (B16) | `bindings/qualify_edge_relations_tests.rs` |
 | Ordered wire traversal contract (B16) | `bindings/wire_traversal_contract_tests.rs` |
 | Growing-holder recipe `volume` contract (B54: closed-form −5440 width step through `executeBatch`) | `bindings/growing_holder_volume_tests.rs` |
