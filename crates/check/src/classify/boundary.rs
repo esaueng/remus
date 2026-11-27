@@ -2983,7 +2983,7 @@ pub fn surface_point_in_face(
 /// them, are built once and shared by every query, so each query costs one
 /// projection and one containment test. Every answer is the one
 /// [`surface_point_in_face`] gives for the same point: both run the same
-/// tests over the same trim data, which [`FaceCache`] holds bit for bit.
+/// tests over the same trim data, which its cache holds bit for bit.
 #[derive(Debug)]
 pub struct PreparedFaceTrim<'a> {
     topo: &'a Topology,
