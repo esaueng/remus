@@ -588,3 +588,109 @@ fn prepared_face_trim_matches_the_one_shot_trim_test() {
     }
     assert!(compared > 1000, "{compared} points compared");
 }
+
+/// A refusal that is not a miss: the halves were built, or the split refused
+/// by name as an interior crossing.
+fn assert_crossing(result: Result<SplitResult, OperationsError>, what: &str) {
+    match result {
+        Ok(_) => {}
+        Err(OperationsError::Unsupported { reason, .. }) => assert!(
+            reason.contains("crosses the interior of face"),
+            "{what}: refused for another reason: {reason}"
+        ),
+        Err(err) => panic!("{what}: a crossing must not read as {err:?}"),
+    }
+}
+
+/// A plane a hair off the axis of a large torus: the normal's radial part
+/// `|w| = 5e-13` is below the Gauss-map helper's cutoff, but `R·|w| = 5e-7`
+/// on an `R = 1e6` torus is past the tolerance, so a plane 2e-7 under the top
+/// ring still crosses (by 3e-7). The rings are read where the normal points.
+#[test]
+fn near_axial_plane_on_a_large_torus_still_crosses() {
+    let mut topo = Topology::new();
+    let torus = make_torus(&mut topo, 1.0e6, 3.0, 16).unwrap();
+    let normal = Vec3::new(0.0, 5.0e-13, 1.0);
+    let crossing = split(&mut topo, torus, Point3::new(0.0, 0.0, 3.000_000_2), normal);
+    assert_crossing(
+        crossing,
+        "R1e6 r3 torus, near-axial plane under the top ring",
+    );
+    let missing = split(&mut topo, torus, Point3::new(0.0, 0.0, 3.000_001), normal);
+    assert!(
+        matches!(missing, Err(OperationsError::InvalidInput { .. })),
+        "a plane 1e-6 over the reach must stay a miss, got {missing:?}"
+    );
+}
+
+/// A unit cube on `z ∈ [-1, 0]` whose top is the bicubic Bezier roof
+/// `z = q(u)·q(v)`, `q(t) = 27/4·t(1−t)²`: zero along its four straight
+/// edges, reaching exactly 1 at `(1/3, 1/3)`. Volume `1 + (9/16)²`.
+fn bump_roofed_cube(topo: &mut Topology) -> SolidId {
+    use remus_math::nurbs::surface::NurbsSurface;
+    use remus_topology::explorer::solid_faces;
+    use remus_topology::face::FaceSurface;
+
+    let cube = make_box(topo, 1.0, 1.0, 1.0).unwrap();
+    transform_solid(topo, cube, &Mat4::translation(0.0, 0.0, -1.0)).unwrap();
+    let top = solid_faces(topo, cube)
+        .unwrap()
+        .into_iter()
+        .find(|&f| {
+            topo.face(f)
+                .unwrap()
+                .effective_plane_normal()
+                .is_some_and(|n| n.z() > 0.5)
+        })
+        .expect("top face");
+    let reversed = topo.face(top).unwrap().is_reversed();
+    let knots = vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
+    let net: Vec<Vec<Point3>> = (0..4)
+        .map(|i| {
+            (0..4)
+                .map(|j| {
+                    let z = if i == 1 && j == 1 { 81.0 / 16.0 } else { 0.0 };
+                    let (x, y) = (f64::from(i) / 3.0, f64::from(j) / 3.0);
+                    // A reversed face flips the carrier's normal: swap u and
+                    // v so the roof's effective normal still points up.
+                    if reversed {
+                        Point3::new(y, x, z)
+                    } else {
+                        Point3::new(x, y, z)
+                    }
+                })
+                .collect()
+        })
+        .collect();
+    let roof = NurbsSurface::new(3, 3, knots.clone(), knots, net, vec![vec![1.0; 4]; 4]).unwrap();
+    topo.face_mut(top)
+        .unwrap()
+        .set_surface(FaceSurface::Nurbs(roof));
+    assert_relative("bump-roofed cube", volume(topo, cube), 1.0 + 81.0 / 256.0);
+    cube
+}
+
+/// The roof crosses `z = 0.999999` by 1e-6 at a peak between every dyadic
+/// witness the patch search reaches; the witnesses are polished onto the
+/// peak. The tangent plane at the peak and a plane past it stay misses.
+#[test]
+fn nurbs_roof_crossed_below_a_narrow_peak_is_a_crossing() {
+    for (z, crossing) in [
+        (0.5, true),
+        (0.999_999, true),
+        (1.0, false),
+        (1.000_001, false),
+    ] {
+        let mut topo = Topology::new();
+        let cube = bump_roofed_cube(&mut topo);
+        let result = split(&mut topo, cube, Point3::new(0.0, 0.0, z), Z);
+        if crossing {
+            assert_crossing(result, &format!("roof at z = {z}"));
+        } else {
+            assert!(
+                matches!(result, Err(OperationsError::InvalidInput { .. })),
+                "roof at z = {z} must stay a miss, got {result:?}"
+            );
+        }
+    }
+}

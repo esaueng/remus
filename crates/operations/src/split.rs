@@ -42,6 +42,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use remus_math::compact_sort::CompactSort;
 use remus_math::curves::Circle3D;
 use remus_math::nurbs::decompose::{BezierPatch, surface_to_bezier_patches};
 use remus_math::nurbs::knot_ops::{surface_knot_insert_u, surface_knot_insert_v};
@@ -87,6 +88,13 @@ const NURBS_MAX_DEPTH: usize = 8;
 /// Most witness points a NURBS face's crossing search tests against the
 /// face's trim.
 const NURBS_TRIM_TESTS: usize = 32;
+
+/// Best witnesses a NURBS face's crossing search keeps per side, to polish
+/// when the patch search alone proves nothing.
+const NURBS_POLISH_SEEDS: usize = 4;
+
+/// Most ascent steps one polished witness takes.
+const NURBS_POLISH_STEPS: usize = 32;
 
 /// Relative slack on the volume-sum identity. The halves reuse the input's own
 /// surfaces and `solid_volume` is exact on them, so the only difference is
@@ -428,6 +436,18 @@ fn split_with_evolution_impl(
                 half_space_split(topo, solid, normal, d, tol)
             })
             .map_err(|fallback| {
+                if let OperationsError::EmptyResult { reason } = &fallback {
+                    // The exact boolean found no material on one side: the
+                    // plane does not split the body. A face's interior can be
+                    // read as crossing only where its sampled trim test
+                    // misplaces a point beside its boundary; this is where
+                    // such a misreading comes back to the miss it was.
+                    log::debug!("split: a half-space half is empty ({reason})");
+                    return OperationsError::InvalidInput {
+                        reason: "cutting plane does not split the solid (entirely on one side)"
+                            .into(),
+                    };
+                }
                 unsupported(format!(
                     "{reason}; the exact half-space boolean fallback also refused \
                      ({fallback})"
@@ -533,11 +553,29 @@ fn face_interior_reach(
                 up.extend(down);
                 up
             } else {
-                // The normal lies along the axis: the critical sets are the
-                // top and bottom rings.
-                let rim = torus.center() + torus.x_axis() * torus.major_radius();
-                let lift = torus.z_axis() * torus.minor_radius();
-                vec![rim + lift, rim - lift]
+                // The normal lies along the axis, to within the helper's
+                // cutoff: the critical sets are (nearly) the top and bottom
+                // rings. Their points of furthest reach lie where the
+                // normal's radial part points, which on a large torus can
+                // still add `R·|w|` past the tolerance, so read the rings
+                // there, both ways round.
+                let axis = torus.z_axis();
+                let w = normal - axis * normal.dot(axis);
+                let len = w.length();
+                let radial = if len > 0.0 && len.is_finite() {
+                    w * (1.0 / len)
+                } else {
+                    torus.x_axis()
+                };
+                let out = radial * torus.major_radius();
+                let lift = axis * torus.minor_radius();
+                let c = torus.center();
+                vec![
+                    c + out + lift,
+                    c + out - lift,
+                    c - out + lift,
+                    c - out - lift,
+                ]
             }
         }
         FaceSurface::Nurbs(surface) => {
@@ -701,6 +739,15 @@ fn nurbs_interior_reach(
     let mut trim = FaceTrim::new(topo, fid, NURBS_TRIM_TESTS);
     let mut tested: BTreeSet<[u64; 3]> = BTreeSet::new();
     let mut budget = NURBS_PATCH_BUDGET;
+    // The furthest witnesses seen on each side, `(reach past the plane, u, v)`,
+    // for the polish below.
+    let mut seeds_above: Vec<(f64, f64, f64)> = Vec::new();
+    let mut seeds_below: Vec<(f64, f64, f64)> = Vec::new();
+    let keep = |seeds: &mut Vec<(f64, f64, f64)>, seed: (f64, f64, f64)| {
+        seeds.push(seed);
+        seeds.compact_sort_by(|a, b| b.0.total_cmp(&a.0));
+        seeds.truncate(NURBS_POLISH_SEEDS);
+    };
     while let Some(QueuedPatch { depth, patch, .. }) = queue.pop() {
         let above = want.above && reach.1 <= eps;
         let below = want.below && reach.0 >= -eps;
@@ -710,22 +757,33 @@ fn nurbs_interior_reach(
         budget -= 1;
 
         let net = patch.surface.control_points();
+        // Patch knots are the source surface's own parameters.
         let (u0, u1) = patch.surface.domain_u();
         let (v0, v1) = patch.surface.domain_v();
-        let mut witnesses: Vec<Point3> = Vec::with_capacity(5);
-        witnesses.push(
-            patch
-                .surface
-                .evaluate(f64::midpoint(u0, u1), f64::midpoint(v0, v1)),
-        );
+        let (um, vm) = (f64::midpoint(u0, u1), f64::midpoint(v0, v1));
+        let mut witnesses: Vec<(Point3, f64, f64)> = Vec::with_capacity(5);
+        witnesses.push((patch.surface.evaluate(um, vm), um, vm));
         if let (Some(first), Some(last)) = (net.first(), net.last()) {
-            witnesses.extend(first.first().copied());
-            witnesses.extend(first.last().copied());
-            witnesses.extend(last.first().copied());
-            witnesses.extend(last.last().copied());
+            let corners = [
+                (first.first(), u0, v0),
+                (first.last(), u0, v1),
+                (last.first(), u1, v0),
+                (last.last(), u1, v1),
+            ];
+            for (p, u, v) in corners {
+                if let Some(&p) = p {
+                    witnesses.push((p, u, v));
+                }
+            }
         }
-        for p in witnesses {
+        for (p, u, v) in witnesses {
             let x = at(p);
+            if above {
+                keep(&mut seeds_above, (x, u, v));
+            }
+            if below {
+                keep(&mut seeds_below, (-x, u, v));
+            }
             if !((above && x > eps) || (below && x < -eps)) {
                 continue;
             }
@@ -751,7 +809,86 @@ fn nurbs_interior_reach(
             }
         }
     }
+
+    // A peak narrower than the deepest patches can sit between every grid
+    // witness. Climb from the furthest witnesses seen to the surface's own
+    // extreme along the normal, and offer that point instead.
+    trim.tests += NURBS_POLISH_SEEDS;
+    for (sign, seeds) in [(1.0, seeds_above), (-1.0, seeds_below)] {
+        for (_, u, v) in seeds {
+            let side_wanted = if sign > 0.0 {
+                want.above && reach.1 <= eps
+            } else {
+                want.below && reach.0 >= -eps
+            };
+            if !side_wanted {
+                break;
+            }
+            let p = climb(surface, normal, sign, u, v);
+            let x = at(p);
+            if sign * x > eps
+                && tested.insert([p.x().to_bits(), p.y().to_bits(), p.z().to_bits()])
+                && trim.contains(p)
+            {
+                reach = (reach.0.min(x), reach.1.max(x));
+            }
+        }
+    }
     reach
+}
+
+/// Climb a NURBS surface from `(u, v)` toward a local maximum of
+/// `sign · normal · S(u, v)`, within its domain: Newton steps where the
+/// Hessian is negative definite, gradient steps otherwise, each accepted only
+/// if it climbs. Returns the point reached.
+fn climb(surface: &NurbsSurface, normal: Vec3, sign: f64, u: f64, v: f64) -> Point3 {
+    let (u0, u1) = surface.domain_u();
+    let (v0, v1) = surface.domain_v();
+    let span = (u1 - u0).hypot(v1 - v0);
+    let height =
+        |u: f64, v: f64| sign * normal.dot(surface.evaluate(u, v) - Point3::new(0.0, 0.0, 0.0));
+    let (mut u, mut v) = (u.clamp(u0, u1), v.clamp(v0, v1));
+    let mut best = height(u, v);
+    for _ in 0..NURBS_POLISH_STEPS {
+        let ders = surface.derivatives(u, v, 2);
+        let at = |k: usize, l: usize| {
+            ders.get(k)
+                .and_then(|row| row.get(l))
+                .map_or(0.0, |d| sign * normal.dot(*d))
+        };
+        let (gu, gv) = (at(1, 0), at(0, 1));
+        let (huu, huv, hvv) = (at(2, 0), at(1, 1), at(0, 2));
+        let det = huu.mul_add(hvv, -(huv * huv));
+        let (mut du, mut dv) = if huu < 0.0 && det > 0.0 {
+            // Newton: solve H·d = −g.
+            ((huv * gv - hvv * gu) / det, (huv * gu - huu * gv) / det)
+        } else {
+            let g = gu.hypot(gv);
+            if g == 0.0 || !g.is_finite() {
+                break;
+            }
+            (gu / g * span * 0.1, gv / g * span * 0.1)
+        };
+        if !du.is_finite() || !dv.is_finite() {
+            break;
+        }
+        let mut climbed = false;
+        for _ in 0..30 {
+            let (nu, nv) = ((u + du).clamp(u0, u1), (v + dv).clamp(v0, v1));
+            let h = height(nu, nv);
+            if h > best {
+                (u, v, best) = (nu, nv, h);
+                climbed = true;
+                break;
+            }
+            du *= 0.5;
+            dv *= 0.5;
+        }
+        if !climbed {
+            break;
+        }
+    }
+    surface.evaluate(u, v)
 }
 
 /// Split a single-span Bezier patch at its parameter midpoints into four.
@@ -855,6 +992,13 @@ fn half_space_split(
         // only leaves the orphan behind, as the other boolean tools do.
         if let Err(error) = topo.delete_solid(tool) {
             log::debug!("split: half-space tool left in the arena: {error}");
+        }
+        // An intersection with no common material is the empty-solid
+        // sentinel: the plane leaves the body on the other side.
+        if solid_faces(topo, half)?.is_empty() {
+            return Err(OperationsError::EmptyResult {
+                reason: format!("the {} half-space holds none of the body", side.name()),
+            });
         }
         if !history.origin.is_exact() || !history.generated.is_empty() {
             return Err(unsupported(format!(
@@ -2007,6 +2151,28 @@ mod tests {
         assert!(
             matches!(err, OperationsError::Unsupported { operation, .. } if operation == "split"),
             "expected a typed refusal, got {err:?}"
+        );
+    }
+
+    /// The exact half-space boolean reports a side with no material as
+    /// `EmptyResult`, which `split` reads as the miss it is: a face interior
+    /// misread as crossing near its sampled boundary still ends in
+    /// `InvalidInput`, not in a boolean refusal.
+    #[test]
+    fn half_space_split_reports_an_empty_side_as_empty() {
+        let mut topo = Topology::new();
+        let cube = crate::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+        let err = half_space_split(
+            &mut topo,
+            cube,
+            Vec3::new(0.0, 0.0, 1.0),
+            5.0,
+            Tolerance::new(),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, OperationsError::EmptyResult { .. }),
+            "expected EmptyResult, got {err:?}"
         );
     }
 
