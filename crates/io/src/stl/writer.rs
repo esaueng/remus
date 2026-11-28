@@ -114,144 +114,79 @@ pub fn validate_angular_tol(angular_tol: f64) -> Result<(), crate::IoError> {
 /// Returns an error if serialization fails.
 pub fn write_mesh_stl(mesh: &TriangleMesh, format: StlFormat) -> Result<Vec<u8>, crate::IoError> {
     let mut filtered = mesh.clone();
+    crate::retain_nondegenerate_triangles(&mut filtered);
     match format {
         StlFormat::Binary => {
-            retain_binary_triangles(&mut filtered);
+            check_binary_precision(&filtered)?;
             write_binary_stl(&filtered)
         }
-        StlFormat::Ascii => {
-            crate::retain_nondegenerate_triangles(&mut filtered);
-            write_ascii_stl(&filtered)
-        }
+        StlFormat::Ascii => write_ascii_stl(&filtered),
     }
 }
 
-/// Prepare one mesh for a binary STL, which stores every coordinate as `f32`.
+/// Refuse a mesh that the `f32` coordinates of a binary STL would damage.
 ///
 /// Far from the origin `f32` resolves only a few hundredths of a millimetre,
-/// so a fine tessellation can hold points that meet, or fall on one line, once
-/// written. Filtering in `f64` lets those facets through as zero-area records,
-/// and dropping a facet whose three points fall on one line opens the mesh. So
-/// every position is rounded to the `f32` [`write_f32_le`] writes, equal
-/// positions are welded, facets with a repeated vertex are dropped, and each
-/// remaining zero-area facet is removed by splitting its neighbour across its
-/// long edge at its middle vertex. Every step keeps a closed mesh closed.
-fn retain_binary_triangles(mesh: &mut TriangleMesh) {
-    let mut welded: std::collections::BTreeMap<[u64; 3], u32> = std::collections::BTreeMap::new();
-    let mut positions = Vec::new();
-    let mut normals = Vec::new();
-    let mut remap = Vec::with_capacity(mesh.positions.len());
-    for (i, p) in mesh.positions.iter().enumerate() {
-        let rounded = Point3::new(to_f32(p.x()), to_f32(p.y()), to_f32(p.z()));
-        let key = [
-            rounded.x().to_bits(),
-            rounded.y().to_bits(),
-            rounded.z().to_bits(),
-        ];
-        let next = u32::try_from(positions.len()).unwrap_or(u32::MAX);
-        let id = *welded.entry(key).or_insert_with(|| {
-            positions.push(rounded);
-            normals.push(
-                mesh.normals
-                    .get(i)
-                    .copied()
-                    .unwrap_or(Vec3::new(0.0, 0.0, 1.0)),
-            );
-            next
-        });
-        remap.push(id);
+/// so points a fine tessellation keeps apart in `f64` can meet, or fall on one
+/// line, once written. A facet would then be written with zero area, or two
+/// vertices would merge, which opens the mesh or makes an edge carry more
+/// than two facets for a reader that joins equal points. Both are refused
+/// rather than written; the mesh itself is never changed, so a mesh that
+/// passes is written exactly as before.
+///
+/// # Errors
+///
+/// [`crate::IoError::InvalidTopology`] naming the first facet or vertex pair
+/// that `f32` damages.
+fn check_binary_precision(mesh: &TriangleMesh) -> Result<(), crate::IoError> {
+    let rounded = |p: Point3| Point3::new(to_f32(p.x()), to_f32(p.y()), to_f32(p.z()));
+    let refuse = |what: String| crate::IoError::InvalidTopology {
+        reason: format!(
+            "{what}: a binary STL stores coordinates as f32, which cannot keep this \
+             mesh apart at its distance from the origin; translate the part nearer the \
+             origin or write ASCII STL"
+        ),
+    };
+
+    for (t, tri) in mesh.indices.chunks_exact(3).enumerate() {
+        let [a, b, c] = [tri[0], tri[1], tri[2]].map(|i| rounded(mesh.positions[i as usize]));
+        if (b - a).cross(c - a).length_squared() == 0.0 {
+            return Err(refuse(format!("facet {t} has zero area in f32")));
+        }
     }
-    let mut triangles: Vec<[u32; 3]> = mesh
-        .indices
-        .chunks_exact(3)
-        .filter_map(|t| {
-            let tri =
-                [t[0], t[1], t[2]].map(|i| remap.get(i as usize).copied().unwrap_or(u32::MAX));
-            let distinct = tri[0] != tri[1] && tri[1] != tri[2] && tri[0] != tri[2];
-            (distinct && tri.iter().all(|&i| (i as usize) < positions.len())).then_some(tri)
+
+    // Two vertices a facet uses, at different f64 positions, that land on one
+    // f32 position. Each used vertex is sorted once, by its f32 bits.
+    let mut used = vec![false; mesh.positions.len()];
+    for &i in &mesh.indices {
+        used[i as usize] = true;
+    }
+    #[allow(clippy::cast_possible_truncation)]
+    let narrow = |v: f64| (v as f32).to_bits();
+    let mut landing: Vec<([u32; 3], [u64; 3])> = mesh
+        .positions
+        .iter()
+        .zip(&used)
+        .filter(|&(_, &is_used)| is_used)
+        .map(|(&p, _)| {
+            (
+                [narrow(p.x()), narrow(p.y()), narrow(p.z())],
+                [p.x().to_bits(), p.y().to_bits(), p.z().to_bits()],
+            )
         })
         .collect();
-
-    // A split can leave a new zero-area facet when the opposite vertex lies on
-    // the same line, so the repair runs until nothing changes, within a bound.
-    for _ in 0..8 {
-        if !split_slivers(&positions, &mut triangles) {
-            break;
-        }
+    landing.sort_unstable();
+    if let Some(pair) = landing
+        .windows(2)
+        .find(|pair| pair[0].0 == pair[1].0 && pair[0].1 != pair[1].1)
+    {
+        let p = pair[0].0.map(f32::from_bits);
+        return Err(refuse(format!(
+            "two distinct vertices meet at ({}, {}, {}) in f32",
+            p[0], p[1], p[2]
+        )));
     }
-
-    mesh.positions = positions;
-    mesh.normals = normals;
-    mesh.indices = triangles.into_iter().flatten().collect();
-    // A sliver the repair could not reach is dropped, as before.
-    crate::retain_nondegenerate_triangles(mesh);
-}
-
-/// Remove each zero-area facet whose neighbour across its long edge can be
-/// split at the facet's middle vertex. Answers whether anything changed.
-fn split_slivers(positions: &[Point3], triangles: &mut Vec<[u32; 3]>) -> bool {
-    let point = |i: u32| positions[i as usize];
-    let zero_area = |t: &[u32; 3]| {
-        let [a, b, c] = t.map(point);
-        (b - a).cross(c - a).length_squared() == 0.0
-    };
-    if !triangles.iter().any(zero_area) {
-        return false;
-    }
-    let mut half_edges = std::collections::BTreeMap::new();
-    for (f, t) in triangles.iter().enumerate() {
-        for k in 0..3 {
-            half_edges.insert((t[k], t[(k + 1) % 3]), f);
-        }
-    }
-    let mut removed = vec![false; triangles.len()];
-    let mut touched = vec![false; triangles.len()];
-    let mut added = Vec::new();
-    for f in 0..triangles.len() {
-        let t = triangles[f];
-        if touched[f] || !zero_area(&t) {
-            continue;
-        }
-        // The middle vertex is the one the other two lie on either side of.
-        let Some(k) = (0..3).find(|&k| {
-            let m = point(t[(k + 2) % 3]);
-            (point(t[k]) - m).dot(point(t[(k + 1) % 3]) - m) < 0.0
-        }) else {
-            continue;
-        };
-        let (u, v, m) = (t[k], t[(k + 1) % 3], t[(k + 2) % 3]);
-        let Some(&g) = half_edges.get(&(v, u)) else {
-            continue;
-        };
-        if g == f || touched[g] {
-            continue;
-        }
-        let n = triangles[g];
-        let Some(j) = (0..3).find(|&j| n[j] == v && n[(j + 1) % 3] == u) else {
-            continue;
-        };
-        let d = n[(j + 2) % 3];
-        if d == m {
-            continue;
-        }
-        removed[f] = true;
-        removed[g] = true;
-        touched[f] = true;
-        touched[g] = true;
-        added.push([v, m, d]);
-        added.push([m, u, d]);
-    }
-    if added.is_empty() {
-        return false;
-    }
-    let mut kept: Vec<[u32; 3]> = triangles
-        .iter()
-        .zip(&removed)
-        .filter_map(|(t, &gone)| (!gone).then_some(*t))
-        .collect();
-    kept.extend(added);
-    *triangles = kept;
-    true
+    Ok(())
 }
 
 /// `v` as the nearest `f32`, back in `f64`.
@@ -382,7 +317,8 @@ fn write_binary_stl_streaming(
     if let [solid_id] = solids {
         let mut mesh =
             tessellate::tessellate_solid_for_analysis(topo, *solid_id, deflection, angular_tol)?;
-        retain_binary_triangles(&mut mesh);
+        crate::retain_nondegenerate_triangles(&mut mesh);
+        check_binary_precision(&mesh)?;
         return write_binary_stl(&mesh);
     }
 
@@ -390,7 +326,8 @@ fn write_binary_stl_streaming(
     for &solid_id in solids {
         let mut mesh =
             tessellate::tessellate_solid_for_analysis(topo, solid_id, deflection, angular_tol)?;
-        retain_binary_triangles(&mut mesh);
+        crate::retain_nondegenerate_triangles(&mut mesh);
+        check_binary_precision(&mesh)?;
         total = checked_add_triangle_count(total, mesh.indices.len() / 3)?;
     }
 
@@ -406,7 +343,7 @@ fn write_binary_stl_streaming(
     for &solid_id in solids {
         let mut mesh =
             tessellate::tessellate_solid_for_analysis(topo, solid_id, deflection, angular_tol)?;
-        retain_binary_triangles(&mut mesh);
+        crate::retain_nondegenerate_triangles(&mut mesh);
         written = checked_add_triangle_count(written, mesh.indices.len() / 3)?;
         if written > total {
             return Err(crate::IoError::InvalidTopology {
@@ -765,64 +702,259 @@ mod tests {
         );
     }
 
+    /// Weld an STL read back (one vertex per facet corner) by exact position.
+    fn welded(mesh: &TriangleMesh) -> TriangleMesh {
+        let mut ids = std::collections::BTreeMap::new();
+        TriangleMesh {
+            indices: mesh
+                .positions
+                .iter()
+                .map(|p| {
+                    let key = [p.x().to_bits(), p.y().to_bits(), p.z().to_bits()];
+                    let next = u32::try_from(ids.len()).unwrap();
+                    *ids.entry(key).or_insert(next)
+                })
+                .collect(),
+            positions: Vec::new(),
+            normals: Vec::new(),
+        }
+    }
+
+    /// A written STL reads back closed, 2-manifold and free of zero-area facets.
+    fn assert_sound(bytes: &[u8], what: &str) {
+        let mesh = crate::stl::read_stl(bytes).unwrap();
+        let zero_area = mesh
+            .indices
+            .chunks_exact(3)
+            .filter(|t| {
+                let [a, b, c] = [t[0], t[1], t[2]].map(|i| mesh.positions[i as usize]);
+                (b - a).cross(c - a).length_squared() == 0.0
+            })
+            .count();
+        assert_eq!(zero_area, 0, "{what}: zero-area facets");
+        let joined = welded(&mesh);
+        assert_eq!(
+            remus_operations::tessellate::boundary_edge_count(&joined),
+            0,
+            "{what}: open edges"
+        );
+        assert_eq!(
+            remus_operations::tessellate::non_manifold_edge_count(&joined),
+            0,
+            "{what}: edges used by more than two facets"
+        );
+    }
+
+    fn assert_precision_refusal(result: Result<Vec<u8>, crate::IoError>, what: &str) {
+        let reason = match result {
+            Err(crate::IoError::InvalidTopology { reason }) => reason,
+            Err(other) => format!("wrong error: {other}"),
+            Ok(bytes) => format!("wrote {} bytes", bytes.len()),
+        };
+        assert!(
+            reason.contains("f32") && reason.contains("ASCII"),
+            "{what}: {reason}"
+        );
+    }
+
+    fn moved(topo: &mut Topology, solid: SolidId, x: f64, y: f64) -> SolidId {
+        remus_operations::transform::transform_solid(
+            topo,
+            solid,
+            &remus_math::mat::Mat4::translation(x, y, 0.0),
+        )
+        .unwrap();
+        solid
+    }
+
     #[test]
-    fn write_stl_far_from_origin_stays_watertight() {
-        // Far from the origin, f32 has about 0.03 mm of resolution. Points a
-        // fine tessellation keeps apart in f64 can meet once narrowed.
+    fn binary_stl_refuses_meshes_f32_would_damage() {
+        let five_degrees = 5f64.to_radians();
         let mut topo = Topology::new();
-        let mut solids = Vec::new();
-        for offset in [300_000.0, 1_000_000.0] {
-            let cylinder =
-                remus_operations::primitives::make_cylinder(&mut topo, 0.5, 1.0).unwrap();
-            let sphere = remus_operations::primitives::make_sphere(&mut topo, 0.5, 16).unwrap();
-            let torus = remus_operations::primitives::make_torus(&mut topo, 2.0, 0.5, 16).unwrap();
-            for solid in [cylinder, sphere, torus] {
-                remus_operations::transform::transform_solid(
-                    &mut topo,
-                    solid,
-                    &remus_math::mat::Mat4::translation(offset, offset, 0.0),
-                )
-                .unwrap();
-                solids.push(solid);
+
+        // Four facets fall on one line in f32.
+        let cylinder = remus_operations::primitives::make_cylinder(&mut topo, 0.5, 1.0).unwrap();
+        let cylinder = moved(&mut topo, cylinder, 300_000.0, 300_000.0);
+        // Vertices meet in f32 and edges would carry more than two facets.
+        let sphere = remus_operations::primitives::make_sphere(&mut topo, 0.5, 16).unwrap();
+        let sphere = moved(&mut topo, sphere, 1_000_000.0, 1_000_000.0);
+        // At 1e7 f32 steps by 1 mm, and the whole cylinder collapses.
+        let vanishing = remus_operations::primitives::make_cylinder(&mut topo, 0.5, 1.0).unwrap();
+        let vanishing = moved(&mut topo, vanishing, 10_000_000.0, 10_000_000.0);
+        let unit_box = remus_operations::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
+
+        for (what, solids) in [
+            ("cylinder at 3e5", vec![cylinder]),
+            ("sphere at 1e6", vec![sphere]),
+            ("cylinder at 1e7", vec![vanishing]),
+            ("box with the cylinder at 1e7", vec![unit_box, vanishing]),
+            ("cylinder at 1e7 with the box", vec![vanishing, unit_box]),
+        ] {
+            assert_precision_refusal(
+                write_stl_with_tolerance(&topo, &solids, 0.01, five_degrees, StlFormat::Binary),
+                what,
+            );
+            // ASCII writes f64, so the same solids export sound.
+            if what != "cylinder at 1e7" && !what.contains("box") {
+                let ascii =
+                    write_stl_with_tolerance(&topo, &solids, 0.01, five_degrees, StlFormat::Ascii)
+                        .unwrap();
+                assert_sound(&ascii, what);
             }
         }
-        for (format, solids) in [
-            (StlFormat::Binary, &solids[..1]),
-            (StlFormat::Binary, &solids[..]),
-            (StlFormat::Ascii, &solids[..]),
-        ] {
-            let bytes =
-                write_stl_with_tolerance(&topo, solids, 0.01, 5f64.to_radians(), format).unwrap();
-            let mesh = crate::stl::read_stl(&bytes).unwrap();
-            let zero_area = mesh
-                .indices
-                .chunks_exact(3)
-                .filter(|t| {
-                    let [a, b, c] = [t[0], t[1], t[2]].map(|i| mesh.positions[i as usize]);
-                    (b - a).cross(c - a).length_squared() == 0.0
-                })
-                .count();
-            assert_eq!(zero_area, 0, "{format:?} wrote zero-area facets");
-            // An STL repeats each vertex per facet: weld by exact position.
-            let mut ids = std::collections::BTreeMap::new();
-            let welded = remus_operations::tessellate::TriangleMesh {
-                indices: mesh
-                    .positions
-                    .iter()
-                    .map(|p| {
-                        let key = [p.x().to_bits(), p.y().to_bits(), p.z().to_bits()];
-                        let next = u32::try_from(ids.len()).unwrap();
-                        *ids.entry(key).or_insert(next)
-                    })
-                    .collect(),
-                positions: Vec::new(),
-                normals: Vec::new(),
-            };
-            assert_eq!(
-                remus_operations::tessellate::boundary_edge_count(&welded),
-                0,
-                "{format:?} mesh is open"
-            );
+        // The box alone still exports.
+        assert_sound(
+            &write_stl(&topo, &[unit_box], 0.01, StlFormat::Binary).unwrap(),
+            "box",
+        );
+    }
+
+    #[test]
+    fn binary_stl_refuses_a_mesh_whose_curved_edge_flattens_in_f32() {
+        // A closed pyramid whose base edge bows outward by 1e-4 mm, near
+        // (3e5, 3e5, 0) where f32 steps by about 0.03 mm. In f32 the arc is a
+        // straight line and its thin base facets have no area.
+        let (x, y) = (300_000.0, 300_000.0);
+        let mut positions = vec![Point3::new(x + 5.0, y + 5.0, 10.0)];
+        let arc = 8;
+        for i in 0..=arc {
+            let t = f64::from(i) / f64::from(arc);
+            let bow = 1e-4 * (std::f64::consts::PI * t).sin();
+            positions.push(Point3::new(x + 10.0 * t, y - bow, 0.0));
+        }
+        positions.push(Point3::new(x + 10.0, y + 10.0, 0.0));
+        positions.push(Point3::new(x, y + 10.0, 0.0));
+        let base: Vec<u32> = (1..=u32::try_from(arc + 3).unwrap()).collect();
+        let mut indices = Vec::new();
+        for k in 0..base.len() {
+            let (a, b) = (base[k], base[(k + 1) % base.len()]);
+            indices.extend_from_slice(&[0, a, b]);
+        }
+        // The base is a fan from the first point of the arc, so it holds thin
+        // facets whose three corners all lie on the arc.
+        for k in 1..base.len() - 1 {
+            indices.extend_from_slice(&[base[0], base[k + 1], base[k]]);
+        }
+        let mesh = TriangleMesh {
+            normals: vec![Vec3::new(0.0, 0.0, 1.0); positions.len()],
+            positions,
+            indices,
+        };
+        // Closed and sound in f64.
+        assert_eq!(remus_operations::tessellate::boundary_edge_count(&mesh), 0);
+        assert_eq!(
+            remus_operations::tessellate::non_manifold_edge_count(&mesh),
+            0
+        );
+        assert_precision_refusal(write_mesh_stl(&mesh, StlFormat::Binary), "pyramid");
+        assert_sound(
+            &write_mesh_stl(&mesh, StlFormat::Ascii).unwrap(),
+            "pyramid in ASCII",
+        );
+    }
+
+    #[test]
+    fn binary_stl_refuses_vertices_that_meet_in_f32() {
+        // Two closed tetrahedra whose nearest corners lie 1e-4 mm apart near
+        // (3e5, 3e5, 0). No facet flattens, but the two corners become one
+        // point, and the edges there would join four facets.
+        let (x, y) = (300_000.0, 300_000.0);
+        let tetra = |dx: f64, sign: f64| {
+            [
+                Point3::new(x + dx, y, 0.0),
+                Point3::new(x + dx + sign * 10.0, y, 0.0),
+                Point3::new(x + dx + sign * 5.0, y + 10.0, 0.0),
+                Point3::new(x + dx + sign * 5.0, y + 3.0, 10.0),
+            ]
+        };
+        let mut positions = tetra(0.0, -1.0).to_vec();
+        positions.extend(tetra(1e-4, 1.0));
+        let faces = |o: u32, flip: bool| {
+            let f = [[0, 2, 1], [0, 1, 3], [1, 2, 3], [2, 0, 3]];
+            f.map(|[a, b, c]| {
+                if flip {
+                    [o + a, o + c, o + b]
+                } else {
+                    [o + a, o + b, o + c]
+                }
+            })
+        };
+        let indices: Vec<u32> = faces(0, false)
+            .into_iter()
+            .chain(faces(4, true))
+            .flatten()
+            .collect();
+        let mesh = TriangleMesh {
+            normals: vec![Vec3::new(0.0, 0.0, 1.0); positions.len()],
+            positions,
+            indices,
+        };
+        assert_eq!(remus_operations::tessellate::boundary_edge_count(&mesh), 0);
+        match write_mesh_stl(&mesh, StlFormat::Binary) {
+            Err(crate::IoError::InvalidTopology { reason }) => {
+                assert!(reason.contains("meet"), "{reason}");
+            }
+            other => assert!(other.is_err(), "wrote the merged corners"),
+        }
+        assert_sound(
+            &write_mesh_stl(&mesh, StlFormat::Ascii).unwrap(),
+            "tetrahedra in ASCII",
+        );
+    }
+
+    #[test]
+    fn binary_stl_away_from_the_origin_stays_sound() {
+        let five_degrees = 5f64.to_radians();
+        let mut topo = Topology::new();
+        let mut solids = Vec::new();
+        for offset in [0.0, 1_000.0, 50_000.0] {
+            let cylinder =
+                remus_operations::primitives::make_cylinder(&mut topo, 2.0, 5.0).unwrap();
+            let sphere = remus_operations::primitives::make_sphere(&mut topo, 3.0, 16).unwrap();
+            let torus = remus_operations::primitives::make_torus(&mut topo, 6.0, 1.5, 16).unwrap();
+            for solid in [cylinder, sphere, torus] {
+                solids.push(moved(&mut topo, solid, offset, offset));
+            }
+        }
+        for solid in &solids {
+            let bytes = write_stl_with_tolerance(
+                &topo,
+                std::slice::from_ref(solid),
+                0.01,
+                five_degrees,
+                StlFormat::Binary,
+            )
+            .unwrap();
+            assert_sound(&bytes, "binary");
+        }
+    }
+
+    // From d69ed9c6's writer: `write_stl` at 0.05 mm, binary.
+    const GOLDEN_CYLINDER: (usize, u64) = (3484, 0x9ed8_9caa_4689_294f);
+    const GOLDEN_THREE: (usize, u64) = (217_584, 0x8a5b_0d4d_5f74_3bea);
+
+    /// FNV-1a, enough to pin the bytes of an export in a test.
+    fn fnv1a(bytes: &[u8]) -> u64 {
+        bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+        })
+    }
+
+    #[test]
+    fn default_binary_stl_bytes_are_unchanged() {
+        // The digests of the writer on main before the angular tolerance and
+        // the f32 check, for the same solids.
+        let mut topo = Topology::new();
+        let cylinder = remus_operations::primitives::make_cylinder(&mut topo, 1.0, 5.0).unwrap();
+        let sphere = remus_operations::primitives::make_sphere(&mut topo, 1.0, 12).unwrap();
+        let torus = remus_operations::primitives::make_torus(&mut topo, 3.0, 1.0, 12).unwrap();
+        let cases = [
+            (vec![cylinder], GOLDEN_CYLINDER),
+            (vec![cylinder, sphere, torus], GOLDEN_THREE),
+        ];
+        for (solids, golden) in cases {
+            let bytes = write_stl(&topo, &solids, 0.05, StlFormat::Binary).unwrap();
+            assert_eq!((bytes.len(), fnv1a(&bytes)), golden);
         }
     }
 
