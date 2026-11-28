@@ -41,9 +41,35 @@ pub fn write_stl(
     deflection: f64,
     format: StlFormat,
 ) -> Result<Vec<u8>, crate::IoError> {
+    write_stl_with_tolerance(
+        topo,
+        solids,
+        deflection,
+        remus_math::chord::DEFAULT_ANGULAR_TOL,
+        format,
+    )
+}
+
+/// [`write_stl`] with an explicit angular tolerance.
+///
+/// `angular_tol` caps, in radians, how far the tangent may turn along one
+/// segment of a curved edge or surface, on top of the chord-height cap that
+/// `deflection` sets. [`write_stl`] passes
+/// [`remus_math::chord::DEFAULT_ANGULAR_TOL`].
+///
+/// # Errors
+///
+/// As [`write_stl`].
+pub fn write_stl_with_tolerance(
+    topo: &Topology,
+    solids: &[SolidId],
+    deflection: f64,
+    angular_tol: f64,
+    format: StlFormat,
+) -> Result<Vec<u8>, crate::IoError> {
     match format {
-        StlFormat::Binary => write_binary_stl_streaming(topo, solids, deflection),
-        StlFormat::Ascii => write_ascii_stl_streaming(topo, solids, deflection),
+        StlFormat::Binary => write_binary_stl_streaming(topo, solids, deflection, angular_tol),
+        StlFormat::Ascii => write_ascii_stl_streaming(topo, solids, deflection, angular_tol),
     }
 }
 
@@ -185,26 +211,19 @@ fn write_binary_stl_streaming(
     topo: &Topology,
     solids: &[SolidId],
     deflection: f64,
+    angular_tol: f64,
 ) -> Result<Vec<u8>, crate::IoError> {
     if let [solid_id] = solids {
-        let mut mesh = tessellate::tessellate_solid_for_analysis(
-            topo,
-            *solid_id,
-            deflection,
-            remus_math::chord::DEFAULT_ANGULAR_TOL,
-        )?;
+        let mut mesh =
+            tessellate::tessellate_solid_for_analysis(topo, *solid_id, deflection, angular_tol)?;
         crate::retain_nondegenerate_triangles(&mut mesh);
         return write_binary_stl(&mesh);
     }
 
     let mut total = 0;
     for &solid_id in solids {
-        let mut mesh = tessellate::tessellate_solid_for_analysis(
-            topo,
-            solid_id,
-            deflection,
-            remus_math::chord::DEFAULT_ANGULAR_TOL,
-        )?;
+        let mut mesh =
+            tessellate::tessellate_solid_for_analysis(topo, solid_id, deflection, angular_tol)?;
         crate::retain_nondegenerate_triangles(&mut mesh);
         total = checked_add_triangle_count(total, mesh.indices.len() / 3)?;
     }
@@ -219,12 +238,8 @@ fn write_binary_stl_streaming(
 
     let mut written = 0;
     for &solid_id in solids {
-        let mut mesh = tessellate::tessellate_solid_for_analysis(
-            topo,
-            solid_id,
-            deflection,
-            remus_math::chord::DEFAULT_ANGULAR_TOL,
-        )?;
+        let mut mesh =
+            tessellate::tessellate_solid_for_analysis(topo, solid_id, deflection, angular_tol)?;
         crate::retain_nondegenerate_triangles(&mut mesh);
         written = checked_add_triangle_count(written, mesh.indices.len() / 3)?;
         if written > total {
@@ -253,17 +268,14 @@ fn write_ascii_stl_streaming(
     topo: &Topology,
     solids: &[SolidId],
     deflection: f64,
+    angular_tol: f64,
 ) -> Result<Vec<u8>, crate::IoError> {
     let mut buf = Vec::new();
     writeln!(buf, "solid remus").map_err(crate::IoError::Io)?;
 
     for &solid_id in solids {
-        let mut mesh = tessellate::tessellate_solid_for_analysis(
-            topo,
-            solid_id,
-            deflection,
-            remus_math::chord::DEFAULT_ANGULAR_TOL,
-        )?;
+        let mut mesh =
+            tessellate::tessellate_solid_for_analysis(topo, solid_id, deflection, angular_tol)?;
         crate::retain_nondegenerate_triangles(&mut mesh);
         append_mesh_ascii(&mut buf, &mesh)?;
     }
@@ -520,6 +532,40 @@ mod tests {
             .sum();
         assert_eq!(count, single_total);
         assert_eq!(bytes.len(), 84 + count * 50);
+    }
+
+    #[test]
+    fn write_stl_angular_tolerance_caps_curved_segments() {
+        // At a 1 mm deflection the chord-height cap allows coarse segments on a
+        // 2 mm radius, so the angular cap is what sets the segment count.
+        let mut topo = Topology::new();
+        let cylinder = remus_operations::primitives::make_cylinder(&mut topo, 2.0, 1.0).unwrap();
+        let count = |angular: f64, format: StlFormat| {
+            let bytes = write_stl_with_tolerance(&topo, &[cylinder], 1.0, angular, format).unwrap();
+            crate::stl::read_stl(&bytes).unwrap().indices.len() / 3
+        };
+
+        let default = write_stl(&topo, &[cylinder], 1.0, StlFormat::Binary).unwrap();
+        assert_eq!(
+            default,
+            write_stl_with_tolerance(
+                &topo,
+                &[cylinder],
+                1.0,
+                remus_math::chord::DEFAULT_ANGULAR_TOL,
+                StlFormat::Binary,
+            )
+            .unwrap(),
+            "write_stl is the default angular tolerance"
+        );
+
+        let coarse = count(remus_math::chord::DEFAULT_ANGULAR_TOL, StlFormat::Binary);
+        let fine = count(5f64.to_radians(), StlFormat::Binary);
+        assert!(
+            fine >= coarse * 3,
+            "a 5 degree cap should need at least three times the triangles of a 20 degree cap, got {fine} against {coarse}"
+        );
+        assert_eq!(fine, count(5f64.to_radians(), StlFormat::Ascii));
     }
 
     #[test]

@@ -6,6 +6,13 @@ historical predecessor-line records, retained for provenance. The
 
 ## Unreleased
 
+### STL export: angular tolerance
+* **io,wasm-io:** `write_stl_with_tolerance` takes the angular cap that
+  `write_stl` fixes at `DEFAULT_ANGULAR_TOL`, and `RemusIo.exportStl` /
+  `exportStlAscii` take an optional third argument, `angularTolerance` in
+  radians. Without it the output is unchanged; a non-finite or
+  non-positive angle is `InvalidInput`.
+
 ### Variable-radius fillets: station laws and an exactness gate
 * **operations,wasm:** tangent-ball setback corners. `fillet_variable_with_corners`
   with `VariableCorners::TangentBall` (`"ballCorners": true` on any

@@ -482,12 +482,24 @@ impl RemusIo {
     fn export_stl_impl(
         bodies: &[u8],
         deflection: f64,
+        angular_tolerance: Option<f64>,
         format: remus_io::stl::writer::StlFormat,
     ) -> Result<Vec<u8>, IoWasmError> {
         validate_positive(deflection, "deflection")?;
+        let angular_tol = match angular_tolerance {
+            Some(angle) => {
+                validate_positive(angle, "angularTolerance")?;
+                angle
+            }
+            None => remus_math::chord::DEFAULT_ANGULAR_TOL,
+        };
         let (topo, solids) = load_solids(bodies)?;
-        Ok(remus_io::stl::writer::write_stl(
-            &topo, &solids, deflection, format,
+        Ok(remus_io::stl::writer::write_stl_with_tolerance(
+            &topo,
+            &solids,
+            deflection,
+            angular_tol,
+            format,
         )?)
     }
 
@@ -780,21 +792,38 @@ impl RemusIo {
     }
 
     /// Tessellate the solids of an arena document into one binary STL.
+    ///
+    /// `deflection` caps the chord height and the optional
+    /// `angularTolerance` caps, in radians, the tangent turn along one
+    /// segment. Without it the default cap of 0.35 rad applies.
     #[wasm_bindgen(js_name = "exportStl")]
-    pub fn export_stl(&self, bodies: &[u8], deflection: f64) -> Result<Vec<u8>, JsError> {
+    pub fn export_stl(
+        &self,
+        bodies: &[u8],
+        deflection: f64,
+        angular_tolerance: Option<f64>,
+    ) -> Result<Vec<u8>, JsError> {
         Ok(Self::export_stl_impl(
             bodies,
             deflection,
+            angular_tolerance,
             remus_io::stl::writer::StlFormat::Binary,
         )?)
     }
 
-    /// Tessellate the solids of an arena document into one ASCII STL.
+    /// Tessellate the solids of an arena document into one ASCII STL, with
+    /// the tolerances of [`exportStl`](Self::export_stl).
     #[wasm_bindgen(js_name = "exportStlAscii")]
-    pub fn export_stl_ascii(&self, bodies: &[u8], deflection: f64) -> Result<Vec<u8>, JsError> {
+    pub fn export_stl_ascii(
+        &self,
+        bodies: &[u8],
+        deflection: f64,
+        angular_tolerance: Option<f64>,
+    ) -> Result<Vec<u8>, JsError> {
         Ok(Self::export_stl_impl(
             bodies,
             deflection,
+            angular_tolerance,
             remus_io::stl::writer::StlFormat::Ascii,
         )?)
     }
@@ -1442,7 +1471,12 @@ mod tests {
 
         // Mesh writers need solids; a sheet-only document is a typed refusal.
         assert!(matches!(
-            RemusIo::export_stl_impl(&document, 0.1, remus_io::stl::writer::StlFormat::Binary),
+            RemusIo::export_stl_impl(
+                &document,
+                0.1,
+                None,
+                remus_io::stl::writer::StlFormat::Binary
+            ),
             Err(IoWasmError::InvalidInput { .. })
         ));
     }
@@ -1450,9 +1484,13 @@ mod tests {
     #[test]
     fn mesh_formats_round_trip_a_box() {
         let document = box_document();
-        let stl =
-            RemusIo::export_stl_impl(&document, 0.1, remus_io::stl::writer::StlFormat::Binary)
-                .unwrap();
+        let stl = RemusIo::export_stl_impl(
+            &document,
+            0.1,
+            None,
+            remus_io::stl::writer::StlFormat::Binary,
+        )
+        .unwrap();
         assert_eq!(
             volumes(&RemusIo::import_stl_impl(&stl, None, None).unwrap()).len(),
             1
@@ -1488,17 +1526,29 @@ mod tests {
     #[test]
     fn invalid_arguments_are_typed_refusals() {
         assert!(matches!(
-            RemusIo::export_stl_impl(&[], 0.1, remus_io::stl::writer::StlFormat::Binary),
+            RemusIo::export_stl_impl(&[], 0.1, None, remus_io::stl::writer::StlFormat::Binary),
             Err(IoWasmError::InvalidInput { .. })
         ));
         assert!(matches!(
             RemusIo::export_stl_impl(
                 &box_document(),
                 0.0,
+                None,
                 remus_io::stl::writer::StlFormat::Binary
             ),
             Err(IoWasmError::InvalidInput { .. })
         ));
+        for angle in [0.0, -0.1, f64::NAN, f64::INFINITY] {
+            assert!(matches!(
+                RemusIo::export_stl_impl(
+                    &box_document(),
+                    0.1,
+                    Some(angle),
+                    remus_io::stl::writer::StlFormat::Binary
+                ),
+                Err(IoWasmError::InvalidInput { .. })
+            ));
+        }
         assert!(matches!(
             RemusIo::import_indexed_mesh_impl(&[0.0, 0.0], &[0, 1, 2]),
             Err(IoWasmError::InvalidInput { .. })
@@ -1568,9 +1618,13 @@ mod tests {
     #[test]
     fn mesh_exports_carry_no_zero_area_facets() {
         let document = box_document();
-        let stl =
-            RemusIo::export_stl_impl(&document, 0.05, remus_io::stl::writer::StlFormat::Binary)
-                .unwrap();
+        let stl = RemusIo::export_stl_impl(
+            &document,
+            0.05,
+            None,
+            remus_io::stl::writer::StlFormat::Binary,
+        )
+        .unwrap();
         let stl_mesh = remus_io::stl::read_stl(&stl).unwrap();
         assert_eq!(stl_mesh.indices.len() % 3, 0);
         for tri in stl_mesh.indices.chunks_exact(3) {
