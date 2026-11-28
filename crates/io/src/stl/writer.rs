@@ -54,12 +54,15 @@ pub fn write_stl(
 ///
 /// `angular_tol` caps, in radians, how far the tangent may turn along one
 /// segment of a curved edge or surface, on top of the chord-height cap that
-/// `deflection` sets. [`write_stl`] passes
+/// `deflection` sets. It must lie in `(0, π/2]`. [`write_stl`] passes
 /// [`remus_math::chord::DEFAULT_ANGULAR_TOL`].
 ///
 /// # Errors
 ///
-/// As [`write_stl`].
+/// As [`write_stl`], and [`OperationsError::InvalidInput`] for an angle that
+/// is not finite or lies outside `(0, π/2]`.
+///
+/// [`OperationsError::InvalidInput`]: remus_operations::OperationsError::InvalidInput
 pub fn write_stl_with_tolerance(
     topo: &Topology,
     solids: &[SolidId],
@@ -67,10 +70,34 @@ pub fn write_stl_with_tolerance(
     angular_tol: f64,
     format: StlFormat,
 ) -> Result<Vec<u8>, crate::IoError> {
+    validate_angular_tol(angular_tol)?;
     match format {
         StlFormat::Binary => write_binary_stl_streaming(topo, solids, deflection, angular_tol),
         StlFormat::Ascii => write_ascii_stl_streaming(topo, solids, deflection, angular_tol),
     }
+}
+
+/// The largest angular tolerance a writer takes, in radians. A coarser cap
+/// would let a quarter circle become one segment.
+pub const MAX_ANGULAR_TOL: f64 = std::f64::consts::FRAC_PI_2;
+
+/// Refuse an angular tolerance that is not finite or lies outside
+/// `(0, MAX_ANGULAR_TOL]`. Zero would switch the cap off, and a negative or
+/// NaN angle would reach the tessellator's internal checks.
+///
+/// # Errors
+///
+/// [`remus_operations::OperationsError::InvalidInput`] naming the angle.
+pub fn validate_angular_tol(angular_tol: f64) -> Result<(), crate::IoError> {
+    if angular_tol.is_finite() && angular_tol > 0.0 && angular_tol <= MAX_ANGULAR_TOL {
+        return Ok(());
+    }
+    Err(remus_operations::OperationsError::InvalidInput {
+        reason: format!(
+            "angular tolerance must be a finite angle in (0, {MAX_ANGULAR_TOL}] radians, got {angular_tol}"
+        ),
+    }
+    .into())
 }
 
 /// Write one already-tessellated mesh to STL format as bytes.
@@ -87,11 +114,150 @@ pub fn write_stl_with_tolerance(
 /// Returns an error if serialization fails.
 pub fn write_mesh_stl(mesh: &TriangleMesh, format: StlFormat) -> Result<Vec<u8>, crate::IoError> {
     let mut filtered = mesh.clone();
-    crate::retain_nondegenerate_triangles(&mut filtered);
     match format {
-        StlFormat::Binary => write_binary_stl(&filtered),
-        StlFormat::Ascii => write_ascii_stl(&filtered),
+        StlFormat::Binary => {
+            retain_binary_triangles(&mut filtered);
+            write_binary_stl(&filtered)
+        }
+        StlFormat::Ascii => {
+            crate::retain_nondegenerate_triangles(&mut filtered);
+            write_ascii_stl(&filtered)
+        }
     }
+}
+
+/// Prepare one mesh for a binary STL, which stores every coordinate as `f32`.
+///
+/// Far from the origin `f32` resolves only a few hundredths of a millimetre,
+/// so a fine tessellation can hold points that meet, or fall on one line, once
+/// written. Filtering in `f64` lets those facets through as zero-area records,
+/// and dropping a facet whose three points fall on one line opens the mesh. So
+/// every position is rounded to the `f32` [`write_f32_le`] writes, equal
+/// positions are welded, facets with a repeated vertex are dropped, and each
+/// remaining zero-area facet is removed by splitting its neighbour across its
+/// long edge at its middle vertex. Every step keeps a closed mesh closed.
+fn retain_binary_triangles(mesh: &mut TriangleMesh) {
+    let mut welded: std::collections::BTreeMap<[u64; 3], u32> = std::collections::BTreeMap::new();
+    let mut positions = Vec::new();
+    let mut normals = Vec::new();
+    let mut remap = Vec::with_capacity(mesh.positions.len());
+    for (i, p) in mesh.positions.iter().enumerate() {
+        let rounded = Point3::new(to_f32(p.x()), to_f32(p.y()), to_f32(p.z()));
+        let key = [
+            rounded.x().to_bits(),
+            rounded.y().to_bits(),
+            rounded.z().to_bits(),
+        ];
+        let next = u32::try_from(positions.len()).unwrap_or(u32::MAX);
+        let id = *welded.entry(key).or_insert_with(|| {
+            positions.push(rounded);
+            normals.push(
+                mesh.normals
+                    .get(i)
+                    .copied()
+                    .unwrap_or(Vec3::new(0.0, 0.0, 1.0)),
+            );
+            next
+        });
+        remap.push(id);
+    }
+    let mut triangles: Vec<[u32; 3]> = mesh
+        .indices
+        .chunks_exact(3)
+        .filter_map(|t| {
+            let tri =
+                [t[0], t[1], t[2]].map(|i| remap.get(i as usize).copied().unwrap_or(u32::MAX));
+            let distinct = tri[0] != tri[1] && tri[1] != tri[2] && tri[0] != tri[2];
+            (distinct && tri.iter().all(|&i| (i as usize) < positions.len())).then_some(tri)
+        })
+        .collect();
+
+    // A split can leave a new zero-area facet when the opposite vertex lies on
+    // the same line, so the repair runs until nothing changes, within a bound.
+    for _ in 0..8 {
+        if !split_slivers(&positions, &mut triangles) {
+            break;
+        }
+    }
+
+    mesh.positions = positions;
+    mesh.normals = normals;
+    mesh.indices = triangles.into_iter().flatten().collect();
+    // A sliver the repair could not reach is dropped, as before.
+    crate::retain_nondegenerate_triangles(mesh);
+}
+
+/// Remove each zero-area facet whose neighbour across its long edge can be
+/// split at the facet's middle vertex. Answers whether anything changed.
+fn split_slivers(positions: &[Point3], triangles: &mut Vec<[u32; 3]>) -> bool {
+    let point = |i: u32| positions[i as usize];
+    let zero_area = |t: &[u32; 3]| {
+        let [a, b, c] = t.map(point);
+        (b - a).cross(c - a).length_squared() == 0.0
+    };
+    if !triangles.iter().any(zero_area) {
+        return false;
+    }
+    let mut half_edges = std::collections::BTreeMap::new();
+    for (f, t) in triangles.iter().enumerate() {
+        for k in 0..3 {
+            half_edges.insert((t[k], t[(k + 1) % 3]), f);
+        }
+    }
+    let mut removed = vec![false; triangles.len()];
+    let mut touched = vec![false; triangles.len()];
+    let mut added = Vec::new();
+    for f in 0..triangles.len() {
+        let t = triangles[f];
+        if touched[f] || !zero_area(&t) {
+            continue;
+        }
+        // The middle vertex is the one the other two lie on either side of.
+        let Some(k) = (0..3).find(|&k| {
+            let m = point(t[(k + 2) % 3]);
+            (point(t[k]) - m).dot(point(t[(k + 1) % 3]) - m) < 0.0
+        }) else {
+            continue;
+        };
+        let (u, v, m) = (t[k], t[(k + 1) % 3], t[(k + 2) % 3]);
+        let Some(&g) = half_edges.get(&(v, u)) else {
+            continue;
+        };
+        if g == f || touched[g] {
+            continue;
+        }
+        let n = triangles[g];
+        let Some(j) = (0..3).find(|&j| n[j] == v && n[(j + 1) % 3] == u) else {
+            continue;
+        };
+        let d = n[(j + 2) % 3];
+        if d == m {
+            continue;
+        }
+        removed[f] = true;
+        removed[g] = true;
+        touched[f] = true;
+        touched[g] = true;
+        added.push([v, m, d]);
+        added.push([m, u, d]);
+    }
+    if added.is_empty() {
+        return false;
+    }
+    let mut kept: Vec<[u32; 3]> = triangles
+        .iter()
+        .zip(&removed)
+        .filter_map(|(t, &gone)| (!gone).then_some(*t))
+        .collect();
+    kept.extend(added);
+    *triangles = kept;
+    true
+}
+
+/// `v` as the nearest `f32`, back in `f64`.
+#[allow(clippy::cast_possible_truncation)]
+fn to_f32(v: f64) -> f64 {
+    f64::from(v as f32)
 }
 
 /// Resolve the vertices and face normal for the `t`-th triangle in a mesh.
@@ -216,7 +382,7 @@ fn write_binary_stl_streaming(
     if let [solid_id] = solids {
         let mut mesh =
             tessellate::tessellate_solid_for_analysis(topo, *solid_id, deflection, angular_tol)?;
-        crate::retain_nondegenerate_triangles(&mut mesh);
+        retain_binary_triangles(&mut mesh);
         return write_binary_stl(&mesh);
     }
 
@@ -224,7 +390,7 @@ fn write_binary_stl_streaming(
     for &solid_id in solids {
         let mut mesh =
             tessellate::tessellate_solid_for_analysis(topo, solid_id, deflection, angular_tol)?;
-        crate::retain_nondegenerate_triangles(&mut mesh);
+        retain_binary_triangles(&mut mesh);
         total = checked_add_triangle_count(total, mesh.indices.len() / 3)?;
     }
 
@@ -240,7 +406,7 @@ fn write_binary_stl_streaming(
     for &solid_id in solids {
         let mut mesh =
             tessellate::tessellate_solid_for_analysis(topo, solid_id, deflection, angular_tol)?;
-        crate::retain_nondegenerate_triangles(&mut mesh);
+        retain_binary_triangles(&mut mesh);
         written = checked_add_triangle_count(written, mesh.indices.len() / 3)?;
         if written > total {
             return Err(crate::IoError::InvalidTopology {
@@ -566,6 +732,98 @@ mod tests {
             "a 5 degree cap should need at least three times the triangles of a 20 degree cap, got {fine} against {coarse}"
         );
         assert_eq!(fine, count(5f64.to_radians(), StlFormat::Ascii));
+    }
+
+    #[test]
+    fn write_stl_with_tolerance_refuses_invalid_angles() {
+        let mut topo = Topology::new();
+        let cylinder = remus_operations::primitives::make_cylinder(&mut topo, 2.0, 1.0).unwrap();
+        for angle in [
+            0.0,
+            -0.1,
+            f64::NAN,
+            f64::INFINITY,
+            MAX_ANGULAR_TOL * 1.01,
+            1e9,
+        ] {
+            for format in [StlFormat::Binary, StlFormat::Ascii] {
+                let result = write_stl_with_tolerance(&topo, &[cylinder], 0.1, angle, format);
+                assert!(
+                    matches!(
+                        result,
+                        Err(crate::IoError::Operations(
+                            remus_operations::OperationsError::InvalidInput { .. }
+                        ))
+                    ),
+                    "{angle} ({format:?}) should be refused"
+                );
+            }
+        }
+        assert!(
+            write_stl_with_tolerance(&topo, &[cylinder], 0.1, MAX_ANGULAR_TOL, StlFormat::Binary)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn write_stl_far_from_origin_stays_watertight() {
+        // Far from the origin, f32 has about 0.03 mm of resolution. Points a
+        // fine tessellation keeps apart in f64 can meet once narrowed.
+        let mut topo = Topology::new();
+        let mut solids = Vec::new();
+        for offset in [300_000.0, 1_000_000.0] {
+            let cylinder =
+                remus_operations::primitives::make_cylinder(&mut topo, 0.5, 1.0).unwrap();
+            let sphere = remus_operations::primitives::make_sphere(&mut topo, 0.5, 16).unwrap();
+            let torus = remus_operations::primitives::make_torus(&mut topo, 2.0, 0.5, 16).unwrap();
+            for solid in [cylinder, sphere, torus] {
+                remus_operations::transform::transform_solid(
+                    &mut topo,
+                    solid,
+                    &remus_math::mat::Mat4::translation(offset, offset, 0.0),
+                )
+                .unwrap();
+                solids.push(solid);
+            }
+        }
+        for (format, solids) in [
+            (StlFormat::Binary, &solids[..1]),
+            (StlFormat::Binary, &solids[..]),
+            (StlFormat::Ascii, &solids[..]),
+        ] {
+            let bytes =
+                write_stl_with_tolerance(&topo, solids, 0.01, 5f64.to_radians(), format).unwrap();
+            let mesh = crate::stl::read_stl(&bytes).unwrap();
+            let zero_area = mesh
+                .indices
+                .chunks_exact(3)
+                .filter(|t| {
+                    let [a, b, c] = [t[0], t[1], t[2]].map(|i| mesh.positions[i as usize]);
+                    (b - a).cross(c - a).length_squared() == 0.0
+                })
+                .count();
+            assert_eq!(zero_area, 0, "{format:?} wrote zero-area facets");
+            // An STL repeats each vertex per facet: weld by exact position.
+            let mut ids = std::collections::BTreeMap::new();
+            let welded = remus_operations::tessellate::TriangleMesh {
+                indices: mesh
+                    .positions
+                    .iter()
+                    .map(|p| {
+                        let key = [p.x().to_bits(), p.y().to_bits(), p.z().to_bits()];
+                        let next = u32::try_from(ids.len()).unwrap();
+                        *ids.entry(key).or_insert(next)
+                    })
+                    .collect(),
+                positions: Vec::new(),
+                normals: Vec::new(),
+            };
+            assert_eq!(
+                remus_operations::tessellate::boundary_edge_count(&welded),
+                0,
+                "{format:?} mesh is open"
+            );
+        }
     }
 
     #[test]

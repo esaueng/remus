@@ -10,8 +10,18 @@ historical predecessor-line records, retained for provenance. The
 * **io,wasm-io:** `write_stl_with_tolerance` takes the angular cap that
   `write_stl` fixes at `DEFAULT_ANGULAR_TOL`, and `RemusIo.exportStl` /
   `exportStlAscii` take an optional third argument, `angularTolerance` in
-  radians. Without it the output is unchanged; a non-finite or
-  non-positive angle is `InvalidInput`.
+  radians. Without it the output is unchanged. The angle must be finite and
+  in `(0, π/2]` (`MAX_ANGULAR_TOL`); anything else is `InvalidInput`
+  (`OperationsError::InvalidInput` in Rust) rather than a silently disabled
+  or coarsened cap. The Rust methods `RemusIo::export_stl` and
+  `export_stl_ascii` keep their two-argument signatures; the angle is on
+  `export_stl_with_tolerance` / `export_stl_ascii_with_tolerance`, which the
+  JavaScript names map to.
+* **io:** binary STL export rounds positions to the `f32` it writes before
+  filtering degenerate facets. Far from the origin a fine tessellation could
+  write zero-area facets that rounding produced; facets with a repeated
+  vertex are now dropped, and a facet whose corners fall on one line is
+  removed by splitting its neighbour, so the mesh stays closed.
 
 ### Variable-radius fillets: station laws and an exactness gate
 * **operations,wasm:** tangent-ball setback corners. `fillet_variable_with_corners`

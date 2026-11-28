@@ -489,6 +489,12 @@ impl RemusIo {
         let angular_tol = match angular_tolerance {
             Some(angle) => {
                 validate_positive(angle, "angularTolerance")?;
+                if angle > remus_io::stl::writer::MAX_ANGULAR_TOL {
+                    return Err(IoWasmError::invalid(format!(
+                        "angularTolerance must be at most {} radians (90 degrees), got {angle}",
+                        remus_io::stl::writer::MAX_ANGULAR_TOL
+                    )));
+                }
                 angle
             }
             None => remus_math::chord::DEFAULT_ANGULAR_TOL,
@@ -795,9 +801,10 @@ impl RemusIo {
     ///
     /// `deflection` caps the chord height and the optional
     /// `angularTolerance` caps, in radians, the tangent turn along one
-    /// segment. Without it the default cap of 0.35 rad applies.
+    /// segment, within `(0, π/2]`. Without it the default cap of 0.35 rad
+    /// applies. Rust callers keep [`export_stl`](Self::export_stl).
     #[wasm_bindgen(js_name = "exportStl")]
-    pub fn export_stl(
+    pub fn export_stl_with_tolerance(
         &self,
         bodies: &[u8],
         deflection: f64,
@@ -812,9 +819,10 @@ impl RemusIo {
     }
 
     /// Tessellate the solids of an arena document into one ASCII STL, with
-    /// the tolerances of [`exportStl`](Self::export_stl).
+    /// the tolerances of [`export_stl_with_tolerance`](Self::export_stl_with_tolerance).
+    /// Rust callers keep [`export_stl_ascii`](Self::export_stl_ascii).
     #[wasm_bindgen(js_name = "exportStlAscii")]
-    pub fn export_stl_ascii(
+    pub fn export_stl_ascii_with_tolerance(
         &self,
         bodies: &[u8],
         deflection: f64,
@@ -1109,6 +1117,30 @@ impl RemusIo {
         indices: &[u32],
     ) -> Result<Vec<u8>, JsError> {
         Ok(Self::import_indexed_mesh_impl(positions, indices)?)
+    }
+}
+
+/// The Rust signatures of the STL writers, unchanged by the optional angle
+/// the JavaScript methods take.
+impl RemusIo {
+    /// Tessellate the solids of an arena document into one binary STL, with
+    /// the default angular tolerance.
+    ///
+    /// # Errors
+    ///
+    /// As [`export_stl_with_tolerance`](Self::export_stl_with_tolerance).
+    pub fn export_stl(&self, bodies: &[u8], deflection: f64) -> Result<Vec<u8>, JsError> {
+        self.export_stl_with_tolerance(bodies, deflection, None)
+    }
+
+    /// Tessellate the solids of an arena document into one ASCII STL, with
+    /// the default angular tolerance.
+    ///
+    /// # Errors
+    ///
+    /// As [`export_stl_ascii_with_tolerance`](Self::export_stl_ascii_with_tolerance).
+    pub fn export_stl_ascii(&self, bodies: &[u8], deflection: f64) -> Result<Vec<u8>, JsError> {
+        self.export_stl_ascii_with_tolerance(bodies, deflection, None)
     }
 }
 
@@ -1523,6 +1555,26 @@ mod tests {
         assert!(!iges.is_empty());
     }
 
+    /// The Rust STL writers keep the two-argument signatures callers compile
+    /// against; the optional angle is a separate method.
+    #[test]
+    fn rust_stl_writers_keep_their_signatures() {
+        type TwoArguments = fn(&RemusIo, &[u8], f64) -> Result<Vec<u8>, JsError>;
+        type WithAngle = fn(&RemusIo, &[u8], f64, Option<f64>) -> Result<Vec<u8>, JsError>;
+        let plain: [TwoArguments; 2] = [RemusIo::export_stl, RemusIo::export_stl_ascii];
+        let with_angle: [WithAngle; 2] = [
+            RemusIo::export_stl_with_tolerance,
+            RemusIo::export_stl_ascii_with_tolerance,
+        ];
+        let io = RemusIo::new();
+        let document = box_document();
+        for (two, three) in plain.into_iter().zip(with_angle) {
+            let bytes = two(&io, &document, 0.1).ok();
+            assert!(bytes.as_ref().is_some_and(|b| !b.is_empty()));
+            assert_eq!(bytes, three(&io, &document, 0.1, None).ok());
+        }
+    }
+
     #[test]
     fn invalid_arguments_are_typed_refusals() {
         assert!(matches!(
@@ -1538,7 +1590,7 @@ mod tests {
             ),
             Err(IoWasmError::InvalidInput { .. })
         ));
-        for angle in [0.0, -0.1, f64::NAN, f64::INFINITY] {
+        for angle in [0.0, -0.1, f64::NAN, f64::INFINITY, 1.6, 1e9] {
             assert!(matches!(
                 RemusIo::export_stl_impl(
                     &box_document(),
