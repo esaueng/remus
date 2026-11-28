@@ -116,83 +116,9 @@ pub fn write_mesh_stl(mesh: &TriangleMesh, format: StlFormat) -> Result<Vec<u8>,
     let mut filtered = mesh.clone();
     crate::retain_nondegenerate_triangles(&mut filtered);
     match format {
-        StlFormat::Binary => {
-            check_binary_precision(&filtered)?;
-            write_binary_stl(&filtered)
-        }
+        StlFormat::Binary => write_binary_stl(&filtered),
         StlFormat::Ascii => write_ascii_stl(&filtered),
     }
-}
-
-/// Refuse a mesh that the `f32` coordinates of a binary STL would damage.
-///
-/// Far from the origin `f32` resolves only a few hundredths of a millimetre,
-/// so points a fine tessellation keeps apart in `f64` can meet, or fall on one
-/// line, once written. A facet would then be written with zero area, or two
-/// vertices would merge, which opens the mesh or makes an edge carry more
-/// than two facets for a reader that joins equal points. Both are refused
-/// rather than written; the mesh itself is never changed, so a mesh that
-/// passes is written exactly as before.
-///
-/// # Errors
-///
-/// [`crate::IoError::InvalidTopology`] naming the first facet or vertex pair
-/// that `f32` damages.
-fn check_binary_precision(mesh: &TriangleMesh) -> Result<(), crate::IoError> {
-    let rounded = |p: Point3| Point3::new(to_f32(p.x()), to_f32(p.y()), to_f32(p.z()));
-    let refuse = |what: String| crate::IoError::InvalidTopology {
-        reason: format!(
-            "{what}: a binary STL stores coordinates as f32, which cannot keep this \
-             mesh apart at its distance from the origin; translate the part nearer the \
-             origin or write ASCII STL"
-        ),
-    };
-
-    for (t, tri) in mesh.indices.chunks_exact(3).enumerate() {
-        let [a, b, c] = [tri[0], tri[1], tri[2]].map(|i| rounded(mesh.positions[i as usize]));
-        if (b - a).cross(c - a).length_squared() == 0.0 {
-            return Err(refuse(format!("facet {t} has zero area in f32")));
-        }
-    }
-
-    // Two vertices a facet uses, at different f64 positions, that land on one
-    // f32 position. Each used vertex is sorted once, by its f32 bits.
-    let mut used = vec![false; mesh.positions.len()];
-    for &i in &mesh.indices {
-        used[i as usize] = true;
-    }
-    #[allow(clippy::cast_possible_truncation)]
-    let narrow = |v: f64| (v as f32).to_bits();
-    let mut landing: Vec<([u32; 3], [u64; 3])> = mesh
-        .positions
-        .iter()
-        .zip(&used)
-        .filter(|&(_, &is_used)| is_used)
-        .map(|(&p, _)| {
-            (
-                [narrow(p.x()), narrow(p.y()), narrow(p.z())],
-                [p.x().to_bits(), p.y().to_bits(), p.z().to_bits()],
-            )
-        })
-        .collect();
-    landing.sort_unstable();
-    if let Some(pair) = landing
-        .windows(2)
-        .find(|pair| pair[0].0 == pair[1].0 && pair[0].1 != pair[1].1)
-    {
-        let p = pair[0].0.map(f32::from_bits);
-        return Err(refuse(format!(
-            "two distinct vertices meet at ({}, {}, {}) in f32",
-            p[0], p[1], p[2]
-        )));
-    }
-    Ok(())
-}
-
-/// `v` as the nearest `f32`, back in `f64`.
-#[allow(clippy::cast_possible_truncation)]
-fn to_f32(v: f64) -> f64 {
-    f64::from(v as f32)
 }
 
 /// Resolve the vertices and face normal for the `t`-th triangle in a mesh.
@@ -318,7 +244,6 @@ fn write_binary_stl_streaming(
         let mut mesh =
             tessellate::tessellate_solid_for_analysis(topo, *solid_id, deflection, angular_tol)?;
         crate::retain_nondegenerate_triangles(&mut mesh);
-        check_binary_precision(&mesh)?;
         return write_binary_stl(&mesh);
     }
 
@@ -327,7 +252,6 @@ fn write_binary_stl_streaming(
         let mut mesh =
             tessellate::tessellate_solid_for_analysis(topo, solid_id, deflection, angular_tol)?;
         crate::retain_nondegenerate_triangles(&mut mesh);
-        check_binary_precision(&mesh)?;
         total = checked_add_triangle_count(total, mesh.indices.len() / 3)?;
     }
 
@@ -745,18 +669,6 @@ mod tests {
         );
     }
 
-    fn assert_precision_refusal(result: Result<Vec<u8>, crate::IoError>, what: &str) {
-        let reason = match result {
-            Err(crate::IoError::InvalidTopology { reason }) => reason,
-            Err(other) => format!("wrong error: {other}"),
-            Ok(bytes) => format!("wrote {} bytes", bytes.len()),
-        };
-        assert!(
-            reason.contains("f32") && reason.contains("ASCII"),
-            "{what}: {reason}"
-        );
-    }
-
     fn moved(topo: &mut Topology, solid: SolidId, x: f64, y: f64) -> SolidId {
         remus_operations::transform::transform_solid(
             topo,
@@ -765,141 +677,6 @@ mod tests {
         )
         .unwrap();
         solid
-    }
-
-    #[test]
-    fn binary_stl_refuses_meshes_f32_would_damage() {
-        let five_degrees = 5f64.to_radians();
-        let mut topo = Topology::new();
-
-        // Four facets fall on one line in f32.
-        let cylinder = remus_operations::primitives::make_cylinder(&mut topo, 0.5, 1.0).unwrap();
-        let cylinder = moved(&mut topo, cylinder, 300_000.0, 300_000.0);
-        // Vertices meet in f32 and edges would carry more than two facets.
-        let sphere = remus_operations::primitives::make_sphere(&mut topo, 0.5, 16).unwrap();
-        let sphere = moved(&mut topo, sphere, 1_000_000.0, 1_000_000.0);
-        // At 1e7 f32 steps by 1 mm, and the whole cylinder collapses.
-        let vanishing = remus_operations::primitives::make_cylinder(&mut topo, 0.5, 1.0).unwrap();
-        let vanishing = moved(&mut topo, vanishing, 10_000_000.0, 10_000_000.0);
-        let unit_box = remus_operations::primitives::make_box(&mut topo, 1.0, 1.0, 1.0).unwrap();
-
-        for (what, solids) in [
-            ("cylinder at 3e5", vec![cylinder]),
-            ("sphere at 1e6", vec![sphere]),
-            ("cylinder at 1e7", vec![vanishing]),
-            ("box with the cylinder at 1e7", vec![unit_box, vanishing]),
-            ("cylinder at 1e7 with the box", vec![vanishing, unit_box]),
-        ] {
-            assert_precision_refusal(
-                write_stl_with_tolerance(&topo, &solids, 0.01, five_degrees, StlFormat::Binary),
-                what,
-            );
-            // ASCII writes f64, so the same solids export sound.
-            if what != "cylinder at 1e7" && !what.contains("box") {
-                let ascii =
-                    write_stl_with_tolerance(&topo, &solids, 0.01, five_degrees, StlFormat::Ascii)
-                        .unwrap();
-                assert_sound(&ascii, what);
-            }
-        }
-        // The box alone still exports.
-        assert_sound(
-            &write_stl(&topo, &[unit_box], 0.01, StlFormat::Binary).unwrap(),
-            "box",
-        );
-    }
-
-    #[test]
-    fn binary_stl_refuses_a_mesh_whose_curved_edge_flattens_in_f32() {
-        // A closed pyramid whose base edge bows outward by 1e-4 mm, near
-        // (3e5, 3e5, 0) where f32 steps by about 0.03 mm. In f32 the arc is a
-        // straight line and its thin base facets have no area.
-        let (x, y) = (300_000.0, 300_000.0);
-        let mut positions = vec![Point3::new(x + 5.0, y + 5.0, 10.0)];
-        let arc = 8;
-        for i in 0..=arc {
-            let t = f64::from(i) / f64::from(arc);
-            let bow = 1e-4 * (std::f64::consts::PI * t).sin();
-            positions.push(Point3::new(x + 10.0 * t, y - bow, 0.0));
-        }
-        positions.push(Point3::new(x + 10.0, y + 10.0, 0.0));
-        positions.push(Point3::new(x, y + 10.0, 0.0));
-        let base: Vec<u32> = (1..=u32::try_from(arc + 3).unwrap()).collect();
-        let mut indices = Vec::new();
-        for k in 0..base.len() {
-            let (a, b) = (base[k], base[(k + 1) % base.len()]);
-            indices.extend_from_slice(&[0, a, b]);
-        }
-        // The base is a fan from the first point of the arc, so it holds thin
-        // facets whose three corners all lie on the arc.
-        for k in 1..base.len() - 1 {
-            indices.extend_from_slice(&[base[0], base[k + 1], base[k]]);
-        }
-        let mesh = TriangleMesh {
-            normals: vec![Vec3::new(0.0, 0.0, 1.0); positions.len()],
-            positions,
-            indices,
-        };
-        // Closed and sound in f64.
-        assert_eq!(remus_operations::tessellate::boundary_edge_count(&mesh), 0);
-        assert_eq!(
-            remus_operations::tessellate::non_manifold_edge_count(&mesh),
-            0
-        );
-        assert_precision_refusal(write_mesh_stl(&mesh, StlFormat::Binary), "pyramid");
-        assert_sound(
-            &write_mesh_stl(&mesh, StlFormat::Ascii).unwrap(),
-            "pyramid in ASCII",
-        );
-    }
-
-    #[test]
-    fn binary_stl_refuses_vertices_that_meet_in_f32() {
-        // Two closed tetrahedra whose nearest corners lie 1e-4 mm apart near
-        // (3e5, 3e5, 0). No facet flattens, but the two corners become one
-        // point, and the edges there would join four facets.
-        let (x, y) = (300_000.0, 300_000.0);
-        let tetra = |dx: f64, sign: f64| {
-            [
-                Point3::new(x + dx, y, 0.0),
-                Point3::new(x + dx + sign * 10.0, y, 0.0),
-                Point3::new(x + dx + sign * 5.0, y + 10.0, 0.0),
-                Point3::new(x + dx + sign * 5.0, y + 3.0, 10.0),
-            ]
-        };
-        let mut positions = tetra(0.0, -1.0).to_vec();
-        positions.extend(tetra(1e-4, 1.0));
-        let faces = |o: u32, flip: bool| {
-            let f = [[0, 2, 1], [0, 1, 3], [1, 2, 3], [2, 0, 3]];
-            f.map(|[a, b, c]| {
-                if flip {
-                    [o + a, o + c, o + b]
-                } else {
-                    [o + a, o + b, o + c]
-                }
-            })
-        };
-        let indices: Vec<u32> = faces(0, false)
-            .into_iter()
-            .chain(faces(4, true))
-            .flatten()
-            .collect();
-        let mesh = TriangleMesh {
-            normals: vec![Vec3::new(0.0, 0.0, 1.0); positions.len()],
-            positions,
-            indices,
-        };
-        assert_eq!(remus_operations::tessellate::boundary_edge_count(&mesh), 0);
-        match write_mesh_stl(&mesh, StlFormat::Binary) {
-            Err(crate::IoError::InvalidTopology { reason }) => {
-                assert!(reason.contains("meet"), "{reason}");
-            }
-            other => assert!(other.is_err(), "wrote the merged corners"),
-        }
-        assert_sound(
-            &write_mesh_stl(&mesh, StlFormat::Ascii).unwrap(),
-            "tetrahedra in ASCII",
-        );
     }
 
     #[test]

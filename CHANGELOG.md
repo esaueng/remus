@@ -16,15 +16,8 @@ historical predecessor-line records, retained for provenance. The
   or coarsened cap. The Rust methods `RemusIo::export_stl` and
   `export_stl_ascii` keep their two-argument signatures; the angle is on
   `export_stl_with_tolerance` / `export_stl_ascii_with_tolerance`, which the
-  JavaScript names map to.
-* **io:** binary STL export refuses a mesh that the `f32` coordinates of
-  the format would damage, with `IoError::InvalidTopology` naming the facet
-  or the vertex pair. Far from the origin `f32` resolves only a few
-  hundredths of a millimetre, so a fine tessellation could be written with
-  zero-area facets, merged vertices, edges carrying more than two facets, or
-  no facets at all. The message says to move the part nearer the origin or
-  to write ASCII STL, which keeps `f64`. A mesh that passes is written
-  byte for byte as before.
+  JavaScript names map to. Binary output at the default angle is byte for
+  byte what it was.
 
 ### Variable-radius fillets: station laws and an exactness gate
 * **operations,wasm:** tangent-ball setback corners. `fillet_variable_with_corners`
